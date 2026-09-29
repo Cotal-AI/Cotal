@@ -292,6 +292,8 @@ try {
       validateRetainedAgent: wrongArm as never,
       scanManagerGoalIndex: wrongArm as never,
       authorizeManagerAdmin: wrongArm as never,
+      admitManagerRun: wrongArm as never,
+      issueManagerRunAttempt: wrongArm as never,
     };
     await refuses("dispatch refuses an enrollment request with unimplemented",
       () => dispatchManagerAuthorityRequest(ctx, OWNER, { request: enrollment() }),

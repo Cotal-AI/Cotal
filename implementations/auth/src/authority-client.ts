@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { AUTH_ENDPOINT, EpEnvelopeError, assertInboxConnId, assertLifecycleToken, endpointToken, epAuthBucket, epcStreamName, epcredFamilyPrefix, epfStreamName, epgateKey, eprepairKey, GOVERN_HEAD, newIdentity, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, admissionBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, AUTH_ENDPOINT, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -87,6 +87,7 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
  * HTTP handler chooses fixed profiles and caller-generated nkeys. */
 export function remoteManagerIssuerGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const base = authorityWriterGrants(space, connId);
+  const admission = `KV_${admissionBucket(space)}`;
   return {
     publish: [
       ...base.publish,
@@ -98,6 +99,15 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
       // issuance family is reachable through this server-side connection.
       `$KV.${epAuthBucket(space)}.epgate.manager.>`,
       `$KV.${epAuthBucket(space)}.epcred.manager.>`,
+      // Standing renewal re-derives the serve surface from the registered spec's content-addressed
+      // cluster artifacts: read-only Direct Get on the space's contract store, nothing else.
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}`,
+      // Run attempt authorization reads the run's admission record from the admission KV store:
+      `$JS.API.STREAM.INFO.${admission}`,
+      `$JS.API.STREAM.MSG.GET.${admission}`,
+      `$JS.API.DIRECT.GET.${admission}`,
+      `$JS.API.DIRECT.GET.${admission}.>`,
     ],
     subscribe: base.subscribe,
   };

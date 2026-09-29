@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   credsFromJwt,
+  admissionSnapshot,
+  accountFromCreds,
   managedRetirementOpId,
   mintLifecycleUid,
   newIdentity,
@@ -22,6 +24,11 @@ import {
   type RemoteManagedAgentPrepareRetirementResult,
   type RemoteRetainedAgentValidationRequest,
   type RemoteRetainedAgentValidationResult,
+  type RemoteRunAdmissionRequest,
+  type RemoteRunAdmissionResult,
+  type RemoteRunAttemptRequest,
+  type RemoteRunAttemptResult,
+  type RunAdmission,
   type RetainedAgentAuthority,
 } from "@cotal-ai/core";
 
@@ -37,6 +44,84 @@ interface RemoteManagerIdentityState {
     goalWriter: Identity;
     sessionLedger: Identity;
   };
+}
+
+function runRequestBase(state: RemoteManagerIdentityState, registrationProof: string, accountPublicKey: string, processEpoch: number) {
+  return {
+    v: 1 as const, space: state.space, actor: "cli", instanceId: state.instanceId,
+    managerLifecycleUid: state.lifecycleUid, requestId: `run${mintLifecycleUid()}`,
+    registrationProof, accountPublicKey, processEpoch,
+    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagerAuthorityRequest["identities"],
+  };
+}
+
+export function remoteRunAdmissionRequest(state: RemoteManagerIdentityState, proof: string, account: string, epoch: number, run: RemoteRunAdmissionRequest["run"]): RemoteRunAdmissionRequest {
+  return { ...runRequestBase(state, proof, account, epoch), kind: "manager-run-admission", run };
+}
+
+export function remoteRunAttemptRequest(state: RemoteManagerIdentityState, proof: string, account: string, epoch: number, coordinates: Pick<RemoteRunAttemptRequest, "attempt" | "operator">): RemoteRunAttemptRequest {
+  if ((coordinates.attempt === undefined) === (coordinates.operator === undefined)) throw new Error("remote run request requires exactly one attempt or operator");
+  return { ...runRequestBase(state, proof, account, epoch), kind: "manager-run-attempt", ...coordinates };
+}
+
+function exactKeys(value: unknown, keys: string[], what: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== keys.sort().join(","))
+    throw new Error(`${what} returned a non-closed result`);
+  return value as Record<string, unknown>;
+}
+
+/** No host result can substitute another admission, request, caller or instance. */
+export function remoteRunAdmission(result: RemoteRunAdmissionResult, request: RemoteRunAdmissionRequest): RunAdmission {
+  exactKeys(result, ["v", "kind", "requestId", "runId", "revision", "admission"], "manager run admission");
+  if (result.v !== 1 || result.kind !== request.kind || result.requestId !== request.requestId || result.runId !== request.run.runId ||
+      !Number.isSafeInteger(result.revision) || result.revision < 1)
+    throw new Error("manager run admission returned different request or run coordinates");
+  const admission = admissionSnapshot(result.admission);
+  if (admission.space !== request.space || admission.endpoint !== "manager" || admission.runId !== request.run.runId ||
+      admission.instanceId !== request.instanceId || admission.provenance.kind !== "issued")
+    throw new Error("manager run admission returned a foreign instance, run, or provenance");
+  return admission;
+}
+
+/** Materialize a complete, bounded JWT pair or exactly one operator JWT for held local nkeys. */
+export function remoteRunAttemptCredentials(
+  result: RemoteRunAttemptResult, request: RemoteRunAttemptRequest, owner: string,
+  identities: { driver: Identity; mediator: Identity } | { operator: Identity },
+): { driver: string; mediator: string } | { operator: string } {
+  const attempt = request.attempt !== undefined;
+  const fields = ["v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "accountPublicKey", "processEpoch", "identities", attempt ? "attempt" : "operator", "credentials"];
+  exactKeys(result, fields, "manager run attempt");
+  if (result.v !== 1 || result.kind !== request.kind || result.space !== request.space || result.owner !== owner ||
+      result.actor !== request.actor || result.instanceId !== request.instanceId || result.managerLifecycleUid !== request.managerLifecycleUid ||
+      result.requestId !== request.requestId || result.registrationProof !== request.registrationProof ||
+      result.accountPublicKey !== request.accountPublicKey || result.processEpoch !== request.processEpoch ||
+      JSON.stringify(result.identities) !== JSON.stringify(request.identities) ||
+      JSON.stringify(result.attempt ?? result.operator) !== JSON.stringify(request.attempt ?? request.operator))
+    throw new Error("manager run attempt returned different registration or grant coordinates");
+  const credentials = exactKeys(result.credentials, attempt ? ["driver", "mediator"] : ["operator"], "manager run credentials");
+  const materialize = (name: "driver" | "mediator" | "operator", identity: Identity): string => {
+    const row = exactKeys(credentials[name], ["jwt", "exp"], `manager run ${name} credential`);
+    if (typeof row.jwt !== "string" || row.jwt.length > 16_384 || row.jwt.split(".").length !== 3 ||
+        !Number.isSafeInteger(row.exp) || (row.exp as number) <= 0)
+      throw new Error(`manager run ${name} returned no bounded JWT`);
+    let claims: { exp?: unknown; sub?: unknown };
+    try { claims = JSON.parse(Buffer.from(row.jwt.split(".")[1]!, "base64url").toString("utf8")); }
+    catch { throw new Error(`manager run ${name} returned a malformed JWT`); }
+    if (claims.exp !== row.exp || claims.sub !== identity.id)
+      throw new Error(`manager run ${name} JWT differs from its expiry or held nkey`);
+    const creds = credsFromJwt(row.jwt, identity);
+    if (accountFromCreds(creds) !== request.accountPublicKey)
+      throw new Error(`manager run ${name} JWT names a foreign account`);
+    return creds;
+  };
+  if (attempt) {
+    if (!("driver" in identities) || identities.driver.id !== request.attempt?.driverId || identities.mediator.id !== request.attempt.mediatorId)
+      throw new Error("manager run attempt requested different local nkeys");
+    return { driver: materialize("driver", identities.driver), mediator: materialize("mediator", identities.mediator) };
+  }
+  if (!("operator" in identities) || identities.operator.id !== request.operator?.id)
+    throw new Error("manager run operator requested a different local nkey");
+  return { operator: materialize("operator", identities.operator) };
 }
 
 export function remoteManagerAdminAuthorizationRequest(
@@ -364,6 +449,90 @@ export function materialCredential(
   if (claims.exp !== credential.exp || !Number.isFinite(envelopeExpiry) || material.expiresAt !== envelopeExpiry || credential.exp * 1000 < material.expiresAt)
     throw new Error(`manager-service ${name} expiry does not match the material envelope`);
   return credsFromJwt(credential.jwt, identity);
+}
+
+/** The shipped caller of the closed `renewStandingBundle` operation. Every coordinate comes from
+ * the held registration: the SAME identities and lifecycle, the host-authenticated current
+ * registration proof from activation, and the account the host's own issued supervisor JWT names.
+ * Only the process epoch is supplied per call, by the Manager's active serve grant. The whole
+ * five-key family is validated against the request before the Manager sees any of it. */
+export function remoteStandingBundleRenewal(args: {
+  state: RemoteManagerIdentityState;
+  owner: string;
+  registrationProof: string;
+  /** Host-issued supervisor credential; its signing account is the assigned account. */
+  supervisorCreds: string;
+  call: (request: RemoteManagerAuthorityRequest) => Promise<RemoteManagerAuthorityMaterial>;
+}): { accountPublicKey: string; renewStandingBundle: (processEpoch: number) => Promise<Record<keyof RemoteManagerIdentityState["identities"], string>> } {
+  const accountPublicKey = accountFromCreds(args.supervisorCreds);
+  if (!accountPublicKey) throw new Error("the host-issued supervisor credential names no account");
+  return {
+    accountPublicKey,
+    renewStandingBundle: async (processEpoch) => {
+      const request: RemoteManagerAuthorityRequest = {
+        ...remoteManagerAuthorityRequest(args.state, "cli", "renewStandingBundle", args.registrationProof),
+        accountPublicKey, processEpoch,
+      };
+      return remoteManagerRenewalCredentials(await args.call(request), request, args.owner, args.state.identities);
+    },
+  };
+}
+
+/** The whole standing family is validated before any holder receives one renewed credential.
+ * A mismatched echo, missing profile or foreign nkey leaves the current live family untouched. */
+export function remoteManagerRenewalCredentials(
+  material: RemoteManagerAuthorityMaterial,
+  request: RemoteManagerAuthorityRequest,
+  owner: string,
+  identities: RemoteManagerIdentityState["identities"],
+): Record<keyof RemoteManagerIdentityState["identities"], string> {
+  const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+  if (request.operation !== "renewStandingBundle" || material.operation !== request.operation ||
+      material.v !== 1 || material.kind !== request.kind || material.space !== request.space ||
+      material.owner !== owner || material.actor !== request.actor || material.instanceId !== request.instanceId ||
+      material.lifecycleUid !== request.managerLifecycleUid || material.requestId !== request.requestId ||
+      material.registrationProof !== request.registrationProof || material.accountPublicKey !== request.accountPublicKey ||
+      material.processEpoch !== request.processEpoch || material.run !== undefined ||
+      JSON.stringify(material.identities) !== JSON.stringify(request.identities) ||
+      JSON.stringify(material.actors) !== JSON.stringify(remoteManagerActors(request.instanceId)) ||
+      Object.values(material.credentials).some((credential) => credential === undefined) ||
+      Object.keys(material.credentials).sort().join(",") !== [...names].sort().join(","))
+    throw new Error("manager-service renewal returned different coordinates or an incomplete standing family");
+  for (const name of names) if (request.identities[name].id !== identities[name].id)
+    throw new Error("manager-service renewal identities differ from the caller-held nkeys");
+  const result = Object.fromEntries(names.map((name) => [name, materialCredential(material, name, identities[name])])) as
+    Record<(typeof names)[number], string>;
+  for (const name of names) if (accountFromCreds(result[name]) !== request.accountPublicKey)
+    throw new Error(`manager-service ${name} JWT names a foreign account`);
+  return result;
+}
+
+/** Validate the pair before a hosted drive replaces either connection's credential. The
+ * issuer's grant is checked by broker preflight at the adoption site, not by JWT decode. */
+export function remoteRunRenewalCredentials(
+  material: RemoteManagerAuthorityMaterial,
+  request: RemoteManagerAuthorityRequest,
+  owner: string,
+  driver: Identity,
+  mediator: Identity,
+): { driver: string; mediator: string } {
+  if (request.operation !== "renewRunDriver" || material.operation !== request.operation ||
+      material.v !== 1 || material.kind !== request.kind || material.space !== request.space ||
+      material.owner !== owner || material.actor !== request.actor || material.instanceId !== request.instanceId ||
+      material.lifecycleUid !== request.managerLifecycleUid || material.requestId !== request.requestId ||
+      material.registrationProof !== request.registrationProof || material.accountPublicKey !== request.accountPublicKey ||
+      material.processEpoch !== request.processEpoch ||
+      JSON.stringify(material.run) !== JSON.stringify(request.run) ||
+      JSON.stringify(material.identities) !== JSON.stringify(request.identities) ||
+      JSON.stringify(material.actors) !== JSON.stringify(remoteManagerActors(request.instanceId)) ||
+      Object.values(material.credentials).some((credential) => credential === undefined) ||
+      Object.keys(material.credentials).sort().join(",") !== "runDriver,runMediator" ||
+      request.run?.driverId !== driver.id || request.run?.mediatorId !== mediator.id)
+    throw new Error("manager-service run renewal returned different coordinates or an incomplete driver/mediator pair");
+  const result = { driver: materialCredential(material, "runDriver", driver), mediator: materialCredential(material, "runMediator", mediator) };
+  if (accountFromCreds(result.driver) !== request.accountPublicKey || accountFromCreds(result.mediator) !== request.accountPublicKey)
+    throw new Error("manager-service run renewal returned a foreign account");
+  return result;
 }
 
 export function expectedRemoteManagerActors(state: RemoteManagerIdentityState) {

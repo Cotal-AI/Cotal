@@ -312,6 +312,8 @@ let deliveryOutput = "";
 let prepareRequests = 0;
 let activateRequests = 0;
 let renewRequests = 0;
+let rejectScheduledRenewals = true;
+let rejectedRenewals = 0;
 let validationRequests = 0;
 let adminAuthorizationRequests = 0;
 let retirementRequests = 0;
@@ -435,9 +437,10 @@ try {
           else if (parsed.request?.kind === "manager-service-maintenance") maintenanceRequests++;
           else if (parsed.request?.operation === "prepare") prepareRequests++;
           else if (parsed.request?.operation === "activate") activateRequests++;
-          else if (parsed.request?.operation === "renew") {
+          else if (parsed.request?.operation === "renew" || parsed.request?.operation === "renewStandingBundle") {
             renewRequests++;
-            rejectScheduledRenewal = renewRequests <= 2;
+            rejectScheduledRenewal = rejectScheduledRenewals;
+            if (rejectScheduledRenewal) rejectedRenewals++;
           }
           else if (parsed.request?.operation === "retire") retirementRequests++;
         } catch { /* the upstream owns malformed-request reporting */ }
@@ -735,15 +738,22 @@ registry.register({
   console.log("  waiting for the stock five-minute executor credential to expire");
   await wait(310_000);
   const beforeMaintenance = maintenanceRequests;
-  const cleanStopped = await stop(supervisor);
+  const beforeStopRenewals = renewRequests;
+  // Keep every scheduled renewal refused through real expiry. Allow refresh only after stop()
+  // synchronously sends SIGTERM, so the test cannot pass on a previously renewed executor.
+  const stopping = stop(supervisor);
+  rejectScheduledRenewals = false;
+  const cleanStopped = await stopping;
   supervisor = undefined;
   const cleanRegistration = await observeRegistration();
   const cleanDeregistered = cleanRegistration === null || cleanRegistration.operation === "DEL";
   check("stock clean stop refreshes the executor and deregisters after its retained credential expires",
-    cleanStopped && cleanDeregistered && renewRequests === 3 && supervisorOutput.includes("✓ deregistered manager instance"),
+    cleanStopped && cleanDeregistered && rejectedRenewals > 0 && renewRequests > beforeStopRenewals && supervisorOutput.includes("✓ deregistered manager instance"),
     {
       stopped: cleanStopped,
       registrationOperation: cleanRegistration?.operation ?? null,
+      rejectedRenewals,
+      beforeStopRenewals,
       renewRequests,
       maintenanceRequestsBefore: beforeMaintenance,
       maintenanceRequestsAfter: maintenanceRequests,

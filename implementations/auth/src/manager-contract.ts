@@ -17,7 +17,23 @@ export function reconstructRemoteManagerServeGrant(
   observed: EpGateState,
 ) {
   const artifacts = request.contractArtifacts ?? [];
-  const cluster = artifacts.find((value) => value && typeof value === "object" && (value as { urn?: unknown }).urn === "ai.cotal.manager") as {
+  return remoteManagerServeGrantFromCluster(
+    request, owner,
+    artifacts.find((value) => value && typeof value === "object" && (value as { urn?: unknown }).urn === "ai.cotal.manager"),
+    observed,
+  );
+}
+
+/** One grant derivation for activation (the submitted canonical document) and standing renewal
+ * (the document the registered service spec names in the content store). Renewal carries no
+ * artifacts, so the same surface is re-derived from registered state rather than from the request. */
+export function remoteManagerServeGrantFromCluster(
+  request: Pick<RemoteManagerAuthorityRequest, "space" | "instanceId">,
+  owner: string,
+  document: unknown,
+  observed: EpGateState,
+) {
+  const cluster = document as {
     urn?: string;
     revision?: number;
     commands?: Array<{ name?: string; class?: string; targeted?: boolean; modes?: string[]; capability?: string; inputDigest?: string; outputDigest?: string; traits?: string[] }>;

@@ -13,7 +13,7 @@ import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, asse
 export interface RemoteManagerAuthorityRequest {
   v: 1;
   kind: "manager-service-authority";
-  operation: "prepare" | "activate" | "renew" | "session" | "retire";
+  operation: "prepare" | "activate" | "renew" | "session" | "retire" | "renewStandingBundle" | "renewRunDriver";
   space: string;
   /** The interactive ledger actor authenticating the request (normally `cli`). */
   actor: string;
@@ -23,6 +23,19 @@ export interface RemoteManagerAuthorityRequest {
   /** Activate/renew proves the registration phase that preceded it. The opaque digest is minted
    * and validated by the host; it never carries permissions itself. */
   registrationProof?: string;
+  /** Renewals only: account and current registration process fence, checked by the issuer. */
+  accountPublicKey?: string;
+  processEpoch?: number;
+  /** Run renewal only: the active journal attempt and both caller-held connection nkeys. */
+  run?: {
+    runId: string;
+    holder: string;
+    takeoverId: string;
+    epoch: number;
+    fencingToken: number;
+    driverId: string;
+    mediatorId: string;
+  };
   /** Session only: one fresh caller-generated serving nkey and the exact session coordinates. */
   session?: { id: string; endpoint: string; sessionId: string; epoch: number; exp: number };
   /** Retire only: one fresh requester nkey plus the exact terminal operation. The opId is stable
@@ -74,6 +87,9 @@ export interface RemoteManagerAuthorityMaterial {
   lifecycleUid: string;
   requestId: string;
   registrationProof?: string;
+  accountPublicKey?: string;
+  processEpoch?: number;
+  run?: RemoteManagerAuthorityRequest["run"];
   retirement?: RemoteManagerAuthorityRequest["retirement"];
   issuedAt: number;
   /** Earliest `exp` among the envelope's credentials, in milliseconds, as the issuer computes it.
@@ -93,6 +109,8 @@ export interface RemoteManagerAuthorityMaterial {
     serve: RemoteManagerCredential;
     goalWriter: RemoteManagerCredential;
     sessionLedger: RemoteManagerCredential;
+    runDriver: RemoteManagerCredential;
+    runMediator: RemoteManagerCredential;
     sessionServing: RemoteManagerCredential;
     retirementRequester: RemoteManagerCredential;
   }>;
@@ -540,4 +558,87 @@ export function parseRemoteManagedAgentPrepareRetirementRequest(raw: unknown): R
     target: parsedTarget,
     opId: o.opId,
   };
+}
+
+/**
+ * Closed first-run admission for one hosted `run-start`, asked by a registered signerless manager.
+ *
+ * This is delegation to the registered trusted host, not a cryptographic proof of an arbitrary
+ * forwarded message. The manager forwards the authenticated `ep.v1` request subject it served; the
+ * host authenticates the manager's registration (account, owner, instance, lifecycle, process
+ * epoch, current-registration proof), re-parses the subject itself, independently resolves the
+ * issued generation it names with live sources, checks that ceiling permits that exact run-start
+ * subject, and creates the immutable admission from the evidence. No ceiling, profile or caller
+ * triple is accepted from the body.
+ */
+export interface RemoteRunAdmissionRequest {
+  v: 1;
+  kind: "manager-run-admission";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  accountPublicKey: string;
+  processEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  /** The host-minted run id and the served request subject, verbatim. */
+  run: { runId: string; subject: string };
+}
+
+/** The admission the host created (or found written by an exact retry), with its store revision. */
+export interface RemoteRunAdmissionResult {
+  v: 1;
+  kind: "manager-run-admission";
+  requestId: string;
+  runId: string;
+  revision: number;
+  admission: import("./run-admission.js").RunAdmission;
+}
+
+/**
+ * Closed first-attempt (and resume) driver/mediator issuance, or one served run-operator call, for
+ * a registered signerless manager. Separate from `renewRunDriver`, which only renews an activated
+ * attempt. The manager generates the nkeys and sends public ids only. The host authenticates the
+ * registration, then derives every grant coordinate from its own stores: the immutable admission
+ * (present, unrevoked, admitted on this instance), the run record's next epoch and fencing token,
+ * the holder under the registered supervisor id, and for an answer a checkpoint still waiting.
+ * Delegation to the registered trusted host; the host signs only the returned grant arguments.
+ */
+export interface RemoteRunAttemptRequest {
+  v: 1;
+  kind: "manager-run-attempt";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  accountPublicKey: string;
+  processEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  /** Exactly one of `attempt` / `operator`. */
+  attempt?: { runId: string; takeoverId: string; epoch: number; fencingToken: number; driverId: string; mediatorId: string };
+  operator?: { id: string; takeoverId: string; runId?: string; answers?: { token: string } };
+}
+
+/** The host returns only signed JWTs for the nkeys held by the registered manager. The
+ * discriminator and complete request echo bind a pair or a single operator to one call. */
+export interface RemoteRunAttemptResult {
+  v: 1;
+  kind: "manager-run-attempt";
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  accountPublicKey: string;
+  processEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  attempt?: RemoteRunAttemptRequest["attempt"];
+  operator?: RemoteRunAttemptRequest["operator"];
+  credentials: { driver: RemoteManagerCredential; mediator: RemoteManagerCredential } | { operator: RemoteManagerCredential };
 }

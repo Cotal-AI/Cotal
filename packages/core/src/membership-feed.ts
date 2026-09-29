@@ -594,6 +594,9 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       // `.catch` is needed to keep `stop()` from throwing.
       await inFlight;
       await Promise.allSettled([connA.drain(), connB.drain()]);
+      // A disconnected drain can reject without closing its reconnect loop. Stop owns both
+      // connections even when the broker is gone; neither may reappear after stop resolves.
+      await Promise.all([connA.close(), connB.close()]);
     },
   };
 }
