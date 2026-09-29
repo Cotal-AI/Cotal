@@ -21,7 +21,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, probeConnect, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, createSpaceAuth, mintCreds, provisionAgentDurables, mintLifecycleUid, newIdentity, probeConnect, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import {
@@ -203,6 +203,16 @@ try {
         owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: t.allowSubscribe ?? [], allowPublish: t.allowPublish ?? [],
         ...(t.role !== undefined ? { role: t.role } : {}), parent: `${owner}.${r.actor}`, lifecycleUid, tokenHash: t.tokenHash,
       } as never);
+      // Host-owned broker footprint for the enrolled lifecycle (the host holds the provisioner;
+      // the participant manager holds no writer).
+      const provisioner = new CotalEndpoint({
+        space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [],
+        consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+        card: { name: "ef-fixture-host-provisioner", kind: "endpoint" },
+      });
+      await provisioner.start();
+      try { await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe: t.subscribe ?? [], allowSubscribe: t.allowSubscribe ?? [] }); }
+      finally { await provisioner.stop(); }
       intercepted.push({ status: 200, actor: t.actor, owner });
       return send(200, {
         v: 1, kind: "manager-managed-agent-enrollment", space: r.space, owner, actor: r.actor, instanceId: r.instanceId,
