@@ -75,6 +75,12 @@ refuses a plaintext listener rather than upgrading on the server's unauthenticat
 holds a standing credential and reconnects unattended, so a downgrade here would repeat with nobody
 watching. See [transport.md](transport.md).
 
+The transport-health component can use the resident endpoint's NATS connection events, with no
+additional authenticated dial while it is healthy. It distinguishes broker disconnects from
+authentication-expiry errors and clears the corresponding failure on a proved credential adoption.
+Until this component is wired into the daemon, the current two-second authenticated broker probe
+remains its active broker watch.
+
 `cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
 without taking the single-flight lease because another daemon holds it, or because a crashed
 holder's lease has not expired yet. A lease write the credential is not allowed to make is reported
