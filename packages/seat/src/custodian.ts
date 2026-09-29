@@ -209,11 +209,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     }
-    try {
-      unlinkSync(launch.recordPath);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
+    // The custody record is retained on disk until verified reaping can consume it;
+    // reapSeat proves kernel process identities and removes the record directory.
     process.exit(0);
   };
 

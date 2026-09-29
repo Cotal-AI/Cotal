@@ -13,7 +13,7 @@
  * **sequence** (`joinCursor`/`leaveCursor`), never wall-clock.
  */
 import { Kvm, type KV } from "@nats-io/kv";
-import { membersBucket, memberKey, parseMemberKey } from "./subjects.js";
+import { membersBucket, memberKey, parseMemberKey, isConcreteChannel, assertLifecycleToken, parsePrincipalKey } from "./subjects.js";
 import type { MembershipRecord } from "./types.js";
 import { liveKvEntries } from "./kv-scan.js";
 
@@ -227,4 +227,32 @@ export function durableEligible(rec: MembershipRecord, seq: number): boolean {
   if (seq <= rec.joinCursor) return false;
   if (rec.leaveCursor !== undefined && seq > rec.leaveCursor) return false;
   return true;
+}
+
+/**
+ * Authoritative membership inventory for one exact lifecycle: reads every live entry from the
+ * members registry and derives the complete, lifecycle-exact list of concrete channels holding
+ * durable membership rows for `(principal, lifecycleUid)`.
+ *
+ * Unlike {@link listMembers}, which silently skips undecodable JSON values for display and fan-out,
+ * this inventory derives membership keys from validated exact keys (`<channel>/<principal>.<lifecycleUid>`)
+ * so malformed or corrupt durable rows cannot be omitted from terminal teardown.
+ */
+export async function listLifecycleMemberChannels(
+  kv: KV,
+  principal: string,
+  lifecycleUid: string,
+): Promise<string[]> {
+  const pr = parsePrincipalKey(principal);
+  if (!pr) throw new Error(`listLifecycleMemberChannels: invalid principal "${principal}"`);
+  assertLifecycleToken(lifecycleUid);
+  const channels = new Set<string>();
+  for (const e of await liveKvEntries(kv)) {
+    const parsed = parseMemberKey(e.key);
+    if (!parsed) continue;
+    if (parsed.principal !== principal || parsed.lifecycleUid !== lifecycleUid) continue;
+    if (!isConcreteChannel(parsed.channel)) continue;
+    channels.add(parsed.channel);
+  }
+  return [...channels].sort();
 }

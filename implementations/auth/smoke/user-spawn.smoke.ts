@@ -415,6 +415,7 @@ let managerStopped = false;
 let observer: InstanceType<typeof CotalEndpoint> | undefined;
 let shortEp: InstanceType<typeof CotalEndpoint> | undefined;
 const ctlEps: Array<InstanceType<typeof CotalEndpoint>> = []; // section O control callers, closed in finally
+let deliveryDaemon: { stop: () => Promise<void> } | undefined;
 try {
   // ---------- A. setup ----------
   console.log("A) user-auth broker + streams + auth service + login + grant");
@@ -1034,6 +1035,32 @@ try {
   const sibStop = await epTargeted(opsmate, "stop", "delta");
   check("owner-domain: the same sibling actor stops it (stop travels with attach)", sibStop.ok === true, sibStop);
   check("delta is gone from the manager after the sibling stop", !psList(manager).some((a) => a.name === "delta"), psList(manager).map((a) => a.name));
+  // ---------- ABSENT-DAEMON CONTROL: HELD RETIREMENT AND RETAINED RESIDUE ----------
+  // While the delivery daemon is absent, the manager's membership inventory challenge cannot
+  // reach a responder. Lack of daemon NEVER proves empty storage: retirement stays held,
+  // the name remains reserved pending retirement, and a same-name spawn is refused.
+  const mRetiring = (manager as unknown as { retiring: Map<string, { opId: string; lifecycleUid: string; lastError?: string }> }).retiring;
+  for (let i = 0; i < 50 && (!mRetiring.has("delta") || !mRetiring.get("delta")?.lastError); i++) await wait(100);
+  check("absent delivery daemon holds retirement: delta is held in retiring with incomplete inventory",
+    mRetiring.has("delta") && /membership inventory incomplete/i.test(mRetiring.get("delta")?.lastError ?? ""),
+    mRetiring.get("delta"));
+  const rHeldSpawn = await manager.startAgent({ name: "delta", agent: "e2e", events: false });
+  check("absent delivery daemon holds retirement: same-name spawn is refused pending retirement",
+    rHeldSpawn.ok === false && /reserved pending retirement/i.test(rHeldSpawn.error ?? ""),
+    rHeldSpawn);
+
+  // ---------- RECOVERY WHEN GENUINE DELIVERY RETURNS ----------
+  // Completed-retirement cells need a REAL delivery daemon and actual provisioned credentials.
+  const { bootDeliveryDaemon } = await import("../../manager/smoke/_boot-delivery.js");
+  deliveryDaemon = await bootDeliveryDaemon({
+    space: SPACE,
+    servers: SERVER,
+    auth,
+    reloadStoreIdentity: { kind: "fs", root },
+  });
+  // Re-drive the held retirement now that genuine delivery has returned:
+  await manager.startAgent({ name: "delta", agent: "e2e", events: false }).catch(() => {});
+
   // ---------- THE RETIREMENT IS AUTHORIZED AND ACTS (Cotal #549) ----------
   // Read from STATE, never from the despawn's log copy. The defect this covers made the auth rail's
   // principal cross-check unsatisfiable, because the gate is bound to `principalKey(DEV_OWNER,
@@ -1605,7 +1632,8 @@ try {
   // its closing brace, so it runs a different total than the full mode.
   // 121 -> 122: section E's bare spawn is served rather than refused since #2078, so the re-pin
   // (#2105) reads the child's managed row to prove the plane really is disarmed, not just announced.
-  const EXPECTED = endpointCliFocus ? 40 : 122;
+  // 122 -> 124: section O absent-daemon control proves retirement held before delivery returns.
+  const EXPECTED = endpointCliFocus ? 40 : 124;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
@@ -1621,6 +1649,7 @@ try {
   console.log(`\nUSER-SPAWN SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = 1;
 } finally {
+  try { await deliveryDaemon?.stop(); } catch { /* */ }
   try { await observer?.stop(); } catch { /* */ }
   try { await shortEp?.stop(); } catch { /* */ }
   for (const e of ctlEps) { try { await e.stop(); } catch { /* */ } }
