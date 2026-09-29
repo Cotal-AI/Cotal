@@ -138,7 +138,7 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
-  principalKey, registry, dmStream, dlvStream, openAclRegistry, openMembersRegistry, readMember, listMembers,
+  principalKey, registry, dmStream, dlvStream, openAclRegistry, openMembersRegistry, readMember, listMembers, memberKey,
   CotalEndpoint, mintMembershipObserverCreds, mintConnectionEvictorCreds, evictDeniedPrincipalWithCreds,
   createEndpointStreams, DEV_OWNER, recordsBucket, epAuthBucket, mintLifecycleUid,
 } = await import("@cotal-ai/core");
@@ -471,13 +471,27 @@ try {
   // A SAME-principal row under another lifecycle uid (a stale/other generation of this alias).
   await delivery!.durableJoinFor(principal.key, "side", foreignUid);
   const otherGenRow = () => memberRow("side", foreignUid);
+
+  const corruptKey = memberKey("unreadable", principal.key, predUid);
+  await inspect(async (_j, nc) => {
+    const kv = await openMembersRegistry(nc, SPACE);
+    await kv.create(corruptKey, new TextEncoder().encode("{invalid-json"));
+  });
+  const corruptEntryBefore = await inspect(async (_j, nc) => {
+    const kv = await openMembersRegistry(nc, SPACE);
+    return kv.get(corruptKey);
+  });
+  check("SAFETY: malformed lifecycle-keyed member row exists in broker",
+    corruptEntryBefore != null && corruptEntryBefore.operation === "PUT" && corruptEntryBefore.value.length === 13,
+    corruptEntryBefore);
+
   const membersBefore = await memberRowsFor();
   // The inventory verb itself, over the manager's own supervisor rail: exactly this lifecycle's
   // channels (never the other-lifecycle "side" row), and a malformed lifecycle is refused.
   const epAdmin = (manager as unknown as { ep: { requestDeliveryAdmin: (op: string, args: Record<string, unknown>, t?: number) => Promise<ControlReply> } }).ep;
   const inv = await epAdmin.requestDeliveryAdmin("lifecycleMemberships", { principal: principal.key, lifecycleUid: predUid });
   check("INVENTORY: the daemon lists exactly the retiring lifecycle's channels (complete, lifecycle-exact)",
-    inv.ok === true && JSON.stringify(inv.data) === JSON.stringify({ complete: true, channels: ["general", "team.api", "unnamed"] }), inv);
+    inv.ok === true && JSON.stringify(inv.data) === JSON.stringify({ complete: true, channels: ["general", "team.api", "unnamed", "unreadable"] }), inv);
   const invBad = await epAdmin.requestDeliveryAdmin("lifecycleMemberships", { principal: principal.key, lifecycleUid: "NOT A UID" });
   check("INVENTORY: a malformed lifecycle is refused (no listing)", invBad.ok === false && invBad.data === undefined, invBad);
   check("MEMBERS: the delivery daemon committed the predecessor's durable rows (general + unnamed)",
@@ -575,6 +589,13 @@ try {
   const fpRetired = await footprint();
   check("witness: the predecessor's broker footprint is fully retired before the alias frees",
     fpRetired.dm.length === 0 && fpRetired.dlv.length === 0 && fpRetired.acl.length === 0, fpRetired);
+  const corruptEntryAfter = await inspect(async (_j, nc) => {
+    const kv = await openMembersRegistry(nc, SPACE);
+    return kv.get(corruptKey);
+  });
+  check("SAFETY: corrupt lifecycle-keyed membership row is gone before alias is freed",
+    corruptEntryAfter == null || corruptEntryAfter.operation === "DEL" || corruptEntryAfter.operation === "PURGE",
+    { corruptKey, kept: corruptEntryAfter?.value?.length });
   const membersRetired = await memberRowsFor();
   check("MEMBERS: the retirement removed the predecessor's launch-channel row (general)", !(await memberRow("general", predUid)), membersRetired);
   check("MEMBERS: the daemon inventory removed the unnamed and wildcard-covered rows too (3 of 3, no residue)",

@@ -85,6 +85,7 @@ import {
   activateMember,
   readMember,
   listMembers,
+  listLifecycleMemberChannels,
   durableEligible,
   StaleMembershipWrite,
 } from "./members.js";
@@ -4806,8 +4807,8 @@ export class CotalEndpoint extends EventEmitter {
       if (!parsePrincipalKey(principal)) return { ok: false, error: "lifecycleMemberships: a principal (owner.actor dot-form) is required" };
       try { assertLifecycleToken(uid); } catch (e) { return { ok: false, error: `lifecycleMemberships: ${(e as Error).message}` }; }
       try {
-        const rows = await listMembers(await this.membersRegistry(), { owner: principal });
-        return { ok: true, data: { complete: true, channels: [...new Set(rows.filter((r) => r.lifecycleUid === uid).map((r) => r.channel))].sort() } };
+        const channels = await listLifecycleMemberChannels(await this.membersRegistry(), principal, uid);
+        return { ok: true, data: { complete: true, channels } };
       } catch (e) {
         return { ok: false, error: `lifecycleMemberships: the inventory read did not complete (${(e as Error).message})` };
       }
