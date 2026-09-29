@@ -85,6 +85,7 @@ import {
   activateMember,
   readMember,
   listMembers,
+  listLifecycleMemberChannels,
   durableEligible,
   StaleMembershipWrite,
 } from "./members.js";
@@ -4800,6 +4801,22 @@ export class CotalEndpoint extends EventEmitter {
         return { ok: true, data: await this.plane3.planeConnLiveness(req.args?.query) };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
+      }
+    }
+    if (req.op === "lifecycleMemberships") {
+      // The terminal teardown's membership INVENTORY: a complete, read-only, lifecycle-exact listing
+      // of one principal's durable membership rows (tombstones included) from the trusted daemon that
+      // owns the members bucket. The caller deletes only the exact keys it gets back, through its
+      // target-pinned deprovisioner grant; this verb deletes nothing and returns no other lifecycle.
+      const principal = typeof req.args?.principal === "string" ? req.args.principal.trim() : "";
+      const uid = typeof req.args?.lifecycleUid === "string" ? req.args.lifecycleUid : "";
+      if (!parsePrincipalKey(principal)) return { ok: false, error: "lifecycleMemberships: a principal (owner.actor dot-form) is required" };
+      try { assertLifecycleToken(uid); } catch (e) { return { ok: false, error: `lifecycleMemberships: ${(e as Error).message}` }; }
+      try {
+        const channels = await listLifecycleMemberChannels(await this.membersRegistry(), principal, uid);
+        return { ok: true, data: { complete: true, channels } };
+      } catch (e) {
+        return { ok: false, error: `lifecycleMemberships: the inventory read did not complete (${(e as Error).message})` };
       }
     }
     if (req.op === "principalLiveness") {

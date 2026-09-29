@@ -1,0 +1,26 @@
+{
+  "suite": [
+    "implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts"
+  ],
+  "guard": "authoritative membership inventory derives channels from validated exact keys so malformed durable rows are not omitted from retirement",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth exec tsx smoke/freeslot-respawn-barrier.smoke.ts",
+  "completionMarker": "FREESLOT RESPAWN BARRIER",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/corrupt-member-inventory.json",
+  "why": [
+    "lifecycleMemberships derives channels from validated exact keys so that unreadable/malformed membership rows",
+    "are included in the inventory and purged during terminal cleanup before the alias is freed.",
+    "Restoring the defective implementation that called listMembers omits undecodable rows from inventory,",
+    "causing the corrupt row to linger and the named safety assertion to fail."
+  ],
+  "mutations": [
+    {
+      "name": "restore defective listMembers complete inventory omission",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "const channels = await listLifecycleMemberChannels(await this.membersRegistry(), principal, uid);",
+      "replace": "const rows = await listMembers(await this.membersRegistry(), { owner: principal }); const channels = [...new Set(rows.filter((r) => r.lifecycleUid === uid).map((r) => r.channel))].sort();",
+      "expectRed": "SAFETY: corrupt lifecycle-keyed membership row is gone before alias is freed",
+      "cell": "SAFETY: corrupt lifecycle-keyed membership row is gone before alias is freed",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

@@ -20,10 +20,10 @@ export class CustodialPtyRuntime implements CustodialRuntime {
   readonly supportsRelease = true;
   /**
    * Private cache of active SeatRecords keyed by custody reference id, populated on spawn and adopt
-   * and pruned on reap or release. When a managed seat cleanly exits, its custodian unlinks the
-   * on-disk custody file; this pinned record allows reapSeat to prove the kernel start identities and
-   * process group are gone without requiring the file to linger. An unadopted reference without a
-   * pinned record falls back to fail-closed absent handling (RuntimeReapUnproven).
+   * and pruned on reap or release. Custody records are retained on disk across seat exit so that
+   * reapSeat can verify kernel start identities and ensure the process group is gone even after a
+   * manager process restarts. An unadopted reference without a pinned or on-disk record falls back
+   * to fail-closed absent handling (RuntimeReapUnproven).
    */
   private readonly records = new Map<string, SeatRecord>();
 

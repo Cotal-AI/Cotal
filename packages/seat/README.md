@@ -41,7 +41,9 @@ observation. A manager worker connects to that custodian over a 0600 filesystem 
 authenticated by `SO_PEERCRED` uid match plus a per-seat capability token. Path possession is
 not enough. Child exit is pushed to every authenticated controller socket. After the child
 exits and the last authenticated client disconnects, the custodian closes the Unix server, unlinks the
-socket and record, and exits. An active child, or a still-connected observer of an exited
+socket, and exits. The custody record stays until `reapSeat` verifies process departure. If the
+recorded group leader is absent but its numeric process group still has members, ownership is
+unproved: reaping refuses without signalling those members or deleting the record. An active child, or a still-connected observer of an exited
 child, keeps the process. A connected socket that never authenticated does not: it owns no
 session, no output subscription and no wait, so a settle owes it nothing. A seat whose child has
 already exited at listen stays up briefly so the launcher can adopt it.

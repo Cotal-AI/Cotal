@@ -490,7 +490,7 @@
     "smoke:seat-native-ci": "tsx bin/smoke/seat-native-ci.smoke.ts",
     "smoke:seat-installed-dist": "tsx bin/smoke/seat-installed-dist.smoke.ts",
     "smoke:seat-protocol": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/protocol.smoke.ts",
-    "smoke:seat-lifecycle": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/lifecycle.smoke.ts",
+    "smoke:seat-lifecycle": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/lifecycle.smoke.ts && tsx packages/seat/smoke/reap-group-identity.smoke.ts",
     "repro:1648": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/repro-1648.mts",
     "smoke:seat-isolation": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/isolation.smoke.ts",
     "smoke:ep-serve:auth": "tsx packages/core/smoke/endpoint-serve-auth.smoke.ts",
