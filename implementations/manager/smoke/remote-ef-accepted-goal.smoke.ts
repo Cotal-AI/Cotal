@@ -31,6 +31,30 @@ import {
 import { pickFreePort } from "./_free-port.js";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 
+// LABELLED SCRIPTED SDK FIXTURE CHILD (stands in for a model worker; not a production provider):
+// joins the mesh with the stock endpoint using ONLY the enrolled bearer command + sentinel path.
+if (process.argv[2] === "agent-child") {
+  try {
+    const { CotalEndpoint } = await import("@cotal-ai/core");
+    const { readFileSync } = await import("node:fs");
+    const { execFile } = await import("node:child_process");
+    const cmd = JSON.parse(process.env.COTAL_BEARER_CMD!) as string[];
+    const bearer = () => new Promise<string>((res, rej) => execFile(cmd[0]!, cmd.slice(1), (e, out, err) => e ? rej(new Error(err.trim() || e.message)) : res(out.trim())));
+    const ep = new CotalEndpoint({
+      space: process.env.COTAL_SPACE!, servers: process.env.COTAL_SERVERS!, bearer,
+      sentinelCreds: readFileSync(process.env.COTAL_SENTINEL_CREDS!, "utf8"),
+      lifecycleUid: process.env.COTAL_LIFECYCLE_UID!, channels: [], consume: false,
+      card: { owner: process.env.COTAL_OWNER!, actor: process.env.COTAL_ACTOR!, name: process.env.COTAL_NAME!, kind: "agent" },
+    });
+    ep.on("error", () => {});
+    await ep.start();
+    await new Promise(() => {});
+  } catch (e) {
+    console.error(`ef-sdk-fixture child failed: ${(e instanceof Error ? e.message : String(e)).replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[jwt]").replace(/-----BEGIN[\s\S]*?-----END[^-]*-----/g, "[creds]").slice(0, 400)}`);
+    process.exit(1);
+  }
+}
+
 const authRequire = createRequire(new URL("../../auth/package.json", import.meta.url));
 const { jwtVerify, createRemoteJWKSet } = authRequire("jose") as { jwtVerify: any; createRemoteJWKSet: any };
 const baRoot = new URL("../../auth/node_modules/better-auth/", import.meta.url);
@@ -146,6 +170,15 @@ try {
     const body = q.method === "POST" ? await readBody(q) : "";
     let parsed: any;
     try { parsed = body ? JSON.parse(body) : undefined; } catch { /* forward as is */ }
+    if (q.url === "/.well-known/cotal-mesh") {
+      // The platform edge publishes ITS OWN URL as the exchange pin (it is what participants dial);
+      // every other pin is the daemon's generated bundle unchanged.
+      const r = await fetch(`${publicUrl}${q.url}`);
+      const bundle = await r.json() as any;
+      bundle.userAuth.endpoints = { ...bundle.userAuth.endpoints, url: proxyUrl };
+      s.writeHead(r.status, { "content-type": "application/json" });
+      return void s.end(JSON.stringify(bundle));
+    }
     if (q.url !== "/manager-service-authority" || parsed?.request?.kind !== "manager-managed-agent-enrollment") return void forward(q, s, body);
     const send = (code: number, v: unknown) => { s.writeHead(code, { "content-type": "application/json" }); s.end(JSON.stringify(v)); };
     try {
@@ -205,9 +238,45 @@ try {
     userAuth: { provider: "cotal", idp: { url: idpUrl, issuer: idpOrigin, audience: idpOrigin }, endpoints: { url: proxyUrl } } as never,
   }, false, false);
   mkdirSync(join(partHome, "xdg"), { recursive: true });
+  // Labelled fixture connector extension + persona (operator-installed, like `cotal ext add`).
+  const extRoot = join(partHome, "xdg", "cotal", "extensions");
+  const extDir = join(extRoot, "node_modules", "ef-sdk-fixture-extension");
+  mkdirSync(extDir, { recursive: true });
+  writeFileSync(join(extDir, "package.json"), JSON.stringify({ name: "ef-sdk-fixture-extension", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
+  writeFileSync(join(extDir, "index.js"), `
+import { registry, eventChannel } from "@cotal-ai/core";
+registry.register({
+  kind: "connector", name: "ef-sdk-fixture", readinessTimeoutMs: 30000,
+  // The events-required mesh policy needs a connector that declares its event channel.
+  eventChannel: (principal) => eventChannel(principal),
+  buildLaunch(opts) {
+    if (!opts.userAuth || !opts.lifecycleUid) throw new Error("ef-sdk-fixture requires enrolled user authority");
+    return {
+      command: process.execPath,
+      args: [...JSON.parse(process.env.COTAL_EF_EXECARGV), process.env.COTAL_EF_FIXTURE, "agent-child"],
+      env: {
+        COTAL_SPACE: opts.space, COTAL_SERVERS: opts.servers, COTAL_NAME: opts.name,
+        COTAL_OWNER: opts.userAuth.owner, COTAL_ACTOR: opts.userAuth.actor,
+        COTAL_SENTINEL_CREDS: opts.userAuth.sentinelCredsPath,
+        COTAL_BEARER_CMD: JSON.stringify(opts.userAuth.bearerCmd), COTAL_LIFECYCLE_UID: opts.lifecycleUid,
+        XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: process.env.COTAL_SKIP_CONNECTOR_SEED,
+      },
+    };
+  },
+});
+`);
+  writeFileSync(join(extRoot, "extensions.json"), JSON.stringify({ extensions: [{
+    pkg: "ef-sdk-fixture-extension", version: "1.0.0", spec: "file:ef-sdk-fixture-extension",
+    provides: [{ kind: "connector", name: "ef-sdk-fixture" }], commands: [], connectors: [{ name: "ef-sdk-fixture", requires: [] }],
+  }] }));
+  mkdirSync(join(partRoot, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(partRoot, ".cotal", "agents", "sdkfixture.md"), "---\nname: sdkfixture\nagent: ef-sdk-fixture\n---\nlabelled scripted SDK fixture\n");
 
   // ---- shipped `cotal supervise` as the signerless participant manager ----
-  const sup = spawn(process.execPath, ["--import", tsxLoader, cliBin, "supervise", "--space", space], { cwd: partRoot, env: childEnv(partHome), stdio: ["ignore", "pipe", "pipe"] });
+  const sup = spawn(process.execPath, ["--import", tsxLoader, cliBin, "supervise", "--space", space], {
+    cwd: partRoot, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...childEnv(partHome), COTAL_EF_EXECARGV: JSON.stringify(["--import", tsxLoader]), COTAL_EF_FIXTURE: import.meta.filename },
+  });
   kids.push(sup);
   let supOut = "";
   sup.stdout?.on("data", (d) => { supOut += d.toString(); });
@@ -222,10 +291,14 @@ try {
 
   // ---- accepted goal: shipped `cotal spawn --detach` ----
   const before = intercepted.length;
-  const sp = await cli(["spawn", "--detach", "--name", "sdkfixture", "--space", space], partRoot, partHome, 120_000);
+  const sp = await cli(["spawn", "sdkfixture", "--detach", "--space", space], partRoot, partHome, 120_000);
   console.log(`    evidence: cotal spawn exit=${sp.code} intercepted=${JSON.stringify(intercepted.slice(before))} out=${sp.out.replace(/\s+/g, " ").slice(0, 600)}`);
-  // OPEN until a labelled fixture connector/persona is installed: recorded, not counted.
-  console.log(`  ? OPEN (accepted-goal): spawn reached enrollment interception=${intercepted.slice(before).some((x) => x.status === 200)}`);
+  ok("accepted spawn goal: enrollment intercepted by the fixture host with the stock door's authorization", intercepted.slice(before).some((x) => x.status === 200 && x.actor === "sdkfixture" && x.owner === owner), intercepted.slice(before));
+  ok("accepted spawn goal reaches a terminal success (scripted SDK child joined)", sp.code === 0, sp.out.slice(-500));
+  const ps2 = await cli(["ps", "--space", space], partRoot, partHome);
+  console.log(`    evidence: ps after spawn exit=${ps2.code} out=${ps2.out.replace(/\s+/g, " ").slice(0, 300)}`);
+  ok("manager lists the enrolled SDK fixture agent", ps2.code === 0 && /sdkfixture/.test(ps2.out), ps2.out.slice(-300));
+  console.log("  ? LABEL: this is the ORDINARY signerless participant (cotal supervise, local launch); the pooled non-custodial runtime and SDK-owned result/successor fencing remain OPEN");
 } finally {
   for (const k of kids) await killAndAwaitExit(k).catch(() => {});
   proxy?.close();
