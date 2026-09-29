@@ -22,12 +22,12 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 const authRequire = createRequire(new URL("../../auth/package.json", import.meta.url));
-const { exportPKCS8 } = authRequire("jose") as { exportPKCS8: any };
+const { SignJWT } = authRequire("jose") as { SignJWT: any };
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
@@ -196,8 +196,17 @@ try {
   const xdgDir = mkdtempSync(join(tmpdir(), "cotal-ef-xdg-"));
   mkdirSync(join(wsDir, ".cotal"), { recursive: true });
 
-  const idpKeyFile = join(wsDir, "idp-key.pem");
-  writeFileSync(idpKeyFile, await exportPKCS8(idpPair.privateKey), { mode: 0o600 });
+  const mintIdpJwt = async (sub = IDP_SUB) =>
+    new SignJWT({})
+      .setProtectedHeader({ alg: "EdDSA" })
+      .setIssuer(IDP_ISS)
+      .setAudience("cotal-services")
+      .setSubject(sub)
+      .setIssuedAt()
+      .setExpirationTime("1h")
+      .sign(idpPair.privateKey);
+
+  const managerBearerToken = await mintIdpJwt();
 
   const childEnv: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? "",
@@ -216,7 +225,7 @@ try {
   let managerInstanceId = "";
   managerProc = spawn(
     process.execPath,
-    ["--import", tsxLoader, managerProcScript, SPACE, SERVERS, wsDir, httpUrl, owner, idpKeyFile, IDP_SUB, IDP_ISS],
+    ["--import", tsxLoader, managerProcScript, SPACE, SERVERS, wsDir, httpUrl, owner, managerBearerToken],
     { cwd: wsDir, env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
   );
 
@@ -268,6 +277,8 @@ try {
   let activeRunId = "";
 
   await cell("1. Fresh first run is admitted via HTTP route and starts on signerless manager", async () => {
+    assert.equal(existsSync(join(wsDir, "idp-key.pem")), false, "IdP private key must not exist in manager root");
+    assert.equal(existsSync(join(wsDir, ".cotal", "auth")), false, "manager root must not contain local auth directory");
     const res = await runCli(["start", "--file", programFile]);
     assert.equal(res.code, 0, `cli run start failed: ${res.stderr}\nstdout: ${res.stdout}`);
     const m = res.stdout.match(/started run (run-[0-9a-f]+) on the manager/);

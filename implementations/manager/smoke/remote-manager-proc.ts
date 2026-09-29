@@ -1,9 +1,7 @@
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { createRequire } from "node:module";
-const authRequire = createRequire(new URL("../../auth/package.json", import.meta.url));
-const { SignJWT, importPKCS8 } = authRequire("jose");
 import {
+  mintLifecycleUid,
   remoteManagerActors,
   remoteManagerRegistrationProof,
   type RemoteManagerAuthorityMaterial,
@@ -17,7 +15,10 @@ import {
   currentRegistrationProof,
   loadOrCreateRemoteManagerIdentity,
   materialCredential,
+  remoteManagerAdminAuthorizationRequest,
+  remoteManagerAdminAuthorized,
   remoteManagerAuthorityRequest,
+  remoteManagerGoalIndexEntries,
   remoteRunAdmission,
   remoteRunAdmissionRequest,
   remoteRunAttemptRequest,
@@ -26,30 +27,17 @@ import {
   remoteStandingBundleRenewal,
 } from "../src/remote-authority.js";
 
-const [space, servers, wsDir, httpUrl, owner, idpKeyFile, idpSub, idpIss] = process.argv.slice(2);
-if (!space || !servers || !wsDir || !httpUrl || !owner || !idpKeyFile) {
-  console.error("usage: remote-manager-proc <space> <servers> <wsDir> <httpUrl> <owner> <idpKeyFile> <idpSub> <idpIss>");
+const [space, servers, wsDir, httpUrl, owner, bearerToken] = process.argv.slice(2);
+if (!space || !servers || !wsDir || !httpUrl || !owner || !bearerToken) {
+  console.error("usage: remote-manager-proc <space> <servers> <wsDir> <httpUrl> <owner> <bearerToken>");
   process.exit(1);
 }
 
-const idpPrivKeyPem = readFileSync(idpKeyFile, "utf8");
-const idpKey = await importPKCS8(idpPrivKeyPem, "EdDSA");
-const mintIdpJwt = async () =>
-  new SignJWT({})
-    .setProtectedHeader({ alg: "EdDSA" })
-    .setIssuer(idpIss || "https://idp.example/ef-joint")
-    .setAudience("cotal-services")
-    .setSubject(idpSub || "operator-ef")
-    .setIssuedAt()
-    .setExpirationTime("5m")
-    .sign(idpKey);
-
 const postHttp = async (request: unknown) => {
-  const token = await mintIdpJwt();
   const resp = await fetch(httpUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ idpToken: token, request }),
+    body: JSON.stringify({ idpToken: bearerToken, request }),
   });
   const json = (await resp.json()) as Record<string, unknown>;
   if (!resp.ok) {
@@ -142,12 +130,41 @@ const manager = new Manager({
     sessionLedgerCreds,
     serveGrant: registered.serveGrant,
     agentBearerExchangeUrl: "https://auth.example.test",
-    mintSessionServing: async () => { throw new Error("mintSessionServing unused in test"); },
-    mintRetirementRequester: async () => { throw new Error("mintRetirementRequester unused in test"); },
-    prepareAgentRetirement: async () => {},
-    validateRetainedAgent: async () => { throw new Error("validateRetainedAgent unused in test"); },
-    scanGoalIndex: async () => [],
-    authorizeAdmin: async () => true,
+    mintSessionServing: async () => { throw new Error("mintSessionServing unsupported in signerless continuity smoke"); },
+    mintRetirementRequester: async () => { throw new Error("mintRetirementRequester unsupported in signerless continuity smoke"); },
+    prepareAgentRetirement: async () => { throw new Error("prepareAgentRetirement unsupported in signerless continuity smoke"); },
+    validateRetainedAgent: async () => { throw new Error("validateRetainedAgent unsupported in signerless continuity smoke"); },
+    scanGoalIndex: async () => {
+      const { proof, epoch } = runBase();
+      const request = {
+        v: 1 as const,
+        kind: "manager-goal-index-scan" as const,
+        space,
+        actor: "cli",
+        instanceId: mgrIdentity.instanceId,
+        managerLifecycleUid: mgrIdentity.lifecycleUid,
+        requestId: `scan${mintLifecycleUid()}`,
+        registrationProof: proof,
+        serveEpoch: epoch,
+        identities: Object.fromEntries(
+          Object.entries(mgrIdentity.identities).map(([k, id]) => [k, { id: id.id }]),
+        ) as never,
+      };
+      const res = (await postHttp(request)) as never;
+      return remoteManagerGoalIndexEntries(res, request, owner);
+    },
+    authorizeAdmin: async (caller) => {
+      const { proof, epoch } = runBase();
+      const request = remoteManagerAdminAuthorizationRequest(
+        mgrIdentity,
+        "cli",
+        proof,
+        epoch,
+        caller,
+      );
+      const res = (await postHttp(request)) as never;
+      return remoteManagerAdminAuthorized(res, request, owner);
+    },
     runHosting: {
       admitRun: async (run) => {
         const { proof, account, epoch } = runBase();
