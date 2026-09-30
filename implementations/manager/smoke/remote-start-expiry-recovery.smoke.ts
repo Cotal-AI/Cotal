@@ -193,8 +193,25 @@ try {
   });
   await cell("the close handlers ask for the all-duty family, the foreign-owner request is refused, and last-good is kept with debt", async () => {
     assert.ok(await until(() => refusals >= 1, 10_000), "no all-duty request was refused");
+    // Each close handler re-dials through `boundedReconnect`, which waits out a retry delay BEFORE its
+    // first attempt, and the gate above stops refusing 6s after the FIRST call reaches it. So whether
+    // a given handler ever sees the refusal depends on where its first attempt lands relative to a
+    // window another handler opened, and nothing sequences the three against it. Requiring all three
+    // to report the refusal asserts an ordering the system does not provide: on 2026-09-30 the service
+    // endpoint closed last, its first attempt succeeded (`manager service endpoint re-dialed`), and
+    // shard 3 reddened on a handler that behaved correctly. What every handler owes is a terminal
+    // outcome in the log; silence is the defect. The refusal itself stays asserted twice over, by
+    // `refusals >= 1` above and by the aggregate below.
+    const refused = (label: string) => new RegExp(`manager ${label} re-dial attempt failed: .*another owner`);
+    // The three terminal shapes `boundedReconnect`'s callers actually emit. The pre-re-dial
+    // `manager <label> connection closed: ...` line is deliberately NOT one of them: matching it
+    // would make this cell vacuous, since it is logged before any attempt is made.
+    const settled = (label: string) => new RegExp(`manager ${label} (?:re-dialed|could not be re-dialed|could not be restored)`);
     for (const label of ["service endpoint", "goal-writer", "session-ledger"])
-      assert.ok(await until(() => logged.some((l) => new RegExp(`manager ${label} re-dial attempt failed: .*another owner`).test(l)), 5_000) || logged.some((l) => new RegExp(`manager ${label} re-dial attempt failed: .*another owner`).test(l)), `the ${label} close handler did not report the all-duty refusal`);
+      assert.ok(await until(() => logged.some((l) => refused(label).test(l) || settled(label).test(l)), 5_000),
+        `the ${label} close handler reported neither the all-duty refusal nor a re-dial outcome`);
+    assert.ok(["service endpoint", "goal-writer", "session-ledger"].some((label) => logged.some((l) => refused(label).test(l))),
+      "no close handler reported the all-duty refusal, so the refusal reached no operator-visible log");
     assert.ok(m.remoteRenewalDebt === undefined || m.remoteRenewalDebt.processEpoch === epoch);
     if (!adopted) {
       assert.equal(m.remoteSupervisorCreds, initial.supervisor);
