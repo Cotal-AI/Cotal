@@ -1,0 +1,18 @@
+{
+  "suite": ["implementations/manager/smoke/remote-resume-completion.smoke.ts"],
+  "guard": "The continuity fixture accepts a resumed drive that durably completes before its held slot is probed",
+  "command": "pnpm smoke:remote-resume-completion",
+  "completionMarker": "remote-ef-continuity:",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/resume-completion-observation.json",
+  "mutations": [
+    {
+      "name": "require the completed resumed run to retain a held slot",
+      "file": "implementations/manager/smoke/remote-ef-continuity.smoke.ts",
+      "find": "return h.held === true || (await readRunRecord(recordsKv, \"manager\", activeRunId))?.status?.value.state === \"completed\";",
+      "replace": "return h.held === true;",
+      "expectRed": "resumed run must be held or durably completed",
+      "cell": "5. Post-expiry recovery: standing duties re-adopted (actual held objects, same nkeys/account), then stock `run resume` retakes the same run",
+      "afterRestore": "pnpm smoke:remote-resume-completion"
+    }
+  ]
+}

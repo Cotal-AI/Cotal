@@ -392,7 +392,12 @@ const SEAMS: Seam[] = [
   // 198/152 -> 201/155: the scoped-consumer and scan-abort cells add three smoke-side calls in
   // packages/core/smoke/manager-lease-grant.smoke.ts (the scoped delivery reader, the admin setup
   // connection, and the supervisor). All state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 201, untypecheckedSites: 155 },
+  // 201/155 -> 220/172: hosted service/renewal and cleanup proofs add seventeen smoke calls:
+  // manager-standing-renewal (1), remote-run-attempt-route (4), remote-ef-continuity (4),
+  // remote-isolated-renewal (1), remote-run-renewal (2), remote-start-expiry-recovery (1),
+  // stock-process-restart (2), deprovision-agent-auth (2). Auth service preflight and run-hosting
+  // renewal add two production calls. The full reader verifies every added call states tls.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 220, untypecheckedSites: 172 },
 ];
 
 /**
@@ -2549,7 +2554,7 @@ for (const seam of SEAMS) {
   const { sites, aliased, bad, untypechecked } = summarize(all);
   // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
   // instead of sending the next author into this file to find out what the floor should become.
-  console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} typechecked)`);
+  console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} outside smoke/)`);
   check(`\`${seam.fn}\`: every call site states \`${seam.key}\``, bad.length === 0,
     bad.map((s) => `${s.file}:${s.line} [${s.verdict}] ${s.detail}`));
 
@@ -2573,9 +2578,9 @@ for (const seam of SEAMS) {
   check(`\`${seam.fn}\`: the scan finds EXACTLY ${seam.sites} call sites (if you added or removed one, update this number deliberately)`,
     sites.length === seam.sites, { found: sites.length, expected: seam.sites });
 
-  // Split from the total on purpose. The half the compiler cannot see is the whole reason this file
-  // exists, and a bare "> 0" here would be satisfied by a single smoke site while the rest vanished.
-  check(`\`${seam.fn}\`: EXACTLY ${seam.untypecheckedSites} of them are under smoke/, which no tsconfig includes`,
+  // Keep the smoke subtree census separate: a bare "> 0" would miss disappearing sites.
+  // The legacy field name is not a typecheck coverage claim; packages now typecheck their smokes.
+  check(`\`${seam.fn}\`: EXACTLY ${seam.untypecheckedSites} of them are under smoke/`,
     untypechecked.length === seam.untypecheckedSites, { found: untypechecked.length, expected: seam.untypecheckedSites });
 }
 

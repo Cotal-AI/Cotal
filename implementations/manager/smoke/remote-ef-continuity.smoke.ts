@@ -645,13 +645,28 @@ try {
     console.log(`    evidence: run resume exit=${r.code} out=${r.stdout.trim().slice(0, 120)} err=${r.stderr.trim().split("\n")[0]?.slice(0, 200)}`);
     assert.equal(r.code, 0, "stock run resume failed after the issuer resumed");
     resumed = true;
-    const retaken = await until(async () => (await probeHeld(activeRunId)).held === true, 15_000);
-    assert.ok(retaken, "resumed run is not held by the manager");
-    const h = await probeHeld(activeRunId);
+    if (process.env.EF_COMPLETE_BEFORE_PROBE === "1") {
+      assert.equal(answeredWhileExpired, true, "completion control requires the real answer recorded while the driver was expired");
+      const finished = await until(async () => (await readRunRecord(recordsKv, "manager", activeRunId))?.status?.value.state === "completed", 15_000);
+      assert.ok(finished, "completion control requires the resumed workflow to finish before probing its slot");
+      console.log("    evidence: actual resumed workflow completed before the held-slot probe");
+    }
+    // A resumed drive can finish before the CLI returns when its answer was already recorded.
+    // Keep the successful held observation; a second probe can legitimately see a freed slot.
+    let h: Awaited<ReturnType<typeof probeHeld>>;
+    const retaken = await until(async () => {
+      h = await probeHeld(activeRunId);
+      return h.held === true || (await readRunRecord(recordsKv, "manager", activeRunId))?.status?.value.state === "completed";
+    }, 15_000);
+    assert.ok(retaken, "resumed run must be held or durably completed");
     const recAfter = await readRunRecord(recordsKv, "manager", activeRunId);
-    console.log(`    evidence: resumed epoch ${recBefore?.status?.value.epoch}->${recAfter?.status?.value.epoch} holder ${recBefore?.status?.value.holder?.slice(-12)}->${recAfter?.status?.value.holder?.slice(-12)} driverExp=${h.driver?.exp} dialRefused=${h.dialRefused}`);
-    assert.equal(h.dialRefused, false, "resumed driver must be broker-accepted");
-    assert.ok(h.driver.exp > now - 1, "resumed driver credential must be fresh");
+    console.log(`    evidence: resumed epoch ${recBefore?.status?.value.epoch}->${recAfter?.status?.value.epoch} holder ${recBefore?.status?.value.holder?.slice(-12)}->${recAfter?.status?.value.holder?.slice(-12)} state=${recAfter?.status?.value.state} held=${h.held} driverExp=${h.driver?.exp} dialRefused=${h.dialRefused}`);
+    if (h.held) {
+      assert.equal(h.dialRefused, false, "resumed driver must be broker-accepted");
+      assert.ok(h.driver.exp > now - 1, "resumed driver credential must be fresh");
+    } else {
+      assert.equal(recAfter?.status?.value.state, "completed", "a released resumed slot requires durable completion, never failed or released state");
+    }
     assert.ok((recAfter?.status?.value.epoch ?? 0) > (recBefore?.status?.value.epoch ?? 0), "resume must fence with a new epoch");
     const j = await runRecoveredCli(["journal", activeRunId]);
     assert.ok(j.stdout.includes("/sleep") || j.stdout.includes("sleep"), "resumed run must keep its native journal");
