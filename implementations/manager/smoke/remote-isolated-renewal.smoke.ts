@@ -209,11 +209,11 @@ try {
     assert.equal(m.managerInstanceId, instanceId);
     assert.equal(m.serviceServe!.grant.epoch, epoch);
   });
-  await manager.stop();
+  await manager.stop({ withAgents: true });
   await hostNc.close();
 } finally {
   console.error = origError;
-  await manager?.stop().catch((e: Error) => console.log(`stop: ${e.message}`));
+  await manager?.stop({ withAgents: true }).catch((e: Error) => console.log(`stop: ${e.message}`));
   releaseBroker();
   await killAndAwaitExit(srv);
 }
