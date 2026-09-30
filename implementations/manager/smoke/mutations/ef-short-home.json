@@ -5,10 +5,10 @@
   "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/ef-short-home.json",
   "mutations": [
     {
-      "name": "allocate the participant home beside its selected root",
+      "name": "allocate the participant home under the wrong owned directory",
       "file": "implementations/manager/smoke/remote-ef-accepted-goal.smoke.ts",
       "find": "mkdtempSync(join(process.env.EF_SHORT_ROOT ?? tmpdir(), \"e\"))",
-      "replace": "mkdtempSync(process.env.EF_SHORT_ROOT ?? tmpdir())",
+      "replace": "mkdtempSync(join(partRoot, \"e\"))",
       "expectRed": "participant home stays inside its selected short root",
       "cell": "participant home stays inside its selected short root",
       "afterRestore": "pnpm smoke:remote-ef-accepted-goal && pnpm smoke:remote-ef-pooled"

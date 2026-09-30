@@ -14,6 +14,7 @@
  *
  * Run: pnpm exec tsx implementations/manager/smoke/remote-ef-accepted-goal.smoke.ts
  */
+import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -107,7 +108,8 @@ let broker: ChildProcess | undefined;
 const intercepted: Array<{ status: number; actor?: string; owner?: string; reason?: string }> = [];
 const authorizedRequests: unknown[] = [];
 try {
-  ok("participant home stays inside its selected short root", dirname(partHome) === resolve(process.env.EF_SHORT_ROOT ?? tmpdir()));
+  assert.equal(dirname(partHome), resolve(process.env.EF_SHORT_ROOT ?? tmpdir()), "participant home stays inside its selected short root");
+  ok("participant home stays inside its selected short root", true);
   // ---- dev IdP ----
   const { betterAuth } = await import(new URL("dist/index.mjs", baRoot).href);
   const { memoryAdapter } = await import(new URL("dist/adapters/memory-adapter/index.mjs", baRoot).href);
