@@ -30,7 +30,7 @@
  * Run: pnpm smoke:hermes-reconnect-effect
  */
 import { strict as nodeAssert } from "node:assert";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 let cells = 0;
@@ -67,6 +67,90 @@ const probe = fileURLToPath(new URL("./reconnect-effect.probe.py", import.meta.u
 const python = ["python3", "python"].find((bin) => spawnSync(bin, ["-c", ""], { stdio: "ignore" }).status === 0);
 assert.ok(python, "no python3/python on PATH: the reconnect effect cannot be verified");
 
+const PROBE_BUDGET_MS = 420_000;
+// The bound spawnSync applied to stdout and stderr TOGETHER. Async spawn has no maxBuffer, so it is
+// counted here, before buffering, to keep the same combined 1 MiB per child.
+const OUTPUT_CAP_BYTES = 1024 * 1024;
+// Grace between the first TERM and the KILL, counted from that first termination request.
+const KILL_GRACE_MS = 5_000;
+
+interface Captured {
+  error?: NodeJS.ErrnoException;
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+interface Probe {
+  result: Promise<Captured>;
+  abort: () => Promise<Captured>;
+}
+
+/**
+ * Start one probe child and capture its outcome as DATA. Nothing here asserts or rejects: a
+ * timeout, an overflow or a nonzero exit is recorded and graded later, in source order, so the
+ * order children finish in never chooses which failure is blamed. The result resolves only after
+ * the child has really closed (exit alone is not enough: the pipes must drain too), and a signal
+ * being delivered is never taken as proof of exit.
+ */
+function startProbe(mode: "subject" | "neutered-reopen" | "deleted-call"): Probe {
+  const child = spawn(python!, [probe, pkgDir + "plugin", mode], { stdio: ["ignore", "pipe", "pipe"] });
+  const out: Buffer[] = [];
+  const err: Buffer[] = [];
+  let bytes = 0;
+  let error: NodeJS.ErrnoException | undefined;
+  let terminating = false;
+  let killTimer: NodeJS.Timeout | undefined;
+  let settle!: (c: Captured) => void;
+  const result = new Promise<Captured>((resolve) => (settle = resolve));
+  let settled = false;
+
+  const finish = (status: number | null): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(budgetTimer);
+    clearTimeout(killTimer);
+    // A capture error is never a pass, even when the child then exited 0 (graceful TERM after an
+    // overflow): a null status makes the original status assertion fail, as spawnSync's did.
+    settle({ error, status: error ? null : status, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+  };
+  // The first termination request sends TERM and arms the KILL from THAT moment.
+  const terminate = (cause: NodeJS.ErrnoException): void => {
+    if (settled) return;
+    error ??= cause;
+    if (terminating) return;
+    terminating = true;
+    child.kill("SIGTERM");
+    killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+  };
+  const fail = (code: string, message: string): NodeJS.ErrnoException =>
+    Object.assign(new Error(message), { code }) as NodeJS.ErrnoException;
+
+  const budgetTimer = setTimeout(
+    () => terminate(fail("ETIMEDOUT", `probe exceeded ${PROBE_BUDGET_MS}ms`)),
+    PROBE_BUDGET_MS,
+  );
+  const collect = (sink: Buffer[]) => (chunk: Buffer) => {
+    if (terminating) return;
+    if (bytes + chunk.length > OUTPUT_CAP_BYTES) {
+      terminate(fail("ENOBUFS", `probe output exceeded ${OUTPUT_CAP_BYTES} bytes`));
+      return;
+    }
+    bytes += chunk.length;
+    sink.push(chunk);
+  };
+  child.stdout.on("data", collect(out));
+  child.stderr.on("data", collect(err));
+  for (const stream of [child.stdout, child.stderr]) stream.on("error", (e) => terminate(e as NodeJS.ErrnoException));
+  child.on("error", (e) => {
+    error ??= e as NodeJS.ErrnoException;
+    // close normally follows a failed spawn too; settling here as well means a missing one cannot hang.
+    if (child.pid === undefined) finish(null);
+  });
+  child.on("close", (code) => finish(code));
+
+  return { result, abort: () => (terminate(fail("ABORTED", "probe aborted")), result) };
+}
+
 /**
  * Each scenario runs in its OWN interpreter, and that isolation is load-bearing rather than tidy.
  *
@@ -76,18 +160,35 @@ assert.ok(python, "no python3/python on PATH: the reconnect effect cannot be ver
  * control as failing, which looked like a passing refuse row while actually being contamination:
  * the control failed for the wrong reason. A refuse row that fails for the wrong reason is worse
  * than no control, because it reads as proof.
+ *
+ * The three interpreters run at the same time, in three separate processes, and are graded below in
+ * the original order once all of them have closed.
  */
-function runScenario(mode: "subject" | "neutered-reopen" | "deleted-call"): Record<string, string> {
-  // The subject probe measured 42s idle on this workstation, up from 30s before the EOF, reader
-  // leak and mid-dial cells were added. CI runs twelve shards on one runner, so the wall clock
-  // there is not this wall clock, and a budget sized to an idle host is a latent red that appears
-  // only under load. 420_000 restores roughly the margin the 180_000 budget had when this probe
-  // was a third of its current size.
-  const PROBE_BUDGET_MS = 420_000;
-  const res = spawnSync(python!, [probe, pkgDir + "plugin", mode], {
-    encoding: "utf8",
-    timeout: PROBE_BUDGET_MS,
+const probes = {
+  subject: startProbe("subject"),
+  "neutered-reopen": startProbe("neutered-reopen"),
+  "deleted-call": startProbe("deleted-call"),
+};
+const captured = new Map<string, Captured>();
+const abortAll = (): Promise<unknown> => Promise.all(Object.values(probes).map((p) => p.abort()));
+const onSignal = (signal: NodeJS.Signals): void => {
+  // Bounded: TERM then KILL close every child within the grace, and the race caps the wait for a
+  // child that cannot be reaped. Then die of the same signal, as an unhandled one would have.
+  void Promise.race([abortAll(), new Promise((r) => setTimeout(r, KILL_GRACE_MS + 2_000))]).then(() => {
+    for (const s of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.removeListener(s, onSignal);
+    process.kill(process.pid, signal);
   });
+};
+for (const s of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(s, onSignal);
+try {
+  for (const [mode, p] of Object.entries(probes)) captured.set(mode, await p.result);
+} finally {
+  await abortAll();
+  for (const s of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.removeListener(s, onSignal);
+}
+
+function runScenario(mode: "subject" | "neutered-reopen" | "deleted-call"): Record<string, string> {
+  const res = captured.get(mode)!;
   // A timeout kill surfaces as a null status, which would otherwise read as "the probe reported
   // nothing" rather than "the probe was cut off". Name it, so a slow runner is never mistaken for
   // a product failure.
