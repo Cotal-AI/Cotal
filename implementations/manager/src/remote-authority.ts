@@ -32,7 +32,7 @@ import {
   type RetainedAgentAuthority,
 } from "@cotal-ai/core";
 
-interface RemoteManagerIdentityState {
+export interface RemoteManagerIdentityState {
   v: 1;
   space: string;
   instanceId: string;

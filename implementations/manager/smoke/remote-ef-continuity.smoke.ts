@@ -295,12 +295,14 @@ try {
     COTAL_HOME: homeDir,
     XDG_CONFIG_HOME: xdgDir,
     COTAL_SKIP_CONNECTOR_SEED: "1",
+    ...(process.env.EF_PUBLIC_AUTHORITY === "1" ? { EF_PUBLIC_AUTHORITY: "1" } : {}),
   };
 
   const cotalBin = resolve("bin/cotal.ts");
   const tsxLoader = import.meta.resolve("tsx");
 
   let managerInstanceId = "";
+  let publicAuthorityBound = false;
   managerProc = spawn(
     process.execPath,
     ["--import", tsxLoader, managerProcScript, SPACE, SERVERS, wsDir, httpUrl, owner, managerBearerToken],
@@ -319,6 +321,7 @@ try {
     while ((i = probeBuf.indexOf("\n")) >= 0) {
       const line = probeBuf.slice(0, i);
       probeBuf = probeBuf.slice(i + 1);
+      if (line === "PUBLIC_REMOTE_AUTHORITY_BOUND:package-root") publicAuthorityBound = true;
       const m = line.match(/^PROBE_RESULT:(.*)$/);
       if (m) probeWaiters.shift()?.(JSON.parse(m[1]!));
       const w = line.match(/^WITNESS_RESULT:(.*)$/);
@@ -425,6 +428,9 @@ try {
   }
 
   await cell("1. Fresh first run is admitted via HTTP route and starts on signerless manager", async () => {
+    if (process.env.EF_PUBLIC_AUTHORITY === "1") {
+      assert.equal(publicAuthorityBound, true, "native child must bind registration and authority helpers from the public package root");
+    }
     assert.equal(existsSync(join(wsDir, "idp-key.pem")), false, "IdP private key must not exist in manager root");
     assert.equal(existsSync(join(wsDir, ".cotal", "auth")), false, "manager root must not contain local auth directory");
     const res = await runCli(["start", "--file", programFile]);

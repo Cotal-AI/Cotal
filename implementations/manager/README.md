@@ -14,6 +14,17 @@ each other; they meet at runtime over NATS.
 See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
+## Remote authority clients
+
+The package root exports `remoteManagerClient`, the stock request builders and response validators
+used by the remote manager path, plus `registerRemoteManagerAuthority` and the
+`RemoteManagerIdentityState` type. Embeddings can use these without private module imports.
+The namespace covers standing renewal, run admission and attempts, maintenance, enrollment and
+retirement. Registration requires host-issued prepare credentials and uses the native registration
+barrier. The host still authenticates requests and owns issuance policy; these helpers grant no
+authority. Keep each account's five private manager identities separate, and retain the stock
+account, identity, epoch and active-run checks when composing callbacks.
+
 ## Startup reconciliation
 
 On an authenticated static mesh, the manager starts reconciling durable orphaned static slots,

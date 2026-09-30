@@ -146,6 +146,19 @@ delivery-admin responder. Reclaiming a held claim from a dead predecessor needs 
 instance first: its admin rail must complete the broker connection-liveness sweep before the
 auth plane takes the claim. An absent or inconclusive oracle refuses the reclaim.
 
+### Remote manager client composition
+
+`@cotal-ai/manager` exports the `remoteManagerClient` namespace, containing the stock remote
+request builders and response validators, and `registerRemoteManagerAuthority` for registration
+with a host-issued prepare credential. `RemoteManagerIdentityState` describes the five private
+manager identities stored under an explicit account-local root. Use these public exports when
+composing `ManagerOptions.remoteAuthority`; do not copy CLI validators or import private modules.
+The namespace includes closed standing/run renewal, admission, maintenance, enrollment and
+retirement helpers. It provides no signer or new grant. The host still owns authenticated issuance,
+current registration and activated-run observations, and any guarded foreign-holder repair.
+An embedding must preserve those checks and supply a supported runtime; the client exports alone
+do not provide a pooled runtime, an authority service or a complete hosted context.
+
 ### Long-lived endpoints take a bearer function
 
 `EndpointOptions.bearer` accepts either a string or a function, and the difference is not stylistic.
