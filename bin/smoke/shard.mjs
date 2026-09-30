@@ -23,6 +23,7 @@
  * a missing sentinel or a zero-cell run, naming the suite and the reason.
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { parseCiSuites, readCiSuiteFragments, suitesForShard, CI_SUITES_PATH } from "./ci-suites.mjs";
 import { readFileSync } from "node:fs";
 import { liveShapedCommandReason } from "../../scripts/mutation-command-safety.mjs";
@@ -102,9 +103,17 @@ if (pre.supported && pre.reaped.length > 0) {
 const isWin = process.platform === "win32";
 
 /** Capture stdout+stderr while still writing them, so the sentinel can be parsed from the suite. */
-function runSuite(bin, args) {
+function runSuite(bin, args, scope) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+  for (const key of ["COTAL_CI_SUITES", "COTAL_TEST_JOBS", "COTAL_TEST_TIMEOUT_MS", "COTAL_SKIP_CONNECTOR_SEED"]) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  env.COTAL_RUN = RUN_MARKER;
+  env.COTAL_SMOKE_SCOPE = scope;
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { stdio: ["inherit", "pipe", "pipe"], shell: isWin });
+    const child = spawn(bin, args, {
+      stdio: ["inherit", "pipe", "pipe"], shell: isWin, env,
+    });
     let out = "";
     const take = (buf, write) => {
       const s = typeof buf === "string" ? buf : buf.toString();
@@ -141,11 +150,11 @@ async function main() {
     const [bin, ...args] = cmd.split(/\s+/);
     console.log(`\n===== ${cmd} =====`);
     // shell:true on Windows so `pnpm` resolves to pnpm.cmd; the tokens are our own fixed script names.
-    const r = await runSuite(bin, args);
-    // Reap BEFORE deciding what to do about the exit status, so a suite that fails does not also get to
-    // abandon its broker for the rest of the run. Anything with the token here is new since the sweep
-    // above, so it belongs to the suite that just returned.
-    const after = reapSmokeBrokers();
+    const scope = randomUUID();
+    const r = await runSuite(bin, args, scope);
+    // Reap before deciding the exit status, but claim only this suite's brokers. Another run's owner
+    // can exit while this suite is active, so arrival after the pre-sweep does not establish ownership.
+    const after = reapSmokeBrokers({ scope });
     reportReaped(cmd, after);
     if (after.reaped.length > 0) leaked.push({ cmd, count: after.reaped.length });
     // Same rule for seat custodians: anything still carrying this run's marker outlived the suite
