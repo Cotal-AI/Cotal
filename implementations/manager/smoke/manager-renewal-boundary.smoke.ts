@@ -32,7 +32,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PROBE = join(HERE, "_probe-457-renewal-boundary.ts");
 
 type Verdict = "SURVIVED" | "FAILED" | "RECOVERED" | "DEAD" | "UNKNOWN";
-interface ProbeResult { rc: number; stdout: string; verdict: Verdict; }
+interface ProbeResult { rc: number; stdout: string; stderr: string; verdict: Verdict; }
 
 // Every mode prints exactly one verdict line whose prefix names the signal it grades:
 // BOUNDARY_RESULT (--control/--mutant, --phase variants) or CLOSE_RESULT (--close variants).
@@ -51,14 +51,19 @@ async function runProbe(flags: readonly string[] = []): Promise<ProbeResult> {
     child.stdout.on("data", (b) => { stdout += b.toString(); });
     child.stderr.on("data", (b) => { stderr += b.toString(); });
     child.on("error", reject);
-    child.on("exit", (rc) => {
+    child.on("close", (rc) => {
       const line = stdout.split("\n").find((l) => VERDICT_PREFIXES.some((p) => l.startsWith(p)));
       const raw = line?.split("=")[1];
       const verdict: Verdict = raw === "SURVIVED" || raw === "FAILED" || raw === "RECOVERED" || raw === "DEAD" ? raw : "UNKNOWN";
-      if (verdict === "UNKNOWN") console.error(`  probe stderr: ${stderr}`);
-      resolve({ rc: rc ?? -1, stdout, verdict });
+      resolve({ rc: rc ?? -1, stdout, stderr, verdict });
     });
   });
+}
+
+function completedProbe(result: PromiseSettledResult<ProbeResult>): ProbeResult {
+  if (result.status === "rejected") throw result.reason;
+  if (result.value.verdict === "UNKNOWN") console.error(`  probe stderr: ${result.value.stderr}`);
+  return result.value;
 }
 
 let pass = 0, fail = 0;
@@ -69,9 +74,22 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 console.log("== #457 renewal-boundary cell ==");
 
+// Each probe owns its broker, port and credentials. Handle every rejection immediately and
+// wait for all probes before grading, so a launch failure cannot abandon running siblings.
+const probes = Promise.allSettled([
+  runProbe(),
+  runProbe(["--mutant"]),
+  runProbe(["--phase"]),
+  runProbe(["--phase", "--mutant"]),
+  runProbe(["--phase", "--mutant-no-push"]),
+  runProbe(["--close"]),
+  runProbe(["--close", "--mutant"]),
+]);
+
 // Cell 1: the shipped schedule survives the boundary.
 console.log("[cell 1/8] schedule under credRenewIntervalMs(TTL): must SURVIVE the boundary");
-const fixed = await runProbe();
+const results = await probes;
+const fixed = completedProbe(results[0]);
 check("BOUNDARY_RESULT=SURVIVED with the shipped schedule", fixed.verdict === "SURVIVED",
   { rc: fixed.rc, tail: fixed.stdout.split("\n").slice(-6).join(" | ") });
 check("probe exited 0 when the schedule holds", fixed.rc === 0, { rc: fixed.rc });
@@ -79,7 +97,7 @@ check("probe exited 0 when the schedule holds", fixed.rc === 0, { rc: fixed.rc }
 // Cell 2: the mutant (interval = TTL/2) reddens the same probe. Proves this cell tests the
 // schedule and not e.g. the broker's grace period.
 console.log("[cell 2/8] --mutant reverts interval to TTL/2: must FAIL the boundary");
-const mutant = await runProbe(["--mutant"]);
+const mutant = completedProbe(results[1]);
 check("BOUNDARY_RESULT=FAILED with interval=TTL/2 (the parent's schedule)", mutant.verdict === "FAILED",
   { rc: mutant.rc, tail: mutant.stdout.split("\n").slice(-6).join(" | ") });
 check("mutant probe exited non-zero when the schedule misses the window", mutant.rc !== 0, { rc: mutant.rc });
@@ -87,7 +105,7 @@ check("mutant probe exited non-zero when the schedule misses the window", mutant
 // Cell 3: phase offset. The shipped renewAt schedule renews inside the window and reconnect()
 // carries the new credential, independent of a decoy interval running with the parent's buggy phase.
 console.log("[cell 3/8] --phase: renewAt schedule must SURVIVE despite a decoy TTL/2 interval");
-const phase = await runProbe(["--phase"]);
+const phase = completedProbe(results[2]);
 check("phase offset: the shipped renewAt schedule renews inside the window and reconnect() carries the new credential",
   phase.verdict === "SURVIVED", { rc: phase.rc, tail: phase.stdout.split("\n").slice(-6).join(" | ") });
 check("phase probe exited 0", phase.rc === 0, { rc: phase.rc });
@@ -95,7 +113,7 @@ check("phase probe exited 0", phase.rc === 0, { rc: phase.rc });
 // Cell 4: phase offset mutant (interval-only). Strips the renewAt timeout, keeps only the decoy
 // interval -- reproduces the parent bug's phase sensitivity.
 console.log("[cell 4/8] --phase --mutant: interval-only (no renewAt timeout) must FAIL");
-const phaseMutant = await runProbe(["--phase", "--mutant"]);
+const phaseMutant = completedProbe(results[3]);
 check("phase offset mutant: interval-only misses the window",
   phaseMutant.verdict === "FAILED", { rc: phaseMutant.rc, tail: phaseMutant.stdout.split("\n").slice(-6).join(" | ") });
 check("phase mutant probe exited non-zero", phaseMutant.rc !== 0, { rc: phaseMutant.rc });
@@ -103,7 +121,7 @@ check("phase mutant probe exited non-zero", phaseMutant.rc !== 0, { rc: phaseMut
 // Cell 5: phase offset mutant (no push). renewAt re-mints but skips nc.reconnect(): the fresh
 // JWT lands on disk but the live connection still presents the stale one and dies at the old exp.
 console.log("[cell 5/8] --phase --mutant-no-push: renewAt re-mints but never pushes, must FAIL");
-const phaseNoPush = await runProbe(["--phase", "--mutant-no-push"]);
+const phaseNoPush = completedProbe(results[4]);
 check("phase offset mutant: a renewal that is not pushed dies at the old exp",
   phaseNoPush.verdict === "FAILED", { rc: phaseNoPush.rc, tail: phaseNoPush.stdout.split("\n").slice(-6).join(" | ") });
 check("phase no-push probe exited non-zero", phaseNoPush.rc !== 0, { rc: phaseNoPush.rc });
@@ -111,14 +129,14 @@ check("phase no-push probe exited non-zero", phaseNoPush.rc !== 0, { rc: phaseNo
 // Cell 6: auth-expired close. The bounded recovery re-dials with a fresh credential after the
 // broker refuses reconnects on an expired credential.
 console.log("[cell 6/8] --close: bounded recovery must RECOVER from an auth-expired close");
-const close = await runProbe(["--close"]);
+const close = completedProbe(results[5]);
 check("auth-expired close: the bounded recovery re-dials with a fresh credential",
   close.verdict === "RECOVERED", { rc: close.rc, tail: close.stdout.split("\n").slice(-8).join(" | ") });
 check("close probe exited 0", close.rc === 0, { rc: close.rc });
 
 // Cell 7: auth-expired close mutant. A log-only handler (the parent's shape) never re-dials.
 console.log("[cell 7/8] --close --mutant: log-only handler must stay DEAD");
-const closeMutant = await runProbe(["--close", "--mutant"]);
+const closeMutant = completedProbe(results[6]);
 check("auth-expired close mutant: a log-only handler stays dead",
   closeMutant.verdict === "DEAD", { rc: closeMutant.rc, tail: closeMutant.stdout.split("\n").slice(-6).join(" | ") });
 check("close mutant probe exited non-zero", closeMutant.rc !== 0, { rc: closeMutant.rc });
