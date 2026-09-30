@@ -24,7 +24,8 @@
  *
  * Run: pnpm smoke:manager-renewal-boundary
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -38,26 +39,97 @@ interface ProbeResult { rc: number; stdout: string; stderr: string; verdict: Ver
 // BOUNDARY_RESULT (--control/--mutant, --phase variants) or CLOSE_RESULT (--close variants).
 const VERDICT_PREFIXES = ["BOUNDARY_RESULT=", "CLOSE_RESULT="];
 
-async function runProbe(flags: readonly string[] = []): Promise<ProbeResult> {
-  return await new Promise((resolve, reject) => {
-    const args = ["tsx", PROBE, ...flags];
-    // The probe boots its own broker and mints its own creds; nothing from an ambient seat may reach it.
-    // suite-ambient-env grades this shape: strip COTAL_ from the copy before the copy is spread.
-    const env: NodeJS.ProcessEnv = { ...process.env };
-    for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
-    env.TMPDIR = process.env.TMPDIR ?? "/var/tmp";
-    const child = spawn("pnpm", args, { stdio: ["ignore", "pipe", "pipe"], env });
-    let stdout = ""; let stderr = "";
-    child.stdout.on("data", (b) => { stdout += b.toString(); });
-    child.stderr.on("data", (b) => { stderr += b.toString(); });
-    child.on("error", reject);
-    child.on("close", (rc) => {
-      const line = stdout.split("\n").find((l) => VERDICT_PREFIXES.some((p) => l.startsWith(p)));
-      const raw = line?.split("=")[1];
-      const verdict: Verdict = raw === "SURVIVED" || raw === "FAILED" || raw === "RECOVERED" || raw === "DEAD" ? raw : "UNKNOWN";
-      resolve({ rc: rc ?? -1, stdout, stderr, verdict });
-    });
+async function runProbes() {
+  const scratch = mkdtempSync(join(process.env.TMPDIR ?? "/var/tmp", "renewal-"));
+  const live = new Set<ChildProcess>();
+  const posix = process.platform !== "win32";
+  let interrupted: NodeJS.Signals | null = null;
+  let grace: NodeJS.Timeout | undefined;
+  let cleanupError: unknown;
+  const killProbe = (child: ChildProcess, signal: NodeJS.Signals): void => {
+    if (child.pid === undefined) return;
+    try {
+      if (posix) process.kill(-child.pid, signal);
+      else {
+        const result = spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        if (result.error) throw result.error;
+        if (result.status !== 0) {
+          process.kill(child.pid, 0); // ESRCH means the child exited before taskkill reached it.
+          throw new Error("could not stop renewal probe process tree");
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  };
+  const stopAll = (signal: NodeJS.Signals): void => {
+    for (const child of live) {
+      try { killProbe(child, signal); }
+      catch (error) { cleanupError ??= error; }
+    }
+  };
+  const onExit = (): void => stopAll("SIGKILL");
+  process.on("exit", onExit);
+  const handlers = (["SIGINT", "SIGTERM", "SIGHUP"] as const).map((signal) => {
+    const handler = (): void => {
+      interrupted ??= signal;
+      stopAll("SIGTERM");
+      grace ??= setTimeout(() => stopAll("SIGKILL"), 5_000);
+    };
+    process.on(signal, handler);
+    return [signal, handler] as const;
   });
+
+  async function runProbe(flags: readonly string[] = []): Promise<ProbeResult> {
+    return await new Promise((resolve, reject) => {
+      const args = ["tsx", PROBE, ...flags];
+      // The probe boots its own broker and mints its own creds; nothing from an ambient seat may reach it.
+      // suite-ambient-env grades this shape: strip COTAL_ from the copy before the copy is spread.
+      const env: NodeJS.ProcessEnv = { ...process.env };
+      for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
+      env.TMPDIR = scratch;
+      const child = spawn("pnpm", args, { stdio: ["ignore", "pipe", "pipe"], env, detached: posix });
+      live.add(child);
+      let stdout = ""; let stderr = "";
+      child.stdout.on("data", (b) => { stdout += b.toString(); });
+      child.stderr.on("data", (b) => { stderr += b.toString(); });
+      child.on("error", reject);
+      child.on("close", (rc) => {
+        live.delete(child);
+        // A closed leader must not leave a descendant running in its private process group.
+        try { if (posix) killProbe(child, "SIGKILL"); }
+        catch (error) { reject(error); return; }
+        const line = stdout.split("\n").find((l) => VERDICT_PREFIXES.some((p) => l.startsWith(p)));
+        const raw = line?.split("=")[1];
+        const verdict: Verdict = raw === "SURVIVED" || raw === "FAILED" || raw === "RECOVERED" || raw === "DEAD" ? raw : "UNKNOWN";
+        resolve({ rc: rc ?? -1, stdout, stderr, verdict });
+      });
+    });
+  }
+
+  try {
+    // Handle every rejection immediately and wait for all probes before grading. Each probe
+    // still owns a fresh broker, port and credentials, with its original clocks and TTLs.
+    return await Promise.allSettled([
+      runProbe(),
+      runProbe(["--mutant"]),
+      runProbe(["--phase"]),
+      runProbe(["--phase", "--mutant"]),
+      runProbe(["--phase", "--mutant-no-push"]),
+      runProbe(["--close"]),
+      runProbe(["--close", "--mutant"]),
+    ]);
+  } finally {
+    if (grace !== undefined) clearTimeout(grace);
+    process.off("exit", onExit);
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+    rmSync(scratch, { recursive: true, force: true });
+    if (cleanupError !== undefined) throw cleanupError;
+    if (interrupted !== null) {
+      process.stderr.write(`renewal probes: interrupted by ${interrupted}\n`);
+      process.exit(128 + ({ SIGHUP: 1, SIGINT: 2, SIGTERM: 15 } as Record<string, number>)[interrupted]!);
+    }
+  }
 }
 
 function completedProbe(result: PromiseSettledResult<ProbeResult>): ProbeResult {
@@ -74,17 +146,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 console.log("== #457 renewal-boundary cell ==");
 
-// Each probe owns its broker, port and credentials. Handle every rejection immediately and
-// wait for all probes before grading, so a launch failure cannot abandon running siblings.
-const probes = Promise.allSettled([
-  runProbe(),
-  runProbe(["--mutant"]),
-  runProbe(["--phase"]),
-  runProbe(["--phase", "--mutant"]),
-  runProbe(["--phase", "--mutant-no-push"]),
-  runProbe(["--close"]),
-  runProbe(["--close", "--mutant"]),
-]);
+const probes = runProbes();
 
 // Cell 1: the shipped schedule survives the boundary.
 console.log("[cell 1/8] schedule under credRenewIntervalMs(TTL): must SURVIVE the boundary");
