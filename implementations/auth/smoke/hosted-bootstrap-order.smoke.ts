@@ -38,7 +38,9 @@ try {
     await setupSpaceStreams({ servers: fx.servers, space: acct.space, creds: await mintCreds(acct.auth, newIdentity(), "provisioner") });
     const composition = { injected: true as const };
     await acct.store.put(deliveryCredsKey(acct.space, composition), await mintCreds(acct.auth, newIdentity(), "delivery"));
-    await acct.store.put(membershipRwCredsKey(acct.space, composition), await mintCreds(acct.auth, newIdentity(), "membership-rw"));
+    // A's renewal starts expired: two fresh issuances in one second can have identical bytes.
+    await acct.store.put(membershipRwCredsKey(acct.space, composition), await mintCreds(acct.auth, newIdentity(), "membership-rw",
+      acct === a ? { expiresAt: Math.floor(Date.now() / 1000) - 60 } : undefined));
     await acct.store.put(membershipObserverCredsKey(acct.space, composition), await mintMembershipObserverCreds(acct.auth, newIdentity()));
   }
 
@@ -134,6 +136,9 @@ try {
   const expiredCred = await a.store.get(key);
   const memKey = membershipRwCredsKey(a.space, { injected: true });
   const initialMembershipCred = await a.store.get(memKey);
+  check("membership-rw renewal starts with a broker-refused expired credential",
+    initialMembershipCred !== undefined && (credsClaims(initialMembershipCred).exp ?? Infinity) < Date.now() / 1000 &&
+    !(await probeConnect(fx.servers, { creds: initialMembershipCred })).ok);
   // The renewal owner's signer lives in the same injected store (stock putSpaceAuth), the store the
   // manager passes remintDaemonCreds as its secretStore. A store with no signer cannot renew.
   check("an injected store without the space signer renews nothing and preserves the last-good cred",
