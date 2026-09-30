@@ -315,6 +315,7 @@
     "smoke:remote-start-expiry-recovery": "tsx implementations/manager/smoke/remote-start-expiry-recovery.smoke.ts",
     "smoke:remote-run-renewal": "tsx implementations/manager/smoke/remote-run-renewal.smoke.ts",
     "smoke:remote-ef-continuity": "tsx implementations/manager/smoke/remote-ef-continuity.smoke.ts",
+    "smoke:public-remote-authority": "tsx implementations/manager/smoke/public-remote-authority.smoke.ts",
     "smoke:remote-resume-completion": "tsx implementations/manager/smoke/remote-resume-completion.smoke.ts",
     "smoke:hosted-bootstrap-order": "tsx implementations/auth/smoke/hosted-bootstrap-order.smoke.ts",
     "smoke:manager-standing-renewal": "tsx implementations/auth/smoke/manager-standing-renewal.smoke.ts",

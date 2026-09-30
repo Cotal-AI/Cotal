@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -12,8 +13,23 @@ import {
 import { Manager, type ManagerOptions } from "../src/manager.js";
 import "@cotal-ai/runtime";
 import { managerClusterArtifacts } from "../src/manager-service-contract.js";
-import { registerRemoteManagerAuthority } from "../src/remote-register.js";
-import {
+import { registerRemoteManagerAuthority as sourceRegisterRemoteManagerAuthority } from "../src/remote-register.js";
+import * as sourceAuthority from "../src/remote-authority.js";
+
+// A library-hosted manager's shipped bearer command re-invokes THIS entry as `agent-bearer ...`
+// (process.argv[1]); delegate that one subcommand before emitting fixture diagnostics.
+if (process.argv[2] === "agent-bearer") {
+  await import(new URL("../../../bin/run.ts", import.meta.url).href);
+  process.exit(process.exitCode ?? 0);
+}
+const publicAuthority = process.env.EF_PUBLIC_AUTHORITY === "1";
+const publicApi = publicAuthority ? await import("@cotal-ai/manager") : undefined;
+if (publicAuthority) {
+  assert.equal(typeof publicApi?.remoteManagerClient, "object", "public manager root exposes remoteManagerClient");
+  assert.equal(typeof publicApi?.registerRemoteManagerAuthority, "function", "public manager root exposes native manager registration");
+}
+const registerRemoteManagerAuthority = publicAuthority ? publicApi!.registerRemoteManagerAuthority : sourceRegisterRemoteManagerAuthority;
+const {
   currentRegistrationProof,
   loadOrCreateRemoteManagerIdentity,
   materialCredential,
@@ -29,14 +45,9 @@ import {
   remoteRunAttemptCredentials,
   remoteRunRenewalCredentials,
   remoteStandingBundleRenewal,
-} from "../src/remote-authority.js";
+} = publicAuthority ? publicApi!.remoteManagerClient : sourceAuthority;
+if (publicAuthority) console.log("PUBLIC_REMOTE_AUTHORITY_BOUND:package-root");
 
-// A library-hosted manager's shipped bearer command re-invokes THIS entry as `agent-bearer ...`
-// (process.argv[1]); delegate that one subcommand to the stock CLI composition root.
-if (process.argv[2] === "agent-bearer") {
-  await import(new URL("../../../bin/run.ts", import.meta.url).href);
-  process.exit(process.exitCode ?? 0);
-}
 const POOLED = process.env.EF_POOLED_RUNTIME === "1";
 if (POOLED) await registerPooledFixture();
 const [space, servers, wsDir, httpUrl, owner, bearerToken] = process.argv.slice(2);
