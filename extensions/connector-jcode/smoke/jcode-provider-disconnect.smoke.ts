@@ -453,6 +453,7 @@ try {
     safetyChild.stderr?.on("data", (chunk: Buffer) => (safetyStderr += chunk.toString()));
     await waitFor("safety initial bridge", () => entriesOf(safetyLog).find((entry) => entry.ev === "listening"));
     await waitFor("safety mesh presence", () => safetyPeerId);
+    await waitFor("safety post-join kickoff turn boundary", () => entriesOf(safetyLog).find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("You are now connected to the Cotal mesh as")));
     await operator.unicast(safetyPeerId!, "SIMULATE_UNPROVEN_TEARDOWN");
     await waitFor("safety replacement attach failure", () => existsSync(safetyFailAttachOnce) ? true : undefined);
     const safetyDeadline = Date.now() + 10_000;
