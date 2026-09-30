@@ -848,9 +848,32 @@ try {
   // frozen and still bound. That is the two-responder state, and it is stationary because one of the
   // two processes cannot run, so it is read here, deliberately, rather than chased later.
   const boundDuringOverlap = await obsG.controlSubs(accountG.account.pub);
+  // SAMPLE FROM THE WAKE, NOT FROM THE ANNOUNCEMENT, which is why this state is declared up here
+  // rather than beside the cells that read it. The sampler used to start after the quiesce line had
+  // been read, which left two lease reads, a `check` and a 20ms poll loop between SIGCONT and the
+  // first reading. A loser that quiesced, concluded and exited inside that gap left the sampler with
+  // nothing: on 2026-09-30 shard 2 reddened with `G6 { exited: true }`, `G7 { answeredSubs: 0 }` and
+  // `G7d { peakBound: 0, loserExited: true }`, three failures off one missed window, against a
+  // daemon whose own transcript (G5b, G8 and G9 all green) showed it had behaved correctly.
+  //
+  // Starting at the wake removes the gap and weakens nothing. Every reading is still taken with the
+  // loser alive, since the loop's own condition is `!incumbent.exited`, and the 2 -> 1 transition is
+  // now caught as it happens instead of looked for after the fact. This is the same move as G5b
+  // coming off `froze` and G7e being deleted, applied to the three cells that were left silently
+  // depending on the freeze landing.
+  let sawLoserAlive = false;
+  let sawOverlap = false;
+  let overlapEndedAlive = false;
+  let overlapEndedUndecided = false;
+  let overlapReturned = false;
+  let peakBound = 0;
+  let answeredSubs = 0;
+  let aliveSamples = 0;
+  let froze = false;
   // Wake it only once the replacement is READY. Sol's boundary is stated exactly this way: the
   // replacement is already serving before the loser's create is refused.
   signalGroup(incumbent, "SIGCONT");
+  const sampler = sampleArbitration();
   check("G4 the replacement acquires the shard and becomes ready", replacementUp, tail(replacement));
   const replacementLease = await readLease(spaceG, credsPathG);
   check("G5 the replacement's lease is live and ready, the winner is SERVING",
@@ -870,13 +893,7 @@ try {
   // the overlap must resolve to exactly one responder BEFORE the loser exits, and must not come
   // back afterwards. A daemon that only stopped serving by exiting fails G7d; a daemon that
   // re-armed mid-arbitration fails G7f.
-  let sawLoserAlive = false;
-  let sawOverlap = false;
-  let overlapEndedAlive = false;
-  let overlapEndedUndecided = false;
-  let overlapReturned = false;
-  let peakBound = 0;
-  let answeredSubs = 0;
+  // (the sampler's state is declared above SIGCONT, because the sampler now starts there.)
 
   // FREEZE THE LOSER WHEN IT SAYS IT WENT QUIET, and sample at leisure. This narrows the window;
   // it does NOT close it, and the comment here used to claim that it did.
@@ -897,7 +914,6 @@ try {
   // already gone or already there; freezing a process does not unbind it, and the broker's answer is
   // about the connection, not about whether the process is scheduled. What it buys is an arbitrarily
   // long interval in which the state is held still instead of chased.
-  let froze = false;
   incumbent.onLine = (chunk, d) => {
     // BEST EFFORT, AND THAT IS ALL. The text here used to claim that because this handler is
     // synchronous inside the parent's data event, "SIGSTOP lands before this process yields, so the
@@ -924,9 +940,18 @@ try {
   check("G5b the loser announced going quiet, so there is a quiesced state to inspect at all",
     incumbent.stderr.includes("stopped serving shard"), { froze, tail: tail(incumbent) });
 
-  const arbDeadline = Date.now() + 25_000;
+  await sampler;
+  if (froze) signalGroup(incumbent, "SIGCONT");
+
+  // 60s rather than 25s because this now starts at the wake, and the announcement wait above is
+  // itself allowed 30s. The loop still ends the moment the loser exits or three consistent readings
+  // of the resolved state are in, so the deadline binds only when the loser never resolves, and in
+  // that case G5b, G8 and G9 are the cells that fail.
+  async function sampleArbitration(): Promise<void> {
+  const arbDeadline = Date.now() + 60_000;
   while (Date.now() < arbDeadline && !incumbent.exited) {
     sawLoserAlive = true;
+    aliveSamples += 1;
     // Bracket the reading anyway: a frozen process prints nothing, so these agree, but if the
     // freeze ever failed to land this still refuses to score a reading the daemon had outrun.
     // THE OWNERSHIP-DECISION MARKER, and it is deliberately not a list of the current wording.
@@ -965,14 +990,14 @@ try {
     if (overlapEndedUndecided && answeredSubs >= 3) break;
     await wait(100);
   }
-  if (froze) signalGroup(incumbent, "SIGCONT");
+  }
   // Sampled once, after the quiesced window, rather than inside the hot loop: each `pendingPulls`
   // opens its own connection, and paying that per iteration made the sampler slower than the window
   // it was trying to resolve (measured: five readings across an entire arbitration).
   const peakPulls = await pendingPulls(spaceG, credsPathG);
 
   check("G6 the loser was still RUNNING during the arbitration, the window this cell grades exists",
-    sawLoserAlive, { exited: incumbent.exited });
+    sawLoserAlive, { exited: incumbent.exited, aliveSamples, answeredSubs });
   check("G7 the responder count was actually readable throughout, the observable is not vacuous",
     answeredSubs > 0, { answeredSubs });
   check("G7b the overlap this cell is about genuinely occurred: two daemons were bound at once",
