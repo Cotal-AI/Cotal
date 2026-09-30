@@ -334,6 +334,10 @@ try {
     await waitFor("mesh presence", () => peerId);
     check("Jcode host joins before the provider stall", Boolean(peerId));
 
+    // Presence can precede the post-join kickoff's turn boundary. A DM arriving during that
+    // turn takes the soft-interrupt path, which does not exercise this fixture's send-message
+    // disconnect trigger. Observe the real boundary before starting the provider-stall case.
+    await waitFor("post-join kickoff turn boundary", () => entries().find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("You are now connected to the Cotal mesh as")));
     await operator.unicast(peerId!, "SIMULATE_PROVIDER_STALL");
     await waitFor("simulated provider disconnect", () => existsSync(closeOnce) ? closeOnce : undefined);
     await waitFor("synthetic transient recovery attach failure", () => existsSync(failAttachOnce) ? failAttachOnce : undefined).catch(() => undefined);
