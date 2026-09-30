@@ -109,7 +109,7 @@ function runSuite(bin, args, scope) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
   env.COTAL_RUN = RUN_MARKER;
-  env.COTAL_SMOKE_SCOPE = scope;
+  env.SMOKE_BROKER_SCOPE = scope;
   return new Promise((resolve) => {
     const child = spawn(bin, args, {
       stdio: ["inherit", "pipe", "pipe"], shell: isWin, env,

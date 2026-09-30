@@ -70,15 +70,15 @@ export const SMOKE_BROKER_PREFIX = "cotal-smoke-broker-";
  */
 export const SMOKE_BROKER_TOKEN = `${SMOKE_BROKER_PREFIX}${process.pid}-${scopeToken()}`;
 
-/** Recover the runner's scope through children that scrub COTAL_* connection settings. */
+/** Recover the runner's scope through children that clear their inherited environment. */
 function scopeToken(): string {
-  let scope = process.env.COTAL_SMOKE_SCOPE?.trim();
+  let scope = process.env.SMOKE_BROKER_SCOPE?.trim();
   let pid = process.ppid;
   for (let hop = 0; !scope && pid > 1 && hop < 16; hop++) {
     try {
       scope = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0")
-        .find((entry) => entry.startsWith("COTAL_SMOKE_SCOPE="))
-        ?.slice("COTAL_SMOKE_SCOPE=".length).trim();
+        .find((entry) => entry.startsWith("SMOKE_BROKER_SCOPE="))
+        ?.slice("SMOKE_BROKER_SCOPE=".length).trim();
     } catch { /* An ancestor may still carry the scope when this parent is unreadable. */ }
     if (scope) break;
     try {
