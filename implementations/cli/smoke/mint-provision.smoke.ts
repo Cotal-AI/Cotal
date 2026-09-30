@@ -414,9 +414,20 @@ try {
     const after = Math.floor(Date.now() / 1000);
     check("mint --expires-in 3600 succeeds", r.code === 0 && existsSync(out), r.out);
     const { exp, iat } = credsClaims(readFileSync(out, "utf8"));
+    // `exp` and `iat` are two clock reads and cannot be one: `userValidDates` computes
+    // `Math.floor(Date.now() / 1000) + ttl` and the JWT library then stamps
+    // `claim.iat = Math.floor(Date.now() / 1000)` itself, overwriting anything a caller passes. When
+    // those two reads straddle a second boundary the difference is `ttl - 1`, which is what CI read
+    // on 2026-09-30: exp 1790768729, iat 1790765130, before 1790765129. So an exact equality asserts
+    // a property the mint cannot provide, and reds at whatever rate the boundary falls between them.
+    // One second is the whole mechanism (two floors of reads a few statements apart), so a wider
+    // tolerance would hide a real second of latency inside the mint. The flag-was-honoured claim is
+    // carried by the `before`/`after` bounds, which pin exp to the command's own execution window and
+    // would fail against any default from the lifetime matrix.
+    const gap = typeof exp === "number" && typeof iat === "number" ? exp - iat : undefined;
     check("  the JWT's exp is iat + the flag, computed within the command's own second",
-      typeof exp === "number" && typeof iat === "number" && exp === iat + 3600 && exp >= before + 3600 && exp <= after + 3600,
-      { exp, iat, before, after });
+      gap !== undefined && gap <= 3600 && gap >= 3599 && exp! >= before + 3600 && exp! <= after + 3600,
+      { exp, iat, gap, before, after });
     // --provision rides the same lifetime through the seam (the durable mint is bounded too).
     const pout = join(root, "bounded-agent.creds");
     const rp = await runMint(["bounded-agent", "--profile", "agent", "--provision", "--expires-in", "3600", "--out", pout]);
