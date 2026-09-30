@@ -24,6 +24,7 @@ export {
   type ResumeControlArgs,
 } from "./resume.js";
 export { SPAWN_INPUT_KEYS, type ManagerStaticReconciliationSweep } from "./manager-service-contract.js";
+export { managerClusterArtifacts } from "./manager-service-contract.js";
 export { RunHosting, type RunHostingContext } from "./run-hosting.js";
 export * as remoteManagerClient from "./remote-authority.js";
 export { registerRemoteManagerAuthority } from "./remote-register.js";

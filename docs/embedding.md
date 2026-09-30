@@ -153,6 +153,10 @@ request builders and response validators, and `registerRemoteManagerAuthority` f
 with a host-issued prepare credential. `RemoteManagerIdentityState` describes the five private
 manager identities stored under an explicit account-local root. Use these public exports when
 composing `ManagerOptions.remoteAuthority`; do not copy CLI validators or import private modules.
+`managerClusterArtifacts()` returns the canonical document, manifest and their digests used by
+registration. Supply its `[document, manifest]` pair when constructing the activation request
+with `remoteManagerClient.remoteManagerAuthorityRequest` and the stock registration proof.
+The host still validates the artifact closure and current registration before activation.
 The namespace includes closed standing/run renewal, admission, maintenance, enrollment and
 retirement helpers. It provides no signer or new grant. The host still owns authenticated issuance,
 current registration and activated-run observations, and any guarded foreign-holder repair.
