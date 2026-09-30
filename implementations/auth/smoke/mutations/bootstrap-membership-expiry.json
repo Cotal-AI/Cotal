@@ -1,0 +1,26 @@
+{
+  "suite": ["implementations/auth/smoke/hosted-bootstrap-order.smoke.ts"],
+  "guard": "Bootstrap membership renewal starts with actual broker-refused expired credentials and reaches the stock membership renewal path",
+  "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:hosted-bootstrap-order",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/bootstrap-membership-expiry.json",
+  "mutations": [
+    {
+      "name": "leave the initial membership credential fresh",
+      "file": "implementations/auth/smoke/hosted-bootstrap-order.smoke.ts",
+      "find": "acct === a ? { expiresAt: Math.floor(Date.now() / 1000) - 60 } : undefined",
+      "replace": "undefined",
+      "expectRed": "membership-rw renewal starts with a broker-refused expired credential",
+      "cell": "membership-rw renewal starts with a broker-refused expired credential",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:hosted-bootstrap-order"
+    },
+    {
+      "name": "omit membership credentials from stock daemon renewal",
+      "file": "packages/workspace/src/renewal.ts",
+      "find": "  { kind: MEMBERSHIP_RW_CREDS_KIND, key: (space) => segmentedKey(MEMBERSHIP_RW_CREDS_KIND, space), profile: \"membership-rw\" },",
+      "replace": "",
+      "expectRed": "stock remint renews the membership-rw cred separately through the injected store after broker preflight",
+      "cell": "stock remint renews the membership-rw cred separately through the injected store after broker preflight",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:hosted-bootstrap-order"
+    }
+  ]
+}
