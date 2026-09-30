@@ -18,7 +18,9 @@ See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
 
 The package root exports `remoteManagerClient`, the stock request builders and response validators
 used by the remote manager path, plus `registerRemoteManagerAuthority` and the
-`RemoteManagerIdentityState` type. Embeddings can use these without private module imports.
+`RemoteManagerIdentityState` type. `managerClusterArtifacts()` provides the canonical document
+and manifest used by registration and the activation request, with both digests. Embeddings can
+use these without private module imports or a copied contract.
 The namespace covers standing renewal, run admission and attempts, maintenance, enrollment and
 retirement. Registration requires host-issued prepare credentials and uses the native registration
 barrier. The host still authenticates requests and owns issuance policy; these helpers grant no

@@ -10,9 +10,9 @@ import {
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
-import { Manager, type ManagerOptions } from "../src/manager.js";
+import { Manager as SourceManager, type ManagerOptions } from "../src/manager.js";
 import "@cotal-ai/runtime";
-import { managerClusterArtifacts } from "../src/manager-service-contract.js";
+import { managerClusterArtifacts as sourceManagerClusterArtifacts } from "../src/manager-service-contract.js";
 import { registerRemoteManagerAuthority as sourceRegisterRemoteManagerAuthority } from "../src/remote-register.js";
 import * as sourceAuthority from "../src/remote-authority.js";
 
@@ -27,7 +27,11 @@ const publicApi = publicAuthority ? await import("@cotal-ai/manager") : undefine
 if (publicAuthority) {
   assert.equal(typeof publicApi?.remoteManagerClient, "object", "public manager root exposes remoteManagerClient");
   assert.equal(typeof publicApi?.registerRemoteManagerAuthority, "function", "public manager root exposes native manager registration");
+  assert.equal(typeof publicApi?.managerClusterArtifacts, "function", "public manager root exposes canonical activation artifacts");
+  assert.equal(typeof publicApi?.Manager, "function", "public manager root exposes the Manager constructor");
 }
+const Manager = publicAuthority ? publicApi!.Manager : SourceManager;
+const managerClusterArtifacts = publicAuthority ? publicApi!.managerClusterArtifacts : sourceManagerClusterArtifacts;
 const registerRemoteManagerAuthority = publicAuthority ? publicApi!.registerRemoteManagerAuthority : sourceRegisterRemoteManagerAuthority;
 const {
   currentRegistrationProof,
@@ -246,6 +250,7 @@ if (POOLED) {
   catch (e) { console.log(`POOLED_PTY_REFUSED:${JSON.stringify((e as Error).message.slice(0, 160))}`); }
 }
 const manager = new Manager(managerOpts(POOLED ? "ef-fixture-host" : "pty", POOLED));
+if (publicAuthority) assert.ok(manager instanceof publicApi!.Manager, "native child instantiates the public Manager constructor");
 
 await manager.start();
 // Fixture-only refusal boundary: stop new renewal entries and drain admitted calls before
