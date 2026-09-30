@@ -220,14 +220,14 @@ try {
     assert.equal((await observeManagerGate() as unknown as { processEpoch: number }).processEpoch, epoch);
   });
   await cell("clean stop deregisters through the adopted family, not the per-duty executor renewal", async () => {
-    await manager!.stop();
+    await manager!.stop({ withAgents: true });
     assert.ok(logged.some((l) => /deregistered manager instance/.test(l)), "clean deregistration did not happen");
     assert.ok(!logged.some((l) => /per-duty executor renewal must not run/.test(l)), "per-duty executor renewal ran");
   });
   await hostNc.close();
 } finally {
   console.error = origError;
-  await manager?.stop().catch((e: Error) => console.log(`stop: ${e.message}`));
+  await manager?.stop({ withAgents: true }).catch((e: Error) => console.log(`stop: ${e.message}`));
   releaseBroker();
   await killAndAwaitExit(srv);
 }
