@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,9 +12,13 @@ import {
   type SecretStore, type SpaceAuth,
 } from "@cotal-ai/core";
 import { deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, type HostedServiceHandle } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, countedAssert, emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { startDeliveryService } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 class MemoryStore implements SecretStore {
   readonly values = new Map<string, string>();
@@ -149,7 +153,8 @@ try {
   await second.close();
   await second.close();
   assert.equal((await inspectors[1].readDeliveryLease(0))?.ready, undefined, "B releases only its own lease");
-  console.log("hosted delivery lifetime: 32 two-account assertions passed");
+  console.log(`hosted delivery lifetime: ${cells()} two-account assertions passed`);
+  emitSentinel({ passed: cells(), failed: 0 });
 } finally {
   for (const h of handles) await h.close();
   for (const nc of callers) await nc.close();

@@ -22,6 +22,7 @@ import { openAuthorityClient } from "../src/authority-client.js";
 import { parsePlaneClaimRow, PLANE_CLAIM_KEY, scannerDeathCopy } from "../src/plane-claim.js";
 import { authIssuerKey } from "../src/store.js";
 import { MemoryStore, startHostedAuthFixture, type HostedAuthAccount } from "./_hosted-auth-fixture.js";
+import { emitSentinel } from "@cotal-ai/smoke-kit";
 
 const fx = await startHostedAuthFixture("hosted-fence");
 const handles: AuthServiceHandle[] = [];
@@ -123,6 +124,7 @@ try {
   ok((await claimState(b)) === "released", "B's close releases its plane claim");
   ok(snapshot(b.store) === storesBefore[1], "B's injected store is unchanged after close");
   console.log(`hosted auth fence: ${count} two-account assertions passed`);
+  emitSentinel({ passed: count, failed: 0 });
 } finally {
   for (const h of handles) await h.close().catch(() => {});
   for (const c of conns) await c.close().catch(() => {});

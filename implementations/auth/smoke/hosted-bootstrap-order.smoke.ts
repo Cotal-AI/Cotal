@@ -12,6 +12,7 @@ import {
   mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, openDeliveryRegistry, setupSpaceStreams,
 } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, putSpaceAuth, remintDaemonCreds, type HostedServiceHandle } from "@cotal-ai/workspace";
+import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { startDeliveryService } from "../../delivery/src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { openAuthLedgerScannerCandidate } from "../src/ledger-scanner.js";
@@ -178,6 +179,7 @@ try {
   check("A acquires its delivery lease only after the trusted remint replaces the expired one", (await aDelivery.readiness()).state === "ready");
   check("B still serves while A recovers its predecessor", (await bAuth.readiness()).state === "ready" && (await fetch(`${bAuth.url}/health`)).ok);
   console.log(`hosted bootstrap order: ${passed} native assertions passed`);
+  emitSentinel({ passed, failed: 0 });
 } finally {
   for (const h of auths) await h.close().catch(() => {});
   for (const h of deliveries) await h.close().catch(() => {});

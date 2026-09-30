@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { mintCreds, newIdentity, setupSpaceStreams, type SecretStore } from "@cotal-ai/core";
 import { startAuthService, type AuthServiceHandle } from "../src/index.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
+import { emitSentinel } from "@cotal-ai/smoke-kit";
 
 const fx = await startHostedAuthFixture("hosted-auth");
 const handles: AuthServiceHandle[] = [];
@@ -75,6 +76,7 @@ try {
   await second.close();
   ok((await health(second)) === undefined, "B closes idempotently");
   console.log(`hosted auth lifetime: ${count} two-account assertions passed`);
+  emitSentinel({ passed: count, failed: 0 });
 } finally {
   for (const h of handles) await h.close().catch(() => {});
   await fx.close();
