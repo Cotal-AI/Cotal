@@ -12,6 +12,13 @@ named `custody transport unsupported on <platform>` error on darwin and win32. T
 in-process node-pty fallback here. The manager's `pty` runtime still spawns in-process off
 Linux and only `adopt` throws that named error.
 
+`peerCredentials(socket)` and its `PeerCredentials` type are exported from the package root.
+For a connected Linux Unix socket, the function returns the kernel's peer `pid`, `uid` and
+`gid` using the same `SO_PEERCRED` helper as custody. Callers must compare that identity
+against their own authorization policy; a PID is not a lifecycle or ownership fence. It
+throws for an unsupported transport or missing native helper, and for a socket without a
+file descriptor. No PTY or custodian is started by reading the peer identity.
+
 The custodian raises its child's `oom_score_adj` to 500 and writes one line to `custodian.log`
 when the kernel refuses.
 
