@@ -38,6 +38,7 @@ interface Run {
 // COTAL_* state — COTAL_SKIP_CONNECTOR_SEED in particular suppresses the very auto-seed under
 // test — so the CLI under test always gets a COTAL_*-scrubbed base env. Cells that need a
 // COTAL_* var (the forged-marker cells) inject it deliberately on top.
+const initialCwd = process.cwd();
 const privateHome = track(mkdtempSync(join(tmpdir(), "seed-home-")));
 const HOST_ENV: Record<string, string | undefined> = Object.fromEntries(
   Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")),
@@ -50,6 +51,9 @@ for (const [key, name] of Object.entries({
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   HOST_ENV[key] = dir;
 }
+// The runner resolves tsx from the checkout, but CLI children must not discover
+// a project or mesh through that checkout's ancestors.
+process.chdir(privateHome);
 function cotal(cfg: string, args: string[], extraEnv: Record<string, string> = {}): Run {
   const r = spawnSync("node", [BIN, ...args], {
     encoding: "utf8",
@@ -79,6 +83,7 @@ export function counts(): { passed: number; failed: number } {
 }
 
 export function cleanupScenario(): void {
+  process.chdir(initialCwd);
   const errors: unknown[] = [];
   for (const dir of cleanup) {
     try { rmSync(dir, { recursive: true, force: true }); }
