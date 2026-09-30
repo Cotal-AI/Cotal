@@ -14,13 +14,14 @@
  *
  * Run: pnpm exec tsx implementations/manager/smoke/remote-ef-accepted-goal.smoke.ts
  */
+import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { CotalEndpoint, createSpaceAuth, mintCreds, provisionAgentDurables, mintLifecycleUid, newIdentity, probeConnect, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
@@ -91,21 +92,9 @@ const auth = await createSpaceAuth(space);
 const hostRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}efgoal-host-`));
 const hostHome = mkdtempSync(join(tmpdir(), "efgoal-hosthome-"));
 const partRoot = mkdtempSync(join(tmpdir(), "efgoal-part-"));
-// A seat socket path lives under HOME/.cotal/seats and must fit the 108-byte Unix limit; an
-// explicit short root (EF_SHORT_HOME_ROOT) keeps it within the lane scratch.
-// EF_SHORT_ROOT: an existing short directory. Each run claims a fresh one-letter home in it (mkdir
-// fails if taken) and removes it at teardown, so repeated runs never share state.
-const partHome = (() => {
-  // The root itself is the one-letter slot: EF_SHORT_ROOT names a PARENT, and the home is
-  // <parent>/<letter>, claimed by an exclusive mkdir. Keep the parent path short (a seat socket
-  // path must stay within the 108-byte Unix limit).
-  const base = process.env.EF_SHORT_ROOT ?? tmpdir();
-  for (const c of "abcdefghijklmnopqrstuvwxyz") {
-    const home = `${base}${c}`;
-    try { mkdirSync(home); return home; } catch { /* taken */ }
-  }
-  throw new Error(`no free one-letter home at ${base}?`);
-})();
+// Seat socket paths must fit the Unix limit. EF_SHORT_ROOT names an existing short parent;
+// mkdtemp claims an exclusive child without requiring a trailing separator or hiding I/O errors.
+const partHome = mkdtempSync(join(process.env.EF_SHORT_ROOT ?? tmpdir(), "e"));
 const jsStore = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}efgoal-js-`));
 mkdirSync(join(hostRoot, ".cotal"), { recursive: true });
 saveSpaceAuth(authDir(hostRoot), auth);
@@ -119,6 +108,8 @@ let broker: ChildProcess | undefined;
 const intercepted: Array<{ status: number; actor?: string; owner?: string; reason?: string }> = [];
 const authorizedRequests: unknown[] = [];
 try {
+  assert.equal(dirname(partHome), resolve(process.env.EF_SHORT_ROOT ?? tmpdir()), "participant home stays inside its selected short root");
+  ok("participant home stays inside its selected short root", true);
   // ---- dev IdP ----
   const { betterAuth } = await import(new URL("dist/index.mjs", baRoot).href);
   const { memoryAdapter } = await import(new URL("dist/adapters/memory-adapter/index.mjs", baRoot).href);
