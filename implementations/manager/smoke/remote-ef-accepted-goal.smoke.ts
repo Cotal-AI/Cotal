@@ -72,6 +72,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 const space = `efgoal${Math.random().toString(36).slice(2, 8)}`;
 const kids: ChildProcess[] = [];
+// Agents this run spawned with `--detach`, so teardown can ask the manager to stop them while
+// that manager is still up. A detached seat is the one thing that outlives its manager by design.
+const detachedSeats: string[] = [];
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 const cliBin = join(repoRoot, "bin", "cotal.ts");
 const tsxLoader = import.meta.resolve("tsx");
@@ -347,6 +350,7 @@ registry.register({
     ok("library-constructed pooled Manager starts on the non-custodial fixture runtime", /MANAGER_READY/.test(mOut), mOut.replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[jwt]").slice(-800));
     const before = intercepted.length;
     const sp = await cli(["spawn", "sdkfixture", "--detach", "--space", space], partRoot, partHome, 120_000);
+    detachedSeats.push("sdkfixture");
     const enrolled = intercepted.slice(before);
     console.log(`    evidence: pooled cotal spawn exit=${sp.code} intercepted=${JSON.stringify(enrolled)} execLaunches=${JSON.stringify(execLaunches)} sdkResults=${JSON.stringify(sdkResults)} out=${sp.out.replace(/\s+/g, " ").slice(0, 500)}`);
     console.log(`    manager: ${(mOut.match(/EXEC_HOST_SPAWN:.*/g) ?? []).join(" ")}`);
@@ -408,6 +412,7 @@ registry.register({
   // ---- accepted goal: shipped `cotal spawn --detach` ----
   const before = intercepted.length;
   const sp = await cli(["spawn", "sdkfixture", "--detach", "--space", space], partRoot, partHome, 120_000);
+  detachedSeats.push("sdkfixture");
   console.log(`    evidence: cotal spawn exit=${sp.code} intercepted=${JSON.stringify(intercepted.slice(before))} out=${sp.out.replace(/\s+/g, " ").slice(0, 600)}`);
   ok("accepted spawn goal: enrollment intercepted by the fixture host with the stock door's authorization", intercepted.slice(before).some((x) => x.status === 200 && x.actor === "sdkfixture" && x.owner === owner), intercepted.slice(before));
   ok("accepted spawn goal reaches a terminal success (scripted SDK child joined)", sp.code === 0, sp.out.slice(-500));
@@ -437,6 +442,21 @@ registry.register({
   console.log("  ? LABEL: this is the ORDINARY signerless participant (cotal supervise, local launch); EF_POOLED=1 runs the pooled non-custodial variant");
   }
 } finally {
+  // A `--detach` seat outlives its manager BY DESIGN, and the default manager stop DETACHES local
+  // custody rather than reaping it, so SIGTERM on `cotal supervise` left a seat custodian holding
+  // ~65 MB with no manager to answer. shard.mjs reaps it by this run's marker and reports the leak
+  // against this suite, which is how it surfaced on 2026-09-30. Ask the manager to stop the agent
+  // while that manager is still up, the `cotal stop --name` form five other suites already use.
+  // Before the kill loop on purpose: this needs the supervisor alive to answer it.
+  //
+  // `cotal down --with-agents` is NOT the remedy here, though it is the form other suites reach for.
+  // A direct `cotal supervise` writes no MANAGER_PIDFILE (only the `cotal up` path does, through
+  // writePidPair), so a bare `down` finds no manager in this folder's process surface and would
+  // reap nothing while looking like a fix.
+  for (const name of detachedSeats) {
+    const st = await cli(["stop", "--name", name, "--space", space], partRoot, partHome, 60_000);
+    if (st.code !== 0) console.error(`teardown: cotal stop --name ${name} exited ${st.code}: ${st.out.slice(-300)}`);
+  }
   for (const k of kids) await killAndAwaitExit(k).catch(() => {});
   proxy?.close();
   idpServer?.closeAllConnections();
