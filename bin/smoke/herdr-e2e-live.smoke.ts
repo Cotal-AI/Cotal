@@ -178,13 +178,20 @@ const scrollback = execFileSync("herdr", ["--session", HERDR_SESSION, "pane", "r
 // already emitted: this suite's subject is that the scrollback carries no token and no seed, and a
 // detail that dumped more of it would copy a real secrecy failure straight into the CI log.
 const squeezed = scrollback.replace(/\s+/g, "");
-check("positive control: scrollback is readable and shows the launcher", scrollback.includes("launch.mjs"),
+// The three booleans above answered it on 2026-09-30: `raw: false, squeezed: true`, so the pane soft
+// wrapped `launch.mjs` and the raw read was never the right haystack. Both the control and the two
+// scrollback secrecy cells match the squeezed read from here on. The secrecy cells matter more than
+// the control did: a seed or token the pane wrapped would have missed a raw `includes` and read as
+// ABSENT, which is this suite's headline claim passing for the one reason that would make it false.
+// Neither needle carries whitespace (`CANARY` is `e2e-control-token-<hex>`, the seed is `SU[A-Z2-7]+`),
+// so squeezing the haystack can only find more, never less.
+check("positive control: scrollback is readable and shows the launcher", squeezed.includes("launch.mjs"),
   { chars: scrollback.length, raw: scrollback.includes("launch.mjs"), squeezed: squeezed.includes("launch.mjs"),
     head: scrollback.slice(0, 160) });
 check("herdr records do NOT contain the control token", !records.includes(CANARY));
-check("pane scrollback does NOT contain the control token", !scrollback.includes(CANARY));
+check("pane scrollback does NOT contain the control token", !squeezed.includes(CANARY));
 check("herdr records do NOT contain the agent's nkey seed", seed.length > 20 && !records.includes(seed));
-check("pane scrollback does NOT contain the agent's nkey seed", seed.length > 20 && !scrollback.includes(seed));
+check("pane scrollback does NOT contain the agent's nkey seed", seed.length > 20 && !squeezed.includes(seed));
 
 // ── THE headline claim: kill the manager, the agent lives ─────────────────────
 console.log("\n  … SIGKILL the manager and watch the agent:\n");
