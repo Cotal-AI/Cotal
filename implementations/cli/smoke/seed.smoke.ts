@@ -132,7 +132,7 @@ try {
     files,
     excluded,
     env: {
-      ...process.env,
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
       TMPDIR: scratch,
       COTAL_TEST_JOBS: process.env.COTAL_TEST_JOBS ?? "2",
       COTAL_TEST_TIMEOUT_MS: process.env.COTAL_TEST_TIMEOUT_MS ?? "420000",
