@@ -11,17 +11,18 @@ import { parseSentinel } from "./sentinel.mjs";
 const COHORT = new Map([
   ["pnpm smoke:attach-stdin", "tsx implementations/manager/smoke/attach-stdin.smoke.ts"],
   ["pnpm smoke:opencode", "tsx extensions/connector-opencode/smoke/turn-wedge.smoke.ts"],
+  ["pnpm smoke:delivery-starvation", "tsx implementations/delivery/smoke/delivery-starvation.smoke.ts"],
 ]);
 const OUTPUT_LIMIT = 32 * 1024 * 1024;
 
 export function poolSelection(planned) {
   const raw = process.env.SMOKE_CI_JOBS;
-  if (raw !== undefined && !/^[1-2]$/.test(raw)) throw new Error("SMOKE_CI_JOBS must be an integer from 1 to 2");
+  if (raw !== undefined && !/^[1-3]$/.test(raw)) throw new Error("SMOKE_CI_JOBS must be an integer from 1 to 3");
   const candidates = planned.filter((cmd) => COHORT.has(cmd));
   const unavailable = process.platform !== "linux" ? `attribution unavailable on ${process.platform}`
     : ["COTAL_HOME", "COTAL_SEAT_ROOT"].find((key) => process.env[key] !== undefined);
   if (unavailable && raw !== undefined && Number(raw) > 1) throw new Error(`smoke pool unavailable: ${unavailable}`);
-  const jobs = raw === undefined ? (unavailable ? 1 : Math.min(2, Math.max(1, availableParallelism() - 1))) : Number(raw);
+  const jobs = raw === undefined ? (unavailable ? 1 : Math.min(3, Math.max(1, availableParallelism() - 1))) : Number(raw);
   if (candidates.length < 2 || jobs === 1) {
     if (candidates.length > 1) console.log(`[pool] serial execution: ${unavailable || "SMOKE_CI_JOBS or CPU budget is 1"}`);
     return { commands: [], jobs: 1 };

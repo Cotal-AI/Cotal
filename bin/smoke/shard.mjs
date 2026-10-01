@@ -15,7 +15,7 @@
  * The frozen legacy list is read from `bin/smoke/ci-suites.txt`; new suites are one-file fragments
  * under `bin/smoke/ci-suites.d/`. Legacy entries keep round-robin `index % count`. Fragment entries
  * use a stable hash of their suite name, so an independently-merged fragment cannot move another.
- * Each smoke runs in its own `pnpm` subprocess. On Linux, a measured two-suite cohort runs
+ * Each smoke runs in its own `pnpm` subprocess. On Linux, a measured cohort of suites runs
  * concurrently with private state before the remaining serial suites. SMOKE_CI_JOBS=1 retains
  * the original serial order; no suites move between shards.
  *
