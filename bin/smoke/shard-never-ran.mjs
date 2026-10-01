@@ -12,10 +12,11 @@
 /**
  * @param {string[]} mine - the shard's full partition, in execution order (as printed at startup).
  * @param {number} failedIndex - index into `mine` of the smoke that just failed.
- * @returns {string} empty if the failure was the partition's last entry, else a report block.
+ * @param {Set<string>} [started] - actual starts when a pool changes execution order.
+ * @returns {string} empty if every suite started, else a report block.
  */
-export function neverRanBlock(mine, failedIndex) {
-  const rest = mine.slice(failedIndex + 1);
+export function neverRanBlock(mine, failedIndex, started) {
+  const rest = started ? mine.filter((cmd) => !started.has(cmd)) : mine.slice(failedIndex + 1);
   if (rest.length === 0) return "";
   return [
     "",
