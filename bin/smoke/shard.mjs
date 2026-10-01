@@ -15,8 +15,9 @@
  * The frozen legacy list is read from `bin/smoke/ci-suites.txt`; new suites are one-file fragments
  * under `bin/smoke/ci-suites.d/`. Legacy entries keep round-robin `index % count`. Fragment entries
  * use a stable hash of their suite name, so an independently-merged fragment cannot move another.
- * Each smoke runs in its own `pnpm` subprocess (separate broker/ports) exactly as the serial chain
- * does; the shards run on SEPARATE runners, so there is no cross-smoke port contention within a shard.
+ * Each smoke runs in its own `pnpm` subprocess. On Linux, a measured two-suite cohort runs
+ * concurrently with private state before the remaining serial suites. SMOKE_CI_JOBS=1 retains
+ * the original serial order; no suites move between shards.
  *
  * Exit status is not enough. A suite that returns 0 having run zero cells is the same false green
  * as an empty chain; the runner parses a cell-count sentinel from the suite's own output and refuses
@@ -31,6 +32,7 @@ import { reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
 import { reapRunCustodians, reportCustodians } from "./reap-seat-custodians.mjs";
 import { neverRanBlock } from "./shard-never-ran.mjs";
 import { parseSentinel } from "./sentinel.mjs";
+import { poolSelection, runPool } from "./shard-pool.mjs";
 
 const REPO = process.cwd();
 
@@ -73,6 +75,8 @@ if (offline && excluded.length === 0) {
   process.exit(2);
 }
 const planned = offline ? mine.filter((cmd) => !excluded.some((e) => e.cmd === cmd)) : mine;
+const pool = poolSelection(planned);
+const started = new Set();
 
 // NAME THIS RUN, and hand the name to every suite. `@cotal-ai/seat` stamps it onto each custodian's
 // argv, so the sweep after a suite can kill the custodians THIS run started and leave every other
@@ -130,18 +134,50 @@ const leakedSeats = [];
 let failure;
 let totalCells = 0;
 
-/** One emit site: later suites that never started stay named the same way for every break reason. */
+/** One emit site for ordinary failures, pooled failures and interruption. */
+function reportNeverRan(i) {
+  const never = neverRanBlock(planned, i, started);
+  if (never) console.error(never);
+}
+
 function failAt(cmd, i, reason, status) {
   console.error(`\n✗ shard ${shard}/${count} FAILED at: ${cmd} (${reason})`);
-  const never = neverRanBlock(planned, i);
-  if (never) console.error(never);
+  reportNeverRan(i);
   failure = status;
 }
 
+async function runPoolPhase() {
+  if (pool.commands.length > 0) {
+    console.log(`[pool] ${pool.commands.length} suites, ${pool.jobs} concurrent; remaining suites run serially`);
+    const result = await runPool(pool.commands, {
+      jobs: pool.jobs, runMarker: RUN_MARKER,
+      indices: new Map(planned.map((cmd, i) => [cmd, i])),
+      onStart: (cmd) => started.add(cmd),
+    });
+    for (const r of result.results) {
+      if (r.brokers.reaped.length > 0) leaked.push({ cmd: r.cmd, count: r.brokers.reaped.length });
+      if (r.seats.reaped.length > 0) leakedSeats.push({ cmd: r.cmd, count: r.seats.reaped.length });
+      if (r.status === 0 && !r.stopped) totalCells += r.cells;
+    }
+    if (result.interrupted) {
+      failure = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 }[result.interrupted];
+      console.error(`[pool] interrupted by ${result.interrupted}`);
+      reportNeverRan(-1);
+    } else if (result.failure) {
+      const { cmd, reason, status } = result.failure;
+      failAt(cmd, planned.indexOf(cmd), reason, status);
+    }
+  }
+}
+
 async function main() {
-  for (let i = 0; i < planned.length; i++) {
+  try { await runPoolPhase(); }
+  catch (error) { failAt("pool", -1, error.message, 1); }
+  for (let i = 0; failure === undefined && i < planned.length; i++) {
     const cmd = planned[i];
+    if (started.has(cmd)) continue;
     const [bin, ...args] = cmd.split(/\s+/);
+    started.add(cmd);
     console.log(`\n===== ${cmd} =====`);
     // shell:true on Windows so `pnpm` resolves to pnpm.cmd; the tokens are our own fixed script names.
     const scope = randomUUID();
@@ -180,20 +216,26 @@ async function main() {
   // every leaking suite is worth more than a run that stops at the first and hides the rest. A failing
   // suite is reported by its own status first: it already has a reason, and a leak on the way out is a
   // consequence of it, not an independent finding.
-  if (failure !== undefined) process.exit(failure);
+  // The pool may have just queued a complete suite log. Let piped output drain before exiting.
+  if (failure !== undefined) {
+    process.exitCode = failure;
+    return;
+  }
   if (leakedSeats.length > 0) {
     console.error(`\n✗ shard ${shard}/${count}: ${leakedSeats.length} suite(s) passed but LEAKED a seat custodian:`);
     for (const { cmd, count: n } of leakedSeats) console.error(`    ${cmd} (${n})`);
     console.error(`  A custodian that outlives the suite that launched it holds ~65 MB with no manager left to`);
     console.error(`  answer, and they accumulate across runs. Each was killed; the suite must reap its own.`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   if (leaked.length > 0) {
     console.error(`\n✗ shard ${shard}/${count}: ${leaked.length} suite(s) passed but LEAKED a broker they owned:`);
     for (const { cmd, count: n } of leaked) console.error(`    ${cmd} (${n})`);
     console.error(`  A green suite that leaves a broker running is a false green. Each of these tore down on`);
     console.error(`  its normal path in review, so this is a real regression in one of them, not reaper noise.`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   if (offline) {
     console.log(

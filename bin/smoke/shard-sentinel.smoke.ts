@@ -8,7 +8,7 @@
  * Run: pnpm smoke:shard-sentinel
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,8 @@ import { liveShapedCommandReason } from "../../scripts/mutation-command-safety.m
 import { formatSentinel, parseSentinel } from "./sentinel.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const { packageManager } = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+if (typeof packageManager !== "string") throw new Error("repository package-manager pin is missing");
 
 const SHARD = fileURLToPath(new URL("./shard.mjs", import.meta.url));
 const SENTINEL = formatSentinel({ passed: 3, failed: 0 });
@@ -38,7 +40,7 @@ function runShippedShard(scripts: Record<string, string>, extraArgs: string[] = 
   const dir = mkdtempSync(join(tmpdir(), "cotal-shard-sentinel-"));
   try {
     const names = Object.keys(scripts);
-    writeFileSync(join(dir, "package.json"), JSON.stringify({ private: true, scripts }));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ private: true, packageManager, scripts }));
     for (const [name, body] of Object.entries(fixtureFiles)) writeFileSync(join(dir, name), body);
     const listPath = join(dir, "ci-suites.txt");
     writeFileSync(listPath, `${names.join("\n")}\n`);

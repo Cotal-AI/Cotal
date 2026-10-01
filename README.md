@@ -348,7 +348,7 @@ We're looking for more design partners building multi-agent systems.
 [Reach out](#team).
 
 Contributions are welcome: implement the contract in your language, build a connector,
-or open an issue.
+or open an issue. See [Running the smoke gate](bin/smoke/README.md) for local and CI testing.
 
 ## Team
 
