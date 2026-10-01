@@ -23,6 +23,7 @@
  * a missing sentinel or a zero-cell run, naming the suite and the reason.
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { parseCiSuites, readCiSuiteFragments, suitesForShard, CI_SUITES_PATH } from "./ci-suites.mjs";
 import { readFileSync } from "node:fs";
 import { liveShapedCommandReason } from "../../scripts/mutation-command-safety.mjs";
@@ -104,7 +105,9 @@ const isWin = process.platform === "win32";
 /** Capture stdout+stderr while still writing them, so the sentinel can be parsed from the suite. */
 function runSuite(bin, args) {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { stdio: ["inherit", "pipe", "pipe"], shell: isWin });
+    const child = spawn(bin, args, {
+      stdio: ["inherit", "pipe", "pipe"], shell: isWin,
+    });
     let out = "";
     const take = (buf, write) => {
       const s = typeof buf === "string" ? buf : buf.toString();
@@ -141,11 +144,13 @@ async function main() {
     const [bin, ...args] = cmd.split(/\s+/);
     console.log(`\n===== ${cmd} =====`);
     // shell:true on Windows so `pnpm` resolves to pnpm.cmd; the tokens are our own fixed script names.
+    const scope = randomUUID();
+    // Keep the runner's existing inherited test configuration, including caller-supplied pins.
+    process.env.SMOKE_BROKER_SCOPE = scope;
     const r = await runSuite(bin, args);
-    // Reap BEFORE deciding what to do about the exit status, so a suite that fails does not also get to
-    // abandon its broker for the rest of the run. Anything with the token here is new since the sweep
-    // above, so it belongs to the suite that just returned.
-    const after = reapSmokeBrokers();
+    // Reap before deciding the exit status, but claim only this suite's brokers. Another run's owner
+    // can exit while this suite is active, so arrival after the pre-sweep does not establish ownership.
+    const after = reapSmokeBrokers({ scope });
     reportReaped(cmd, after);
     if (after.reaped.length > 0) leaked.push({ cmd, count: after.reaped.length });
     // Same rule for seat custodians: anything still carrying this run's marker outlived the suite

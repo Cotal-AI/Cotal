@@ -39,11 +39,16 @@ export function listNatsServers(): NatsServerRow[] | undefined;
  * read before it is acted on. It is the honest way to answer "what would this kill on my machine",
  * and the answer is worth having: on one developer box, of 15 live brokers it claimed 1.
  *
- * @param {{ dryRun?: boolean }} [opts]
+ * `scope` restricts a post-suite pass to that suite's token. A foreign owner can die while this
+ * suite runs; the time its broker became orphaned does not establish who should be blamed.
+ * Omitting scope keeps the global pre-run cleanup available.
+ *
+ * @param {{ dryRun?: boolean, scope?: string }} [opts]
  * @returns {ReapReport}
  */
-export function reapSmokeBrokers({ dryRun }?: {
+export function reapSmokeBrokers({ dryRun, scope }?: {
     dryRun?: boolean;
+    scope?: string;
 }): ReapReport;
 /**
  * One line when there is nothing to say, a named list when there is.

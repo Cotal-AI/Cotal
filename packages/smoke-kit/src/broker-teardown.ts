@@ -46,6 +46,7 @@
  * fixes; the token covers the case it cannot. Neither covers both.
  */
 import type { ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 
 /** The stable half of the token: what marks a store dir as a smoke broker's at all. */
@@ -67,7 +68,29 @@ export const SMOKE_BROKER_PREFIX = "cotal-smoke-broker-";
  * append their own tag after it still match, since the owner is parsed from the pid segment rather
  * than from the whole name.
  */
-export const SMOKE_BROKER_TOKEN = `${SMOKE_BROKER_PREFIX}${process.pid}-`;
+export const SMOKE_BROKER_TOKEN = `${SMOKE_BROKER_PREFIX}${process.pid}-${scopeToken()}`;
+
+/** Recover the runner's scope through children that clear their inherited environment. */
+function scopeToken(): string {
+  let scope = process.env.SMOKE_BROKER_SCOPE?.trim();
+  let pid = process.ppid;
+  for (let hop = 0; !scope && pid > 1 && hop < 16; hop++) {
+    try {
+      scope = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0")
+        .find((entry) => entry.startsWith("SMOKE_BROKER_SCOPE="))
+        ?.slice("SMOKE_BROKER_SCOPE=".length).trim();
+    } catch { /* An ancestor may still carry the scope when this parent is unreadable. */ }
+    if (scope) break;
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const parent = Number(stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[1]);
+      if (!Number.isInteger(parent)) break;
+      pid = parent;
+    } catch { break; }
+  }
+  // Standalone suites retain the unscoped token. The digest keeps paths bounded and contains no name.
+  return scope ? `s${createHash("sha256").update(scope).digest().subarray(0, 16).toString("base64url")}-` : "";
+}
 
 /**
  * Kill a broker and DO NOT RETURN until it is actually gone, so the caller's `rmSync` cannot race a
