@@ -622,6 +622,9 @@ importers:
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../../extensions/connector-core
+      '@cotal-ai/connector-hermes':
+        specifier: workspace:*
+        version: link:../../extensions/connector-hermes
       '@cotal-ai/connector-opencode':
         specifier: workspace:*
         version: link:../../extensions/connector-opencode
