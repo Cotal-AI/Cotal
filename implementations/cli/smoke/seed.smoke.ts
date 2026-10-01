@@ -18,7 +18,7 @@
  * Run: pnpm smoke:seed
  */
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { runFiles, emitSentinel } from "@cotal-ai/smoke-kit";
 import { existsSync, mkdirSync, writeFileSync, dirname, posix, win32, defaultAgentType, isPathSpec, seedGeneration, seedStorePath, stageSeedPayload, check, cotal, freshCfg, writeJson, track, counts, cleanupScenario } from "./seed-cases/harness.js";
@@ -134,7 +134,7 @@ try {
     env: {
       ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
       TMPDIR: scratch,
-      COTAL_TEST_JOBS: process.env.COTAL_TEST_JOBS ?? "2",
+      COTAL_TEST_JOBS: process.env.COTAL_TEST_JOBS ?? (availableParallelism() >= 4 ? "3" : "2"),
       COTAL_TEST_TIMEOUT_MS: process.env.COTAL_TEST_TIMEOUT_MS ?? "420000",
     },
   });
