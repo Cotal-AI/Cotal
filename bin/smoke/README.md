@@ -28,9 +28,10 @@ Within the pool, output is retained per suite and printed in declared order, wit
 notices while it runs. Each suite has a 32 MiB output limit. Nonzero exits, invalid sentinels
 and output overflow stop admission and stop in-flight siblings. Their reports distinguish
 stopped work from suites that never ran.
-SIGINT, SIGTERM and SIGHUP also stop the pool and return a nonzero status. Broker and
-custodian leaks remain failures. Existing suite watchdogs and the CI job timeout remain
-in force.
+SIGINT, SIGTERM and SIGHUP also stop the pool and return a nonzero status. The starvation
+suite stops its detached daemon groups on exit and on those signals, including paused groups.
+Broker and custodian leaks remain failures. Existing suite watchdogs and the CI job timeout
+remain in force.
 
 `pnpm smoke:ci:offline` keeps its existing live-suite exclusions and reports them. It is
 not the full gate or a replacement name for a smaller testing tier.

@@ -236,6 +236,19 @@ function signalGroup(d: Daemon, signal: NodeJS.Signals): void {
   }
 }
 
+function stopDaemons(): void {
+  for (const d of daemons) {
+    try { if (!d.exited) { signalGroup(d, "SIGCONT"); signalGroup(d, "SIGKILL"); } } catch { /* gone */ }
+  }
+}
+
+// Detached groups outlive the suite's own group. Stop them before the broker helper removes
+// their state and re-raises handled signals. One-shot listeners preserve that signal exit.
+process.prependOnceListener("exit", stopDaemons);
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.prependOnceListener(sig, stopDaemons);
+}
+
 /** Wait for the daemon to be SERVING, not merely spawned: its own readiness line. Returns false on
  *  timeout, and the caller fails the cell rather than proceeding against a daemon that never came
  *  up, which is how the predecessor suite graded a corpse green. */
@@ -1476,11 +1489,7 @@ try {
   }
   process.exitCode = 1;
 } finally {
-  // SIGCONT before SIGKILL: a SIGSTOPped process does not act on SIGKILL until it is resumed on
-  // some platforms, and a suite that leaves a frozen daemon behind has poisoned the next run.
-  for (const d of daemons) {
-    try { if (!d.exited) { signalGroup(d, "SIGCONT"); signalGroup(d, "SIGKILL"); } } catch { /* gone */ }
-  }
+  stopDaemons();
   // Held sockets keep the event loop alive, so a suite that fails mid-cell would otherwise hang
   // until its CI timeout rather than reporting the red it already has.
   for (const p of proxies) { try { p.close(); } catch { /* gone */ } }
