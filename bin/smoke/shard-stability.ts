@@ -303,7 +303,7 @@ const verifierMatches = (sha: string): boolean => {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const actual = createHash("sha256").update(source).digest("hex");
-    return actual === "4206ff926c9ff74e2d1990e77a786808930c429915c06a407262233f43b0264c";
+    return actual === "7f511302887d61bcfef6f7db4acf383dd90835840d723f75ab8359357f36b056";
   } catch {
     return false;
   }
@@ -452,6 +452,7 @@ const replaceRefRuntimeControl = (): boolean => {
       ["bin/smoke/ci-suites.d/control.txt", "smoke:fragment\n"],
       ["bin/smoke/ci-suites.mjs", "export {};\n"],
       ["bin/smoke/shard.mjs", "export {};\n"],
+      ["bin/smoke/shard-pool.mjs", "export {};\n"],
       ["bin/smoke/reap-smoke-brokers.mjs", "export {};\n"],
       ["package.json", "{}\n"],
       ["pnpm-workspace.yaml", "packages: []\n"],
