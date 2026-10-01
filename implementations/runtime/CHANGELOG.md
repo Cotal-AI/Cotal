@@ -1,5 +1,53 @@
 # @cotal-ai/runtime
 
+## 0.58.0
+
+### Patch Changes
+
+- 417b5f0: Replay a drive's own journal again when a read loses a round, instead of failing the step
+
+  A drive reads its journal through one replay durable named after its takeover, before every effect
+  and at every poll of a parked pause. When another reader held that durable, the read raised
+  `RunJournalReplayRaced` and the interpreter recorded it on the step as `L4000 handler-fault`, so one
+  branch of a `parallel` failed on a healthy run. `activateRun` already treats the same error as a
+  lost round and replays again.
+
+  The reads behind a drive's steps (`RunScopeAuthority`, hosted and under `cotal run --local`) and the driver's diagnostic for a
+  journal with no run record now do the same, with the takeover's bound: up to three replays, one
+  straight after another, and the race is raised unchanged when the third is lost too. An operator
+  read runs under a takeover id minted for that one read (the manager and `cotal run` mint a fresh one
+  per call), so `RunHost.status`, `RunHost.locate` and `cotal run journal` still report the race on
+  their first read.
+
+  Only the race is retried. A reader in another process can also tear a fetch or return an empty
+  replay; neither is retried here.
+
+  A new suite, `smoke:runtime-run-host-replay`, drives the manager's run host through a `parallel` of
+  three `ask` steps answered within the same second: once while `RunHost.status` reads the drive's
+  own takeover id, and once while another connection takes records off the drive's durable. No branch
+  fails in either.
+
+  The `connector-core` docs bundle is regenerated for the updated paragraph in `docs/workflows.md`.
+
+- 1721738: Support signerless manager run hosting through typed host admission, initial-attempt and renewal operations. Renew the complete standing credential family while preserving held identities, serve epochs and last-good credentials on refusal. Keep pooled managers off local PTY launch paths and enforce the execution host boundary. Update the native lifecycle and mutation checks for these paths.
+- Updated dependencies [0589316]
+- Updated dependencies [59a7e64]
+- Updated dependencies [95ae645]
+- Updated dependencies [fba1537]
+- Updated dependencies [576f622]
+- Updated dependencies [2457692]
+- Updated dependencies [ee6de5d]
+- Updated dependencies [4229e53]
+- Updated dependencies [e9ef5b3]
+- Updated dependencies [7c54825]
+- Updated dependencies [2c31f95]
+- Updated dependencies [397bc60]
+- Updated dependencies [7b3924c]
+- Updated dependencies [1721738]
+  - @cotal-ai/core@0.58.0
+  - @cotal-ai/workspace@0.58.0
+  - @cotal-ai/lang@0.58.0
+
 ## 0.57.0
 
 ### Patch Changes
