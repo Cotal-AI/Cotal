@@ -1,7 +1,29 @@
 {
   "suite": [
     "implementations/cli/smoke/seed.smoke.ts",
-    "implementations/cli/smoke/install.smoke.ts"
+    "implementations/cli/smoke/install.smoke.ts",
+    "implementations/cli/smoke/seed-cases/harness.ts",
+    "implementations/cli/smoke/seed-cases/first-boot.smoke.ts",
+    "implementations/cli/smoke/seed-cases/supervise.smoke.ts",
+    "implementations/cli/smoke/seed-cases/removal.smoke.ts",
+    "implementations/cli/smoke/seed-cases/cursor-repair.smoke.ts",
+    "implementations/cli/smoke/seed-cases/manifest-reset.smoke.ts",
+    "implementations/cli/smoke/seed-cases/manifest-repair.smoke.ts",
+    "implementations/cli/smoke/seed-cases/invalid-stamp.smoke.ts",
+    "implementations/cli/smoke/seed-cases/corrupt-stamp.smoke.ts",
+    "implementations/cli/smoke/seed-cases/recovery-obligation.smoke.ts",
+    "implementations/cli/smoke/seed-cases/malformed-recovery.smoke.ts",
+    "implementations/cli/smoke/seed-cases/partial-tear.smoke.ts",
+    "implementations/cli/smoke/seed-cases/authority-union.smoke.ts",
+    "implementations/cli/smoke/seed-cases/same-generation.smoke.ts",
+    "implementations/cli/smoke/seed-cases/store-gc.smoke.ts",
+    "implementations/cli/smoke/seed-cases/operator-pinned.smoke.ts",
+    "implementations/cli/smoke/seed-cases/forged-environment.smoke.ts",
+    "implementations/cli/smoke/seed-cases/ambiguous-marker.smoke.ts",
+    "implementations/cli/smoke/seed-cases/parallel-boots.smoke.ts",
+    "implementations/cli/smoke/seed-cases/symlinked-bin.smoke.ts",
+    "implementations/cli/smoke/seed-cases/downgrade.smoke.ts",
+    "implementations/cli/smoke/seed-cases/downgrade-hint.smoke.ts"
   ],
   "guard": "an older cotal refuses a newer seed store without writing, names only a proven sufficient executable, and keeps the generic fallback otherwise",
   "command": "pnpm smoke:seed",
@@ -39,8 +61,8 @@
       "find": "    isValidSemver(storeGeneration) &&\n    isStrictlyNewer(storeGeneration, generation)",
       "replace": "    isValidSemver(storeGeneration) &&\n    isStrictlyNewer(storeGeneration, generation) &&\n    process.pid < 0",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
-      "expectRed": "✗ FAIL: downgrade: an older binary REFUSES a store stamped newer",
-      "cell": "✗ FAIL: downgrade: an older binary REFUSES a store stamped newer"
+      "expectRed": "\u2717 FAIL: downgrade: an older binary REFUSES a store stamped newer",
+      "cell": "\u2717 FAIL: downgrade: an older binary REFUSES a store stamped newer"
     },
     {
       "name": "the sufficient executable recovery is replaced by the generic instruction",
@@ -48,8 +70,8 @@
       "find": "    const newerExecutable = verifiedCotalExecutables().find(\n      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,\n    );\n    const recovery = newerExecutable\n      ? `run the cotal-ai ${newerExecutable.version} executable at ${JSON.stringify(newerExecutable.path)}`\n      : \"run the newer cotal\";",
       "replace": "    const recovery = \"run the newer cotal\";",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
-      "expectRed": "✗ FAIL: downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin",
-      "cell": "✗ FAIL: downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin"
+      "expectRed": "\u2717 FAIL: downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin",
+      "cell": "\u2717 FAIL: downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin"
     },
     {
       "name": "every verified executable is treated as sufficient, including one below the store generation",
@@ -57,8 +79,8 @@
       "find": "      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0,",
       "replace": "      (candidate) => compareSemver(candidate.version, storeGeneration) >= 0 || compareSemver(candidate.version, storeGeneration) < 0,",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
-      "expectRed": "✗ FAIL: downgrade hint: never names a candidate below the store generation",
-      "cell": "✗ FAIL: downgrade hint: never names a candidate below the store generation"
+      "expectRed": "\u2717 FAIL: downgrade hint: never names a candidate below the store generation",
+      "cell": "\u2717 FAIL: downgrade hint: never names a candidate below the store generation"
     },
     {
       "name": "the recovery probe admits an ephemeral npx cache shim as a durable executable",
@@ -67,8 +89,8 @@
       "replace": "    const hit = resolveOnPath(join(dir, \"cotal\"), env);",
       "command": "pnpm smoke:install",
       "completionMarker": "install smoke:",
-      "expectRed": "✗ recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path",
-      "cell": "✗ recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path"
+      "expectRed": "\u2717 recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path",
+      "cell": "\u2717 recovery probe: ignores an ephemeral npx executable but verifies the same executable at a durable path"
     },
     {
       "name": "the older-than-store refusal points at --reset, which discards authority",
@@ -76,8 +98,8 @@
       "find": "        `${recovery}, or \\`cotal ext seed --force\\` to rebuild the store for this version`,",
       "replace": "        `${recovery}, or \\`cotal ext seed --reset\\` to rebuild the store for this version`,",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
-      "expectRed": "✗ FAIL: downgrade: the refusal names the way out",
-      "cell": "✗ FAIL: downgrade: the refusal names the way out"
+      "expectRed": "\u2717 FAIL: downgrade: the refusal names the way out",
+      "cell": "\u2717 FAIL: downgrade: the refusal names the way out"
     }
   ]
 }
