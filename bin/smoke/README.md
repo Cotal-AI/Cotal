@@ -3,12 +3,13 @@
 `pnpm smoke:ci` builds the workspace and runs the full gate. CI builds first and calls
 `shard.mjs` for its assigned partition. Suites keep their existing shard assignments.
 
-On Linux, the runner can first overlap `smoke:attach-stdin` and `smoke:opencode` when both
-belong to the partition and the worker budget allows it. The default uses up to two workers
-and leaves at least one CPU outside that budget when more than one is available.
+On Linux, the runner can first overlap `smoke:attach-stdin`, `smoke:opencode` and
+`smoke:delivery-starvation` when at least two of them belong to the partition and the worker
+budget allows it. The default uses up to three workers and leaves at least one CPU outside
+that budget when more than one is available.
 Other suites, including `smoke:attach-reconnect`, run serially after the pool.
 
-Set `SMOKE_CI_JOBS=1` to retain the original serial order. Values from 1 to 2 are accepted;
+Set `SMOKE_CI_JOBS=1` to retain the original serial order. Values from 1 to 3 are accepted;
 other values throw. Other platforms use serial execution. A caller-pinned `COTAL_HOME`
 or `COTAL_SEAT_ROOT` also keeps execution serial so the runner does not replace that pin.
 Requesting multiple workers with either restriction throws and names the restriction.
@@ -27,9 +28,10 @@ Within the pool, output is retained per suite and printed in declared order, wit
 notices while it runs. Each suite has a 32 MiB output limit. Nonzero exits, invalid sentinels
 and output overflow stop admission and stop in-flight siblings. Their reports distinguish
 stopped work from suites that never ran.
-SIGINT, SIGTERM and SIGHUP also stop the pool and return a nonzero status. Broker and
-custodian leaks remain failures. Existing suite watchdogs and the CI job timeout remain
-in force.
+SIGINT, SIGTERM and SIGHUP also stop the pool and return a nonzero status. The starvation
+suite stops its detached daemon groups on exit and on those signals, including paused groups.
+Broker and custodian leaks remain failures. Existing suite watchdogs and the CI job timeout
+remain in force.
 
 `pnpm smoke:ci:offline` keeps its existing live-suite exclusions and reports them. It is
 not the full gate or a replacement name for a smaller testing tier.
