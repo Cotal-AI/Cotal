@@ -55,6 +55,13 @@ const NPM_ACCESS_TOKEN_ENVIRONMENT_VARIABLES = [
   "pnpm_config_//registry.npmjs.org/:_authToken",
 ];
 
+function assertNoNpmAccessToken(env) {
+  const accessTokenVariable = NPM_ACCESS_TOKEN_ENVIRONMENT_VARIABLES.find((name) => Boolean(env[name]));
+  if (accessTokenVariable) {
+    throw new Error(`publish preflight refused: ${accessTokenVariable} is set; release publishes through OIDC only`);
+  }
+}
+
 function decodeJwtPayload(token) {
   const parts = token.split(".");
   if (parts.length !== 3) throw new Error("GitHub OIDC requester returned a malformed JWT");
@@ -357,10 +364,7 @@ export async function preflightNpmPublish({
   fetchImpl = fetch,
   log = console.log,
 }) {
-  const accessTokenVariable = NPM_ACCESS_TOKEN_ENVIRONMENT_VARIABLES.find((name) => Boolean(env[name]));
-  if (accessTokenVariable) {
-    throw new Error(`publish preflight refused: ${accessTokenVariable} is set; release publishes through OIDC only`);
-  }
+  assertNoNpmAccessToken(env);
   let packages;
   try {
     packages = validateReleaseSet(fixedPackages, workspacePackages);
@@ -471,6 +475,7 @@ export async function preflightFromRepository({
   log = console.log,
   exec = execFileSync,
 } = {}) {
+  assertNoNpmAccessToken(env);
   const fixedPackages = closureFromConfig(readFileSync(join(root, ".changeset", "config.json"), "utf8"));
   const workspacePackages = workspacePackagesFromPnpm(root, exec);
   return preflightNpmPublish({ fixedPackages, workspacePackages, registryBase: registryBase.replace(/\/+$/, ""), env, fetchImpl, log });
