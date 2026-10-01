@@ -33,3 +33,22 @@ in force.
 
 `pnpm smoke:ci:offline` keeps its existing live-suite exclusions and reports them. It is
 not the full gate or a replacement name for a smaller testing tier.
+
+## Workspace commands
+
+Use the repository's pinned pnpm version. Recursive package tasks start when their
+own declared prerequisites finish, within pnpm's worker limit. They need not wait
+for unrelated packages in the same dependency group. Nested test workers have
+separate budgets; the package limit is not a limit on every child process.
+
+Declare test imports from another workspace package as development dependencies.
+This keeps a test that rebuilds a bundle ahead of dependent tests that import it.
+Do not discard dependency ordering to increase concurrency.
+
+`pnpm typecheck` builds before checking source and smoke types. `pnpm build` runs
+the declared package builds. Build a fresh checkout before running `pnpm test`;
+some package tests also rebuild their own outputs.
+
+`pnpm test` includes deterministic unit checks and integration checks using files,
+sockets, processes, PTYs, native modules and bundles. It does not replace the full
+smoke gate's broker, manager and agent scenarios.
