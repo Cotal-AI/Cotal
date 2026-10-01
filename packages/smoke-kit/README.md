@@ -17,6 +17,6 @@ This does not enable concurrent scheduling or change seat custodian markers. Anc
 uses Linux procfs. On other platforms, the broker-owning process must inherit the scope in its
 environment. The reaper reports when its platform cannot enumerate brokers.
 
-The shard runner removes inherited `COTAL_*` connection settings from suite environments. It
-passes the test inventory, worker/time budgets and connector-seeding switch explicitly, alongside
-the run marker and the suite's broker scope.
+The serial shard runner sets the scope before launching each suite. Existing environment
+inheritance stays unchanged, including caller-supplied test pins, budgets and private paths.
+Each suite remains responsible for isolating the environments of its own children.

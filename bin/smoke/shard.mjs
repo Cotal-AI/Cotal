@@ -103,16 +103,10 @@ if (pre.supported && pre.reaped.length > 0) {
 const isWin = process.platform === "win32";
 
 /** Capture stdout+stderr while still writing them, so the sentinel can be parsed from the suite. */
-function runSuite(bin, args, scope) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
-  for (const key of ["COTAL_CI_SUITES", "COTAL_TEST_JOBS", "COTAL_TEST_TIMEOUT_MS", "COTAL_SKIP_CONNECTOR_SEED"]) {
-    if (process.env[key] !== undefined) env[key] = process.env[key];
-  }
-  env.COTAL_RUN = RUN_MARKER;
-  env.SMOKE_BROKER_SCOPE = scope;
+function runSuite(bin, args) {
   return new Promise((resolve) => {
     const child = spawn(bin, args, {
-      stdio: ["inherit", "pipe", "pipe"], shell: isWin, env,
+      stdio: ["inherit", "pipe", "pipe"], shell: isWin,
     });
     let out = "";
     const take = (buf, write) => {
@@ -151,7 +145,9 @@ async function main() {
     console.log(`\n===== ${cmd} =====`);
     // shell:true on Windows so `pnpm` resolves to pnpm.cmd; the tokens are our own fixed script names.
     const scope = randomUUID();
-    const r = await runSuite(bin, args, scope);
+    // Keep the runner's existing inherited test configuration, including caller-supplied pins.
+    process.env.SMOKE_BROKER_SCOPE = scope;
+    const r = await runSuite(bin, args);
     // Reap before deciding the exit status, but claim only this suite's brokers. Another run's owner
     // can exit while this suite is active, so arrival after the pre-sweep does not establish ownership.
     const after = reapSmokeBrokers({ scope });
