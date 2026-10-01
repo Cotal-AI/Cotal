@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.58.0
+
+### Patch Changes
+
+- 7e1bc61: Wait for the observed post-join kickoff turn boundary in the provider-disconnect smoke fixture. Presence alone can precede that boundary, routing the test marker through a soft interrupt instead of the intended ordinary-turn disconnect trigger. Add a delayed-turn mutation and restored native checks. Connector behavior is unchanged.
+
 ## 0.57.0
 
 ### Patch Changes

@@ -1,5 +1,51 @@
 # @cotal-ai/cli
 
+## 0.58.0
+
+### Patch Changes
+
+- fba1537: A repair `up` after a broker died reopens the store the mesh record names and refuses a different `--store-dir`. A foreground `up` whose broker exits unexpectedly keeps the mesh record, names the exit and the repair, and exits non-zero.
+- 576f622: A process's pidfile and its identity pin now publish as one rename-based transition, so a crash between the two writes never leaves a torn pair (old pid beside a new pin, or a new pid beside an old one). A crash still leaves one of the legacy shapes teardown already handles.
+- 2457692: The broker floor SPEC §13.12 states is now enforced on every endpoint connection, the provisioning connections and `cotal up`, and `cotal up` names a broker below 2.14.5 as one whose presence bucket can latch.
+- 7687fef: A refused re-exec no longer leaves a pid record, a daemon log or a seed journal entry behind, and
+  the entry check no longer trusts a file name
+
+  The entry check in `selfArgv()` accepted any file named `cotal`, `cotal.ts` or `cotal.js`, so an
+  unrelated file with one of those names could still re-exec itself as a daemon. The entry now counts
+  only when it resolves, through any symlink, to the bin that the `cotal-ai` package declares
+  (`dist/cotal.js`) or to the `cotal.ts` beside that package's manifest (a checkout's
+  `bin/cotal.ts`). A global install's `bin/cotal` symlink resolves into the package and is still
+  accepted.
+
+  Four paths ran the check only after they had changed something, and now run it first:
+
+  - The auth-service starter published its pid slot, already naming the launcher, before the check.
+    A refused start left a record that read as a running service, so a retry started nothing, and
+    teardown would signal whichever process held the launcher's pid.
+  - The connector seed wrote its crash cursor, staged the payload and wrote a pending child marker
+    before the check. The next command then failed with "a connector seed may be mid-flight", and
+    `cotal ext seed --repair` refused the same way until the marker was removed by hand.
+  - The manager and delivery starters deleted dead pre-upgrade records (their pidfiles and the
+    delivery-aware marker) before the check.
+
+  The refusal's remedy line now names `ensureAuthService` along with the other starters.
+
+- Updated dependencies [0589316]
+- Updated dependencies [59a7e64]
+- Updated dependencies [95ae645]
+- Updated dependencies [fba1537]
+- Updated dependencies [576f622]
+- Updated dependencies [2457692]
+- Updated dependencies [ee6de5d]
+- Updated dependencies [e9ef5b3]
+- Updated dependencies [7c54825]
+- Updated dependencies [2c31f95]
+- Updated dependencies [397bc60]
+- Updated dependencies [7b3924c]
+- Updated dependencies [1721738]
+  - @cotal-ai/core@0.58.0
+  - @cotal-ai/workspace@0.58.0
+
 ## 0.57.0
 
 ### Patch Changes

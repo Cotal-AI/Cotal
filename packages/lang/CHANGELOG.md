@@ -1,5 +1,11 @@
 # @cotal-ai/lang
 
+## 0.58.0
+
+### Patch Changes
+
+- 4229e53: Forward `observe` through the worker bridge, so a `waitUntil` run hosted by a manager completes instead of failing with "host.options.handler.observe is not a function".
+
 ## 0.57.0
 
 ### Minor Changes
