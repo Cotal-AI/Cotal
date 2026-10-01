@@ -216,20 +216,26 @@ async function main() {
   // every leaking suite is worth more than a run that stops at the first and hides the rest. A failing
   // suite is reported by its own status first: it already has a reason, and a leak on the way out is a
   // consequence of it, not an independent finding.
-  if (failure !== undefined) process.exit(failure);
+  // The pool may have just queued a complete suite log. Let piped output drain before exiting.
+  if (failure !== undefined) {
+    process.exitCode = failure;
+    return;
+  }
   if (leakedSeats.length > 0) {
     console.error(`\n✗ shard ${shard}/${count}: ${leakedSeats.length} suite(s) passed but LEAKED a seat custodian:`);
     for (const { cmd, count: n } of leakedSeats) console.error(`    ${cmd} (${n})`);
     console.error(`  A custodian that outlives the suite that launched it holds ~65 MB with no manager left to`);
     console.error(`  answer, and they accumulate across runs. Each was killed; the suite must reap its own.`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   if (leaked.length > 0) {
     console.error(`\n✗ shard ${shard}/${count}: ${leaked.length} suite(s) passed but LEAKED a broker they owned:`);
     for (const { cmd, count: n } of leaked) console.error(`    ${cmd} (${n})`);
     console.error(`  A green suite that leaves a broker running is a false green. Each of these tore down on`);
     console.error(`  its normal path in review, so this is a real regression in one of them, not reaper noise.`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   if (offline) {
     console.log(
