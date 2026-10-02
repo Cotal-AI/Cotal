@@ -607,6 +607,15 @@ try {
   const runtimeDispatched = await post(`${LOOPBACK}/manager-service-authority`, { idpToken: idpJwt, request: vedRuntime("manager-managed-agent-runtime-create") }, capHdr);
   check("the typed manager-authority route refuses a runtime kind (host interception owns it)",
     runtimeDispatched.status === 403 && /runtime create and status must be handled by host platform interception/.test(String(runtimeDispatched.body.error)), runtimeDispatched);
+  // The SHIPPED client: the registered provider resolves this space's endpoint, mints a fresh IdP JWT
+  // from the cached login, and posts over the real transport. A stock host answers unimplemented, and
+  // the client surfaces that refusal rather than returning a body.
+  let clientRefusal = "";
+  try {
+    await cotalAuthProvider.requestRemoteManagedAgentRuntime!({ store, dir, request: vedRuntime("manager-managed-agent-runtime-status") as never });
+  } catch (e) { clientRefusal = e instanceof Error ? e.message : String(e); }
+  check("the shipped provider client reaches the stock route and surfaces its unimplemented refusal",
+    /signed in, but managed agent runtime status was refused: .*runtime create and status must be handled by host platform interception/.test(clientRefusal), clientRefusal);
 
   // ---------- G. per-peer isolation + budget separation ----------
   console.log("G) per-peer failure isolation; public throttling never touches loopback");
@@ -695,7 +704,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 94;
+const EXPECTED = 95;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);
