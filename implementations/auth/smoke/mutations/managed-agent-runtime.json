@@ -14,7 +14,8 @@
     "The proof mutation drops the constant-time proof comparison. The proof is the only host-issued fact in the request, so without it every other coordinate is participant-supplied.",
     "The target-owner mutation lets a request name another owner's target, which would let one owner's manager drive or read another owner's runtime.",
     "The two closed-schema mutations let a providerRef through at the top level or a handle through in the target. The contract refuses a provider reference rather than ignoring it, so a host can never be handed one as if it were authority.",
-    "The dispatch mutation removes the unimplemented refusal, so a runtime request falls through to the manager-lifecycle issuer."
+    "The dispatch mutation removes the unimplemented refusal, so a runtime request falls through to the manager-lifecycle issuer.",
+    "The target-serialization mutation restores the JSON.stringify comparison of the result target. Property order is not part of the closed target schema, so a host that serializes the same owner, actor and lifecycleUid in another order would have its answer refused as a foreign target."
   ],
   "mutations": [
     {
@@ -84,6 +85,16 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "FAIL: runtime-create refuses target.handle",
       "cell": "runtime-create refuses target.handle"
+    },
+    {
+      "name": "runtime result binder compares the target by serialization",
+      "file": "packages/core/src/remote-manager-authority.ts",
+      "find": "    Object.keys(t).sort().join(\",\") === \"actor,lifecycleUid,owner\" &&\n    t.owner === request.target.owner && t.actor === request.target.actor && t.lifecycleUid === request.target.lifecycleUid;\n",
+      "replace": "    JSON.stringify(t) === JSON.stringify(request.target);\n",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/managed-agent-runtime.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "FAIL: the binder accepts a result whose target carries the same owner, actor and lifecycleUid in another key order",
+      "cell": "the binder accepts a result whose target carries the same owner, actor and lifecycleUid in another key order"
     },
     {
       "name": "stock dispatch answers a runtime request instead of refusing it",

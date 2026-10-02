@@ -25,7 +25,7 @@
     {
       "name": "runtime result binder ignores the echoed target",
       "file": "packages/core/src/remote-manager-authority.ts",
-      "find": "      r.requestId !== request.requestId || r.owner !== request.target.owner ||\n      JSON.stringify(r.target) !== JSON.stringify(request.target))",
+      "find": "      r.requestId !== request.requestId || r.owner !== request.target.owner || !sameTarget)",
       "replace": "      r.requestId !== request.requestId || r.owner !== request.target.owner)",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "FAIL: a host body naming another target is refused by the manager",

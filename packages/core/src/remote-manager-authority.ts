@@ -713,10 +713,14 @@ export function parseRemoteManagedAgentRuntimeResult(raw: unknown, request: Remo
   ]);
   for (const key of Object.keys(r))
     if (!allowed.has(key)) throw new Error(`${what} carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  // The target is compared by value over its closed key set; property order is not part of the schema.
+  const t = r.target as Record<string, unknown> | null | undefined;
+  const sameTarget = t !== null && typeof t === "object" && !Array.isArray(t) &&
+    Object.keys(t).sort().join(",") === "actor,lifecycleUid,owner" &&
+    t.owner === request.target.owner && t.actor === request.target.actor && t.lifecycleUid === request.target.lifecycleUid;
   if (r.v !== 1 || r.kind !== request.kind || r.space !== request.space || r.actor !== request.actor ||
       r.instanceId !== request.instanceId || r.managerLifecycleUid !== request.managerLifecycleUid ||
-      r.requestId !== request.requestId || r.owner !== request.target.owner ||
-      JSON.stringify(r.target) !== JSON.stringify(request.target))
+      r.requestId !== request.requestId || r.owner !== request.target.owner || !sameTarget)
     throw new Error(`${what} returned different lifecycle, request, owner, or target coordinates`);
   assertRuntimeAnswer(r as { state: unknown; readiness: unknown; retirementPhase?: unknown }, what);
   return remoteManagedAgentRuntimeResult(request, r.owner as string, r as unknown as RemoteManagedAgentRuntimeResult);

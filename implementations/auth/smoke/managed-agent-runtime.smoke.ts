@@ -55,6 +55,9 @@ const outcome = async <T>(fn: () => Promise<T>): Promise<{ value?: T; code?: str
     return { code: e instanceof EpEnvelopeError ? e.code : "thrown", message: e instanceof Error ? e.message : String(e) };
   }
 };
+const outcomeSync = <T>(fn: () => T): { value?: T; message?: string } => {
+  try { return { value: fn() }; } catch (e) { return { message: e instanceof Error ? e.message : String(e) }; }
+};
 const refuses = async (name: string, fn: () => Promise<unknown>, code: string, pattern: RegExp) => {
   const r = await outcome(fn);
   check(name, r.code === code && pattern.test(r.message ?? ""), r);
@@ -255,6 +258,16 @@ try {
       () => parseRemoteManagedAgentRuntimeResult({ ...built, owner: OTHER_OWNER }, request), /different lifecycle, request, owner, or target/);
     throws("the binder refuses a result for another target",
       () => parseRemoteManagedAgentRuntimeResult({ ...built, target: { ...TARGET, lifecycleUid: mintLifecycleUid() } }, request), /different lifecycle, request, owner, or target/);
+    // Property order is not part of the closed schema: a host may serialize the target in any order.
+    const reordered = { lifecycleUid: TARGET.lifecycleUid, actor: TARGET.actor, owner: TARGET.owner };
+    const reorderedOk = outcomeSync(() => parseRemoteManagedAgentRuntimeResult({ ...built, target: reordered }, request));
+    check("the binder accepts a result whose target carries the same owner, actor and lifecycleUid in another key order",
+      reorderedOk.value?.state === "bound" && reorderedOk.value.target.owner === OWNER &&
+        reorderedOk.value.target.actor === TARGET.actor && reorderedOk.value.target.lifecycleUid === TARGET.lifecycleUid, reorderedOk);
+    throws("the binder refuses a result whose target carries an extra key",
+      () => parseRemoteManagedAgentRuntimeResult({ ...built, target: { ...reordered, handle: "prov-123" } }, request), /different lifecycle, request, owner, or target/);
+    throws("the binder refuses a result whose target is missing a key",
+      () => parseRemoteManagedAgentRuntimeResult({ ...built, target: { owner: TARGET.owner, actor: TARGET.actor } }, request), /different lifecycle, request, owner, or target/);
     throws("the binder refuses a state outside the closed set",
       () => parseRemoteManagedAgentRuntimeResult({ ...built, state: "running" }, request), /state must be one of/);
     throws("the binder refuses a readiness outside the closed set",
@@ -296,6 +309,6 @@ try {
   releaseBroker();
 }
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 47;
+const EXPECTED = 50;
 console.log(`\nMANAGED-AGENT-RUNTIME SMOKE ${fail === 0 && pass + fail === EXPECTED ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed, expected ${EXPECTED})`);
 process.exit(fail === 0 && pass + fail === EXPECTED ? 0 : 1);
