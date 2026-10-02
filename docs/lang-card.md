@@ -105,6 +105,10 @@ non-finite number inside one is L3041, a function is L3042. `json.stringify` is 
 form (sorted keys, no spaces), and it refuses what has no canonical form (L4016) rather than
 dropping it.
 
+A value nested deep enough to exhaust the host's stack (a `json.stringify` of an array nested
+thousands deep, or deep recursion) fails the run. A `catch` never sees it, because the depth at
+which it happens depends on the host and not on the program.
+
 ## Top refusals
 
 | Code | What it refuses | Write instead |

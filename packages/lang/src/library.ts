@@ -22,7 +22,7 @@
  */
 
 import { canonicalize } from "json-canonicalize";
-import { RuntimeFault } from "./errors.js";
+import { RuntimeFault, isStackExhaustion } from "./errors.js";
 import { parseDuration } from "./duration.js";
 import type { ScopeFrame } from "./keys.js";
 import { scopePathString } from "./keys.js";
@@ -62,6 +62,7 @@ function guarded<T extends unknown[]>(name: string, impl: (...args: T) => unknow
     try {
       return await impl(...args);
     } catch (e) {
+      if (isStackExhaustion(e)) throw e;
       if (e instanceof TypeError || e instanceof RangeError || e instanceof SyntaxError) {
         throw new RuntimeFault("L4016", `${name}: ${e.message}`);
       }
