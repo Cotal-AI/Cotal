@@ -2,12 +2,13 @@
   "suite": [
     "implementations/auth/smoke/user-spawn.smoke.ts"
   ],
-  "guard": "on a user-auth mesh `cotal attach` opens the seat's session through the identity plane and never redeems from a local seed (#2312)",
-  "command": "pnpm --filter @cotal-ai/cli build && COTAL_USER_ENDPOINT_CLI_ONLY=1 pnpm smoke:user-spawn:live",
+  "guard": "on a user-auth mesh `cotal attach` opens the seat's session through the identity plane and never redeems from a local seed, and the identity plane refuses a session it cannot verify (#2312)",
+  "command": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build && COTAL_USER_ENDPOINT_CLI_ONLY=1 pnpm smoke:user-spawn:live",
   "completionMarker": "USER-ENDPOINT CLI SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-user-mode.json",
   "why": [
-    "The fixture drives the real bin/cotal.ts attach against a native user-auth broker, auth service and manager, with the space's static seed on disk (the fixture saves it for the pre-flip manager). The CLI resolves its built dist, so the command rebuilds the CLI first and afterRestore rebuilds it again."
+    "The fixture drives the real bin/cotal.ts attach against a native user-auth broker, auth service and manager, with the space's static seed on disk (the fixture saves it for the pre-flip manager). The CLI resolves its built dist, so the command rebuilds the CLI first and afterRestore rebuilds it again.",
+    "The auth service the fixture starts imports @cotal-ai/auth from its dist, so the auth build runs before the suite and again after each restore."
   ],
   "mutations": [
     {
@@ -17,7 +18,43 @@
       "replace": "    case \"user\":\n      return t.spaceAuth ? { kind: \"mint\", auth: t.spaceAuth } : { kind: \"fatal\", message: attachNoSeedMessage(t) };",
       "expectRed": "#2312: `cotal attach` on a user-auth mesh opens the seat's session",
       "cell": "#2312: `cotal attach` on a user-auth mesh opens the seat's session",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+      "afterRestore": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the identity plane skips verification",
+      "file": "implementations/auth/src/session-redemption.ts",
+      "find": "  const row = await readRow(r, claim.sessionId);\n",
+      "replace": "  const row = await readRow(r, claim.sessionId);\n  return { endpoint: row.endpoint, sessionId: row.sessionId, epoch: row.serving.epoch, exp: Math.floor(row.exp / 1000) };\n",
+      "expectRed": "#2312: a grant held by another owner is refused at the exchange (401)",
+      "cell": "#2312: a grant held by another owner is refused at the exchange (401)",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the expiry check is removed",
+      "file": "implementations/auth/src/session-redemption.ts",
+      "find": "  if (row.exp <= now) deny(`session ${claim.sessionId} expired at ${new Date(row.exp).toISOString()}`);\n",
+      "replace": "",
+      "expectRed": "#2312: an expired session is refused at the exchange (401, the reason names the expiry)",
+      "cell": "#2312: an expired session is refused at the exchange (401, the reason names the expiry)",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the epoch check is removed",
+      "file": "implementations/auth/src/session-redemption.ts",
+      "find": "  if (row.serving.epoch !== claim.epoch) deny(`session ${claim.sessionId} is pinned to serving epoch ${row.serving.epoch}, not ${claim.epoch}`);\n",
+      "replace": "",
+      "expectRed": "#2312: a wrong-epoch session claim is refused at the callout",
+      "cell": "#2312: a wrong-epoch session claim is refused at the callout",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the callout stops binding the grant expiry and binds the bearer's",
+      "file": "implementations/auth/src/callout.ts",
+      "find": "        const exp = validated.act.view === \"session-caller\" ? sessionExp : validated.exp;",
+      "replace": "        const exp = validated.exp; void sessionExp;",
+      "expectRed": "#2312: the callout binds the session-caller connection to the grant's expiry, not the bearer's",
+      "cell": "#2312: the callout binds the session-caller connection to the grant's expiry, not the bearer's",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build"
     }
   ]
 }
