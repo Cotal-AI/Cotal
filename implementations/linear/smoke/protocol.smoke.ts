@@ -29,7 +29,7 @@ const { LINEAR_MCP_ORIGIN } = await import("../src/origin.js");
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
 
-const seen = { redirect: false, refreshes: 0, outstanding: 0, maxOutstanding: 0, streamsOpen: 0, holdInit: false, initAborted: false, initializedAfterClose: false, closedAt: 0, bigEntry: false };
+const seen = { redirect: false, refreshes: 0, outstanding: 0, maxOutstanding: 0, streamsOpen: 0, holdInit: false, initAborted: false, initializedAfterClose: false, closedAt: 0, bigEntry: false, deepEntry: false, bigHead: false };
 const server = createServer(async (req, res) => {
   const path = new URL(req.url ?? "/", "http://local").pathname;
   const json = (data: unknown): void => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(data)); };
@@ -55,7 +55,7 @@ const server = createServer(async (req, res) => {
     return;
   }
   const rpc = (result: unknown): void => json({ jsonrpc: "2.0", id: m.id, result });
-  const initResult = { protocolVersion: m.params?.protocolVersion, serverInfo: { name: "local-stand-in", version: "1" }, capabilities: { tools: {}, "vendor/feature": {} } };
+  const initResult = { protocolVersion: m.params?.protocolVersion, serverInfo: { name: "local-stand-in", version: "1" }, capabilities: { tools: {}, "vendor/feature": {} }, ...(seen.bigHead ? { instructions: "i".repeat(210_000) } : {}) };
   if (m.method === "initialize" && seen.holdInit) {
     // Held long enough for the client to be closed underneath it.
     let answered = false;
@@ -66,7 +66,18 @@ const server = createServer(async (req, res) => {
   }
   if (m.method === "initialize") return rpc(initResult);
   if (m.method === "tools/list" && seen.bigEntry) return rpc({ tools: [{ name: "wide", description: "x".repeat(60 * 1024), inputSchema: { type: "object" } }] });
-  if (m.method === "tools/list") return rpc({ tools: ["echo", "redirect", "hold", "stream"].map((name) => ({ name, inputSchema: { type: "object" }, "vendor/field": "keep" })) });
+  if (m.method === "tools/list" && seen.deepEntry) {
+    // A few compact kilobytes that print to hundreds: indentation grows with every level.
+    let schema: Record<string, unknown> = { type: "object" };
+    for (let i = 0; i < 140; i++) schema = { type: "object", properties: { p: schema } };
+    return rpc({ tools: [{ name: "deep", inputSchema: schema }] });
+  }
+  if (m.method === "tools/call" && m.params?.name === "leak") {
+    // A server echoing the bearer it received as an error-data KEY, not a value.
+    const bearer = String(req.headers.authorization ?? "").replace(/^Bearer /, "");
+    return json({ jsonrpc: "2.0", id: m.id, error: { code: -32603, message: "failed", data: { [bearer]: "diagnostic" } } });
+  }
+  if (m.method === "tools/list") return rpc({ tools: ["echo", "redirect", "hold", "stream", "leak"].map((name) => ({ name, inputSchema: { type: "object" }, "vendor/field": "keep" })) });
   if (m.method === "tools/call" && m.params?.name === "stream") return sse({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: "streamed" }] } });
   if (m.method === "tools/call" && m.params?.name === "redirect") { seen.redirect = true; res.writeHead(307, { location: "https://example.invalid/" }).end(); return; }
   if (m.method === "tools/call" && m.params?.name === "hold") {
@@ -156,6 +167,56 @@ try {
   await wide.close(1000);
 }
 seen.bigEntry = false;
+
+// A compact entry that prints far over the bound is refused the same way, so a limit=1 page always fits the tool.
+seen.deepEntry = true;
+const deep = new LinearUpstream({ name: "local-control", mode: "write", auth: "token", tokenFile }, { ...DEFAULT_LIMITS, maxTimeoutMs: 2000, defaultTimeoutMs: 2000 });
+try {
+  const outcome = await deep.inventory().then(() => "resolved", (e: Error) => e.message);
+  check("a deeply nested entry that prints over the bound refuses discovery, naming it", /tools\[0\].*deep.*renders to \d+ bytes/.test(outcome), outcome);
+} finally {
+  await deep.close(1000);
+}
+seen.deepEntry = false;
+
+// Initialize instructions the first page could not carry refuse discovery too.
+seen.bigHead = true;
+const headed = new LinearUpstream({ name: "local-control", mode: "write", auth: "token", tokenFile }, { ...DEFAULT_LIMITS, maxTimeoutMs: 2000, defaultTimeoutMs: 2000 });
+try {
+  const outcome = await headed.inventory().then(() => "resolved", (e: Error) => e.message);
+  check("oversized initialize instructions refuse discovery", /instructions and capabilities render to \d+ bytes/.test(outcome), outcome);
+} finally {
+  await headed.close(1000);
+}
+seen.bigHead = false;
+
+// An error-data key equal to the bearer is scrubbed like a value.
+const leaky = new LinearUpstream({ name: "local-control", mode: "write", auth: "token", tokenFile }, { ...DEFAULT_LIMITS, maxTimeoutMs: 2000, defaultTimeoutMs: 2000 });
+try {
+  const inv2 = await leaky.inventory();
+  const leak = await leaky.callTool({ name: "leak", inventoryDigest: inv2.digest });
+  const printed = JSON.stringify(leak);
+  check("a protocol error's data keys are scrubbed of the bearer", leak.kind === "protocol-error" && !printed.includes("local-control-token") && printed.includes("[redacted]"), printed.slice(0, 200));
+} finally {
+  await leaky.close(1000);
+}
+
+// A caller's deadline ends the connect it started when nobody else is waiting on it.
+seen.holdInit = true;
+seen.initAborted = false;
+seen.initializedAfterClose = false;
+const brief = new LinearUpstream({ name: "local-control", mode: "write", auth: "token", tokenFile }, { ...DEFAULT_LIMITS, maxTimeoutMs: 2000, defaultTimeoutMs: 2000 });
+try {
+  const early = await brief.callTool({ name: "echo", timeoutMs: 80 });
+  seen.closedAt = Date.now();
+  await new Promise((r) => setTimeout(r, 600));
+  check("a call whose deadline expires during connect is not executed", early.kind === "refused" && early.reason === "deadline" && early.outcome === "not-executed", early);
+  check("that deadline ends the initialize request it started", seen.initAborted, seen);
+  check("no initialized notification follows the abandoned connect", !seen.initializedAfterClose, seen);
+} finally {
+  await brief.close(1000);
+}
+seen.holdInit = false;
 
 server.closeAllConnections();
 await new Promise((resolve) => server.close(resolve));

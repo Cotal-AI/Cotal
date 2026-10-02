@@ -62,8 +62,10 @@ export interface LinearLimits {
   maxInventoryBytes: number;
   /** Cap on the number of discovery pages across all lists. */
   maxInventoryPages: number;
-  /** Cap on one inventory entry (a tool, resource, template or prompt), so every accepted entry fits
-   *  the reply an agent tool can carry. One over it refuses the whole inventory, named. */
+  /** Cap on one inventory entry (a tool, resource, template or prompt) and on the initialize head
+   *  (server, instructions, capabilities), measured as an agent tool prints them
+   *  ({@link renderedBytes}), so every accepted entry and the first page fit the reply that tool
+   *  can carry. One over it refuses the whole inventory, named. */
   maxInventoryEntryBytes: number;
   /** Upstream requests in flight at once. */
   maxConcurrent: number;
@@ -75,6 +77,13 @@ export interface LinearLimits {
   /** An inventory older than this is read again before the next request, for servers that do not
    *  send list-changed notifications. */
   maxInventoryAgeMs: number;
+}
+
+/** Bytes of `value` as an agent tool prints it: pretty JSON, nested where an inventory page nests an
+ *  entry. Indentation grows with depth, so a compact entry of a few kilobytes can print to hundreds;
+ *  this measure is never smaller than the wire form, so one bound covers both. */
+export function renderedBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify({ items: [value] }, null, 2));
 }
 
 export const DEFAULT_LIMITS: LinearLimits = {
@@ -282,7 +291,7 @@ export class LinearUpstream {
   private transport?: CapturingTransport;
   /** The server's `initialize` result, verbatim. */
   private initialized?: Json;
-  private connecting?: Promise<Client>;
+  private connecting?: { abandoned: AbortController; waiters: number; done: boolean; promise: Promise<Client> };
   private current?: LinearInventory;
   private stale = true;
   private closed = false;
@@ -298,14 +307,28 @@ export class LinearUpstream {
     this.slots = new Slots(limits.maxConcurrent, limits.maxQueued);
   }
 
+  /** The session, or the connect in flight shared by every caller waiting on it. `signal` is this
+   *  caller's own deadline: when the last waiting caller leaves, the connect is ended with it, so an
+   *  operation's deadline never leaves an initialize running behind nobody. */
   private async session(signal: AbortSignal): Promise<Client> {
     if (this.closed) throw new Error("the Linear upstream is closed");
     if (this.client) return this.client;
-    this.connecting ??= this.connect().finally(() => (this.connecting = undefined));
-    return bounded(this.connecting, signal);
+    if (!this.connecting) {
+      const abandoned = new AbortController();
+      const shared = { abandoned, waiters: 0, done: false, promise: this.connect(abandoned.signal) };
+      shared.promise.finally(() => { shared.done = true; this.connecting = undefined; }).catch(() => {});
+      this.connecting = shared;
+    }
+    const c = this.connecting;
+    c.waiters++;
+    try {
+      return await bounded(c.promise, signal);
+    } finally {
+      if (--c.waiters === 0 && !c.done) c.abandoned.abort(new Error("every caller left before the session was established"));
+    }
   }
 
-  private async connect(): Promise<Client> {
+  private async connect(abandoned: AbortSignal): Promise<Client> {
     const pinned = pinnedFetch(this.url, () => this.credential.bearer(), this.limits.maxResponseBytes);
     const transport = new CapturingTransport(new StreamableHTTPClientTransport(this.url, {
       // The request being dispatched ends its own HTTP request when its deadline expires; the SDK
@@ -334,7 +357,7 @@ export class LinearUpstream {
     client.onclose = () => this.drop(client);
     // Closing the upstream ends a connect in flight: the initialize request is aborted and no
     // session is published afterwards.
-    const init = dispatch(AbortSignal.any([this.closing.signal, AbortSignal.timeout(this.limits.defaultTimeoutMs)]));
+    const init = dispatch(AbortSignal.any([this.closing.signal, abandoned, AbortSignal.timeout(this.limits.defaultTimeoutMs)]));
     try {
       await dispatching.run(init, () => client.connect(transport, { timeout: this.limits.defaultTimeoutMs }));
       if (!init.raw) throw new Error("the initialize response was not captured");
@@ -396,6 +419,10 @@ export class LinearUpstream {
       const caps = (initialized.capabilities ?? {}) as Json;
       const version = initialized.serverInfo as { name?: string; version?: string } | undefined;
       const instructions = initialized.instructions;
+      const head = { server: version, ...(typeof instructions === "string" ? { instructions } : {}), capabilities: caps };
+      const headSize = renderedBytes(head);
+      if (headSize > this.limits.maxInventoryEntryBytes)
+        throw new Error(`initialize's instructions and capabilities render to ${headSize} bytes, over the ${this.limits.maxInventoryEntryBytes}-byte bound; refusing the inventory`);
       let pages = 0;
       let bytes = 0;
       const timeout = this.limits.defaultTimeoutMs;
@@ -415,9 +442,9 @@ export class LinearUpstream {
           const list = page[key];
           if (!Array.isArray(list)) throw new Error(`${method} returned no ${key} array`);
           for (const entry of list as Json[]) {
-            const size = Buffer.byteLength(JSON.stringify(entry));
+            const size = renderedBytes(entry);
             if (size > this.limits.maxInventoryEntryBytes)
-              throw new Error(`${key}[${items.length}] ("${String(entry.name ?? entry.uri ?? entry.uriTemplate ?? "")}") is ${size} bytes, over the ${this.limits.maxInventoryEntryBytes}-byte entry bound; refusing the inventory`);
+              throw new Error(`${key}[${items.length}] ("${String(entry.name ?? entry.uri ?? entry.uriTemplate ?? "")}") renders to ${size} bytes, over the ${this.limits.maxInventoryEntryBytes}-byte entry bound; refusing the inventory`);
             items.push(entry);
           }
           const next = page.nextCursor;
@@ -575,7 +602,7 @@ export class LinearUpstream {
   private scrubValue(v: unknown): unknown {
     if (typeof v === "string") return this.scrub(v);
     if (Array.isArray(v)) return v.map((x) => this.scrubValue(x));
-    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, this.scrubValue(x)]));
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [this.scrub(k), this.scrubValue(x)]));
     return v;
   }
 
@@ -622,7 +649,7 @@ export class LinearUpstream {
     await bounded(client?.close() ?? Promise.resolve(), grace).catch(() => {});
     // A connect in flight was aborted above; one that still completes is closed, never published.
     if (connecting) {
-      const late = await bounded(connecting, grace).catch(() => undefined);
+      const late = await bounded(connecting.promise, grace).catch(() => undefined);
       if (late) await bounded(late.close(), grace).catch(() => {});
     }
   }

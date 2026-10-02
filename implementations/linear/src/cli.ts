@@ -105,10 +105,13 @@ async function serve(account: string, endpoint: string, v: Record<string, unknow
   // The record is READY from registration on, so a start that fails after it must take the record
   // back down rather than leave an advertised endpoint nobody serves.
   const handle = await runLinearEndpoint(reg.bundle, upstream).catch(async (e: unknown) => {
-    await Promise.race([reg.deregister(), new Promise((r) => setTimeout(r, 10_000).unref())]).catch((d: unknown) =>
-      console.error(`deregistration failed (${(d as Error).message}); the record stays until the instance is registered again`));
+    // Reported as it happened: removed, failed, or still pending when the 10-second wait ran out.
+    const removal = await Promise.race([
+      reg.deregister().then(() => "its registration was removed", (d: unknown) => `its registration could not be removed (${(d as Error).message}) and still advertises this instance`),
+      new Promise<string>((r) => setTimeout(() => r("its deregistration did not complete within 10 seconds and may still be pending; the record may still advertise this instance"), 10_000).unref()),
+    ]);
     await upstream.close();
-    fail(`${endpoint} did not start serving: ${(e as Error).message}; its registration was removed`);
+    fail(`${endpoint} did not start serving: ${(e as Error).message}; ${removal}`);
   });
   console.log(`serving ${handle.endpoint} (instance ${handle.instanceId}, epoch ${handle.epoch}) for Linear account ${account} (${inv.mode}, ${inv.tools.length} tools, inventory ${inv.digest})`);
   let timer: NodeJS.Timeout | undefined;
