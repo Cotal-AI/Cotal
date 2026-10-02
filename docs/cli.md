@@ -1673,6 +1673,7 @@ See [Watch a mesh](watch-a-mesh.md).
 ```bash
 cotal ext add @cotal-ai/linear
 cotal linear account add <name> --mode <write|readonly> (--token-stdin | --token-file <path>)
+cotal linear account login <name> --mode <write|readonly>
 cotal linear account show <name>
 cotal linear inventory <account> [--json]
 cotal linear call <account> <tool> [--args '<json>'] [--inventory <digest>] [--timeout <ms>]
@@ -1685,10 +1686,14 @@ An operator client for the official Linear MCP server. It only talks to `https:/
 option. Use a separate account per Linear workspace, and prefer a `readonly` account with a
 restricted read key wherever writes are not needed.
 
-An account's token is a Linear API key or OAuth access token, sent as `Authorization: Bearer`. It is
-never taken from argv: `--token-stdin` stores it under the cotal home as a 0600 file, and
+An account's credential is sent as `Authorization: Bearer` and is never taken from argv. `account add`
+takes a Linear API key: `--token-stdin` stores it under the cotal home as a 0600 file, and
 `--token-file` points at an existing file that must not be readable by other users. The file is read
-at each use, so rotating it needs no restart. Redirects are refused so the token is never forwarded.
+at each use, so rotating it needs no restart. `account login` runs Linear's OAuth flow instead: it
+registers a client, prints the authorize URL, and waits on a loopback redirect. It asks for scope
+`read` in `readonly` mode and `read write` in `write` mode, keeps the tokens in a 0600 file, and
+refreshes them before a request is sent. OAuth requests only go to `https://mcp.linear.app`.
+Redirects are refused so the credential is never forwarded.
 
 `inventory` reads the server's capabilities and every page of its tools, plus resources, resource
 templates and prompts when the server advertises them. Names and schemas are printed as the server
@@ -1702,8 +1707,12 @@ protocol error, a timeout, Ctrl-C, a response over the size cap, an expired sess
 failure exits 3 and is never retried; its outcome is `unknown`, for read-only tools too, so check
 Linear before repeating a write. HTTP 401, 403 and 429 answers are reported as `not-executed`.
 
-Not yet available: serving Linear as a registered Cotal endpoint that agents call, and OAuth login.
-Today an agent reaches Linear only through an operator running these commands.
+The package also defines the endpoint contract a registered Linear service would serve: the fixed
+commands `inventory`, `call-tool`, `read-resource`, `get-prompt` and `complete`, each needing the one
+`linear.mcp` capability. That capability is permission to call the endpoint; which tools a call can
+reach is decided by the Linear account. Serving it is not available yet, because the mesh does not
+yet issue registration credentials for a third-party endpoint name or caller grants for agents. Today
+an agent reaches Linear only through an operator running these commands.
 
 ## deliver
 
