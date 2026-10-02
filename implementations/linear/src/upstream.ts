@@ -17,8 +17,13 @@
  * reported with outcome `unknown`: the tool may or may not have run, and that holds for read-only
  * tools too. A tool result with `isError: true` is an ordinary MCP result and is returned as such. A
  * JSON-RPC error from the server is a protocol error, kept apart from both. `not-executed` is only
- * claimed for refusals made before dispatch (queue full, unknown tool, stale inventory pin) or for
- * an HTTP 401/403/429 answer from the server.
+ * claimed for refusals made before dispatch (queue full, unknown tool, stale inventory pin, the
+ * deadline expiring while queued, discovering or connecting). An HTTP 401/403/429 answer to a
+ * dispatched request is `unknown` too: the MCP transport gives no proof that the server did not act.
+ *
+ * One deadline bounds the whole operation: the slot wait, discovery, connect and the call itself.
+ * Errors carry a status or a class, never response text, and the bearer is scrubbed from anything
+ * the server sent back before it leaves this module.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -100,7 +105,7 @@ export type Outcome = "not-executed" | "unknown";
 export type UpstreamReply =
   | { kind: "result"; result: Json; inventoryDigest: string }
   | { kind: "protocol-error"; code: number; message: string; data?: unknown; outcome: Outcome }
-  | { kind: "refused"; reason: "queue-full" | "unknown-tool" | "not-advertised" | "stale-inventory" | "discovery-failed" | "closed"; detail: string; outcome: "not-executed" }
+  | { kind: "refused"; reason: "queue-full" | "unknown-tool" | "not-advertised" | "stale-inventory" | "discovery-failed" | "deadline" | "closed"; detail: string; outcome: "not-executed" }
   | {
       kind: "failed";
       reason: "timeout" | "cancelled" | "output-too-large" | "session-expired" | "unauthenticated" | "permission-denied" | "rate-limited" | "transport";
@@ -130,12 +135,27 @@ class Slots {
   private active = 0;
   private readonly waiting: Array<() => void> = [];
   constructor(private readonly max: number, private readonly maxQueued: number) {}
-  /** Resolves with a release function, or `null` when the queue is full. */
-  async acquire(): Promise<(() => void) | null> {
+  /** Resolves with a release function, `null` when the queue is full, or rejects with the
+   *  signal's reason when it aborts while waiting (the waiter leaves the queue). */
+  async acquire(signal?: AbortSignal): Promise<(() => void) | null> {
+    signal?.throwIfAborted();
     if (this.active < this.max) this.active++;
     else if (this.waiting.length >= this.maxQueued) return null;
     // A released slot is handed straight to the next waiter, so `active` never overshoots.
-    else await new Promise<void>((r) => this.waiting.push(r));
+    else
+      await new Promise<void>((resolve, reject) => {
+        const wake = (): void => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        };
+        const onAbort = (): void => {
+          const i = this.waiting.indexOf(wake);
+          if (i >= 0) this.waiting.splice(i, 1);
+          reject(signal!.reason);
+        };
+        this.waiting.push(wake);
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
     let released = false;
     return () => {
       if (released) return;
@@ -147,14 +167,35 @@ class Slots {
   }
 }
 
+/** Reject when `signal` aborts, without leaving a listener behind. */
+function bounded<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => { signal.removeEventListener("abort", onAbort); resolve(v); },
+      (e) => { signal.removeEventListener("abort", onAbort); reject(e); },
+    );
+  });
+}
+
+class DeadlineError extends Error {
+  constructor() {
+    super("the request deadline expired before dispatch");
+    this.name = "DeadlineError";
+  }
+}
+
 export class LinearUpstream {
   private client?: Client;
   private transport?: StreamableHTTPClientTransport;
   private connecting?: Promise<Client>;
   private current?: LinearInventory;
   private stale = true;
-  private overflows = 0;
   private closed = false;
+  /** Aborts every queued or in-flight operation on {@link close}. */
+  private readonly closing = new AbortController();
   private readonly slots: Slots;
   private readonly url: URL;
   private readonly credential: LinearCredential;
@@ -165,16 +206,16 @@ export class LinearUpstream {
     this.slots = new Slots(limits.maxConcurrent, limits.maxQueued);
   }
 
-  private async session(): Promise<Client> {
+  private async session(signal: AbortSignal): Promise<Client> {
     if (this.closed) throw new Error("the Linear upstream is closed");
     if (this.client) return this.client;
     this.connecting ??= this.connect().finally(() => (this.connecting = undefined));
-    return this.connecting;
+    return bounded(this.connecting, signal);
   }
 
   private async connect(): Promise<Client> {
     const transport = new StreamableHTTPClientTransport(this.url, {
-      fetch: pinnedFetch(this.url, () => this.credential.bearer(), this.limits.maxResponseBytes, () => this.overflows++),
+      fetch: pinnedFetch(this.url, () => this.credential.bearer(), this.limits.maxResponseBytes),
       // Resuming a dropped stream is not a re-dispatch, but this client still never reconnects on its own.
       reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 },
     });
@@ -208,15 +249,17 @@ export class LinearUpstream {
     void client.close().catch(() => {});
   }
 
-  /** Complete discovery. Refuses on any cap rather than returning a partial inventory. */
-  async inventory(opts: { refresh?: boolean } = {}): Promise<LinearInventory> {
+  /** Complete discovery. Refuses on any cap rather than returning a partial inventory. `signal`
+   *  bounds the whole read, including the slot wait and connect. */
+  async inventory(opts: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<LinearInventory> {
     const fresh = this.current && Date.now() - Date.parse(this.current.fetchedAt) < this.limits.maxInventoryAgeMs;
     if (this.current && fresh && !this.stale && !opts.refresh) return this.current;
-    const release = await this.slots.acquire();
+    const signal = AbortSignal.any([this.closing.signal, opts.signal ?? AbortSignal.timeout(this.limits.maxTimeoutMs)]);
+    const release = await this.slots.acquire(signal);
     if (!release) throw new Error("the Linear upstream queue is full");
     try {
-      await this.credential.prepare();
-      const client = await this.session();
+      await bounded(this.credential.prepare(), signal);
+      const client = await this.session(signal);
       const caps = (client.getServerCapabilities() ?? {}) as unknown as Json;
       const version = client.getServerVersion();
       let pages = 0;
@@ -232,7 +275,7 @@ export class LinearUpstream {
         let cursor: string | undefined;
         do {
           if (++pages > this.limits.maxInventoryPages) throw new Error(`Linear discovery exceeded ${this.limits.maxInventoryPages} pages; refusing a partial inventory`);
-          const page = (await client.request({ method, params: cursor === undefined ? {} : { cursor } } as never, schema, { timeout })) as unknown as Json;
+          const page = (await client.request({ method, params: cursor === undefined ? {} : { cursor } } as never, schema, { timeout, signal })) as unknown as Json;
           bytes += Buffer.byteLength(JSON.stringify(page));
           if (bytes > this.limits.maxInventoryBytes) throw new Error(`Linear discovery exceeded ${this.limits.maxInventoryBytes} bytes; refusing a partial inventory`);
           const list = page[key];
@@ -276,7 +319,7 @@ export class LinearUpstream {
     } catch (e) {
       this.stale = true;
       if (e instanceof StreamableHTTPError && e.code === 404 && this.client) this.drop(this.client);
-      throw e;
+      throw new Error(this.describeError(e));
     } finally {
       release();
     }
@@ -314,82 +357,126 @@ export class LinearUpstream {
     if (this.closed) return { kind: "refused", reason: "closed", detail: "the Linear upstream is closed", outcome: "not-executed" };
     const timeoutMs = Math.min(req.timeoutMs ?? this.limits.defaultTimeoutMs, this.limits.maxTimeoutMs);
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error(`timeoutMs must be a positive integer`);
-    // Discovery happens before dispatch: a stale or never-read inventory is re-read first. The
-    // request itself has not been sent if discovery fails.
-    let inv: LinearInventory;
-    try {
-      inv = await this.inventory();
-      await this.credential.prepare();
-    } catch (e) {
-      return { kind: "refused", reason: "discovery-failed", detail: `Linear discovery failed: ${e instanceof Error ? e.message : String(e)}`, outcome: "not-executed" };
-    }
-    if (req.inventoryDigest !== undefined && req.inventoryDigest !== inv.digest)
-      return { kind: "refused", reason: "stale-inventory", detail: `the inventory changed (now ${inv.digest}); describe again before calling`, outcome: "not-executed" };
-    const absent = precheck(inv);
-    if (absent) return { kind: "refused", reason: absentReason, detail: absent, outcome: "not-executed" };
-    const release = await this.slots.acquire();
-    if (!release) return { kind: "refused", reason: "queue-full", detail: "the Linear upstream queue is full", outcome: "not-executed" };
+    // ONE deadline for the whole operation: queueing, discovery, connect and the call.
     const ctl = new AbortController();
     let why: "timeout" | "cancelled" | undefined;
     const timer = setTimeout(() => {
       why ??= "timeout";
-      ctl.abort(new Error("deadline"));
+      ctl.abort(new DeadlineError());
     }, timeoutMs);
     const onCancel = (): void => {
       why ??= "cancelled";
       ctl.abort(new Error("cancelled"));
     };
     req.signal?.addEventListener("abort", onCancel, { once: true });
-    const overflowsBefore = this.overflows;
+    this.closing.signal.addEventListener("abort", onCancel, { once: true });
+    if (req.signal?.aborted || this.closing.signal.aborted) onCancel();
+    const notDispatched = (): UpstreamReply => why === "timeout"
+      ? { kind: "refused", reason: "deadline", detail: "the deadline expired before the request was sent", outcome: "not-executed" }
+      : { kind: "refused", reason: "closed", detail: "cancelled before the request was sent", outcome: "not-executed" };
+    let release: (() => void) | null | undefined;
     try {
+      // Discovery happens before dispatch: a stale or never-read inventory is re-read first. The
+      // request itself has not been sent if discovery fails.
+      let inv: LinearInventory;
+      try {
+        inv = await this.inventory({ signal: ctl.signal });
+        await bounded(this.credential.prepare(), ctl.signal);
+      } catch (e) {
+        if (ctl.signal.aborted) return notDispatched();
+        return { kind: "refused", reason: "discovery-failed", detail: `Linear discovery failed: ${this.describeError(e)}`, outcome: "not-executed" };
+      }
+      if (req.inventoryDigest !== undefined && req.inventoryDigest !== inv.digest)
+        return { kind: "refused", reason: "stale-inventory", detail: `the inventory changed (now ${inv.digest}); read it again before calling`, outcome: "not-executed" };
+      const absent = precheck(inv);
+      if (absent) return { kind: "refused", reason: absentReason, detail: absent, outcome: "not-executed" };
+      try {
+        release = await this.slots.acquire(ctl.signal);
+      } catch {
+        return notDispatched();
+      }
+      if (!release) return { kind: "refused", reason: "queue-full", detail: "the Linear upstream queue is full", outcome: "not-executed" };
       const client = this.client;
-      if (!client) return { kind: "refused", reason: "discovery-failed", detail: "the MCP session ended after discovery; describe again", outcome: "not-executed" };
-      if (req.signal?.aborted) return { kind: "refused", reason: "closed", detail: "cancelled before dispatch", outcome: "not-executed" };
-      // The SDK sends notifications/cancelled when the signal aborts. Its own timeout sits past ours.
+      if (!client) return { kind: "refused", reason: "discovery-failed", detail: "the MCP session ended after discovery; read the inventory again", outcome: "not-executed" };
+      if (ctl.signal.aborted) return notDispatched();
+      // From here the request is handed to the transport. The SDK sends notifications/cancelled
+      // when the signal aborts; its own timeout sits past ours.
       const result = (await client.request(request as never, schema, { signal: ctl.signal, timeout: timeoutMs + 5_000 })) as unknown as Json;
       return { kind: "result", result, inventoryDigest: inv.digest };
     } catch (e) {
-      return this.classify(e, why, this.overflows !== overflowsBefore);
+      return this.classify(e, why);
     } finally {
       clearTimeout(timer);
       req.signal?.removeEventListener("abort", onCancel);
-      release();
+      this.closing.signal.removeEventListener("abort", onCancel);
+      release?.();
     }
   }
 
-  private classify(e: unknown, why: "timeout" | "cancelled" | undefined, overflowed: boolean): UpstreamReply {
-    const detail = e instanceof Error ? e.message : String(e);
+  /** A failure as a status or class, with the bearer scrubbed. Response bodies are never kept. */
+  private describeError(e: unknown): string {
+    if (e instanceof StreamableHTTPError) return `HTTP ${e.code ?? "error"} from the Linear MCP server`;
+    if (e instanceof OriginRefusedError || e instanceof ResponseTooLargeError || e instanceof DeadlineError) return e.message;
+    if (e instanceof McpError) return this.scrub(`MCP error ${e.code}: ${e.message}`);
+    return this.scrub(e instanceof Error ? `${e.name}: ${e.message}` : "an unexpected failure");
+  }
+
+  /** Remove the current bearer from text the server or a library produced. */
+  private scrub(text: string): string {
+    let token: string | undefined;
+    try {
+      token = this.credential.bearer();
+    } catch {
+      token = undefined;
+    }
+    return token && token.length >= 8 ? text.split(token).join("[redacted]") : text;
+  }
+
+  private scrubValue(v: unknown): unknown {
+    if (typeof v === "string") return this.scrub(v);
+    if (Array.isArray(v)) return v.map((x) => this.scrubValue(x));
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, this.scrubValue(x)]));
+    return v;
+  }
+
+  private classify(e: unknown, why: "timeout" | "cancelled" | undefined): UpstreamReply {
+    const detail = this.describeError(e);
     if (e instanceof OriginRefusedError) return { kind: "failed", reason: "transport", detail, outcome: "not-executed" };
     if (why) return { kind: "failed", reason: why, detail: `${why} after dispatch; the request may or may not have run`, outcome: "unknown" };
-    if (overflowed || e instanceof ResponseTooLargeError)
+    // Attributed only when THIS request's own response crossed the cap. A streamed overflow on
+    // another request's stream ends that request, not this one.
+    if (e instanceof ResponseTooLargeError)
       return { kind: "failed", reason: "output-too-large", detail: `the response exceeded ${this.limits.maxResponseBytes} bytes and was discarded; the request may have run`, outcome: "unknown" };
     if (e instanceof StreamableHTTPError) {
       const status = e.code;
       if (status === 404) {
         if (this.client) this.drop(this.client);
-        return { kind: "failed", reason: "session-expired", detail: "the MCP session expired; the call is not retried", outcome: "unknown" };
+        return { kind: "failed", reason: "session-expired", detail: "the MCP session expired; the call is not retried and may have run", outcome: "unknown" };
       }
-      if (status === 401) return { kind: "failed", reason: "unauthenticated", detail, outcome: "not-executed" };
-      if (status === 403) return { kind: "failed", reason: "permission-denied", detail, outcome: "not-executed" };
-      if (status === 429) return { kind: "failed", reason: "rate-limited", detail, outcome: "not-executed" };
+      if (status === 401) return { kind: "failed", reason: "unauthenticated", detail, outcome: "unknown" };
+      if (status === 403) return { kind: "failed", reason: "permission-denied", detail, outcome: "unknown" };
+      if (status === 429) return { kind: "failed", reason: "rate-limited", detail, outcome: "unknown" };
       return { kind: "failed", reason: "transport", detail, outcome: "unknown" };
     }
     if (e instanceof McpError) {
       if (e.code === ErrorCode.RequestTimeout) return { kind: "failed", reason: "timeout", detail, outcome: "unknown" };
       if (e.code === ErrorCode.ConnectionClosed) return { kind: "failed", reason: "transport", detail, outcome: "unknown" };
-      return { kind: "protocol-error", code: e.code, message: e.message, ...(e.data !== undefined ? { data: e.data } : {}), outcome: "unknown" };
+      return { kind: "protocol-error", code: e.code, message: this.scrub(e.message), ...(e.data !== undefined ? { data: this.scrubValue(e.data) } : {}), outcome: "unknown" };
     }
     return { kind: "failed", reason: "transport", detail, outcome: "unknown" };
   }
 
-  /** Close the session and end it upstream. In-flight requests reject and report `unknown`. */
-  async close(): Promise<void> {
+  /** Close the session and end it upstream, within `graceMs`. Queued requests refuse before
+   *  dispatch; in-flight ones are cancelled and report `unknown`. */
+  async close(graceMs = 5_000): Promise<void> {
     this.closed = true;
+    this.closing.abort(new Error("the Linear upstream is closing"));
     const transport = this.transport;
     const client = this.client;
     this.client = undefined;
     this.transport = undefined;
-    if (transport?.sessionId) await transport.terminateSession().catch(() => {});
-    await client?.close().catch(() => {});
+    const grace = AbortSignal.timeout(graceMs);
+    if (transport?.sessionId) await bounded(transport.terminateSession(), grace).catch(() => {});
+    await bounded(client?.close() ?? Promise.resolve(), grace).catch(() => {});
   }
 }

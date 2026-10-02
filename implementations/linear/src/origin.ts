@@ -40,7 +40,7 @@ export class OriginRefusedError extends Error {
   }
 }
 
-export function pinnedFetch(pinned: URL, readToken: () => string, maxBytes: number, onOverflow: () => void): FetchLike {
+export function pinnedFetch(pinned: URL, readToken: () => string, maxBytes: number): FetchLike {
   return async (url, init) => {
     const target = new URL(typeof url === "string" ? url : url.href);
     if (target.origin !== pinned.origin || target.pathname !== pinned.pathname || target.search !== "")
@@ -52,14 +52,13 @@ export function pinnedFetch(pinned: URL, readToken: () => string, maxBytes: numb
       await res.body?.cancel().catch(() => {});
       throw new OriginRefusedError(`refusing a ${res.status} redirect from ${pinned.href}: the credential is never forwarded`);
     }
-    return boundResponse(res, maxBytes, onOverflow);
+    return boundResponse(res, maxBytes);
   };
 }
 
-function boundResponse(res: Response, maxBytes: number, onOverflow: () => void): Response {
+function boundResponse(res: Response, maxBytes: number): Response {
   const declared = res.headers.get("content-length");
   if (declared !== null && Number(declared) > maxBytes) {
-    onOverflow();
     void res.body?.cancel().catch(() => {});
     throw new ResponseTooLargeError(maxBytes);
   }
@@ -69,7 +68,6 @@ function boundResponse(res: Response, maxBytes: number, onOverflow: () => void):
     transform(chunk, ctl) {
       seen += chunk.byteLength;
       if (seen > maxBytes) {
-        onOverflow();
         ctl.error(new ResponseTooLargeError(maxBytes));
       } else ctl.enqueue(chunk);
     },
