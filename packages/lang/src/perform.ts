@@ -1876,8 +1876,15 @@ export async function runScope(
     // this process is live and the world is reachable, and walking away from live membership on
     // an ordinary error would be the `spawn` leak in another shape.
     // A HOST-SIDE UNWIND leaves the close owed: closing would be a new action after the driver
-    // said stop, and the pending entry is exactly what "a close is still owed" looks like.
-    if (bodyError instanceof RunReleased || bodyError instanceof RunHeld || bodyError instanceof JournalAppendRejected)
+    // said stop, and the pending entry is exactly what "a close is still owed" looks like. A host
+    // stack exhaustion in the body is the same unwind (§9.2): closing after it would be a new effect
+    // on a run that must stop, and a close error would replace it with one a program can catch.
+    if (
+      bodyError instanceof RunReleased ||
+      bodyError instanceof RunHeld ||
+      bodyError instanceof JournalAppendRejected ||
+      isStackExhaustion(bodyError)
+    )
       throw bodyError;
     if (bodyError instanceof Cancelled) throw new ScopeFailed(bodyError, { closed: false });
 
