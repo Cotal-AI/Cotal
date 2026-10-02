@@ -234,7 +234,9 @@ the service process, so no signing material reaches the caller, and it returns
 `{ authorized: true, owner, actor, instanceId, serveEpoch }` or maps its refusal to 400, 401, 403,
 409, or 412. It decides only. A platform that intercepts these requests owns every write, and stock
 `dispatchManagerAuthorityRequest` refuses both request kinds with `unimplemented` rather than
-answering a manager-lifecycle phase for an agent-lifecycle request.
+answering a manager-lifecycle phase for an agent-lifecycle request. The same door decides the hosted
+runtime create and status kinds. For those it reads the manager actor's ledger row itself and returns
+`{ authorized: true, owner, instanceId, actor, target }`.
 [embedding.md](embedding.md) documents the managed doors' contracts.
 
 The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`, and

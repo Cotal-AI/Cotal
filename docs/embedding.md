@@ -393,6 +393,29 @@ and `authorizeRemoteManagedAgentPrepareRetirement` are exported too, for a host 
 decision without the HTTP hop. Both require ledger scope `supervise`; `spawn` and `admin` do not
 imply it.
 
+A host that runs managed agents on its own hosted runtime adds two more kinds on the same transport.
+`kind: "manager-managed-agent-runtime-create"` asks the host to create the runtime for one agent it
+already enrolled, and `kind: "manager-managed-agent-runtime-status"` reads that runtime's state. Both
+carry the manager envelope plus `target: { owner, actor, lifecycleUid }`, the coordinate the
+enrollment returned. Both schemas are closed. An unknown top-level or target field, including
+`providerRef`, `handle`, or `name`, is refused as `bad-request`, because the host alone issues and
+holds provider references. There is no stop, adopt, or probe kind: stop goes through
+prepare-retirement. Stock dispatch refuses both kinds with `unimplemented`, and the verify-enrollment
+door decides them. `authorizeRemoteManagedAgentRuntimeCreate` and
+`authorizeRemoteManagedAgentRuntimeStatus` apply the enrollment door's checks: host space, a target
+owner equal to the authenticated owner, the manager actor's own ledger row with `supervise`, the open
+gate, the current serve epoch, and the registration proof. Each returns only
+`{ owner, instanceId, actor, target }`. The door touches no provider and writes nothing. The host
+matches the decision to its own intent record and performs the create afterwards. The host answers
+with `state` (`reserved`, `creating`, `bound`, `create-unknown`, `closing`, or `closed`), `readiness`
+(`ready`, `bound-not-ready`, or `none`), and an optional `retirementPhase`. A manager builds requests
+with `remoteManagerClient.remoteManagedAgentRuntimeRequest` and binds the answer with
+`remoteManagedAgentRuntimeState`.
+
+An enrollment result may also carry `runtimeIntent: { state: "reserved" }` when the host reserved a
+hosted runtime for the agent. It is display-only. Older hosts omit it, the manager binds both shapes
+to the same material, and nothing reads it as authority.
+
 Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
 request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays
 that tuple over the current registered manager lifecycle. HTTPS does not separately authenticate the
