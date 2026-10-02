@@ -480,7 +480,8 @@ export interface EffectHandler {
    * Optional. A host that runs the program in another realm (the worker bridge) calls this once
    * with a function that resolves when the program has reacted to everything the handler has
    * answered so far. A handler that schedules its own deliveries, as the simulator does, awaits
-   * it before each one; any other handler can leave it out.
+   * it before each one; any other handler can leave it out. It returns a release the host calls
+   * when that realm is gone, after which the handler paces itself again.
    */
-  useQuiescence?(settled: () => Promise<void>): void;
+  useQuiescence?(settled: () => Promise<void>): () => void;
 }

@@ -189,8 +189,11 @@ export class SimHandler implements EffectHandler {
    * draining this realm's microtasks no longer means it has reached its next park. The host that
    * owns the boundary says when it has, and the pump waits for that before each delivery (#2240).
    */
-  useQuiescence(settled: () => Promise<void>): void {
+  useQuiescence(settled: () => Promise<void>): () => void {
     this.settled = settled;
+    return () => {
+      if (this.settled === settled) this.settled = undefined;
+    };
   }
 
   /**

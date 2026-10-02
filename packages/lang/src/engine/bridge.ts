@@ -300,8 +300,11 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
     sent++;
     port.postMessage(m);
   };
-  seam.handler.useQuiescence?.(() =>
-    idleAt === sent ? Promise.resolve() : new Promise<void>((resolve) => waiters.push(resolve)),
+  // A closed seam has no thread left to report, so it settles at once and hands the hook back:
+  // the handler may outlive this run and be used again (#2240).
+  let closed = false;
+  const release = seam.handler.useQuiescence?.(() =>
+    closed || idleAt === sent ? Promise.resolve() : new Promise<void>((resolve) => waiters.push(resolve)),
   );
 
   port.on("message", (m: ToHost) => {
@@ -402,5 +405,15 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
     throw new Error(`cotal-lang effect bridge: the thread sent a message kind this host does not know (${String((m as { kind?: unknown }).kind)})`);
   });
 
-  return { clock, close: () => port.close() };
+  return {
+    clock,
+    close: () => {
+      closed = true;
+      release?.();
+      const ready = waiters;
+      waiters = [];
+      for (const w of ready) w();
+      port.close();
+    },
+  };
 }
