@@ -358,13 +358,13 @@ export interface RemoteManagedAgentPrepareRetirementResult {
 
 /** The host's record of one hosted runtime intent. Forward-only and host-internal: the participant
  *  reads it and never selects a transition. */
-export const MANAGED_AGENT_RUNTIME_STATES = ["reserved", "creating", "bound", "create-unknown", "closing", "closed"] as const;
+export const MANAGED_AGENT_RUNTIME_STATES = Object.freeze(["reserved", "creating", "bound", "create-unknown", "closing", "closed"] as const);
 export type ManagedAgentRuntimeState = (typeof MANAGED_AGENT_RUNTIME_STATES)[number];
 /** Readiness is an observation, not a state. `bound` means a known handle, not a ready agent. */
-export const MANAGED_AGENT_RUNTIME_READINESS = ["ready", "bound-not-ready", "none"] as const;
+export const MANAGED_AGENT_RUNTIME_READINESS = Object.freeze(["ready", "bound-not-ready", "none"] as const);
 export type ManagedAgentRuntimeReadiness = (typeof MANAGED_AGENT_RUNTIME_READINESS)[number];
 /** The host's terminal retirement phase for the target, when one has started. */
-export const MANAGED_AGENT_RETIREMENT_PHASES = ["intent", "released", "retired", "deprovisioned", "terminal"] as const;
+export const MANAGED_AGENT_RETIREMENT_PHASES = Object.freeze(["intent", "released", "retired", "deprovisioned", "terminal"] as const);
 export type ManagedAgentRetirementPhase = (typeof MANAGED_AGENT_RETIREMENT_PHASES)[number];
 
 /**
