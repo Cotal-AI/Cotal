@@ -17,10 +17,9 @@ const GRACE_MS = 3_000;
 
 /**
  * In-process node-pty ownership. The worker is the child's parent, so killing
- * the worker kills the seat. Production Linux pty goes through
- * `CustodialPtyRuntime`. Off Linux, `createRuntime("pty")` still spawns here;
- * `adopt` throws until that platform's custody transport lands. `legacy-pty-custody`
- * also instantiates this class on Linux as the honest M1 residual.
+ * the worker kills the seat. `createRuntime("pty")` spawns here on every
+ * platform; on Linux its subclass still adopts seats an earlier custodial
+ * manager launched. This class's own `adopt` throws.
  */
 export class LegacyPtyRuntime implements Runtime {
   readonly kind = "pty" as const;

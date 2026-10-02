@@ -365,11 +365,11 @@ How a spawn resolves:
 Detach from an attached PTY with **Ctrl-]** (the agent keeps running); rebind it with
 `COTAL_DETACH_KEY=ctrl-<char>` when it clashes with a keybinding inside the agent's TUI.
 
-**Runtimes.** The manager spawns into a **pty** by default. On Linux a detached per-seat
-custodian owns that PTY, so replacing the manager worker does not close the seat. A custodian
-whose agent has exited exits a few seconds later on its own, and a manager that boots after a
-crash reaps the seats its predecessor left running. Other
-platforms still spawn the PTY in-process; `adopt` throws until their transport lands. Optional runtimes are installed
+**Runtimes.** The manager spawns into a **pty** by default. It spawns the PTY in-process on
+every platform, so replacing the manager worker closes its seats and the pty runtime gives no hot
+update. On Linux it can still adopt and reap seats that an earlier manager launched under a
+detached per-seat custodian, so those seats drain under the new manager; it starts no new
+custodian. A custodian whose agent has exited exits a few seconds later on its own. Optional runtimes are installed
 through the extension surface, for example `cotal ext add @cotal-ai/orca`, then selected with
 `--runtime orca` (similarly `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`). They put teammates in native
 terminal surfaces rather than manager-owned PTYs. Runtime names are open-ended and resolved from

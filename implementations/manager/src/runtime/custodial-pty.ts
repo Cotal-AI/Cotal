@@ -10,10 +10,11 @@ function defaultCustodyRoot(): string {
 }
 
 /**
- * Production pty runtime on Linux: a one-shot launcher starts a detached
- * per-seat custodian, then this process holds only a proxy AgentHandle.
- * `createRuntime("pty")` does not construct this class off Linux. Spawn and
- * adopt still throw the named transport error if it is instantiated there.
+ * Linux custodial pty: a one-shot launcher starts a detached per-seat
+ * custodian, then this process holds only a proxy AgentHandle.
+ * `createRuntime("pty")` no longer spawns through this class (#1391); it uses
+ * it only to adopt and reap seats a pre-repair manager left running. Spawn and
+ * adopt throw the named transport error off Linux.
  */
 export class CustodialPtyRuntime implements CustodialRuntime {
   readonly kind = "pty" as const;

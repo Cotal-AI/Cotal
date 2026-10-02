@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { registry, type AgentHandle, type Runtime, type RuntimeKind, type RuntimeProvider, type RuntimeReference } from "@cotal-ai/core";
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
+import { unsupportedTransport } from "@cotal-ai/seat";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
 
@@ -72,15 +73,38 @@ export async function requireRuntimeReap(
   runtime: Runtime,
   reference: RuntimeReference,
 ): Promise<{ outcome: "reaped"; detail: string }> {
-  if (!isCustodialRuntime(runtime))
+  if (typeof (runtime as Partial<CustodialRuntime>).reap !== "function")
     throw new Error(`runtime "${runtime.kind}" does not support reap; the orphaned process for ${reference.kind}:${reference.id} cannot be proved gone`);
-  const evidence = await runtime.reap(reference);
+  const evidence = await (runtime as CustodialRuntime).reap(reference);
   // The refusal this function's contract promises, made structural: `absent` never leaves here, so
   // the return type carries no branch a caller could render as success. Placing it at the callsites
   // instead left each one free to describe an unread record as a reaped process, which is what both
   // of them did.
   if (evidence.outcome === "absent") throw new RuntimeReapUnproven(runtime.kind, reference);
   return evidence;
+}
+
+/**
+ * The built-in `pty` runtime on every platform. It spawns in-process and never starts a custodian
+ * (#1391). On Linux it still adopts and reaps seats that an earlier `CustodialPtyRuntime` launched,
+ * so a manager can drain custody records left by a pre-repair manager. It has no `reserve`, so the
+ * manager records no custody reference for a new spawn.
+ */
+class PtyRuntime extends LegacyPtyRuntime {
+  private custodial?: CustodialPtyRuntime;
+
+  private legacyCustody(): CustodialPtyRuntime {
+    if (process.platform !== "linux") throw unsupportedTransport();
+    return (this.custodial ??= new CustodialPtyRuntime());
+  }
+
+  override adopt(reference: RuntimeReference): AgentHandle {
+    return this.legacyCustody().adopt(reference);
+  }
+
+  reap(reference: RuntimeReference): Promise<RuntimeReapEvidence> {
+    return this.legacyCustody().reap(reference);
+  }
 }
 
 /** How a manager picks its backend. `auto` is the deterministic default — always `pty`. External
@@ -103,8 +127,7 @@ export function createRuntime(mode: RuntimeMode, session: string): Runtime {
           `where @lydell/node-pty's spawn-helper hangs before exec and every agent wedges at "starting…". ` +
           `Run the manager under node, or install and select an external runtime.`,
       );
-    if (process.platform === "linux") return new CustodialPtyRuntime();
-    return new LegacyPtyRuntime();
+    return new PtyRuntime();
   }
   let provider: RuntimeProvider;
   try {
