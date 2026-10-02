@@ -1,5 +1,5 @@
 import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
-import { divergentCwdAnchor, loadMeshes, targetFlags } from "@cotal-ai/workspace";
+import { divergentCwdAnchor, loadMeshes, targetFlags, userSessionAuth } from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
@@ -718,7 +718,20 @@ async function establishAttachSession(
   // a static mesh whose seed had gone missing, and every open attach was refused.
   const material = attachSessionMaterial(t);
   if (material.kind === "fatal") return { ok: false, kind: "fatal", message: material.message };
-  const link: RedeemLink =
+  let link: RedeemLink;
+  if (material.kind === "redeem") {
+    // #2312, USER mesh: present this login's identity together with the grant to the identity
+    // plane, which decides whether this principal holds the session and answers with a bearer the
+    // callout turns into the SAME session-caller rows and grant expiry the static arm mints. No seed
+    // is read or written, and nothing on this side decides who may hold the session.
+    let auth: { bearer: string; sentinelCreds: string };
+    try {
+      auth = await userSessionAuth(t, grant);
+    } catch (e) {
+      return { ok: false, kind: "fatal", message: e instanceof Error ? e.message : String(e) };
+    }
+    link = { mode: "session-bearer", tls, ...auth };
+  } else link =
     material.kind === "bare"
       // An open mesh has no credential system: the same bare connection the control round trip
       // already used opens the caller rail. Nothing is minted and nothing is invented.
@@ -741,8 +754,9 @@ async function establishAttachSession(
   // real repaint, instead of a restored socket over a session that ended without us.
   const nc = await dialerFor(t.server)({
     servers: t.server,
-    ...redeemConnectOpts(link),
     inboxPrefix: `_INBOX_${id.id}`,
+    // After the default: a bearer link's callout scopes the inbox on its own connect nonce.
+    ...redeemConnectOpts(link),
     maxReconnectAttempts: reconnect ? 0 : -1,
     // Detection latency is part of the defect, not a detail of it. A laptop waking from sleep does
     // not always get a socket error: the connection can sit half-open, and on the stock two-minute
@@ -796,13 +810,18 @@ export type AttachSessionTarget = {
  */
 export type RedeemLink =
   | { mode: "bare"; tls: boolean }
-  | { mode: "session-caller"; tls: boolean; creds: string };
+  | { mode: "session-caller"; tls: boolean; creds: string }
+  // #2312: a user mesh. The identity plane minted the bearer for ONE session; the callout turns it
+  // into the session-caller rows. Never a seed.
+  | { mode: "session-bearer"; tls: boolean; bearer: string; sentinelCreds: string };
 
 /** The ONE place a {@link RedeemLink} becomes NATS connect options. Both connections on the redeem
  *  path (the session link and the abandoned-session hand-back) go through here, so neither can
  *  invent a credential for an open mesh or drop one on a sealed mesh, and a third caller gets the
  *  same two arms for free. */
 export function redeemConnectOpts(link: RedeemLink): ReturnType<typeof standaloneConnectOpts> {
+  if (link.mode === "session-bearer")
+    return standaloneConnectOpts({ bearer: link.bearer, sentinelCreds: link.sentinelCreds, tls: link.tls });
   return link.mode === "bare"
     ? standaloneConnectOpts({ tls: link.tls })
     : standaloneConnectOpts({ creds: link.creds, tls: link.tls });
@@ -822,16 +841,18 @@ export function redeemConnectOpts(link: RedeemLink): ReturnType<typeof standalon
 export function attachSessionMaterial(t: AttachSessionTarget):
   | { kind: "bare" }
   | { kind: "mint"; auth: SpaceAuth }
+  | { kind: "redeem" }
   | { kind: "fatal"; message: string } {
   switch (t.mode) {
     // An OPEN mesh: no credential system at all, so there is no seed to be missing and nothing to
     // mint. This is the arm issue #1205 did not have.
     case "open":
       return { kind: "bare" };
-    // A USER mesh: refused by name, and refused EVEN IF a seed is present, because the bearer plane
-    // is the control surface there and static material would be the wrong identity.
+    // A USER mesh: the identity plane redeems the grant for the bearer (#2312), EVEN IF a seed is
+    // present, because the bearer plane is the control surface there and static material would be
+    // the wrong identity. `spaceAuth` is never consulted on this arm.
     case "user":
-      return { kind: "fatal", message: attachNoSeedMessage(t) };
+      return { kind: "redeem" };
     // SEALED (`auth`) and unrecorded: the seed is required, and its absence is a refusal. A sealed
     // mesh must never be rescued by the open arm — that is the failure a fix for #1205 is most
     // likely to introduce, and `smoke:attach-open-mode` asserts the refusal by name against a live
@@ -847,8 +868,6 @@ function attachNoSeedMessage(t: AttachSessionTarget): string {
     ? `\n  NOTE this directory resolves to ${shadow.cwdRoot}, which holds a DIFFERENT trust chain for "${t.space}"; it was NOT used.`
     : "";
   const head = `mesh attach needs this space's local seed to redeem the session grant, and the mesh resolved for "${t.space}" does not provide one.`;
-  if (t.auth.bearer)
-    return `${head}\n  broker ${t.server}\n  This is a USER-AUTH mesh, which holds no local seed by design; two-step user-mode redemption is not wired yet, so attach is unavailable on it from every directory, not just this one.${shadowLine}`;
   if (t.root === undefined)
     return `${head}\n  broker ${t.server}\n  This connection resolved NO checkout root, and no supported route reaches redemption in that state: an off-registry \`--server\` on an unregistered space is refused for missing credentials, and \`--creds\` is refused at the control surface, both before a session grant is asked for. Reaching this sentence means a route now exists that skips both refusals.${shadowLine}`;
   return `${head}\n  broker ${t.server}\n  resolved root ${t.root}\n  This is a static-auth mesh. Attach still needs this space's seed under ${t.root}/.cotal/auth. Restore the seed at that checkout. This mesh is not open, so attach will not connect without the seed.${shadowLine}`;
@@ -878,8 +897,8 @@ type Abandoned = { grant: SessionGrant; link: RedeemLink; inbox: string; server:
 async function releaseAbandonedSession(s: Abandoned): Promise<void> {
   const nc = await dialerFor(s.server)({
     servers: s.server,
-    ...redeemConnectOpts(s.link),
     inboxPrefix: `_INBOX_${s.inbox}`,
+    ...redeemConnectOpts(s.link),
     maxReconnectAttempts: 0,
     timeout: LINK_DEADLINE_MS,
     // The same short ping the reconnecting session uses. This connection exists BECAUSE a link died,

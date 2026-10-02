@@ -194,7 +194,10 @@ function cotal(args: string[], timeoutMs = 20_000): Promise<{ status: number | n
  *  SIGKILL it. For long-lived commands such as `attach`, whose success is a banner, not an exit. */
 function cotalUntil(args: string[], ready: RegExp, timeoutMs: number): Promise<{ status: number | null; plain: string; sawReady: boolean }> {
   return new Promise((resolve) => {
-    const child = spawn(TSX, [CLI_BIN, ...args], { cwd: root, env: { ...cliEnv, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    // Its own process group: tsx runs the CLI in a grandchild that holds the pipes, so killing only
+    // the wrapper would leave the session (and this promise) open.
+    const child = spawn(TSX, [CLI_BIN, ...args], { cwd: root, env: { ...cliEnv, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const killAll = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ } };
     let out = "";
     let done = false;
     const finish = (status: number | null) => {
@@ -206,9 +209,9 @@ function cotalUntil(args: string[], ready: RegExp, timeoutMs: number): Promise<{
     };
     const onData = (data: Buffer) => {
       out += data.toString();
-      if (ready.test(out)) setTimeout(() => { child.kill("SIGKILL"); }, 300);
+      if (ready.test(out)) setTimeout(killAll, 300);
     };
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    const timer = setTimeout(killAll, timeoutMs);
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
     child.on("error", () => finish(null));
@@ -1665,8 +1668,10 @@ try {
   // 121 -> 122: section E's bare spawn is served rather than refused since #2078, so the re-pin
   // (#2105) reads the child's managed row to prove the plane really is disarmed, not just announced.
   // 122 -> 124: section O absent-daemon control proves retirement held before delivery returns.
-  // 40/124 -> 41/125: B1g's user-mesh `cotal attach` cell (#2312).
-  const EXPECTED = endpointCliFocus ? 41 : 125;
+  // 40/124 -> 42/125: B1g's user-mesh `cotal attach` cell (#2312). Measured with that one cell
+  // added: 43 cells reported before this count check in focus mode, so the focus pin moves by two
+  // (the old 40 was already one short in focus mode; inferred from that run, not run at the base).
+  const EXPECTED = endpointCliFocus ? 42 : 125;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

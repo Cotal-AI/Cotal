@@ -181,13 +181,13 @@ export const cotalAuthProvider: AuthProvider = {
   /** Client side: this machine's login session → a fresh IdP JWT → the local auth service's
    *  exchange → the Cotal bearer, plus the space's sentinel creds. NO fallback anywhere; each
    *  failure is one sentence with the exact operator action (U1/U10/U11 acceptance strings). */
-  async userCredentials({ store, dir, space, actor, view, managerInstanceId }: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string }) {
+  async userCredentials({ store, dir, space, actor, view, managerInstanceId, sessionGrant }: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string; sessionGrant?: unknown }) {
     const idp = loadPinnedIdp(dir);
     const callout = await loadCalloutAuth(store, space);
     // No local material: this machine may still hold a REMOTE registration (\`cotal meshes add
     // --from\`), whose registry entry pinned the IdP + public exchange at registration time. The
     // remote arm consumes exactly what registration pinned - it discovers nothing at connect time.
-    if (!idp || !callout) return remoteUserCredentials(dir, space, actor, view, managerInstanceId);
+    if (!idp || !callout) return remoteUserCredentials(dir, space, actor, view, managerInstanceId, sessionGrant);
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
     const session = requireIdpSession(homeCotalDir(), idp.url);
     // Daemon liveness BEFORE the IdP round-trip: a down auth service must surface its exact
@@ -210,7 +210,7 @@ export const cotalAuthProvider: AuthProvider = {
       res = await fetch(`${info.url}/exchange`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
-        body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}), ...(managerInstanceId !== undefined ? { managerInstanceId } : {}) }),
+        body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}), ...(managerInstanceId !== undefined ? { managerInstanceId } : {}), ...(sessionGrant !== undefined ? { sessionGrant } : {}) }),
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
@@ -794,6 +794,7 @@ async function remoteUserCredentials(
   actor: string,
   view?: string,
   managerInstanceId?: string,
+  sessionGrant?: unknown,
 ): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }> {
   const remote = remoteUserAuthEntry(dir, space);
   if (!remote)
@@ -822,7 +823,7 @@ async function remoteUserCredentials(
       // NO Authorization header: the public face is capless by design - the idpToken in the body
       // is the whole credential, and the loopback capability never leaves the daemon's machine.
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}), ...(managerInstanceId !== undefined ? { managerInstanceId } : {}) }),
+      body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}), ...(managerInstanceId !== undefined ? { managerInstanceId } : {}), ...(sessionGrant !== undefined ? { sessionGrant } : {}) }),
       signal: AbortSignal.timeout(15_000),
     });
   } catch (e) {

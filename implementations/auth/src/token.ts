@@ -37,13 +37,13 @@ export const MAX_TOKEN_TTL_SEC = 900;
  *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
  *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
  *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
-export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller"] as const;
+export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
 /** Views the public exchange face will mint (still ledger-gated). Every other
  *  {@link USER_TOKEN_VIEWS} value stays loopback-only. An actor-secret exchange may request
  *  only manager-caller, which narrows its existing command authority to one instance. */
-export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger", "manager-caller"] as const satisfies readonly UserTokenView[];
+export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger", "manager-caller", "session-caller"] as const satisfies readonly UserTokenView[];
 
 /** The ONE central view policy table: which ledger capability each view's exchange requires (and
  *  the callout re-asserts, defense in depth). `admin` = operator authority (god-view read +
@@ -58,7 +58,19 @@ export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "sup
   deployer: "spawn",
   "manager-service": "supervise",
   "manager-caller": undefined, // baseline self calls are allowed; command grants still derive from scope
+  // #2312: no ledger scope. The grant itself is the authority: the auth plane verifies the redeemed
+  // `session.<id>` row names THIS principal as holder, at the exchange and again at the callout mint.
+  "session-caller": undefined,
 };
+
+/** The ONE §13.6 session a `session-caller` bearer may open: the rail coordinates plus the grant
+ *  expiry (unix seconds) the minted connection is bound to, exactly what the static arm mints. */
+export interface UserTokenSession {
+  endpoint: string;
+  sessionId: string;
+  epoch: number;
+  exp: number;
+}
 
 /** The server-authored actor claim. `owner` restates `sub` (cross-checked); `actor` is the
  *  ledger-derived agent-instance id; `parent` is at most ONE spawner audit link; `view` is the
@@ -83,6 +95,8 @@ export interface UserTokenActor {
   view?: UserTokenView;
   /** The one manager instance a manager-caller bearer may address. */
   managerInstanceId?: string;
+  /** The one session a session-caller bearer may open (#2312). */
+  session?: UserTokenSession;
 }
 
 /** A fully validated user token, reduced to what the callout needs. */
@@ -115,6 +129,18 @@ const CREDENTIAL_ID_SEGMENT = /^[A-Za-z0-9_-]+$/;
 export function assertCredentialIdClaim(v: unknown): asserts v is string {
   if (typeof v !== "string" || v.length === 0 || v.length > 256 || !v.split(".").every((s) => CREDENTIAL_ID_SEGMENT.test(s)))
     throw new Error(`user token: act.credentialId ${JSON.stringify(v)} is not a bounded dotted KV-safe credential id`);
+}
+
+/** Assert a `session` claim is the closed `{endpoint, sessionId, epoch, exp}` shape. Shared by the
+ *  issuer (mint side) and the validator so the inverse holds. THROWS. */
+export function assertSessionClaim(v: unknown): asserts v is UserTokenSession {
+  const o = v as Record<string, unknown>;
+  if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error("user token: act.session must be an object");
+  for (const k of Object.keys(o)) if (!["endpoint", "sessionId", "epoch", "exp"].includes(k)) throw new Error(`user token: act.session carries the unknown field "${k}"`);
+  if (typeof o.endpoint !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(o.endpoint)) throw new Error("user token: act.session.endpoint is not an endpoint token");
+  if (typeof o.sessionId !== "string" || !/^[A-Za-z0-9_-]{22,128}$/.test(o.sessionId)) throw new Error("user token: act.session.sessionId is not a session id");
+  for (const k of ["epoch", "exp"] as const)
+    if (typeof o[k] !== "number" || !Number.isSafeInteger(o[k]) || (o[k] as number) < 0) throw new Error(`user token: act.session.${k} is not an unsigned integer`);
 }
 
 export interface ValidateUserTokenOpts {
@@ -206,6 +232,12 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     throw new Error('user token: view "manager-caller" requires act.managerInstanceId');
   if (act.managerInstanceId !== undefined && act.view !== "manager-caller")
     throw new Error('user token: act.managerInstanceId is valid only with view "manager-caller"');
+  if (act.view === "session-caller" && act.session === undefined)
+    throw new Error('user token: view "session-caller" requires act.session');
+  if (act.session !== undefined) {
+    if (act.view !== "session-caller") throw new Error('user token: act.session is valid only with view "session-caller"');
+    assertSessionClaim(act.session);
+  }
   // Lifecycle claim (SPEC 13.1): grammar-asserted when present. Presence/absence POLICY lives at the
   // connect boundary (ledgerAuthorizeConnect requires it on EVERY bearer, views included) and the
   // mint boundary (the idp bridge and the agent exchange stamp it from the grant row); the validator
@@ -231,7 +263,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     owner,
     space: opts.audience,
     scope,
-    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId },
+    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId, ...(act.session ? { session: act.session } : {}) },
     credentialId: act.credentialId,
     ver: USER_TOKEN_VER,
     exp: payload.exp,

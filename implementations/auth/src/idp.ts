@@ -29,7 +29,7 @@ import type { CryptoKey, JWTVerifyGetKey } from "jose";
 import { assertValidOwnerToken } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
-import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, type UserTokenView } from "./token.js";
+import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, type UserTokenSession, type UserTokenView } from "./token.js";
 import { grantCommandLine } from "./grant-command.js";
 
 /** The pinned identity of ONE external IdP. All fields are operator config — nothing in here is
@@ -111,7 +111,12 @@ export interface IdpBridge {
    *  the fresh ledger grant and its explicit required-scope policy, then stamped into `act.view`.
    *  This bridge handles human proofs only; the actor-secret handler separately allows the
    *  narrowing manager-caller view. */
-  exchange(idpToken: string, req: { actor: string; ttlSec?: number; view?: UserTokenView; managerInstanceId?: string }): Promise<ExchangeResult>;
+  exchange(idpToken: string, req: {
+    actor: string; ttlSec?: number; view?: UserTokenView; managerInstanceId?: string;
+    /** #2312, required for view "session-caller": the identity plane's session decision for the
+     *  principal this bridge derived. Returns the session claim to stamp; throws to refuse. */
+    verifySession?: (p: { owner: string; actor: string; lifecycleUid: string }) => Promise<UserTokenSession>;
+  }): Promise<ExchangeResult>;
 }
 
 /** Verify an external IdP JWT against the pinned config and return its `sub` AND `exp`. Same pinning
@@ -241,7 +246,13 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       const idpRemaining = idpExp - Math.floor(Date.now() / 1000);
       if (idpRemaining <= 0)
         throw new Error("idp bridge: the IdP session proof has expired - cannot mint a bearer");
-      const ttlSec = Math.min(req.ttlSec ?? MAX_TOKEN_TTL_SEC, idpRemaining);
+      let ttlSec = Math.min(req.ttlSec ?? MAX_TOKEN_TTL_SEC, idpRemaining);
+      let session: UserTokenSession | undefined;
+      if (req.view === "session-caller") {
+        if (!req.verifySession) throw new Error('view "session-caller" needs the identity plane\'s session decision - refusing to mint');
+        session = await req.verifySession({ owner, actor: req.actor, lifecycleUid: grant.lifecycleUid });
+        ttlSec = Math.min(ttlSec, Math.max(1, session.exp - Math.floor(Date.now() / 1000)));
+      }
       // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential id
       // rides act.credentialId — ensured (minted release-last on first exchange) BEFORE the
       // bearer bytes are signed, so the row the connect arm requires is durable before any
@@ -258,6 +269,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         credentialId,
         view: req.view,
         managerInstanceId: req.managerInstanceId,
+        ...(session ? { session } : {}),
         ttlSec,
       });
       const { exp } = decodeJwt(token);

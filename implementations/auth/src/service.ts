@@ -64,7 +64,8 @@ import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
-import { PUBLIC_EXCHANGE_VIEWS, type UserTokenView, type ValidatedUserToken } from "./token.js";
+import { PUBLIC_EXCHANGE_VIEWS, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
+import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
 import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest } from "./manager-authority.js";
@@ -155,6 +156,12 @@ export interface AuthAuthorityPlane {
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
   selectManagerInstance: (owner: string, requested?: string) => Promise<string>;
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>;
+  /** #2312: may this principal hold this one session? Leader-reads the redeemed `session.<id>` row
+   *  and the serving manager gate; returns the session claim (expiry from the row) or throws. */
+  verifySession: (
+    principal: { owner: string; actor: string; lifecycleUid?: string },
+    claim: { endpoint: string; sessionId: string; epoch: number; grantSig?: string },
+  ) => Promise<UserTokenSession>;
   retireInteractiveLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<{
     retired: boolean;
     lifecycleUid: string;
@@ -654,6 +661,18 @@ export async function openAuthAuthorityPlane(opts: {
       refuseIfFenced();
       const verdict = await managerGate(owner, assertLifecycleToken(instanceId, "managerInstanceId"));
       if (verdict !== "candidate") throw new Error(`manager instance ${instanceId} is ${verdict} at the permission mint`);
+    },
+    verifySession: async (principal, claim) => {
+      refuseIfFenced();
+      return verifySessionRedemption({
+        jsm: recordsJsm,
+        space,
+        managerGate: async (owner, instanceId) => {
+          const verdict = await managerGate(owner, assertLifecycleToken(instanceId, "serving.instanceId"));
+          const gate = await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
+          return { verdict, ...(gate ? { processEpoch: gate.processEpoch } : {}) };
+        },
+      }, principal, claim);
     },
     retireInteractiveLifecycle: async (args) => {
       refuseIfFenced();
@@ -1498,7 +1517,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ url: string; p
       space,
       token: { key: issuer.localKeySet(), issuer: issuer.issuer },
       authorizeActor: plane.authorizeConnect,
-      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller),
+      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession),
       log: (l) => console.error(l),
     });
     // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
@@ -1542,6 +1561,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ url: string; p
       dir,
       mintConnectCredential: plane.mintConnectCredential,
       selectManagerInstance: plane.selectManagerInstance,
+      verifySession: plane.verifySession,
     };
     const loopback = createServer((req, res) => void handle(req, res, ctx));
     http = loopback;
@@ -1659,6 +1679,7 @@ interface HandlerCtx {
    *  human arm stamps inside the bridge). */
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
   selectManagerInstance: AuthAuthorityPlane["selectManagerInstance"];
+  verifySession: AuthAuthorityPlane["verifySession"];
 }
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
@@ -2045,7 +2066,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const peer = policy.peerKey(req);
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
-  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId } = body as {
+  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant } = body as {
     idpToken?: unknown;
     actor?: unknown;
     actorToken?: unknown;
@@ -2053,7 +2074,10 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     ttlSec?: unknown;
     view?: unknown;
     managerInstanceId?: unknown;
+    sessionGrant?: unknown;
   };
+  if ((view === "session-caller") !== (sessionGrant !== undefined))
+    return send(res, 400, { error: 'view "session-caller" and sessionGrant come together or not at all' });
   if (ttlSec !== undefined && typeof ttlSec !== "number") return send(res, 400, { error: "ttlSec must be a number" });
   if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
   if (managerInstanceId !== undefined && typeof managerInstanceId !== "string") return send(res, 400, { error: "managerInstanceId must be a string when present" });
@@ -2130,11 +2154,16 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
           managerInstanceId as string | undefined,
         )
       : undefined;
+    // #2312: a session-caller bearer is signed only once the identity plane has decided that THIS
+    // principal holds THAT redeemed session. The bridge's `verifySession` hook runs the decision on
+    // the principal it derived, before signing; the callout re-runs it at the mint.
+    const session = view === "session-caller" ? grantCoordinates(sessionGrant) : undefined;
     const r = await ctx.bridge.exchange(idpToken, {
       actor,
       ttlSec,
       view: view as UserTokenView | undefined,
       managerInstanceId: selectedManagerInstanceId,
+      ...(session ? { verifySession: (p: { owner: string; actor: string; lifecycleUid: string }) => ctx.verifySession(p, session) } : {}),
     });
     return send(res, 200, r);
   } catch (e) {

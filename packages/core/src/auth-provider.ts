@@ -73,7 +73,7 @@ export interface AuthProvider extends Extension {
    * deploy connections the operator surfaces (`web`, `console`, `history clear`, `channels`,
    * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
-  userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string }): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }>;
+  userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string; sessionGrant?: unknown }): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }>;
   /**
    * Prepare the signed-in account's optional space catalog without exposing its cached session
    * bearer. The provider owns advertisement discovery, conditional HTTP, freshness, locking, and

@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, admissionBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, AUTH_ENDPOINT, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, admissionBucket, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, AUTH_ENDPOINT, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -108,6 +108,10 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
       `$JS.API.STREAM.MSG.GET.${admission}`,
       `$JS.API.DIRECT.GET.${admission}`,
       `$JS.API.DIRECT.GET.${admission}.>`,
+      // #2312: user-mode session redemption leader-reads the ONE `session.<id>` row the manager's
+      // redemption wrote (body-selected MSG.GET, never DIRECT.GET; no write) plus the bind INFO.
+      `$JS.API.STREAM.INFO.KV_${sessionsBucket(space)}`,
+      `$JS.API.STREAM.MSG.GET.KV_${sessionsBucket(space)}`,
     ],
     subscribe: base.subscribe,
   };
