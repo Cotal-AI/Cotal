@@ -20,6 +20,7 @@ try {
     "remoteManagerMaintenanceRequest", "remoteManagerMaintenanceResult", "remoteRetainedAgentValidationRequest",
     "retainedAgentAuthority", "expectedRemoteManagerActors", "remoteManagedAgentEnrollmentRequest",
     "remoteManagedAgentEnrollmentMaterial", "remoteManagedAgentPrepareRetirementRequest", "remoteManagedAgentRetirementPrepared",
+    "remoteManagedAgentRuntimeRequest", "remoteManagedAgentRuntimeState",
   ]) {
     assert.equal(typeof client[name], "function", `public manager client exports ${name}`);
     checked++;

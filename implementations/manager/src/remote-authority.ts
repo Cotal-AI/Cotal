@@ -7,6 +7,7 @@ import {
   managedRetirementOpId,
   mintLifecycleUid,
   newIdentity,
+  parseRemoteManagedAgentRuntimeResult,
   remoteManagerActors,
   writeSecretFileAtomic,
   type Identity,
@@ -22,6 +23,8 @@ import {
   type RemoteManagedAgentEnrollmentResult,
   type RemoteManagedAgentPrepareRetirementRequest,
   type RemoteManagedAgentPrepareRetirementResult,
+  type RemoteManagedAgentRuntimeRequest,
+  type RemoteManagedAgentRuntimeResult,
   type RemoteRetainedAgentValidationRequest,
   type RemoteRetainedAgentValidationResult,
   type RemoteRunAdmissionRequest,
@@ -575,8 +578,14 @@ export function remoteManagedAgentEnrollmentMaterial(
     "v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid",
     "requestId", "registrationProof", "serveEpoch", "material",
   ];
+  // `runtimeIntent` is additive and display-only: older hosts omit it, and it is never authority.
+  // It is checked for shape and then dropped; nothing below reads it.
+  const { runtimeIntent, ...envelope } = (result ?? {}) as RemoteManagedAgentEnrollmentResult;
+  if (runtimeIntent !== undefined && (runtimeIntent === null || typeof runtimeIntent !== "object" ||
+      Object.keys(runtimeIntent).join(",") !== "state" || runtimeIntent.state !== "reserved"))
+    throw new Error('managed agent enrollment returned a runtimeIntent other than { state: "reserved" }');
   if (result === null || typeof result !== "object" || Array.isArray(result) ||
-      Object.keys(result).sort().join(",") !== envelopeKeys.sort().join(","))
+      Object.keys(envelope).sort().join(",") !== envelopeKeys.sort().join(","))
     throw new Error("managed agent enrollment returned a non-closed result");
   if (result.v !== 1 || result.kind !== "manager-managed-agent-enrollment" || result.space !== request.space ||
       result.actor !== request.actor || result.instanceId !== request.instanceId ||
@@ -662,4 +671,37 @@ export function remoteManagedAgentRetirementPrepared(
     throw new Error("managed agent prepare-retirement returned different lifecycle, target, or operation coordinates");
   if (result.prepared !== true)
     throw new Error("managed agent prepare-retirement did not confirm the release; the terminal barrier must not start");
+}
+
+/** Build one hosted runtime create or status request for an already-enrolled managed agent. The
+ *  target is the host-selected coordinate the enrollment returned; there is no provider field. */
+export function remoteManagedAgentRuntimeRequest<K extends RemoteManagedAgentRuntimeRequest["kind"]>(
+  kind: K,
+  state: RemoteManagerIdentityState,
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  target: { owner: string; actor: string; lifecycleUid: string },
+): Extract<RemoteManagedAgentRuntimeRequest, { kind: K }> {
+  return {
+    v: 1,
+    kind,
+    space: state.space,
+    actor,
+    instanceId: state.instanceId,
+    managerLifecycleUid: state.lifecycleUid,
+    requestId: `runtime${mintLifecycleUid()}`,
+    registrationProof,
+    serveEpoch,
+    target: { owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid },
+    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagedAgentRuntimeRequest["identities"],
+  } as Extract<RemoteManagedAgentRuntimeRequest, { kind: K }>;
+}
+
+/** Bind a host runtime result to its request: closed, every coordinate echoed, closed enums. */
+export function remoteManagedAgentRuntimeState(
+  result: unknown,
+  request: RemoteManagedAgentRuntimeRequest,
+): RemoteManagedAgentRuntimeResult {
+  return parseRemoteManagedAgentRuntimeResult(result, request);
 }
