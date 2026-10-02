@@ -296,11 +296,20 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  * separated from the disposition (print and exit, or throw), and `connectOrExit` is now a thin
  * wrapper that supplies the exiting disposition. The two forms cannot drift in what they say
  * because there is only one place the sentence is written.
+ *
+ * `kind` says whether asking again can help. `transient` is a broker that did not answer in time
+ * or could not be reached, and nothing else: a caller that keeps going retries it. Every other
+ * refusal is `permanent` (missing seed, refused credentials, a user-auth mesh offered static
+ * creds), and a caller that keeps going must stop and say the sentence rather than retry it.
  */
+export type ConnectRefusalKind = "transient" | "permanent";
+
 export class ConnectRefusal extends Error {
-  constructor(readonly rendered: string, readonly hint?: string, options?: { cause?: unknown }) {
+  readonly kind: ConnectRefusalKind;
+  constructor(readonly rendered: string, readonly hint?: string, options?: { cause?: unknown; kind?: ConnectRefusalKind }) {
     super(rendered, options);
     this.name = "ConnectRefusal";
+    this.kind = options?.kind ?? "permanent";
   }
 }
 
@@ -582,7 +591,8 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}): Prom
   // Whether the caller actually presented anything to be rejected. `tls` is deliberately not part
   // of this: it is transport, not identity, and a TLS-only connection presents no credential.
   const hasAuth = Boolean(auth.creds ?? auth.token ?? (auth.user && auth.pass));
-  throw new ConnectRefusal(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth }));
+  const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
+  throw new ConnectRefusal(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth }), undefined, { kind });
 }
 
 /** {@link reachableOrThrow} with the exiting disposition. */
@@ -609,8 +619,13 @@ export async function resolveTargetOrThrow(flags: {
     target = resolveMeshTarget(process.cwd(), { ...flags, offline: sweep.offline });
   } catch (e) {
     // The target error rides as `cause`, so a caller that must tell "no mesh recorded at all" from
-    // every other refusal can read its `code` instead of matching the rendered sentence.
-    if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e });
+    // every other refusal can read its `code` instead of matching the rendered sentence. No mesh
+    // found is transient: the sweep keeps a crashed `up` mesh as offline, so it resolves again once
+    // its broker is back. A record that exists and is broken, or several that match, is not.
+    if (isWorkspaceTargetError(e)) {
+      const kind = e.code === "no-meshes" || e.code === "unknown-space" ? "transient" : "permanent";
+      throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e, kind });
+    }
     throw e;
   }
   // If a dangling `current` was silently bypassed — it named a mesh that's since gone (deleted,
@@ -636,7 +651,11 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
   // user target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    throw new ConnectRefusal(`✗ no mesh running at ${target.server} - mesh "${target.space}" is recorded at ${target.root} but not running; run \`cotal up\` there to restart`);
+    throw new ConnectRefusal(
+      `✗ no mesh running at ${target.server} - mesh "${target.space}" is recorded at ${target.root} but not running; run \`cotal up\` there to restart`,
+      undefined,
+      { kind: "transient" },
+    );
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
@@ -645,7 +664,8 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
   // `offline`; mismatch (creds rejected / mode flipped) still drops it. Manual never deletes.
   // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
   const pruned = r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
-  throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }));
+  const kind = r.kind === "unreachable" || r.kind === "slow-link" ? "transient" : "permanent";
+  throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }), undefined, { kind });
 }
 
 /** {@link preflightOrThrow} with the exiting disposition. */
