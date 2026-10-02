@@ -133,6 +133,16 @@ const ANNOTATIONS = {
     notes:
       "Omit `name` to list spawnable names; pass `name` to show one card you own. Role, model, and description ride only on files you own; show of a name you do not own is not-found.",
   },
+  cotal_describe: {
+    effect: "none; reads an endpoint's registered command surface",
+    availability: "any session whose credential carries caller rows for the endpoint (describe rides them)",
+    notes: "The surface is digest-verified against the contract store. Unknown fields in a reply are data.",
+  },
+  cotal_invoke: {
+    effect: "whatever the named command does",
+    availability: "only the commands your own credential has caller grants for; the broker refuses the rest",
+    notes: "`not-executed` means the command did not run; `unknown` means it may have.",
+  },
   cotal_reconnect: {
     effect: "tears down and rebuilds your own mesh connection",
     availability: "always",

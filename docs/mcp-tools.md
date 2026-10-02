@@ -31,6 +31,8 @@ The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` an
 | [`cotal_run`](#cotalrun) | run a workflow program | starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only |
 | [`cotal_persona`](#cotalpersona) | define a persona | writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce` |
 | [`cotal_personas`](#cotalpersonas) | list or show personas | read-only |
+| [`cotal_describe`](#cotaldescribe) | describe an endpoint | none; reads an endpoint's registered command surface |
+| [`cotal_invoke`](#cotalinvoke) | invoke an endpoint command | whatever the named command does |
 | [`cotal_reconnect`](#cotalreconnect) | reconnect to the mesh | tears down and rebuilds your own mesh connection |
 
 ## `cotal_orientation`
@@ -384,6 +386,39 @@ Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name`
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | no | Persona to show. Omit to list the catalog. |
+
+## `cotal_describe`
+
+*describe an endpoint*
+
+List the commands a registered endpoint serves, as this session's credential sees them: each command's capability, whether it is targeted, and its input schema. The surface comes from the endpoint's describe reply and the content-addressed contract store, digest-verified, never from the endpoint's own claims. Read it before cotal_invoke.
+
+- **Side-effect:** none; reads an endpoint's registered command surface.
+- **Available:** any session whose credential carries caller rows for the endpoint (describe rides them).
+- The surface is digest-verified against the contract store. Unknown fields in a reply are data.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `endpoint` | string | yes | The endpoint name, e.g. com.example.linear. |
+| `refresh` | boolean | no | Resolve again instead of using this session's cached surface. |
+
+## `cotal_invoke`
+
+*invoke an endpoint command*
+
+Call one command on a registered endpoint with JSON arguments, over this session's own connection and grants. The arguments are checked against the command's digest-verified input schema before anything is sent, and the reply against its output schema. A failure reports its code and outcome: `not-executed` means the command did not run; `unknown` means it may have. Do not repeat a call whose outcome is unknown without checking first.
+
+- **Side-effect:** whatever the named command does.
+- **Available:** only the commands your own credential has caller grants for; the broker refuses the rest.
+- `not-executed` means the command did not run; `unknown` means it may have.
+
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `endpoint` | string | yes | The endpoint name, e.g. com.example.linear. |
+| `command` | string | yes | The command name from cotal_describe. |
+| `args` | object | no | The command's arguments as a JSON object. |
+| `self` | boolean | no | Targeted commands only: act on this session itself. |
+| `timeoutMs` | integer | no | Reply deadline in milliseconds (default 30000). |
 
 ## `cotal_reconnect`
 
