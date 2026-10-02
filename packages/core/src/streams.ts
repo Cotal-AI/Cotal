@@ -3,6 +3,7 @@ import {
   jetstreamManager,
   AckPolicy,
   DeliverPolicy,
+  StorageType,
   type ConsumerConfig,
   type JetStreamClient,
   type JetStreamManager,
@@ -58,6 +59,13 @@ import {
 
 /** Default presence-bucket entry TTL (ms) — matches the endpoint's default liveness window. */
 const PRESENCE_TTL_MS = 6_000;
+
+/** #1356: the presence bucket is memory-backed. Its records are pure liveness that every endpoint
+ *  rewrites every heartbeat and republishes after a broker restart, so durability buys nothing, while
+ *  a file-backed store can latch a permanent write error that refuses every later write (and so every
+ *  registering bind) until the broker restarts. Storage class is fixed at stream creation, so a bucket
+ *  created file-backed by an older cotal stays file-backed until it is recreated. */
+export const PRESENCE_STORAGE = StorageType.Memory;
 
 /** Per-(sender,channel)-subject retention cap on the chat stream — the bound past which the
  *  oldest message on a subject is discarded (`DiscardPolicy.Old`). Also the horizon of focus
@@ -464,19 +472,19 @@ export async function reconcileBucketTtl(
  *  Now a TTL'd bucket cannot be created without appearing here, so it cannot be missed on upgrade.
  *
  *  NOT mode-gated: an open mesh carries the same buckets and drifts identically. */
-export function ttlBuckets(space: string): ReadonlyArray<readonly [string, number]> {
+export function ttlBuckets(space: string): ReadonlyArray<readonly [string, number, StorageType]> {
   return [
     // Presence (liveness): dead agents' records must age out, or the roster reports a despawned
     // agent as live. Pre-created so agents, denied KV stream-create, can open it.
-    [presenceBucket(space), PRESENCE_TTL_MS],
+    [presenceBucket(space), PRESENCE_TTL_MS, PRESENCE_STORAGE],
     // Delivery-daemon single-flight lease + readiness: bucket-level TTL so a crashed holder's lease
     // auto-expires and a fresh daemon can re-acquire. Lease keys only, `delivery`-cred write,
     // world-readable (the non-gating delivery-health surface).
-    [deliveryBucket(space), LEASE_TTL_MS],
+    [deliveryBucket(space), LEASE_TTL_MS, StorageType.File],
     // Manager singleton lease, same shape as the delivery lease. Pre-created so the long-lived
     // supervisor can lease-bind OPEN-ONLY (closure (ii), residual 2) — it holds no STREAM.CREATE.
     // Config matches `managerLeaseRegistry()`'s create-first exactly, so that path stays idempotent.
-    [managerBucket(space), MANAGER_LEASE_TTL_MS],
+    [managerBucket(space), MANAGER_LEASE_TTL_MS, StorageType.File],
   ] as const;
 }
 
@@ -649,7 +657,7 @@ export async function setupSpaceStreams(opts: {
     // cannot be created on this path without also being reconciled on the upgrade path; the
     // channel/members/acl registries below are durable config and carry no TTL.
     const kvm = new Kvm(nc);
-    for (const [bucket, ttl] of ttlBuckets(opts.space)) await kvm.create(bucket, { ttl });
+    for (const [bucket, ttl, storage] of ttlBuckets(opts.space)) await kvm.create(bucket, { ttl, storage });
     await jsm.streams.add(canonicalBackupStreamConfig(opts.space, `KV_${channelBucket(opts.space)}`));
     // Durable-membership registry (Plane-3): privileged-write, no TTL (durable config, like the
     // channel registry). Pre-created so the delivery daemon (and open-mode self) can OPEN it; agents

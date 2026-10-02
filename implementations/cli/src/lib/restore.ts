@@ -28,6 +28,7 @@ import {
   MANAGER_LEASE_TTL_MS,
   membershipBucket,
   MEMBERSHIP_MAX_BYTES,
+  PRESENCE_STORAGE,
   presenceBucket,
   recordsBucket,
   recreateConsumerCheckpoint,
@@ -554,7 +555,7 @@ async function createOmittedInfrastructure(
     const jsm = await jetstreamManager(nc);
     for (const stream of create) await jsm.streams.add(canonicalBackupStreamConfig(space, stream));
     const kvm = new Kvm(nc);
-    await kvm.create(presenceBucket(space), { ttl: 6_000 });
+    await kvm.create(presenceBucket(space), { ttl: 6_000, storage: PRESENCE_STORAGE });
     await kvm.create(membershipBucket(space), { history: 1, max_bytes: MEMBERSHIP_MAX_BYTES });
     await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
     await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });

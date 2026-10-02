@@ -36,6 +36,7 @@ import {
   standaloneConnectOpts,
   requireBrokerFloor,
   parseServerVersion,
+  presenceBucket,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
   mkSecretDir,
@@ -48,6 +49,7 @@ import {
   type CompletionResult,
 } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager, StorageType } from "@nats-io/jetstream";
 import {
   assertSingleSpaceBroker,
   assertUserAuthInfo,
@@ -973,11 +975,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           // a same-root caller holds the space's signing material either way.
           reconcileCreds = await mintCreds(spaceAuth, newIdentity(), "provisioner");
         }
-        const v = await brokerVersion(server, reconcileCreds);
-        if (belowPresenceSafeBroker(v))
+        const v = await brokerVersion(server, held.space, reconcileCreds);
+        if (belowPresenceSafeBroker(v.version) && v.presenceFileBacked)
           console.error(
             c.yellow(
-              `! nats-server ${v} is below 2.14.5: its file-backed presence bucket can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
+              `! nats-server ${v.version} is below 2.14.5 and the presence bucket of "${held.space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
             ),
           );
         for (const r of await reconcileSpaceTtls({ servers: server, space: held.space, creds: reconcileCreds }))
@@ -1327,11 +1329,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     markPendingResumeDegraded(resumeAttempt ?? "", reason, startupLock);
     throw new Error(reason);
   }
-  const v = await brokerVersion(server, setup?.creds);
-  if (belowPresenceSafeBroker(v))
+  const v = await brokerVersion(server, space, setup?.creds);
+  if (belowPresenceSafeBroker(v.version) && v.presenceFileBacked)
     console.error(
       c.yellow(
-        `! nats-server ${v} is below 2.14.5: its file-backed presence bucket can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
+        `! nats-server ${v.version} is below 2.14.5 and the presence bucket of "${space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
       ),
     );
   if (restored) await provePreparedRestoreListener(restored);
@@ -2493,18 +2495,18 @@ export async function startMeshDetached(
     if (opts.boundListener) removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true });
     throw new Error(`nats-server did not become reachable at ${server} - see ${logPath}`);
   }
-  let brokerVer: string;
+  let brokerVer: BrokerFacts;
   try {
-    brokerVer = await brokerVersion(server, setup?.creds);
+    brokerVer = await brokerVersion(server, space, setup?.creds);
   } catch (e) {
     child.kill("SIGTERM");
     if (opts.boundListener) removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true });
     throw e;
   }
-  if (belowPresenceSafeBroker(brokerVer))
+  if (belowPresenceSafeBroker(brokerVer.version) && brokerVer.presenceFileBacked)
     console.error(
       c.yellow(
-        `! nats-server ${brokerVer} is below 2.14.5: its file-backed presence bucket can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
+        `! nats-server ${brokerVer.version} is below 2.14.5 and the presence bucket of "${space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
       ),
     );
   if (!opts.boundListener) {
@@ -2810,18 +2812,33 @@ async function waitReady(server: string, creds?: string): Promise<boolean> {
 // SPEC §13.12: reads the connected broker's version, and refuses loud below the 2.12 floor
 // before any pidfile or provisioning touches it (the same gate `requireBrokerFloor` enforces
 // on every other control-surface connection).
-async function brokerVersion(server: string, creds?: string): Promise<string> {
+type BrokerFacts = { version: string; presenceFileBacked: boolean };
+
+/** The broker's version, and whether `space`'s presence stream exists file-backed. Cotal creates
+ *  it in memory (#1356), so only a bucket an older cotal created is file-backed; an absent one
+ *  will be created in memory by `setupSpaceStreams`. */
+async function brokerVersion(server: string, space: string, creds?: string): Promise<BrokerFacts> {
   const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
   try {
     requireBrokerFloor(nc);
-    return nc.info?.version ?? "";
+    const version = nc.info?.version ?? "";
+    let presenceFileBacked = false;
+    try {
+      const info = await (await jetstreamManager(nc)).streams.info(`KV_${presenceBucket(space)}`);
+      presenceFileBacked = info.config.storage === StorageType.File;
+    } catch (e) {
+      const err = e as { message?: string; api_error?: { err_code?: number } };
+      if (err.api_error?.err_code !== 10059 && !/stream not found/i.test(err.message ?? "")) throw e;
+    }
+    return { version, presenceFileBacked };
   } finally {
     await nc.drain();
   }
 }
 
 // #1356: the presence bucket's file-backed latch is fixed in nats-server 2.14.5. Below that,
-// `cotal up` warns (never refuses: 2.14.0 meets the SPEC §13.12 floor and is the bundled broker).
+// `cotal up` warns when the space's presence bucket is file-backed (never refuses: 2.14.0 meets the
+// SPEC §13.12 floor and is the bundled broker). A memory-backed bucket has no file store to latch.
 function belowPresenceSafeBroker(version: string): boolean {
   const p = parseServerVersion(version);
   if (!p) return false;
