@@ -416,9 +416,9 @@ Call one command on a registered endpoint with JSON arguments, over this session
 |---|---|---|---|
 | `endpoint` | string | yes | The endpoint name, e.g. com.example.linear. |
 | `command` | string | yes | The command name from cotal_describe. |
-| `args` | object | no | The command's arguments as a JSON object. |
+| `args` | record | no | The command's arguments as a JSON object. |
 | `self` | boolean | no | Targeted commands only: act on this session itself. |
-| `timeoutMs` | integer | no | Reply deadline in milliseconds (default 30000). |
+| `timeoutMs` | number | no | Reply deadline in milliseconds (default 30000). |
 
 ## `cotal_reconnect`
 
