@@ -233,13 +233,14 @@ takeover or manager restart continues the run. Revoking twice is not an error, a
 reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
 reconcile, named in its log.
 
-`run ps --local` reads the marker beside each run record and prints `revoked` for a run that
-carries one, whatever state the record itself holds, with the revoker and the reason under the
-table. The record is display only here: a revoke writes no terminal state, because no host drove
+`run ps`, hosted or `--local`, reads the marker beside each run record and prints `revoked` for a
+run that carries one, whatever state the record itself holds, with the revoker and the reason
+under the table. The record is display only here: a revoke writes no terminal state, because no host drove
 the run to one and the journal owns the facts. A marker the listing cannot read, whether the store
 is unreachable or the marker has a version or shape it does not know, prints `unchecked` in the
 `STATE` column. The reason and the state the record carries go to stderr, and the command exits 1
-once every row is printed. The hosted `run ps` reads the record alone.
+once every row is printed. The hosted `run-ps` rows carry the marker as `revoked` (`by` and
+`reason`) or a failed read as `revocationUnreadable`, beside the record's own `state`.
 
 A run whose step was refused (L5016) stays held; a
 resume on a host that can perform the step performs it live and continues from there.

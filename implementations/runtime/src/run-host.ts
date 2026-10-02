@@ -10,6 +10,7 @@
 import {
   readRunRecord,
   readRunAdmission,
+  readRunRevocation,
   replayRunJournal,
   runDriverCaller,
   walkKvEntries,
@@ -282,11 +283,22 @@ export const cotalLangRunHost: RunHost = {
       if (record === undefined) continue;
       const st = record.status?.value;
       const lineage = record.spec.value.forkedFrom;
+      // The revocation marker beside the record, as `run ps --local` reads it. Only a driver writes
+      // the record, so a run whose driver died keeps `running` there after a revoke. A marker read
+      // that fails is carried as such: "no marker" and "could not look" are different answers.
+      let revocation: Pick<RunListRow, "revoked" | "revocationUnreadable"> = {};
+      try {
+        const r = await readRunRevocation(planes.jsm, planes.space, endpoint, runId);
+        if (r !== undefined) revocation = { revoked: { by: r.by, reason: r.reason } };
+      } catch (err) {
+        revocation = { revocationUnreadable: (err as Error).message };
+      }
       rows.push({
         runId,
         endpoint,
         ...(st !== undefined ? { state: st.state, holder: st.holder, epoch: st.epoch, journalHigh: st.journalHigh } : {}),
         ...(lineage !== undefined ? { forkedFrom: lineage } : {}),
+        ...revocation,
       });
     }
     return rows;

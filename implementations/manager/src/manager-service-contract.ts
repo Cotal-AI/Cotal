@@ -671,6 +671,11 @@ const RUN_ROW_SCHEMA = {
       type: "object", additionalProperties: false, required: ["run", "step"],
       properties: { run: { type: "string" }, step: { type: "string" } },
     },
+    revoked: {
+      type: "object", additionalProperties: false, required: ["by", "reason"],
+      properties: { by: { type: "string" }, reason: { type: "string" } },
+    },
+    revocationUnreadable: { type: "string" },
   },
 } as const;
 const RUN_PS_OUTPUT_SCHEMA = { type: "array", items: RUN_ROW_SCHEMA } as const;

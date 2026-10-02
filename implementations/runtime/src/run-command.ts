@@ -763,10 +763,12 @@ function printRuns(space: string, rows: readonly RunListRow[]): void {
     console.log(`no workflow runs recorded in space ${space}`);
     return;
   }
+  // The same reading as `run ps --local`: a marker wins over the record's state, and a marker the
+  // host could not read prints `unchecked` with the record's word on stderr and exit 1.
   const table = rows.map((r) => [
     r.runId,
     r.endpoint,
-    r.state ?? "(no status)",
+    r.revoked !== undefined ? "revoked" : r.revocationUnreadable !== undefined ? "unchecked" : r.state ?? "(no status)",
     r.holder ?? "-",
     r.journalHigh === undefined ? "-" : String(r.journalHigh),
     r.forkedFrom === undefined ? "-" : `${r.forkedFrom.run}@${r.forkedFrom.step}`,
@@ -776,6 +778,13 @@ function printRuns(space: string, rows: readonly RunListRow[]): void {
   const line = (r: string[]) => r.map((cell, i) => cell.padEnd(widths[i] as number)).join("  ");
   console.log(line(header));
   for (const r of table) console.log(line(r));
+  for (const r of rows)
+    if (r.revoked !== undefined)
+      console.log(`${r.endpoint}/${r.runId}: revoked by ${r.revoked.by} (${r.revoked.reason}); the status record is left as its driver last wrote it`);
+  const unchecked = rows.filter((r) => r.revocationUnreadable !== undefined);
+  for (const r of unchecked)
+    console.error(`${r.endpoint}/${r.runId}: revocation marker could not be read (${r.revocationUnreadable}); its record reads ${r.state ?? "(no status)"}`);
+  if (unchecked.length > 0) process.exitCode = 1;
 }
 
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
