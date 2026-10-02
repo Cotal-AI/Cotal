@@ -62,6 +62,9 @@ export interface LinearLimits {
   maxInventoryBytes: number;
   /** Cap on the number of discovery pages across all lists. */
   maxInventoryPages: number;
+  /** Cap on one inventory entry (a tool, resource, template or prompt), so every accepted entry fits
+   *  the reply an agent tool can carry. One over it refuses the whole inventory, named. */
+  maxInventoryEntryBytes: number;
   /** Upstream requests in flight at once. */
   maxConcurrent: number;
   /** Requests allowed to wait for a slot; one more is refused before dispatch. */
@@ -78,6 +81,7 @@ export const DEFAULT_LIMITS: LinearLimits = {
   maxResponseBytes: 512 * 1024,
   maxInventoryBytes: 4 * 1024 * 1024,
   maxInventoryPages: 200,
+  maxInventoryEntryBytes: 48 * 1024,
   maxConcurrent: 8,
   maxQueued: 32,
   defaultTimeoutMs: 30_000,
@@ -198,7 +202,11 @@ class DeadlineError extends Error {
 /** What one SDK request carries that the SDK itself does not: the signal its HTTP request must
  *  obey, and the server's `result` before any schema touched it. */
 interface Dispatch {
+  /** The deadline or cancellation joined with {@link end}. */
   signal: AbortSignal;
+  /** Aborted once the request has settled, so a response stream the server keeps open after the
+   *  result does not keep its socket. */
+  end: AbortController;
   id?: string | number;
   raw?: Json;
   /** Settles when the HTTP request behind this dispatch has ended, however it ended. */
@@ -206,6 +214,11 @@ interface Dispatch {
 }
 
 const dispatching = new AsyncLocalStorage<Dispatch>();
+
+function dispatch(signal: AbortSignal): Dispatch {
+  const end = new AbortController();
+  return { signal: AbortSignal.any([signal, end.signal]), end };
+}
 
 /** The SDK transport, with each request's {@link Dispatch} attached at send and resolved at the
  *  matching response. The SDK parses incoming messages with a passthrough result schema, so the
@@ -299,7 +312,9 @@ export class LinearUpstream {
       // only passes its transport-wide signal here.
       fetch: (url, init) => {
         const d = dispatching.getStore();
-        if (!d) return pinned(url, init);
+        // Only the request's own POST belongs to it. The standalone GET stream the SDK opens after
+        // `initialized` is the session's, bounded by the transport-wide signal and {@link close}.
+        if (!d || init?.method !== "POST") return pinned(url, init);
         const p = pinned(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, d.signal]) : d.signal });
         // The slot behind this request is held until this HTTP request has ended, so a deadline
         // never lets the next request start while the aborted one is still open.
@@ -317,14 +332,20 @@ export class LinearUpstream {
     client.setNotificationHandler(ResourceListChangedNotificationSchema, markStale);
     client.setNotificationHandler(PromptListChangedNotificationSchema, markStale);
     client.onclose = () => this.drop(client);
-    const init: Dispatch = { signal: AbortSignal.timeout(this.limits.defaultTimeoutMs) };
+    // Closing the upstream ends a connect in flight: the initialize request is aborted and no
+    // session is published afterwards.
+    const init = dispatch(AbortSignal.any([this.closing.signal, AbortSignal.timeout(this.limits.defaultTimeoutMs)]));
     try {
       await dispatching.run(init, () => client.connect(transport, { timeout: this.limits.defaultTimeoutMs }));
       if (!init.raw) throw new Error("the initialize response was not captured");
+      if (this.closed) throw new Error("the Linear upstream is closed");
     } catch (e) {
       transport.forget(init);
+      init.end.abort();
       await client.close().catch(() => {});
       throw e;
+    } finally {
+      init.end.abort();
     }
     this.client = client;
     this.transport = transport;
@@ -347,11 +368,13 @@ export class LinearUpstream {
   /** One SDK request in its own dispatch context: the schema still validates the shape, and the
    *  server's `result` is returned verbatim. */
   private async raw(signal: AbortSignal, run: () => Promise<unknown>): Promise<Json> {
-    const d: Dispatch = { signal };
+    const d = dispatch(signal);
     try {
       await dispatching.run(d, run);
     } finally {
       this.transport?.forget(d);
+      // Settled either way: a response stream still open past the result is ended here.
+      d.end.abort();
       await d.inflight;
     }
     if (!d.raw) throw new Error("the MCP response was not captured");
@@ -391,7 +414,12 @@ export class LinearUpstream {
           if (bytes > this.limits.maxInventoryBytes) throw new Error(`Linear discovery exceeded ${this.limits.maxInventoryBytes} bytes; refusing a partial inventory`);
           const list = page[key];
           if (!Array.isArray(list)) throw new Error(`${method} returned no ${key} array`);
-          items.push(...(list as Json[]));
+          for (const entry of list as Json[]) {
+            const size = Buffer.byteLength(JSON.stringify(entry));
+            if (size > this.limits.maxInventoryEntryBytes)
+              throw new Error(`${key}[${items.length}] ("${String(entry.name ?? entry.uri ?? entry.uriTemplate ?? "")}") is ${size} bytes, over the ${this.limits.maxInventoryEntryBytes}-byte entry bound; refusing the inventory`);
+            items.push(entry);
+          }
           const next = page.nextCursor;
           if (next !== undefined && typeof next !== "string") throw new Error(`${method} returned a non-string cursor`);
           if (next !== undefined && seen.has(next)) throw new Error(`${method} repeated a cursor; refusing a looping inventory`);
@@ -586,10 +614,16 @@ export class LinearUpstream {
     this.closing.abort(new Error("the Linear upstream is closing"));
     const transport = this.transport;
     const client = this.client;
+    const connecting = this.connecting;
     this.client = undefined;
     this.transport = undefined;
     const grace = AbortSignal.timeout(graceMs);
     if (transport?.sessionId) await bounded(transport.inner.terminateSession(), grace).catch(() => {});
     await bounded(client?.close() ?? Promise.resolve(), grace).catch(() => {});
+    // A connect in flight was aborted above; one that still completes is closed, never published.
+    if (connecting) {
+      const late = await bounded(connecting, grace).catch(() => undefined);
+      if (late) await bounded(late.close(), grace).catch(() => {});
+    }
   }
 }

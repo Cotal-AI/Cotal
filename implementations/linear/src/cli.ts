@@ -98,8 +98,18 @@ async function serve(account: string, endpoint: string, v: Record<string, unknow
     await upstream.close();
     fail(`the Linear account "${account}" did not answer discovery: ${(e as Error).message}`);
   });
-  const reg = await registerLinearEndpoint({ auth, servers: target.server, space: target.space, tls: target.tlsRequired, endpoint });
-  const handle = await runLinearEndpoint(reg.bundle, upstream);
+  const reg = await registerLinearEndpoint({ auth, servers: target.server, space: target.space, tls: target.tlsRequired, endpoint }).catch(async (e: unknown) => {
+    await upstream.close();
+    fail(`registering ${endpoint} failed: ${(e as Error).message}`);
+  });
+  // The record is READY from registration on, so a start that fails after it must take the record
+  // back down rather than leave an advertised endpoint nobody serves.
+  const handle = await runLinearEndpoint(reg.bundle, upstream).catch(async (e: unknown) => {
+    await Promise.race([reg.deregister(), new Promise((r) => setTimeout(r, 10_000).unref())]).catch((d: unknown) =>
+      console.error(`deregistration failed (${(d as Error).message}); the record stays until the instance is registered again`));
+    await upstream.close();
+    fail(`${endpoint} did not start serving: ${(e as Error).message}; its registration was removed`);
+  });
   console.log(`serving ${handle.endpoint} (instance ${handle.instanceId}, epoch ${handle.epoch}) for Linear account ${account} (${inv.mode}, ${inv.tools.length} tools, inventory ${inv.digest})`);
   let timer: NodeJS.Timeout | undefined;
   const schedule = (ms: number | undefined): void => {

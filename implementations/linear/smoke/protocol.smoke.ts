@@ -29,10 +29,18 @@ const { LINEAR_MCP_ORIGIN } = await import("../src/origin.js");
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
 
-const seen = { redirect: false, refreshes: 0, outstanding: 0, maxOutstanding: 0 };
+const seen = { redirect: false, refreshes: 0, outstanding: 0, maxOutstanding: 0, streamsOpen: 0, holdInit: false, initAborted: false, initializedAfterClose: false, closedAt: 0, bigEntry: false };
 const server = createServer(async (req, res) => {
   const path = new URL(req.url ?? "/", "http://local").pathname;
   const json = (data: unknown): void => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(data)); };
+  // A result delivered as an SSE event on a stream the server then keeps open, as a streaming MCP
+  // server may do after answering.
+  const sse = (data: unknown): void => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`event: message\ndata: ${JSON.stringify(data)}\n\n`);
+    seen.streamsOpen++;
+    res.once("close", () => { seen.streamsOpen--; });
+  };
   if (path.includes("oauth-protected-resource")) return json({ resource: `${LINEAR_MCP_ORIGIN}/mcp`, authorization_servers: [LINEAR_MCP_ORIGIN] });
   if (path.includes("oauth-authorization-server") || path.includes("openid-configuration"))
     return json({ issuer: LINEAR_MCP_ORIGIN, authorization_endpoint: `${LINEAR_MCP_ORIGIN}/authorize`, token_endpoint: `${LINEAR_MCP_ORIGIN}/token`, registration_endpoint: `${LINEAR_MCP_ORIGIN}/register`, response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"], code_challenge_methods_supported: ["S256"] });
@@ -41,10 +49,25 @@ const server = createServer(async (req, res) => {
   let body = "";
   for await (const part of req) body += part;
   const m = JSON.parse(body) as { id?: number; method: string; params?: { name?: string; protocolVersion?: string } };
-  if (m.id === undefined) { res.writeHead(202).end(); return; }
+  if (m.id === undefined) {
+    if (m.method === "notifications/initialized" && seen.closedAt && Date.now() >= seen.closedAt) seen.initializedAfterClose = true;
+    res.writeHead(202).end();
+    return;
+  }
   const rpc = (result: unknown): void => json({ jsonrpc: "2.0", id: m.id, result });
-  if (m.method === "initialize") return rpc({ protocolVersion: m.params?.protocolVersion, serverInfo: { name: "local-stand-in", version: "1" }, capabilities: { tools: {}, "vendor/feature": {} } });
-  if (m.method === "tools/list") return rpc({ tools: ["echo", "redirect", "hold"].map((name) => ({ name, inputSchema: { type: "object" }, "vendor/field": "keep" })) });
+  const initResult = { protocolVersion: m.params?.protocolVersion, serverInfo: { name: "local-stand-in", version: "1" }, capabilities: { tools: {}, "vendor/feature": {} } };
+  if (m.method === "initialize" && seen.holdInit) {
+    // Held long enough for the client to be closed underneath it.
+    let answered = false;
+    res.once("close", () => { if (!answered) seen.initAborted = true; });
+    await new Promise((r) => setTimeout(r, 300));
+    answered = true;
+    return rpc(initResult);
+  }
+  if (m.method === "initialize") return rpc(initResult);
+  if (m.method === "tools/list" && seen.bigEntry) return rpc({ tools: [{ name: "wide", description: "x".repeat(60 * 1024), inputSchema: { type: "object" } }] });
+  if (m.method === "tools/list") return rpc({ tools: ["echo", "redirect", "hold", "stream"].map((name) => ({ name, inputSchema: { type: "object" }, "vendor/field": "keep" })) });
+  if (m.method === "tools/call" && m.params?.name === "stream") return sse({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: "streamed" }] } });
   if (m.method === "tools/call" && m.params?.name === "redirect") { seen.redirect = true; res.writeHead(307, { location: "https://example.invalid/" }).end(); return; }
   if (m.method === "tools/call" && m.params?.name === "hold") {
     seen.outstanding++; seen.maxOutstanding = Math.max(seen.maxOutstanding, seen.outstanding);
@@ -98,12 +121,45 @@ try {
   check("timed-out calls never hold more sockets than the concurrency limit", seen.maxOutstanding <= 2, seen);
   await new Promise((r) => setTimeout(r, 200));
   check("no held socket outlives its deadline by more than a moment", seen.outstanding <= 1, seen);
+
+  const streamed = [];
+  for (let i = 0; i < 5; i++) streamed.push(await upstream.callTool({ name: "stream", inventoryDigest: inv.digest }));
+  check("a result sent as an SSE event comes back", streamed.every((r) => r.kind === "result"), streamed);
+  await new Promise((r) => setTimeout(r, 200));
+  check("a request's response stream is closed once its result is in", seen.streamsOpen === 0, seen);
 } finally {
   await upstream.close(1000);
-  server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
-  globalThis.fetch = nativeFetch;
-  rmSync(home, { recursive: true, force: true });
 }
+
+// Closing the upstream while its first connect is still in flight ends that connect: the initialize
+// request is aborted, and no session is announced to the server afterwards.
+seen.holdInit = true;
+const closing = new LinearUpstream({ name: "local-control", mode: "write", auth: "token", tokenFile }, { ...DEFAULT_LIMITS, maxTimeoutMs: 2000, defaultTimeoutMs: 2000 });
+const pending = closing.inventory().then(() => "resolved", (e: Error) => e.message);
+await new Promise((r) => setTimeout(r, 50));
+seen.closedAt = Date.now();
+await closing.close(50);
+const closedOutcome = await pending;
+await new Promise((r) => setTimeout(r, 500));
+check("an inventory read interrupted by close rejects", closedOutcome !== "resolved", closedOutcome);
+check("closing during connect ends the initialize request", seen.initAborted, seen);
+check("no initialized notification follows a close", !seen.initializedAfterClose, seen);
+seen.holdInit = false;
+
+// One inventory entry larger than an agent tool can carry refuses the whole inventory, named.
+seen.bigEntry = true;
+const wide = new LinearUpstream({ name: "local-control", mode: "write", auth: "token", tokenFile }, { ...DEFAULT_LIMITS, maxTimeoutMs: 2000, defaultTimeoutMs: 2000 });
+try {
+  const outcome = await wide.inventory().then(() => "resolved", (e: Error) => e.message);
+  check("an inventory entry over the entry bound refuses discovery, naming the entry", /tools\[0\].*wide.*bytes/.test(outcome), outcome);
+} finally {
+  await wide.close(1000);
+}
+seen.bigEntry = false;
+
+server.closeAllConnections();
+await new Promise((resolve) => server.close(resolve));
+globalThis.fetch = nativeFetch;
+rmSync(home, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
