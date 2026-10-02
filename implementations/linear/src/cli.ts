@@ -8,10 +8,12 @@
 import { resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { assertAccountName, loadAccount, saveAccount, storedTokenPath } from "./account.js";
+import { loginAccount } from "./oauth.js";
 import { isLinearMode } from "./origin.js";
 import { LinearUpstream, type UpstreamReply } from "./upstream.js";
 
 export const USAGE = `cotal linear account add <name> --mode <write|readonly> (--token-stdin | --token-file <path>)
+cotal linear account login <name> --mode <write|readonly>
 cotal linear account show <name>
 cotal linear inventory <account> [--json]
 cotal linear call <account> <tool> [--args <json>] [--inventory <digest>] [--timeout <ms>]
@@ -82,12 +84,19 @@ export async function linear(args: ParsedArgs): Promise<void> {
         console.log(JSON.stringify(loadAccount(name), null, 2));
         return;
       }
+      if (action === "login") {
+        const mode = v.mode;
+        if (!isLinearMode(mode)) fail("--mode must be write or readonly");
+        await loginAccount(name, mode);
+        console.log(`saved Linear account ${name} (${mode}, oauth)`);
+        return;
+      }
       if (action !== "add") fail(USAGE);
       const mode = v.mode;
       if (!isLinearMode(mode)) fail("--mode must be write or readonly");
       if (Boolean(v["token-stdin"]) === (v["token-file"] !== undefined)) fail("give exactly one of --token-stdin or --token-file");
-      if (v["token-stdin"]) saveAccount({ name, mode, tokenFile: storedTokenPath(name) }, await readStdin());
-      else saveAccount({ name, mode, tokenFile: resolve(String(v["token-file"])) });
+      if (v["token-stdin"]) saveAccount({ name, mode, auth: "token", tokenFile: storedTokenPath(name) }, await readStdin());
+      else saveAccount({ name, mode, auth: "token", tokenFile: resolve(String(v["token-file"])) });
       console.log(`saved Linear account ${name} (${mode})`);
       return;
     }

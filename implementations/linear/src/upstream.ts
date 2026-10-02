@@ -38,7 +38,8 @@ import {
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { contractDigest } from "@cotal-ai/core";
-import { readAccountToken, type LinearAccount } from "./account.js";
+import type { LinearAccount } from "./account.js";
+import { credentialFor, type LinearCredential } from "./oauth.js";
 import { linearMcpUrl, OriginRefusedError, pinnedFetch, ResponseTooLargeError } from "./origin.js";
 
 export interface LinearLimits {
@@ -152,9 +153,11 @@ export class LinearUpstream {
   private closed = false;
   private readonly slots: Slots;
   private readonly url: URL;
+  private readonly credential: LinearCredential;
 
   constructor(readonly account: LinearAccount, readonly limits: LinearLimits = DEFAULT_LIMITS) {
     this.url = linearMcpUrl(account.mode);
+    this.credential = credentialFor(account);
     this.slots = new Slots(limits.maxConcurrent, limits.maxQueued);
   }
 
@@ -167,7 +170,7 @@ export class LinearUpstream {
 
   private async connect(): Promise<Client> {
     const transport = new StreamableHTTPClientTransport(this.url, {
-      fetch: pinnedFetch(this.url, () => readAccountToken(this.account), this.limits.maxResponseBytes, () => this.overflows++),
+      fetch: pinnedFetch(this.url, () => this.credential.bearer(), this.limits.maxResponseBytes, () => this.overflows++),
       // Resuming a dropped stream is not a re-dispatch, but this client still never reconnects on its own.
       reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 },
     });
@@ -207,6 +210,7 @@ export class LinearUpstream {
     const release = await this.slots.acquire();
     if (!release) throw new Error("the Linear upstream queue is full");
     try {
+      await this.credential.prepare();
       const client = await this.session();
       const caps = (client.getServerCapabilities() ?? {}) as unknown as Json;
       const version = client.getServerVersion();
@@ -310,6 +314,7 @@ export class LinearUpstream {
     let inv: LinearInventory;
     try {
       inv = await this.inventory();
+      await this.credential.prepare();
     } catch (e) {
       return { kind: "refused", reason: "discovery-failed", detail: `Linear discovery failed: ${e instanceof Error ? e.message : String(e)}`, outcome: "not-executed" };
     }
