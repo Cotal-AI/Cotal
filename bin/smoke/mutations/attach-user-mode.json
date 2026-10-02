@@ -1,0 +1,23 @@
+{
+  "suite": [
+    "implementations/auth/smoke/user-spawn.smoke.ts"
+  ],
+  "guard": "on a user-auth mesh `cotal attach` opens the seat's session through the identity plane and never redeems from a local seed (#2312)",
+  "command": "pnpm --filter @cotal-ai/cli build && COTAL_USER_ENDPOINT_CLI_ONLY=1 pnpm smoke:user-spawn:live",
+  "completionMarker": "USER-ENDPOINT CLI SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-user-mode.json",
+  "why": [
+    "The fixture drives the real bin/cotal.ts attach against a native user-auth broker, auth service and manager, with the space's static seed on disk (the fixture saves it for the pre-flip manager). The CLI resolves its built dist, so the command rebuilds the CLI first and afterRestore rebuilds it again."
+  ],
+  "mutations": [
+    {
+      "name": "the CLI falls back to the seed on a user mesh",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "    case \"user\":\n      return { kind: \"redeem\" };",
+      "replace": "    case \"user\":\n      return t.spaceAuth ? { kind: \"mint\", auth: t.spaceAuth } : { kind: \"fatal\", message: attachNoSeedMessage(t) };",
+      "expectRed": "#2312: `cotal attach` on a user-auth mesh opens the seat's session",
+      "cell": "#2312: `cotal attach` on a user-auth mesh opens the seat's session",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}
