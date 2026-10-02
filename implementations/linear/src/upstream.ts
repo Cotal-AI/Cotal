@@ -56,6 +56,9 @@ export interface LinearLimits {
   /** Default and ceiling for one request's deadline. */
   defaultTimeoutMs: number;
   maxTimeoutMs: number;
+  /** An inventory older than this is read again before the next request, for servers that do not
+   *  send list-changed notifications. */
+  maxInventoryAgeMs: number;
 }
 
 export const DEFAULT_LIMITS: LinearLimits = {
@@ -66,6 +69,7 @@ export const DEFAULT_LIMITS: LinearLimits = {
   maxQueued: 32,
   defaultTimeoutMs: 30_000,
   maxTimeoutMs: 120_000,
+  maxInventoryAgeMs: 15 * 60_000,
 };
 
 type Json = Record<string, unknown>;
@@ -128,17 +132,17 @@ class Slots {
   constructor(private readonly max: number, private readonly maxQueued: number) {}
   /** Resolves with a release function, or `null` when the queue is full. */
   async acquire(): Promise<(() => void) | null> {
-    if (this.active >= this.max) {
-      if (this.waiting.length >= this.maxQueued) return null;
-      await new Promise<void>((r) => this.waiting.push(r));
-    }
-    this.active++;
+    if (this.active < this.max) this.active++;
+    else if (this.waiting.length >= this.maxQueued) return null;
+    // A released slot is handed straight to the next waiter, so `active` never overshoots.
+    else await new Promise<void>((r) => this.waiting.push(r));
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      this.active--;
-      this.waiting.shift()?.();
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.active--;
     };
   }
 }
@@ -206,7 +210,8 @@ export class LinearUpstream {
 
   /** Complete discovery. Refuses on any cap rather than returning a partial inventory. */
   async inventory(opts: { refresh?: boolean } = {}): Promise<LinearInventory> {
-    if (this.current && !this.stale && !opts.refresh) return this.current;
+    const fresh = this.current && Date.now() - Date.parse(this.current.fetchedAt) < this.limits.maxInventoryAgeMs;
+    if (this.current && fresh && !this.stale && !opts.refresh) return this.current;
     const release = await this.slots.acquire();
     if (!release) throw new Error("the Linear upstream queue is full");
     try {
