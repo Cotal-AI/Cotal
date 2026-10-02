@@ -534,7 +534,13 @@ async function drive(
   }
 
   const resumed = appender.steps() as readonly JournalEntry[];
-  const store = new RunJournalStore(appender);
+  // THE TAIL ANCHOR FOLLOWS EVERY APPEND once the run is noted `running`, so a record appended
+  // since this activation is covered before the program acts on it. Unset until then: the spec
+  // revision this write pins is read below, and the `running` note covers whatever came before it.
+  let anchor: ((journalHigh: number) => Promise<void>) | undefined;
+  const store = new RunJournalStore(appender, async (high) => {
+    if (anchor !== undefined) await anchor(high);
+  });
   let flipped: ReadonlySet<string>;
   try {
     // The explicit callback wins; otherwise a handler that declares `adopted` repairs its own state.
@@ -641,6 +647,20 @@ async function drive(
 
   try {
     statusRevision = await note(req, "running", appender.journalHigh, specRevision, statusRevision);
+    anchor = async (high) => {
+      try {
+        statusRevision = await note(req, "running", high, specRevision, statusRevision);
+      } catch (e) {
+        // A takeover is the journal fence's to detect, and the append this follows already passed
+        // it. A moved revision whose record still names this lease is not one, so write over it
+        // once; a record naming any other lease is a fact this driver does not hold the run.
+        if (!isStatusConflict(e)) throw e;
+        const now = (await readRunRecord(req.kv, req.endpoint, req.runId))?.status;
+        if (now === undefined || now.value.holder !== req.lease.holder || now.value.epoch !== req.lease.epoch
+          || now.value.fencingToken !== req.lease.fencingToken) throw e;
+        statusRevision = await note(req, "running", high, specRevision, now.revision);
+      }
+    };
   } catch (e) {
     // A LOST CAS HERE IS A FACT, not a store hiccup: the only principal entitled to write this
     // run's status is a driver that holds it, so someone moved the revision between this

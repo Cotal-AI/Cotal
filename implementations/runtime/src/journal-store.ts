@@ -92,7 +92,18 @@ export class RunJournalUnavailable extends Error {
 }
 
 export class RunJournalStore implements JournalStore {
-  constructor(private readonly appender: RunJournalAppender) {}
+  private anchoring: Promise<void> = Promise.resolve();
+
+  /**
+   * `anchor`, when given, is called with the journal's head after every append and awaited before
+   * the append resolves, so the entry is covered by an anchor outside the journal before the
+   * language acts on it. The calls run one at a time in append order. A failed anchor fails this
+   * append and every later one, which the language reads as L5010.
+   */
+  constructor(
+    private readonly appender: RunJournalAppender,
+    private readonly anchor?: (journalHigh: number) => Promise<void>,
+  ) {}
 
   /** True once the underlying appender is finished. A driver polls this to stop early rather than
    *  discovering it on the next entry — the interpreter has no such concept and does not need one. */
@@ -119,6 +130,11 @@ export class RunJournalStore implements JournalStore {
         throw new RunJournalUnavailable(this.appender.run, e);
       }
       throw e;
+    }
+    const anchor = this.anchor;
+    if (anchor !== undefined) {
+      this.anchoring = this.anchoring.then(() => anchor(this.appender.journalHigh));
+      await this.anchoring;
     }
   }
 }
