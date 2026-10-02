@@ -182,7 +182,9 @@ try {
       v: 1, kind: enroll.kind, space, owner: OWNER, actor: "cli", instanceId: state.instanceId,
       managerLifecycleUid: state.lifecycleUid, requestId: enroll.requestId, registrationProof: proof, serveEpoch: EPOCH, material,
     };
-    const fromOlder = remoteManagedAgentEnrollmentMaterial(older, enroll);
+    let fromOlder: unknown;
+    try { fromOlder = remoteManagedAgentEnrollmentMaterial(older, enroll); }
+    catch (e) { fromOlder = (e as Error).message; }
     check("an older host that omits runtimeIntent still enrolls", JSON.stringify(fromOlder) === JSON.stringify(material), fromOlder);
     let fromCurrent: unknown;
     try { fromCurrent = remoteManagedAgentEnrollmentMaterial({ ...older, runtimeIntent: { state: "reserved" } }, enroll); }
