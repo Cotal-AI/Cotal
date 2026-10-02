@@ -132,6 +132,12 @@ export interface RunListRow {
   readonly epoch?: number;
   readonly journalHigh?: number;
   readonly forkedFrom?: { readonly run: string; readonly step: string };
+  /** The run's revocation marker as the host read it beside the record (SPEC 14.8). Display only:
+   *  `state` stays what the record holds, since a revoke writes no terminal state. */
+  readonly revoked?: { readonly by: string; readonly reason: string };
+  /** Why the host could not read the run's revocation marker. The row is then not known to be
+   *  unrevoked, and a renderer must not print the record's state as if it were. */
+  readonly revocationUnreadable?: string;
 }
 
 /** One row of a run's journal view. */
