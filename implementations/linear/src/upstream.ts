@@ -201,6 +201,8 @@ interface Dispatch {
   signal: AbortSignal;
   id?: string | number;
   raw?: Json;
+  /** Settles when the HTTP request behind this dispatch has ended, however it ended. */
+  inflight?: Promise<void>;
 }
 
 const dispatching = new AsyncLocalStorage<Dispatch>();
@@ -298,7 +300,11 @@ export class LinearUpstream {
       fetch: (url, init) => {
         const d = dispatching.getStore();
         if (!d) return pinned(url, init);
-        return pinned(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, d.signal]) : d.signal });
+        const p = pinned(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, d.signal]) : d.signal });
+        // The slot behind this request is held until this HTTP request has ended, so a deadline
+        // never lets the next request start while the aborted one is still open.
+        d.inflight = p.then(() => undefined, () => undefined);
+        return p;
       },
       // Resuming a dropped stream is not a re-dispatch, but this client still never reconnects on its own.
       reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 },
@@ -346,6 +352,7 @@ export class LinearUpstream {
       await dispatching.run(d, run);
     } finally {
       this.transport?.forget(d);
+      await d.inflight;
     }
     if (!d.raw) throw new Error("the MCP response was not captured");
     return d.raw;
