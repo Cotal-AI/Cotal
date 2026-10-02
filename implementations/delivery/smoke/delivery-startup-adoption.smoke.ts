@@ -14,7 +14,7 @@
  * Deaths are a race (measured on the unfixed daemon: 1-2 per 20 trials near offset 0, none past
  * ~40 ms), so the death cell alone can pass on an unfixed tree. The reply cells are deterministic:
  * an adoption that lands before start-up finished is refused as not started with nothing adopted,
- * and one that lands after it still adopts.
+ * the next pass on that same daemon then adopts, and one that lands after start-up still adopts.
  *
  * NOTE: runs the BUILT dist — `pnpm build` first.
  * Run: pnpm exec tsx implementations/delivery/smoke/delivery-startup-adoption.smoke.ts
@@ -103,7 +103,7 @@ try {
   sup.on("error", () => {});
   await sup.start();
 
-  const trials: { offset: number; died: boolean; startupFailed: boolean; reply: string }[] = [];
+  const trials: { offset: number; died: boolean; startupFailed: boolean; reply: string; retry?: string }[] = [];
   for (let round = 0; round < ROUNDS; round++) {
     for (const offset of OFFSETS_MS) {
       let output = "";
@@ -135,8 +135,23 @@ try {
       }
       await until(() => exited, SETTLE_MS, 50);
       const startupFailed = output.includes("start-up failed");
-      trials.push({ offset, died: exited, startupFailed, reply });
-      console.log(`  · round ${round} offset ${offset}ms: ${exited ? "DIED" : "alive"}${startupFailed ? " (start-up failed)" : ""}; reload ${reply}`);
+      // The refusal promises that the next renewal pass adopts: replay the pass on this same daemon
+      // once start-up has settled, with a fresh generation, as the manager's next tick would.
+      let retry: string | undefined;
+      if (!exited && reply.includes(NOT_STARTED)) {
+        const dlv2 = await mintCreds(auth, dlvId, "delivery");
+        const rw2 = await mintCreds(auth, rwId, "membership-rw");
+        writeFileSync(credsPath, dlv2, { mode: 0o600 });
+        writeFileSync(rwPath, rw2, { mode: 0o600 });
+        try {
+          const r = await sup.requestDeliveryAdmin("reloadCreds", { expected: { delivery: credsFingerprint(dlv2), membership: credsFingerprint(rw2) } }, 15_000);
+          retry = r.ok ? "ok" : `refused: ${r.error}`;
+        } catch (e) {
+          retry = `no reply: ${(e as Error).message}`;
+        }
+      }
+      trials.push({ offset, died: exited, startupFailed, reply, ...(retry !== undefined ? { retry } : {}) });
+      console.log(`  · round ${round} offset ${offset}ms: ${exited ? "DIED" : "alive"}${startupFailed ? " (start-up failed)" : ""}; reload ${reply}${retry !== undefined ? `; next pass ${retry}` : ""}`);
       if (exited || startupFailed) console.log(`    daemon tail:\n${output.slice(-1200)}`);
 
       if (!exited) await killAndAwaitExit(daemon, "SIGTERM");
@@ -153,6 +168,8 @@ try {
   check(`an adoption landing before start-up finished was refused as not started, nothing adopted (${early.length}/${trials.length})`, early.length > 0);
   const other = trials.filter((t) => t.reply !== "ok" && !t.reply.includes(NOT_STARTED));
   check(`every reply was a full adoption or the not-started refusal, never a partial one`, other.length === 0, other.map((t) => `${t.offset}ms: ${t.reply}`));
+  const retried = early.filter((t) => t.retry !== undefined);
+  check(`the next renewal pass on the same daemon adopted every refused generation (${retried.filter((t) => t.retry === "ok").length}/${early.length})`, early.length > 0 && retried.length === early.length && retried.every((t) => t.retry === "ok"), retried.filter((t) => t.retry !== "ok").map((t) => `${t.offset}ms: ${t.retry}`));
   check(`an adoption landing after start-up still adopted (${trials.filter((t) => t.reply === "ok").length}/${trials.length})`, trials.some((t) => t.reply === "ok"));
 
   console.log(`\nDELIVERY-STARTUP-ADOPTION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

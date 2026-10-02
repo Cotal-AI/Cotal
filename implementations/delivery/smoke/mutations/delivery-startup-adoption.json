@@ -32,6 +32,15 @@
       "expectRed": "an adoption landing before start-up finished was refused as not started, nothing adopted",
       "cell": "an adoption landing before start-up finished was refused as not started, nothing adopted",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "start-up never completes, so every adoption is refused for good",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "  startedUp = true;\n",
+      "replace": "  startedUp = false;\n",
+      "expectRed": "the next renewal pass on the same daemon adopted every refused generation",
+      "cell": "the next renewal pass on the same daemon adopted every refused generation",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }
