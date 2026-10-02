@@ -219,6 +219,8 @@ const AGENT_ROW_SCHEMA = {
     // itself a managed seat - not carried here, the manager does not hold it).
     model: { type: "string" },
     variant: { type: "string" },
+    // The connector-reported provider from presence (#785): absent when the connector reported none.
+    provider: { type: "string" },
     cwd: { type: "string" },
     pid: { type: "integer", minimum: 1 },
     spawner: { type: "string" },
@@ -228,6 +230,37 @@ const AGENT_ROW_SCHEMA = {
 } as const;
 
 const PS_OUTPUT_SCHEMA = { type: "array", items: AGENT_ROW_SCHEMA } as const;
+
+// One durable static-slot observation row (the `StaticSlotObservationDetail` fields minus
+// `kind`, plus this manager's live/identity facts). Closed: never a raw StaticManagedSlotRow,
+// never a credential id.
+const SLOT_ROW_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["name", "owner", "actor", "slotLifecycleUid", "slotPhase", "slotRevision", "readOrder", "consistency", "live", "managerInstanceId"],
+  properties: {
+    name: { type: "string" },
+    owner: { type: "string" },
+    actor: { type: "string" },
+    slotLifecycleUid: { type: "string" },
+    slotPhase: { type: "string", enum: ["provisioning", "active", "terminalizing", "retired"] },
+    cleanupComplete: { type: "boolean" },
+    slotRevision: { type: "integer", minimum: 0 },
+    headState: { type: "string", enum: ["active", "retiring", "retired"] },
+    headOp: {
+      type: "object", additionalProperties: false, required: ["opId", "kind"],
+      properties: { opId: { type: "string" }, kind: { type: "string", enum: ["retirement"] } },
+    },
+    headLifecycleUid: { type: "string" },
+    headRevision: { type: "integer", minimum: 0 },
+    readOrder: { type: "array", items: { type: "string", enum: ["slot", "head"] }, minItems: 2, maxItems: 2 },
+    consistency: { type: "string", enum: ["ordered-not-atomic"] },
+    live: { type: "boolean" },
+    managerInstanceId: { type: "string" },
+  },
+} as const;
+const SLOTS_OUTPUT_SCHEMA = { type: "array", items: SLOT_ROW_SCHEMA } as const;
+
 const INSPECT_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name"],
   properties: { name: { type: "string", minLength: 1 } },
@@ -269,6 +302,11 @@ const SPAWN_INPUT_SCHEMA = {
     },
   },
 } as const;
+
+/** The `start` op's argument vocabulary as the served contract declares it: every property name
+ *  `SPAWN_INPUT_SCHEMA` accepts. Exported so a parity check reads the vocabulary from here rather
+ *  than carrying a second, driftable copy of it. */
+export const SPAWN_INPUT_KEYS: readonly string[] = Object.keys(SPAWN_INPUT_SCHEMA.properties);
 
 /** `spawn` success output (P2 item 2): the ACTION ACCEPTANCE floor — the ALLOCATED agent identity
  *  (name + the owner/actor/uid addressing triple item 1 addresses by) plus the goal coordinates
@@ -711,6 +749,7 @@ const ROWS: CommandRow[] = [
   { name: "status", capability: "manager.read", input: VOID_SCHEMA, output: STATUS_OUTPUT_SCHEMA, targeted: false, handler: "status" },
   { name: "ps", capability: "manager.read", input: VOID_SCHEMA, output: PS_OUTPUT_SCHEMA, targeted: false, handler: "ps" },
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
+  { name: "slots", capability: "manager.read", input: VOID_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
   { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
@@ -957,6 +996,7 @@ export interface ManagerServiceHandlers {
   status(ctx: EpServeContext): ManagerStatus | Promise<ManagerStatus>;
   ps(ctx: EpServeContext): unknown | Promise<unknown>;
   inspect(ctx: EpServeContext): unknown | Promise<unknown>;
+  slots(ctx: EpServeContext): unknown | Promise<unknown>;
   models(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveCwd(ctx: EpServeContext): unknown | Promise<unknown>;
   spawn(ctx: EpServeContext): unknown | Promise<unknown>;

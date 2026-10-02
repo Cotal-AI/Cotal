@@ -948,11 +948,9 @@ function buildCtx(run: EngineRun): CtxWithSteps {
           return ~(v as number);
         case "update":
           // `x++`, `x--` and their compound cousins, on the slow path only: the transform emits a
-          // native increment when it can see the operand is a number. A DECLARED DIVERGENCE: the
-          // walker reads the operand through `Number(...)`, so `"5"++` answers 6 and a
-          // record settles as NaN, while `o + 1` and `x += 1` refuse on the very same values. That
-          // is the silent-coercion class, filed against the walker as issue #646, and it is not
-          // being built into the new engine for fidelity's sake.
+          // native increment when it can see the operand is a number. The walker refuses a
+          // non-number operand the same way, with this same sentence (`interpret.ts`,
+          // `refuseNonNumberUpdate`), so `x++`, `x + 1` and `x += 1` all answer one law now.
           if (typeof v !== "number") {
             throw new RuntimeFault(
               "L4018",

@@ -17,6 +17,8 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
+from .hooks import _material_token
+
 _BACKOFF_S = 2.0
 
 # How long ``reopen`` waits for a closed reader to finish unwinding. Bounded on purpose: a reader
@@ -28,6 +30,14 @@ _REOPEN_JOIN_SECONDS = 2.0
 class BridgeClient:
     def __init__(self, socket_path: str) -> None:
         self._path = socket_path
+        # Resolved once, the same pair `hooks.relay` reads: standalone mode exports
+        # COTAL_CONTROL_TOKEN directly; a managed launch carries it in the launch material only.
+        self._token = os.environ.get("COTAL_CONTROL_TOKEN") or _material_token()
+        if not self._token:
+            raise RuntimeError(
+                "no control token could be resolved (neither COTAL_CONTROL_TOKEN nor a readable "
+                "COTAL_LAUNCH_MATERIAL with one) — the bridge socket cannot be authenticated"
+            )
         self._sock: Optional[socket.socket] = None
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[threading.Event, dict]] = {}
@@ -79,7 +89,7 @@ class BridgeClient:
                     return
                 if self._sock is None:
                     continue
-                self._send({"t": "subscribe"})  # (re)subscribe after every (re)connect
+                self._send({"t": "subscribe", "token": self._token})  # (re)subscribe after every (re)connect
             # Read through a local handle. Re-reading `self._sock` here would race a concurrent
             # reassignment between the guard above and the recv below.
             sock = self._sock
@@ -177,9 +187,14 @@ class BridgeClient:
             except OSError:
                 self._sock = None
 
-    def delivered(self, msg_id: str) -> None:
-        """Ack a message on the stream — call only once it has been surfaced into a turn."""
-        self._send({"t": "delivered", "id": msg_id})
+    def delivered(self, recv_key: str) -> None:
+        """Ack a message on the stream — call only once it has been surfaced into a turn.
+
+        The bridge matches the per-delivery receive key (``recvKey``), never the wire id: an
+        id-less message has wire id "", and a frame keyed any other way is silently ignored,
+        which leaves the bridge holding its in-flight slot until the next restart (#2237).
+        """
+        self._send({"t": "delivered", "recvKey": recv_key})
 
     def reply(self, target: dict, text: str) -> None:
         """Route a turn's reply back to its mesh origin (channel broadcast or DM to the sender)."""

@@ -1,0 +1,95 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/run-host-replay.smoke.ts"
+  ],
+  "guard": "A hosted drive's own journal reads share one replay durable per takeover. Reads under one takeover id run one at a time in the process, so a parallel of three asks answered within one second fails no branch while RunHost.status reads the same id; a step read or the no-record diagnostic that loses a round to another reader replays again, at most three times, and raises the race after the third; any other failure is raised on the first read.",
+  "command": "pnpm smoke:runtime-run-host-replay",
+  "completionMarker": "run-host-replay.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/run-host-replay.json   # --config resolves against the repo root, never the cwd",
+  "why": [
+    "Issue #1623 asked for a runtime cell where a parallel of three asks settling within the same second fails no branch, with the shared-durable behaviour as its mutant, and for the race to be retried at the step the way activateRun retries it.",
+    "The shared-durable mutant (RH7) reverts the per-durable serialisation in packages/core/src/run-journal.ts. The suite loads @cotal-ai/core from dist, so that mutation and its control build core first and rebuild it after the restore. RH8 is the positive control for that build path: it disables the freshness guard in the same file and must redden a cell of its own.",
+    "RH7 is killed only because block 1 also reads the drive's takeover id through RunHost.status on the driver's connection. Without that reader the three asks' step reads all go through one RunScopeAuthority, whose own promise chain already puts them in order, so reverting the core lock alone leaves a hosted parallel green. The authority's chain is therefore not registered as a mutant; see `redundant`.",
+    "RH1 to RH6 mutate the runtime sources the suite imports through relative paths, so no build sits between them and the run. RH5 and RH6 swap each call site back to the unretried core replay under the same local name, which is the source as it was before this change."
+  ],
+  "mutations": [
+    {
+      "name": "RH1: a step read raises the race on its first lost round again",
+      "file": "implementations/runtime/src/journal-store.ts",
+      "find": "      if (!(e instanceof RunJournalReplayRaced) || attempt >= OWN_REPLAY_ATTEMPTS) throw e;",
+      "replace": "      throw e;",
+      "expectRed": "no branch fails when one of the drive's step reads loses a round to another reader",
+      "cell": "no branch fails when one of the drive's step reads loses a round to another reader"
+    },
+    {
+      "name": "RH2: the replay bound grows by one round",
+      "file": "implementations/runtime/src/journal-store.ts",
+      "find": "export const OWN_REPLAY_ATTEMPTS = 3;",
+      "replace": "export const OWN_REPLAY_ATTEMPTS = 4;",
+      "expectRed": "a step read that loses every round fails with the race after three replays, not a fourth",
+      "cell": "a step read that loses every round fails with the race after three replays, not a fourth"
+    },
+    {
+      "name": "RH3: the replay bound shrinks by one round",
+      "file": "implementations/runtime/src/journal-store.ts",
+      "find": "export const OWN_REPLAY_ATTEMPTS = 3;",
+      "replace": "export const OWN_REPLAY_ATTEMPTS = 2;",
+      "expectRed": "a step read that loses two rounds replays a third time and reads the run",
+      "cell": "a step read that loses two rounds replays a third time and reads the run"
+    },
+    {
+      "name": "RH4: every failure of a step read is replayed, not only the race",
+      "file": "implementations/runtime/src/journal-store.ts",
+      "find": "      if (!(e instanceof RunJournalReplayRaced) || attempt >= OWN_REPLAY_ATTEMPTS) throw e;",
+      "replace": "      if (attempt >= OWN_REPLAY_ATTEMPTS) throw e;",
+      "expectRed": "a step read that fails for any other reason raises that failure without replaying again",
+      "cell": "a step read that fails for any other reason raises that failure without replaying again"
+    },
+    {
+      "name": "RH5: the step reads go back to the unretried replay",
+      "file": "implementations/runtime/src/run-scope-authority.ts",
+      "find": "import { replayOwnJournal } from \"./journal-store.js\";",
+      "replace": "import { replayRunJournal as replayOwnJournal } from \"@cotal-ai/core\";",
+      "expectRed": "no branch fails when one of the drive's step reads loses a round to another reader",
+      "cell": "no branch fails when one of the drive's step reads loses a round to another reader"
+    },
+    {
+      "name": "RH6: the no-record diagnostic goes back to the unretried replay",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "import { RunJournalStore, replayOwnJournal } from \"./journal-store.js\";",
+      "replace": "import { RunJournalStore } from \"./journal-store.js\";\nimport { replayRunJournal as replayOwnJournal } from \"@cotal-ai/core\";",
+      "expectRed": "and it still releases the run naming a journal that was activated and never pinned",
+      "cell": "and it still releases the run naming a journal that was activated and never pinned"
+    },
+    {
+      "name": "RH7: replays under one takeover id run concurrently again, sharing one durable",
+      "file": "packages/core/src/run-journal.ts",
+      "find": "  const mine = ahead === undefined ? body() : ahead.then(body);",
+      "replace": "  void ahead;\n  const mine = body();",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-host-replay",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "no branch fails while status reads the drive's own takeover id",
+      "cell": "no branch fails while status reads the drive's own takeover id"
+    },
+    {
+      "name": "RH8: CONTROL (expect KILLED): the freshness guard stops refusing, so a tail is read as the run",
+      "file": "packages/core/src/run-journal.ts",
+      "find": "  if (!replayConsumerIsFresh(info)) {",
+      "replace": "  if (!replayConsumerIsFresh(info) && false) {",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-host-replay",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "a step read that loses every round fails with the race after three replays, not a fourth",
+      "cell": "a step read that loses every round fails with the race after three replays, not a fourth",
+      "note": "Proves the suite reads the rebuilt core rather than a stale dist, so RH7's verdict is about the lock and not about module resolution."
+    }
+  ],
+  "redundant": [
+    {
+      "name": "the authority's own read chain is removed",
+      "file": "implementations/runtime/src/run-scope-authority.ts",
+      "find": "    const reading = this.reading.then(() => this.readJournal());",
+      "found": "2026-09-17",
+      "why": "SURVIVED three runs of three, each paired in the same run with RH5 (same file) as its control, which was KILLED every time. With the core per-durable lock in place, every read the authority makes already waits for the previous read of the same durable, so dropping the authority's own chain changes no order a cell can see. It becomes observable only with RH7 applied too: with both edits and core rebuilt, three runs of three failed both panels before any ask parked and before any status read was made, with block 1's branches recording L4000 `consumer deleted` (two runs) or an incomplete replay (one run). That is two mutations, not one, so it is recorded here rather than registered."
+    }
+  ]
+}

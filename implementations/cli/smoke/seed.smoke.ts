@@ -17,499 +17,143 @@
  * Requires the binary built (`pnpm --filter cotal-ai... build`); `pnpm smoke:seed` does that first.
  * Run: pnpm smoke:seed
  */
-import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { delimiter, dirname, join, posix, win32 } from "node:path";
-import { defaultAgentType } from "@cotal-ai/workspace";
-import { isPathSpec } from "../src/commands/ext.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { availableParallelism, tmpdir } from "node:os";
+import { join } from "node:path";
+import { runFiles, emitSentinel } from "@cotal-ai/smoke-kit";
+import { existsSync, mkdirSync, writeFileSync, dirname, posix, win32, defaultAgentType, isPathSpec, seedGeneration, seedStorePath, stageSeedPayload, check, cotal, freshCfg, writeJson, track, counts, cleanupScenario } from "./seed-cases/harness.js";
 
-const REPO = join(import.meta.dirname, "..", "..", "..");
-const BIN = join(REPO, "bin", "dist", "cotal.js");
-if (!existsSync(BIN)) {
-  console.error(`✗ ${BIN} missing — build first: pnpm --filter cotal-ai... build`);
-  process.exit(1);
-}
+try {
+  // ── defaultAgentType (unit) ──────────────────────────────────────────────────────────────────────
+  check("defaultAgentType defaults to claude", defaultAgentType("claude", {}) === "claude");
+  check("COTAL_DEFAULT_AGENT overrides", defaultAgentType("claude", { COTAL_DEFAULT_AGENT: "opencode" }) === "opencode");
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
+  // ── isPathSpec (unit, cross-platform) — the seed-store spec is an ABSOLUTE path on both platforms ──
+  // Injected win32/posix isAbsolute so the classification is proven for Windows drive/UNC paths on any CI.
+  check("path spec: Windows drive-absolute (the Windows seed-store spec) classifies as a path", isPathSpec("C:\\Users\\r\\cotal\\seed\\store\\0.1.0\\claude", win32.isAbsolute));
+  check("path spec: Windows UNC classifies as a path", isPathSpec("\\\\server\\share\\ext", win32.isAbsolute));
+  check("path spec: POSIX absolute (the POSIX seed-store spec) classifies as a path", isPathSpec("/home/r/.config/cotal/seed/store/0.1.0/claude", posix.isAbsolute));
+  check("path spec: relative classifies as a path", isPathSpec("./local-ext", posix.isAbsolute) && isPathSpec(".\\local-ext", win32.isAbsolute));
+  check("path spec: a registry name is NOT a path (scoped)", !isPathSpec("@cotal-ai/connector-x", win32.isAbsolute) && !isPathSpec("@cotal-ai/connector-x", posix.isAbsolute));
+  check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("connector-x@1.2.3", win32.isAbsolute) && !isPathSpec("connector-x@1.2.3", posix.isAbsolute));
+
+  // ── seed-store generation path safety (unit) ──────────────────────────────────────────────────────
+  {
+    const cfg = track(freshCfg());
+    const storeRoot = join(cfg, "cotal", "seed", "store");
+    const error = (run: () => unknown): string => {
+      try {
+        run();
+        return "";
+      } catch (e) {
+        return (e as Error).message;
+      }
+    };
+    const priorConfig = process.env.XDG_CONFIG_HOME;
+    const priorArgv = process.argv[1];
+    process.env.XDG_CONFIG_HOME = cfg;
+    const craftedRoot = join(cfg, "crafted-cli");
+    const craftedEntry = join(craftedRoot, "dist", "cotal.js");
+    mkdirSync(dirname(craftedEntry), { recursive: true });
+    writeFileSync(craftedEntry, "");
+    const craftedGeneration = (generation: string): string => {
+      writeJson(join(craftedRoot, "package.json"), { name: "cotal-ai", version: generation });
+      process.argv[1] = craftedEntry;
+      return error(() => seedGeneration());
+    };
+    const generationTraversal = craftedGeneration("../../escaped");
+    check("seed generation: reconcile input refuses a traversal version before any write", /not plausible semver/.test(generationTraversal) && generationTraversal.includes("package.json"), generationTraversal);
+    const generationDotSegment = craftedGeneration("0.36.0+..");
+    check("seed generation: reconcile input refuses a semver build-metadata dot segment", /"\.\." segment/.test(generationDotSegment), generationDotSegment);
+    const generationSeparator = craftedGeneration("0.36.0+safe/escaped");
+    check("seed generation: reconcile input refuses a semver build-metadata separator", /path separator/.test(generationSeparator), generationSeparator);
+    const generationWindowsSeparator = craftedGeneration("0.36.0+safe\\escaped");
+    check("seed generation: reconcile input refuses a Windows build-metadata separator", /path separator/.test(generationWindowsSeparator), generationWindowsSeparator);
+    writeJson(join(craftedRoot, "package.json"), { name: "cotal-ai", version: "0.36.0" });
+    check("seed generation: normal version remains accepted", seedGeneration() === "0.36.0");
+    process.argv[1] = priorArgv;
+    const traversal = error(() => seedStorePath("../../escaped", "claude"));
+    check("seed path: containment refuses a traversal destination before a write", /not strictly inside/.test(traversal) && traversal.includes(storeRoot), traversal);
+    const buildTraversal = error(() => seedStorePath("0.36.0+../../../escaped", "claude"));
+    check("seed path: containment refuses a semver build-metadata traversal", /not strictly inside/.test(buildTraversal), buildTraversal);
+
+    // Bypass seedGeneration deliberately: containment is the writer's second guard, before its first
+    // remove/copy/rename/announce, even if a future caller supplies an unchecked generation.
+    const outside = join(cfg, "cotal", "escaped", "claude");
+    const stageTraversal = error(() => stageSeedPayload("../../escaped", "claude", { force: true }));
+    check("seed path: staging containment refuses traversal before any write", /not strictly inside/.test(stageTraversal) && !existsSync(outside), stageTraversal);
+
+    const control = seedStorePath("0.36.0", "claude");
+    check("seed path: a normal generation remains under its store root", control === join(storeRoot, "0.36.0", "claude"), control);
+    if (priorConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorConfig;
   }
-};
-
-interface Run {
-  status: number;
-  stdout: string;
-  stderr: string;
+} finally {
+  cleanupScenario();
 }
-// The harness itself may run inside a supervised seat whose environment carries operational
-// COTAL_* state — COTAL_SKIP_CONNECTOR_SEED in particular suppresses the very auto-seed under
-// test — so the CLI under test always gets a COTAL_*-scrubbed base env. Cells that need a
-// COTAL_* var (the forged-marker cells) inject it deliberately on top.
-const HOST_ENV: Record<string, string | undefined> = Object.fromEntries(
-  Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")),
-);
-function cotal(cfg: string, args: string[], extraEnv: Record<string, string> = {}): Run {
-  const r = spawnSync("node", [BIN, ...args], {
-    encoding: "utf8",
-    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1", ...extraEnv },
+
+const files = [
+  "first-boot.smoke.ts",
+  "supervise.smoke.ts",
+  "removal.smoke.ts",
+  "cursor-repair.smoke.ts",
+  "manifest-reset.smoke.ts",
+  "manifest-repair.smoke.ts",
+  "invalid-stamp.smoke.ts",
+  "corrupt-stamp.smoke.ts",
+  "recovery-obligation.smoke.ts",
+  "malformed-recovery.smoke.ts",
+  "partial-tear.smoke.ts",
+  "authority-union.smoke.ts",
+  "same-generation.smoke.ts",
+  "store-gc.smoke.ts",
+  "operator-pinned.smoke.ts",
+  "forged-environment.smoke.ts",
+  "ambiguous-marker.smoke.ts",
+  "parallel-boots.smoke.ts",
+  "symlinked-bin.smoke.ts",
+  "downgrade.smoke.ts",
+  "downgrade-hint.smoke.ts"
+];
+const excluded: Record<string, string> = {};
+if (process.platform === "win32") {
+  for (const file of ["symlinked-bin.smoke.ts", "downgrade-hint.smoke.ts"]) {
+    files.splice(files.indexOf(file), 1);
+    excluded[file] = "Unix executable/symlink scenario; unchanged Windows exclusion";
+  }
+}
+
+const scratch = mkdtempSync(join(tmpdir(), "seed-run-"));
+const cleanupRun = (): void => rmSync(scratch, { recursive: true, force: true });
+try {
+  const pending = runFiles({
+    cwd: join(import.meta.dirname, "..", "..", ".."),
+    dir: "implementations/cli/smoke/seed-cases",
+    files,
+    excluded,
+    env: {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+      TMPDIR: scratch,
+      COTAL_TEST_JOBS: process.env.COTAL_TEST_JOBS ?? (availableParallelism() >= 4 ? "3" : "2"),
+      COTAL_TEST_TIMEOUT_MS: process.env.COTAL_TEST_TIMEOUT_MS ?? "420000",
+    },
   });
-  return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
-}
-function fakeCotal(path: string, version: string): void {
-  mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' 'cotal-ai ${version}'\n`);
-  chmodSync(path, 0o755);
-}
-const freshCfg = (): string => mkdtempSync(join(tmpdir(), "cotal-seed-smoke-"));
-const seedDir = (cfg: string) => join(cfg, "cotal", "seed");
-const manifestPath = (cfg: string) => join(cfg, "cotal", "extensions", "extensions.json");
-const readJson = (p: string) => JSON.parse(readFileSync(p, "utf8"));
-const writeJson = (p: string, v: unknown) => writeFileSync(p, JSON.stringify(v));
-const listNames = (cfg: string): string[] => {
-  const out = cotal(cfg, ["ext", "list"]).stdout;
-  return ["claude", "opencode", "codex", "hermes", "jcode", "pi"].filter((n) => out.includes(`connector:${n}`));
-};
-const cleanup: string[] = [];
-const track = <T extends string>(c: T): T => (cleanup.push(c), c);
-
-// ── defaultAgentType (unit) ──────────────────────────────────────────────────────────────────────
-check("defaultAgentType defaults to claude", defaultAgentType("claude", {}) === "claude");
-check("COTAL_DEFAULT_AGENT overrides", defaultAgentType("claude", { COTAL_DEFAULT_AGENT: "opencode" }) === "opencode");
-
-// ── isPathSpec (unit, cross-platform) — the seed-store spec is an ABSOLUTE path on both platforms ──
-// Injected win32/posix isAbsolute so the classification is proven for Windows drive/UNC paths on any CI.
-check("path spec: Windows drive-absolute (the Windows seed-store spec) classifies as a path", isPathSpec("C:\\Users\\r\\cotal\\seed\\store\\0.1.0\\claude", win32.isAbsolute));
-check("path spec: Windows UNC classifies as a path", isPathSpec("\\\\server\\share\\ext", win32.isAbsolute));
-check("path spec: POSIX absolute (the POSIX seed-store spec) classifies as a path", isPathSpec("/home/r/.config/cotal/seed/store/0.1.0/claude", posix.isAbsolute));
-check("path spec: relative classifies as a path", isPathSpec("./local-ext", posix.isAbsolute) && isPathSpec(".\\local-ext", win32.isAbsolute));
-check("path spec: a registry name is NOT a path (scoped)", !isPathSpec("@cotal-ai/connector-x", win32.isAbsolute) && !isPathSpec("@cotal-ai/connector-x", posix.isAbsolute));
-check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("connector-x@1.2.3", win32.isAbsolute) && !isPathSpec("connector-x@1.2.3", posix.isAbsolute));
-
-// ── 1. first-run auto-seed + state files ─────────────────────────────────────────────────────────
-{
-  const cfg = track(freshCfg());
-  const first = cotal(cfg, ["ext", "list"]); // the auto-seed boot; surface its output if it fails
-  const names = ["claude", "opencode", "codex", "hermes", "jcode", "pi"].filter((n) => first.stdout.includes(`connector:${n}`));
-  if (names.length !== 6) console.log(`[diag] auto-seed status=${first.status}\n--stdout--\n${first.stdout}\n--stderr--\n${first.stderr}`);
-  check("auto-seed: all six connectors seeded on first command", names.length === 6, names);
-  check("auto-seed: the web dashboard seeded on first command (command:web)", first.stdout.includes("command:web"), first.stdout);
-  const sd = seedDir(cfg);
-  check("auto-seed: authority/witness/stamp written", ["authority.json", "witness.json", "stamp.json"].every((f) => existsSync(join(sd, f))));
-  const ever = readJson(join(sd, "authority.json")).everSeeded.slice().sort();
-  check("auto-seed: authority records all seven first-party exts", ever.join(",") === "claude,codex,hermes,jcode,opencode,pi,web", ever);
-
-  // The operator-global seed-store write must not be silent (#593): re-seeding `~/.config/cotal/seed/store`
-  // from a non-released checkout makes those bytes the machine-wide payload for the version key, so the
-  // reconcile announces each materialization with its path on the provenance channel (stderr).
-  const storeRoot = join(cfg, "cotal", "seed", "store");
-  // The EXACT destination, not merely the store root: a line naming the root, or a sibling under it,
-  // would satisfy a substring check while no longer naming the directory that was actually written.
-  const generation = readJson(join(sd, "stamp.json")).generation;
-  const openCodePayload = join(storeRoot, generation, "opencode");
-  check("provenance: the machine-wide seed-store write is announced with its path (not silent)",
-    first.stderr.includes("wrote operator-global seed store payload") && first.stderr.includes(storeRoot),
-    first.stderr);
-  check("provenance: the announced destination is the payload directory itself, not just the store root",
-    first.stderr.includes(`operator-global seed store payload (opencode): ${openCodePayload}`) && existsSync(join(openCodePayload, "package.json")),
-    first.stderr);
-
-  // 2. idempotent no-op: stamp untouched on a second boot, and NO seed-store write is announced, since
-  // the announce tracks a real materialization, not every boot (the fast path copies nothing).
-  const m1 = statSync(join(sd, "stamp.json")).mtimeMs;
-  const second = cotal(cfg, ["ext", "list"]);
-  const m2 = statSync(join(sd, "stamp.json")).mtimeMs;
-  check("idempotent: stamp untouched across boots (fast-path, no re-seed)", m1 === m2);
-  check("provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)",
-    !second.stderr.includes("seed store payload"), second.stderr);
-}
-
-// ── direct `supervise` (the agent supervisor) SEEDS on a fresh config — it is NOT a skipped daemon ─
-{
-  const cfg = track(freshCfg());
-  const officials = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-codex", "@cotal-ai/connector-hermes", "@cotal-ai/connector-jcode", "@cotal-ai/pi"];
-  const seededOnDisk = (): number => {
-    try {
-      return (readJson(manifestPath(cfg)).extensions as { pkg: string }[]).filter((e) => officials.includes(e.pkg)).length;
-    } catch {
-      return 0;
-    }
-  };
-  // A direct `cotal supervise` is a USER command, not a spawner child, so it must run the first-run
-  // seed before it would launch any agent. Point it at an unreachable broker; the boot-gate seed runs
-  // BEFORE the connect attempt, so the connectors appear regardless of the connect outcome — poll the
-  // manifest on disk (not `ext list`, which would itself seed) and kill the daemon once they exist.
-  const child = spawn("node", [BIN, "supervise", "--space", "seedsmoke", "--server", "nats://127.0.0.1:59998"], {
-    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
-    stdio: "ignore",
-  });
-  const deadline = Date.now() + 90000;
-  // Wait for the COMPLETE seed commit (the stamp lands after all seven extensions + authority),
-  // not the connector subtotal — killing mid-commit would tear the web seed / cursor state.
-  while (Date.now() < deadline && !(seededOnDisk() >= 6 && existsSync(join(seedDir(cfg), "stamp.json"))))
-    await new Promise((r) => setTimeout(r, 1000));
-  child.kill("SIGKILL");
-  check("direct `supervise` seeds all six connectors on a fresh config (public command, not exempted)", seededOnDisk() === 6);
-}
-
-// ── 3. removability + removed-stays-removed ──────────────────────────────────────────────────────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  const bad = cotal(cfg, ["ext", "remove", "connector:hermes"]);
-  check("remove rejects a bad ref (provides-id) loudly", bad.status !== 0 && /no installed extension/i.test(bad.stderr), bad.stderr);
-  cotal(cfg, ["ext", "remove", "@cotal-ai/connector-hermes"]);
-  check("remove drops the connector", !listNames(cfg).includes("hermes"));
-  listNames(cfg); // reconcile again
-  check("removed connector stays removed across reconcile", !listNames(cfg).includes("hermes"));
-  const ever = readJson(join(seedDir(cfg), "authority.json")).everSeeded;
-  check("authority still records the removed connector as ever-seeded", ever.includes("hermes"));
-}
-
-// ── 5. crash cursor → auto fails loud → --repair re-installs ──────────────────────────────────────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  cotal(cfg, ["ext", "remove", "@cotal-ai/connector-hermes"]);
-  writeJson(join(seedDir(cfg), "reconcile.cursor.json"), { nonce: "deadbeef", package: "hermes", phase: "add" });
-  const auto = cotal(cfg, ["ext", "list"]);
-  check("crash cursor: auto boot fails loud (interrupted)", auto.status !== 0 && /interrupted/i.test(auto.stderr), auto.stderr);
-  const rep = cotal(cfg, ["ext", "seed", "--repair"]);
-  check("crash cursor: --repair exits 0", rep.status === 0, rep.stderr);
-  check("crash cursor: --repair re-installed the interrupted connector", listNames(cfg).includes("hermes"));
-  check("crash cursor: cursor cleared only after a verified re-install", !existsSync(join(seedDir(cfg), "reconcile.cursor.json")));
-}
-
-// ── 6. corrupt manifest → --reset quarantines + rebuilds ─────────────────────────────────────────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  writeFileSync(manifestPath(cfg), "{{ not json");
-  const auto = cotal(cfg, ["ext", "list"]);
-  check("corrupt manifest: auto boot fails loud", auto.status !== 0);
-  const reset = cotal(cfg, ["ext", "seed", "--reset"]);
-  check("corrupt manifest: --reset exits 0 (does not wedge on the same read)", reset.status === 0, reset.stderr);
-  check("corrupt manifest: --reset reports the quarantine", /quarantine/i.test(reset.stderr), reset.stderr);
-  check("corrupt manifest: --reset rebuilt all six", listNames(cfg).length === 6);
-  const quarantined = readdirSync(join(cfg, "cotal", "extensions")).some((f) => f.includes(".corrupt."));
-  check("corrupt manifest: moved aside (.corrupt.*)", quarantined);
-}
-
-// ── 4. corrupt manifest with connectors still on disk → --repair rebuilds (not "kept removed") ────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  writeFileSync(manifestPath(cfg), "{ broken");
-  const rep = cotal(cfg, ["ext", "seed", "--repair"]);
-  check("on-disk rebuild: --repair exits 0 over a corrupt manifest", rep.status === 0, rep.stderr);
-  check("on-disk rebuild: connectors still on disk are rebuilt, not reported removed", listNames(cfg).length === 6);
-}
-
-// ── 4b. an invalid version stamp does not make --repair loop forever (semver fail-loud + recover) ─
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  writeJson(join(seedDir(cfg), "stamp.json"), { generation: "0.bad.0" }); // parses as JSON, not as semver
-  const auto = cotal(cfg, ["ext", "list"]);
-  check("invalid stamp: auto boot fails loud (prescribes --repair)", auto.status !== 0 && /repair/i.test(auto.stderr), auto.stderr);
-  const rep = cotal(cfg, ["ext", "seed", "--repair"]);
-  check("invalid stamp: --repair recovers instead of re-emitting the same error (no loop)", rep.status === 0, rep.stderr);
-  const gen = readJson(join(seedDir(cfg), "stamp.json")).generation;
-  check("invalid stamp: --repair wrote a valid stamp", /^\d+\.\d+\.\d+/.test(gen), gen);
-}
-
-// ── 4c. a SYNTACTICALLY corrupt stamp (invalid JSON) does not wedge --repair/--reset ──────────────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  writeFileSync(join(seedDir(cfg), "stamp.json"), "{ not json"); // readStamp() itself would throw
-  const rep = cotal(cfg, ["ext", "seed", "--repair"]);
-  check("corrupt-JSON stamp: --repair quarantines it and recovers (no wedge)", rep.status === 0, rep.stderr);
-  const stampGen = rep.status === 0 ? readJson(join(seedDir(cfg), "stamp.json")).generation : "";
-  check("corrupt-JSON stamp: a valid stamp is written", /^\d+\.\d+\.\d+/.test(stampGen), stampGen);
-}
-
-// ── 4d. a durable recovery obligation (repair SIGKILL'd after quarantine) is honored, not forgotten ─
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  // Simulate a --repair that recorded its obligation, quarantined state, then died before reinstalling:
-  // a torn connector on disk + a durable recovery marker. The obligation must survive to the next run.
-  const mainEntry = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-hermes", "dist", "index.js");
-  if (existsSync(mainEntry)) {
-    rmSync(mainEntry, { force: true });
-    writeJson(join(seedDir(cfg), "reconcile.recovery.json"), { rebuildFromDisk: true, repairAllSeeded: true });
-    const auto = cotal(cfg, ["ext", "list"]);
-    check("recovery obligation: an auto boot fails loud (does not stamp success over it)", auto.status !== 0 && /interrupted/i.test(auto.stderr), auto.stderr);
-    const rep = cotal(cfg, ["ext", "seed", "--repair"]);
-    check("recovery obligation: --repair honors it and restores the torn connector", rep.status === 0 && existsSync(mainEntry), rep.stderr);
-    check("recovery obligation: the marker is cleared only after a successful commit", !existsSync(join(seedDir(cfg), "reconcile.recovery.json")));
+  process.once("exit", cleanupRun);
+  const result = await pending;
+  const unit = counts();
+  if (!result.ok || unit.failed) {
+    // A nonzero child exit does not return its printed assertion tally. Do not
+    // advertise a partial sum as the complete failed run's assertion count.
+    console.log("seed smoke: FAILED; see complete per-scenario output above");
+    process.exitCode = 1;
   } else {
-    check("recovery obligation: hermes main entry present to tear", false, mainEntry);
+    const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
+    const expected = process.platform === "win32" ? 73 : 80;
+    if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);
+    console.log(`seed smoke: ${passed} passed, 0 failed`);
+    emitSentinel({ passed, failed: 0 });
   }
+} finally {
+  process.off("exit", cleanupRun);
+  cleanupRun();
 }
-
-// ── 4e. a malformed ({}) recovery journal + a damaged NON-main artifact recovers conservatively ──
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  // Delete a required non-main artifact (main survives, so a main-only check would miss it) and leave
-  // a malformed `{}` recovery marker. A `{}` must be treated as CORRUPT (not an empty obligation), so
-  // --repair reinstalls conservatively and restores the artifact rather than clearing over damage.
-  const bundle = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-opencode", "dist", "plugin.bundle.js");
-  if (existsSync(bundle)) {
-    rmSync(bundle, { force: true });
-    writeJson(join(seedDir(cfg), "reconcile.recovery.json"), {}); // parses, but names no obligation
-    const auto = cotal(cfg, ["ext", "list"]);
-    check("malformed recovery: an auto boot fails loud (a marker exists)", auto.status !== 0 && /interrupted/i.test(auto.stderr), auto.stderr);
-    const rep = cotal(cfg, ["ext", "seed", "--repair"]);
-    check("malformed recovery: --repair recovers conservatively and restores the non-main artifact", rep.status === 0 && existsSync(bundle), rep.stderr);
-    check("malformed recovery: marker cleared only after success", !existsSync(join(seedDir(cfg), "reconcile.recovery.json")));
-  } else {
-    check("malformed recovery: opencode bundle present to damage", false, bundle);
-  }
-}
-
-// ── 2b. a `{}` cursor with a missing on-disk package is repaired, not falsely reported success ────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  // PARTIAL tear: keep the manifest entry AND package.json, delete only the built entry (dist/index.js),
-  // and leave an unactionable `{}` cursor. --repair must conservatively reinstall+verify every seeded
-  // built-in (a surviving package.json is NOT proof of integrity) — never clear the cursor + succeed.
-  const pkgDir = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-hermes");
-  const mainEntry = join(pkgDir, "dist", "index.js");
-  if (existsSync(mainEntry)) {
-    rmSync(mainEntry, { force: true }); // package.json survives; the built entry does not
-    writeJson(join(seedDir(cfg), "reconcile.cursor.json"), {}); // parses, but names no package
-    const rep = cotal(cfg, ["ext", "seed", "--repair"]);
-    check("partial tear: --repair exits 0", rep.status === 0, rep.stderr);
-    check("partial tear: the torn connector's entry file is actually restored", existsSync(mainEntry));
-  } else {
-    check("partial tear: hermes main entry present to tear", false, mainEntry);
-  }
-}
-
-// ── 8. truncated authority never resurrects a removed connector ──────────────────────────────────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  cotal(cfg, ["ext", "remove", "@cotal-ai/connector-hermes"]);
-  writeJson(join(seedDir(cfg), "authority.json"), { everSeeded: ["claude", "opencode", "pi"] }); // drop hermes
-  rmSync(join(seedDir(cfg), "stamp.json"), { force: true }); // force a real reconcile
-  cotal(cfg, ["ext", "seed"]);
-  check("authority union: a truncated authority does not resurrect a removed connector", !listNames(cfg).includes("hermes"));
-}
-
-// ── 8b. a built-in added at an UNCHANGED generation still seeds (fast-path coverage) ─────────────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  // Simulate a prefix stamped BEFORE codex joined the built-in set: strip codex from the manifest,
-  // its installed files, and BOTH authority records (never-seeded, not removed) — while the stamp
-  // stays at the CURRENT generation. The old generation-only fast path NOOPed forever here.
-  const mp = manifestPath(cfg);
-  const m = readJson(mp);
-  m.extensions = m.extensions.filter((e: { pkg: string }) => e.pkg !== "@cotal-ai/connector-codex");
-  writeJson(mp, m);
-  rmSync(join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-codex"), { recursive: true, force: true });
-  for (const f of ["authority.json", "authority.bak.json"]) {
-    const p2 = join(seedDir(cfg), f);
-    if (existsSync(p2)) {
-      const a = readJson(p2);
-      a.everSeeded = (a.everSeeded as string[]).filter((n) => n !== "codex");
-      writeJson(p2, a);
-    }
-  }
-  // Drive it through `cotal` directly rather than listNames(), because this block is the one place a
-  // command reaches the stager with an INTACT payload already in the store: codex was stripped from
-  // the manifest and from disk but never from `store/<generation>/codex`, so the re-seed takes the
-  // stager's idempotent early return. That path copies nothing, so it must announce nothing, and the
-  // only way to see that is to read this command's stderr.
-  const reseed = cotal(cfg, ["ext", "list"]); // any auto command must notice the unaccounted built-in and seed it
-  const names = ["claude", "opencode", "codex", "hermes", "pi"].filter((n) => reseed.stdout.includes(`connector:${n}`));
-  check("same-generation built-in add: auto reconcile seeds the missing built-in", names.includes("codex"), names);
-  check("provenance: a re-seed that reuses an intact payload announces no seed-store write",
-    !reseed.stderr.includes("seed store payload"), reseed.stderr);
-}
-
-// ── 8c. the store's DESTRUCTIVE step is announced too (#593) ─────────────────────────────────────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg); // seed once, so a live generation exists beside the one we plant
-  const sd = seedDir(cfg);
-  const storeRoot = join(sd, "store");
-  // Plant an unreferenced older generation: no manifest entry installs from it, which is exactly the
-  // condition gcSeedStore removes on. It is a directory with a payload in it, not an empty shell, so
-  // the removal is a real recursive delete of operator-global bytes.
-  const stale = join(storeRoot, "0.0.1-stale", "opencode");
-  mkdirSync(stale, { recursive: true });
-  writeJson(join(stale, "package.json"), { name: "@cotal-ai/connector-opencode", version: "0.0.1-stale" });
-  const forced = cotal(cfg, ["ext", "seed", "--force"]);
-  check("gc: the unreferenced generation is actually removed", forced.status === 0 && !existsSync(join(storeRoot, "0.0.1-stale")), forced.stderr);
-  check("provenance: the machine-wide seed-store DELETE is announced with its path (not silent)",
-    forced.stderr.includes("removed operator-global seed store generation (0.0.1-stale)") &&
-      forced.stderr.includes(join(storeRoot, "0.0.1-stale")),
-    forced.stderr);
-}
-
-// ── 9. operator-pinned official entry not auto-refreshed on upgrade (source-aware) ───────────────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  const mp = manifestPath(cfg);
-  const m = readJson(mp);
-  for (const e of m.extensions) if (e.pkg === "@cotal-ai/connector-hermes") { delete e.source; e.version = "9.9.9"; e.spec = "@cotal-ai/connector-hermes@9.9.9"; }
-  writeJson(mp, m);
-  rmSync(join(seedDir(cfg), "stamp.json"), { force: true }); // simulate an upgrade → a refresh pass
-  cotal(cfg, ["ext", "seed"]);
-  const hv = readJson(mp).extensions.find((e: { pkg: string }) => e.pkg === "@cotal-ai/connector-hermes")?.version;
-  check("source-aware: operator-pinned official version preserved (not auto-refreshed)", hv === "9.9.9", hv);
-}
-
-// ── 2. forged COTAL_EXT_SEEDING gets no seed-child treatment ──────────────────────────────────────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  const gen = readJson(join(seedDir(cfg), "stamp.json")).generation;
-  cotal(cfg, ["ext", "remove", "@cotal-ai/connector-opencode"]);
-  const store = join(seedDir(cfg), "store", gen, "opencode");
-  if (existsSync(store)) {
-    cotal(cfg, ["ext", "add", store], { COTAL_EXT_SEEDING: "1", COTAL_EXT_SEEDING_PARENT: "1" });
-    const src = readJson(manifestPath(cfg)).extensions.find((e: { pkg: string }) => e.pkg === "@cotal-ai/connector-opencode")?.source;
-    check("forged env: a forged marker yields a normal operator add (no source:seeded)", src === undefined, src);
-  } else {
-    check("forged env: store payload present", false, store);
-  }
-}
-
-// ── 3b. ambiguous (pending, dead-parent) child marker is fail-loud ───────────────────────────────
-{
-  const cfg = track(freshCfg());
-  listNames(cfg);
-  // A real orphan leaves the cursor the parent journaled before spawning AND a pending marker whose
-  // parent PID is now dead (2147483646 is never a live reconcile parent) — the ambiguous window.
-  writeJson(join(seedDir(cfg), "reconcile.cursor.json"), { nonce: "x", package: "hermes", phase: "add" });
-  writeJson(join(seedDir(cfg), "reconcile.child.json"), { state: "pending", parentPid: 2147483646, nonce: "x", ts: 1 });
-  const auto = cotal(cfg, ["ext", "list"]);
-  check("ambiguous marker: auto boot fails loud (mid-flight, manual clear)", auto.status !== 0 && /mid-flight/i.test(auto.stderr), auto.stderr);
-}
-
-// ── 12. TRULY-PARALLEL first boots do not collide or falsely report "interrupted" ────────────────
-{
-  const cfg = track(freshCfg());
-  const boot = (): Promise<{ code: number; err: string }> =>
-    new Promise((resolve) => {
-      const p = spawn("node", [BIN, "ext", "list"], {
-        env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
-      });
-      let err = "";
-      p.stderr.on("data", (d) => (err += d.toString()));
-      p.on("close", (code) => resolve({ code: code ?? -1, err }));
-    });
-  // Launch several boots at once on a pristine prefix: exactly one seeds, the rest wait on the lock
-  // then no-op. None may collide, error, or falsely report "interrupted".
-  const results = await Promise.all([boot(), boot(), boot(), boot()]);
-  check("parallel boots: all exit 0 (one seeds, the rest wait then no-op)", results.every((r) => r.code === 0), results.map((r) => r.code));
-  check("parallel boots: none falsely reports 'interrupted'", !results.some((r) => /interrupted/i.test(r.err)));
-  check("parallel boots: exactly six connectors seeded (no double-seed)", listNames(cfg).length === 6);
-}
-
-// ── the GLOBAL-INSTALL shape: the binary reached through a bin SYMLINK ────────────────────────────
-// `npm i -g cotal-ai` publishes `<prefix>/bin/cotal` as a symlink INTO the package, and Node leaves
-// `process.argv[1]` pointing at the symlink, whose own parents hold no `package.json` and no
-// `seeded-connectors/`. Every other case here spawns the real `dist/cotal.js` (an entry that happens to
-// sit inside the package), so this is the only one that covers how an installed binary is actually run.
-// Skipped on Windows: npm publishes `.cmd`/`.ps1` shims there that exec the real path, so the symlink
-// shape does not exist, and unprivileged `symlinkSync` is EPERM regardless.
-if (process.platform !== "win32") {
-  const cfg = track(freshCfg());
-  const linkDir = track(mkdtempSync(join(tmpdir(), "cotal-seed-binlink-")));
-  const link = join(linkDir, "cotal");
-  symlinkSync(BIN, link);
-  const r = spawnSync("node", [link, "ext", "list"], {
-    encoding: "utf8",
-    env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
-  });
-  const out = r.stdout ?? "";
-  const names = ["claude", "opencode", "codex", "hermes", "jcode", "pi"].filter((n) => out.includes(`connector:${n}`));
-  if (names.length !== 6) console.log(`[diag] symlinked boot status=${r.status}\n--stdout--\n${out}\n--stderr--\n${r.stderr}`);
-  check("symlinked bin: boot resolves the generation (no 'cannot determine' fail)", !/cannot determine the seed generation/.test(r.stderr ?? ""), r.stderr);
-  check("symlinked bin: all six built-ins seeded", names.length === 6, names);
-  // The generation must be the cotal-ai VERSION, i.e. resolved through the link into the package —
-  // not some unrelated `package.json` found by walking up out of the link's own directory.
-  const version = readJson(join(REPO, "bin", "package.json")).version;
-  check("symlinked bin: generation is the cotal-ai version (walked from the real path)", readJson(join(seedDir(cfg), "stamp.json")).generation === version, version);
-  check("symlinked bin: payloads copied into that generation's durable store", existsSync(join(seedDir(cfg), "store", version)));
-}
-
-// ── an OLDER binary must refuse a store stamped NEWER, and write nothing ─────────────────────────
-// Without the refusal an older cotal misses the stamp fast path, refreshes nothing (the refresh
-// fires only when the running binary is strictly newer), and then writes its own older generation
-// over the stamp at the commit. The store ends up claiming a generation whose payloads are not the
-// ones installed, and the next command from the newer binary reinstalls every connector to stamp it
-// back, so two binaries alternating flap the store and pay a full reseed each way.
-//
-// The store is stamped 99.0.0 rather than running an actually-old build: a released older binary
-// does not carry this guard and never will, so pointing one at a newer store proves nothing about
-// the fix. 99.0.0 is newer than any binary that will ever run this suite, which is the same
-// comparison from the side the guard can actually defend.
-{
-  const cfg = track(freshCfg());
-  cotal(cfg, ["ext", "list"]); // seed it normally first
-  const stamp = join(seedDir(cfg), "stamp.json");
-  writeJson(stamp, { generation: "99.0.0" });
-  const before = readFileSync(stamp);
-  const storeBefore = readdirSync(join(seedDir(cfg), "store")).sort().join(",");
-
-  const r = cotal(cfg, ["ext", "list"]);
-  const said = `${r.stdout}${r.stderr}`;
-  check("downgrade: an older binary REFUSES a store stamped newer", r.status !== 0, r.status);
-  check("downgrade: the refusal names both generations", /is older than the seed store's generation 99\.0\.0/.test(said), said.slice(0, 300));
-  check(
-    "downgrade: the refusal names the way out",
-    /ext seed --force/.test(said) && !/ext seed --reset/.test(said),
-    said.slice(0, 300),
-  );
-  // The point of the guard is that it writes NOTHING, so assert the bytes, not just the exit code.
-  check("downgrade: stamp.json is byte-identical after the refusal", readFileSync(stamp).equals(before));
-  check("downgrade: no store generation added or removed", readdirSync(join(seedDir(cfg), "store")).sort().join(",") === storeBefore, storeBefore);
-
-  // A refusal that prescribes a fix has to have a working fix, or it is a wedge with instructions.
-  const force = cotal(cfg, ["ext", "seed", "--force"]);
-  check("downgrade: `ext seed --force` recovers the store", force.status === 0, force.stderr.slice(0, 300));
-  check("downgrade: the stamp is this binary's generation again", readJson(stamp).generation === readJson(join(REPO, "bin", "package.json")).version);
-  check("downgrade: ordinary commands work after the force rebuild", listNames(cfg).length === 6);
-}
-
-// ── downgrade recovery names a concrete executable only after proving its version ───────────────
-if (process.platform !== "win32") {
-  const cfg = track(freshCfg());
-  cotal(cfg, ["ext", "list"]);
-  const stamp = join(seedDir(cfg), "stamp.json");
-  writeJson(stamp, { generation: "99.0.0" });
-
-  const home = track(freshCfg());
-  const candidate = join(home, ".local", "bin", "cotal");
-  const reducedPath = [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter);
-  fakeCotal(candidate, "99.0.0");
-  const sufficient = cotal(cfg, ["ext", "list"], { HOME: home, PATH: reducedPath });
-  const sufficientOut = `${sufficient.stdout}${sufficient.stderr}`;
-  check("downgrade hint: finds the installer cotal even when reduced PATH omits ~/.local/bin", sufficientOut.includes(candidate), sufficientOut.slice(0, 400));
-  check("downgrade hint: names the version the executable proved", sufficientOut.includes("cotal-ai 99.0.0"), sufficientOut.slice(0, 400));
-
-  fakeCotal(candidate, "98.0.0");
-  const stale = cotal(cfg, ["ext", "list"], { HOME: home, PATH: reducedPath });
-  const staleOut = `${stale.stdout}${stale.stderr}`;
-  check("downgrade hint: never names a candidate below the store generation", !staleOut.includes(candidate) && /run the newer cotal/.test(staleOut), staleOut.slice(0, 400));
-}
-
-for (const c of cleanup) rmSync(c, { recursive: true, force: true });
-console.log(`\nseed smoke: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);

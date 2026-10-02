@@ -8,11 +8,11 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, ftruncateSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { parsePid, probeLiveness, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
 import type { SignalFn } from "./manager-proc.js";
 
 import { selfArgv } from "./self-exec.js";
@@ -147,17 +147,23 @@ export function claimAuthPidSlot(space: string): { fd: number } | { livePid: num
 }
 
 /** Start the provider's daemon command detached (pid + log space-scoped), stopped by `cotal down`.
- *  The pid slot is claimed exclusively FIRST ({@link claimAuthPidSlot}); a held or contested slot
- *  yields to the existing daemon (the caller's ready() poll adjudicates liveness). */
+ *  The pid slot is claimed exclusively before the spawn ({@link claimAuthPidSlot}); a held or
+ *  contested slot yields to the existing daemon (the caller's ready() poll adjudicates liveness). */
 function startAuthServiceDetached(space: string, server: string, command: string, extraArgs: string[] = []): number {
-  reclaimDeadLegacyPid(space); // a pre-hex crash leaves a dead legacy pidfile; clear it or the
-                               // canonical claim below produces the both-present wedge readPidPath refuses
+  // The entry is validated BEFORE any pidfile work (#1629). The claim below publishes a pidfile that
+  // already names THIS launcher, which is alive and is not an auth service, and the reclaim deletes a
+  // pre-hex record. A refusal after them left the root changed: the claimed record read as a running
+  // service, so a retry started nothing and waited on readiness with no daemon behind it, and
+  // teardown signalled whichever process held the launcher's pid.
+  //
+  // Then: a pre-hex crash leaves a dead legacy pidfile; clear it or the canonical claim produces the
+  // both-present wedge readPidPath refuses.
+  const [node, ...self] = selfArgv();
+  reclaimDeadLegacyPid(space);
   const slot = claimAuthPidSlot(space);
   if (slot === undefined) return 0;
   if ("livePid" in slot) return slot.livePid;
   try {
-    // Before the log is opened, for the reason startManagerDetached states (#1629).
-    const [node, ...self] = selfArgv();
     const fd = openSync(LOG_PATH(space), "a");
     // Internal child re-exec (the `up` that reached here already seeded); the auth service does not
     // launch agents, so it skips the connector seed on boot (a direct `cotal auth-service` still seeds).
@@ -168,15 +174,12 @@ function startAuthServiceDetached(space: string, server: string, command: string
     });
     closeSync(fd);
     child.unref();
-    // Replace the launcher pid with the daemon child's pid through the exclusively-created fd,
-    // never a re-open (truncate first: the fd position sits past the launcher pid).
-    ftruncateSync(slot.fd, 0);
-    writeSync(slot.fd, String(child.pid), 0);
-    // #969: pin the daemon child's pid to its process start. Written AFTER the pid content is the
-    // final one, so a torn pairing (pin names a different pid) is the crash window, never a launch
-    // state - and the verify below refuses a torn pairing loud.
-    writeIdentityPin(PID_PATH(space), child.pid ?? 0);
-    return child.pid ?? 0;
+    // Replace the launcher pid with the daemon child's pid: the pair is published by rename over
+    // the claimed name (#969/#1238), so a crash never leaves a torn pairing - the verify below
+    // refuses a torn pairing loud regardless.
+    if (!child.pid) throw new Error("auth service spawned with no pid");
+    writePidPair(PID_PATH(space), child.pid);
+    return child.pid;
   } finally {
     closeSync(slot.fd);
   }

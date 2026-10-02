@@ -30,6 +30,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { once } from "node:events";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { startBridgeServer } from "../src/bridge.js";
 
@@ -66,7 +68,7 @@ const emptyIdDelivery = (text: string): InboxItem => ({
   kind: "channel", channel: "general", mentionsMe: false, historical: false, text,
 });
 
-import type { AgentConfig } from "../src/config.js";
+import type { AgentConfig } from "@cotal-ai/connector-core";
 
 const config = {
   space: "hermes-empty-id", name: "Hermes", role: "reviewer",
@@ -75,7 +77,8 @@ const config = {
 };
 
 const agent = new FakeAgent();
-const bridge = startBridgeServer(agent as unknown as MeshAgent, config as AgentConfig, socketPath);
+const TOKEN = "empty-id-bridge-token";
+const bridge = startBridgeServer(agent as unknown as MeshAgent, config as AgentConfig, socketPath, TOKEN);
 
 try {
   for (let i = 0; i < 50; i++) {
@@ -104,14 +107,47 @@ try {
     throw new Error(`timed out waiting for bridge frame: ${JSON.stringify(frames)}`);
   };
 
-  client.write(JSON.stringify({ t: "subscribe" }) + "\n");
+  // ---- 0a) a subscribe with no token is dropped before it becomes the adapter ----
+  {
+    const raw = connect(socketPath);
+    await once(raw, "connect");
+    raw.write(JSON.stringify({ t: "subscribe" }) + "\n");
+    await once(raw, "close");
+    agent.emitIncoming(); // nothing to receive it: the connection never became the adapter
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(frames.length, 0, "no frame reaches a connection that never authenticated");
+  }
+
+  // ---- 0b) a tool frame from an unauthenticated connection gets no tool_result ----
+  {
+    const raw = connect(socketPath);
+    await once(raw, "connect");
+    let sawResult = false;
+    raw.setEncoding("utf8");
+    raw.on("data", (d) => { if (String(d).includes("tool_result")) sawResult = true; });
+    raw.write(JSON.stringify({ t: "tool", id: "x", name: "cotal_send", args: {} }) + "\n");
+    await once(raw, "close");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(sawResult, false, "a tool frame before auth gets no tool_result");
+  }
+
+  // ---- 0c) a subscribe with a wrong token is dropped ----
+  {
+    const raw = connect(socketPath);
+    await once(raw, "connect");
+    raw.write(JSON.stringify({ t: "subscribe", token: "wrong" }) + "\n");
+    await once(raw, "close");
+  }
+
+  client.write(JSON.stringify({ t: "subscribe", token: TOKEN }) + "\n");
 
   // ---- 1) an empty-id message is pumped like any other ----
   agent.items.push(emptyIdDelivery("first empty-id body"));
   agent.emitIncoming(); // the real MeshAgent fires "incoming" per buffered arrival
   const first = await waitFrame((f) => f.t === "incoming");
-  const firstMsg = first.msg as { id?: string; recvKey?: string };
+  const firstMsg = first.msg as { id?: string; recvKey?: string; historical?: boolean };
   assert.equal(firstMsg.id, "", "the empty wire id rides the wire item");
+  assert.strictEqual(firstMsg.historical, false, "the wire item carries the historical flag, so the sidecar can frame a backfill (#2205)");
   assert.ok(typeof firstMsg.recvKey === "string" && firstMsg.recvKey !== "", "the wire item carries a minted receive key");
 
   // ---- 2) the ack the sidecar sends (by receive key, wire id empty) clears the hold ----
@@ -130,7 +166,42 @@ try {
   assert.deepEqual(agent.drained, [firstMsg.recvKey, secondKey], "the second empty-id delivery is retired too: not a one-shot unwedge");
 
   client.destroy();
-  console.log("✓ hermes empty-id bridge: id-less deliveries pump, ack, and unwedge by receive key");
+
+  // ---- 4) the REAL Python client's ack retires the delivery (#2237) ----
+  // Cells 2-3 write the ack frame by hand, so they cannot see which field the shipped client
+  // puts the key in. Here the plugin's own BridgeClient subscribes, receives one item, and acks
+  // it through `delivered()` exactly as the adapter does; the bridge must drain that key.
+  const python = ["python3", "python"].find((bin) => spawnSync(bin, ["-c", ""], { stdio: "ignore" }).status === 0);
+  assert.ok(python, "python is on PATH, so the real client's ack can be driven at all");
+  const pluginDir = fileURLToPath(new URL("../plugin", import.meta.url));
+  const script = [
+    "import sys, threading",
+    "sys.path.insert(0, sys.argv[1])",
+    "from cotal.bridge_client import BridgeClient",
+    "c = BridgeClient(sys.argv[2])",
+    "done = threading.Event()",
+    "def on_incoming(m):",
+    "    c.delivered(m['recvKey'])",
+    "    done.set()",
+    "c.start(on_incoming)",
+    "sys.exit(0 if done.wait(10) else 3)",
+  ].join("\n");
+  agent.items.push(emptyIdDelivery("third body, acked by the real client"));
+  const thirdKey = agent.items[agent.items.length - 1].recvKey;
+  // Whatever runs this suite may be a managed agent session, so the inherited environment can carry
+  // a live credential and a live broker URL. Strip every COTAL_ key from the copy before the child
+  // sees it; the control token set below is the only one this client reads.
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
+  const py = spawn(python!, ["-c", script, pluginDir, socketPath], {
+    env: { ...childEnv, COTAL_CONTROL_TOKEN: TOKEN }, stdio: ["ignore", "inherit", "inherit"],
+  });
+  const [code] = (await once(py, "exit")) as [number | null];
+  assert.equal(code, 0, "the real client subscribed and surfaced the pending item");
+  for (let i = 0; i < 50 && !agent.drained.includes(thirdKey); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(agent.drained, [firstMsg.recvKey, secondKey, thirdKey], "the real client's delivered() ack names the receive key the bridge matches (#2237)");
+
+  console.log("✓ hermes empty-id bridge: unauthenticated connections are dropped; the legit client still receives incoming after authenticating; id-less deliveries pump, ack, and unwedge by receive key; the real Python client's ack retires its delivery");
 } finally {
   bridge.close();
   rmSync(dir, { recursive: true, force: true });

@@ -22,7 +22,7 @@ const runtime: Runtime = {
   spawn: () => handle,
   adopt: (candidate) => candidate.id === reference.id ? handle : (() => { throw new Error("unknown reference"); })(),
 };
-assert.equal(runtime.adopt(reference), handle);
+assert.equal(runtime.adopt!(reference), handle);
 
 const withoutAdopt: Runtime = {
   kind: "fixture",

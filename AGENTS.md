@@ -44,6 +44,7 @@ is current before changing behavior.
 pnpm cotal <cmd>   # run the CLI via tsx bin/cotal.ts (base + manager commands)
 pnpm smoke         # core smoke test
 pnpm smoke:ci      # security/protocol smoke suite (the CI gate); needs nats-server on PATH
+pnpm smoke:ci:offline # the gate minus the suites that start a stack or drive real processes; prints what it excluded, and is not the gate
 pnpm typecheck     # tsc --noEmit across all packages
 pnpm build         # tsc build across all packages
 ```
@@ -160,6 +161,12 @@ restore, so it records what it broke before it breaks it: the next run puts the 
 `node scripts/mutation-proof.mjs --recover` does only that. Red alone is not proof: an unrelated
 early failure is also red. And a killed mutation shows the test *depends* on that code — not that a
 real entry point *reaches* it; if the test builds its inputs by hand, prove that part separately.
+The fixture census (`pnpm smoke:mutation-fixtures`) refuses a mutation whose command builds the
+mutated package with no `afterRestore` that rebuilds it, because that run leaves a `dist/` compiled
+from the mutant.
+- **Every package's `typecheck` also runs a `tsconfig.smoke.json` over its smoke tree.** A new
+package with smoke files adds the same pair, because a smoke file that is typechecked by nothing
+runs green over real type errors.
 - **Keep the code clean and minimal.** No bloat, no overcomplication.
 - **Do only what is asked**, not more, not less. Do not add features or abstractions that are
 not explicitly requested or clearly needed.

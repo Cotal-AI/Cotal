@@ -41,8 +41,8 @@
  *   - The broker-side footprint (dm_/dlv_ durables, ACL row) is not asserted; the on-disk creds
  *     file is the asserted deprovision observable.
  *
- * Throwaway everything: own authed nats-server on an OS-assigned free port (ONE space - each
- * space reserves a 4 GiB artifact store on the broker's tmpfs store dir), sandboxed COTAL_HOME,
+ * Throwaway everything: own authed nats-server on an OS-assigned free port (ONE space is all the rig
+ * needs; the artifact Object Store reserves nothing, so the count is not a capacity choice), sandboxed COTAL_HOME,
  * scratch workspace root, kills only PIDs it spawned or that its own children wrote to pidfiles.
  * No live stack is touched, no `cotal up`/`down` anywhere. Needs nats-server on PATH.
  * Run: pnpm smoke:manager-stop-reap

@@ -2,8 +2,8 @@ import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOp
 import { divergentCwdAnchor, loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
-import { attachClient, detachKey, holdTerminal, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
+import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
 /**
@@ -16,18 +16,14 @@ import { completingFlagValue } from "../lib/completion.js";
 const nameFlag = (what: string) =>
   ({ name: "name", type: "string", value: "<n>", description: what }) as const;
 
-/** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
- *  ps/stop/attach so the three cannot drift. For stop and attach it is the seat-locality escape
- *  hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily the
- *  one that wins the class queue. */
-const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast" } as const;
 // #651: the same rows, two richer presentations. `--wide` stays human (one dim facts line per
 // seat); `--json` is the machine form (one JSON object per line, exactly the row the manager
 // sent). Mutually exclusive because they are two answers to "how should I read this".
 const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: cwd, pid, spawner, lifecycle uid, host/instance" } as const;
 const jsonFlag = { name: "json", type: "boolean", description: "machine-readable: one JSON object per seat per line (instance headers go to stderr)" } as const;
+const slotsFlag = { name: "slots", type: "boolean", description: "list durable static slot rows instead of live seats (#1274); mutually exclusive with --wide" } as const;
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
-export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag] as const satisfies readonly FlagSpec[];
+export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag, slotsFlag] as const satisfies readonly FlagSpec[];
 /** `--no-reconnect`: one session, exit when it ends, whatever ended it. The default reconnects,
  *  which is right for a person at a terminal and wrong for a script that wants a single run with a
  *  single exit code. */
@@ -99,6 +95,7 @@ type AgentRow = {
   // no model pin; a runtime that owns no real process has no pid).
   model?: string;
   variant?: string;
+  provider?: string;
   cwd?: string;
   pid?: number;
   spawner?: string;
@@ -340,8 +337,9 @@ function printAgentRow(r: AgentRow, indent = ""): void {
 /** Extra operational facts for `--wide`. Model and requested variant are already in the compact
  *  identity row, so repeating them here would make wide output noisier without adding provenance.
  *  Only fields the manager actually recorded print; lifecycle uid is required on every row. */
-export function agentWideFacts(r: Pick<AgentRow, "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host">): string[] {
+export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host">): string[] {
   const facts: string[] = [];
+  if (r.provider) facts.push(`provider ${r.provider}`);
   if (r.cwd) facts.push(`cwd ${r.cwd}`);
   if (r.pid !== undefined) facts.push(`pid ${r.pid}`);
   if (r.spawner) facts.push(`spawner ${r.spawner}`);
@@ -366,16 +364,57 @@ function printSeat(r: AgentRow, opts: { wide: boolean; json: boolean }, indent =
   if (opts.wide) printWideFacts(r, indent);
 }
 
+/** One durable static slot row, the `slots` command's answer (#1274). Unlike `AgentRow` there is
+ *  no live/wide split: the row is already the full closed projection. */
+type SlotRow = {
+  name: string;
+  owner: string;
+  actor: string;
+  slotLifecycleUid: string;
+  slotPhase: "provisioning" | "active" | "terminalizing" | "retired";
+  cleanupComplete?: boolean;
+  slotRevision: number;
+  headState?: "active" | "retiring" | "retired";
+  headOp?: { opId: string; kind: "retirement" };
+  headLifecycleUid?: string;
+  headRevision?: number;
+  readOrder: ["slot", "head"];
+  consistency: "ordered-not-atomic";
+  live: boolean;
+  managerInstanceId: string;
+};
+
+/** `--slots` rendering, beside `printSeat`. `--json` prints the row unchanged; the human form is
+ *  one compact line naming phase, slot uid, cleanup, head and liveness. */
+function printSlot(r: SlotRow, opts: { json: boolean }, indent = ""): void {
+  if (opts.json) {
+    console.log(JSON.stringify(r));
+    return;
+  }
+  const cleanup = r.cleanupComplete === undefined ? "unknown" : String(r.cleanupComplete);
+  const head = r.headState === undefined ? "absent" : `${r.headState}${r.headOp ? ` op ${r.headOp.kind}:${r.headOp.opId}` : ""}`;
+  console.log(`${indent}${r.name}  ${r.slotPhase}  slot ${r.slotLifecycleUid}  cleanupComplete=${cleanup}  head=${head}  live=${r.live}  readOrder=slot,head consistency=${r.consistency}`);
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   // #651 presentations: the two forms are mutually exclusive because they answer "how do I read
   // this" two different ways;
   // inventing a precedence would be a silent fallback, so refuse instead.
-  const opts = { wide: v.wide === true, json: v.json === true };
+  const opts = { wide: v.wide === true, json: v.json === true, slots: v.slots === true };
   if (opts.wide && opts.json) {
     console.error(c.red("✗ --wide and --json are mutually exclusive: --wide is the human table, --json the machine form"));
     process.exit(1);
   }
+  if (opts.slots && opts.wide) {
+    console.error(c.red("✗ --slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts"));
+    process.exit(1);
+  }
+  const command = opts.slots ? "slots" : "ps";
+  const emptyLine = opts.slots ? "(no nonretired static slots)" : "(no managed agents)";
+  const print = opts.slots
+    ? (r: unknown, indent = ""): void => printSlot(r as SlotRow, { json: opts.json }, indent)
+    : (r: unknown, indent = ""): void => printSeat(r as AgentRow, opts, indent);
   const on = onInstanceOrExit(v.on, "cotal ps");
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
@@ -383,16 +422,16 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
   // single-manager view. Same path for both modes (no freeze; no scatter).
   if (on !== undefined) {
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, { instanceId: on });
+    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, { instanceId: on });
     failIfNotOk(reply);
-    const rows = (reply.data as AgentRow[]) ?? [];
+    const rows = (reply.data as unknown[]) ?? [];
     if (!rows.length) {
       // A JSON stream with zero rows is zero lines on stdout, not a prose line that would
       // corrupt a consumer reading JSONL.
-      if (!opts.json) console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim(emptyLine));
       return;
     }
-    for (const r of rows) printSeat(r, opts);
+    for (const r of rows) print(r);
     return;
   }
 
@@ -410,18 +449,18 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // unreachable (pin 3).
   if (t.auth.bearer) {
     // No explicit --on on this branch; askManager uses the issuer's concrete selection.
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
+    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, {});
     failIfNotOk(reply);
-    const rows = (reply.data as AgentRow[]) ?? [];
+    const rows = (reply.data as unknown[]) ?? [];
     if (!rows.length) {
-      if (!opts.json) console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim(emptyLine));
       return;
     }
-    for (const r of rows) printSeat(r, opts);
+    for (const r of rows) print(r);
     return;
   }
 
-  const scatter = await scatterManager(t.space, t.server, "ps", t.auth, t.spaceAuth);
+  const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth);
   if (!scatter.ok) {
     console.error(c.red(`✗ ${scatter.error}`));
     process.exit(1);
@@ -432,12 +471,12 @@ export async function ps(args: ParsedArgs): Promise<void> {
   );
   // A single-manager space is the common case — print a flat list, no per-manager grouping noise.
   if (instances.length === 1 && instances[0].reachable && !instances[0].error) {
-    const rows = (instances[0].data as AgentRow[]) ?? [];
+    const rows = (instances[0].data as unknown[]) ?? [];
     if (!rows.length) {
-      if (!opts.json) console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim(emptyLine));
       return;
     }
-    for (const r of rows) printSeat(r, opts);
+    for (const r of rows) print(r);
     return;
   }
   // Multi-manager: group under a per-instance header; unreachable instances are shown, never dropped.
@@ -474,15 +513,16 @@ export async function ps(args: ParsedArgs): Promise<void> {
       }
       continue;
     }
-    const rows = (inst.data as AgentRow[]) ?? [];
+    const rows = (inst.data as unknown[]) ?? [];
     header(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
-    for (const r of rows) printSeat(r, opts, "  ");
+    for (const r of rows) print(r, "  ");
   }
   if (mismatches.length)
     console.error(c.red(`✗ Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`));
   if (incomplete) {
     console.error(c.red("✗ Incomplete manager census: some instances did not return seats. Rows above are partial, not a complete list."));
     process.exitCode = 1;
+
   }
 }
 
@@ -868,17 +908,19 @@ function watchDetachKey(byte: number): { pressed: Promise<void>; hit: () => bool
   let pressedYet = false;
   const pressed = new Promise<void>((r) => { fire = r; });
   const hit = () => { pressedYet = true; fire(); };
-  // Exactly one byte, and exactly the detach byte. A chunk carrying it alongside anything else is
-  // NOT a keypress: measured on a pty, a real keypress arrives in a read of its own even at 3ms
-  // spacing, and the only two ways the byte arrives with company are a paste and a reader that was
-  // not reading. Treating a paste that happens to contain 0x1d as a detach would turn data into a
-  // control action on input nobody typed; the reader that was not reading is the defect this
-  // watcher's new lifetime fixes, not a matching problem.
+  // The whole chunk must be exactly one press of the detach key: the legacy control byte, or the
+  // kitty keyboard protocol / xterm modifyOtherKeys encoding of the same press (see
+  // `isDetachPress`, #598). A chunk carrying it alongside anything else is NOT a keypress:
+  // measured on a pty, a real keypress arrives in a read of its own even at 3ms spacing, and the
+  // only two ways the byte arrives with company are a paste and a reader that was not reading.
+  // Treating a paste that happens to contain the byte (or the encoded sequence) as a detach would
+  // turn data into a control action on input nobody typed; the reader that was not reading is the
+  // defect this watcher's new lifetime fixes, not a matching problem.
   // Under the console, Ink has called `stdin.setEncoding("utf8")`, and an encoding persists on the
   // stream after Ink releases raw mode, so data arrives as a STRING there (the standalone command
   // gets Buffers). Normalize first: a one-character string is not the number 0x1d, and the compare
   // below would otherwise never match, making the key dead for as long as a reconnect takes.
-  const onData = (d: Buffer) => { if (d.length === 1 && d[0] === byte) hit(); };
+  const onData = (d: Buffer) => { if (isDetachPress(d, byte)) hit(); };
   const onChunk = (data: Buffer | string) => onData(Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8"));
   stdin.on("data", onChunk);
   stdin.resume();

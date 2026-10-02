@@ -31,10 +31,16 @@ import {
   objectStoreStream,
   spaceBackupInventory,
   validateSpaceBackupInventory,
-  ARTIFACT_STORE_MAX_BYTES,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+/** The stock `max_bytes` every artifact store created before the reservation was removed carries.
+ *  Deliberately spelled out here rather than imported: the shipped code no longer exports it, and a
+ *  test that took the number from the implementation could not tell a reconcile from a no-op. */
+const LEGACY_CAP = 4 * 1024 * 1024 * 1024;
+/** A cap nobody stocked: a deliberate operator decision, which setup must still refuse. */
+const DELIBERATE_CAP = 3 * 1024 * 1024 * 1024;
 
 /** A one-chunk web stream. `ReadableStream.from` is Node's own and is absent from the lib types
  *  the artifact store's `put` is declared against, so build the stream with the constructor both
@@ -95,15 +101,18 @@ try {
   check("it is NOT in the backed-up set", !inv.full.includes(OBJ));
   check("its exclusion class is `artifact`", inv.excluded.find((s) => s.name === OBJ)?.class === "artifact");
 
-  // The quota is the only thing bounding artifact storage: a fresh bucket ships max_bytes -1 and the
-  // space account is provisioned disk_storage -1, so an unset cap is unbounded growth, not a default.
+  // NO BYTE CAP, and that is the point. A positive `max_bytes` is RESERVED in full against the
+  // server's `max_file_store` the moment the stream is created, empty or not, so a per-space artifact
+  // quota bounds how many SPACES a broker can hold rather than how many bytes a space can write (see
+  // `artifact-store-no-reserve.smoke.ts`, which measures that on a capped broker). At -1 the store
+  // reserves nothing and is bounded by the broker's real file-store usage, exactly like the space's
+  // chat, DM, inbox and delivery streams.
   const si = await jsm.streams.info(OBJ);
-  check("the store carries an EXPLICIT max_bytes", si.config.max_bytes === ARTIFACT_STORE_MAX_BYTES,
+  check("the store carries NO byte cap, so it reserves nothing", si.config.max_bytes === -1,
     si.config.max_bytes);
-  check("its max_bytes is not the unbounded default", si.config.max_bytes !== -1);
   check("its subjects are the object-store grammar", JSON.stringify(si.config.subjects) ===
     JSON.stringify([`$O.${artifactBucket(SPACE)}.C.>`, `$O.${artifactBucket(SPACE)}.M.>`]), si.config.subjects);
-  // Hitting the cap must REFUSE the write, never evict older artifacts: a reference published
+  // Hitting the bound must REFUSE the write, never evict older artifacts: a reference published
   // yesterday quietly ceasing to resolve is the silent failure this design refuses everywhere else.
   check("it discards NEW on overflow (refuse, never evict a live artifact)", si.config.discard === "new",
     si.config.discard);
@@ -113,8 +122,7 @@ try {
   // DRIFT. `Objm.create` is create-if-MISSING: measured, creating at max_bytes 1024 and then calling
   // create again with 4096 leaves the stream at 1024 — it neither updates nor refuses. Since
   // setupSpaceStreams is idempotent and re-runs on every `cotal up`, a bare create would adopt a
-  // pre-existing or hand-widened store FOREVER while the code read as if it enforced a cap. An
-  // unenforced cap is not a smaller cap, it is no cap: account disk is provisioned unlimited.
+  // pre-existing or hand-shaped store FOREVER while the code read as if it had configured it.
   //
   // The cells above cannot see this — they only ever exercise FRESH creation, which is exactly why
   // this one exists. A suite that only tests the path it built is a guard that cannot fire.
@@ -125,10 +133,45 @@ try {
   let refused = "";
   try { await setupSpaceStreams({ servers, space: drifted }); refused = "ADOPTED IT"; }
   catch (e) { refused = (e as Error).message; }
-  check("setup REFUSES a pre-existing store whose cap has drifted", refused.includes("has drifted"), refused);
-  check("the refusal names the actual and expected caps", refused.includes("1024") &&
-    refused.includes(String(ARTIFACT_STORE_MAX_BYTES)), refused);
+  check("setup REFUSES a pre-existing store carrying a cap", refused.includes("has drifted"), refused);
+  check("the refusal names the actual cap and the expected -1", refused.includes("max_bytes is 1024") &&
+    refused.includes("expected -1"), refused);
   await deleteSpace({ servers, space: drifted });
+
+  // THE LEGACY RECONCILE, and its boundary. A store at exactly the stock 4 GiB was created by the code
+  // this change replaces and is still reserving 4 GiB of the broker's file store, so setup must
+  // CONVERGE it to -1 rather than refuse it — otherwise the defect stays on every existing mesh. A cap
+  // at any OTHER positive value was somebody's deliberate decision and is still refused: setup never
+  // silently widens a bound it did not set. Both halves here, because either alone reads as correct.
+  const legacy = `${SPACE}legacy`;
+  const lnc = await connect({ servers });
+  await new Objm(jetstream(lnc)).create(artifactBucket(legacy), { max_bytes: LEGACY_CAP });
+  const beforeReconcile = (await (await jetstreamManager(lnc)).streams.info(objectStoreStream(artifactBucket(legacy)))).config.max_bytes;
+  await lnc.close();
+  check("a store planted at the legacy stock cap really holds it", beforeReconcile === LEGACY_CAP, beforeReconcile);
+  let legacyErr = "";
+  try { await setupSpaceStreams({ servers, space: legacy }); } catch (e) { legacyErr = (e as Error).message; }
+  const rnc = await connect({ servers });
+  const afterReconcile = (await (await jetstreamManager(rnc)).streams.info(objectStoreStream(artifactBucket(legacy)))).config.max_bytes;
+  await rnc.close();
+  check("setup RECONCILES a legacy 4 GiB store to -1 (releasing its reservation)",
+    legacyErr === "" && afterReconcile === -1, `${legacyErr} max_bytes=${afterReconcile}`);
+  await deleteSpace({ servers, space: legacy });
+
+  const deliberate = `${SPACE}deliberate`;
+  const pnc = await connect({ servers });
+  await new Objm(jetstream(pnc)).create(artifactBucket(deliberate), { max_bytes: DELIBERATE_CAP });
+  await pnc.close();
+  let deliberateRefusal = "";
+  try { await setupSpaceStreams({ servers, space: deliberate }); deliberateRefusal = "WIDENED A DELIBERATE CAP"; }
+  catch (e) { deliberateRefusal = (e as Error).message; }
+  check("setup still REFUSES a cap that is not the legacy stock value",
+    deliberateRefusal.includes("has drifted") && deliberateRefusal.includes(String(DELIBERATE_CAP)), deliberateRefusal);
+  const qnc = await connect({ servers });
+  const untouched = (await (await jetstreamManager(qnc)).streams.info(objectStoreStream(artifactBucket(deliberate)))).config.max_bytes;
+  await qnc.close();
+  check("the refused store is left exactly as the operator set it", untouched === DELIBERATE_CAP, untouched);
+  await deleteSpace({ servers, space: deliberate });
 
   // WRONG BINDING, RIGHT NUMBERS. The sharper version of the same hole: a stream under the object
   // store's NAME with the correct cap and the correct discard, but bound to other subjects, is not
@@ -139,8 +182,8 @@ try {
   await (await jetstreamManager(hnc)).streams.add({
     name: objectStoreStream(artifactBucket(hijack)),
     subjects: ["foreign.capture.>"],
-    max_bytes: ARTIFACT_STORE_MAX_BYTES,   // deliberately CORRECT
-    discard: "new" as never,               // deliberately CORRECT
+    max_bytes: -1,             // deliberately CORRECT
+    discard: "new" as never,   // deliberately CORRECT
     storage: "file" as never,
   });
   await hnc.close();
@@ -163,7 +206,7 @@ try {
   const fb = artifactBucket(flags);
   await fjsm.streams.add({
     name: objectStoreStream(fb), subjects: [`$O.${fb}.C.>`, `$O.${fb}.M.>`],
-    max_bytes: ARTIFACT_STORE_MAX_BYTES, discard: "new" as never, storage: "file" as never,
+    max_bytes: -1, discard: "new" as never, storage: "file" as never,
     retention: "limits" as never, allow_rollup_hdrs: false,
   });
   // First: prove the drift actually breaks writes, so the assertion below guards a real failure
@@ -192,7 +235,7 @@ try {
   const ab = artifactBucket(aged);
   await (await jetstreamManager(anc)).streams.add({
     name: objectStoreStream(ab), subjects: [`$O.${ab}.C.>`, `$O.${ab}.M.>`],
-    max_bytes: ARTIFACT_STORE_MAX_BYTES, discard: "new" as never, storage: "file" as never,
+    max_bytes: -1, discard: "new" as never, storage: "file" as never,
     retention: "limits" as never, allow_rollup_hdrs: true, max_age: 1_000_000_000,
   });
   const aos = await new Objm(jetstream(anc)).create(ab);
@@ -208,15 +251,15 @@ try {
   check("setup REFUSES a store that expires artifacts", ageRefusal.includes("max_age"), ageRefusal);
   await deleteSpace({ servers, space: aged });
 
-  // A hidden message limit overriding the advertised cap: loud rather than silent, but still a bound
-  // nobody configured. One 1-byte object costs 2 messages (chunk + meta), so max_msgs=2 admits
-  // exactly one artifact while 4 GiB sits free.
+  // A hidden message limit refusing artifacts long before the broker is full: loud rather than silent,
+  // but still a bound nobody configured. One 1-byte object costs 2 messages (chunk + meta), so
+  // max_msgs=2 admits exactly one artifact while the whole file store sits free.
   const capped = `${SPACE}capped`;
   const cnc = await connect({ servers });
   const cb = artifactBucket(capped);
   await (await jetstreamManager(cnc)).streams.add({
     name: objectStoreStream(cb), subjects: [`$O.${cb}.C.>`, `$O.${cb}.M.>`],
-    max_bytes: ARTIFACT_STORE_MAX_BYTES, discard: "new" as never, storage: "file" as never,
+    max_bytes: -1, discard: "new" as never, storage: "file" as never,
     retention: "limits" as never, allow_rollup_hdrs: true, max_msgs: 2,
   });
   const cos = await new Objm(jetstream(cnc)).create(cb);
@@ -225,12 +268,12 @@ try {
   try { await cos.put({ name: "second" }, bytesStream(new Uint8Array([1]))); }
   catch (e) { secondErr = (e as Error).message; }
   await cnc.close();
-  check("a message-capped store refuses a second artifact with the byte cap free",
+  check("a message-capped store refuses a second artifact with the file store free",
     secondErr.length > 0, secondErr || "second put unexpectedly succeeded");
   let capRefusal = "";
   try { await setupSpaceStreams({ servers, space: capped }); capRefusal = "ADOPTED A HIDDEN-LIMIT STORE"; }
   catch (e) { capRefusal = (e as Error).message; }
-  check("setup REFUSES a store whose real bound is not its byte cap", capRefusal.includes("max_msgs"),
+  check("setup REFUSES a store whose real bound is not the broker's file store", capRefusal.includes("max_msgs"),
     capRefusal);
   await deleteSpace({ servers, space: capped });
 

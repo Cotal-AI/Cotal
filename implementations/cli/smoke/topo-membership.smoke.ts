@@ -123,8 +123,9 @@ console.log("5. MeshView classifies what its endpoint answers (the error path dr
 class StubEndpoint extends EventEmitter {
   space = "stub";
   readAnswer: () => Promise<MembershipSnapshot> = () => Promise.resolve({ asOf: NOW, members: [] });
-  watchAnswer: (cb: () => void) => Promise<{ stop(): Promise<void> }> = (cb) => { this.onChange = cb; return Promise.resolve({ stop: async () => {} }); };
+  watchAnswer: (cb: () => void, onClosed?: (e: Error) => void) => Promise<{ stop(): Promise<void> }> = (cb, onClosed) => { this.onChange = cb; this.onClosed = onClosed; return Promise.resolve({ stop: async () => {} }); };
   onChange?: () => void;
+  onClosed?: (e: Error) => void;
   async start() {}
   async stop() {}
   getRoster(): Presence[] { return []; }
@@ -133,7 +134,7 @@ class StubEndpoint extends EventEmitter {
   async dmHistory() { return []; }
   ref() { return { id: "stub", name: "stub" }; }
   readMembership() { return this.readAnswer(); }
-  watchMembership(cb: () => void) { return this.watchAnswer(cb); }
+  watchMembership(cb: () => void, onClosed?: (e: Error) => void) { return this.watchAnswer(cb, onClosed); }
 }
 async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => MembershipView }> {
   const view = new MeshView(stub as unknown as CotalEndpoint, {});
@@ -169,6 +170,20 @@ async function viewOver(stub: StubEndpoint): Promise<{ view: MeshView; m: () => 
   stub.watchAnswer = () => Promise.reject(new Error("watch refused"));
   const { view, m } = await viewOver(stub);
   check("a failing WATCH over a readable feed is named as the watch's failure", /^watch: watch refused/.test(m().unreadable ?? ""), m());
+  await view.stop();
+}
+{
+  const stub = new StubEndpoint();
+  stub.readAnswer = () => Promise.resolve(snapshot);
+  const { view, m } = await viewOver(stub);
+  check("MeshView starts live off a readable feed before the closed-watch cell", m().unreadable === undefined && m().snapshot?.asOf === NOW, m());
+  stub.onClosed?.(new Error("membership watch closed"));
+  await wait(50);
+  check("a watch that closes after setup is named as the watch's failure, never as a connection error", /^watch: membership watch closed/.test(m().unreadable ?? ""), m());
+  check("...and never as a connection error", view.snapshot().status.error === undefined, view.snapshot().status);
+  stub.onChange?.();
+  await wait(300);
+  check("...and a later change clears the reason, leaving a live snapshot", m().unreadable === undefined && m().snapshot?.asOf === NOW, m());
   await view.stop();
 }
 {

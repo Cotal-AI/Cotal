@@ -35,7 +35,7 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `name` | string, required | Display name → `card.name`. A launcher resolves a bare name to `.cotal/agents/<name>.md`. |
+| `name` | string, required | Display name → `card.name`. A launcher resolves a bare name to `.cotal/agents/<name>.md`. At most 128 characters; the validator refuses longer names rather than minting a credential that would overflow the broker's CONNECT line. |
 | `role` | string | The addressable **service**: presence label *and* the anycast address ([SPEC §3](../SPEC.md#3-subject-layout)). |
 | `kind` | `agent` \| `endpoint` | Participation class; default `agent`. |
 | `description` | string | One-line summary → `card.description`. |

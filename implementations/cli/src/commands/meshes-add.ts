@@ -15,6 +15,7 @@ import {
   personaDir,
   pinnedFetch,
   preflightTarget,
+  PREFLIGHT_CONFIRM_TIMEOUT_MS,
   recordMesh,
   setCurrent,
   userAuthStateDir,
@@ -345,6 +346,8 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
       return `✗ the credentials for "${space}" under ${authDir(root)} have EXPIRED - re-mint them where the mesh runs (the broker itself is up)`;
     case "tls-trust":
       return `✗ the broker at ${server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, then re-run`;
+    case "slow-link":
+      return `✗ the broker at ${server} answered TCP but the credentialed connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s - nothing was registered; retry, or raise the connect budget if this link is consistently slow`;
   }
 }
 

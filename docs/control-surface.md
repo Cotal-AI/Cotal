@@ -49,12 +49,15 @@ the fetched input schema before publish. A signed-in user invokes the same surfa
 bearer, and the broker enforces each command's existing capability grant. A manager alias supplied
 through `--name` resolves through its name-keyed `inspect` command, so an authorized targeted call
 does not need the manager-wide `ps` enumeration grant. Every built-in manager command uses this
-same trust chain, so there is nothing the built-ins can reach that a described contract cannot.
+same trust chain, so there is nothing the built-ins can reach that a described contract cannot. The registered
+`auth` endpoint is describable the same way `manager` is: `cotal describe auth` lists
+`retire-lifecycle` and its exact-mode target shape.
 See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
 
 The manager's `resolve-cwd` command is in the `manager.spawn` capability class. It accepts an
 absolute path on that manager's host and returns its canonical directory plus the host name. It
 refuses a relative, missing or non-directory path with `failed-precondition`; it creates nothing.
+`spawn` applies the same check at admission, before any credentials or durables are minted.
 
 ### Inspecting a managed name
 
@@ -92,6 +95,16 @@ custodian exit can unlink its file without losing the recorded boot and process 
 If the file is missing, reaping uses that retained record and the existing kernel identity
 checks. An unknown reference without either record refuses cleanup. Reused process ids
 are never signalled on the strength of the old record.
+
+### Listing the durable slots
+
+Manager `slots` (`manager.read`, untargeted) lists the durable static slot rows this manager
+owns. Only static managers hold these rows: a user-mode or open manager answers
+`failed-precondition`, and a manager whose durable store is not standing answers `unavailable`.
+Each row carries the same `readOrder` and `consistency` fields `inspect` uses, because the list
+is read the same way: torn across rows as well as within each row's slot/head pair. A `retired`
+row is never listed. `live` reflects the manager's live roster at render time, not the durable
+row.
 
 ## Spawn is a goal
 
@@ -147,11 +160,12 @@ state, not reporting a missing one.
 A space can run more than one manager. Each manager persists a stable logical instance id
 across restarts and advances its process epoch when it comes back, so callers address a
 specific manager without caring which process currently serves it. On a static or open mesh,
-an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did);
-`cotal spawn <persona> --detach --on <instance>` pins one instance by its exact id (a
-foreground spawn has no manager to pin and refuses the flag). There are no ordinal
+an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
+`cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
+pin one instance by its exact id. A foreground CLI spawn has no manager to pin and refuses the
+flag. An MCP pin that does not resolve is refused without falling back to class anycast. There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
-the whole id, because `--on` takes nothing else.
+the whole id, because both surfaces take nothing else.
 
 On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
 exchange. It authorizes one concrete manager instance using the caller's current actor grant and

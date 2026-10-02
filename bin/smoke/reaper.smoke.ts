@@ -54,7 +54,7 @@ console.log("\n── smoke broker reaper ────────────�
 // workspace build. That duplication is only safe if it cannot drift, which is what this asserts.
 check("the reaper's prefix literal is the one the kit mints", SMOKE_BROKER_PREFIX === KIT_PREFIX, `${SMOKE_BROKER_PREFIX} vs ${KIT_PREFIX}`);
 // And the minted token must actually carry this process's pid, or the owner check has nothing to read.
-check("the kit's token stamps the owning pid into the dir name", SMOKE_BROKER_TOKEN === `${KIT_PREFIX}${process.pid}-`, SMOKE_BROKER_TOKEN);
+check("the kit's token stamps the owning pid into the dir name", new RegExp(`^${KIT_PREFIX}${process.pid}-(?:s[A-Za-z0-9_-]{22}-)?$`).test(SMOKE_BROKER_TOKEN), SMOKE_BROKER_TOKEN);
 
 // ── the declaration beside the module is emitted from it, so it cannot describe a different one ──
 //
@@ -208,7 +208,7 @@ const armKey = (arm: DeclaredShape): string =>
           : `opaque(${arm.text})`;
 // These are values, not types.
 const NAMED_ARMS: Readonly<Record<string, string>> = {
-  "reapSmokeBrokers#0#object{dryRun:union(boolean|undefined)}": "{ dryRun: true }",
+  "reapSmokeBrokers#0#object{dryRun:union(boolean|undefined),scope:union(string|undefined)}": "{ dryRun: true }",
   "reportReaped#1#object{inspected:number,ownedLive:number,reaped:array<object{args:string,owner:number,pid:number}>,supported:boolean,unclaimable:number,unparseable:number}": "report",
 };
 // And the arms that are COMPILED but not RUN, each named with the reason it cannot be run.

@@ -555,7 +555,7 @@ const inheritedFlip = (flip: number, clean: AguiEvent[], dirtyEvents: AguiEvent[
     },
   };
   const f = Object.create(proto) as ReturnType<typeof good>;
-  for (const [k, v] of Object.entries(good())) if (k !== "events") (f as Record<string, unknown>)[k] = v;
+  for (const [k, v] of Object.entries(good())) if (k !== "events") (f as unknown as Record<string, unknown>)[k] = v;
   return f;
 };
 const proxyFlip = (flip: number, clean: AguiEvent[], dirtyEvents: AguiEvent[]) => {

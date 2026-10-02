@@ -26,6 +26,15 @@ pre-signal agent inventory was spared; those agents may have been reaped.
 - **Manager**: a detached supervisor answering the control plane, so
   `cotal spawn --detach` and the `cotal_spawn` tool work right after `up`.
 
+The file-backed presence bucket can remain open and watchable while refusing every write. A bound
+endpoint reports this as `presence-write-stuck` after one full presence TTL of consecutive failures.
+The roster is last-known while that condition is active. Restarting the broker clears nats-server's
+in-memory store latch and preserves the JetStream root. Current credentials split the required stream
+authority: the `cotal up` provisioner can create the presence stream but cannot delete it, while the
+teardown credential can delete it but cannot recreate it. Cotal therefore reports the condition but
+does not attempt an unsafe partial delete-and-recreate. Stop and restart the broker to recover.
+A broker below nats-server 2.14.5 carries the latch (nats-server fixed it in 2.14.5); `cotal up` says so when it starts or finds one. A broker below the SPEC §13.12 floor of 2.12 is refused at connect with the floor sentence.
+
 Three modes:
 
 - **Default (static auth).** JWT-authed, on by default: sender authenticity and per-agent
@@ -96,7 +105,11 @@ reopens past the stamp (the successor's boot heal, or
 [Gate recovery](#gate-recovery).
 
 Standalone `cotal deliver --creds` is not a repair for that split. Production renewal needs
-the manager and the daemon to address one credential store. Separate host filesystems still
+the manager and the daemon to address one credential store. The manager renews its own service
+credential inside that credential's own window and re-dials its service connection with the
+renewed credential; if the connection closes and cannot be restored within about forty seconds
+it releases its lease and exits so a restart can serve, while a broker that is briefly gone is
+waited out. Separate host filesystems still
 leave manager root A writing and the daemon reloading root B; that composition is refused
 while the daemon stays up. Before every remint the manager challenges the delivery daemon's
 store identity, and the answer must come from the process holding the delivery lease: the
@@ -220,6 +233,10 @@ that `cotal up` starts a local manager as well as the broker and delivery daemon
 `cotal up --no-manager` (add the flag to the unit's `ExecStart` too) on a host intended to be
 broker-only, so the unit and the host agree.
 
+Seats spawned by the built-in `pty` runtime run with `oom_score_adj` 500, so under memory
+pressure the kernel prefers a seat over the broker, manager and delivery daemon, which are left as
+they were started; the extension runtimes do not own the seat's process and get no preference.
+
 That `Type=simple` shape puts nats in the unit's cgroup with the foreground `up` process. A
 `Restart=always` (or `on-failure`) of **this** unit therefore restarts nats as well, so remote
 managers drop for the time it takes the broker to come back. Wrapping `cotal up --detach` in
@@ -234,6 +251,9 @@ restart, including the nats PID. Escaping that cgroup needs an explicit unit set
 install` covers only the manager, so for the broker and its siblings pick the example that
 matches the ownership you want, and treat
 `systemctl is-active` as unit health, not mesh health.
+
+A broker that crashes under that foreground `up` keeps its mesh record and exits non-zero, so the
+unit's restart takes the repair path against the recorded store rather than starting a second one.
 
 If the deployment deliberately uses `cotal up --detach` as a boot action, monitor observed state
 instead of the launcher's exit:
@@ -458,17 +478,23 @@ This gate is on **registration**. `cotal join --creds --server <url>` deliberate
 explicit connection at face value and does not consult the registry, so it is not covered. Join
 that way only to an address you would have registered.
 
+The connection is still probed first, with the same second try at the longer budget the registry
+preflight uses, so a slow link reads as a connect that did not finish within that budget and a
+refused port reads as a broker that is not running.
+
 Records added this way are removed only by something that names them. A failed liveness probe
 does not delete any record: an unreachable broker, local or registered by hand, is shown as
 `offline` in `cotal meshes`. A bare command does not count that offline record as running;
 name it with `--space` to restart it. `cotal down` / `cotal clean all` still drop an `up` record for the
 project they are tearing down, and they leave a hand-registered one alone even when `--root`
-pointed at that project. A `cotal up` for that space refuses outright (naming `cotal meshes rm`) unless it is
-that same endpoint: finding a broker already answering there is a refresh that starts nothing and
-leaves the record's provenance alone, while actually starting the broker for that space, server and
-root makes this machine the one running it, so the record becomes an ordinary local one that
-`cotal down` clears. `cotal meshes rm` drops it and re-registering with `--force` replaces it. `rm`
-only forgets a mesh. To stop one running here, use `cotal down`.
+pointed at that project. A `cotal up` for that space refuses outright unless it is that same
+endpoint: finding a broker already answering there is a refresh that starts nothing and leaves the
+record's provenance alone, while actually starting the broker for that space, server and root
+makes this machine the one running it, so the record becomes an ordinary local one that
+`cotal down` clears. The refusal names `cotal supervise --space <s> --server <url>` (plus `cotal
+deliver`) when the registered broker is on another host, and `cotal meshes rm` when it is local.
+`cotal meshes rm` drops it and re-registering with `--force` replaces it. `rm` only forgets a
+mesh. To stop one running here, use `cotal down`.
 
 ## Watching
 
@@ -499,10 +525,14 @@ cotal up --detach
 cotal up --restore ./space-backup --detach
 ```
 
+A refused cut leaves the mesh running and unfenced: fix what the refusal names and run
+`cotal down --preserve-state` again.
+
 Use `--store-dir` on both preservation and backup for a custom JetStream store. A store cap set
 with `cotal up --max-file-store <bytes>` travels with the preserved state, and the resume renders it
 again. nats-server reads the cap once at start and refuses a config reload that changes it, so a new
-cap always needs a restart. `registry` is the
+cap always needs a restart. The cut records the chat stream's frontier per retained seat, so a
+resumed seat catches up from there instead of replaying its channels. `registry` is the
 only partial selection (`backup create ... --only registry`; `up --restore ... --restore-only
 registry`). Backup never stops or restarts a mesh implicitly, never opens the original store, and
 does not contain credentials or trust secrets. Backup/restore in every auth mode, open included,
@@ -595,5 +625,6 @@ what is actually running. Those files live under the **project** `.cotal/`, not 
 unless the mesh root is the home directory. `cotal up --detach` redirects delivery and manager
 stdio onto those files, so an operator-created systemd unit around that launcher does not put
 the child logs in that unit's journal. `journalctl -u <unit>` can be empty while the crash
-reason is already in the project log. The access rules are collected in
+reason is already in the project log. Manager log lines start with the UTC time they were
+written. The access rules are collected in
 [Channels & permissions](channels-and-permissions.md).

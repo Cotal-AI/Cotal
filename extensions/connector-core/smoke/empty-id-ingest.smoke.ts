@@ -48,12 +48,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { chatSubject, isReachable, mintLifecycleUid, seedChannelRegistry } from "@cotal-ai/core";
+import { chatSubject, isReachable, mintLifecycleUid, seedChannelRegistry, type CotalMessage, type MessageMeta } from "@cotal-ai/core";
 import { MeshAgent, afterRecallMark } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
@@ -130,7 +130,7 @@ const msg = (id: string, text: string): CotalMessage => ({
   id,
   ts: Date.now(),
   space,
-  from: { id: `${PUB_OWNER}.${PUB_ACTOR}`, name: "RawPub", kind: "agent" },
+  from: { id: `${PUB_OWNER}.${PUB_ACTOR}`, name: "RawPub" },
   channel: "ch",
   parts: [{ kind: "text", text }],
 });
@@ -147,7 +147,7 @@ let deliverySeq = 0;
 // alive long after the FAILED line, which hangs whatever invoked the suite.
 let nc: Awaited<ReturnType<typeof connect>> | undefined;
 try {
-  for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: {} } });
 
   agent.start();
@@ -157,8 +157,8 @@ try {
 
   nc = await connect({ servers, maxReconnectAttempts: 0 });
   const publish = async (id: string, text: string) => {
-    nc.publish(subject, enc.encode(rawMsg(id, text)));
-    await nc.flush();
+    nc!.publish(subject, enc.encode(rawMsg(id, text)));
+    await nc!.flush();
   };
   const drainedTexts = (): string[] => agent.drainInbox().map((i) => i.text);
 

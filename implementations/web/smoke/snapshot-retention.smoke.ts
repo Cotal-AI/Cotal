@@ -69,7 +69,7 @@ function load(): Api {
 }
 
 const SNAP = load();
-ok("0.2 the file publishes its three entry points on window", Boolean(SNAP?.readJson && SNAP?.refreshAll && SNAP?.staleLabel));
+ok("0.2 the file publishes its three entry points on window", Boolean((SNAP as Partial<Api>)?.readJson && (SNAP as Partial<Api>)?.refreshAll && (SNAP as Partial<Api>)?.staleLabel));
 
 const res = (status: number, body: unknown) => ({
   ok: status >= 200 && status < 300,

@@ -17,6 +17,10 @@ OpenCode needs no setup step. The picker in `cotal setup` just records that you 
 is no plugin to install; the connector auto-wires at spawn. You only need the `opencode` binary
 on your PATH. (Claude Code, by contrast, installs a plugin because its wake channel needs one.)
 
+The connector supports two OpenCode lines: 1.x (`opencode-ai` 1.16 and later) and 2.x
+(`@opencode/cli` 2.0 and later). It detects the line from `opencode --version` at spawn. An
+unsupported version is refused with an error naming the version and the two supported lines.
+
 ## Spawn it
 
 Same launch grammar as any agent (see [run-a-mesh.md](run-a-mesh.md)):
@@ -108,8 +112,9 @@ channel, the grant, and how to read it. The launcher sets `COTAL_EVENTS` by defa
 `--no-events` to opt out on an unrestricted space. A required registration carries
 `eventsRequired` in launch material, or `COTAL_EVENTS_REQUIRED=1` on the direct env fallback, so a
 personal user-mode OpenCode session arms without a separate event flag. Its own publish grant must
-cover the principal-keyed event channel or the connector refuses before joining. The emitter starts
-once the mesh link is up, so a session created before the first bind still publishes.
+cover the principal-keyed event channel or the connector refuses before joining. The session boundary
+is captured at adopt, before the mesh link connects, so a session created before the first bind still
+publishes and nothing it writes while the connector is still starting up is silently dropped.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 
@@ -133,7 +138,8 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   still publishes one `RUN_ERROR` that does fit: it keeps the code and says the original detail
   was omitted or shortened because of the bound, so a reader is never shown a truncated message as
   complete. A turn **you** stopped is not a failure and is not published as one: a user cancellation
-  arrives on the same event, and it closes the run as an ordinary end.
+  arrives on the same event, and it closes the run as an ordinary end. A failed turn also re-arms
+  the wake it carried, so a focus @mention whose turn failed is driven again after the retry delay.
 
 Reasoning is off by default.
 
@@ -146,6 +152,10 @@ Reasoning is off by default.
 - **No tool-sharing.** `connectors.opencode.mcpServers` is not implemented and throws if set.
   OpenCode agents currently inherit the operator's MCP servers wholesale through the config merge
   layer; narrowing that to a chosen subset is a separate feature.
+- **On 2.x, the event plane needs `--no-events`.** The AG-UI event plane is not carried on
+  OpenCode 2.x yet; spawn with `--no-events`.
+- **On 2.x, `cotal models` is refused.** The 2.x catalog is served by a running opencode
+  server, not the CLI, so pass `--model provider/model` directly instead.
 
 ## See also
 

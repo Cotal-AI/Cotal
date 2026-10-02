@@ -48,11 +48,21 @@ const files: Record<string, string> = {
       "smoke:manager-service": "node suites/real.mjs",
       "smoke:safe": "node suites/safe.mjs",
       "smoke:safe-options": "node --enable-source-maps suites/safe.mjs",
+      "smoke:evict-live:auth": "node suites/evict.mjs",
+      "smoke:quiet-file": "node suites/quiet-live.smoke.mjs",
+      "smoke:live-suite": "node suites/graders.mjs",
+      "smoke:stack": "node suites/stack.mjs",
+      "smoke:completion": "node suites/completion.mjs",
     },
   }),
   "suites/boom.mjs": "throw new Error('executed live-named suite');\n",
   "suites/real.mjs": `// ${MARKER} on a JWT broker\nthrow new Error('executed unsuffixed live suite');\n`,
   "suites/safe.mjs": "console.log('safe');\n",
+  "suites/evict.mjs": "console.log('evict');\n",
+  "suites/quiet-live.smoke.mjs": "console.log('live by file name only');\n",
+  "suites/graders.mjs": "console.log('a classifier-grading suite, not a live one');\n",
+  "suites/stack.mjs": "const r = cotal([\"up\", \"--detach\"]);\n",
+  "suites/completion.mjs": "const exactUp = await completionOut([\"up\"]);\n",
 };
 const readFile = (path: string) => {
   const rel = path.replace(/\\/g, "/");
@@ -116,6 +126,31 @@ check(
   "a path-spelled tsx launcher of a safe suite still executes",
   liveShapedCommandReason("./node_modules/.bin/tsx suites/safe.mjs", opts) === null,
   liveShapedCommandReason("./node_modules/.bin/tsx suites/safe.mjs", opts),
+);
+check(
+  "a stack-starting source is refused for invoking cotal up",
+  liveShapedCommandReason("pnpm smoke:stack", opts) === "suites/stack.mjs invokes cotal up",
+  liveShapedCommandReason("pnpm smoke:stack", opts),
+);
+check(
+  "a tab-completion query on the up argv is not an invocation",
+  liveShapedCommandReason("pnpm smoke:completion", opts) === null,
+  liveShapedCommandReason("pnpm smoke:completion", opts),
+);
+check(
+  "a live segment inside a script name is refused, not only a suffix",
+  liveShapedCommandReason("pnpm smoke:evict-live:auth", opts) === "smoke:evict-live:auth is live-named",
+  liveShapedCommandReason("pnpm smoke:evict-live:auth", opts),
+);
+check(
+  "a first segment naming the area is not a live marker",
+  liveShapedCommandReason("pnpm smoke:live-suite", opts) === null,
+  liveShapedCommandReason("pnpm smoke:live-suite", opts),
+);
+check(
+  "a resolved source file named -live.smoke is refused without a live-named script",
+  liveShapedCommandReason("pnpm smoke:quiet-file", opts) === "suites/quiet-live.smoke.mjs is a live suite source",
+  liveShapedCommandReason("pnpm smoke:quiet-file", opts),
 );
 
 const git = (root: string, args: string[]) =>

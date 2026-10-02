@@ -30,7 +30,8 @@ if (SUBCOMMAND === "auth-service" || SUBCOMMAND === "agent-bearer") {
   process.exit(0);
 }
 
-const { CotalEndpoint, chatSubject, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid,
+import type { CotalEndpoint } from "@cotal-ai/core";
+const { CotalEndpoint: CotalEndpointCtor, chatSubject, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid,
   newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts, epAuthBucket, recordsBucket,
   recordSpecKey, recordStatusKey, RECORD_KINDS } = await import("@cotal-ai/core");
 const { Kvm } = await import("@nats-io/kv");
@@ -112,7 +113,7 @@ interface CommandResult { code: number | null; stdout: string; stderr: string }
 function execBearer(argv: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<CommandResult> {
   return new Promise((resolve) => {
     execFile(argv[0], argv.slice(1), { cwd: clientRoot, env: { ...cleanEnv, ...extraEnv }, timeout: 30_000, maxBuffer: 1 << 20 },
-      (err, stdout, stderr) => resolve({ code: err ? ((err as NodeJS.ErrnoException & { code?: number }).code as number ?? 1) : 0, stdout: stdout.toString(), stderr: stderr.toString() }));
+      (err, stdout, stderr) => resolve({ code: err ? ((err as NodeJS.ErrnoException & { code?: number }).code as unknown as number ?? 1) : 0, stdout: stdout.toString(), stderr: stderr.toString() }));
   });
 }
 const bearerArgv = (url = exchangeBase, token = tokenPath) => [
@@ -234,7 +235,7 @@ try {
   witnessNc = await connect({ servers: SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, newIdentity(), "admin"))) });
   witnessNc.subscribe(chatSubject(SPACE, "*", "*", "general"), { callback: (err, msg) => { if (!err) try { witnessMessages.push(msg.json<CotalMessage>()); } catch { /* skip */ } } });
   await witnessNc.flush();
-  witness = new CotalEndpoint({ space: SPACE, servers: SERVER, creds: await mintCreds(auth, newIdentity(), "admin"),
+  witness = new CotalEndpointCtor({ space: SPACE, servers: SERVER, creds: await mintCreds(auth, newIdentity(), "admin"),
     lifecycleUid: mintLifecycleUid(), channels: [], consume: false, registerPresence: false, watchPresence: false,
     card: { name: "witness", kind: "endpoint" } });
   witness.on("error", () => {}); await witness.start();

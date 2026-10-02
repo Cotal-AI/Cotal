@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, renderLifecycleBlocked, LANG_PROBLEM_DETAIL_KIND, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, LANG_PROBLEM_DETAIL_KIND, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 import { attributionSafe, fmtBody, fmtItem, fmtFrom } from "./framing.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
@@ -578,6 +578,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             bucket: presence.bucket,
             since: new Date(presence.since).toISOString(),
             forMs: presence.forMs,
+            consecutiveFailures: presence.consecutiveFailures,
+            stuck: presence.stuck,
             ...(presence.error !== undefined ? { error: presence.error } : {}),
             note: "presence writes are the first thing to fail here, not necessarily the only thing - a broker can refuse writes far more widely while this connection stays up",
           },
@@ -663,8 +665,25 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         "List the agents currently present in your Cotal space, with their role, status, and current activity.",
       run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
+        const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
+        // #1229: rendering never refuses, but it must not present a partial or last-known roster
+        // as a complete one. `unpopulated` = the watch has not replayed its initial snapshot (a
+        // reconnect refill); `stale` = the bucket has been silent past the liveness window.
+        const view = agent.presenceView();
+        const viewSentence =
+          view.state === "unpopulated"
+            ? `The presence watch has not completed its initial snapshot in "${config.space}", so this list may be partial and a missing name is not an absence verdict.`
+            : view.state === "stale"
+              ? `The presence view in "${config.space}" has been silent since ${new Date(view.staleSince).toISOString()}, so the rows below are last-known.`
+              : "";
         const roster = agent.roster();
-        if (!roster.length) return ok(`No one is present in "${config.space}" yet.`);
+        if (!roster.length) {
+          const empty = `No one is present in "${config.space}" yet.`;
+          const preface = writeFailure?.stuck
+            ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. This empty roster is last-known until a write succeeds or the broker store is repaired.`
+            : viewSentence;
+          return ok(preface ? `${preface}\n\n${empty}` : empty);
+        }
         // Names aren't unique. Where one repeats, append the instance id so a DM can target the
         // exact peer (the id is the only authoritative address); keep unique rows clean.
         const counts = new Map<string, number>();
@@ -691,7 +710,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
           return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
         });
-        return ok(`Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`);
+        const rendered = `Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`;
+        const preface = writeFailure?.stuck
+          ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. The roster below is last-known until a write succeeds or the broker store is repaired.`
+          : viewSentence;
+        return ok(preface ? `${preface}\n\n${rendered}` : rendered);
       },
     },
     {
@@ -867,8 +890,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
       async run(agent, _config, { to, text: msg }: { to: string; text: string }) {
         try {
-          const { peer } = await agent.dm(to, msg);
-          return ok(`DM sent to ${peer.card.name}.`);
+          const { peer, ack, recipientStatusAtSend } = await agent.dm(to, msg);
+          const dup = ack.duplicate ? " duplicate publication." : "";
+          return ok(
+            `DM stored as seq ${ack.seq} for ${peer.card.name} (recipient was ${recipientStatusAtSend} at send; delivery not confirmed).${dup}`,
+          );
         } catch (e) {
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates
@@ -971,7 +997,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               ? " · durable backstop unavailable — live messages still arrive; offline replay is at risk after backlog cap"
               : c.deliveryHealth === "active"
                 ? " · durable backstop active"
-                : "";
+                : c.deliveryHealth === "unknown"
+                  ? " · durable backstop health unknown — this reader cannot establish it (no delivery grant here, or the daemon answered with an error)"
+                  : "";
           return `${c.joined ? "●" : "○"} #${c.channel}${desc} (${c.joined ? "subscribed" : "not subscribed"}, replay ${c.replay ? "on" : "off"})${mode}${unclosed}${health}`;
         });
         return ok(
@@ -1072,6 +1100,14 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal web` so the user can watch the mesh in real time.",
       schema: {
         name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
+        instance: z
+          .string()
+          .refine((value) => {
+            try { assertLifecycleToken(value, "instance"); return true; }
+            catch { return false; }
+          }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
+          .optional()
+          .describe("Optional manager instance id for a multi-manager space. Omitted uses class anycast. A pin that cannot be resolved is refused without falling back to another manager."),
         role: z
           .string()
           .optional()
@@ -1099,7 +1135,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .string()
           .optional()
           .describe(
-            "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace.",
+            "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. A directory that does not exist on the serving manager's host is refused before launch, with the host named; in a multi-manager space pin the manager with instance.",
           ),
         prompt: z
           .string()
@@ -1118,9 +1154,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events }: { name: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }) {
+      async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, instance });
           if (!reply.ok) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
           const d = reply.data as { name?: string; mode?: string; model?: string } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned

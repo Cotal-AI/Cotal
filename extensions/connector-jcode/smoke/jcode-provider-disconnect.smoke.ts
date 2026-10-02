@@ -79,7 +79,7 @@ let guardChild: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
-  assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  assert.ok(condition, `${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -334,12 +334,16 @@ try {
     await waitFor("mesh presence", () => peerId);
     check("Jcode host joins before the provider stall", Boolean(peerId));
 
+    // Presence can precede the post-join kickoff's turn boundary. A DM arriving during that
+    // turn takes the soft-interrupt path, which does not exercise this fixture's send-message
+    // disconnect trigger. Observe the real boundary before starting the provider-stall case.
+    await waitFor("post-join kickoff turn boundary", () => entries().find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("You are now connected to the Cotal mesh as")));
     await operator.unicast(peerId!, "SIMULATE_PROVIDER_STALL");
     await waitFor("simulated provider disconnect", () => existsSync(closeOnce) ? closeOnce : undefined);
     await waitFor("synthetic transient recovery attach failure", () => existsSync(failAttachOnce) ? failAttachOnce : undefined).catch(() => undefined);
     check("the recovery attempt deterministically loses its first attach race (#971)", entries().some((entry) => entry.ev === "attach_failed_once"), entries());
     await waitFor("recovery retry or seat exit after the transient attach loss", () =>
-      stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child.exitCode !== null
+      stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child!.exitCode !== null
         ? true
         : undefined,
     );
@@ -449,6 +453,7 @@ try {
     safetyChild.stderr?.on("data", (chunk: Buffer) => (safetyStderr += chunk.toString()));
     await waitFor("safety initial bridge", () => entriesOf(safetyLog).find((entry) => entry.ev === "listening"));
     await waitFor("safety mesh presence", () => safetyPeerId);
+    await waitFor("safety post-join kickoff turn boundary", () => entriesOf(safetyLog).find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("You are now connected to the Cotal mesh as")));
     await operator.unicast(safetyPeerId!, "SIMULATE_UNPROVEN_TEARDOWN");
     await waitFor("safety replacement attach failure", () => existsSync(safetyFailAttachOnce) ? true : undefined);
     const safetyDeadline = Date.now() + 10_000;

@@ -117,6 +117,21 @@ try {
     output.slice(-1200),
   );
 
+  // The refused line above is what `.cotal/manager.<key>.log` holds when this runs detached, and
+  // ordering is the only temporal information a bare line carries (#1423).
+  const refusalLine = output.split("\n").find((line) => /remote supervision .* was refused/.test(line)) ?? "";
+  const stampMatch = refusalLine.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z) /);
+  check(
+    "every supervisor line carries the UTC time it was written, so the log reads on its own (#1423)",
+    stampMatch !== null && Math.abs(Date.now() - Date.parse(stampMatch[1])) <= 60_000,
+    { line: refusalLine },
+  );
+  check(
+    "...and the stamp is the line's first token, not embedded later",
+    !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/.test(refusalLine.slice(25)),
+    { line: refusalLine },
+  );
+
   // Explicit server may only repeat the registry broker; a supervisor must not borrow remote
   // metadata from one mesh then dial another. This is a pre-network refusal, so the fake endpoint
   // need not answer.

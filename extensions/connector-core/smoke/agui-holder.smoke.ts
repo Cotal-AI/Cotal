@@ -280,6 +280,10 @@ const B = "/tmp/session-b.jsonl";
   );
   c("rebind:a-refused-rebind-starts-NO-second-emitter", r.starts === 1, r.starts);
   c("rebind:the-holder-stays-bound-to-the-FIRST-path", r.holder.path === A, r.holder.path);
+  c("rebind:a-holder-killed-by-the-refusal-is-not-reported-running", !r.holder.running, {
+    failure: r.holder.failure?.message,
+    running: r.holder.running,
+  });
 }
 
 {

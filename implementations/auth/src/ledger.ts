@@ -402,9 +402,12 @@ export function grantManagedActor(dir: string, row: Omit<ActorRow, "grantedAt"> 
   const shadowRefusal = () =>
     new Error(`actor "${row.actor}" already has an interactive grant - a managed agent cannot shadow it; revoke it first (\`cotal actor revoke ${row.actor}\`) or spawn under another name`);
   if (findIn(dir, "interactive", row.owner, row.actor)) throw shadowRefusal();
-  // Same rule as grantActor: every row carries a lifecycle UID; the spawn path passes the one it
-  // provisioned durables under, and a direct caller without one gets a fresh mint (never absent).
-  const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid ?? mintLifecycleUid(), grantedAt: new Date().toISOString() };
+  // The managed space REFUSES an absent lifecycle uid: the uid is the coordinate the spawn path
+  // provisioned broker durables under and stamps into the bearer, so a server-minted one would
+  // name a lifecycle nobody runs. Only the interactive grantActor mints its own.
+  if (row.lifecycleUid === undefined || row.lifecycleUid === "")
+    throw new Error("grantManagedActor: a managed grant must carry the lifecycle uid the spawn path provisioned under; the ledger never mints one");
+  const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid, grantedAt: new Date().toISOString() };
   writeRow(dir, "managed-agent", full);
   // Symmetric post-write compensation (see grantActor) — at most one surviving row per principal.
   if (findIn(dir, "interactive", row.owner, row.actor)) {

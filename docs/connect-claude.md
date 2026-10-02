@@ -274,9 +274,10 @@ session with no launch material and no required-policy fallback keeps the generi
 
 A new session includes its first run even when Claude writes a positional startup prompt before the
 connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
-`source: "startup"`; resumed, forked, cleared, and compacted sessions adopt at the current transcript
-boundary and do not republish retained history. Crash recovery follows the cursor already stored in
-the event write-ahead log, regardless of the new process's startup label.
+`source: "startup"`; resumed, forked, cleared, and compacted sessions adopt at the transcript boundary
+captured at that adopt, before the mesh link connects, so nothing Claude appends while the connector
+is still starting up lands behind the cursor and is silently dropped. Crash recovery follows the
+cursor already stored in the event write-ahead log, regardless of the new process's startup label.
 
 Claude starts each hook in its own process, so a prompt or stop relay can reach Cotal before the
 `SessionStart` relay. The connector holds those event flushes and the terminal until `SessionStart`
@@ -345,14 +346,19 @@ non-zero and writes no creds file, because the observer profile carries a fixed 
 whole chat plane, which is the opposite of what a scoped watcher is for. The agent profile also prints the lifecycle uid the
 reader needs, since an authed consuming endpoint refuses to start without one.
 
+On an **open** mesh there is nothing to grant: the mesh has no credentials and no ACLs, so any peer
+that lists the channel reads it, and the refusal says so instead of naming a command. The
+own-channel rule still applies there, because a spawn is not the place to hand out a read on
+another agent's tool inputs and outputs.
+
 Two things a reader has to do that are not obvious, both on `CotalEndpoint`. It must pass the event
 channel in `channels`: an endpoint reads the channels it lists, so one constructed without
 the event channel joins nothing and the frames never arrive. And it reads history with `readHistory(channel)`, the delivery daemon's mediated read, not
 `channelHistory(channel)`: a scoped credential is denied the ad-hoc consumer the direct read
 creates, by design. `cotal console` and the web console already do both.
 
-The `<owner>.<actor>` pair is the session's principal, not its display name. On a user-auth mesh
-the actor half **is** the agent's name, so the channel is `events.<your-owner>.<agent-name>`. On a
+The `<owner>.<actor>` pair is the session's principal. On a user-auth mesh the actor half is the
+agent's own name, so the channel is `events.<your-owner>.<agent-name>`. On a
 static mesh the owner half is the literal `local` and the actor is a key the manager allocated, so
 the channel is `events.local.<key>`; the spawn reply carries that key as `id`. Note
 that `cotal console` and the web console keep event channels out of their channel lists on purpose,
@@ -413,6 +419,11 @@ a subset of what it holds and no more. So a peer-initiated spawn is refused unle
 spawning identity's own grant already covers the child's event channel. The refusal prints the
 exact `cotal actor grant` command that widens it. An operator launch, whose chain reaches an
 admin-scoped or roster row, is unaffected. Passing `events: false` is the explicit opt-out.
+
+Arming the event plane through a typed spawn request (`manager.spawn` with `events`, including
+the CLI's `cotal spawn --detach --events`) additionally requires the caller's admin tier on a
+user mesh. A non-admin caller that asks for the plane is refused before anything is provisioned,
+and one that stays silent gets a spawn without it, with the reply saying so.
 
 ## Resume a session
 

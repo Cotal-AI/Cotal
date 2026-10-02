@@ -14,6 +14,73 @@
       "replace": "    if (opts.resolvedBinaries?.opencode) env.COTAL_OPENCODE_BIN = opts.resolvedBinaries.opencode;",
       "expectRed": "operator COTAL_OPENCODE_BIN wins over the manager boot fallback",
       "cell": "operator COTAL_OPENCODE_BIN wins over the manager boot fallback"
+    },
+    {
+      "name": "opencodeLine always returns 1, never detecting a 2.x binary",
+      "file": "extensions/connector-opencode/src/opencode-line.ts",
+      "find": "  if (major === 1 || major === 2) return major;",
+      "replace": "  if (major === 1 || major === 2) return 1;",
+      "expectRed": "opencodeLine parses 'opencode v2.0.18' as line 2",
+      "cell": "opencodeLine parses 'opencode v2.0.18' as line 2"
+    },
+    {
+      "name": "opencodeLine always returns 2, never detecting a 1.x binary",
+      "file": "extensions/connector-opencode/src/opencode-line.ts",
+      "find": "  if (major === 1 || major === 2) return major;",
+      "replace": "  if (major === 1 || major === 2) return 2;",
+      "expectRed": "opencodeLine parses '1.18.23' as line 1",
+      "cell": "opencodeLine parses '1.18.23' as line 1"
+    },
+    {
+      "name": "plugin2.ts skips the 2.x GET /api/model check, joining with an unverified model",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    if (!selectedModel) return;\n    await verifyServerModel2(serverUrl, serverAuth, selectedModel, settleMs);",
+      "replace": "    return;",
+      "command": "pnpm smoke:opencode",
+      "expectRed": "2.x: an unlisted model refuses before join (GET /api/model, empty list)",
+      "cell": "2.x: an unlisted model refuses before join (GET /api/model, empty list)"
+    },
+    {
+      "name": "plugin2.ts refuses on the first empty listing instead of waiting",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    if (Date.now() >= deadline)\n      throw new Error(modelRefusalSentence(selectedModel, `GET /api/model listed no provider within ${settleMs / 1000} s`));",
+      "replace": "    throw new Error(modelRefusalSentence(selectedModel, `GET /api/model listed no provider within ${settleMs / 1000} s`));",
+      "command": "pnpm smoke:opencode",
+      "expectRed": "2.x: an empty listing is waited on, and the model check passes once the server lists it",
+      "cell": "2.x: an empty listing is waited on, and the model check passes once the server lists it"
+    },
+    {
+      "name": "plugin2.ts never reads the operator's boot prompt off the environment",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "  let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;",
+      "replace": "  let bootPrompt: string | undefined = undefined;",
+      "expectRed": "on 2.x a boot prompt drives a turn without any peer traffic",
+      "cell": "on 2.x a boot prompt drives a turn without any peer traffic"
+    },
+    {
+      "name": "plugin2.ts's boot task never opens the boot gate",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    bootReady = true;\n    await drive();",
+      "replace": "    await drive();",
+      "expectRed": "on 2.x a boot prompt drives a turn without any peer traffic",
+      "cell": "on 2.x a boot prompt drives a turn without any peer traffic (the gate mutant)"
+    },
+    {
+      "name": "plugin2.ts never clears the boot prompt once the submission lands",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "      if (system) primed = true;\n      if (boot !== undefined) bootPrompt = undefined;",
+      "replace": "      if (system) primed = true;",
+      "expectRed": "after the boot turn ends a DM drives a turn carrying the DM and not the boot text again",
+      "cell": "after the boot turn ends a DM drives a turn carrying the DM and not the boot text again"
+    },
+    {
+      "name": "plugin2.ts clears the boot prompt before the submission has landed",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "    busy = true;\n    surfaced = ids;\n    briefed = true;\n    try {\n      await opencodeApi(",
+      "replace": "    busy = true;\n    surfaced = ids;\n    briefed = true;\n    if (boot !== undefined) bootPrompt = undefined;\n    try {\n      await opencodeApi(",
+      "expectRed": "a failed boot submission keeps the prompt and the next drive submits it",
+      "cell": "a failed boot submission keeps the prompt and the next drive submits it"
     }
   ]
 }
+

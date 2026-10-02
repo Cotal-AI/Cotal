@@ -205,7 +205,7 @@ export const cotalLangRunHost: RunHost = {
     const admission = () => readRunAdmission(mediator.jsm, planes.space, req.endpoint, req.runId);
     const handler = createRunEffectHost(mediator, {
       space: planes.space, endpoint: req.endpoint, runId: req.runId,
-      caller: runDriverCaller(req.runId), instanceId: req.instanceId, epoch: req.epoch,
+      caller: runDriverCaller(req.runId, admitted.caller.owner), instanceId: req.instanceId, epoch: req.epoch,
       holder: req.holder, defaultCheckpointTimeout: req.defaultCheckpointTimeout,
     }, authority, admission);
     const records = createRunRecordHost(mediator, req.endpoint, req.runId);

@@ -16,6 +16,7 @@ import {
   parseShareSelection,
   principalKey,
   mintLifecycleUid,
+  spawnNameError,
   provisionAgent,
   provisionAgentDurables,
   registry,
@@ -344,7 +345,7 @@ export const spawnFlags = [
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
   { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
   { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
-  { name: "on", type: "string", value: "<instance>", description: "with --detach: target a specific manager instance id (multi-manager space); default = class anycast" },
+  { name: "on", type: "string", value: "<instance>", description: "with --detach: target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not roster's `local.…` principal id" },
 ] as const satisfies readonly FlagSpec[];
 
 /** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
@@ -368,6 +369,20 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
 
 /** Comma-list flag → string[] (shared by both spawn modes). */
 const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
+
+/** #867: the name a spawn sends must already be a mintable identity, and the check must not wait
+ *  for the manager's round trip. `spawnNameError` is the SAME predicate the manager applies at its
+ *  door (manager.ts `start`), so the operator sees core's own refusal — offending character,
+ *  reservation reason, and the `_` remedy — before any request leaves. A courtesy only: the
+ *  manager door stays the enforcement point; this is why the CLI passes the target mesh's auth
+ *  mode rather than restating the grammar (static mode keys the actor on the nkey, not the name). */
+function refuseUnmintableNameOrExit(name: string, userMode: boolean): void {
+  const refusal = spawnNameError(name, { userMode });
+  if (refusal) {
+    console.error(c.red(`✗ ${refusal}`));
+    process.exit(1);
+  }
+}
 
 /** The `--detach` mode: hand the launch to the running manager over the control plane. One grammar
  *  with the foreground path; the persona file is resolved (and is the access default) manager-side,
@@ -398,6 +413,10 @@ async function spawnDetached(
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
+  // #867: refuse an unmintable identity BEFORE the round trip. On this path the persona is
+  //  resolved manager-side, so the effective identity is `--name` alone — when it is absent the
+  //  manager applies the same spawnNameError to the file's `name:` at its own door.
+  if (values.name !== undefined) refuseUnmintableNameOrExit(values.name, t.mode === "user");
   const eventsRequired = policy?.events === "required";
   if (eventsRequired && events === false) {
     console.error(c.red(`✗ space "${t.space}" requires the event plane by registration policy; --no-events is not allowed`));
@@ -426,14 +445,17 @@ async function spawnDetached(
     subscribe: splitFlag(values.subscribe),
     allowSubscribe: splitFlag(values["allow-subscribe"]),
     allowPublish: splitFlag(values["allow-publish"]),
-    // Explicit choice: true (--events/default), false (--no-events).
-    events: eventsRequired || events,
+    // #373: send the bit only when the operator chose it. On an events-required space the
+    // policy still forces the plane on (the manager refuses a non-admin caller on such a space
+    // anyway, so the operator must hold the admin tier for the spawn to succeed at all).
+    events: eventsRequired ? true : events,
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
   }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: on });
   failIfNotOk(reply);
-  const d = reply.data as { name: string; role?: string; agent: string; mode: string };
+  const d = reply.data as { name: string; role?: string; agent: string; mode: string; eventsNotice?: string };
+  if (d.eventsNotice) console.log(c.yellow(`! ${d.eventsNotice}`));
   console.log(
     c.green(`✓ spawned ${c.bold(d.name)} (detached)`) +
       c.dim(` (${d.role ?? "no role"} · ${d.agent} · ${d.mode}) - attach with: cotal attach --name ${d.name}`),
@@ -529,7 +551,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red("✗ --events and --no-events are mutually exclusive"));
     process.exit(1);
   }
-  const events = values["no-events"] ? false : true;
+  // #373: the detached path sends the bit ONLY when the operator chose it. `--events` gives
+  // true, `--no-events` gives false, neither gives undefined — the manager's spawn gate treats
+  // an explicit true from a non-admin caller as operator reach and serves an omission unarmed
+  // with a notice, so an unconditional default-true would be refused for an ordinary actor.
+  const events = values.events ? true : values["no-events"] ? false : undefined;
 
   // `--detach`: the SAME grammar, launched by the manager into a detached PTY. The persona is
   // resolved manager-side (its workspace root owns `.cotal/agents`); flags ride the control
@@ -584,7 +610,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`✗ space "${target.space}" requires the event plane by registration policy; --no-events is not allowed`));
     process.exit(1);
   }
-  const launchEvents = eventsRequired || events;
+  // Foreground is the operator's own in-process launch (no typed door, no epAdminReach) and is
+  // NOT gated: it keeps the default-on plane. `events` is now a tri-state (undefined when the
+  // operator passed neither flag), so default it on here the way the old boolean did.
+  const launchEvents = eventsRequired || events !== false;
   const { space, server, auth } = target;
   const composition = { injected: false as const, root: target.root };
 
@@ -631,6 +660,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`✗ the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`));
     process.exit(1);
   }
+  // #867: same door as the detached path — the effective identity (flag or file) must be mintable
+  //  before any provision work; core's own refusal names the offender and the `_` remedy.
+  refuseUnmintableNameOrExit(requested, target.mode === "user");
 
   // Preflight: fail with one sentence if the mesh is down or won't take our creds, instead of
   // crashing mid-connect with a raw NATS Authorization Violation.
@@ -677,6 +709,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const variant = values.variant ?? def.variant;
   if (variant && !connector.supportsModelVariant) {
     console.error(c.red(`✗ ${agentType} connector does not support model variants (variant)`));
+    process.exit(1);
+  }
+  if (values.prompt !== undefined && !connector.supportsPrompt) {
+    console.error(c.red(`✗ ${agentType} connector does not support an initial prompt (prompt)`));
     process.exit(1);
   }
 

@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/spawn-args.smoke.ts"
   ],
-  "guard": "a cotal_spawn model pin that the manager does not record is refused, and a matching inspect is named on the spawn result",
+  "guard": "cotal_spawn carries model and manager-instance pins, refuses malformed instances before invoke, and rejects explicit pins outside credential authority",
   "command": "pnpm smoke:spawn-args",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/spawn-model-pin.json",
   "completionMarker": "SPAWN-ARGS SMOKE",
@@ -13,7 +13,9 @@
     "",
     "A1 drops the inspect attestation so a successful spawn with a requested model never checks the",
     "recorded pin. A2 keeps inspect but reports success even when inspect recorded a different model.",
-    "A3 hides the recorded model from the tool result so a caller can still believe a pin it cannot see."
+    "A3 hides the recorded model from the tool result so a caller can still believe a pin it cannot see.",
+    "A4 drops the instance option at the manager boundary. A5 removes lifecycle-token validation.",
+    "A6 disables the user-auth disagreement guard so an explicit pin can be silently overridden."
   ],
   "mutations": [
     {
@@ -36,6 +38,27 @@
       "find": "          const pin = d?.model ? ` recorded model ${JSON.stringify(d.model)}` : \"\";\n",
       "replace": "          const pin = \"\";\n",
       "expectRed": "cotal_spawn tool names the recorded model on success"
+    },
+    {
+      "name": "A4 drop the manager instance pin at the invokeService boundary",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const reply = await this.managerInvoke(\"spawn\", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });",
+      "replace": "    const reply = await this.managerInvoke(\"spawn\", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });",
+      "expectRed": "instance pin reaches invokeService and requests a pinned resolve"
+    },
+    {
+      "name": "A5 skip manager instance lifecycle-token validation",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      instance = opts?.instance === undefined ? undefined : assertLifecycleToken(opts.instance, \"instance\");",
+      "replace": "      instance = opts?.instance;",
+      "expectRed": "a malformed instance is refused before invoke"
+    },
+    {
+      "name": "A6 disable explicit instance disagreement refusal in user mode",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this.config.userAuth && instance !== undefined && this.config.managerInstanceId !== undefined && instance !== this.config.managerInstanceId)",
+      "replace": "    if (false && this.config.userAuth && instance !== undefined && this.config.managerInstanceId !== undefined && instance !== this.config.managerInstanceId)",
+      "expectRed": "user mode: an explicit instance that differs from credential authority is refused before invoke"
     }
   ]
 }

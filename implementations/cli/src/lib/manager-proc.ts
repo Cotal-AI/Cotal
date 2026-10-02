@@ -10,7 +10,7 @@ import {
   readProcessCommand, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE,
   type CommandReader, type LivenessProbe, type LocalProcessContext,
-  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, parsePositiveIntegerFlag, removeIdentityPin, verifyIdentityPin, writeIdentityPin,
+  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, parsePositiveIntegerFlag, removeIdentityPin, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 /** The `--max-sessions` value a live `cotal supervise` argv is actually serving.
  *
@@ -193,15 +193,17 @@ export function startManagerDetached(
   o: ManagerStartOpts = {},
 ): number {
   const space = o.space ?? folderSpace();
-  // Clear a provably dead PRE-UPGRADE record before claiming the canonical slot, so an upgraded root
-  // does not end up holding both names and failing every later read as ambiguous. It refuses (throws)
-  // on a live or unattributable one rather than orphaning the daemon behind it.
+  // BEFORE ANY RECORD OR LOG IS TOUCHED. `selfArgv` refuses when this process was not started from
+  // the `cotal` entry (#1629), and a refusal must leave the root exactly as it found it. Computed after
+  // the reclaim below, a refused start deleted dead pre-upgrade records; computed after `openSync`, it
+  // created a manager log and leaked its descriptor.
+  //
+  // Then clear a provably dead PRE-UPGRADE record before claiming the canonical slot, so an upgraded
+  // root does not end up holding both names and failing every later read as ambiguous. It refuses
+  // (throws) on a live or unattributable one rather than orphaning the daemon behind it.
+  const [node, ...self] = selfArgv();
   reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));
   reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));
-  // BEFORE THE LOG IS OPENED. `selfArgv` refuses when this process was not started from the `cotal`
-  // entry (#1629), and a refusal must leave the root exactly as it found it: computing the argv after
-  // `openSync` would create a manager log and leak its descriptor on every refused start.
-  const [node, ...self] = selfArgv();
   const logPath = managerLogPath(space);
   // 0600: the manager prints its console URL here, and that URL carries the console token — a
   // standing credential for every agent's terminal on this mesh, at rest for the life of the file.
@@ -242,11 +244,10 @@ export function startManagerDetached(
   // CANONICAL path, never a pre-upgrade one: a start that kept writing the root-scoped name would
   // keep minting the very records this change ends.
   const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx(space));
-  writeFileSync(pidPath, String(child.pid));
-  // #969: pin the pid to the start of the process behind it, so a later teardown can refuse a pid
-  // that was reused by an unrelated process. Sibling of the pidfile (marker pattern); absent on a
-  // platform that cannot produce a start token, which reads as a legacy record to every reader.
-  writeIdentityPin(pidPath, child.pid ?? 0);
+  if (!child.pid) throw new Error("manager spawned with no pid");
+  // #969/#1238: publish the pair by rename (pidfile + sibling start-token pin), so a crash never
+  // leaves a torn pairing; a platform that cannot produce a start token still gets the legacy shape.
+  writePidPair(pidPath, child.pid);
   // Mark this manager as delivery-aware (non-hosting) so the delivery preflight can tell it apart from
   // an old Plane-3-hosting manager. Written next to the pid, removed together in stopManager / down.
   writeFileSync(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space)), String(child.pid));
@@ -301,13 +302,13 @@ export function ensureManager(
   o: ManagerStartOpts = {},
   probe: LivenessProbe = probeLiveness,
   readCommand: CommandReader = readProcessCommand,
-): { running: boolean } {
+): { running: boolean; started: boolean; pid?: number } {
   const space = o.space ?? folderSpace();
   const state = managerLiveness(probe, readCommand, space);
-  if (state === "alive") return { running: true };
+  if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(probe, readCommand, space); // refuses on unknown / unattributable, reports foreign
-  startManagerDetached(o);
-  return { running: true };
+  const pid = startManagerDetached(o);
+  return { running: true, started: true, pid };
 }
 
 /** A signal, injectable for the same reason the probe is: `EPERM` from `kill` is producible only by

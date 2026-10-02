@@ -153,7 +153,9 @@ type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
 const withTimeout = <T,>(p: Promise<T>, ms: number, msg: string): Promise<T> =>
   Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
 let pass = 0, fail = 0;
+let cells = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
+  cells++;
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
@@ -413,6 +415,7 @@ let managerStopped = false;
 let observer: InstanceType<typeof CotalEndpoint> | undefined;
 let shortEp: InstanceType<typeof CotalEndpoint> | undefined;
 const ctlEps: Array<InstanceType<typeof CotalEndpoint>> = []; // section O control callers, closed in finally
+let deliveryDaemon: { stop: () => Promise<void> } | undefined;
 try {
   // ---------- A. setup ----------
   console.log("A) user-auth broker + streams + auth service + login + grant");
@@ -445,10 +448,11 @@ try {
   // path as any other, so each row differs from the rest in exactly one way: its mesh state.
   for (const n of ["alpha", "beta", "delta", "iota", "kappa"])
     writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
-  // `epsilon` and `zeta` carry NO role on purpose: section E asks what a peer may delegate on the EVENT
-  // PLANE, and a role is itself a delegated capability, so a `role: worker` persona would be
-  // refused for the role before the channel was ever weighed and the cell would read as a pass.
-  for (const n of ["epsilon", "zeta"])
+  // `epsilon`, `zeta`, `lambda`, `mu` and `nu` carry NO role on purpose: section E asks what a peer
+  // may delegate on the EVENT PLANE, and a role is itself a delegated capability, so a `role: worker`
+  // persona would be refused for the role before the channel was ever weighed and the cell would read
+  // as a pass. There are five because section E gives every spawn its own child name; see the block.
+  for (const n of ["epsilon", "zeta", "lambda", "mu", "nu"])
     writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
 
   authChild = spawnAuthService();
@@ -697,7 +701,12 @@ try {
     JSON.stringify({ observed: [...observed], uncovered }),
   );
   const quietPid = (psList(manager).find((a) => a.name === "iota"))?.pid;
-  if (quietPid) process.kill(quietPid, "SIGKILL");
+  // #798: the pid above came from a listing, and a child can be gone by the time it is signalled. On an
+  // ensure-gone kill ESRCH is the desired end state, never an abort. Prove the cleanup tolerates exactly
+  // that state: end the child, then run the same cleanup once more against the pid it just ended.
+  await killPid(quietPid);
+  const goneAgain = await killPid(quietPid).then(() => "ok", (e: Error) => e.message);
+  check("ensure-gone on the quiet seat tolerates a child that already exited (#798)", goneAgain === "ok", { quietPid, goneAgain });
   const quietReply: ControlReply = await quietPending;
   check("a seat that never joins the mesh is not reported as a successful launch", quietReply.ok === false, quietReply);
 
@@ -1026,6 +1035,32 @@ try {
   const sibStop = await epTargeted(opsmate, "stop", "delta");
   check("owner-domain: the same sibling actor stops it (stop travels with attach)", sibStop.ok === true, sibStop);
   check("delta is gone from the manager after the sibling stop", !psList(manager).some((a) => a.name === "delta"), psList(manager).map((a) => a.name));
+  // ---------- ABSENT-DAEMON CONTROL: HELD RETIREMENT AND RETAINED RESIDUE ----------
+  // While the delivery daemon is absent, the manager's membership inventory challenge cannot
+  // reach a responder. Lack of daemon NEVER proves empty storage: retirement stays held,
+  // the name remains reserved pending retirement, and a same-name spawn is refused.
+  const mRetiring = (manager as unknown as { retiring: Map<string, { opId: string; lifecycleUid: string; lastError?: string }> }).retiring;
+  for (let i = 0; i < 50 && (!mRetiring.has("delta") || !mRetiring.get("delta")?.lastError); i++) await wait(100);
+  check("absent delivery daemon holds retirement: delta is held in retiring with incomplete inventory",
+    mRetiring.has("delta") && /membership inventory incomplete/i.test(mRetiring.get("delta")?.lastError ?? ""),
+    mRetiring.get("delta"));
+  const rHeldSpawn = await manager.startAgent({ name: "delta", agent: "e2e", events: false });
+  check("absent delivery daemon holds retirement: same-name spawn is refused pending retirement",
+    rHeldSpawn.ok === false && /reserved pending retirement/i.test(rHeldSpawn.error ?? ""),
+    rHeldSpawn);
+
+  // ---------- RECOVERY WHEN GENUINE DELIVERY RETURNS ----------
+  // Completed-retirement cells need a REAL delivery daemon and actual provisioned credentials.
+  const { bootDeliveryDaemon } = await import("../../manager/smoke/_boot-delivery.js");
+  deliveryDaemon = await bootDeliveryDaemon({
+    space: SPACE,
+    servers: SERVER,
+    auth,
+    reloadStoreIdentity: { kind: "fs", root },
+  });
+  // Re-drive the held retirement now that genuine delivery has returned:
+  await manager.startAgent({ name: "delta", agent: "e2e", events: false }).catch(() => {});
+
   // ---------- THE RETIREMENT IS AUTHORIZED AND ACTS (Cotal #549) ----------
   // Read from STATE, never from the despawn's log copy. The defect this covers made the auth rail's
   // principal cross-check unsatisfiable, because the gate is bound to `principalKey(DEV_OWNER,
@@ -1191,18 +1226,26 @@ try {
   // The rule moved the refusal AHEAD of the mint. Keeping the old assertion would be asserting the
   // defect, so what is asserted now is the refusal itself, at the door, over a real bearer.
   //
+  // WHY EVERY SPAWN BELOW NOW USES ITS OWN CHILD NAME. They all asked for `epsilon`, which was safe
+  // only while every one of them was refused: the name never existed, so "no row for the child" was
+  // a real reading. #2078 made the bare spawn SERVED, and one served spawn under the shared name
+  // turned five later absence assertions into statements about the FIRST spawn's row instead of
+  // their own (#2105). Distinct names put each cell back on its own subject, and they cost five
+  // role-free personas rather than two.
+  //
   // The stated limit is asserted too, from the other side, because a limit nobody tests is a
   // sentence: the CONCRETE form is refused whatever the envelope says, and the WILDCARD form is
   // left to the envelope exactly as every other channel is.
   console.log("E) the own-channel rule at the real door, and the envelope's remaining half");
   const VICTIM = eventChannel({ owner: OWNER_B, actor: "auditor" });
   const VICTIM_WILDCARD = `events.${OWNER_B}.>`;
-  type Accepted = { ok: boolean; name?: string; error?: string };
+  type Accepted = { ok: boolean; name?: string; eventsNotice?: string; error?: string };
   const epSpawnAccept = async (ep: InstanceType<typeof CotalEndpoint>, args: Record<string, unknown>): Promise<Accepted> => {
     try {
       const r = await ep.invokeService("manager", "spawn", args, { deadlineMs: 15_000 });
       if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
-      return { ok: true, name: (r.reply.data as { name?: string }).name };
+      const d = r.reply.data as { name?: string; eventsNotice?: string };
+      return { ok: true, name: d.name, eventsNotice: d.eventsNotice };
     } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
   };
   const settle = async (ms: number) => { await new Promise((r) => setTimeout(r, ms)); };
@@ -1210,7 +1253,16 @@ try {
     r.ok === false && /another agent's event channel/.test(r.error ?? "") && (r.error ?? "").includes(VICTIM);
   const evtpeer = await ctlCaller("evtpeer", OWNER, ["spawn"], { allowSubscribe: ["general"], allowPublish: ["general"] });
   const defaultPlane = eventChannel({ owner: OWNER, actor: "epsilon" });
-  const defaultRefusal = await (async (): Promise<Accepted> => {
+  // THE BARE SPAWN, RE-PINNED TO WHAT THE DOOR SERVES. This cell used to assert a refusal reading
+  // `delegation only narrows`: an omitted `events` bit armed the child's plane by default, the
+  // spawner could not delegate it, and the delegation envelope refused the whole spawn. #2078 closed
+  // #373 by moving the decision ahead of that, onto the caller's admin tier, and chose to SERVE a
+  // non-admin caller that omits the bit with the plane disarmed plus a notice saying so, rather than
+  // refuse it. That grants the child strictly less than the refusal argued about, so nothing widened;
+  // what changed is that an ordinary actor's bare `cotal spawn` works. The gate cell for that
+  // decision lives in `implementations/manager/smoke/remote-authority-operations.smoke.ts` and is
+  // green on every CI run, so this suite was the only thing still asserting the old door (#2105).
+  const bare = await (async (): Promise<Accepted> => {
     try {
       const r = await evtpeer.invokeService(
         "manager",
@@ -1218,46 +1270,57 @@ try {
         { name: "epsilon", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general"] },
         { deadlineMs: 15_000, follow: true },
       );
+      const d = r.reply.data as { name?: string; eventsNotice?: string };
       return r.reply.ok === true
-        ? { ok: true, name: (r.reply.data as { name?: string }).name }
+        ? { ok: true, name: d.name, eventsNotice: d.eventsNotice }
         : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
     } catch (e) {
       return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message };
     }
   })();
-  check("a peer-initiated bare spawn is refused by default when the spawner cannot delegate the child's event plane",
-    defaultRefusal.ok === false && /delegation only narrows/.test(defaultRefusal.error ?? "") && (defaultRefusal.error ?? "").includes(defaultPlane), defaultRefusal);
-  const readOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  check("a peer-initiated bare spawn is SERVED with the child's event plane disarmed, and the reply says so rather than downgrading in silence",
+    bare.ok === true && bare.name === "epsilon" && /event plane not armed/.test(bare.eventsNotice ?? ""), bare);
+  await settle(2500);
+  // THE NOTICE IS NOT THE EVIDENCE. A reply string is what the door claims; the managed row is what
+  // the broker will actually honour. Read it, because a regression that keeps the notice and arms the
+  // plane anyway is exactly the one #2078 exists to stop, and it would pass the cell above.
+  const bareRow = existsSync(rowFile("managed", OWNER, "epsilon"))
+    ? (JSON.parse(readFileSync(rowFile("managed", OWNER, "epsilon"), "utf8")) as { allowSubscribe?: string[]; allowPublish?: string[] })
+    : undefined;
+  check("...and the child's row carries no grant on that plane, on either side",
+    bareRow !== undefined && !(bareRow.allowSubscribe ?? []).includes(defaultPlane) && !(bareRow.allowPublish ?? []).includes(defaultPlane),
+    { bareRow, defaultPlane });
+  const readOverAsk = await epSpawnAccept(evtpeer, { name: "zeta", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
   check("a peer's ep spawn asking a FOREIGN event channel as its child's READ set is refused AT THE DOOR, naming the channel",
     ownChannelRefusal(readOverAsk), readOverAsk);
   await settle(1500);
-  check("...and no managed row for the child", !existsSync(rowFile("managed", OWNER, "epsilon")));
-  check("...and no live agent by that name", !psList(manager).some((a) => a.name === "epsilon"), psList(manager).map((a) => a.name));
-  const writeOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", events: false, allowSubscribe: ["general"], allowPublish: ["general", VICTIM] });
+  check("...and no managed row for the child", !existsSync(rowFile("managed", OWNER, "zeta")));
+  check("...and no live agent by that name", !psList(manager).some((a) => a.name === "zeta"), psList(manager).map((a) => a.name));
+  const writeOverAsk = await epSpawnAccept(evtpeer, { name: "lambda", agent: "e2e", events: false, allowSubscribe: ["general"], allowPublish: ["general", VICTIM] });
   check("the same over-ask on the child's WRITE set is refused at the door too: publishing INTO another agent's plane is forgery, not eavesdropping",
     ownChannelRefusal(writeOverAsk), writeOverAsk);
   await settle(1500);
-  check("...and leaves no row either", !existsSync(rowFile("managed", OWNER, "epsilon")));
+  check("...and leaves no row either", !existsSync(rowFile("managed", OWNER, "lambda")));
   // THE HALF THE ENVELOPE NO LONGER DECIDES. An operator widening the peer's own grant used to
   // admit this exact request, and that was the whole "containment rather than ban" story. The
   // own-channel rule takes the CONCRETE form out of the envelope's hands: the answer is the same
   // refusal, from a spawner that demonstrably holds the channel.
   const widened = await ctlCaller("evtpeer2", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
-  const admitted = await epSpawnAccept(widened, { name: "epsilon", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  const admitted = await epSpawnAccept(widened, { name: "mu", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
   check("with the peer's OWN grant widened by the operator, the identical spawn is STILL refused: the concrete form is not the envelope's to hand down",
     ownChannelRefusal(admitted), admitted);
   await settle(2500);
-  check("...and still writes no row", !existsSync(rowFile("managed", OWNER, "epsilon")), admitted);
+  check("...and still writes no row", !existsSync(rowFile("managed", OWNER, "mu")), admitted);
   // THE STATED LIMIT, ASSERTED. `eventChannelPrincipal` decodes exactly two principal tokens, so a
   // WILDCARD is not an event channel to the rule and passes it untouched, governed by the envelope
   // alone. That is deliberate: the wildcard is the form an operator writes on purpose for an
   // observer, and this cell is what stops the limit being a comment nobody tests.
   const wildpeer = await ctlCaller("evtpeer3", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
-  const wildAdmitted = await epSpawnAccept(wildpeer, { name: "epsilon", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
+  const wildAdmitted = await epSpawnAccept(wildpeer, { name: "nu", agent: "e2e", events: false, allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
   check("the WILDCARD form is left to the delegation envelope: a peer whose own grant covers it CAN hand it down", wildAdmitted.ok === true, wildAdmitted);
   await settle(2500);
-  const wildRow = existsSync(rowFile("managed", OWNER, "epsilon"))
-    ? (JSON.parse(readFileSync(rowFile("managed", OWNER, "epsilon"), "utf8")) as { allowSubscribe?: string[]; parent?: string })
+  const wildRow = existsSync(rowFile("managed", OWNER, "nu"))
+    ? (JSON.parse(readFileSync(rowFile("managed", OWNER, "nu"), "utf8")) as { allowSubscribe?: string[]; parent?: string })
     : undefined;
   check("...and a row IS written, carrying exactly the pattern it asked for", wildRow?.allowSubscribe?.includes(VICTIM_WILDCARD) === true, wildRow);
   check("...recording the peer that delegated it as parent", wildRow?.parent === `${OWNER}.evtpeer3`, wildRow);
@@ -1288,13 +1351,18 @@ try {
   check("the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
     grantCmd.length > 0 && flag("allow-subscribe") === VICTIM && flag("allow-publish") === "" && flag("scope") === "" && ownerFlag === OWNER,
     { grantCmd, sub: flag("allow-subscribe"), pub: flag("allow-publish"), scope: flag("scope"), owner: ownerFlag });
+  // The static suite grades the same selector at its resume door (the remedy there is `cotal mint`,
+  // not `cotal actor grant`, chosen off the MANAGER's mesh); this is the user-mesh mirror, so R2 in
+  // the remedy fixture has its own cell.
+  const remedyText = overText.error ?? "";
+  check("the user-mesh refusal prints the user-mesh route (actor grant), never the static mint route",
+    /cotal actor grant /.test(remedyText) && !/cotal mint /.test(remedyText), remedyText.slice(0, 600));
   // A THIRD claim, and the one no cell read until now: the RATIONALE. The two cells above grade the
   // printed command and the row it writes; both stay green while the sentence explaining WHY every
   // field must be spelled out understates how wide the default is. It said `spawn` scope when
   // `runActor` omitting `--scope` writes `spawn,role:default` - dropping a DELEGATION capability
   // from a sentence whose only job is calibration. An operator auditing a past omitted-scope grant
   // by that sentence concludes it "only got spawn" and closes a question that is open.
-  const remedyText = overText.error ?? "";
   check("the user-mesh remedy states the omitted-scope default in FULL, both capabilities, and not the narrower one",
     /spawn,role:default/.test(remedyText) && !/`spawn` scope/.test(remedyText), remedyText);
   const READER = "evtreader";
@@ -1558,6 +1626,16 @@ try {
   const revokedEx = await agentExchange("alpha", alphaToken, OWNER); // the OLD captured secret
   check("the old captured actor token is uniformly denied (401) after revocation", revokedEx.status === 401, { status: revokedEx.status, error: revokedEx.body.error });
 
+  // A count, because several cells above only run when the spawn before them succeeded: a regression
+  // that refuses every spawn DELETES them rather than failing them, and the run still prints a
+  // verdict. The focus mode (COTAL_USER_ENDPOINT_CLI_ONLY=1) skips the block between the switch and
+  // its closing brace, so it runs a different total than the full mode.
+  // 121 -> 122: section E's bare spawn is served rather than refused since #2078, so the re-pin
+  // (#2105) reads the child's managed row to prove the plane really is disarmed, not just announced.
+  // 122 -> 124: section O absent-daemon control proves retirement held before delivery returns.
+  const EXPECTED = endpointCliFocus ? 40 : 124;
+  check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
+
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
@@ -1571,6 +1649,7 @@ try {
   console.log(`\nUSER-SPAWN SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = 1;
 } finally {
+  try { await deliveryDaemon?.stop(); } catch { /* */ }
   try { await observer?.stop(); } catch { /* */ }
   try { await shortEp?.stop(); } catch { /* */ }
   for (const e of ctlEps) { try { await e.stop(); } catch { /* */ } }

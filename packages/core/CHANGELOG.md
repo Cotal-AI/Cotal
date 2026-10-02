@@ -1,5 +1,80 @@
 # @cotal-ai/core
 
+## 0.58.0
+
+### Minor Changes
+
+- 95ae645: The auth retirement rail is a conforming registered endpoint with a describable contract. The requester calls it through the generic client in the exact target mode. A legacy body is refused as unsupported-version.
+
+### Patch Changes
+
+- 0589316: Allow an endpoint to configure native NATS heartbeat timing on its resident connection without changing other clients' defaults.
+- 59a7e64: Expose an account-scoped delivery service handle with explicit store identity and per-context close while retaining the CLI daemon runner. Close membership connections after disconnected drains so stopped contexts cannot reconnect when the broker returns. Keep health failures during asynchronous delivery startup local to that context and close resources returned after a failed start.
+- 2457692: The broker floor SPEC §13.12 states is now enforced on every endpoint connection, the provisioning connections and `cotal up`, and `cotal up` names a broker below 2.14.5 as one whose presence bucket can latch.
+- 7c54825: Distinguish native consumer deletion acknowledgments and observed disappearance from uniquely attributable removals. Refuse live KV CAS successors, preserve exact-target INFO grants, and propagate unknown uniqueness through Manager reconciliation. Count ACL and membership rows removed by a competing purge as observed disappearances, not prior absence or this caller's deletion.
+- 2c31f95: Clean up each finite KV scan's owned consumer on completion, interruption or cancellation, while retaining the broker's inactivity expiry as a crash backstop. Preserve cancellation through empty-scan bind and cleanup, including calls with an omitted filter, instead of returning an empty result. Membership-feed reconciliation now reads live entries in one scan.
+- 397bc60: Deprovisioning returns truthful bounded resource accounting distinguishing deleted resources from absent no-ops across repeated teardown attempts. Key existence and tombstone state are verified through exact Direct Get checks before purging KV keys, ensuring repeated deprovisioning reports zero deleted entries. Partial broker failures record refused resources and raise DeprovisionError with partial accounting rather than discarding earlier progress.
+- 7b3924c: Retire a lifecycle's durable membership rows through target-pinned exact-key grants. Complete inventory derives channels from validated native keys, including wildcard-covered and unnamed channels, so unreadable values cannot hide rows from cleanup. An unavailable inventory retains undiscovered rows and holds retirement pending retry. Other principals and successor lifecycles remain untouched. Retirement fixtures now use complete zero-row responses only for empty synthetic inventories, and the user-mode test verifies held retirement until genuine delivery returns.
+- 1721738: Support signerless manager run hosting through typed host admission, initial-attempt and renewal operations. Renew the complete standing credential family while preserving held identities, serve epochs and last-good credentials on refusal. Keep pooled managers off local PTY launch paths and enforce the execution host boundary. Update the native lifecycle and mutation checks for these paths.
+
+## 0.57.0
+
+### Patch Changes
+
+- e7c702a: The jcode connector now reports the provider route serving a seat's model to presence, and `cotal ps --wide`/`--json` surface it as `provider`.
+- 6f64bcc: The manager's `slots` command and `cotal ps --slots` list a static manager's durable static slot rows, projected the same way `inspect` reports a stranded name.
+- 42448fa: A DM send now reports the stored sequence and the recipient's status at send instead of a bare success, and `cotal deliver pending <name>` reads a recipient's held DMs from the broker.
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+
+## 0.56.0
+
+### Patch Changes
+
+- e506040: Plane-3 durable fan-out and membership-transfer publishes omit `Nats-Msg-Id` for an `id: ""` message instead of deriving one from the empty id, so two distinct id-less posts on a durable channel both reach a member instead of the second being collapsed by the broker's duplicate window (#673). A message with a real id keeps its idempotent publish key unchanged.
+- 8dc7c92: `doctor auth --fix` takes the mesh's one daemon-credential renewal lease before it re-signs when the broker answers, refuses with the live holder and the recovery named while a manager or another doctor holds it, and records and prints an explicit offline repair when the broker does not answer (#1063).
+- 99cad7b: A membership watch that closes after setup now reaches its caller through a second callback on `watchMembership`, instead of leaving the caller holding a stale snapshot with no signal. The dashboard broadcasts the existing membership-read-failed event and the console marks the feed unreadable, instead of both keeping the last snapshot silently (#485).
+- 1218786: The broker probe gates a plaintext dial on the server's INFO greeting on a socket it owns, so a broker that completes the TCP handshake but greets after the budget no longer leaves an orphaned socket that keeps the process alive; a TLS-required or websocket dial keeps the handshake-only gate (#2156).
+
+## 0.55.0
+
+### Minor Changes
+
+- 888e9bc: Create each space's artifact Object Store with no byte cap, so it reserves nothing against the broker's JetStream file store.
+
+  nats-server reserves a stream's whole `max_bytes` against the server's `max_file_store` the moment the stream is created, empty or not, and refuses the next stream with JetStream error 10047 (`insufficient storage resources available`) once the reservations would pass the cap. Every space's artifact store was created at 4 GiB, so the per-space artifact quota bounded how many SPACES a broker could hold rather than how many bytes a space could write. On one production host nine spaces reserved 36.56 GiB of a 36.75 GiB cap while all nine stores together held 6,060 bytes, and the tenth space could not be provisioned. Reproduced on a real broker under `max_file_store: 9 GiB`: two spaces provisioned, the third refused with 10047, `reserved_storage` 8.19 GiB, 0 bytes stored.
+
+  The trade-off, plainly: artifacts are now bounded by the broker's file-store cap, like every other stream a space owns (`chat`, `dm`, `inbox` and `delivery` already carry `max_bytes: -1`), and no longer by a per-space quota. One space can therefore fill the broker's store with artifacts where before it could fill only its own 4 GiB. An operator who wants a per-space artifact bound sets it on the store deliberately, and setup will refuse to widen it. `discard: new` is unchanged, so reaching the bound still refuses a put rather than evicting an artifact whose reference is already published.
+
+  A store left at exactly the legacy stock 4 GiB is updated to `-1` and read back, so an existing mesh releases its reservation on the next `cotal up`; the `provisioner` credential gains `$JS.API.STREAM.UPDATE` on `OBJ_<artifact bucket>` and nothing else for it. Any other positive `max_bytes` was a deliberate decision and is still refused as drift. Every other drift check on the store is unchanged: subjects, mirror/sources, `discard: new`, file storage, limits retention, rollup headers, `max_age: 0`, sealed, and the message and size limits. `ARTIFACT_STORE_MAX_BYTES` is removed from the public surface.
+
+  The old comment claimed 4 GiB was "roughly sixteen artifacts at the 256 MiB per-artifact ceiling". No such ceiling exists or existed: a 257 MiB put succeeded against a stock store, and the 256 KiB bound in the codebase belongs to contract artifacts (SPEC §13.7), which are a different thing. The claim is gone and no ceiling was added.
+
+- 2e13607: Let a remote participant supervisor spawn and terminally release a HOST-OWNED managed agent (#1972). A registered participant holds no ledger writer, no JetStream provisioner, and no signing seed, so `cotal spawn <actor> -d --on <instanceId>` previously failed in auth preflight and a despawn refused outright.
+
+  `@cotal-ai/core` adds the two closed wire operations and their parsers: `manager-managed-agent-enrollment` and `manager-managed-agent-prepare-retirement`. An enrollment carries the SHA-256 digest of the agent's standing actor token and never the token, and carries no lifecycle UID at all; a prepare-retirement's `opId` must be `managedRetirementOpId(target.lifecycleUid)`.
+
+  `@cotal-ai/auth` adds `authorizeRemoteManagedAgentEnrollment` and `authorizeRemoteManagedAgentPrepareRetirement`, which require `supervise` at the caller instance's current open manager gate with the host-issued registration proof, plus the loopback door `POST /manager-service-authority/verify-enrollment` (`VERIFY_ENROLLMENT_PATH`) that a host platform calls for the decision while it owns every write. The door derives the caller's scope from the local ledger rather than the request body. `dispatchManagerAuthorityRequest` refuses both kinds with `unimplemented`, since stock owns no such storage, and the provider gains the `enrollRemoteManagedAgent` and `prepareRemoteManagedAgentRetirement` clients.
+
+  `@cotal-ai/manager` adds the `remoteAuthority.enrollManagedAgent` hook and takes it in `provisionUserAgent`: the participant generates the actor token, writes it at 0600 before the request, sends only the digest, adopts the HOST's chosen lifecycle UID, and launches `agent-bearer --exchange-url`. `prepareAgentRetirement` now performs the host release instead of throwing.
+
+- 357af9f: `cotal_spawn` accepts an optional manager instance id. Core resolves and invokes that exact instance without placing the pinned handle in the class cache, while malformed, unreachable, or credential-conflicting pins fail instead of falling back to class anycast.
+
+### Patch Changes
+
+- 810814b: Warn when a per-member delivery durable binds on a plane with no ready delivery lease.
+- 8472dc3: `cotal_channels` reports a durable channel's delivery health from the daemon's own answer: `active` requires a live lease and a membership round-trip that lists the channel for this lifecycle, a daemon that answers nothing renders `degraded`, and a reader that cannot establish it (a responder-present error) renders `unknown` instead of omitting the clause. `CotalEndpoint.fetchMemberships()` is public for that round-trip (issue #445).
+- f272f71: Bound the display-name and policy-channel length at the shared validators (`MAX_NAME_LENGTH` 128, `MAX_CHANNEL_LENGTH` 4096), so an over-long name or channel is refused with the bound named instead of minting a credential that exceeds the broker's `max_control_line` and silently hanging the connect (issue #375). The mint itself refuses a user JWT whose byte size exceeds the control line minus the CONNECT envelope (`MAX_MINTED_JWT_BYTES`), so many individually valid channels cannot compose into a credential the broker drops.
+- a83dd80: Preflight reports a probe that ran out of its budget as a slow link instead of a trust failure: `probeConnect` now returns a distinct `timeout` reason, `preflightTarget` routes it to a new `slow-link` verdict without consulting the INFO greeting, and the rendered sentence names the connect budget and says the registry entry was kept, never a CA. A real certificate failure against a TLS-required mesh still renders the `tls-trust` guidance.
+- db9a969: Escalate consecutive presence write failures after one liveness TTL and label connector roster snapshots as not live until a write succeeds.
+- d284ee6: A manifest or spawn prompt on a connector that cannot deliver one is refused at preflight (including `up -f --dry-run`), at spawn and in the manager, the way an unsupported model variant is: connectors now declare `supportsPrompt`, and claude, opencode, codex, jcode and pi declare it; hermes keeps its launch-time throw as the second line of defence.
+- d3d6742: Name the compiler's generated-code shape and the overflowing property count when a wide but legal contract schema overflows the call stack at compile, instead of blaming the caller's schema. Flip the schema-profile Ajv pin to `allErrors: true`, which raises the stack-bounded compile ceiling roughly 3.4x at any given stack budget without changing any validation verdict.
+- fd58782: The session smoke now grades that a differently signed grant for the same session never re-releases the winner's credential.
+
 ## 0.54.0
 
 ### Minor Changes

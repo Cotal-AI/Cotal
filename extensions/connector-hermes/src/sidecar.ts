@@ -63,7 +63,7 @@ export function startSidecar(): Sidecar {
     hermesHookHandle,
     { fatalBind: true },
   );
-  const bridge = startBridgeServer(agent, config, bridgeSock);
+  const bridge = startBridgeServer(agent, config, bridgeSock, controlToken);
 
   // The plugin reads this at register(ctx) time to declare the cotal_* tools (full shared parity).
   writeFileSync(toolsFile, JSON.stringify(hermesToolDescriptors(config)));

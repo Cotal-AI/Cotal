@@ -157,6 +157,42 @@
       "expectRed": "recover:a-SENT-but-unacked-pending-adds-nothing-because-it-CARRIES-no-assigned-sequence",
       "cell": "recover:a-SENT-but-unacked-pending-adds-nothing-because-it-CARRIES-no-assigned-sequence",
       "note": "The omission of `sent_unacked` is deliberate and is now written down, so it is graded: a deliberate omission nobody can break is indistinguishable from an oversight nobody noticed. The mutant makes the scan reach for an `ackSeq` that the state is forbidden to carry."
+    },
+    {
+      "name": "S30 the parse-side tip bound is relaxed back to any safe non-negative integer, so MAX_SAFE_INTEGER opens again",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "if (!isFrontierTip(d.tip)) throw new SubjectFrontierCorruptError(path, \"tip is a safe non-negative integer below Number.MAX_SAFE_INTEGER\", String(d.tip));",
+      "replace": "if (!isSafeNonNegInt(d.tip)) throw new SubjectFrontierCorruptError(path, \"tip is a safe non-negative integer below Number.MAX_SAFE_INTEGER\", String(d.tip));",
+      "expectRed": "corrupt:a-MAX_SAFE_INTEGER-tip-is-refused-at-open",
+      "cell": "corrupt:a-MAX_SAFE_INTEGER-tip-is-refused-at-open",
+      "note": "MAX_SAFE_INTEGER is the one value in the safe-non-negative-integer family that is well formed and operationally fatal: the successor is unrepresentable and no ack can ever satisfy the next publish. Relaxing the bound back to the shared validator lets it open again."
+    },
+    {
+      "name": "S31 the advance-side tip bound is relaxed back to any safe non-negative integer, so a write of MAX_SAFE_INTEGER is accepted before the durable write",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "if (!isFrontierTip(seq)) throw new Error(`subject frontier ${this.path}: seq must be a safe non-negative integer below Number.MAX_SAFE_INTEGER, got ${String(seq)}`);",
+      "replace": "if (!isSafeNonNegInt(seq)) throw new Error(`subject frontier ${this.path}: seq must be a safe non-negative integer below Number.MAX_SAFE_INTEGER, got ${String(seq)}`);",
+      "expectRed": "advance:MAX_SAFE_INTEGER-is-refused-before-the-write",
+      "cell": "advance:MAX_SAFE_INTEGER-is-refused-before-the-write",
+      "note": "Fail-closed has to happen before the write, on the write side too, or a bad-but-well-formed value bricks the record while the caller that wrote it reports success."
+    },
+    {
+      "name": "S32 the shared read helper's lstat refusal is dropped, so a symlinked record is followed on both the read paths that share it",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "    if (st.isSymbolicLink())\n      throw new SubjectFrontierCorruptError(path, \"a real subject record, never a symlink\", \"the writer never wrote a symlink\");\n",
+      "replace": "    if (false)\n      throw new SubjectFrontierCorruptError(path, \"a real subject record, never a symlink\", \"the writer never wrote a symlink\");\n",
+      "expectRed": "corrupt:a-SYMLINKED-record-is-refused-at-open-by-the-PORTABLE-check",
+      "cell": "corrupt:a-SYMLINKED-record-is-refused-at-open-by-the-PORTABLE-check",
+      "note": "readRecord is shared by open and by readDiskTip, so this same mutant also reddens advance:a-record-SWAPPED-for-a-link-after-open-is-refused-at-the-re-read; the two cells are graded at the same code path, not two independent guards, so no separate S34 entry exists for the re-read. An O_NOFOLLOW-drop mutant is not registered beside it: the portable lstat refuses first, and no deterministic cell can drive the check-to-open race that flag exists for."
+    },
+    {
+      "name": "S33 the pre-rename lstat guard is removed from write, so a link planted at the record path receives the rename instead of a refusal",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (st?.isSymbolicLink())\n        throw new SubjectFrontierCorruptError(this.path, \"a real subject record, never a symlink\", \"the writer never wrote a symlink\");\n",
+      "replace": "      if (false)\n        throw new SubjectFrontierCorruptError(this.path, \"a real subject record, never a symlink\", \"the writer never wrote a symlink\");\n",
+      "expectRed": "write:a-link-at-the-record-path-is-refused-before-the-rename",
+      "cell": "write:a-link-at-the-record-path-is-refused-before-the-rename",
+      "note": "Without this guard the atomic rename replaces the link itself, so the link's target is stranded holding the stale document while this principal's own history moved on."
     }
   ]
 }

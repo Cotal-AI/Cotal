@@ -1,0 +1,18 @@
+{
+  "suite": [
+    "implementations/cli/smoke/doctor-auth.smoke.ts"
+  ],
+  "guard": "with no broker reachable, `doctor auth --fix` records and prints an explicit OFFLINE repair and never claims the mesh's renewal lease it never held (#1063)",
+  "command": "pnpm smoke:doctor-auth",
+  "proveWith": "pnpm mutation-proof --config implementations/cli/smoke/fixtures/doctor-fix-authority.mutations.json",
+  "mutations": [
+    {
+      "name": "the offline branch writes authority: \"lease\" instead of \"offline\"",
+      "file": "implementations/cli/src/commands/doctor.ts",
+      "find": "      results = await remintDaemonCreds(root, auth.space);\n      authority = \"offline\";",
+      "replace": "      results = await remintDaemonCreds(root, auth.space);\n      authority = \"lease\";",
+      "expectRed": "--fix with no broker records an offline repair and says so",
+      "cell": "--fix with no broker records an offline repair and says so"
+    }
+  ]
+}

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { adoptSeatSync, launchSeat, reapSeat, seatId, SeatClient } from "../src/index.js";
+import { adoptSeatSync, launchSeat, processStartToken, reapSeat, seatId, SeatClient } from "../src/index.js";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 
 if (process.platform !== "linux") {
@@ -57,6 +57,13 @@ const state = (pid: number): string => {
     }
   }
 };
+const oomAdj = (pid: number): string => {
+  try {
+    return readFileSync(`/proc/${pid}/oom_score_adj`, "utf8").trim();
+  } catch {
+    return "unreadable";
+  }
+};
 
 const root = makeSeatRoot("cotal-seat-life-");
 const handles: Array<{
@@ -77,6 +84,9 @@ const collect = async (h: ReturnType<typeof adoptSeatSync>, ms = 800): Promise<s
 
 try {
   {
+    // The launcher raises its own oom_score_adj above the seat value before launching: the custodian and the child inherit 600, so only the helper's write can make the child read 500. On a hosted runner whose processes already start at 500 an inherited value would otherwise pass the child cell with the write skipped (the CI reproof at 19312d774 let both oom mutants survive).
+    writeFileSync("/proc/self/oom_score_adj", "600");
+    check("oom: the launcher sits above the seat value, so inheritance cannot pass the child cell", oomAdj(process.pid) === "600");
     const rec = launchSeat({
       root,
       name: "counter",
@@ -90,6 +100,8 @@ try {
     const h = adoptSeatSync(rec);
     handles.push(h);
     check("spawn: custodian and child are live", state(rec.custodianPid) !== "gone" && state(rec.childPid) !== "gone", rec);
+    check("oom: the custodial child carries the seat preference", oomAdj(rec.childPid) === "500");
+    check("oom: the custodian keeps the launcher's inherited oom_score_adj", oomAdj(rec.custodianPid) === oomAdj(process.pid));
     const snap = await h.attach().backlog();
     check("snapshot: backlog returns bytes", snap.length >= 0);
     const first = await collect(h, 400);
@@ -271,17 +283,20 @@ try {
     await h.waitForExit();
     check("natural exit: waitForExit resolves and status is exited", h.status() === "exited");
     h.close();
-    const recordGone = join(root, rec.id, "record.json");
+    const recordFile = join(root, rec.id, "record.json");
+    const exited = await until(() => {
+      const custodianGone = state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z";
+      return custodianGone && !existsSync(rec.socket) && existsSync(recordFile);
+    }, 5_000);
+    const reaped = exited ? await reapSeat(root, rec.id) : undefined;
     check(
       "natural exit: custodian process, socket, and record converge without fixture kill",
-      await until(() => {
-        const custodianGone = state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z";
-        return custodianGone && !existsSync(rec.socket) && !existsSync(recordGone);
-      }, 5_000),
+      Boolean(exited && reaped?.outcome === "reaped" && !existsSync(recordFile)),
       {
         custodian: state(rec.custodianPid),
         socket: existsSync(rec.socket),
-        record: existsSync(recordGone),
+        record: existsSync(recordFile),
+        reaped: reaped?.outcome,
       },
     );
     handles.push(h);
@@ -383,7 +398,10 @@ await h.waitForExit();
       await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", 20_000),
       state(rec.custodianPid),
     );
-    check("its socket and record are gone with it", !existsSync(rec.socket) && !existsSync(join(root, rec.id, "record.json")), rec.socket);
+    const unadoptedRecord = join(root, rec.id, "record.json");
+    const unadoptedSettled = !existsSync(rec.socket) && existsSync(unadoptedRecord);
+    const unadoptedReaped = unadoptedSettled ? await reapSeat(root, rec.id) : undefined;
+    check("its socket and record are gone with it", Boolean(unadoptedSettled && unadoptedReaped?.outcome === "reaped" && !existsSync(unadoptedRecord)), rec.socket);
   }
 
   {
@@ -422,6 +440,52 @@ await h.waitForExit();
     // Whatever the cells above found, this seat must not outlive the suite.
     try { process.kill(-rec.childPid, "SIGKILL"); } catch { /* already gone */ }
     try { process.kill(rec.custodianPid, "SIGKILL"); } catch { /* already gone */ }
+  }
+
+  {
+    // A dead leader leaves no generation witness for its numeric group. Retain custody
+    // rather than signalling members whose relationship to the recorded leader is unproved.
+    const rec = launchSeat({
+      root,
+      name: "dead-leader-grandchild",
+      spec: {
+        command: process.execPath,
+        args: ["-e", "const c = require('child_process').spawn(process.execPath, ['-e', 'process.on(\"SIGHUP\", ()=>{}); setInterval(()=>{},1000)'], { stdio: 'ignore' }); c.on('spawn', () => { setTimeout(() => process.exit(0), 100); });"],
+        env: { PATH: process.env.PATH ?? "" },
+      },
+      cwd: process.cwd(),
+    });
+    // Wait for leader to exit naturally
+    await until(() => state(rec.childPid) === "gone" || state(rec.childPid) === "Z", 5_000);
+    // Wait for custodian to settle and exit
+    await until(() => state(rec.custodianPid) === "gone" || state(rec.custodianPid) === "Z", 5_000);
+    // Verify grandchild is still running in the leader's process group
+    const membersBefore = readdirSync("/proc").filter((e) => /^\d+$/.test(e)).filter((e) => {
+      try {
+        const stat = readFileSync(`/proc/${e}/stat`, "utf8");
+        return stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[2] === String(rec.childPid);
+      } catch {
+        return false;
+      }
+    });
+    const owned = membersBefore.map((pid) => ({ pid: Number(pid), start: processStartToken(Number(pid)) }));
+    check("instrument: grandchild lives after leader exit", owned.length >= 1 && owned.every((p) => p.start !== undefined), owned);
+    const evidence = await reapSeat(root, rec.id).catch((e: Error) => e);
+    check(
+      "reapSeat refuses unproved dead-leader group ownership",
+      evidence instanceof Error && /group ownership is unproved/.test(evidence.message),
+      evidence instanceof Error ? evidence.message : evidence,
+    );
+    check("unproved group members retain their recorded identities", owned.every((p) => p.start !== undefined && processStartToken(p.pid) === p.start));
+    check("unproved dead-leader custody record is retained", existsSync(join(root, rec.id, "record.json")));
+    for (const p of owned) {
+      if (p.start !== undefined && processStartToken(p.pid) === p.start) process.kill(p.pid, "SIGKILL");
+    }
+    const departed = await until(() => owned.every((p) => processStartToken(p.pid) !== p.start), 5_000);
+    check("fixture-owned descendants depart before final reap", departed);
+    const reaped = departed ? await reapSeat(root, rec.id) : undefined;
+    check("verified empty group permits custody cleanup", reaped?.outcome === "reaped" && !existsSync(join(root, rec.id, "record.json")));
+
   }
 
   {

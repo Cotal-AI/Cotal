@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, assertInboxConnId, endpointToken, epAuthBucket, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, admissionBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, AUTH_ENDPOINT, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -87,6 +87,7 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
  * HTTP handler chooses fixed profiles and caller-generated nkeys. */
 export function remoteManagerIssuerGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
   const base = authorityWriterGrants(space, connId);
+  const admission = `KV_${admissionBucket(space)}`;
   return {
     publish: [
       ...base.publish,
@@ -98,12 +99,72 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
       // issuance family is reachable through this server-side connection.
       `$KV.${epAuthBucket(space)}.epgate.manager.>`,
       `$KV.${epAuthBucket(space)}.epcred.manager.>`,
+      // Standing renewal re-derives the serve surface from the registered spec's content-addressed
+      // cluster artifacts: read-only Direct Get on the space's contract store, nothing else.
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}`,
+      // Run attempt authorization reads the run's admission record from the admission KV store:
+      `$JS.API.STREAM.INFO.${admission}`,
+      `$JS.API.STREAM.MSG.GET.${admission}`,
+      `$JS.API.DIRECT.GET.${admission}`,
+      `$JS.API.DIRECT.GET.${admission}.>`,
     ],
     subscribe: base.subscribe,
   };
 }
 
 export { remoteManagerRegistrationProof };
+
+/**
+ * The AUTH PLANE's OWN registration executor grant (#399 M2): the ONE `(auth, instanceId)`
+ * self-registration this plane performs at boot (`registerServiceInstance` +
+ * `authorizeServeGrant` + `writeServiceStatus` + the §13.7 contract-artifact publish), mirrored
+ * from the manager's `endpointServeExecutorPermissions` (`packages/core/src/provision.ts:2426`)
+ * but built directly (the auth plane self-authorizes its own name with the space signing seed,
+ * exactly as the manager self-authorizes `manager`, so this rides the same self-minted
+ * `openAuthorityClient` door as the writer/barrier connections rather than a `mintCreds` profile).
+ * Key-pinned to exactly this instance's gate/cred/repair rows and its two `svc.auth.<instanceId>`
+ * record keys plus the endpoint's `govern.auth` head; the contract-artifact publish is the same
+ * single-token `epc.*` form {@link contractPublisherGrants} uses (never the wide `epc.>`).
+ */
+export function authRegistrationExecutorGrants(space: string, connId: string, instanceId: string): { publish: string[]; subscribe: string[] } {
+  const auth = `KV_${epAuthBucket(space)}`;
+  const records = `KV_${recordsBucket(space)}`;
+  const gateKey = epgateKey(AUTH_ENDPOINT, instanceId);
+  const credPrefix = epcredFamilyPrefix(AUTH_ENDPOINT, instanceId);
+  const repairKey = eprepairKey(AUTH_ENDPOINT, instanceId);
+  const recordKeys = [
+    recordSpecKey(RECORD_KINDS.svc, [AUTH_ENDPOINT, assertLifecycleToken(instanceId, "instanceId")]),
+    recordStatusKey(RECORD_KINDS.svc, [AUTH_ENDPOINT, assertLifecycleToken(instanceId, "instanceId")]),
+    recordAtomicKey(GOVERN_HEAD, [AUTH_ENDPOINT]),
+  ];
+  const inbox = assertInboxConnId(connId);
+  return {
+    publish: [
+      "$JS.API.INFO",
+      `$JS.API.STREAM.MSG.GET.${auth}`,
+      `$JS.API.STREAM.MSG.GET.${records}`,
+      // Registration Phase 2 enumerates the epcred family (`kv.keys('epcred.<endpoint>.<instanceId>.>')`)
+      // to revoke + verify-evict a superseded serve family before publishing a new spec (SPEC 13.1).
+      // `kv.keys()` opens an ephemeral ordered consumer, so the executor needs CONSUMER lifecycle on
+      // the auth stream, scoped the same as the manager's own mirror (`endpointServeExecutorPermissions`,
+      // provision.ts:2477-2479): the whole bucket, since a subject-wildcard consumer cannot be key-pinned
+      // tighter by a broker ACL.
+      `$JS.API.CONSUMER.CREATE.${auth}.>`,
+      `$JS.API.CONSUMER.INFO.${auth}.>`,
+      `$JS.API.CONSUMER.DELETE.${auth}.>`,
+      `$JS.API.DIRECT.GET.${recordsBucket(space)}`,
+      `$JS.API.DIRECT.GET.${recordsBucket(space)}.>`,
+      `$KV.${epAuthBucket(space)}.${gateKey}`,
+      `$KV.${epAuthBucket(space)}.${repairKey}`,
+      `$KV.${epAuthBucket(space)}.${credPrefix}.>`,
+      ...recordKeys.map((k) => `$KV.${recordsBucket(space)}.${k}`),
+      `${spacePrefix(space)}.epc.*`,
+      `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+    ],
+    subscribe: [`_INBOX_${inbox}.>`],
+  };
+}
 
 /**
  * The BARRIER EXECUTOR's scoped credential grant (SPEC 13.9): the lifecycle-barrier surface —

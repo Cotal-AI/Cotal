@@ -91,6 +91,9 @@ Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 steps return instantly, and the first unrecorded step is performed live. It refuses a journal that
 belongs to another run, a pin that differs from the recorded ones, and a different language version.
 
+A failed journal entry replays its error, while a pending entry lets the handler recover the
+external work it bound before the interruption.
+
 **Migrate** moves a run onto edited source. A dry walk of the new program over the recorded journal
 finds every recorded step the edit changed (a divergence) and every one it no longer reaches (an
 orphan), and the orphan table says what each means: a removed `sleep` is nothing, a removed `turn`
@@ -205,9 +208,11 @@ mints the run's own credential from the folder's trust material, so it runs from
 project folder. A local start also names the run's channel ceiling itself:
 `--admit-read <channels> --admit-publish <channels>`, comma-separated patterns or `none`, both
 required. The record it writes says an operator admitted the run and why, and the host checks
-it the same way it checks a hosted admission. A user-auth mesh runs no programs yet, hosted or
-local: the manager refuses the family by name, since a hosted run's seats would be spawned under
-the static owner, which a user mesh refuses, and a user bearer holds no run rows. An open mesh
+it the same way it checks a hosted admission. A registered remote user-auth manager can host a
+run through its issuing host. The host resolves the versioned caller against live issuance,
+admits the run, and signs only the run's fixed driver, mediator and one-shot operator credentials
+for manager-held nkeys. Renewal checks the activated attempt; the manager holds no signer.
+Local user-auth runs remain unavailable because a user bearer holds no run rows. An open mesh
 hosts none either, since it issues no caller authority to admit a run under.
 
 A hosted run is **admitted** under the caller that started it. The caller's credential is an
@@ -278,7 +283,10 @@ durable, including the diagnostic for a journal with no run record. That durable
 the takeover, and an attempt reads it many times, so reads under one takeover run one at a time in
 the hosting process and a replay removes a durable of its own name that an interrupted earlier read
 left behind. A durable that survives a replay's own delete belongs to a reader the process cannot
-account for, and reading its tail is refused.
+account for, and reading its tail is refused. A drive handles that refusal as a takeover does: the
+reads behind its steps, and the diagnostic for a journal with no run record, replay up to three
+times before the refusal is raised. An operator read runs under a takeover minted for that read and
+reports the refusal on its first read.
 
 A served read uses a one-shot `run-operator` credential. An answer uses a read to find the open
 pause, then a second credential pinned to that token for the answer and settlement.

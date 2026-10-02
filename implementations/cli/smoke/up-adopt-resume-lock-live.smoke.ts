@@ -64,8 +64,9 @@ const TSX = join(WT, "node_modules", ".bin", "tsx");
 const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
 const resumeDocPath = join(root, ".cotal", "maintenance", "v1", "resume.json");
 const openConfPath = join(root, ".cotal", "server-open.conf");
-// Above the per-space reservations (the artifact object store alone reserves 4 GiB), so the cap is
-// honored without refusing provisioning.
+// Comfortably above the space's own reservations (the artifact Object Store reserves nothing, so what
+// remains is a 64 MiB membership bucket), so the cap is honored without refusing provisioning. What is
+// under test is that the cap is RENDERED and RESUMED, not where it sits.
 const CAP = 17179869184;
 const cappedBlock = `jetstream { store_dir: ${JSON.stringify(join(root, ".cotal", "nats"))}, max_file_store: ${CAP} }`;
 const openConfJetStream = (): string =>

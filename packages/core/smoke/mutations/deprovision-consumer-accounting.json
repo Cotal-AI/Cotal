@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "packages/core/smoke/deprovision-agent-auth.smoke.ts"
+  ],
+  "guard": "deprovisionAgent truthfully distinguishes live consumer deletions from idempotent absent no-ops",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/core exec tsx smoke/deprovision-agent-auth.smoke.ts",
+  "completionMarker": "DEPROVISION SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/deprovision-consumer-accounting.json",
+  "why": [
+    "deleteConsumerIdempotent must classify a native INFO not-found consumer as absent rather than disappeared.",
+    "Mutating the pre-read absence outcome to disappearance claims deletion evidence on repeat deprovision.",
+    "The suite must catch this on the named cell asserting repeated deprovision reports 0 deleted consumers."
+  ],
+  "mutations": [
+    {
+      "name": "claim native INFO not-found consumer as disappeared on repeat deprovision",
+      "file": "packages/core/src/streams.ts",
+      "find": "if (!(await present())) return \"absent\";",
+      "replace": "if (!(await present())) return \"disappeared\";",
+      "expectRed": "ACCOUNTING: repeated deprovision reports 0 deleted consumers and 2 absent consumers",
+      "cell": "ACCOUNTING: repeated deprovision reports 0 deleted consumers and 2 absent consumers",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

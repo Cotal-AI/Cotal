@@ -88,9 +88,10 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
   ) {}
 
   /** True once an emitter is running here. False while a start is still in flight — it reports what
-   *  IS, never what is about to be. */
+   *  IS, never what is about to be. A dead holder is not running: after {@link die} what IS, is
+   *  that this holder is finished, whatever its unstopped emitter still says. */
   get running(): boolean {
-    return this.emitter !== undefined && !this.emitter.stopped;
+    return this.dead === undefined && this.emitter !== undefined && !this.emitter.stopped;
   }
 
   /** The failure that killed this holder, if one did. */

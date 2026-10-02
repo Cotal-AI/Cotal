@@ -57,6 +57,19 @@ the latter re-publishes itself and lets the delivery of that record make the vie
 `cotal ps` prints `mesh unknown` with the reason, never a liveness word, for a row whose
 manager reports a view that is not `current` ([cli.md](cli.md)).
 
+Presence publishing is also monitored separately from the watch. One refused heartbeat remains a
+recoverable warning. If consecutive writes keep failing for a full presence TTL, the endpoint raises
+`PresenceWriteStuckError` with code `presence-write-stuck` and marks the failure record as stuck.
+`cotal_orientation` and `cotal_roster` then say the view is not live and label roster rows as
+last-known until a write succeeds. A successful write resets the consecutive count and clears the
+condition. The condition is local diagnosis, not a new wire field.
+
+The same two tools also render the view's own trust state: under an `unpopulated` view `cotal_roster`
+says the presence watch has not completed its initial snapshot, so the list may be partial and a
+missing name is not an absence verdict, and under a `stale` view it names the silent-since instant
+and labels the rows last-known. A send or DM to a name the observer cannot verify is refused with
+that condition rather than sent, instead of being reported as an unknown peer.
+
 ## Three delivery modes
 
 Every delivery message is addressed one of three ways
@@ -108,6 +121,15 @@ reader keeps its own bookmark, catching up at its own pace with nothing missed a
 interruption required. One mechanism covers three needs at once: live delivery, the
 inbound buffer, and late-join history. DMs and anycast are always at-least-once this way
 ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
+
+A send result proves only that the broker accepted and stored the message at a sequence
+(`stored seq N`), not that any recipient read it: `cotal send dm` and the `cotal_dm` tool
+report that sequence together with the recipient's roster status at the moment of send
+(`idle`, `working`, or `offline`), and neither ever claims `delivered`. The stored sequence
+is a fact about the stream; the status-at-send words are a fact about the roster a moment
+before publish; retention (how long the durable holds it, whether a same-name respawn
+inherits it) is a third, separate fact, covered below and inspectable with
+[`cotal deliver pending`](cli.md#deliver).
 
 ## Channel delivery
 

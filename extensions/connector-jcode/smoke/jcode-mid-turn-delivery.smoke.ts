@@ -66,7 +66,7 @@ let operator: CotalEndpoint | undefined;
 let stderr = "";
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
-  assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  assert.ok(condition, `${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -145,6 +145,15 @@ try {
 
   await waitFor("mesh presence", () => peerId);
   check("Jcode recipient is live before the delivery probe", Boolean(peerId));
+
+  // This seat has no spawn prompt, so its post-join notice is dispatched as its own driven turn
+  // (#1199) right after join, ahead of anything this probe sends. Wait for that turn (the second
+  // turn_done, after readiness) to finish, or OPEN_LONG_TURN arrives on a still-busy session and is
+  // routed through soft_interrupt instead of becoming the seat's own driven long turn this probe
+  // depends on.
+  await waitFor("the no-prompt seat's post-join notice turn to finish before the mid-turn probe (#1199)", () =>
+    entries().filter((entry) => entry.ev === "turn_done_emitted").length >= 2 ? true : undefined,
+  );
 
   await operator.unicast(peerId!, "OPEN_LONG_TURN");
   await waitFor("the recipient's long Harness turn", () =>

@@ -12,6 +12,16 @@ named `custody transport unsupported on <platform>` error on darwin and win32. T
 in-process node-pty fallback here. The manager's `pty` runtime still spawns in-process off
 Linux and only `adopt` throws that named error.
 
+`peerCredentials(socket)` and its `PeerCredentials` type are exported from the package root.
+For a connected Linux Unix socket, the function returns the kernel's peer `pid`, `uid` and
+`gid` using the same `SO_PEERCRED` helper as custody. Callers must compare that identity
+against their own authorization policy; a PID is not a lifecycle or ownership fence. It
+throws for an unsupported transport or missing native helper, and for a socket without a
+file descriptor. No PTY or custodian is started by reading the peer identity.
+
+The custodian raises its child's `oom_score_adj` to 500 and writes one line to `custodian.log`
+when the kernel refuses.
+
 The Linux `SO_PEERCRED` helper is compiled for the host arch by `pnpm build`. That is a
 developer tree, not a publishable one: it prints a host-dev-build banner and writes
 `build/Release/linux-<arch>/peercred.node`. Pack and publish require both `linux-x64`
@@ -38,7 +48,9 @@ observation. A manager worker connects to that custodian over a 0600 filesystem 
 authenticated by `SO_PEERCRED` uid match plus a per-seat capability token. Path possession is
 not enough. Child exit is pushed to every authenticated controller socket. After the child
 exits and the last authenticated client disconnects, the custodian closes the Unix server, unlinks the
-socket and record, and exits. An active child, or a still-connected observer of an exited
+socket, and exits. The custody record stays until `reapSeat` verifies process departure. If the
+recorded group leader is absent but its numeric process group still has members, ownership is
+unproved: reaping refuses without signalling those members or deleting the record. An active child, or a still-connected observer of an exited
 child, keeps the process. A connected socket that never authenticated does not: it owns no
 session, no output subscription and no wait, so a settle owes it nothing. A seat whose child has
 already exited at listen stays up briefly so the launcher can adopt it.

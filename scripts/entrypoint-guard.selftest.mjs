@@ -76,7 +76,7 @@ const PROBES = [
     script: "verify-publish-closure.mjs",
     argv: [],
     status: 2,
-    stderr: "usage: verify-publish-closure.mjs <version> [--json]",
+    stderr: "usage: verify-publish-closure.mjs <version> [--json] [--recheck]",
   },
 ];
 

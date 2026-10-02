@@ -17,6 +17,8 @@
  *   - a head PRE-RED was classified from a declared suite PATH even though mutation-proof may have
  *     refused a different per-mutation command. Attribution now follows that exact command's
  *     base-to-head transition instead of inferring causation from selection provenance.
+ *   - an unstable failure signature (a suite printing per-run text) was reported as contamination
+ *     or as a changed failure; it is now named as unstable and stays UNMEASURED.
  *
  * A fixture whose guarded source was deleted or renamed away is a DANGLING fixture: its anchor can
  * no longer resolve, so its proof is unrunnable. That is precisely the state this gate refuses, so a
@@ -550,7 +552,32 @@ function ensureSnapshotPrepared(snapshot, label) {
   if (!snapshot.preparationError) snapshot.prepared = true;
 }
 
-function compareSnapshots(headRun, baseRun) {
+// A signature that changes between two runs of the SAME command in the SAME clean snapshot is
+// not evidence of anything except itself: a suite printing per-run text (a minted principal, a
+// seat uid, a run marker) hashes differently every time, so comparing it against another hash
+// cannot classify anything. Probe that instability by re-running the command once, lazily and
+// only on a hash mismatch, cached per command so a fixture with several commands pays once at
+// most and a stable signature never pays at all.
+const unstableSignatureReason = (command) =>
+  `the failure signature of \`${command}\` is not stable across two runs of the clean head snapshot,`
+  + " so its root provenance cannot be compared; the suite's failure output carries per-run text";
+
+const repeatHeadRuns = new Map();
+function headSignatureInstabilityReason(command, firstHash) {
+  let entry = repeatHeadRuns.get(command);
+  if (!entry) {
+    entry = runCommand(command, snapshots.head.path, snapshotComparisonEnv());
+    repeatHeadRuns.set(command, entry);
+  }
+  const reason = unmeasurableFailure(entry);
+  if (reason) return `head confirmation repeat ${reason}`;
+  const repeatHash = failureSignatureHash(entry.output, snapshots.head.path);
+  return repeatHash === undefined || repeatHash !== firstHash
+    ? unstableSignatureReason(command)
+    : undefined;
+}
+
+function compareSnapshots(command, headRun, baseRun) {
   const reason = unmeasurableFailure(baseRun);
   if (reason) return { kind: "unmeasured", reason };
   if (baseRun.status === 0) return { kind: "attributable", baseStatus: baseRun.status };
@@ -560,12 +587,18 @@ function compareSnapshots(headRun, baseRun) {
 
   // A bare non-zero cannot distinguish a suite verdict from broken setup. Only an identical,
   // non-infrastructure red from the independently run head command proves RED -> RED. Any difference
-  // is ambiguity and therefore UNMEASURED, never a silent inherited clearance.
+  // is ambiguity and therefore UNMEASURED, never a silent inherited clearance. A difference caused
+  // by per-run text in the output is named as instability, not left to read as a verdict change.
   const baseFailure = comparableFailure(baseRun.output, snapshots.base.path);
   const headFailure = comparableFailure(headRun.output, snapshots.head.path);
   if (headRun.status !== baseRun.status || baseFailure === undefined || headFailure === undefined
       || headFailure !== baseFailure) {
-    return { kind: "unmeasured", reason: "base and head were both red but did not produce the same stable failure signature" };
+    const headHash = failureSignatureHash(headRun.output, snapshots.head.path);
+    const unstable = headRun.status === baseRun.status && headHash !== undefined
+      && headSignatureInstabilityReason(command, headHash);
+    return { kind: "unmeasured", reason: unstable
+      ? unstableSignatureReason(command)
+      : "base and head were both red but did not produce the same stable failure signature" };
   }
   return { kind: "inherited", baseStatus: baseRun.status };
 }
@@ -580,6 +613,13 @@ function rootContaminationReason(provenance, cleanHeadRun) {
   const cleanHash = failureSignatureHash(cleanHeadRun.output, snapshots.head.path);
   if (provenance.status !== cleanHeadRun.status || provenance.signatureHash === null
       || cleanHash === undefined || provenance.signatureHash !== cleanHash) {
+    // Equal statuses with two differing hashes can still be ONE failure whose output changes per
+    // run. Only a signature that is stable across two clean-head runs is evidence of contamination.
+    if (provenance.status === cleanHeadRun.status && provenance.signatureHash !== null
+        && cleanHash !== undefined
+        && headSignatureInstabilityReason(provenance.command, cleanHash)) {
+      return unstableSignatureReason(provenance.command);
+    }
     return "root PRE-RED was not reproduced in the clean head snapshot; root execution-state contamination detected";
   }
   return undefined;
@@ -654,7 +694,7 @@ for (const { path, command, mutations } of prove) {
         unmeasuredPreRed.push({ path, command: fixtureCommand, reason: `head confirmation ${headReason}` });
         continue;
       }
-      const transition = compareSnapshots(headRun, baseRun);
+      const transition = compareSnapshots(fixtureCommand, headRun, baseRun);
       if (fixtureCommand === refused.command && transition.kind === "inherited" && refusalReason) {
         unmeasuredPreRed.push({ path, command: fixtureCommand, reason: refusalReason });
         continue;

@@ -6,10 +6,13 @@ import {
   LEASE_TTL_MS,
   accountFromCreds,
   credsClaims,
+  deliveryBucket,
   dialerFor,
   idFromCreds,
-  defaultProbeTimeoutMs,
+  isCasLoss,
+  isPermissionDenied,
   isReachable,
+  leaseKey,
   mintCreds,
   newIdentity,
   formatSecretStoreIdentity,
@@ -23,10 +26,13 @@ import {
   type SecretStoreIdentity,
   type TimerWriterHandle,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removeIdentityPin, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writeIdentityPin } from "@cotal-ai/workspace";
+import { PermissionViolationError } from "@nats-io/transport-node";
+import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removeIdentityPin, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { mayServeOn, brokerGoneVerdict, classifyProbe, DescheduleSampler, leaseAction, LoopLagMeter, PROBE_INTERVAL_MS, PROBE_LATE_FACTOR, type LeaseReading } from "./watchdog.js";
+import { mayServeOn, leaseAction, type LeaseReading } from "./watchdog.js";
+import { DeliveryTransportHealth } from "./transport-health.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
+import type { HostedContextInputs, HostedServiceHandle, HostedServiceState } from "@cotal-ai/workspace";
 
 type Values = Record<string, string | undefined>;
 
@@ -302,9 +308,8 @@ export function recordDeliveryPid(root: string, space: string): () => void {
   reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx);
   const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx);
   const mine = String(process.pid);
-  writeFileSync(pidPath, mine);
-  // #969: pin the pid to its process start so a later teardown can refuse a reused pid.
-  writeIdentityPin(pidPath, process.pid);
+  // #969/#1238: publish the pair by rename so a later teardown never sees a torn pairing.
+  writePidPair(pidPath, process.pid);
   return () => {
     try {
       if (readFileSync(pidPath, "utf8").trim() !== mine) return; // a successor's record: not ours to remove
@@ -361,11 +366,36 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   }
 }
 
+/** Start one independently owned delivery context. No cwd, process signal, pidfile, or exit
+ * policy is borrowed from the CLI runner. The caller owns its explicit state path and store. */
+export async function startDeliveryService(inputs: HostedContextInputs): Promise<HostedServiceHandle> {
+  if (!inputs.context.accountPublicKey || !inputs.context.lifecycleUid || !inputs.space || !inputs.servers || !inputs.stateDir)
+    throw new Error("delivery: hosted context needs an account, lifecycle, space, server and stateDir");
+  if (inputs.store.identity === undefined)
+    throw new Error("delivery: hosted SecretStore must declare a stable identity");
+  const actual = parseSecretStoreIdentity(inputs.store.identity);
+  if (!sameSecretStoreIdentity(actual, inputs.storeIdentity) || actual.kind !== "injected")
+    throw new Error("delivery: hosted SecretStore identity does not match the assigned store identity");
+  let releaseOnStartupFailure: (() => Promise<void>) | undefined;
+  try {
+    return await runStartedDelivery(
+      { values: { space: inputs.space, server: inputs.servers }, positionals: [], raw: [] } as ParsedArgs,
+      inputs.store,
+      (release) => { releaseOnStartupFailure = release; },
+      inputs,
+    ) as HostedServiceHandle;
+  } catch (error) {
+    await releaseOnStartupFailure?.();
+    throw error;
+  }
+}
+
 async function runStartedDelivery(
   args: ParsedArgs,
   store: SecretStore | undefined,
   publishReleaser: (release: () => Promise<void>) => void,
-): Promise<void> {
+  hosted?: HostedContextInputs,
+): Promise<void | HostedServiceHandle> {
   const v = args.values as Values;
   const shard = v.shard ? Number(v.shard) : 0;
   const shards = v.shards ? Number(v.shards) : 1;
@@ -387,19 +417,88 @@ async function runStartedDelivery(
   const credsSrc = resolveCredsStore(v, space, store);
   if (v.creds !== undefined)
     assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, credsPath: resolve(v.creds) });
-  const server = v.server ?? DEFAULT_SERVER;
   const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
+  if (hosted !== undefined && accountFromCreds(creds.initial) !== hosted.context.accountPublicKey)
+    throw new Error("delivery: scoped credential account does not match the assigned hosted context");
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
-  // REQUIRE TLS when the operator said to. This daemon holds a STANDING credential and reconnects
+  // WHICH BROKER, WORKSTATION COMPOSITION (#756, the deliver half). `cotal ps`/`spawn`/`attach`/
+  // `status`/`supervise` all resolve the registered mesh for the space/root and dial its broker;
+  // this daemon alone took `v.server ?? DEFAULT_SERVER`, so a registered space whose record names
+  // a non-default broker was dialed at the loopback default, and the refusal then named that wrong
+  // URL with the wrong remedy. Mirrors `superviseTarget` (manager/commands.ts): the record is the
+  // broker authority, an explicit `--server` may repeat it but never silently override it, and the
+  // recorded TLS requirement rides along (see the TLS block below for why a downgrade repeats on
+  // every reconnect). A resolver error because NOTHING is recorded for the space keeps today's
+  // bare default: scratch suites, standalone dev runs and hosted compositions register nothing and
+  // must not change. Any other resolver error propagates. An INJECTED store never consults the
+  // registry at all: the hosted daemon learns everything from argv and the store (the launcher
+  // comment in cli delivery-proc.ts), and coupling it to a workstation artifact it may not have
+  // would break the composition it exists for.
+  let server = v.server ?? DEFAULT_SERVER;
+  let registered: MeshTarget | undefined;
+  if (store === undefined) {
+    const root = findCotalRoot();
+    try {
+      registered = resolveMeshTarget(root, { space });
+    } catch (error) {
+      // `unknown-space` is the no-record-for-that-space case: the bare default above stands. A
+      // corrupt/ambiguous record stays its own loud error rather than a silent loopback dial.
+      if (!isWorkspaceTargetError(error) || error.code !== "unknown-space") throw error;
+    }
+    if (registered !== undefined) {
+      // The resolution moves the BROKER to the record while creds and the $SYS scan target stay on
+      // the daemon's own root, so a record for another root would serve this root's tenant material
+      // against another tenant's broker — the silent wrong-mesh outcome the registry exists to
+      // prevent. Refuse before any dial, naming both roots (canonicalRoot-wise, the rule
+      // meshesForRoot states: a raw `===` silently misses differently-spelled roots).
+      if (canonicalRoot(registered.root) !== canonicalRoot(root))
+        throw new Error(
+          `delivery: space "${space}" is registered for root ${registered.root} but this daemon serves root ${root} - the recorded broker belongs to another workspace; run the daemon from that root, or re-register with \`cotal meshes add\``,
+        );
+      if (v.server !== undefined && v.server !== registered.server)
+        throw new Error(
+          `--server ${v.server} does not match registered space "${space}" at ${registered.server} - deliver refuses to use a different broker than the meshes entry`,
+        );
+      server = registered.server;
+    }
+  }
+
+  // REQUIRE TLS when the operator said to, and when the record the server came from demands it
+  // (same rule as an explicit `--tls`). This daemon holds a STANDING credential and reconnects
   // unattended, so a downgrade here is not a one-shot exposure like a human running `cotal status`
   // - it is repeated, on every reconnect, with nobody watching. `tls: true` makes the client refuse
   // rather than fall back, which is the only behaviour that survives a forged plaintext INFO.
   // Boolean flags arrive as presence in this Values map (`Record<string, string | undefined>`),
   // matching how `--dev-mint` is read below. Comparing to `true` would silently never match.
-  const tls = v.tls !== undefined;
+  const tls = v.tls !== undefined || registered?.tlsRequired === true;
+  // SAY THE DIAL TARGET before anything can refuse on it, in every workstation shape: an operator
+  // (and a cell) can then assert WHAT the daemon dialed even when the default port is live on the
+  // host and the run gets past the reachability refusal. The hosted (injected-store) daemon learns
+  // its target from argv and stays silent here.
+  if (store === undefined)
+    console.error(
+      registered !== undefined
+        ? `• delivery: space "${space}" is registered at ${server} (meshes entry) - dialing it${tls ? " with TLS required" : ""}`
+        : `• delivery: no meshes entry for "${space}" - dialing ${server}${v.server !== undefined ? " (--server)" : " (the local default)"}${tls ? " with TLS required" : ""}`,
+    );
   if (!(await isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) }))) {
+    // The refusal names the URL actually dialed, and — when that URL came from a registry record —
+    // the remedy that fits the record's origin, in the same wording render.ts uses for preflight
+    // `unreachable`: an `up` record is THIS machine's mesh and `cotal up` restarts it; a `manual`
+    // record is a broker elsewhere that only its own operator can start, so `Run: cotal up` here
+    // would prescribe starting a DIFFERENT, local mesh under that name.
+    if (registered !== undefined) {
+      console.error(
+        registered.origin === "manual" || registered.origin === "catalog"
+          ? `✗ delivery: no broker answered at ${server} - "${space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${space}\` to unregister it`
+          : `✗ delivery: no mesh running at ${server} - mesh "${space}" is recorded at ${registered.root} but not running; run \`cotal up\` there to restart`,
+      );
+      if (hosted !== undefined) throw new Error(`delivery: no broker answered at ${server}`);
+      process.exit(1);
+    }
     console.error(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
+    if (hosted !== undefined) throw new Error(`delivery: can't reach NATS at ${server}`);
     process.exit(1);
   }
 
@@ -415,7 +514,7 @@ async function runStartedDelivery(
   // is known for certain, rather than inferred later by probing the store or sniffing the
   // filesystem, both of which report "workstation" for a hosted daemon and would emit a CLI repair
   // the host cannot run. It selects the REPAIR IDIOM only; failure semantics never fork on it.
-  const scanRoot = findCotalRoot();
+  const scanRoot = hosted?.stateDir ?? findCotalRoot();
   const scanTarget: ScanTarget = {
     root: scanRoot,
     expectedAccount: accountFromCreds(creds.initial),
@@ -448,6 +547,8 @@ async function runStartedDelivery(
     watchPresence: true, // read the roster for @mention resolution …
     registerPresence: false, // … but NEVER publish the daemon onto the roster (it's infra, not a peer)
     card: { id: ownId, name: "delivery", role: "delivery", kind: "endpoint" },
+    transportPingIntervalMs: Number(process.env.COTAL_DELIVERY_PING_INTERVAL_MS) || 2500,
+    transportMaxPingOut: Number(process.env.COTAL_DELIVERY_MAX_PING_OUT) || 2,
   });
   // Both channels: raw connection errors ride `error`, while every condition the endpoint is
   // already surviving — a failed 75% renewal, the passive backstop's "still holds the previous
@@ -456,7 +557,51 @@ async function runStartedDelivery(
   const say = (e: Error) => console.error(`! delivery endpoint: ${e.message}`);
   ep.on("error", say);
   ep.on("warning", say);
-  await ep.start();
+  try { await ep.start(); }
+  catch (error) { await ep.stop(); throw error; }
+
+  const BROKER_GONE_MS = Number(process.env.COTAL_DELIVERY_BROKER_GONE_MS) || 15_000;
+  const BROKER_GONE_BACKSTOP_MS = Math.max(
+    BROKER_GONE_MS,
+    Number(process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS) || BROKER_GONE_MS * 4,
+  );
+  let stopHandler: ((code: number, cause?: string) => void) | undefined;
+  let hostedStartupFailure: Error | undefined;
+  let stopHosted: ((cause: string) => void) | undefined;
+  const health = new DeliveryTransportHealth(
+    (reason) => {
+      console.error(
+        reason === "credential-expired"
+          ? "✗ delivery: credential expired without renewal"
+          : reason === "backstop"
+            ? "✗ delivery: broker connection unavailable past backstop (broker unreachable), exiting (coupled to the broker)"
+            : "✗ delivery: broker connection unavailable (broker unreachable), exiting (coupled to the broker)",
+      );
+      const cause = reason === "credential-expired" ? "credential expired without renewal" : `broker connection unavailable (${reason})`;
+      if (hosted !== undefined) {
+        hostedStartupFailure ??= new Error(`delivery context stopped during startup: ${cause}`);
+        if (stopHosted !== undefined) stopHosted(cause);
+        else void ep.stop(); // before lease acquisition, no context-owned lease can be released
+        return;
+      }
+      if (stopHandler !== undefined) stopHandler(1, cause);
+      else earlyStop(1);
+    },
+    () => console.error("! delivery: credential expired, awaiting proved renewal"),
+    BROKER_GONE_MS,
+    BROKER_GONE_BACKSTOP_MS,
+  );
+  ep.on("transport", ({ connected }: { connected: boolean }) => {
+    health.transport(connected);
+  });
+  ep.on("error", (e: Error) => {
+    if (e.name === "UserAuthenticationExpiredError" || (e as { cause?: { name?: string } }).cause?.name === "UserAuthenticationExpiredError") {
+      health.credentialExpired();
+    }
+  });
+  ep.on("creds-adopted", () => {
+    health.adopted();
+  });
 
   // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon
   // already holds this shard (two clients binding the same durable name SPLIT delivery). The bucket TTL
@@ -469,9 +614,28 @@ async function runStartedDelivery(
   let revision: number | undefined;
   try {
     revision = await ep.acquireDeliveryLease(shard);
-  } catch {
-    console.error(`✗ delivery: a live lease already exists for shard ${shard} — another delivery daemon is running. Not binding.`);
+  } catch (e) {
+    if (isCasLoss(e)) {
+      console.error(`✗ delivery: a live lease already exists for shard ${shard} — another delivery daemon is running. Not binding.`);
+    } else if (isPermissionDenied(e)) {
+      const typed = e instanceof PermissionViolationError
+        ? e
+        : (e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError
+          ? (e as { cause: PermissionViolationError }).cause
+          : undefined;
+      const refused = typed
+        ? `${typed.operation} "${typed.subject}"`
+        : (e as Error).message;
+      console.error(
+        `✗ delivery: the lease write for shard ${shard} was refused (${refused}) — this credential ` +
+          `cannot write ${deliveryBucket(space)}.${leaseKey(shard)}. Not binding. Use a credential ` +
+          `holding the "delivery" profile.`,
+      );
+    } else {
+      console.error(`✗ delivery: acquiring the lease for shard ${shard} failed: ${(e as Error).message}. Not binding.`);
+    }
     await ep.stop();
+    if (hosted !== undefined) throw e;
     process.exit(1);
     return;
   }
@@ -496,6 +660,13 @@ async function runStartedDelivery(
   // it is provably ours, then exit. Once the real `shutdown` is installed it REPLACES this, and
   // `stopping` makes the pair idempotent, so a signal arriving mid-swap cannot run both.
   let stopping = false;
+  let unavailable: string | undefined;
+  let closePromise: Promise<void> | undefined;
+  let membership: MembershipFeedHandle | undefined;
+  let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>> } | undefined;
+  let timerWriterAttempt: Promise<void> | undefined;
+  let stopLeaseWatch: (() => void) | undefined;
+  let renew: ReturnType<typeof setInterval> | undefined;
   /** Removes THIS process's liveness record, once it has one. Declared BEFORE the handlers that
    *  call it and assigned below, so a signal landing between the two is a no-op rather than a
    *  temporal-dead-zone throw: at that instant nothing has been written, so there is nothing to
@@ -505,6 +676,7 @@ async function runStartedDelivery(
   const earlyStop = (code: number): void => {
     if (stopping) return;
     stopping = true;
+    health.stop();
     setTimeout(() => process.exit(code), 2000);
     unrecordPid?.();
     void (async () => {
@@ -516,10 +688,13 @@ async function runStartedDelivery(
       process.exit(code);
     })();
   };
+  stopHandler = earlyStop;
   const earlySigint = (): void => earlyStop(0);
   const earlySigterm = (): void => earlyStop(0);
-  process.on("SIGINT", earlySigint);
-  process.on("SIGTERM", earlySigterm);
+  if (hosted === undefined) {
+    process.on("SIGINT", earlySigint);
+    process.on("SIGTERM", earlySigterm);
+  }
   // THE LIVENESS RECORD GOES HERE, AFTER THE ACQUIRE AND NOT BEFORE IT (#1528).
   //
   // The record answers "which process is this space's delivery daemon", and until this line this
@@ -535,7 +710,7 @@ async function runStartedDelivery(
   // own `ready` flag already carries it; the pidfile only ever claimed a process.
   //
   // Placed one statement after the signal handlers, so every exit path from here on can remove it.
-  unrecordPid = recordDeliveryPid(findCotalRoot(), space);
+  if (hosted === undefined) unrecordPid = recordDeliveryPid(findCotalRoot(), space);
   // AND THE SAME RELEASE, REACHABLE BY AN ORDINARY `catch`. The two process-level guards below
   // only see a fault that reaches the RUNTIME. A start-up rejection on the public CLI path does
   // not: `runCli` awaits this function inside its own try/catch (cli/src/command.ts), so the
@@ -546,16 +721,36 @@ async function runStartedDelivery(
   // exists". So the release is published HERE, to a scope that a plain `catch` around the rest of
   // start-up can reach, and the process guards stay as the backstop for faults that never become
   // a rejection this function can see (a synchronous throw in a timer, say).
-  publishReleaser(async (): Promise<void> => {
-    if (stopping) return;
+  const close = (): Promise<void> => {
+    if (closePromise !== undefined) return closePromise;
     stopping = true;
-    unrecordPid?.(); // the record dies with the daemon it describes, including on a start-up failure
-    try {
-      const own = await ep.readDeliveryLeaseEntry(shard);
-      if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
-    } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
-    try { await ep.stop(); } catch { /* broker may be gone */ }
-  });
+    if (renew !== undefined) clearInterval(renew);
+    health.stop();
+    stopLeaseWatch?.();
+    unrecordPid?.();
+    closePromise = (async () => {
+      try { await ep.quiescePlane3(); } catch { /* stop still releases the connection */ }
+      try {
+        const own = await ep.readDeliveryLeaseEntry(shard);
+        if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
+      } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
+      try { await membership?.stop(); } catch { /* broker may be gone */ }
+      try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
+      try { await Promise.race([timerWriter?.nc.drain(), new Promise((r) => setTimeout(r, 1000))]); } catch { /* broker may be gone */ }
+      try { await timerWriterAttempt; } catch { /* startup or broker fault */ }
+      try { await ep.stop(); } catch { /* broker may be gone */ }
+    })();
+    return closePromise;
+  };
+  publishReleaser(close);
+  stopHosted = (cause) => {
+    unavailable = `delivery context stopped (code 1): ${cause}`;
+    void close();
+  };
+  if (hostedStartupFailure !== undefined) {
+    await close();
+    throw hostedStartupFailure;
+  }
   // A START-UP FAILURE AFTER THE ACQUIRE MUST ALSO GIVE THE SHARD BACK. Between this point and the
   // handler swap far below, a throw would otherwise propagate out of `runDelivery` with the row
   // still claiming the shard, stranding it for the bucket TTL exactly as an unhandled signal did -
@@ -581,12 +776,13 @@ async function runStartedDelivery(
   };
   const earlyUncaught = (e: Error): void => earlyFault("faulted", e);
   const earlyRejection = (e: unknown): void => earlyFault("rejected a promise", e);
-  process.on("uncaughtException", earlyUncaught);
-  process.on("unhandledRejection", earlyRejection);
+  if (hosted === undefined) {
+    process.on("uncaughtException", earlyUncaught);
+    process.on("unhandledRejection", earlyRejection);
+  }
 
   // Broker-sourced graph membership handle — declared BEFORE Plane-3 so the delivery-admin reload
   // hook below can close over it (it starts further down; the closure reads it live).
-  let membership: MembershipFeedHandle | undefined;
   // WHY the feed is down, carried from `startMembership` so the adoption refusal below names the real
   // fault instead of its symptom. Without it, an expired $SYS observer cred surfaces to the operator
   // only as "membership feed is not running" (#338).
@@ -622,12 +818,20 @@ async function runStartedDelivery(
     // killing it to discover it was alive (any refusal/unknown blocks the repair, fail-closed).
     principalLiveness: (principal) => executePrincipalLiveness(server, scanTarget, principal),
     reloadStoreIdentity: () => reloadStoreIdentity,
+    onDeliveryCredsAdopted: () => health.adopted(),
   });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,
   // not merely that the single-flight slot was claimed.
   try { revision = await ep.markDeliveryLeaseReady(shard, revision); }
-  catch { /* lost the lease between acquire and ready — the renew loop's CAS failure will exit us */ }
+  catch (error) {
+    if (hosted !== undefined) throw error;
+    /* CLI: the renew loop's CAS failure will exit us if the lease was lost. */
+  }
+  if (hostedStartupFailure !== undefined) {
+    await close();
+    throw hostedStartupFailure;
+  }
   console.log(`✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: cotal down`);
 
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
@@ -650,6 +854,13 @@ async function runStartedDelivery(
     console.error(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected`);
   }
 
+  // A store read can finish after a startup health fault closed the endpoint. Dispose the feed
+  // it just returned before rejecting; it did not exist when the original close ran.
+  if (hostedStartupFailure !== undefined) {
+    try { await membership?.stop(); } finally { await close(); }
+    throw hostedStartupFailure;
+  }
+
   // The TIMER WRITER (SPEC 13.2): the pump that turns workflow `.schedule` requests into armed
   // broker schedules. Hosted here because this daemon is the space's standing server-side process;
   // without a running writer no pause on the space ever expires. Its OWN connection under the same
@@ -657,8 +868,7 @@ async function runStartedDelivery(
   // module-per-connection isolation), re-dialed with the FRESHEST cred by a supervised restart
   // loop: a fault never kills delivery, is never silent (each attempt logs why the space cannot
   // expire pauses right now), and a cred that gains rows at renewal is picked up on the next dial.
-  let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>> } | undefined;
-  void (async () => {
+  timerWriterAttempt = (async () => {
     let backoffMs = 5_000;
     for (;;) {
       if (stopping) return;
@@ -670,14 +880,16 @@ async function runStartedDelivery(
           name: "cotal-delivery-timer-writer",
           maxReconnectAttempts: -1,
         });
+        if (stopping) { await nc.close(); return; }
         const handle = await startTimerWriter(nc, space);
+        if (stopping) { await handle.stop(); await nc.close(); return; }
         timerWriter = { handle, nc };
         backoffMs = 5_000;
         console.log(`✓ timer writer up (space ${space}) — workflow pauses on this space expire`);
         await handle.done; // resolves only through stop(); a fault rejects
         return;
       } catch (e) {
-        if (stopping) return;
+        if (stopping) { try { await nc?.close(); } catch { /* already closed */ } return; }
         console.error(
           `! timer writer: down (${(e as Error).message}) — retrying in ${Math.round(backoffMs / 1000)}s; pauses on this space do not expire until it is back`,
         );
@@ -689,12 +901,17 @@ async function runStartedDelivery(
     }
   })();
 
-  const shutdown = (code: number): void => {
+  const shutdown = (code: number, cause?: string): void => {
+    if (hosted !== undefined) {
+      unavailable = cause ? `delivery context stopped (code ${code}): ${cause}` : `delivery context stopped (code ${code})`;
+      void close();
+      return;
+    }
     if (stopping) return;
     stopping = true;
-    clearInterval(renew);
-    clearInterval(brokerWatch);
-    stopLeaseWatch();
+    if (renew !== undefined) clearInterval(renew);
+    health.stop();
+    stopLeaseWatch?.();
     // THE RECORD GOES FIRST, AND SYNCHRONOUSLY. Everything below this line talks to a broker that
     // may be dead and is bounded only by the 2s hard exit; a record left behind because a drain
     // hung is a record that outlives its process, which is this issue's defect re-entering through
@@ -748,6 +965,7 @@ async function runStartedDelivery(
       process.exit(code);
     })();
   };
+  stopHandler = shutdown;
 
   // SIGNAL HANDLERS GO UP THE MOMENT `shutdown` EXISTS, NOT AFTER STARTUP FINISHES.
   //
@@ -770,16 +988,18 @@ async function runStartedDelivery(
   // knows nothing of the renew timer, the membership feed or the timer writer - would run first and
   // set `stopping`, making the full teardown a no-op. `stopping` still guards the swap itself, so a
   // signal delivered between these two statements is handled exactly once.
-  process.off("SIGINT", earlySigint);
-  process.off("SIGTERM", earlySigterm);
-  // The start-up fault guards go too, and BY REFERENCE: `removeAllListeners` here would strip
-  // listeners this daemon does not own. They exist to cover the window where no `shutdown` exists;
-  // past this line a fault should surface normally rather than become a quiet exit that skips the
-  // full teardown.
-  process.off("uncaughtException", earlyUncaught);
-  process.off("unhandledRejection", earlyRejection);
-  process.on("SIGINT", () => shutdown(0));
-  process.on("SIGTERM", () => shutdown(0));
+  if (hosted === undefined) {
+    process.off("SIGINT", earlySigint);
+    process.off("SIGTERM", earlySigterm);
+    // The start-up fault guards go too, and BY REFERENCE: `removeAllListeners` here would strip
+    // listeners this daemon does not own. They exist to cover the window where no `shutdown` exists;
+    // past this line a fault should surface normally rather than become a quiet exit that skips the
+    // full teardown.
+    process.off("uncaughtException", earlyUncaught);
+    process.off("unhandledRejection", earlyRejection);
+    process.on("SIGINT", () => shutdown(0));
+    process.on("SIGTERM", () => shutdown(0));
+  }
   /** What the broker says about THIS shard's lease key right now, the verdict a failed renew does
    *  NOT have. `unknown` never collapses into `gone`: not being able to look is not the same fact as
    *  looking and finding nothing (#1318).
@@ -843,6 +1063,7 @@ async function runStartedDelivery(
    *  caller has just proven ownership; `why` is what proved it, since "it started serving again" is
    *  only auditable next to the evidence that permitted it. */
   const resumeServing = async (why: string): Promise<void> => {
+    if (stopping) return;
     try { await ep.rearmPlane3(); }
     catch (e) { console.error(`! delivery: ${why} but could not resume Plane-3 (${(e as Error).message})`); return; }
     // `ready` MEANS "THE RESPONDER IS UP", and it is what `ensureDelivery` waits on and what the
@@ -888,7 +1109,7 @@ async function runStartedDelivery(
   // establish it refuses to start, loudly (the await below throws out of start-up and the
   // releaser gives the shard back), rather than degrade into the polled window this issue is
   // about. The stop handle is cleared on every exit path the renew interval is: `shutdown`.
-  const stopLeaseWatch = await ep.watchDeliveryLease(shard, (info) => {
+  stopLeaseWatch = await ep.watchDeliveryLease(shard, (info) => {
    if (stopping) return;
    // The row as this event states it: an event for a row we own answers ITSELF (no state
    // change); a row we do not own, or a delete, needs the broker's word on what is there NOW
@@ -947,6 +1168,11 @@ async function runStartedDelivery(
      }
    })().catch((e) => console.error(`! delivery: the lease watch trigger faulted (${(e as Error).message}); the renew interval remains the arbiter`));
  });
+  if (hosted !== undefined && stopping) {
+    stopLeaseWatch?.();
+    await close();
+    throw hostedStartupFailure ?? new Error(unavailable ?? "delivery context stopped during startup");
+  }
   // Renew the lease at ~half the TTL so a healthy holder never self-evicts.
 
   //
@@ -960,7 +1186,7 @@ async function runStartedDelivery(
   // second refused over a sequence the first legitimately moved, a conflict this daemon manufactures
   // itself and then reads as someone else's takeover.
   let renewInFlight = false;
-  const renew = setInterval(() => {
+  renew = setInterval(() => {
     if (stopping || renewInFlight) return;
     renewInFlight = true;
     void (async () => {
@@ -1063,192 +1289,19 @@ async function runStartedDelivery(
     })();
   }, Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
 
-  // Coupled to the broker: POLL its reachability. Survive brief blips (the endpoint reconnects on its
-  // own), but EXIT if the broker is GONE, the endpoint would otherwise retry reconnect forever (its
-  // terminal-close never fires), so this is what stops the daemon outliving the server it serves.
-  // (`cotal up`/`down` teardown stops it too.) The window is env-overridable for tests.
-  //
-  // WHAT "GONE" MEANS IS NOW DECIDED FROM EVIDENCE, NOT FROM A CLOCK (#1318). Three conditions used
-  // to produce one signal and only one of them was a dead server: the broker being down, this
-  // process being descheduled so the interval never fired, and a probe that could not complete a
-  // handshake because the local process could not get scheduled to finish it. A wall-clock
-  // `Date.now() - lastReachable` cannot tell them apart, and widening it only moves the threshold.
-  // Three signals separate them, and all three are things this process can actually observe:
-  //
-  //   • MEASURED LOOP LAG. The gap between consecutive firings of a timer we own, minus its nominal
-  //     period, is local starvation by direct measurement. It is credited back, so time this process
-  //     spent off the runqueue is never counted against the broker.
-  //   • COMPLETED NEGATIVE PROBES. Only a probe that RAN TO COMPLETION and returned false is
-  //     evidence about the server. A probe that never ran contributes nothing (that was the whole
-  //     defect: the window aged with no probe having failed), and one that REJECTED is an
-  //     unanswered question, it now resets the counter and logs, where it used to be swallowed by
-  //     `.catch(() => {})` and silently age the window.
-  //   • TRANSPORT-LEVEL LIVENESS. A `transport: connected` edge from the endpoint's own connection
-  //     cannot happen without a server on the other end, so it is positive evidence obtained for
-  //     free, on a path that does not need this process to schedule a probe at all.
-  //
-  // A starvation diagnosis therefore reports DEGRADED and keeps serving; a genuinely dead broker
-  // still exits, on the same window, as fast as completed probes can say so.
-  const BROKER_GONE_MS = Number(process.env.COTAL_DELIVERY_BROKER_GONE_MS) || 15_000;
-  // How many completed negatives make elapsed time believable. Two is the floor: one completed
-  // negative is a single refused connect, which a loopback under momentary pressure can produce.
-  // The default scales with the window so a test that shortens the window does not thereby demand
-  // more evidence than the window has room for.
-  const BROKER_GONE_PROBES = Math.max(
-    2,
-    Number(process.env.COTAL_DELIVERY_BROKER_GONE_PROBES) || Math.ceil(BROKER_GONE_MS / PROBE_INTERVAL_MS / 2),
-  );
-  // The hard backstop: past this, no amount of measured lag or transport optimism keeps the daemon
-  // alive. A daemon that OUTLIVES a dead broker is worse than one that restarts unnecessarily, so
-  // the repair is bounded and fails toward exiting.
-  const BROKER_GONE_BACKSTOP_MS = Math.max(
-    BROKER_GONE_MS,
-    Number(process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS) || BROKER_GONE_MS * 4,
-  );
-  let lastReachable = Date.now();
-  let completedNegatives = 0;
-  let degraded = false;
-  // What the endpoint's OWN connection reports about its socket to this same broker. Seeded true
-  // because `ep.start()` above completed, which it cannot do without a server having answered.
-  let transportConnected = true;
-  const lag = new LoopLagMeter(PROBE_INTERVAL_MS);
-  /** Positive evidence, from wherever it came: restart the window and its lag budget together. */
-  const sawBroker = (): void => {
-    lastReachable = Date.now();
-    completedNegatives = 0;
-    lag.reset();
-    if (degraded) {
-      degraded = false;
-      console.error(`✓ delivery: the broker is answering again, Plane-3 is serving normally (space ${space})`);
-    }
-  };
-  // The endpoint's OWN transport edge. This is evidence the daemon gets without being scheduled to
-  // probe for it, and it is the signal that distinguishes "the connection object reports a
-  // transport-level close" from "silence": a live connection to that address proves a server, while
-  // a disconnect is the endpoint's own business (nats.js reconnects through blips of its own
-  // accord) and merely stops excusing a probe that will not complete.
-  ep.on("transport", (t: { connected: boolean }) => {
-    transportConnected = t.connected;
-    if (t.connected) sawBroker();
-  });
-  // THE BUDGET THE PROBE IS ACTUALLY GIVEN, asked of the one function that decides it. A ws(s)
-  // broker rides an HTTPS edge and gets 5s, not the 1s a loopback TCP broker gets; judging a ws
-  // probe against 1000 would read every honest refusal on such a broker as this process's own
-  // starvation, so the completed-negative count could never rise and a genuinely dead ws broker
-  // would be ended only by the backstop, with the wrong reason in its log. The budget and the
-  // judgment have to come from the same place.
-  const probeBudgetMs = defaultProbeTimeoutMs(server);
-  const brokerWatch = setInterval(() => {
-    if (stopping) return;
-    // Measure FIRST, before any await: this is the gap since the previous firing, and it is the
-    // only place the daemon can learn that it was not scheduled.
-    lag.tick(Date.now());
-    // THE SAME TRANSPORT AS EVERY OTHER DIAL IN THIS PROCESS. This poll carries `latestCreds` — a
-    // standing credential — and `isReachable` performs a real authenticated connect whenever creds
-    // are supplied, every 2 seconds, for the life of the daemon. It is the most repeated credential
-    // presentation in the system, and it was the one dial here that did not name its transport.
-    //
-    // The poll predates TLS and is identical on `main`, where nothing is encrypted and it is at
-    // least consistent. What is new is the ASYMMETRY: with the two dials above upgraded, an operator
-    // who enables TLS would get a protected main path and an unprotected watchdog. An inconsistent
-    // guarantee is worse than a uniformly absent one, because the operator now believes something.
-    const probeStarted = Date.now();
-    // Watch this process's own scheduling FOR THE DURATION OF THE PROBE. A refusal is only evidence
-    // about the server if the server was actually given the time the deadline promised it, and
-    // under short CPU slices most of a probe's wall-clock can be time this process was not running.
-    const sampler = new DescheduleSampler();
-    sampler.start(probeStarted);
-    void isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) })
-      .then(
-        (ok) => classifyProbe(ok, Date.now() - probeStarted, probeBudgetMs, PROBE_LATE_FACTOR, sampler.stop()),
-        // A REJECTED probe is an unanswered question, not a negative answer. It used to be swallowed
-        // whole by `.catch(() => {})`, so it neither refreshed the window nor evaluated anything and
-        // silently aged the daemon toward an exit it had gathered no evidence for.
-        (e: Error) => {
-          sampler.stop();
-          console.error(`! delivery: the broker probe did not complete (${e.message}), no verdict from it; serving, retrying`);
-          return classifyProbe(undefined, Date.now() - probeStarted);
-        },
-      )
-      .then((probe) => {
-        if (stopping) return;
-        if (probe.counts === "positive") { sawBroker(); return; }
-        if (probe.counts === "incomplete") {
-          // The run of credible refusals is broken by a probe that did not complete.
-          completedNegatives = 0;
-          return;
-        }
-        if (probe.counts === "starved") {
-          // The probe RAN and said no, but its answer arrived so far past its own deadline that the
-          // deadline was enforced against this process rather than against the server. That is the
-          // starved-client case, and it is the one an elapsed-time predicate cannot see at all: the
-          // timer is firing, the probes are completing, and every one of them is `false`.
-          // Dated with the instant the answer ARRIVED, so the meter can tell whether this stall is
-          // the same wall-clock interval the tick above already charged (union, counted once) or an
-          // adjacent one (disjoint, both counted). The overlap question is settled by timestamps
-          // rather than by comparing magnitudes, which cannot distinguish the two.
-          lag.credit(probe.lateBy, Date.now());
-          completedNegatives = 0;
-        } else {
-          // A refusal that arrived on time. This is the only thing that may accrue against the broker.
-          completedNegatives += 1;
-        }
-        // ONE SPAN, MEASURED ONCE, USED FOR BOTH. Reading the clock twice would let the elapsed span
-        // and the lag clamp disagree by the cost of the call itself.
-        const sinceReachable = Date.now() - lastReachable;
-        const verdict = brokerGoneVerdict({
-          msSinceLastReachable: sinceReachable,
-          // CLAMPED TO THE SPAN IT IS SUBTRACTED FROM. The interval gap and a late probe answer can
-          // testify to the same stall, and the meter cannot tell that from two adjacent stalls, so it
-          // keeps both charges and the bound is applied here, where the span is known. Without it a
-          // 10s stall read 17s and drove unstarved time negative, which cannot be cleared by any
-          // amount of real outage: a dead broker then survives the evidence clause and exits only on
-          // the backstop, 44s -> 62s measured. Time not had cannot exceed time passed.
-          starvedMs: lag.starvedMsWithin(sinceReachable),
-          completedNegatives,
-          transportConnected,
-          windowMs: BROKER_GONE_MS,
-          requiredNegatives: BROKER_GONE_PROBES,
-          backstopMs: BROKER_GONE_BACKSTOP_MS,
-        });
-        if (verdict.exit) {
-          // SAY WHICH EXIT THIS IS. The single message here previously claimed completed probes over
-          // ">15s of unstarved time" on BOTH paths, and on the backstop path that sentence is simply
-          // false: the backstop fires precisely when the evidence clauses did NOT conclude, often
-          // with zero completed refusals. An operator debugging a starved host was handed a
-          // confident evidentiary claim the daemon had not established.
-          console.error(
-            verdict.reason === "backstop"
-              ? `✗ delivery: giving up on elapsed time alone, ${Math.round(BROKER_GONE_BACKSTOP_MS / 1000)}s since the last ` +
-                  `confirmed reachability with no sufficient evidence either way (${completedNegatives} completed probes refused, ` +
-                  `${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of local scheduler lag credited). This is a BOUND, not a diagnosis: the ` +
-                  `broker may be gone or this process may have been starved past the bound, exiting (coupled to the broker)`
-              : `✗ delivery: broker unreachable, ${completedNegatives} completed probes refused within their deadline over ` +
-                  `>${BROKER_GONE_MS / 1000}s of unstarved time (${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of local scheduler lag credited), exiting (coupled to the broker)`,
-          );
-          shutdown(1);
-          return;
-        }
-        // NOT an exit. Say so once per episode, naming WHICH condition it is, so an operator reading
-        // the log during a load incident sees "this host starved me" rather than a daemon that
-        // silently vanished.
-        if (!degraded && verdict.reason !== "reachable") {
-          degraded = true;
-          console.error(
-            verdict.reason === "starved"
-              ? `! delivery: DEGRADED, cannot reach the broker, but ${Math.round(lag.starvedMsWithin(sinceReachable) / 1000)}s of that window was local scheduler lag (this host is starving this process, not the broker); serving, retrying`
-              : verdict.reason === "transport-live"
-                ? `! delivery: DEGRADED, a fresh probe cannot complete, but this daemon's own connection to ${server} is still open, so the broker is there and this process cannot ask; serving, retrying`
-                : `! delivery: DEGRADED, the broker has not answered for >${BROKER_GONE_MS / 1000}s but only ${completedNegatives} of ${BROKER_GONE_PROBES} probes have refused within their deadline; serving, retrying`,
-          );
-        }
-      })
-      .catch((e: Error) => {
-        // The verdict path itself faulted. Never silent, and never an exit: a bug in the detector
-        // must not end the daemon it is meant to keep alive.
-        console.error(`! delivery: the broker watch tick faulted (${e.message}); serving, retrying`);
-      });
-  }, PROBE_INTERVAL_MS);
+  // Native transport health is driven by DeliveryTransportHealth above (resident transport events).
 
-  await new Promise<void>(() => {}); // run until signalled
+  if (hosted !== undefined) {
+    const context = hosted.context;
+    return {
+      readiness(): HostedServiceState {
+        return unavailable !== undefined
+          ? { state: "unavailable", context, cause: unavailable }
+          : { state: stopping ? "draining" : "ready", context };
+      },
+      async drain(): Promise<void> { await close(); },
+      close,
+    };
+  }
+  await new Promise<void>(() => {}); // CLI runs until signalled
 }

@@ -32,8 +32,9 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, seedChannelRegistry, isReachable, type PresenceCondition } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey, type PresenceCondition } from "@cotal-ai/core";
+import { connect as rawConnect } from "@nats-io/transport-node";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
@@ -144,13 +145,44 @@ async function dm(text: string): Promise<void> {
   await operator.unicast(id, text);
 }
 
+/**
+ * Publish a raw DM whose wire id is the EMPTY STRING, from a foreign client with no Cotal layer —
+ * the only shape an empty id can arrive in (first-party publish APIs mint one). The sender
+ * principal rides the subject (`local.rawpub`) and `from.id` matches it, so the receiver's
+ * authenticity guard passes and the message reaches ingest like any conformant one (#674: the
+ * adapter seam, not MeshAgent, is what is under test here). `drain()` closes the socket.
+ */
+const enc = new TextEncoder();
+let rawNc: Awaited<ReturnType<typeof rawConnect>> | undefined;
+async function rawEmptyIdDm(text: string, opts?: { flush?: boolean }): Promise<void> {
+  const recip = operator.getRoster().find((p) => p.card.name === PEER)?.card.id;
+  const parsed = recip ? parsePrincipalKey(recip) : undefined;
+  if (!recip || !parsed) throw new Error(`peer ${PEER} not in the operator's roster yet`);
+  rawNc ??= await rawConnect({ servers, maxReconnectAttempts: 0 });
+  rawNc.publish(
+    unicastSubject(space, parsed.owner, parsed.actor, "local", "rawpub"),
+    enc.encode(
+      JSON.stringify({
+        id: "",
+        ts: Date.now(),
+        space,
+        from: { id: "local.rawpub", name: "RawPub", kind: "agent" },
+        to: recip,
+        parts: [{ kind: "text", text }],
+      }),
+    ),
+  );
+  // `flush: false` lets a caller queue a second publish before either crosses the wire, so two
+  // raw sends land in one round trip — otherwise the host's idle drive() can start a turn on the
+  // first message before the second has even reached the broker (a test-timing race, not the
+  // adapter behavior the cell is grading).
+  if (opts?.flush !== false) await rawNc.flush();
+}
+
 let host: ReturnType<typeof spawn> | undefined;
 let tuiHostRef: ReturnType<typeof spawn> | undefined;
 try {
-  for (let i = 0; i < 50; i++) {
-    if (await isReachable(servers)) break;
-    await sleep(200);
-  }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   await operator.start();
 
@@ -276,6 +308,113 @@ try {
   await dm("post-steer");
   const t4 = await waitFor("post-steer turn", () => turnStarts().find((t) => t.includes("post-steer")));
   check("steered batch acked with its turn", !t4.includes("steer-payload") && !t4.includes("SLOW block"), t4);
+
+  // (4a) #674: a raw DM with an EMPTY wire id drives a turn of its own when the host is idle, and
+  // the turn's start ledger records its RECEIVE key (a minted one — the raw id is "") so the
+  // boundary ack addresses something real. Under the ledger-keyed-by-id mutation the ack drains
+  // "" instead, the message never commits, and the turn boundary immediately re-drives it — the
+  // marker text appears in a SECOND turn start (here: before the probe is even sent).
+  await sleep(300);
+  await rawEmptyIdDm("empty-drive");
+  const tD = await waitFor("empty-id drive turn", () => turnStarts().find((t) => t.includes("empty-drive")));
+  check("an empty-id DM drives a turn and never re-drives (#674)", true, tD);
+  await sleep(800); // let a mutant's un-acked re-drive run; a healthy boundary commits and stays idle
+  check(
+    "the driven empty-id DM committed at its boundary (no second turn carries it)",
+    turnStarts().filter((t) => t.includes("empty-drive")).length === 1,
+    turnStarts().filter((t) => t.includes("empty-drive")),
+  );
+
+  // (4b) #674: an empty-id DM steered mid-turn carries exactly once. `surfaced` holds RECEIVE
+  // keys; the steer filter must test `i.recvKey` against that set. Under the raw-id mutation an
+  // empty-id item's id ("") is never in the set, so it is steered a SECOND time into the same
+  // turn — the steer injection would name it twice.
+  await sleep(300);
+  await dm("SLOW empty-window");
+  await waitFor("SLOW empty-window turn", () => turnStarts().find((t) => t.includes("SLOW empty-window")));
+  await rawEmptyIdDm("empty-steer");
+  await waitFor("empty-id steer", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/steer" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("empty-steer")),
+    ),
+  );
+  await sleep(1500); // let the SLOW empty-window turn COMPLETE before counting: a :648 raw-id
+  // mutant re-steers the id-less item for as long as the turn stays open (a storm of turn/steer
+  // entries), so the count must span the whole journal after the window closes — counting inside
+  // the first matching entry would let every re-steer past the same guard.
+  const emptySteerCount = logEntries().filter(
+    (e) =>
+      e.ev === "recv" &&
+      e.method === "turn/steer" &&
+      ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("empty-steer")),
+  ).length;
+  check(
+    "an empty-id DM steered mid-turn is not steered twice (#674)",
+    emptySteerCount === 1,
+    { emptySteerCount },
+  );
+  check(
+    "no turn start ever carries the steered empty-id text",
+    turnStarts().every((t) => !t.includes("empty-steer")),
+    turnStarts().filter((t) => t.includes("empty-steer")),
+  );
+  // (the probe DM's marker shares no substring with `empty-steer`, so the ack checks below can
+  // test the text's absence without matching the probe itself)
+  await dm("post-674-probe");
+  const tE3 = await waitFor("post-674-probe turn", () => turnStarts().find((t) => t.includes("post-674-probe")));
+  check(
+    "the steered empty-id DM was acked with its turn",
+    !tE3.includes("empty-steer") && !tE3.includes("SLOW empty-window"),
+    tE3,
+  );
+
+  // (4c) #674: two raw DMs with EMPTY wire ids, published back-to-back into ONE turn. The
+  // first-party APIs mint an id per message, so an empty id can only come off the wire from a
+  // raw client — exactly the foreign shape `empty-id-ingest` drives at the MeshAgent layer.
+  // `drive()` peeks the inbox synchronously in the first `incoming` dispatch, so two DMs into an
+  // IDLE host are deterministically two turns; the one open window is a live turn, and steers are
+  // how both join it. The ADAPTER seam is what this cell grades: the surfaced ids the turn owns
+  // are receive keys (a minted one for each id-less item, start and steers alike), and the
+  // boundary acks by exactly those keys — otherwise the ack addressed "" twice, nothing commits,
+  // and the boundary's pump re-carries both texts into the very next turn (the ledger-keyed-by-id
+  // mutation this cell must catch).
+  await sleep(300);
+  await dm("SLOW empty-frame");
+  await waitFor("SLOW empty-frame turn", () => turnStarts().find((t) => t.includes("SLOW empty-frame")));
+  await rawEmptyIdDm("empty-a", { flush: false });
+  await rawEmptyIdDm("empty-b");
+  const emptySteerTexts = () =>
+    logEntries()
+      .filter((e) => e.ev === "recv" && e.method === "turn/steer")
+      .map((e) => ((e.params?.input as { text?: string }[] | undefined) ?? []).map((i) => i.text ?? "").join("\n"));
+  await waitFor("both empty-id DMs steered into the open turn", () => {
+    const texts = emptySteerTexts();
+    return texts.some((t) => t.includes("empty-a")) && texts.some((t) => t.includes("empty-b")) ? texts : undefined;
+  });
+  await sleep(1500); // let the SLOW empty-frame turn complete (its boundary is the ack site)
+  const emptySteered = emptySteerTexts();
+  check(
+    "two empty-id DMs in one turn both commit (#674)",
+    emptySteered.filter((t) => t.includes("empty-a")).length === 1 &&
+      emptySteered.filter((t) => t.includes("empty-b")).length === 1,
+    emptySteered,
+  );
+  check(
+    "no turn start ever carries either empty-id text (steers joined, never drove)",
+    turnStarts().every((t) => !t.includes("empty-a") && !t.includes("empty-b")),
+    turnStarts().filter((t) => t.includes("empty-a") || t.includes("empty-b")),
+  );
+  await sleep(500);
+  await dm("after-empty");
+  const tE2 = await waitFor("post-empty turn", () => turnStarts().find((t) => t.includes("after-empty")));
+  check(
+    "the empty-id batch was committed at its boundary (neither text returns)",
+    !tE2.includes("empty-a") && !tE2.includes("empty-b"),
+    tE2,
+  );
 
   // (5) interrupt: an OPERATOR interrupt dismisses the batch — acked, not redelivered. HANG holds
   // the turn open until it is interrupted (the fake's self-interrupt fallback after ~1s stands in
@@ -927,10 +1066,7 @@ try {
   await waitFor("shutlaunch thread started", () =>
     !existsSync(shutLaunchLog)
       ? undefined
-      : readFileSync(shutLaunchLog, "utf8")
-          .split("\n")
-          .filter(Boolean)
-          .map((l) => JSON.parse(l) as LogEntry)
+      : readJsonLines<LogEntry>(shutLaunchLog)
           .find((e) => e.ev === "recv" && e.method === "thread/start"),
     30_000,
   );
@@ -1163,13 +1299,7 @@ try {
     },
     stdio: ["ignore", "ignore", "inherit"],
   }));
-  const tuiEntries = (): LogEntry[] =>
-    !existsSync(tuiLog)
-      ? []
-      : readFileSync(tuiLog, "utf8")
-          .split("\n")
-          .filter(Boolean)
-          .map((l) => JSON.parse(l) as LogEntry);
+  const tuiEntries = (): LogEntry[] => readJsonLines<LogEntry>(tuiLog);
   const tuiLaunch = await waitFor("codex TUI launch", () => tuiEntries().find((e) => e.ev === "tui"), 30_000);
   const tuiArgv = (tuiLaunch.argv ?? []) as string[];
   const startedThread = tuiEntries().find((e) => e.ev === "recv" && e.method === "thread/start");

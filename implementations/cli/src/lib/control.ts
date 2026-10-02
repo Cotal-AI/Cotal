@@ -1,6 +1,7 @@
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
+  assertLifecycleToken,
   GOAL_BEARING_COMMANDS,
   epProbeInstanceInterest,
   freezeExpectedSet,
@@ -24,6 +25,7 @@ import {
   type EpCaller,
   type EpInstanceLiveness,
   type EpVerbTarget,
+  type FlagSpec,
   type Profile,
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
@@ -60,6 +62,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   input: { command: "input", targeted: true },
   status: { command: "inspect" },
   ps: { command: "ps" },
+  slots: { command: "slots" },
   models: { command: "models" },
   launch: { command: "launch" },
   purge: { command: "purge" },
@@ -208,16 +211,32 @@ export interface ManagerPin {
   instanceId?: string;
 }
 
+/** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
+ *  ps/stop/attach/input/describe so they cannot drift. For stop and attach it is the seat-locality
+ *  escape hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily
+ *  the one that wins the class queue. */
+export const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not the roster's `local.…` principal id" } as const satisfies FlagSpec;
+
 /** Read `--on` at the site that declares it. Absent stays absent (class rails). An EMPTY value
  *  (`--on=`, `--on ""`, or `--on "$INSTANCE"` with the variable unset) is refused here, up front:
  *  it is falsy, so every `if (on)` branch would treat it as absent and drop the pin (a `stop` would
  *  fall through to seat locality, an open-mesh `ps` to the scatter), while the mint and core's
  *  route builder treat it as PRESENT and refuse it as an invalid token. Two answers for one input;
- *  a dropped pin is a silent fallback, so neither branch gets to see it. */
+ *  a dropped pin is a silent fallback, so neither branch gets to see it. A non-empty value is also
+ *  shape-checked here now, against core's own lifecycle-token grammar: the mint's bare grammar
+ *  error named neither the identifier `--on` wants nor where to read it, which cost operators
+ *  spawn attempts on a format mismatch (#423). */
 export function onInstanceOrExit(on: string | undefined, verb: string): string | undefined {
   if (on === undefined) return undefined;
   if (on === "") {
     console.error(c.red(`✗ --on requires a manager instance id (the whole id, as \`cotal ps\` prints it): \`${verb} --on <instance>\`. An empty value is refused, not dropped`));
+    process.exit(1);
+  }
+  try {
+    assertLifecycleToken(on, "instanceId");
+  } catch (e) {
+    const principalClause = on.startsWith("local.") ? `; "${on}" is a principal id` : "";
+    console.error(c.red(`✗ ${(e as Error).message}. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`manager <id>\` header in a multi-manager space, the \`instance <id>\` fact under \`cotal ps --wide\`), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${principalClause}: \`${verb} --on <instance>\``));
     process.exit(1);
   }
   return on;

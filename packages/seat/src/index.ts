@@ -4,5 +4,7 @@ export { adoptSeat, adoptSeatSync, type SeatHandle, type SeatAttachSession } fro
 export { assertSeatId, bootToken, processStartToken, readRecord, recordPath, seatId, socketPath, type SeatRecord } from "./record.js";
 export { censusCustodians, identityVerdict, reapSeat, type CustodianSighting, type SeatReapEvidence } from "./reap.js";
 export { SeatClient } from "./client.js";
+export { peerCredentials, type PeerCredentials } from "./peercred.js";
 export { runCustodian, type CustodianLaunch } from "./custodian.js";
+export { SEAT_OOM_SCORE_ADJ, preferSeatForOomKill, type OomPreference } from "./oom.js";
 export { StartupConfirmMatcher, normalizeConfirmText, unmatchedConfirmMessage } from "./startup-confirm.js";

@@ -16,8 +16,8 @@
  * synthesized frames over a scripted endpoint. Run: pnpm smoke:claude-turn-frames
  */
 import { MeshAgent } from "@cotal-ai/connector-core";
-import type { AgentConfig } from "@cotal-ai/connector-core";
-import { createClaudeHandle, type HookEvent } from "../src/hooks.js";
+import type { AgentConfig, HookEvent } from "@cotal-ai/connector-core";
+import { createClaudeHandle } from "../src/hooks.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {

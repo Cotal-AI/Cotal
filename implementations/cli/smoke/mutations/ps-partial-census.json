@@ -8,7 +8,41 @@
       "replace": "    process.exitCode = 0;",
       "expectRed": "partial census attempt",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "The --on refusal drops the identifier guidance and reverts to the mint's bare grammar sentence",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "    console.error(c.red(`✗ ${(e as Error).message}. --on wants the manager INSTANCE id as \\`cotal ps\\` prints it (the \\`manager <id>\\` header in a multi-manager space, the \\`instance <id>\\` fact under \\`cotal ps --wide\\`), not the roster's principal id (\\`local.U…\\`, as \\`cotal endpoints\\` shows it)${principalClause}: \\`${verb} --on <instance>\\``));",
+      "replace": "    console.error(c.red(`✗ ${(e as Error).message}`));",
+      "expectRed": "ps --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)",
+      "cell": "ps --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "describe drops the --on flag: unknown option, not a malformed-id refusal (#554)",
+      "file": "implementations/cli/src/commands/describe.ts",
+      "find": "export const describeFlags = [...targetFlags, onFlag] as const satisfies readonly FlagSpec[];",
+      "replace": "export const describeFlags = [...targetFlags] as const satisfies readonly FlagSpec[];",
+      "expectRed": "a malformed instance id on describe is REFUSED, not silently widened (#554)",
+      "cell": "a malformed instance id on describe is REFUSED, not silently widened (#554)",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "describe's pin reaches the mint but not the describe subject: the unpinned describe is refused by the broker (#554)",
+      "file": "implementations/cli/src/commands/describe.ts",
+      "find": "    const instanceId = on ?? auth.managerInstanceId;\n    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {\n      deadlineMs: 10_000,\n      ...(instanceId !== undefined ? { instanceId } : {}),\n    });",
+      "replace": "    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {\n      deadlineMs: 10_000,\n      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),\n    });",
+      "expectRed": "describe HONOURS --on: it deadlines on the pinned rail instead of asking the class queue",
+      "cell": "describe HONOURS --on: it deadlines on the pinned rail instead of asking the class queue",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ],
-  "suite": ["implementations/manager/smoke/cli-on-instance-live.smoke.ts"]
+  "suite": ["implementations/manager/smoke/cli-on-instance-live.smoke.ts"],
+  "why": [
+    "The clean-exit-code mutation proves the partial-census cells actually watch the exit code, not just the message.",
+    "The --on-guidance mutation proves the new #423 cell actually watches the guidance text (the identifier and where ps prints it), not just the bare grammar phrase the mint already produced.",
+    "The describeFlags mutation proves the #554 malformed-id cell actually depends on describe accepting --on at all, not just on the mint's validator.",
+    "The resolveService-instanceId mutation proves the #554 pin actually reaches the describe subject. With the flag dropped on the floor every describe is unpinned: section 3's IID1 and IID2 attribution cells red whenever the class queue hands the call to the other instance, which is most runs but not every run, and section 5's `describe HONOURS --on` deadline cell reds on every run, because a live manager answers the absent-instance describe that should have deadlined. The entry names the section 5 cell so the kill never depends on which instance won the queue."
+  ]
 }
+

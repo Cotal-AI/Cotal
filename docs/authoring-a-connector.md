@@ -26,7 +26,7 @@ const myConnector: Connector = {
       env: { /* COTAL_* wiring from opts */ },
     };
   },
-  // optional: listModels, supportsModelVariant, supportsResume,
+  // optional: listModels, supportsModelVariant, supportsPrompt, supportsResume,
   // supportsSessionContinuation, supportsToolListAnnounce, eventChannel, pluginRoot
 };
 
@@ -36,7 +36,7 @@ registry.register(myConnector);          // registration runs on import, making 
 `buildLaunch(opts)` is the whole job: given a `LaunchOpts` (space, name, role, creds, channels,
 model, prompt…), return a `LaunchSpec` (the command, args, and environment) whose process connects to
 the broker as that mesh node. Everything else on the interface is optional and default-deny: declare
-`supportsModelVariant`/`supportsResume`/`supportsSessionContinuation`/`supportsToolListAnnounce` only if you honor them (a request for one you don't declare
+`supportsModelVariant`/`supportsPrompt`/`supportsResume`/`supportsSessionContinuation`/`supportsToolListAnnounce` only if you honor them (a request for one you don't declare
 fails loud before any provisioning), list `requires` so a missing CLI fails with a clear message, and
 implement `listModels` only if you want a selector catalog. Implement `eventChannel` only if your
 session publishes a structured event plane: it names the channel the manager grants that session
@@ -47,6 +47,19 @@ that omits it refuses a launch unless the caller explicitly opts out with `--no-
 the `Connector` interface in
 [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) and the OpenCode connector in
 [`extensions/connector-opencode/`](../extensions/connector-opencode/) for a complete worked example.
+
+### Local listeners
+
+A connector that carries the `cotal_*` surface over any local listener, loopback TCP or a Unix
+socket, authenticates every connection with a secret the child receives through the launch
+material or an environment variable and never through argv. It compares the presented secret to
+its own in constant time, bounds the request body and the pre-authentication frame, and drops an
+unauthenticated connection before it can reach a tool. State the same-uid limit rather than
+claiming it away: a bind address is not a boundary on a shared workstation, only the secret is.
+Copy one of the two shipped shapes rather than inventing a third: the Codex loopback MCP endpoint
+(`extensions/connector-codex/src/mcp.ts`) or connector-core's control server
+(`extensions/connector-core/src/control.ts`, exported for reuse by a sibling listener in the same
+process).
 
 ## Packaging rules (enforced at `ext add`)
 

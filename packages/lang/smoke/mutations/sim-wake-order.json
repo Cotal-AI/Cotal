@@ -2,7 +2,7 @@
   "suite": [
     "packages/lang/smoke/sim.smoke.ts"
   ],
-  "guard": "The simulator delivers parked timed effects in wake order on one virtual clock, so concurrent branches accumulate the durations they wrote; delivery in ask order is the old shared-serial-clock behavior that decided races by the order effects were asked. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The simulator delivers parked timed effects in wake order on one virtual clock, so concurrent branches accumulate the durations they wrote; delivery in ask order is the old shared-serial-clock behavior that decided races by the order effects were asked; and a scripted wait value or a scripted ask clock is read back, never replaced by a default. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-sim",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/sim-wake-order.json",
   "mutations": [
@@ -15,6 +15,24 @@
       "completionMarker": "ok script entries the run never reached are named",
       "cell": "two parked sleeps deliver in wake order, not ask order, each at its own wake",
       "note": "Ask-order delivery hands the 5m sleep its wake first and the clock never goes back, so both arrive stamped 300000 in ask order; every sequential cell upstream is indifferent to the pop rule and keeps the marker green."
+    },
+    {
+      "name": "wait discards scripted event",
+      "file": "packages/lang/src/sim.ts",
+      "find": "    else await this.timedBy(this.script.clock?.wait, \"1m\", ctx);\n    return value;",
+      "replace": "    else await this.timedBy(this.script.clock?.wait, \"1m\", ctx);\n    return null;",
+      "expectRed": "a scripted wait delivers hello",
+      "cell": "a scripted wait delivers hello",
+      "note": "Replacing the returned value with null makes every delivered wait indistinguishable from a timeout, so a program reading the scripted event sees null instead and a downstream ?? fallback fires silently."
+    },
+    {
+      "name": "ask ignores scripted clock",
+      "file": "packages/lang/src/sim.ts",
+      "find": "this.timedBy(this.script.clock?.ask, \"1m\", ctx)",
+      "replace": "this.timedBy(undefined, \"1m\", ctx)",
+      "expectRed": "an ask advances by its scripted two-minute clock",
+      "cell": "an ask advances by its scripted two-minute clock",
+      "note": "Dropping the scripted clock read falls back to the 1m default always, so a scripted 2m advance goes unasserted; a monotonicity-only check (cell 8b) cannot tell the default from a real scripted value."
     }
   ]
 }

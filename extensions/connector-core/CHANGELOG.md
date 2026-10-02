@@ -1,5 +1,75 @@
 # @cotal-ai/connector-core
 
+## 0.58.0
+
+### Patch Changes
+
+- a058bf9: Clarify that publication preflight rejects npm credential environment variables before enumerating workspace packages.
+- 417b5f0: Replay a drive's own journal again when a read loses a round, instead of failing the step
+
+  A drive reads its journal through one replay durable named after its takeover, before every effect
+  and at every poll of a parked pause. When another reader held that durable, the read raised
+  `RunJournalReplayRaced` and the interpreter recorded it on the step as `L4000 handler-fault`, so one
+  branch of a `parallel` failed on a healthy run. `activateRun` already treats the same error as a
+  lost round and replays again.
+
+  The reads behind a drive's steps (`RunScopeAuthority`, hosted and under `cotal run --local`) and the driver's diagnostic for a
+  journal with no run record now do the same, with the takeover's bound: up to three replays, one
+  straight after another, and the race is raised unchanged when the third is lost too. An operator
+  read runs under a takeover id minted for that one read (the manager and `cotal run` mint a fresh one
+  per call), so `RunHost.status`, `RunHost.locate` and `cotal run journal` still report the race on
+  their first read.
+
+  Only the race is retried. A reader in another process can also tear a fetch or return an empty
+  replay; neither is retried here.
+
+  A new suite, `smoke:runtime-run-host-replay`, drives the manager's run host through a `parallel` of
+  three `ask` steps answered within the same second: once while `RunHost.status` reads the drive's
+  own takeover id, and once while another connection takes records off the drive's durable. No branch
+  fails in either.
+
+  The `connector-core` docs bundle is regenerated for the updated paragraph in `docs/workflows.md`.
+
+## 0.57.0
+
+### Patch Changes
+
+- 93b98e9: Let a cooperative teardown publish departure after it has given up waiting on a presence write. Presence writes are serialized, so the departure publish queued behind the very write the teardown's intake bound had just abandoned: the wait ended, offline never published, the seat kept its last status until its presence TTL expired, and the plugin process never reached its exit. The agent gains `abandonPresenceWrites()`, which the teardown calls only on the path where it announces the bound expired; ordering behind writes that do settle inside the bound is unchanged (#2207).
+- e7c702a: The jcode connector now reports the provider route serving a seat's model to presence, and `cotal ps --wide`/`--json` surface it as `provider`.
+- 42448fa: A DM send now reports the stored sequence and the recipient's status at send instead of a bare success, and `cotal deliver pending <name>` reads a recipient's held DMs from the broker.
+- 8b64d64: The per-principal subject record now refuses a tip of `Number.MAX_SAFE_INTEGER` on read and write and refuses a symlinked record at open, at the re-read and before the rename.
+- ad809a2: Keep Jcode seats alive when session checkpoints interrupt tool observations or temporarily remove the journal. Validate the session snapshot, preserve pending journal reads, restore tool brackets from the event WAL, and publish explicit discontinuities without weakening event validation.
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+- 8137d83: The Hermes bridge's local Unix-socket listener now authenticates the first frame of every connection against the launch's control token, dropping an unauthenticated or wrongly-tokened connection before it ever reaches the adapter or a tool call, and the Python-side client now presents that same token on every connect and reconnect.
+
+## 0.56.0
+
+### Patch Changes
+
+- 5cf0861: `spawn` refuses at admission a `cwd` the serving manager's host cannot resolve, naming the path, the reason and the host, so a misplaced spawn in a multi-manager space fails before anything is minted instead of at launch (#385 item 2). `cotal_spawn` documents that an unresolvable `cwd` is refused before launch.
+
+## 0.55.0
+
+### Minor Changes
+
+- 357af9f: `cotal_spawn` accepts an optional manager instance id. Core resolves and invokes that exact instance without placing the pinned handle in the class cache, while malformed, unreachable, or credential-conflicting pins fail instead of falling back to class anycast.
+
+### Patch Changes
+
+- a13c8bb: Capture the event plane's start boundary at adopt instead of at the emitter's first read, so a complete record written while the connector is still starting up (the mesh wait, log open, and preflight) is no longer silently dropped. Claude Code and OpenCode both wrap their session source with the shared `BoundStartSource`.
+- 7c7c853: A dead AG-UI emitter holder reports itself not running, so a health read after a refused rebind or a failed start no longer sees a live event plane.
+- 8472dc3: `cotal_channels` reports a durable channel's delivery health from the daemon's own answer: `active` requires a live lease and a membership round-trip that lists the channel for this lifecycle, a daemon that answers nothing renders `degraded`, and a reader that cannot establish it (a responder-present error) renders `unknown` instead of omitting the clause. `CotalEndpoint.fetchMemberships()` is public for that round-trip (issue #445).
+- 67bbcc5: Report a Jcode session-journal fold as a terminal event without stopping the seat.
+- eddc5f0: Serialize presence writes from one agent so they land in the order they were made, and publish departure only after every write already in flight has settled. This fixes overlapping status writes interleaving their puts (#2055) and an offline record landing before an earlier in-flight status write (#636).
+- eddc5f0: Refuse a presence write admitted after stop() began, instead of queueing it behind departure: departure's offline publish is now itself a presence-chain entry ordered after every write already admitted, and any write admitted after it rejects at once with a fixed error, so a straggler can neither sit out the connect grace behind the chain nor land after the offline record (#636).
+- db9a969: Escalate consecutive presence write failures after one liveness TTL and label connector roster snapshots as not live until a write succeeds.
+- 5418d1f: Consult `presenceView()` on every roster read in the connector, so a partial reconnect refill is not rendered or enforced as a complete roster: `cotal_roster` and `cotal_orientation` label an `unpopulated` view as a snapshot still in progress and a `stale` view as last-known, and a send or DM to a name that cannot be verified waits once for the presence snapshot and is then refused with the observer's condition instead of reporting a live peer as absent.
+
 ## 0.54.0
 
 ### Minor Changes

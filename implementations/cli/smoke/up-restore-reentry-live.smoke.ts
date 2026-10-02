@@ -29,7 +29,7 @@
  * children. Needs `nats-server` on PATH.
  * Run: pnpm smoke:up-restore-reentry:live
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { join, resolve as resolvePath } from "node:path";
@@ -57,7 +57,21 @@ const WT = resolvePath(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
 const TSX = join(WT, "node_modules", ".bin", "tsx");
 const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+const prepareIntentPath = join(root, ".cotal", "maintenance", "v1", "prepare-intent.json");
 const artifact = join(root, "registry-backup");
+const coreDist = join(WT, "packages", "core", "dist", "index.js");
+
+// A bare unmanaged endpoint the manager did not spawn: the ten-line idle-endpoint shape from
+// console-control.smoke.ts (:68-78), copied because that suite does not export it. It registers
+// presence on the mesh with the manager's own env and idles until killed.
+const UNMANAGED_CHILD = [
+  "const{pathToFileURL}=require('node:url');",
+  "import(pathToFileURL(process.env.CORE_DIST).href).then(async({CotalEndpoint})=>{",
+  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,",
+  "channels:[],consume:false,registerPresence:true,watchPresence:false,",
+  "card:{name:process.env.COTAL_NAME,kind:'agent',role:'worker'}});",
+  "ep.on('error',()=>{});await ep.start();setInterval(()=>{},1000);});",
+].join("");
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -131,6 +145,45 @@ try {
     else await sleep(5_000);
   }
   ok("the manager answers on the ep rails before the cut", railsUp);
+
+  console.log("\n1b) SUBJECT: a live unmanaged endpoint refuses the cut, then leaves the manager unfenced");
+  const unmanaged = spawn(process.execPath, ["-e", UNMANAGED_CHILD], {
+    cwd: root,
+    env: { PATH: process.env.PATH ?? "", CORE_DIST: coreDist, COTAL_SPACE: space, COTAL_SERVERS: server, COTAL_NAME: "bystander" },
+    stdio: "ignore",
+    detached: true,
+  });
+  unmanaged.unref();
+  const { readPresenceWithoutConsumer } = await import("../src/commands/down.js");
+  let onRoster = false;
+  for (let i = 0; i < 30 && !onRoster; i++) {
+    const observed = await readPresenceWithoutConsumer(space, server);
+    if (observed.roster.some((presence) => presence.card.name === "bystander")) onRoster = true;
+    else await sleep(1_000);
+  }
+  ok("the unmanaged endpoint reaches the roster", onRoster);
+
+  const refused = runSync(["down", "--preserve-state"]);
+  const refusedLog = tail(refused);
+  ok("a live unmanaged endpoint refuses the cut before any child stops",
+    refused.status !== 0 && /cannot preserve while unmanaged endpoints are live: bystander/.test(refusedLog),
+    { status: refused.status, log: refusedLog.slice(-1200) });
+
+  const psAfterRefusal = runSync(["ps", "--space", space, "--server", server]);
+  ok("a refused prepare leaves the manager answering ps, not fenced",
+    psAfterRefusal.status === 0 && !/preserving mode/.test(tail(psAfterRefusal)),
+    { status: psAfterRefusal.status, log: tail(psAfterRefusal).slice(-1200) });
+
+  ok("a refused prepare clears its intent", !existsSync(prepareIntentPath));
+
+  if (unmanaged.pid) try { process.kill(unmanaged.pid, "SIGKILL"); } catch { /* already gone */ }
+  let offRoster = false;
+  for (let i = 0; i < 30 && !offRoster; i++) {
+    const observed = await readPresenceWithoutConsumer(space, server);
+    if (!observed.roster.some((presence) => presence.card.name === "bystander")) offRoster = true;
+    else await sleep(1_000);
+  }
+  ok("the unmanaged endpoint leaves the roster once killed", offRoster);
 
   const cut = runSync(["down", "--preserve-state"]);
   ok("the cut exited 0", cut.status === 0, tail(cut).slice(-1200));

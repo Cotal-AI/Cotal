@@ -101,6 +101,20 @@
       "find": "  \"with-agents\": { type: \"boolean\" },\n",
       "replace": "",
       "expectRed": "explicit destructive down retains the same exact sandbox identity guard"
+    },
+    {
+      "name": "M12 scan drops a down site whose enclosing call cannot be classified",
+      "file": "packages/smoke-kit/smoke/sandbox-guard.smoke.ts",
+      "find": "        const call = callNameAt(code, site.index);\n        if (!call) {\n          if (guardCalls < 1) findings.push(unclassifiedDown(relative, code, site.index));\n          return [];\n        }",
+      "replace": "        const call = callNameAt(code, site.index);\n        if (!call) return [];",
+      "expectRed": "shape 2 bound argv must be reported as unclassified"
+    },
+    {
+      "name": "M13 scan stops resolving down verb constants to their call sites",
+      "file": "packages/smoke-kit/smoke/sandbox-guard.smoke.ts",
+      "find": "        sites.push({ ...call, index: use.index });",
+      "replace": "        if (guardCalls > 0) sites.push({ ...call, index: use.index });",
+      "expectRed": "shape 1 verb constant must be scanned as a down site"
     }
   ]
 }

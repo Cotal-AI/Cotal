@@ -704,9 +704,10 @@ async function resolveRunControlTarget(values: RunValues): Promise<ControlTarget
   if (!existsSync(path))
     throw new Error(`run: managed seat credential is missing at ${path}; refusing to answer as a different caller`);
   const creds = readFileSync(path, "utf8");
+  const tls = mesh.tlsRequired;
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
-    ...standaloneConnectOpts({ creds, tls: mesh.tlsRequired }),
+    ...standaloneConnectOpts({ creds, tls }),
     maxReconnectAttempts: 0,
   });
   try {

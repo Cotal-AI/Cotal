@@ -25,14 +25,18 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
+import type { CotalEndpoint as CotalEndpointType, EpCaller, EpEnvelopeError as EpEnvelopeErrorType } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+process.env.COTAL_HOME = join(dir, "home");
+const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, DEV_OWNER, agentFilePath, CotalEndpoint, EpEnvelopeError,
-} from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+} = await import("@cotal-ai/core");
+const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
 // A literal, not an import: the constant does not exist on tips predating the fence, and an import
 // would make this probe refuse to load on the very tip it is the baseline for.
@@ -64,7 +68,6 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `epsplit-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const mkRoot = (tag: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });
@@ -78,7 +81,7 @@ const releaseBroker = teardownOnSignal(srv, dir);
 type MgrPriv = { managerInstanceId: string };
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
-let ep: CotalEndpoint | undefined;
+let ep: CotalEndpointType | undefined;
 
 try {
   let up = false;
@@ -166,7 +169,7 @@ try {
       // trials where it fired twice.
       const marks = (e instanceof EpEnvelopeError ? e.details ?? [] : []).map((d) => d.kind).filter(Boolean);
       if (marks.includes(EP_BIND_REFUSED)) bindRefused++;
-      refusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && (e as EpEnvelopeError).outcome === "not-executed";
+      refusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && (e as EpEnvelopeErrorType).outcome === "not-executed";
       outcomeStated = e instanceof EpEnvelopeError && e.outcome !== undefined;
       detail = e instanceof EpEnvelopeError
         ? `${e.code}|outcome=${e.outcome ?? "(absent)"}|${marks.join(",") || "(no details)"}`
@@ -240,7 +243,7 @@ try {
       // the flake it caused required adding this line first.
       const thrown = (e instanceof EpEnvelopeError ? e.details ?? [] : []) as Array<{ kind?: string; boundTo?: { instanceId?: string } }>;
       const marks = thrown.map((d) => d.kind).filter(Boolean);
-      forcedRefusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && (e as EpEnvelopeError).outcome === "not-executed";
+      forcedRefusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && (e as EpEnvelopeErrorType).outcome === "not-executed";
       // Read here too, so this face is legible rather than blank. A resolve failure rethrows the
       // ORIGINAL refusal, whose bind is the one forced in, so the guard below correctly rejects it:
       // no re-issue went out. Left unassigned it stayed "", which is indistinguishable in the output

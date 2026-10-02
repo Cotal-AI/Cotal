@@ -21,7 +21,9 @@ read checks it must apply. A conformant deployment may realize the backstop diff
   eligible member's private durable store. For an `@mention` on a *`live`* channel it also writes
   a copy for each mentioned peer authorized to read that channel, which is how a mention reaches
   an authorized peer who isn't currently joined ([SPEC §4](../SPEC.md#4-delivery-modes)). Fan-out
-  handles routing; authorization remains with the broker policy.
+  handles routing; authorization remains with the broker policy. A post with an empty id is copied
+  without a duplicate-suppression key, so two distinct id-less posts are both delivered and a
+  redelivery of one may surface twice.
 - **Trusted reader.** It pulls each pending entry, re-checks that the member is still allowed to
   read it, and hands the authorized copy to the member over an at-least-once channel (its inbox),
   keeping the entry pending until the member confirms it was surfaced. A crash between handing off
@@ -56,6 +58,11 @@ credential** co-located with the broker: never an allow-all cred, and it never h
 signing key. One daemon serves a space (a single-flight lease guards against a second binding the
 same durables).
 
+An agent binds its per-member delivery durable even when the plane reached by its connection has no
+ready delivery lease, so a daemon that starts later can deliver through it. A missing or not-ready
+lease emits a warning that names the durable, space, and condition. It tells the agent to reconnect
+against another plane if that plane serves the space, which re-binds the durable there.
+
 Before it constructs its endpoint or claims that lease, the daemon reads the account-scoped `$SYS`
 observer from the same source it will use for scans, whether that source is the workstation store or
 an injected hosted store. It refuses if the observer belongs to another account, is missing, or is
@@ -68,9 +75,17 @@ refuses a plaintext listener rather than upgrading on the server's unauthenticat
 holds a standing credential and reconnects unattended, so a downgrade here would repeat with nobody
 watching. See [transport.md](transport.md).
 
+The transport-health component can use the resident endpoint's NATS connection events, with no
+additional authenticated dial while it is healthy. It distinguishes broker disconnects from
+authentication-expiry errors and clears the corresponding failure on a proved credential adoption.
+Until this component is wired into the daemon, the current two-second authenticated broker probe
+remains its active broker watch.
+
 `cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
 without taking the single-flight lease because another daemon holds it, or because a crashed
-holder's lease has not expired yet. `up` says so and exits non-zero instead of printing a healthy control plane over a
+holder's lease has not expired yet. A lease write the credential is not allowed to make is reported
+as a denial naming the refused subject and operation, never as another daemon holding the lease.
+`up` says so and exits non-zero instead of printing a healthy control plane over a
 daemon that is not there. The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
 for the space it serves ([Config](config.md#project-files)). That path is project-local. Detached
 `up` redirects the daemon's stdout and stderr onto the file, so wrapping the launcher in a
@@ -79,7 +94,10 @@ systemd unit does not put those lines in that unit's journal.
 The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
 removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a
 container entrypoint, a systemd unit, or `cotal deliver --space <space>` typed by hand all reach one
-too, and a record written only by the launcher goes stale the moment any of those restarts it. The
+too, and a record written only by the launcher goes stale the moment any of those restarts it. Typed
+by hand on the workstation, the daemon dials the broker recorded for the space in the mesh registry
+(a mismatching `--server` is refused before any dial); with no record for the space it uses the
+local mesh default, and a daemon with an injected store never consults the registry at all. The
 write happens once the daemon holds the single-flight lease, because that is the point at which it is
 the space's daemon: one that loses the lease refuses to bind and exits, and must not overwrite the
 live holder's record on its way out.

@@ -13,6 +13,6 @@
   },
   "scripts": {
     "test": "tsx smoke/package.smoke.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json"
   }
 }

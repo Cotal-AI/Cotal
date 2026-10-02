@@ -133,11 +133,11 @@ export async function resolveControlTarget(
 /** The caller triple a control call rides, or a refusal naming why the credential cannot. A user
  *  bearer or a minted static instrument carries its own triple. An OPEN mesh has no credential
  *  system: the manager registered under DEV_OWNER and the broker enforces nothing, so a fresh
- *  DEV_OWNER triple is synthesized. A raw `--creds` file with no triple predates the endpoint
- *  control surface and is refused rather than silently downgraded. */
+ *  DEV_OWNER triple is synthesized. A raw `--creds` file supplies no triple and that route cannot
+ *  mint one, so it is refused rather than silently downgraded. */
 export function controlCaller(auth: ControlAuth): { caller: EpCaller } | { refusal: string } {
   if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds))) return { caller: auth.epCaller };
   if (auth.creds)
-    return { refusal: "this --creds file predates the v0.4 control surface (no endpoint-serve rows); re-mint it with a current cotal, or drive the manager from its project folder which mints the instrument for you" };
+    return { refusal: "this control call has no endpoint-caller triple (owner, actor, lifecycle uid), and a raw --creds invocation cannot mint one; minting the file again changes nothing. Run the command from the mesh's project folder, or name the mesh with --space against its registry entry, so the CLI mints the one-shot instrument for you" };
   return { caller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
 }

@@ -47,7 +47,11 @@ credentials and pre-creates the durables agents may only *bind* (their DM inbox,
 role's task queue). The manager hosts it today, but nothing is manager-special about it;
 privilege attaches to the signer, and a space can run without a manager.
 `cotal mint <name> --profile <agent|observer|admin>` is the out-of-band path; spawn calls
-the same library ([CLI](cli.md)). Minting static creds is a **static-auth** surface: a
+the same library ([CLI](cli.md)). The out-of-band profiles carry no default TTL: pass
+`--expires-in <seconds>` (or `--expires-at`) for a bounded credential, which a
+standing-renewal consumer requires; pass `--identity <creds>` to re-mint for the nkey a
+file already carries, keeping the principal and its durables. Minting static creds is a
+**static-auth** surface: a
 per-user-auth space refuses it, because agents there join under a logged-in user, never
 via a handed-out file (see *Per-user auth* below).
 
@@ -142,7 +146,8 @@ a scoped credential on the spot. Every bearer also names a **root credential** r
 space's credential ledger, proved live at each connect, so revoking that one credential
 bites at the very next connect. The operator grants access with
 `cotal actor grant <actor> --sub <their id>`; a bare grant is the full envelope (all
-channels, may spawn), and `--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
+channels; scope `spawn,role:default`, so it may spawn and may delegate the default role), and
+`--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
 No ledger row, no access; there is no allow-by-default.
 
 **Space catalogs.** A successful authenticated `GET <idp>/token` may advertise one catalog with:
@@ -215,6 +220,22 @@ stored in the owner-only `auth-service.json` file. An operator may add a second 
 That listener still binds `127.0.0.1`; put a reverse proxy in front of it and terminate TLS there.
 In-process TLS is deliberately not another deployment mode: it would duplicate certificate renewal
 and fork proxy-based deployments.
+
+The loopback face also serves three host-only doors, all capability-gated and never on the public
+face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
+and `/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its
+remote manager is gone. The third decides one:
+`POST /manager-service-authority/verify-enrollment` answers whether a remote manager may have a
+managed agent enrolled or released under its authenticated owner. The body is
+`{ owner, request }` and nothing else. The caller's capability scope is read from this machine's
+ledger, never taken from the body, so a host that forwarded a participant-supplied scope could not
+grant itself `supervise`. The door reads the manager gate and checks the registration proof inside
+the service process, so no signing material reaches the caller, and it returns
+`{ authorized: true, owner, actor, instanceId, serveEpoch }` or maps its refusal to 400, 401, 403,
+409, or 412. It decides only. A platform that intercepts these requests owns every write, and stock
+`dispatchManagerAuthorityRequest` refuses both request kinds with `unimplemented` rather than
+answering a manager-lifecycle phase for an agent-lifecycle request.
+[embedding.md](embedding.md) documents the managed doors' contracts.
 
 The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`, and
 `GET /.well-known/cotal-mesh`; every other path is 404. It does **not** require the loopback
@@ -406,11 +427,12 @@ operations and a one-shot **retire** phase for one exact managed lifecycle. Each
 coordinate; the host writes its credential ledger row and finalizes the gate before it releases
 usable material. The retire phase fresh-checks the current manager instance, server-derived serve
 principal, serve epoch, same-owner target and lifecycle UID. It returns only a short-lived requester
-credential pinned to that target. The manager sends it on the existing auth retirement rail with the
-operation id derived from the target lifecycle UID. The terminal rail recomputes it from the
-broker-pinned target before any durable access. A caller cannot substitute another valid operation
-identity for the same target, and retries plus auth-service boot recovery finish the same terminal
-barrier. It never exposes the barrier executor or a general mint surface.
+credential pinned to that target. The manager invokes the registered `auth` endpoint's
+`retire-lifecycle` command through the generic client, resolving the service and calling it with
+an exact target and the operation id derived from the target lifecycle UID. The endpoint
+recomputes that id from the broker-pinned target before any durable access. A caller cannot
+substitute another valid operation identity for the same target, and retries plus auth-service
+boot recovery finish the same terminal barrier. It never exposes the barrier executor or a general mint surface.
 
 Registration maintenance stays on the host. Eviction accepts only a principal found by the host's
 sealed scan of the caller instance's `epcred.manager.<instanceId>.*` family. Reconciliation may

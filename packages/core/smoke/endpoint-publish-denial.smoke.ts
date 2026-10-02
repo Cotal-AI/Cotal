@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, PermissionViolationError } from "@nats-io/transport-node";
+import type { StatusStream } from "../src/endpoint-publish-denial.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import {
   compileContract, createSpaceAuth, describeEndpoint, DEV_OWNER, EpEnvelopeError, epCall, epCast,
@@ -121,7 +122,7 @@ try {
   // An INDEPENDENT status iterator on the same connection records what the broker actually said,
   // so the cells assert against observed truth rather than against the verbs' own reports.
   const violations: string[] = [];
-  const seen = nc.status();
+  const seen = nc.status() as StatusStream;
   void (async () => { for await (const s of seen) if (s.type === "error" && s.error instanceof PermissionViolationError) violations.push(`${s.error.subject}`); })().catch(() => {});
 
   const cast = await caught(() => epCast(nc, space, { mode: "inst", instanceId: IID }, {

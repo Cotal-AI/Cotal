@@ -1,0 +1,17 @@
+{
+  "suite": ["packages/core/smoke/deprovision-agent-auth.smoke.ts"],
+  "guard": "a live newer native KV revision after a failed conditional purge cannot be reported absent",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/core exec tsx smoke/deprovision-agent-auth.smoke.ts",
+  "completionMarker": "DEPROVISION SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/deprovision-cas-put.json",
+  "why": ["A competing native same-bytes PUT advances the ACL revision after the shipped Direct Get.", "The teardown must reject a live post-CAS revision rather than report absent resources."],
+  "mutations": [{
+    "name": "accept live replacement after native ACL CAS loss",
+    "file": "packages/core/src/streams.ts",
+    "find": "if (after.live) throw new Error(`CAS loss left a live ${bucket}/${key}`, { cause: err });",
+    "replace": "if (after.live) return { outcome: \"absent\", status: \"raced-loss\" };",
+    "expectRed": "AUDIT: CAS loss to a live PUT refuses instead of claiming complete absence",
+    "cell": "AUDIT: CAS loss to a live PUT refuses instead of claiming complete absence",
+    "afterRestore": "pnpm --filter @cotal-ai/core build"
+  }]
+}

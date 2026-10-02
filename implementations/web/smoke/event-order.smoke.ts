@@ -594,7 +594,7 @@ console.log("event-order smoke");
     (ctx as Record<string, unknown>).renderSidebarNav = () => { threw = true; throw new Error("render blew up"); };
     await drive(ctx, "refresh()", frame(9));
     ok("14.7 a throw between the arm and the settle still settles the boundary", ctx.feedOrder.settled === true);
-    ok("14.7b CONTROL: the stimulus really threw (a cell whose throw never fires grades nothing)", threw === true);
+    ok("14.7b CONTROL: the stimulus really threw (a cell whose throw never fires grades nothing)", (threw as boolean) === true);
     ok("14.8 and the frame held during it still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
   }
   {

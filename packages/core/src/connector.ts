@@ -23,6 +23,10 @@ export interface LaunchOpts {
    *  forwards it (`COTAL_LIFECYCLE_UID`) so the session's endpoint binds its lifecycle-keyed
    *  dm/dlv/chathist durables — the same exact names its credential pins. */
   lifecycleUid?: string;
+  /** The CHAT stream sequence this incarnation had reached before a preservation cut (manager-
+   *  recorded). The connector forwards it (`COTAL_BACKFILL_FLOOR`) so the session's boot backfill
+   *  reads only what came after it instead of the whole retained window. Absent on a fresh launch. */
+  backfillFloor?: number;
   /** The accepted-row token of the credential's issuance (SPEC 13.15), chosen by the launcher at
    *  mint. The connector forwards it (`COTAL_ACCEPTED_TOKEN`) so the session's endpoint reads the
    *  generation the issuer bound and pins it into its caller rails. Static issued launches only. */
@@ -64,7 +68,9 @@ export interface LaunchOpts {
   launchOptions?: Record<string, unknown>;
   /** An initial message for the session to act on the moment it starts (`cotal spawn --prompt`).
    *  A connector delivers it as the harness's first turn or throws at launch; it never ignores it,
-   *  because an operator who passed a prompt is waiting on the turn it starts. */
+   *  because an operator who passed a prompt is waiting on the turn it starts. Gated upstream by
+   *  {@link Connector.supportsPrompt}, so a prompt on a connector that cannot deliver one is
+   *  refused before any provisioning. */
   prompt?: string;
   /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
    *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
@@ -245,6 +251,10 @@ export interface Connector extends Extension {
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.prompt} as the harness's first turn.
+   *  Default-deny, so a prompt on a connector that does not declare it fails before any
+   *  provisioning rather than being accepted and never submitted. */
+  readonly supportsPrompt?: boolean;
   /**
    * Connector-specific upper bound for reaching mesh presence after its process is launched.
    *

@@ -1,5 +1,25 @@
 # @cotal-ai/connector-hermes
 
+## 0.58.0
+
+### Patch Changes
+
+- e5ee584: The Hermes Python client now acks a surfaced delivery under `recvKey`, the field the bridge matches, so each delivery is retired and the bridge no longer stops after the first automatic item of a gateway boot.
+- a5327b4: The Hermes bridge now forwards an inbox item's `historical` flag to the sidecar, and the adapter frames a join-time backfill with the same `(history) ` prefix connector-core's `fmtItem` gives the other connectors, so a retained @mention replayed after a gateway restart no longer reads as a live request.
+
+## 0.57.0
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+- 8137d83: The Hermes bridge's local Unix-socket listener now authenticates the first frame of every connection against the launch's control token, dropping an unauthenticated or wrongly-tokened connection before it ever reaches the adapter or a tool call, and the Python-side client now presents that same token on every connect and reconnect.
+
+## 0.56.0
+
+## 0.55.0
+
 ## 0.54.0
 
 ## 0.53.0

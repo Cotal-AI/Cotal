@@ -1,5 +1,168 @@
 # cotal-ai
 
+## 0.58.0
+
+### Patch Changes
+
+- f5b723f: Allocate accepted-goal test homes as unique children of the selected temporary root. The prior concatenation attempted sibling paths such as `/tmpa` and hid permission failures as exhausted names on CI. Cover ordinary and pooled native paths with a root-containment assertion and mutation proof. Product runtime behavior is unchanged.
+- 7e1bc61: Wait for the observed post-join kickoff turn boundary in the provider-disconnect smoke fixture. Presence alone can precede that boundary, routing the test marker through a soft interrupt instead of the intended ordinary-turn disconnect trigger. Add a delayed-turn mutation and restored native checks. Connector behavior is unchanged.
+- f758cd5: Expose the canonical manager activation document and closure manifest through `managerClusterArtifacts`. Public-only embeddings can complete prepare, registration and activation without importing private contract modules. Exercise the public Manager constructor and activation artifacts in the native continuity fixture; host validation, issuance policy and wire grants are unchanged.
+- 66ef843: Export the existing Linux socket peer-credentials reader and its type from the seat package root so embedders can apply their own UID policy without importing private native-helper paths. Verify the public API with real separate-process Unix sockets and explicit unsupported-platform refusal.
+- 5758877: Expose the stock remote manager request builders and response validators through the public `remoteManagerClient` namespace, along with native registration and its identity-state type. Embeddings can compose closed remote-authority callbacks without private imports or copied CLI policy. Add a package-root export gate and exercise the real native continuity path with public registration and client helpers; issuance policy and wire grants are unchanged.
+- a726a3d: Register the hosted service and renewal checks with stable CI suite fragments, mark the restart fixture's broker for owned teardown, and verify unsupported seat reaping on other platforms without claiming Linux process-group coverage. Let the continuity fixture observe an already-started transport reconnect before preparing its recovery command.
+- 59672dd: Register the remaining hosted-runtime smoke entrypoints in stable CI fragments and report native assertion counts through canonical completion markers. Refresh the explicit-TLS call-site census. Make the resume fixture retain its first successful held-slot observation or require durable completion with a new epoch, and exercise completion before the probe as a separate regression gate.
+- 1721738: Support signerless manager run hosting through typed host admission, initial-attempt and renewal operations. Renew the complete standing credential family while preserving held identities, serve epochs and last-good credentials on refusal. Keep pooled managers off local PTY launch paths and enforce the execution host boundary. Update the native lifecycle and mutation checks for these paths.
+- Updated dependencies [f5b723f]
+- Updated dependencies [274c783]
+- Updated dependencies [4aa8cf1]
+- Updated dependencies [0589316]
+- Updated dependencies [a058bf9]
+- Updated dependencies [2cb1d72]
+- Updated dependencies [59a7e64]
+- Updated dependencies [95ae645]
+- Updated dependencies [fba1537]
+- Updated dependencies [5831ef8]
+- Updated dependencies [576f622]
+- Updated dependencies [2457692]
+- Updated dependencies [ee6de5d]
+- Updated dependencies [e9ef5b3]
+- Updated dependencies [7c54825]
+- Updated dependencies [2c31f95]
+- Updated dependencies [f758cd5]
+- Updated dependencies [5758877]
+- Updated dependencies [7687fef]
+- Updated dependencies [d4bb1f3]
+- Updated dependencies [397bc60]
+- Updated dependencies [417b5f0]
+- Updated dependencies [7b3924c]
+- Updated dependencies [a726a3d]
+- Updated dependencies [59672dd]
+- Updated dependencies [fd0cf70]
+- Updated dependencies [1721738]
+  - @cotal-ai/manager@0.58.0
+  - @cotal-ai/auth@0.58.0
+  - @cotal-ai/delivery@0.58.0
+  - @cotal-ai/core@0.58.0
+  - @cotal-ai/connector-core@0.58.0
+  - @cotal-ai/workspace@0.58.0
+  - @cotal-ai/cli@0.58.0
+  - @cotal-ai/runtime@0.58.0
+
+## 0.57.0
+
+### Patch Changes
+
+- Updated dependencies [15b4664]
+- Updated dependencies [93b98e9]
+- Updated dependencies [e7c702a]
+- Updated dependencies [6f64bcc]
+- Updated dependencies [42448fa]
+- Updated dependencies [8b64d64]
+- Updated dependencies [33357d9]
+- Updated dependencies [ad809a2]
+  - @cotal-ai/delivery@0.57.0
+  - @cotal-ai/connector-core@0.57.0
+  - @cotal-ai/core@0.57.0
+  - @cotal-ai/manager@0.57.0
+  - @cotal-ai/cli@0.57.0
+  - @cotal-ai/workspace@0.57.0
+  - @cotal-ai/auth@0.57.0
+  - @cotal-ai/runtime@0.57.0
+
+## 0.56.1
+
+### Patch Changes
+
+- Updated dependencies [6b76946]
+- Updated dependencies [a4c5ffa]
+- Updated dependencies [8137d83]
+  - @cotal-ai/core@0.56.1
+  - @cotal-ai/manager@0.56.1
+  - @cotal-ai/connector-core@0.56.1
+  - @cotal-ai/cli@0.56.1
+  - @cotal-ai/auth@0.56.1
+  - @cotal-ai/delivery@0.56.1
+  - @cotal-ai/runtime@0.56.1
+  - @cotal-ai/workspace@0.56.1
+
+## 0.56.0
+
+### Patch Changes
+
+- Updated dependencies [ccf3d5f]
+- Updated dependencies [a42a5e8]
+- Updated dependencies [e506040]
+- Updated dependencies [0cf1cf3]
+- Updated dependencies [0d7649d]
+- Updated dependencies [ac53a09]
+- Updated dependencies [4e1c8f5]
+- Updated dependencies [8dc7c92]
+- Updated dependencies [101f4ce]
+- Updated dependencies [99cad7b]
+- Updated dependencies [b2453f4]
+- Updated dependencies [3c40736]
+- Updated dependencies [1218786]
+- Updated dependencies [ef8889d]
+- Updated dependencies [00257cf]
+- Updated dependencies [5cf0861]
+  - @cotal-ai/cli@0.56.0
+  - @cotal-ai/core@0.56.0
+  - @cotal-ai/manager@0.56.0
+  - @cotal-ai/auth@0.56.0
+  - @cotal-ai/workspace@0.56.0
+  - @cotal-ai/connector-core@0.56.0
+  - @cotal-ai/delivery@0.56.0
+  - @cotal-ai/runtime@0.56.0
+
+## 0.55.0
+
+### Patch Changes
+
+- a83dd80: Preflight reports a probe that ran out of its budget as a slow link instead of a trust failure: `probeConnect` now returns a distinct `timeout` reason, `preflightTarget` routes it to a new `slow-link` verdict without consulting the INFO greeting, and the rendered sentence names the connect budget and says the registry entry was kept, never a CA. A real certificate failure against a TLS-required mesh still renders the `tls-trust` guidance.
+- 565a92f: Refuse an unmintable spawn name client-side before the manager round trip: `cotal spawn` now applies the core name door (the same predicate the manager applies) to the effective identity on both the foreground and `--detach` paths, keyed on the target mesh's auth mode, so a hyphenated name on a user-auth mesh fails immediately with the actor-token explanation and the `_` remedy instead of after the provisioning call.
+- Updated dependencies [888e9bc]
+- Updated dependencies [a13c8bb]
+- Updated dependencies [065717c]
+- Updated dependencies [e1351c2]
+- Updated dependencies [810814b]
+- Updated dependencies [427a848]
+- Updated dependencies [7c7c853]
+- Updated dependencies [8472dc3]
+- Updated dependencies [f272f71]
+- Updated dependencies [391af1d]
+- Updated dependencies [d5ef965]
+- Updated dependencies [84e0175]
+- Updated dependencies [8120e34]
+- Updated dependencies [67bbcc5]
+- Updated dependencies [64ec80e]
+- Updated dependencies [3e95455]
+- Updated dependencies [e4f1d2d]
+- Updated dependencies [92ae52c]
+- Updated dependencies [4918b65]
+- Updated dependencies [17d066f]
+- Updated dependencies [a83dd80]
+- Updated dependencies [eddc5f0]
+- Updated dependencies [eddc5f0]
+- Updated dependencies [db9a969]
+- Updated dependencies [d284ee6]
+- Updated dependencies [4f48629]
+- Updated dependencies [f7f23d3]
+- Updated dependencies [2e13607]
+- Updated dependencies [5418d1f]
+- Updated dependencies [d3d6742]
+- Updated dependencies [4de65c9]
+- Updated dependencies [fd58782]
+- Updated dependencies [357af9f]
+- Updated dependencies [cbb7087]
+  - @cotal-ai/core@0.55.0
+  - @cotal-ai/connector-core@0.55.0
+  - @cotal-ai/delivery@0.55.0
+  - @cotal-ai/cli@0.55.0
+  - @cotal-ai/manager@0.55.0
+  - @cotal-ai/auth@0.55.0
+  - @cotal-ai/workspace@0.55.0
+  - @cotal-ai/runtime@0.55.0
+
 ## 0.54.0
 
 ### Patch Changes

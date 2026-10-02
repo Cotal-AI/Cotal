@@ -364,6 +364,15 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
       && await logsOf("log(-[1]);").then(() => false, (e: Error) => e.message.startsWith("L4018"))
       && await logsOf("const f = () => 1; log(`${f}`);").then(() => false, (e: Error) => e.message.startsWith("L4018"))
       && JSON.stringify(await logsOf('const o = { a: 1 }; try { log(`${o}`); } catch (e) { log(e.code); }')) === '["L4018"]');
+  // `++`/`--` count, and refuse the same way as `+`/`+=` on a record, a numeric string or null
+  // rather than settling a record as NaN or a string as a number (#646): the fast path (a number
+  // operand) keeps counting natively.
+  ok("`++` and `--` refuse a record, a numeric string or null with L4018 and keep a number native",
+    await logsOf("const o = { c: {} }; o.c++; log(o.c);").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf('let n = "5"; n++; log(n);').then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf("let n = null; n--; log(n);").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && JSON.stringify(await logsOf('const o = { c: {} }; try { o.c++; } catch (e) { log(e.code); }')) === '["L4018"]'
+      && JSON.stringify(await logsOf("let n = 1; n++; ++n; log(n);")) === "[3]");
   ok("but identity comparison takes any operands, and primitives coerce as JavaScript coerces them",
     JSON.stringify(await logsOf('const o = { a: 1 }; const p = o; log(o === p, o !== p, "a" + 1, true + 1, null + 1);')) === '[[true,false,"a1",2,1]]');
   // A callable `then` is the one member a record may not carry, on any route that writes one

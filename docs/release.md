@@ -99,10 +99,11 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
   a direct `npm publish` Allowed action on THIS repository's `changesets.yml` publisher;
 - only after those checks, the workspace build, native assembly, and recursive publish.
 
-The census prints every package, version, OIDC result, and direct-publish result before it refuses.
-If every exact version already exists, the preflight reports a no-op and exits successfully before
-credential checks. A mixed census, incomplete fixed group, failed OIDC exchange, or stage-only
-package exits before `pnpm publish`.
+The preflight first refuses npm access-token environment variables, before invoking pnpm to
+enumerate workspace packages. The registry census prints each package, version, OIDC result and
+direct-publish result. If every exact version already exists, the preflight reports a no-op before
+OIDC requests. A mixed census, incomplete fixed group, failed OIDC exchange, or stage-only package
+exits before `pnpm publish`.
 
 The post-publish closure gate checks every package in the fixed group. Registry observations cannot
 distinguish a partial publish from slow propagation: clean 404s and repeated non-404 failures both

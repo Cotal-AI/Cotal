@@ -50,7 +50,7 @@ const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: confi
 // refusal fires, so a cell can pass on an operator's machine and fail in CI's clean env
 // (measured, PR #962 shard 3). The child sees only the sandbox's own pins.
 const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
-const childEnv = { ...inheritedEnv, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const childEnv: Record<string, string | undefined> = { ...inheritedEnv, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 // Follow-on assign so a concurrent isolation edit on the object literal does not collide.
 // `cotal send` now refuses without a complete identity in this process.
 childEnv.COTAL_NAME = "cli";
@@ -224,7 +224,7 @@ try {
   check("interactive lifecycle retirement refuses a UID other than the current actor row", retireWrongUid.status === 409, await retireWrongUid.text());
   // The flagless grant is the FULL one: all channels + spawn + the stock role (the golden path —
   // login, grant, spawn just works; narrowing is the operator's explicit act).
-  check("flagless grant defaults to the full envelope", grant.out.includes("read [>]") && grant.out.includes("post [>]") && grant.out.includes("spawn"), grant.out);
+  check("flagless grant defaults to the full envelope, scope spawn and role:default", grant.out.includes("read [>]") && grant.out.includes("post [>]") && grant.out.includes("scope [spawn, role:default]"), grant.out);
 
   // The ENVELOPE rule on the foreground CLI spawn path: NARROW the cli grant explicitly, then an
   // over-ask beyond it is refused at the grant write — before any broker footprint — and the

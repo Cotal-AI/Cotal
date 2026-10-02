@@ -78,6 +78,7 @@ import {
   runStaticTerminal,
 } from "../src/static-lifecycle.js";
 import { bootBroker } from "./_boot-broker.js";
+import { requestDeliveryAdminZeroMemberships } from "./_fake-delivery-admin.js";
 
 let failures = 0;
 let ran = 0;
@@ -141,6 +142,7 @@ const fakeHandle = (name: string): AgentHandle => {
   on: () => {},
   off: () => {},
   waitForPresenceSnapshot: () => Promise.resolve(),
+  requestDeliveryAdmin: requestDeliveryAdminZeroMemberships,
   getRoster: (): Presence[] =>
     [...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map(
       (a): Presence => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name, role: "worker", kind: "agent", description: "", tags: [] }, status: "idle", lifecycleUid: a.lifecycleUid, ts: 0 }),

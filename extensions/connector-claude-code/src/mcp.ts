@@ -33,7 +33,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
 import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "./agui-map.js";
-import { createClaudeTranscriptSource } from "./agui-source.js";
+import { createBoundClaudeTranscriptSource } from "./agui-source.js";
 
 /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set in main()
  *  iff COTAL_EVENTS is on (buildLaunch sets it for managed sessions; a personal session never
@@ -72,6 +72,12 @@ async function main(): Promise<void> {
     // publishes to are computed from the identity the connection authenticates as.
     events = new AguiEmitterHolder<ClaudeEntry, unknown>(
       async (transcriptPath: string, sessionSource: unknown) => {
+        // Captured as the FACTORY'S FIRST ACT, before the mesh wait below and before anything else
+        // this bind does: a lazily-built source otherwise positions itself on its own first read,
+        // which happens only after the mesh wait, and anything the session writes to the transcript
+        // in that window is silently dropped. `fork` runs its own file-appear wait inside this same
+        // call and still substitutes its boundary exactly once. `startup` needs no boundary.
+        const source = await createBoundClaudeTranscriptSource(transcriptPath, sessionSource);
         const startEmitter = async () => {
           // The events state root throws rather than defaulting to the working directory: a WAL
           // written somewhere no later start looks is a silent loss.
@@ -107,7 +113,7 @@ async function main(): Promise<void> {
             endpoint: agent.ep,
             wal,
             subjectFrontier,
-            source: createClaudeTranscriptSource(transcriptPath, sessionSource),
+            source,
             map: mapper.map,
           });
         };

@@ -101,6 +101,7 @@ const e2eCon: Connector = {
   name: "e2e",
   requires: ["node"],
   supportsModelVariant: true,
+  supportsPrompt: true, // the suite spawns with --prompt; the contract is default-deny (#315)
   buildLaunch: (o) => {
     lastOpts = o;
     return {

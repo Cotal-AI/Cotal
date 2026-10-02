@@ -33,7 +33,7 @@
  * loads a file cannot be said to test it. The discarded `{ exitCode, signal }` is the ROOT of the
  * missing information, so it gets cells that actually spawn, exit, and read the result back.
  */
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentHandle, AttachSession } from "@cotal-ai/core";
@@ -257,7 +257,18 @@ function reap(handle: AgentHandle, cause: FreeSlotCause): { lines: string[]; sea
   await clean.waitForExit!();
   check("the pty runtime reports the child's REAL exit code", clean.exitInfo?.()?.code === 42, clean.exitInfo?.());
 
-  const killed = rt.spawn("killed", { command: "/bin/sh", args: ["-c", "sleep 30"], env: { PATH: "/usr/bin:/bin" } }, "/tmp");
+  let killed!: AgentHandle;
+  if (process.platform === "linux") {
+    // The test process raises its own oom_score_adj above the seat value before launching: the pty child inherits 600, so only the helper's write can make the child read 500. On a hosted runner whose processes already start at 500 an inherited value would otherwise pass the child cell with the write skipped (the CI reproof at 19312d774 let both oom mutants survive).
+    writeFileSync("/proc/self/oom_score_adj", "600");
+    check("the test process sits above the seat value, so inheritance cannot pass the child cell", readFileSync("/proc/self/oom_score_adj", "utf8").trim() === "600");
+    killed = rt.spawn("killed", { command: "/bin/sh", args: ["-c", "sleep 30"], env: { PATH: "/usr/bin:/bin" } }, "/tmp");
+    check("the in-process pty runtime applies the seat preference to its child", readFileSync(`/proc/${killed.pid}/oom_score_adj`, "utf8").trim() === "500");
+  } else {
+    // Documented, not exercised: CI runs Linux, so this arm is graded by reading only.
+    const oomLines = capture(() => { killed = rt.spawn("killed", { command: "/bin/sh", args: ["-c", "sleep 30"], env: { PATH: "/usr/bin:/bin" } }, "/tmp"); });
+    check("the in-process pty runtime logs Linux-only off Linux", oomLines.join(" ").includes("Linux-only"));
+  }
   killed.stop({ graceful: false });
   await killed.waitForExit!();
   const info = killed.exitInfo?.();

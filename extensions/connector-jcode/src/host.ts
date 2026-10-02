@@ -9,7 +9,7 @@ import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
-import { activeModelRoute, bareModelId, describeRoute } from "./route-identity.js";
+import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
 import {
   classifyReadinessProviderRefusal,
   installJcodeDiagnosticLog,
@@ -450,8 +450,8 @@ export async function runJcodeHost(): Promise<void> {
           // no requested turn can append past an unacknowledged boundary. On restart an existing WAL
           // wins over the current journal end and replays everything appended after that cursor.
           await initializeJcodeEventBoundary(journalPath, wal);
-          const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
+          const resumeBrackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
+          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: resumeBrackets?.run, resumeTools: resumeBrackets?.tools });
           return AguiEmitter.start<PositionedJcodeJournalRecord>({
             endpoint: agent.ep,
             wal,
@@ -1842,7 +1842,11 @@ export async function runJcodeHost(): Promise<void> {
         "model_mismatch",
         `jcode connector: the Harness API did not identify the active provider route for model ${JSON.stringify(effectiveModel ?? "(the provider default)")} — refusing to apply launch settings to an unverified route`,
       );
-    if (effectiveModel && runtime) writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, effectiveModel)}\n`);
+    if (effectiveModel && runtime) {
+      writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, effectiveModel)}\n`);
+      const provider = effectiveProvider(runtime, effectiveModel);
+      if (provider) await agent.setModel(effectiveModel, undefined, provider);
+    }
     // The Cotal variant is Jcode's per-session reasoning effort. Apply it after model selection
     // and before any instructions or readiness turn, so no served turn uses an unrequested tier.
     // Jcode owns the provider/model ladder and validates the requested tier at this API boundary.
@@ -2025,16 +2029,29 @@ export async function runJcodeHost(): Promise<void> {
     // not just a busy agent, because the thrown code is `internal` for every one of them.
     // drive() is gated on initialized. Leave that false until this notice has been attempted so a
     // turn_done from the still-open proof cannot dispatch the spawn kickoff first (#1440).
-    try {
-      await client.sendMessage(
-        sessionId,
-        `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,
-        { noReply: true },
-      );
-    } catch (notice) {
-      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
+    const joinNotice = `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`;
+    if (bootPrompt) {
+      try {
+        await client.sendMessage(sessionId, joinNotice, { noReply: true });
+      } catch (notice) {
+        writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
+      }
+    } else {
+      // No spawn prompt means nothing else schedules a turn after join: a persona that subscribes
+      // to nothing would otherwise sit on this notice as an unread append forever, never woken
+      // except by a directed mesh message (#1199). Route it through the same pendingKickoff/
+      // drive() dispatch boundary the spawn prompt uses instead of a noReply append, so it gets
+      // exactly one scheduled turn under the same one-shot rule (consumed at the request, never
+      // retried on an ambiguous error) and the same initialized gate and steering rules. A resumed
+      // session that is legitimately busy at this moment fails this turn the same way any other
+      // turn fails (drive()'s own catch logs it and schedules a retry) rather than killing the seat.
+      pendingKickoff = joinNotice;
     }
     initialized = true;
+    // The startup kickoff is the first requested turn after the pre-join readiness boundary. Bind
+    // its durable journal before dispatch so its first output opens an AG-UI run rather than being
+    // adopted as retained history. A still-open readiness turn remains excluded above.
+    if (!readinessTurnOpen) await ensureEventsBound();
     // Kickoff is not the only work that can arrive during that gate: a restart DM is parked until
     // this drain, or the replacement never observes it (#1440 / #910).
     if (hasDriveWork()) await drive();

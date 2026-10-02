@@ -1,0 +1,6 @@
+# The per-space artifact store must RESERVE NOTHING against the broker's `max_file_store`.
+# nats-server reserves a stream's whole `max_bytes` at create time, so the old 4 GiB artifact cap
+# bounded how many spaces a broker could hold and refused the next one with JetStream error 10047
+# while the stores were empty. Live-broker only: the reservation, the refusal and `reserved_storage`
+# are all the broker's own accounting, so nothing hermetic can see any of it.
+smoke:artifact-store-no-reserve

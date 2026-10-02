@@ -1,9 +1,10 @@
 {
   "suite": [
-    "implementations/cli/smoke/persona-templates.smoke.ts"
+    "implementations/cli/smoke/persona-templates.smoke.ts",
+    "implementations/cli/smoke/mint-provision.smoke.ts"
   ],
-  "guard": "new defaults can create channels, byte-exact legacy defaults upgrade, and user-edited personas remain untouched",
-  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli typecheck && pnpm smoke:persona-templates",
+  "guard": "new defaults can create channels, byte-exact legacy defaults upgrade, user-edited personas remain untouched, and a minted credential's lifetime and identity are the operator's flags, not the command's defaults",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli typecheck && pnpm smoke:persona-templates && pnpm smoke:mint-provision:auth",
   "completionMarker": "persona templates:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/default-agent-publish.json",
   "why": [
@@ -56,6 +57,33 @@
       "expectRed": "default-workflow-capability: the default declares spawn and run",
       "cell": "default-workflow-capability: the default declares spawn and run",
       "note": "Restores the spawn-only default; the real setup subprocess also checks the parsed on-disk capabilities."
+    },
+    {
+      "name": "M6 drop the mint lifetime before it reaches the seam",
+      "file": "implementations/cli/src/commands/mint.ts",
+      "find": "  const identity = existingIdentity ?? newIdentity();\n  const lifetime = { expiresInSeconds, expiresAt };\n  const creds = target\n    ? await provisionForMint(auth, identity, { allowSubscribe, allowPublish, role, lifecycleUid: lifecycleUid!, ...lifetime }, target)\n    : await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role, lifecycleUid, ...lifetime });",
+      "replace": "  const identity = existingIdentity ?? newIdentity();\n  const creds = target\n    ? await provisionForMint(auth, identity, { allowSubscribe, allowPublish, role, lifecycleUid: lifecycleUid! }, target)\n    : await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role, lifecycleUid });",
+      "expectRed": "the JWT's exp is iat + the flag, computed within the command's own second",
+      "cell": "the JWT's exp is iat + the flag, computed within the command's own second",
+      "note": "Restores the shipped half 1: the flag parses and validates but never reaches mintCreds, so the mint itself still succeeds while the credential stays unbounded (exp undefined). The success cell stays green by design; the exp-arithmetic cell is the one that catches the dropped lifetime."
+    },
+    {
+      "name": "M7 churn the identity on every re-mint",
+      "file": "implementations/cli/src/commands/mint.ts",
+      "find": "  const identity = existingIdentity ?? newIdentity();",
+      "replace": "  const identity = newIdentity();",
+      "expectRed": "the re-minted credential's principal IS the original's (same nkey, so every durable keyed to it survives)",
+      "cell": "the re-minted credential's principal IS the original's (same nkey, so every durable keyed to it survives)",
+      "note": "Restores the shipped half 2: --identity is read and validated, then ignored, so the re-minted credential is a new principal and every durable keyed to the old one is orphaned."
+    },
+    {
+      "name": "M8 stop refusing a TTL the seam would refuse",
+      "file": "implementations/cli/src/commands/mint.ts",
+      "find": "    const n = Number(values[\"expires-in\"]);\n    if (!Number.isInteger(n) || n <= 0) {\n      console.error(c.red(`--expires-in must be a positive integer number of seconds (got \"${values[\"expires-in\"]}\")`));\n      process.exit(1);\n    }",
+      "replace": "    const n = Number(values[\"expires-in\"]);",
+      "expectRed": "--expires-in 0 exits 1 naming the value (a TTL the seam would refuse)",
+      "cell": "--expires-in 0 exits 1 naming the value (a TTL the seam would refuse)",
+      "note": "Drops the CLI-side validation so a zero TTL falls through to the seam's throw after the operator believed the mint was underway. The cell requires the refusal at the command surface, naming the value."
     }
   ]
 }

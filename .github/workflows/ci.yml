@@ -112,6 +112,12 @@ jobs:
         shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v6
+        with:
+          # egress-guard-differential resolves the predecessor commit of the egress classifier and
+          # diffs HEAD's verdicts against it. A depth-1 clone reaches no role-carrying ancestor of
+          # agui.ts, so the resolver cell fails with "deepen the checkout" and takes shard 0 with
+          # it. Same reason the unit job pins this.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6.0.8
         with:
           standalone: true

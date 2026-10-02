@@ -371,8 +371,8 @@ export function checkRequestSubjectAgreement(env: EndpointRequest, subject: Pars
     if (!env.target) fail("target-mismatch", `the "${t.mode}" form requires a body target (SPEC 13.3)`);
     if (env.target.owner !== t.tOwner)
       fail("target-mismatch", `target.owner "${env.target.owner}" does not equal the subject target owner "${t.tOwner}"`);
-    if (t.mode === "handle" && (env.target.actor !== t.tActor || env.target.lifecycleUid !== t.tUid))
-      fail("target-mismatch", "in handle mode the body target actor and lifecycleUid must equal the subject redemption triple");
+    if ((t.mode === "handle" || t.mode === "exact") && (env.target.actor !== t.tActor || env.target.lifecycleUid !== t.tUid))
+      fail("target-mismatch", `in ${t.mode} mode the body target actor and lifecycleUid must equal the subject target triple`);
   }
 
   const sender = `${subject.caller.owner}.${subject.caller.actor}`;

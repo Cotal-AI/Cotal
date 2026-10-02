@@ -41,6 +41,7 @@ import {
   principalFromConnz,
 } from "./subjects.js";
 import { openMembersRegistry, listMembers } from "./members.js";
+import { liveKvEntries } from "./kv-scan.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import type { ChannelMembership } from "./types.js";
 
@@ -490,14 +491,23 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // Diff-before-put on the normalized {live,durable} (NOT observedAt), then prune departed agents — so a
     // quiet poll bumps no revision and wakes no watcher. Feed-wide freshness rides the heartbeat key below.
     const existing = new Set<string>();
-    for await (const k of await feedKv.keys()) if (k !== MEMBERSHIP_FEED_KEY) existing.add(k);
+    const current = new Map<string, ChannelMembership>();
+    for (const e of await liveKvEntries(feedKv)) {
+      if (e.key === MEMBERSHIP_FEED_KEY) continue;
+      existing.add(e.key);
+      try {
+        current.set(e.key, e.json<ChannelMembership>());
+      } catch {
+        /* re-write on garble */
+      }
+    }
     for (const [id, rec] of next) {
       const key = membershipKey(id);
       existing.delete(key);
-      const cur = await feedKv.get(key);
+      const curRec = current.get(key);
       let same = false;
-      if (cur && cur.operation !== "DEL" && cur.operation !== "PURGE") {
-        try { same = sameMembership(cur.json<ChannelMembership>(), rec); } catch { /* re-write on garble */ }
+      if (curRec) {
+        try { same = sameMembership(curRec, rec); } catch { /* re-write on garble */ }
       }
       if (!same) await feedKv.put(key, enc(JSON.stringify(rec)));
     }
@@ -584,6 +594,9 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       // `.catch` is needed to keep `stop()` from throwing.
       await inFlight;
       await Promise.allSettled([connA.drain(), connB.drain()]);
+      // A disconnected drain can reject without closing its reconnect loop. Stop owns both
+      // connections even when the broker is gone; neither may reappear after stop resolves.
+      await Promise.all([connA.close(), connB.close()]);
     },
   };
 }

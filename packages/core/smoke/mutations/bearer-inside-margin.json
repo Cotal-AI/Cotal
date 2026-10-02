@@ -2,7 +2,7 @@
   "suite": [
     "packages/core/smoke/bearer-inside-margin.smoke.ts"
   ],
-  "guard": "on a bearer REFRESH the endpoint refuses material that is already dead and material the source merely re-served, and keeps arming a short-TTL source at the 5s floor",
+  "guard": "on a bearer REFRESH the endpoint refuses material that is already dead and material the source re-served with no refresh margin left, and keeps arming a short-TTL source at the 5s floor",
   "command": "pnpm smoke:bearer-inside-margin",
   "completionMarker": "BEARER INSIDE MARGIN",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/bearer-inside-margin.json",
@@ -23,7 +23,12 @@
     "exp has not moved; an advancement test refuses those.",
     "Sibling cells (the warning text, the cache staying on the last good token) cannot grade any of this",
     "alone: a future change could emit the message, or leave the cache alone, and still re-read at the",
-    "floor or still adopt."
+    "floor or still adopt.",
+    "The margin edge is graded on a pinned clock. No live-clock cell holds a token near zero margin, and",
+    "on a live clock zero is a one-millisecond race, so the boundary flip (<= 0 to < 0) and the deleted",
+    "margin conjunct both SURVIVED the live-clock cells while the other endpoint.ts mutations were",
+    "KILLED in the same run. The pinned refresh also reads the delay it arms, which pins the 15s retry",
+    "value that the 12s window only bounds from below."
   ],
   "mutations": [
     {
@@ -60,7 +65,43 @@
       "replace": "      if (held !== undefined || true) {",
       "expectRed": "the initial fetch is adopted even when it is already expired",
       "cell": "the initial fetch is adopted even when it is already expired",
-      "note": "Both refusals protect a cached token, so with no cache there is nothing to protect and start() has to come up on whatever the source has. bindConnection's pre-dial guard is what speaks for a dead first token, and it names the remedy; refusing here instead leaves the endpoint with no bearer at all and the authenticator presenting undefined."
+      "note": "Both refusals protect a cached token, so with no cache there is nothing to protect and start() has to come up on whatever the source has. bindConnection's pre-dial guard is what speaks for a dead first token, and it names the remedy; refusing here instead makes start() throw this refusal before that guard runs, with no bearer held. Nothing dials, because the initial fetch rethrows."
+    },
+    {
+      "name": "the margin edge goes exclusive, so a re-served token with zero margin left is adopted",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 0)",
+      "replace": "        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS < 0)",
+      "expectRed": "a re-served token with zero margin left is refused (the margin edge is inclusive)",
+      "cell": "a re-served token with zero margin left is refused (the margin edge is inclusive)",
+      "note": "The two branches differ only when exp - now - 60s is 0. The cell pins Date.now to that instant, so the refusal either fires or it does not."
+    },
+    {
+      "name": "the re-serve refusal starts with one millisecond of margin still left",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 0)",
+      "replace": "        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 1)",
+      "expectRed": "the same token with 1ms of margin left is adopted, with no warning",
+      "cell": "the same token with 1ms of margin left is adopted, with no warning",
+      "note": "The other side of the edge. The zero-margin cell catches a threshold moved below 0 and this cell catches one moved above it (<= 1, <= 30_000), so the boundary is pinned from both sides."
+    },
+    {
+      "name": "the re-serve refusal no longer asks how much life the token has left",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (bearer === held && expiryMs - Date.now() - CotalEndpoint.BEARER_REFRESH_MARGIN_MS <= 0)",
+      "replace": "        if (bearer === held)",
+      "expectRed": "a re-served token with most of its life left is adopted, with no warning",
+      "cell": "a re-served token with most of its life left is adopted, with no warning",
+      "note": "Deleting the margin conjunct only makes the refusal stricter, so every refused-source cell stays green. A source that caches and re-serves a healthy token is the input that tells them apart."
+    },
+    {
+      "name": "a failed refresh retries after ten minutes instead of 15s",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      this.armBearerRefresh(CotalEndpoint.BEARER_RETRY_MS);",
+      "replace": "      this.armBearerRefresh(600_000);",
+      "expectRed": "that refusal arms the retry at 15s (BEARER_RETRY_MS), not at the 5s floor",
+      "cell": "that refusal arms the retry at 15s (BEARER_RETRY_MS), not at the 5s floor",
+      "note": "The 12s no-re-read cell accepts any retry delay of 12s or more. This cell reads the delay itself."
     }
   ]
 }

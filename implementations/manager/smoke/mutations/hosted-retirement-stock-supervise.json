@@ -7,7 +7,7 @@
   "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/hosted-retirement-stock-supervise.json",
   "why": [
     "This owner-native acceptance starts the real cotal supervise CLI, an authenticated broker, registry-pinned HTTPS authority, and a retained child from a registry-only participant root.",
-    "The release mutation proves the stock callback is the fail-closed boundary before retirement requester issuance; the commit mutation proves the third HTTPS validation is a fresh commit-time check rather than startup traffic.",
+    "The release mutation proves the stock callback is the fail-closed boundary before retirement requester issuance: stock asks the host to prepare the release, the host answers unimplemented, and dropping that host round trip lets the teardown walk on to the terminal rail. The commit mutation proves the third HTTPS validation is a fresh commit-time check rather than startup traffic.",
     "The admin mutations prove remote serve-time authorization cannot bypass the host callback and cannot ignore the caller lifecycle bound to the host row."
   ],
   "mutations": [
@@ -23,10 +23,10 @@
     {
       "name": "stock supervision silently accepts hosted release without a host composition",
       "file": "implementations/manager/src/commands.ts",
-      "find": "          throw new Error(\"remote participant supervision cannot terminally retire a hosted managed agent without a host release composition\");",
-      "replace": "          return;",
-      "expectRed": "stock hosted deprovision fails closed at the explicit host-release refusal",
-      "cell": "stock hosted deprovision fails closed at the explicit host-release refusal",
+      "find": "          const result = await provider.prepareRemoteManagedAgentRetirement({\n            store: workspaceSecretStore(findCotalRoot()),\n            dir: join(findCotalRoot(), \".cotal\", \"auth\", space),\n            request,\n          });\n          remoteManagedAgentRetirementPrepared(result, request);\n",
+      "replace": "          void request;\n",
+      "expectRed": "stock hosted deprovision fails closed at the host's unimplemented release refusal",
+      "cell": "stock hosted deprovision fails closed at the host's unimplemented release refusal",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {

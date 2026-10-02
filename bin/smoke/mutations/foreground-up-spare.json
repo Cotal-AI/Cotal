@@ -55,6 +55,17 @@
       "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "note": "The round-2 blocker as a mutant: the refusal prints but the async teardown continues past the return, so the manager and the broker are signalled anyway and up exits 0. The refusal-gate cell (capability file removed, SIGINT, manager and broker still alive, refusal names the reap route, no spared report) is the first cell that can notice. Deterministic: the capability file is deleted by the cell before the signal."
+    },
+    {
+      "name": "M4 ensureManager discards the reuse/start distinction, so a restored manager reports the same as one it merely found alive (#883)",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  const pid = startManagerDetached(o);\n  return { running: true, started: true, pid };",
+      "replace": "  const pid = startManagerDetached(o);\n  return { running: true, started: false, pid };",
+      "expectRed": "the refresh names the restored manager with a pid",
+      "cell": "the refresh names the restored manager with a pid",
+      "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "The pre-fix defect this lane exists to close: `ensureManager` returning `started: false` on BOTH the reuse branch and the branch that just launched a manager is exactly the collapsed shape #883 reported (a restore prints the byte-identical no-op line). `up.ts` only prints the restore line when `plane.started` is true, so this mutant makes the refresh after a SIGTERM'd manager print nothing beyond `already running`, and the restore-naming cell is the first (and only) one that can notice - the pid is still correct and the manager still comes back, so every earlier cell in that refresh stays green."
     }
   ]
 }

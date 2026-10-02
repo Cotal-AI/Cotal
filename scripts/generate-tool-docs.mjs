@@ -247,6 +247,12 @@ for (const s of specs) {
     lines.push("No arguments.");
     lines.push("");
   }
+  if (s.name === "cotal_dm") {
+    lines.push(
+      "On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it.",
+    );
+    lines.push("");
+  }
 }
 
 lines.push("---");

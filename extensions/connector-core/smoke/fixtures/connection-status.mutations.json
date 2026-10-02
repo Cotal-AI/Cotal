@@ -95,6 +95,16 @@
       "expectRed": "committing fresh arrivals over an undelivered head is NOT progress, so the session still refuses ready",
       "cell": "committing fresh arrivals over an undelivered head is NOT progress, so the session still refuses ready",
       "note": "The second half of the fix, mutated separately from the measure it feeds. Keying the new mark on any automatic entry makes it a slower-spelled copy of the old one, so the fix could be half-reverted here and still look present at the call site. The accepting cell below it pins the other direction, so a mutant that simply never records progress is not mistaken for a pass."
+    },
+    {
+      "name": "durable delivery health collapses back to the lease-only conjunct, certifying a killed daemon's residue (#445)",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      joined && this.ep.channelDeliveryClass(channel) === \"durable\"\n        ? !leaseReadable\n          ? \"unknown\"\n          : daemonMemberships === undefined\n            ? \"degraded\"\n            : daemonMemberships.some((m) => m.channel === channel) && leaseLive\n              ? \"active\"\n              : \"degraded\"\n        : undefined;",
+      "replace": "      joined && this.ep.channelDeliveryClass(channel) === \"durable\"\n        ? leaseLive\n          ? \"active\"\n          : \"degraded\"\n        : undefined;",
+      "expectRed": "daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)",
+      "cell": "daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:channel-attention:auth",
+      "note": "This restores the exact pre-#445 measure: health from the lease and the session-local membership map alone, the two conjuncts a SIGKILLed daemon satisfies for a whole lease TTL. The suite stages a daemon that stops without a lease release, so its KV row still reads ready:true, and the FIRST cell this mutant reddens is the daemon-gone one named above — a killed daemon again certifying itself active. The per-mutation command runs the auth suite that stages the daemon; the config-level command still grades this file's own suite. The auth suite runs every cell and prints `SUITE COMPLETE:` on pass and fail alike, so the config-level completionMarker applies to it and a red run is graded by count."
     }
   ]
 }

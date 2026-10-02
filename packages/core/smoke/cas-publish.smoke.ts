@@ -230,6 +230,14 @@ try {
   const plain = await ep.multicast("ordinary", { channel: CH });
   c("ordinary multicast still works and still mints its own id", typeof plain.id === "string" && plain.id.length > 0 && plain.id !== id1);
 
+  // publishMsg (the chat/anycast path) carries its own copy of the parts guard, distinct from the
+  // CAS path above — this cell is the only thing that goes red if that copy is deleted.
+  await throws(
+    "multicast refuses a non-JSON data value through publishMsg (NaN stores as null if unchecked)",
+    () => ep.multicast("x", { channel: CH, parts: [{ kind: "data", data: Number.NaN }] as unknown as CotalMessage["parts"] }),
+    (e) => /non-JSON value/.test((e as Error).message),
+  );
+
   await ep2.stop();
   await ep.stop();
 } finally {

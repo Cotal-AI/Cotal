@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, standaloneConnectOpts } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, standaloneConnectOpts, dlvDurable } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -55,7 +55,7 @@ try {
 
   // The dashboard/observer is the membership-feed reader in production. Use its real admin grant:
   // the delivery cred writes the feed but deliberately cannot create the ordered consumer a KV watch needs.
-  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer", role: "observer", kind: "observer" } });
+  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer", role: "observer", kind: "endpoint" } });
   observer.on("error", () => {}); await observer.start();
 
   const aId = newIdentity();
@@ -67,7 +67,7 @@ try {
   // Pre-reconnect: the responder works + the daemon holds a (ready) lease (so the deliveryKv reopen is
   // exercised post-reconnect).
   const leaseRev = await daemon.acquireDeliveryLease(0);
-  await daemon.markDeliveryLeaseReady(0, leaseRev);
+  const readyLeaseRev = await daemon.markDeliveryLeaseReady(0, leaseRev);
   const pre = await agent.durableJoinChannel("review");
   check("durableJoin works before reconnect", pre.durable === true);
   const reviewGen = pre.generation ?? 0;
@@ -190,7 +190,7 @@ try {
 
   // Permanent endpoint shutdown has no future cleanup epoch. If the broker connection is already
   // terminal, an outstanding public stop must not hang the process waiting for an impossible rebuild.
-  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-broker-down", role: "observer", kind: "observer" } });
+  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-broker-down", role: "observer", kind: "endpoint" } });
   observer.on("error", () => {}); await observer.start();
   const brokerDownWatch = await observer.watchMembership(() => {});
   await (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc.close();
@@ -211,7 +211,7 @@ try {
   check("the broker-down shutdown exception is isolated before later lifecycle cells", (await membershipConsumers()).length === 0, await membershipConsumers());
 
   // Restart a fresh observer for the terminal-close arm: endpoint stop is permanent by contract.
-  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-2", role: "observer", kind: "observer" } });
+  observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-2", role: "observer", kind: "endpoint" } });
   observer.on("error", () => {}); await observer.start();
 
   // Terminal self-heal starts only AFTER the old connection is closed. Its cleanup request cannot ride
@@ -247,7 +247,56 @@ try {
   let recoveredFromRejectedArm = false;
   try { await observer.reconnect(); recoveredFromRejectedArm = true; } catch { /* cell below names it */ }
   check("a later rebuild recovers a membership watch after a transient arm rejection", recoveredFromRejectedArm);
+
+  // A watch iterator closed under a live connection must reach the caller through onClosed,
+  // not just the generic endpoint error event.
+  const closedReasons: string[] = [];
+  const watchesBeforeClosedCell = new Set([...(observer as unknown as { membershipFeedWatches: Set<{ iter?: { stop(): void } }> }).membershipFeedWatches]);
+  const closedWatch = await observer.watchMembership(() => {}, (err) => { closedReasons.push(err.message); });
+  await wait(200);
+  const closedWatchIntent = [...(observer as unknown as { membershipFeedWatches: Set<{ iter?: { stop(): void } }> }).membershipFeedWatches]
+    .find((w) => !watchesBeforeClosedCell.has(w));
+  closedWatchIntent?.iter?.stop();
+  for (let i = 0; i < 40 && closedReasons.length === 0; i++) await wait(50);
+  check("a watch iterator closed under a live connection reaches the caller's closed callback", JSON.stringify(closedReasons) === JSON.stringify(["membership watch closed"]), closedReasons);
+  await closedWatch.stop();
+
   await terminalWatch.stop();
+
+  const durable = dlvDurable(DEV_OWNER, aId.id, uidA);
+  const probeDlvBind = async () => {
+    const errors: Error[] = [];
+    const warnings: Error[] = [];
+    let messages = 0;
+    const probe = new CotalEndpoint({ space, servers: SERVERS, creds: aCreds, channels: [], lifecycleUid: uidA, watchPresence: false, registerPresence: false, card: { id: aId.id, name: "alice-bind-probe", kind: "agent" } });
+    probe.on("error", (e) => errors.push(e));
+    probe.on("warning", (e) => warnings.push(e));
+    probe.on("message", () => { messages++; });
+    let startError: Error | undefined;
+    try { await probe.start(); await wait(100); }
+    catch (e) { startError = e as Error; }
+    finally { try { await probe.stop(); } catch { /* isolate probe cleanup from the named bind cells */ } }
+    return { errors, warnings, messages, startError };
+  };
+
+  const quiet = await probeDlvBind();
+  check("a quiet delivery durable binds while the plane holds a ready lease without raising a warning", quiet.startError === undefined && quiet.errors.length === 0 && quiet.warnings.length === 0, quiet);
+  check("the ready-lease control delivers no message on a genuinely quiet plane", quiet.messages === 0, quiet);
+
+  await daemon.releaseDeliveryLease(0, readyLeaseRev);
+  const missingLease = await probeDlvBind();
+  const missingLeaseWarning = missingLease.warnings[0];
+  check("a delivery durable binds and warns when the plane has no ready delivery lease", missingLease.startError === undefined && missingLease.errors.length === 0 && missingLease.warnings.length === 1, missingLease);
+  check("the missing-lease warning names the durable, space, condition, and reconnect repair", missingLeaseWarning?.message.includes(durable) === true && missingLeaseWarning.message.includes(space) && missingLeaseWarning.message.includes("no ready delivery lease") && missingLeaseWarning.message.includes("reconnect against it"), missingLeaseWarning?.message);
+  check("the warned missing-lease bind delivers no message", missingLease.messages === 0, missingLease);
+
+  const notReadyRev = await daemon.acquireDeliveryLease(0);
+  const notReadyLease = await probeDlvBind();
+  const notReadyWarning = notReadyLease.warnings[0];
+  check("a delivery durable binds and warns when the delivery lease is not ready", notReadyLease.startError === undefined && notReadyLease.errors.length === 0 && notReadyLease.warnings.length === 1, notReadyLease);
+  check("the not-ready warning names the durable, space, condition, and reconnect repair", notReadyWarning?.message.includes(durable) === true && notReadyWarning.message.includes(space) && notReadyWarning.message.includes("no ready delivery lease") && notReadyWarning.message.includes("reconnect against it"), notReadyWarning?.message);
+  check("the warned not-ready bind delivers no message", notReadyLease.messages === 0, notReadyLease);
+  await daemon.releaseDeliveryLease(0, notReadyRev);
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

@@ -130,6 +130,8 @@ Send a private message to one specific peer, by name (or instance id).
 | `to` | string | yes | The peer's name (or instance id). |
 | `text` | string | yes | The message. |
 
+On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it.
+
 ## `cotal_anycast`
 
 *ask any agent of a role*
@@ -241,12 +243,13 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | yes | Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name. |
+| `instance` | string | no | Optional manager instance id for a multi-manager space. Omitted uses class anycast. A pin that cannot be resolved is refused without falling back to another manager. |
 | `role` | string | no | Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role. A role of `manager` requires the persona to carry capabilities: [spawn]: a seat that presents as a manager but cannot spawn is refused at spawn time. Ask an operator to add the grant to the persona file (a persona you defined with cotal_persona cannot declare it itself). |
 | `agent` | string | no | Optional harness the new peer runs on: the agent/connector type (claude, jcode, opencode, hermes), NOT the persona to spawn (that's `name`). Resolution order: this explicit agent > the persona's agent: pin > the caller's COTAL_DEFAULT_AGENT > the manager's COTAL_DEFAULT_AGENT > the product default (Claude). |
 | `model` | string | no | Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. The spawn fails if the manager does not record this pin. The result names the recorded model; do not treat a spawn as cross-vendor unless that name matches what you requested. |
 | `variant` | string | no | Optional model variant override (connector-defined; for OpenCode, a model variant such as high/max/low). |
 | `launchOptions` | record | no | Optional connector-specific launch options: an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused. |
-| `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. |
+| `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. A directory that does not exist on the serving manager's host is refused before launch, with the host named; in a multi-manager space pin the manager with instance. |
 | `prompt` | string | no | Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted. |
 | `events` | boolean | no | Event planes are on by default for connectors that publish one. Pass false to opt out; true only restates the default. |
 

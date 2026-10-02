@@ -26,17 +26,13 @@
  * Run: pnpm smoke:manager-restart-fence   (needs nats-server + node on PATH; boots its own broker)
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { createServer, type AddressInfo } from "node:net";
-import {
-  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
-  bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf,
-  type ActionContext, type EpAttributedReply, type EpCaller, type ParsedEpRequest,
-  type Connector, type LaunchSpec, registry,
-} from "@cotal-ai/core";
+import type { ActionContext, EpAttributedReply, EpCaller, EpEnvelopeError as EpEnvelopeErrorType, ParsedEpRequest, Connector, LaunchSpec } from "@cotal-ai/core";
+import type { CotalEndpoint as SourceCotalEndpoint } from "../../../packages/core/src/index.js";
 // `CotalEndpoint` comes from SOURCE while everything else above comes from the built package, and
 // the split is deliberate. The long-lived-client behaviour graded below lives in
 // `invokeService`, and a suite that imports `dist` cannot make a claim about `src`: a mutation of
@@ -44,11 +40,18 @@ import {
 // about the test. Nothing is shared across the two copies — the client's only contact with the
 // manager (which reaches core through `dist`) is over NATS, and the goal helpers above operate on
 // the manager's own context, so no branded object crosses the boundary.
-import { CotalEndpoint } from "../../../packages/core/src/index.js";
-import { recordMesh, loadManagerInstanceIdentity } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const home = mkdtempSync(join(tmpdir(), "cotal-mrf-home-"));
+process.env.COTAL_HOME = home;
+const {
+  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
+  bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry, MANAGER_LEASE_TTL_MS,
+} = await import("@cotal-ai/core");
+const { CotalEndpoint } = await import("../../../packages/core/src/index.js");
+const { recordMesh, loadManagerInstanceIdentity } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -70,7 +73,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-mrf-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext } };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void>; ep: SourceCotalEndpoint };
 // THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
 // AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
 // so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
@@ -96,8 +99,8 @@ const reqFor = (goalId: string): ParsedEpRequest =>
   ({ plane: "request", route: "one", endpoint: MANAGER_ENDPOINT, command: "spawn", caller, id: goalId } as unknown as ParsedEpRequest);
 
 let mgr: InstanceType<typeof Manager> | undefined;
-let client: CotalEndpoint | undefined;
-let reader: CotalEndpoint | undefined;
+let client: SourceCotalEndpoint | undefined;
+let reader: SourceCotalEndpoint | undefined;
 try {
   const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}mrf-js-`))], { stdio: "ignore" });
   teardownOnSignal(broker);
@@ -165,8 +168,93 @@ try {
     readerWarm.reply.ok === true && readerCache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1, readerCache.get(MANAGER_ENDPOINT)?.responder);
 
   // ── restart: incarnation 2 (same root) ──
+  // Issue #367: a renew already in flight when a clean stop begins must not leave the liveness
+  // lease key behind for the rest of the bucket TTL. The triage timed SIGTERM against the first
+  // renew tick; a suite cannot win that race by timing, so this cell manufactures the exact state
+  // the race produces: one `renewManagerLease` call performs TWO broker renews and reports the
+  // FIRST revision to the manager, so the broker's row ends one revision ahead of the manager's
+  // cached knowledge before `stop()` runs. A stop that releases at the cached revision (the
+  // mutation the bind-recovery fixture restores) now misses the row deterministically, not by luck.
+  const m1ep = M1.ep as unknown as {
+    renewManagerLease: (info: unknown, revision: number) => Promise<number>;
+    releaseManagerLease: (instanceId: string, revision: number) => Promise<void>;
+    stop: () => Promise<void>;
+  };
+  const realRenew = m1ep.renewManagerLease.bind(m1ep);
+  const realRelease = m1ep.releaseManagerLease.bind(m1ep);
+  const realEpStop = m1ep.stop.bind(m1ep);
+  let doubled = false;
+  // (c) A late renew must cross a stop that has already released the key and still find the gone
+  // arm fenced: the fixture's other entry deletes that fence and expects THIS cell red. Both fences
+  // guard paths a real SIGTERM can take, but a suite cannot win the timing, so this orders the same
+  // crossing by promises instead of a race: the late renew's OWN broker call is held until the
+  // stop's release has actually completed, then fires at a revision the release invalidated, on a
+  // connection held open until it settles. Unstopped code would re-acquire the key; the gone-arm
+  // fence (the mutation target) is the only thing that does not.
+  let releaseDone = () => {};
+  const released = new Promise<void>((res) => { releaseDone = res; });
+  // HARDENING (fourth lifecycle): the release below must not run until the tracked renew's
+  // cache writes are all done. A release at the cached revision (the mutation entry 4 restores)
+  // only misses when the cached revision is BEHIND the row, and every write to `leaseRevision`
+  // that precedes the release in program order comes from the tracked renew above: its happy
+  // path reports `second - 1` while the row sits at `second`, and its catch path (a refused
+  // broker renew reconciling a still-owned row) ADOPTS the row's CURRENT revision, which would
+  // hand the mutant a revision that no longer misses. Awaiting the tracked renew's settlement
+  // inside the release wrapper pins the order structurally: `stop()` already awaits the tracked
+  // renew before it releases, so on the fixed path this gate is already open; and on the mutated
+  // path no code can write `leaseRevision` between that settlement and the release, because the
+  // late renew for (c) and any interval tick still pending are gated on `released` (the timer is
+  // cleared before the wrapper is ever entered). The row is one revision past every revision the
+  // manager can believe, on every ordering the host can pick.
+  let renewDone = () => {};
+  const renewSettled = new Promise<void>((res) => { renewDone = res; });
+  m1ep.releaseManagerLease = async (instanceId, revision) => {
+    await renewSettled;
+    // A finally, not a then: this must open the gate even when a mutation makes the CAS above throw
+    // (entry 3 replaces the released call with one at the stale cached revision), or the late renew
+    // below would wait forever on a release that never resolves.
+    try { await realRelease(instanceId, revision); } finally { releaseDone(); }
+  };
+  // The doubled wrapper closes over `realRenew`, not over `m1ep.renewManagerLease`, so once
+  // `renewLease()` below has invoked it (its broker calls already running against `realRenew`
+  // directly), the slot can be swapped to the gated version immediately: the doubled call is
+  // unaffected, and the untracked late renew for (c) sees only the gated version, never the doubled
+  // one.
+  m1ep.renewManagerLease = async (info, revision) => {
+    // The finally feeds the release wrapper's gate above: settlement means every cache write this
+    // attempt will ever make has landed, not merely that its last broker call returned.
+    try {
+      const second = await realRenew(info, await realRenew(info, revision));
+      doubled = true;
+      return second - 1;
+    } finally { renewDone(); }
+  };
+  void M1.renewLease();
+  m1ep.renewManagerLease = async (info, revision) => {
+    await released;
+    return realRenew(info, revision);
+  };
+  // Fired here, BEFORE stop(): untracked (not through `renewLease()`'s entry fence, and not joined
+  // by stop's `leaseRenewTask`), so stop cannot wait it out. Its broker call is gated above and does
+  // not actually run until the release below has completed.
+  const lateRenewSettled = M1.renewLeaseAttempt();
+  // stop() closes the endpoint last (`await this.ep.stop()`); keep it open until the late renew has
+  // fully settled, so its verdict (gone, not unknown-from-a-closed-connection) is always reached.
+  m1ep.stop = async () => { await lateRenewSettled.catch(() => {}); await realEpStop(); };
   await mgr.stop({ withAgents: true });
+  m1ep.renewManagerLease = realRenew;
+  m1ep.releaseManagerLease = realRelease;
+  m1ep.stop = realEpStop;
+  check("...(a) prelude: the double renew really landed, row one revision past the cache", doubled, { doubled });
+  const leaseAfterStop = await client.readOwnManagerLease(iid1);
+  check("(a) a clean stop with a renew in flight still removes the lease key", leaseAfterStop === undefined, leaseAfterStop);
+  check("(c) a renew that runs after the stop does not put the key back", leaseAfterStop === undefined, leaseAfterStop);
+
+  const bootStarted = Date.now();
   mgr = await bootManager();
+  const bootMs = Date.now() - bootStarted;
+  check("(b) the successor boots at once after that stop, without waiting out the lease TTL", bootMs < MANAGER_LEASE_TTL_MS / 2, { bootMs, ttl: MANAGER_LEASE_TTL_MS });
+
   const M2 = mgr as unknown as MgrPriv;
   const iid2 = M2.managerInstanceId;
   const epoch2 = M2.serviceServe!.grant.epoch;
@@ -203,12 +291,12 @@ try {
     const before = pubs();
     const splitsBefore = client.splitRecoveryCount;
     const announced: Array<{ command?: string; servedBy?: { instanceId: string; epoch: number }; splitsRecovered?: number }> = [];
-    client.on("split-recovered", (e) => announced.push(e as (typeof announced)[number]));
+    client.on("split-recovered", (e: unknown) => announced.push(e as (typeof announced)[number]));
     let threw: unknown;
     let reply: EpAttributedReply | undefined;
     try { reply = await client.invokeService(MANAGER_ENDPOINT, "spawn", { name: `ghost-${mintLifecycleUid().slice(0, 6)}`, agent: "claude" }); } catch (e) { threw = e; }
     check("the stale-epoch client's UNSAFE call no longer surfaces `expired` — the successor refused it before running it",
-      threw === undefined, threw instanceof Error ? `${(threw as EpEnvelopeError).code ?? ""} ${threw.message.slice(0, 160)}` : threw);
+      threw === undefined, threw instanceof Error ? `${(threw as EpEnvelopeErrorType).code ?? ""} ${threw.message.slice(0, 160)}` : threw);
     check("...and what comes back is the SUCCESSOR's own answer, at ITS epoch",
       reply?.responder.instanceId === iid1 && reply?.responder.epoch === epoch2, { responder: reply?.responder, epoch2 });
     // The re-issue is the whole point, and it is only safe because the first attempt PROVED it did
@@ -287,6 +375,7 @@ try {
   await client?.stop().catch(() => {});
   await mgr?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
+  rmSync(home, { recursive: true, force: true });
 }
 
 console.log(`\n${fail === 0 ? "MANAGER RESTART + TERMINAL SURVIVAL SMOKE OK ✅" : "MANAGER RESTART + TERMINAL SURVIVAL SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);

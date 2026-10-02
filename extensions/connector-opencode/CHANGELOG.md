@@ -1,5 +1,39 @@
 # @cotal-ai/connector-opencode
 
+## 0.58.0
+
+## 0.57.0
+
+### Patch Changes
+
+- 93b98e9: Let a cooperative teardown publish departure after it has given up waiting on a presence write. Presence writes are serialized, so the departure publish queued behind the very write the teardown's intake bound had just abandoned: the wait ended, offline never published, the seat kept its last status until its presence TTL expired, and the plugin process never reached its exit. The agent gains `abandonPresenceWrites()`, which the teardown calls only on the path where it announces the bound expired; ordering behind writes that do settle inside the bound is unchanged (#2207).
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+- baf7596: Fixed the OpenCode 2.x adapter dropping `cotal spawn --prompt`'s kickoff text: `plugin2.ts` now reads `COTAL_OPENCODE_PROMPT` and submits it as its first connector-driven turn, alongside the briefing and the persona as `system`, the same floor the 1.x plugin already runs. A failed first submission keeps the text for the next drive.
+
+## 0.56.0
+
+### Minor Changes
+
+- 7a43218: OpenCode support adds a new supported host line, `@opencode/cli` 2.x, alongside the existing 1.x line. A single directory plugin target now bundles both lines from one entry file. On 2.x the connector adds a 2.x viewer and the model, session, turn, prompt and model.request routes over the plugin's own event stream, since 2.x carries no AG-UI event plane. An unsupported OpenCode version is refused loud at spawn instead of silently degrading. Two 2.x limits: the event plane needs `--no-events`, and `cotal models` is refused because the 2.x catalog is served by a running opencode server rather than the CLI.
+
+### Patch Changes
+
+- e0ed0f5: Re-arm a focus @mention wake when its turn fails after the submission landed, so the seat is retried instead of left never told to look again.
+
+## 0.55.0
+
+### Patch Changes
+
+- a13c8bb: Capture the event plane's start boundary at adopt instead of at the emitter's first read, so a complete record written while the connector is still starting up (the mesh wait, log open, and preflight) is no longer silently dropped. Claude Code and OpenCode both wrap their session source with the shared `BoundStartSource`.
+- 647dcf2: The session-reset mutation fixture registers the removal of the settle barrier between the old holder's chain and the new session's frames, so the ordering cell is proved to notice it.
+- b58918f: The turn-wedge smoke grades the error-retry backoff under sustained failure: the doubling, one timer per window, the thirty-second ceiling, the reset after a completed turn, and a stop landing while a retry is pending.
+- d284ee6: A manifest or spawn prompt on a connector that cannot deliver one is refused at preflight (including `up -f --dry-run`), at spawn and in the manager, the way an unsupported model variant is: connectors now declare `supportsPrompt`, and claude, opencode, codex, jcode and pi declare it; hermes keeps its launch-time throw as the second line of defence.
+
 ## 0.54.0
 
 ## 0.53.0

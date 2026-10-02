@@ -170,14 +170,23 @@ solely because `turn_done` has not arrived. The manager's wait can still report 
 join itself is slow after a passing proof; that is not a cleanup verdict, and it is not the same
 as a host `readiness_timeout`. Use `cotal attach <name>` or `cotal ps` to inspect an `uncertain`
 launch. The
-host then waits for the mesh connection and presence bind to complete before it adds a no-reply
-notice that the bootstrap orientation predates the join and that a new orientation is live
-context. During a broker outage, it stays waiting and sends no connected notice.
+host then waits for the mesh connection and presence bind to complete before it delivers a notice
+that the bootstrap orientation predates the join and that a new orientation is live context. During
+a broker outage, it stays waiting and sends no connected notice.
 
-A refused post-join notice is logged without ending the joined session. The startup prompt stays
-pending while the native session is busy or its bridge reconnects. Once the host invokes the request,
-it consumes that prompt and does not retry it after an ambiguous error or close. This prevents a
-second submission; it cannot prove whether the first request executed.
+A seat launched with a spawn `--prompt` gets that notice as a no-reply append; the prompt is still
+the seat's first driven turn. A seat launched with no spawn `--prompt` has nothing else to schedule
+a turn after join, so the notice is delivered as the seat's first driven turn instead of a no-reply
+append: the same dispatch boundary and one-shot rule the startup prompt uses, so the seat's final
+startup state is never an unread append.
+
+A refused post-join notice sent as a no-reply append is logged without ending the joined session.
+When the notice is instead the startup turn (no spawn prompt), a refusal on that turn is handled
+the same way any other startup-prompt failure is: logged and retried, never fatal to the seat. The
+startup prompt (or, with no spawn prompt, the notice standing in for it) stays pending while the
+native session is busy or its bridge reconnects. Once the host invokes the request, it consumes
+that prompt and does not retry it after an ambiguous error or close. This prevents a second
+submission; it cannot prove whether the first request executed.
 
 The startup prompt excludes the automatic inbox. Messages buffered before it run in the following
 turn, including ordinary channel traffic held in `dnd`. Quiet-channel traffic remains available only
@@ -196,6 +205,17 @@ read again after a host crash. The connector therefore reads Jcode's native appe
 journal under the seat's private home. The journal supplies a durable byte cursor and is keyed by
 the Jcode session id, which is also the AG-UI thread id. A restarted seat continues from the cursor
 stored in its event write-ahead log and does not republish records already acknowledged.
+
+If Jcode checkpoints its journal, the connector validates the saved session snapshot and ends the
+interrupted event observations with `RUN_ERROR`, code `jcode_journal_fold`. Open tool observations
+end before this error; this does not claim that their executions completed. The seat stays up while
+the next journal is absent, including during a long tool call. The reader keeps its previous cursor
+until it can read the new journal from its beginning. It does not reconstruct missing output from
+the snapshot. A tool result whose start was not observed produces `jcode_tool_start_missing`, not
+an invented tool start or an unpaired end. On restart, open tools are restored from the event WAL.
+
+A missing journal without a valid snapshot for the same session remains an emitter failure.
+Malformed cursors, invalid complete records and filesystem access refusals are not checkpoints.
 
 When the seat's mesh connection drops and the endpoint is rebuilding it, event publishing waits
 until the connection is live again and then publishes the queued records in order. The seat stays up
@@ -229,8 +249,10 @@ shows those messages without clearing them.
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
 against the active provider, and an accepted selection becomes the session pin and the seat's model
-label. The connector does not require `RuntimeInfo.model` to echo that pin immediately because the
-runtime field can temporarily report the previous model after selection.
+label. The connector reports the provider route actually serving that model to presence, and
+`cotal ps --wide` and `--json` show it as `provider`. The connector does not require `RuntimeInfo.model`
+to echo that pin immediately because the runtime field can temporarily report the previous model
+after selection.
 
 Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
 `provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means

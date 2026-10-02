@@ -1,5 +1,31 @@
 # @cotal-ai/lang
 
+## 0.58.0
+
+### Patch Changes
+
+- 4229e53: Forward `observe` through the worker bridge, so a `waitUntil` run hosted by a manager completes instead of failing with "host.options.handler.observe is not a function".
+
+## 0.57.0
+
+### Minor Changes
+
+- ae90f5d: The scripted turn no longer asks for a timestamp it discards: `SimScript`'s turn entries drop the unused `at` field, so a script author's previously valid `at` literal now fails to typecheck (#729). The simulator grades a scripted wait's delivered value and a scripted ask's two-minute clock instead of taking them on faith (#724). `EffectHandler`'s docblock and the docs now state the handler failure contract: a `bind` failure is a throw (#735).
+
+## 0.56.1
+
+## 0.56.0
+
+### Patch Changes
+
+- 493eef5: The tree-walker's `++` and `--` refuse an operand that is not already a number with L4018, the same sentence the compiled engine's `case "update"` throws, instead of reading it through a bare `Number(...)`: a record no longer decays to NaN and a numeric string no longer silently becomes a number, so `x++`, `x + 1` and `x += 1` agree (#646). The two declared divergences this covered are retired.
+
+## 0.55.0
+
+### Patch Changes
+
+- 2b28653: A `RunDivergence` raised inside a concurrency scope is no longer recorded as the scope's own outcome: `performScope`'s ladder rethrows it and settles nothing, so the scope entry stays pending and a resume re-enters it and diverges again at the step that broke, instead of replaying a recorded `L4000` scope-fault a program's `try`/`catch` can swallow. A divergence among a `race`'s settled arms is hoisted ahead of the winner scan beside a refused append and a held arm, so a losing arm's divergence is never discarded behind a winning sibling and the winner's value is never handed back over it. A divergence also cancels no sibling: `parallel`, `fanOut` and the `race` settle treat it like a release or a refused append, leave every other arm to run to its own boundary and rethrow bare, so a resume of the original source completes the run instead of replaying a cancellation the divergence recorded.
+
 ## 0.54.0
 
 ## 0.53.0
