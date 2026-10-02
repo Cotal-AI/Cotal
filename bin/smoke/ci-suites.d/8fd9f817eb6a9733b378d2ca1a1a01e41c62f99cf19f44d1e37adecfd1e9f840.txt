@@ -1,0 +1,4 @@
+# The manager's hosted runtime create/status client and its binder for an untrusted host body, over
+# HTTP against the real authority plane. Added with the suite in #2316, which defined the script but
+# not this fragment, so nothing ran it.
+smoke:managed-agent-runtime-client
