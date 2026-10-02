@@ -1,0 +1,42 @@
+{
+  "name": "@cotal-ai/linear",
+  "description": "Cotal Linear integration: adds the `linear` command, a bounded client for the official Linear MCP server.",
+  "version": "0.58.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "implementations/linear"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "peerDependencies": {
+    "@cotal-ai/core": "*",
+    "@cotal-ai/workspace": "*"
+  },
+  "devDependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/workspace": "workspace:*"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
