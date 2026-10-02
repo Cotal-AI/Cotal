@@ -409,17 +409,33 @@ class Emitter {
    * program that reads `e.code`.
    */
   private tryStatement(node: AnyNode): string {
-    let out = `try ${this.block(node.block as AnyNode)}`;
+    const finalizer = node.finalizer as AnyNode | null;
+    // Allocated before the body is emitted, so no temp inside the try or catch can share its slot.
+    const forfeit = finalizer === null || finalizer === undefined ? null : this.temp();
+    const block = this.block(node.block as AnyNode);
+    let out = `try ${block}`;
     const handler = node.handler as AnyNode | null;
-    if (handler !== null && handler !== undefined) {
+    // With no catch, the wrapper below is the only `try` the block needs.
+    if (handler === null || handler === undefined) out = block;
+    else {
       const raw = this.temp();
       const caught = this.seam("caught", raw);
       const param = handler.param as AnyNode | null;
       const bind = param === null || param === undefined ? `${caught};\n` : this.bindPattern(param, caught, "const");
       out += `catch (${raw}) {\n${bind}${this.block(handler.body as AnyNode, true)}}\n`;
     }
-    if (node.finalizer !== null && node.finalizer !== undefined) out += `finally ${this.block(node.finalizer as AnyNode)}`;
-    return out;
+    if (forfeit === null) return out;
+    // AN UNCATCHABLE FAULT UNWINDS PAST `finally` TOO (§9.2), as it does on the walker. A native
+    // `finally` runs on every exit, so the try and catch are wrapped once more: `caught` asks whether
+    // what left them is uncatchable (it rethrows those), and the finalizer is skipped when it is, so
+    // it can neither perform an effect past the fault nor replace it with a completion of its own.
+    const left = this.temp();
+    const asked = this.temp();
+    return (
+      `${forfeit} = false;\ntry {\n${out}} catch (${left}) {\n` +
+      `try { ${this.seam("caught", left)}; } catch (${asked}) { ${forfeit} = true; throw ${asked}; }\n` +
+      `throw ${left};\n} finally {\nif (!${forfeit}) ${this.block(finalizer as AnyNode)}}\n`
+    );
   }
 
   /**
