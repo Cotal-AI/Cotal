@@ -990,8 +990,8 @@
     {
       "name": "the host answers an append before the store has recorded it",
       "file": "packages/lang/src/engine/bridge.ts",
-      "find": "      void seam.store.append(m.entry).then(\n        () => port.postMessage({ kind: \"answer\", seq: m.seq, ok: true, value: undefined } satisfies ToThread),\n        (e: unknown) => port.postMessage({ kind: \"answer\", seq: m.seq, ok: false, error: flatten(e) } satisfies ToThread),\n      );",
-      "replace": "      void seam.store.append(m.entry).catch(() => {});\n      port.postMessage({ kind: \"answer\", seq: m.seq, ok: true, value: undefined } satisfies ToThread);",
+      "find": "      void seam.store.append(m.entry).then(\n        () => toThread({ kind: \"answer\", seq: m.seq, ok: true, value: undefined } satisfies ToThread),\n        (e: unknown) => toThread({ kind: \"answer\", seq: m.seq, ok: false, error: flatten(e) } satisfies ToThread),\n      );",
+      "replace": "      void seam.store.append(m.entry).catch(() => {});\n      toThread({ kind: \"answer\", seq: m.seq, ok: true, value: undefined } satisfies ToThread);",
       "expectRed": "a step's pending half is durable in the host BEFORE its effect fires, and its settled half after",
       "completionMarker": "ok every effect was serviced by the host's own handler instance",
       "cell": "a step's pending half is durable in the host BEFORE its effect fires, and its settled half after",
@@ -1000,7 +1000,7 @@
     {
       "name": "a bind from the host never reaches the thread's journal",
       "file": "packages/lang/src/engine/bridge.ts",
-      "find": "        bind: (external) => {\n          const b = bseq++;\n          const answer = new Promise<void>((resolve, reject) => binds.set(b, { resolve, reject }));\n          port.postMessage({ kind: \"bind\", bseq: b, seq: seqHere, external } satisfies ToThread);\n          return answer;\n        },",
+      "find": "        bind: (external) => {\n          const b = bseq++;\n          const answer = new Promise<void>((resolve, reject) => binds.set(b, { resolve, reject }));\n          toThread({ kind: \"bind\", bseq: b, seq: seqHere, external } satisfies ToThread);\n          return answer;\n        },",
       "replace": "        bind: () => Promise.resolve(),",
       "expectRed": "the journal a bridged run brings back is the WALKER'S, entry for entry",
       "completionMarker": "ok a bridged run completes, its handler never having left this process",
