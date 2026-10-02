@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/linear",
-  "description": "Cotal Linear integration: adds the `linear` command, a bounded client for the official Linear MCP server.",
+  "description": "Cotal Linear integration: serves the official Linear MCP server as a registered Cotal endpoint and adds the `linear` operator command.",
   "version": "0.58.0",
   "license": "Apache-2.0",
   "repository": {
@@ -23,7 +23,9 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@nats-io/kv": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0"
   },
   "peerDependencies": {
     "@cotal-ai/core": "*",
