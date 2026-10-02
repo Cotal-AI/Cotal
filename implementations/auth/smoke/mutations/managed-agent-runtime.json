@@ -68,8 +68,8 @@
     {
       "name": "runtime parser lets a top-level providerRef through",
       "file": "packages/core/src/remote-manager-authority.ts",
-      "find": "    \"registrationProof\", \"serveEpoch\", \"target\", \"identities\",\n  ]);\n  for (const key of Object.keys(o))\n    if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);\n  const envelope = parseManagedAgentEnvelope(o, what, kind);",
-      "replace": "    \"registrationProof\", \"serveEpoch\", \"target\", \"identities\", \"providerRef\",\n  ]);\n  for (const key of Object.keys(o))\n    if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);\n  const envelope = parseManagedAgentEnvelope(o, what, kind);",
+      "find": "  \"registrationProof\", \"serveEpoch\", \"identities\", \"target\",\n]);",
+      "replace": "  \"registrationProof\", \"serveEpoch\", \"identities\", \"target\", \"providerRef\",\n]);",
       "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/managed-agent-runtime.smoke.ts",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "FAIL: runtime-create refuses a top-level providerRef",

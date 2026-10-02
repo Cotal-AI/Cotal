@@ -617,6 +617,12 @@ export function parseRemoteManagedAgentPrepareRetirementRequest(raw: unknown): R
   };
 }
 
+/** The closed top-level fields of a runtime create or status request. */
+const RUNTIME_REQUEST_KEYS: ReadonlySet<string> = new Set([
+  "v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId",
+  "registrationProof", "serveEpoch", "identities", "target",
+]);
+
 /** One closed runtime request parser for both kinds. The target is exactly the host-selected
  *  coordinate an enrollment returned, so a provider reference, handle, or name has nowhere to go. */
 function parseRemoteManagedAgentRuntimeRequest<K extends RemoteManagedAgentRuntimeRequest["kind"]>(
@@ -626,12 +632,8 @@ function parseRemoteManagedAgentRuntimeRequest<K extends RemoteManagedAgentRunti
 ): Extract<RemoteManagedAgentRuntimeRequest, { kind: K }> {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) enrollmentError(what, "must be an object");
   const o = raw as Record<string, unknown>;
-  const allowed = new Set([
-    "v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId",
-    "registrationProof", "serveEpoch", "target", "identities",
-  ]);
   for (const key of Object.keys(o))
-    if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+    if (!RUNTIME_REQUEST_KEYS.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   const envelope = parseManagedAgentEnvelope(o, what, kind);
   const target = o.target;
   if (target === null || typeof target !== "object" || Array.isArray(target)) enrollmentError(what, "requires a target");
