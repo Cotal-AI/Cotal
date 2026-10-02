@@ -61,11 +61,20 @@ session. The broker may or may not already hold that frame, so the halt cannot s
 3. For each session listed, start it again on 0.58.0 while the broker is reachable, let it recover,
    stop it, and run step 2 again. Recovery publishes the frame as 0.58.0 would have, error text
    included, so it only finishes what 0.58.0 had already started.
+
+   If that start halts with `cas-loss` instead, the broker had already stored the frame and the
+   seat lost the acknowledgement, so the frame and its error text are already on the channel. No
+   restart settles that log, on 0.58.0 or later: the stream checks the frozen expectation before it
+   deduplicates the retry, so every retry of the frame halts the same way. Clear it as the halt
+   message says: purge the agent's event channel, then remove the agent's directory under the
+   events state root whole (see [Event plane](connect-claude.md#event-plane)). The purge also drops
+   the earlier frames of every session of that agent.
 4. Upgrade once step 2 prints nothing.
 
 If a session halts with `egress-run-error` after the upgrade, go back to step 3 for that session on
-0.58.0. Do not edit or delete `wal.json` to get past the halt: clearing the pending frame abandons
-that epoch, and an event the broker never received is lost.
+0.58.0. Do not edit or delete `wal.json` on its own to get past either halt: clearing the pending
+frame abandons that epoch, an event the broker never received is lost, and removing part of the
+directory leaves a state the next start refuses.
 
 ## From 0.53.0 to 0.54.0
 
