@@ -143,7 +143,28 @@ try {
   await waitFor("initial bridge", () => entries().find((entry) => entry.ev === "listening"));
   await waitFor("mesh presence", () => peerId);
   check("the shipped Jcode host joins before the provider stall (instrument control)", Boolean(peerId));
+  // `listening` is the fake's socket being up and presence is the host announcing itself on the
+  // mesh. Neither says the host has a jcode SESSION, and the stall marker is delivered as a turn, so
+  // a marker that arrives before the session exists has nothing to run on. The host creates or
+  // attaches its session in its boot sequence rather than on the first turn (`host.ts`, beside the
+  // SIGINT handlers), so this wait resolves during startup and cannot deadlock on the turn it is
+  // gating. `fake-jcode.mjs` logs `session_path` for exactly this use: "Recorded so a test can
+  // assert WHICH path the host took, not merely that it started."
+  await waitFor("the host's jcode session", () => entries().find((entry) => entry.ev === "session_path"));
   await operator.unicast(peerId!, "SIMULATE_PROVIDER_STALL");
+  // Delivery and behaviour are separate waits on purpose. The fake logs every inbound frame, so the
+  // marker ARRIVING at the bridge is directly observable, and the refusal below is downstream of
+  // that arrival. Shard 3 reddened twice on 2026-10-01 (01c8af371 and 8e57aa9fc), both at `timed out
+  // waiting for persistent permanent replacement refusal` and both green on a re-run with no code
+  // change, and the single combined wait could not say whether the marker had even reached the
+  // bridge. A timeout on the first wait now names the delivery; a timeout on the second names the
+  // host's recovery, which is the defect this suite exists to catch.
+  await waitFor("the stall marker to reach the bridge", () =>
+    entries().find((entry) =>
+      entry.ev === "request" &&
+      String((entry.frame as { content?: unknown } | undefined)?.content ?? "").includes("SIMULATE_PROVIDER_STALL"),
+    ),
+  );
   await waitFor("persistent permanent replacement refusal", () =>
     entries().find((entry) => entry.ev === "attach_refused" && entry.code === "invalid_request"),
   );
