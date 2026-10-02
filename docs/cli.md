@@ -1730,8 +1730,9 @@ The endpoint serves five fixed commands: `inventory`, `call-tool`, `read-resourc
 endpoint; which tools a call can reach is decided by the Linear account and its mode. `inventory`
 replies in pages that fit a broker message: the first page carries the server, its capabilities,
 its instructions and per-section counts, and every page carries entries verbatim with an opaque
-cursor bound to the inventory digest. An entry is never cut; one too large for a reply refuses the
-page. A cursor or `inventoryDigest` from an older inventory is refused before anything is sent to
+cursor bound to the inventory digest. An entry is never cut: discovery refuses an inventory that
+carries an entry over 48 KiB, naming it, so every entry it accepts fits one reply and the tool an
+agent reads it with. A cursor or `inventoryDigest` from an older inventory is refused before anything is sent to
 Linear. `call-tool`, `read-resource`, `get-prompt` and `complete` require the digest the caller read.
 
 ### Callers
