@@ -15,6 +15,7 @@
  */
 import type { ToolDefinition } from "@opencode-ai/plugin";
 import { cotalToolSpecs, parseToolArgs, refuseAnyArgs, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
+import type { OpenCode2ToolEditor } from "./opencode2-types.js";
 
 /** Build the cotal_* tool map wired to one mesh agent, rendered from the shared specs. */
 export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<string, ToolDefinition> {
@@ -60,4 +61,48 @@ export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<s
     };
   }
   return tools;
+}
+
+/** Build the cotal_* tool list for OpenCode 2.x's `ctx.tool.transform(ed => ed.add(...))`, from
+ *  the SAME shared specs {@link buildCotalTools} renders for 1.x. 2.x's `Tool.Info.input` accepts
+ *  a zod 4 object directly (a StandardSchema — measured, `fx105/measurements.md`), so the closed
+ *  schema goes across unmodified; there is no 1.x-style raw-shape flattening needed here. The
+ *  closed-object refusal at dispatch is the same guard as {@link buildCotalTools} keeps: this host
+ *  also hands `execute` the caller's object UNVALIDATED, so a stray `owner`/`actor` is refused by
+ *  name here too, never silently reaching `run`. */
+export function buildCotalTools2(agent: MeshAgent, config: AgentConfig): Parameters<OpenCode2ToolEditor["add"]>[0][] {
+  const defs: Parameters<OpenCode2ToolEditor["add"]>[0][] = [];
+  for (const spec of cotalToolSpecs(config, "opencode")) {
+    if (spec.name === "cotal_inbox") {
+      defs.push({
+        name: "cotal_inbox",
+        description:
+          "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic stays queued; in focus mode, normal channel recall is also shown read-only.",
+        input: spec.schema,
+        async execute(args: unknown) {
+          const refusal = refuseAnyArgs(spec.name, args);
+          if (refusal) return { content: `⚠ ${refusal}` };
+          const r = await spec.run(agent, config, { scope: "pull-only" });
+          return { content: r.isError ? `⚠ ${r.text}` : r.text };
+        },
+      });
+      continue;
+    }
+    defs.push({
+      name: spec.name,
+      description: spec.description,
+      input: spec.schema,
+      async execute(args: unknown) {
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = parseToolArgs(spec, args);
+        } catch (e) {
+          return { content: `⚠ ${(e as Error).message}` };
+        }
+        const r = await spec.run(agent, config, parsed);
+        return { content: r.isError ? `⚠ ${r.text}` : r.text };
+      },
+    });
+  }
+  return defs;
 }

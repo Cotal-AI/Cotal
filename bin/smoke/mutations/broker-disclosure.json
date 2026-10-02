@@ -54,8 +54,8 @@
     {
       "name": "one file's disclosure is deleted, which is the regression this guard exists for",
       "file": "extensions/pi/smoke/tool-input-closed.smoke.ts",
-      "find": "console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? \"INHERITED from the environment\" : \"suite default\"})`);",
-      "replace": "void brokerFromEnv;",
+      "find": "console.log(`• broker: ${process.env.COTAL_SERVERS} (suite default; an inherited COTAL_SERVERS was ${inheritedBroker ? \"DISCARDED by the ambient scrub\" : \"absent\"})`);",
+      "replace": "void inheritedBroker;",
       "expectRed": "extensions/pi/smoke/tool-input-closed.smoke.ts prints the broker it resolved",
       "cell": "extensions/pi/smoke/tool-input-closed.smoke.ts prints the broker it resolved",
       "note": "A careless edit, not a malicious one: the line is dropped and the capture kept, which still typechecks and leaves that suite passing. Before this guard the whole repo stayed green."
@@ -81,8 +81,8 @@
     {
       "name": "PAIRED: a real file captures the flag after its own `||=`, so the disclosure always says inherited",
       "file": "extensions/connector-core/smoke/tool-input-closed.smoke.ts",
-      "find": "const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\nprocess.env.COTAL_SERVERS ||= \"nats://127.0.0.1:4222\";",
-      "replace": "process.env.COTAL_SERVERS ||= \"nats://127.0.0.1:4222\";\nconst brokerFromEnv = process.env.COTAL_SERVERS !== undefined;",
+      "find": "const inheritedBroker = process.env.COTAL_SERVERS !== undefined;",
+      "replace": "const inheritedBroker = Boolean(process.env.COTAL_SERVERS);",
       "expectRed": "extensions/connector-core/smoke/tool-input-closed.smoke.ts records whether the value was inherited, before `||=` overwrites the evidence",
       "cell": "extensions/connector-core/smoke/tool-input-closed.smoke.ts records whether the value was inherited, before `||=` overwrites the evidence",
       "note": "The defect wearing a healthy shape: two lines swapped, everything still compiles, the line still prints, and it is wrong every single run. This is the pair that makes mutation 3 mean something -- one shows the guard would stop looking, the other shows what it is looking at."

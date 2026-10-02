@@ -23,6 +23,10 @@ export interface LaunchOpts {
    *  forwards it (`COTAL_LIFECYCLE_UID`) so the session's endpoint binds its lifecycle-keyed
    *  dm/dlv/chathist durables — the same exact names its credential pins. */
   lifecycleUid?: string;
+  /** The CHAT stream sequence this incarnation had reached before a preservation cut (manager-
+   *  recorded). The connector forwards it (`COTAL_BACKFILL_FLOOR`) so the session's boot backfill
+   *  reads only what came after it instead of the whole retained window. Absent on a fresh launch. */
+  backfillFloor?: number;
   /** The accepted-row token of the credential's issuance (SPEC 13.15), chosen by the launcher at
    *  mint. The connector forwards it (`COTAL_ACCEPTED_TOKEN`) so the session's endpoint reads the
    *  generation the issuer bound and pins it into its caller rails. Static issued launches only. */
@@ -64,7 +68,9 @@ export interface LaunchOpts {
   launchOptions?: Record<string, unknown>;
   /** An initial message for the session to act on the moment it starts (`cotal spawn --prompt`).
    *  A connector delivers it as the harness's first turn or throws at launch; it never ignores it,
-   *  because an operator who passed a prompt is waiting on the turn it starts. */
+   *  because an operator who passed a prompt is waiting on the turn it starts. Gated upstream by
+   *  {@link Connector.supportsPrompt}, so a prompt on a connector that cannot deliver one is
+   *  refused before any provisioning. */
   prompt?: string;
   /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
    *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
@@ -82,14 +88,18 @@ export interface LaunchOpts {
   continueSession?: string;
   /** Publish this session's AG-UI event plane to the agent's own event channel (see
    *  {@link Connector.eventChannel}), so an external observer or UI can read what the agent actually
-   *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to OFF; set `true`
-   *  to opt in, surfaced as the `--events` flag on `cotal spawn` / `cotal start`.
+   *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to ON for a
+   *  connector that declares an event channel; set `false` to opt out (`--no-events`).
    *
    *  The flag ARMS the emitter. It is deliberately separate from the grant the manager mints from
    *  {@link Connector.eventChannel}: holding publish rights on a channel is not a request to publish
    *  to it, so a hand-written `allowPublish` entry cannot turn events on for a session the launch
    *  path never armed. */
   events?: boolean;
+  /** The selected registration requires this session's structured event plane. A launcher sets this
+   *  from trusted registration material; connectors carry it into launch material for session-side
+   *  enforcement as well as arming the emitter. */
+  eventsRequired?: boolean;
   /** Operator MCP servers to SHARE with this agent, resolved from the cotal config by the caller
    *  (see {@link connectorServers}). Keyed by server name, `.mcp.json`-shaped, with `${VAR}`
    *  secret refs intact. A connector renders them into its own host format; the default is none
@@ -241,6 +251,10 @@ export interface Connector extends Extension {
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.prompt} as the harness's first turn.
+   *  Default-deny, so a prompt on a connector that does not declare it fails before any
+   *  provisioning rather than being accepted and never submitted. */
+  readonly supportsPrompt?: boolean;
   /**
    * Connector-specific upper bound for reaching mesh presence after its process is launched.
    *

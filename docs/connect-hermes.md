@@ -45,6 +45,11 @@ Hermes is model-agnostic; set any one provider's key in your environment. Model 
 matches the other connectors: the `--model` flag, else the agent file's `model:`, else an ambient
 `HERMES_MODEL`. Hermes exposes no `cotal models` catalog (unlike OpenCode).
 
+With none of those set, the launch is refused. The managed profile does not read `~/.hermes`, so a
+model configured there is not used, and without a model Hermes would choose one of its own over a
+provider you may have no key for. The refusal names the three ways to set a model. To run on your
+own profile instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).
+
 ## How it binds
 
 Unlike Claude Code or OpenCode (where the harness *is* the process), Hermes runs as a long-lived
@@ -53,7 +58,9 @@ live inside a per-turn process; the connector's command is a small **launcher/su
 owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run` as its child.
 
 - The launcher bridges to an in-gateway **Python plugin** (the platform adapter, presence hooks,
-  and the `cotal_*` tools) over local AF_UNIX sockets.
+  and the `cotal_*` tools) over local AF_UNIX sockets. The bridge socket is authenticated on
+  connect with the launch's control token (the first frame must carry it), and its path is not
+  predictable: it is derived from the token rather than from the space and agent name alone.
 - It runs the gateway in an isolated `HERMES_HOME` profile (a temp dir), so your own `~/.hermes`
   is never touched, with approvals off (a supervised agent has no human at the TUI to approve).
   To put your own Hermes on the mesh instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).

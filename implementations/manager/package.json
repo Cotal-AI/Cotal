@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/manager",
   "description": "Cotal agent supervisor: spawns and manages mesh nodes via a pluggable runtime (pty/tmux/cmux/orca/herdr).",
-  "version": "0.49.0",
+  "version": "0.58.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -47,8 +47,10 @@
     "@cotal-ai/connector-codex": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
+    "@cotal-ai/connector-hermes": "workspace:*",
     "@cotal-ai/connector-opencode": "workspace:*",
     "@cotal-ai/delivery": "workspace:*",
+    "@cotal-ai/runtime": "workspace:*",
     "@nats-io/nats-core": "^3.4.0",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.1"

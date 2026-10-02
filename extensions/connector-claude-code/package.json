@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-claude-code",
   "description": "Cotal connector for Claude Code: an installed plugin that joins a session to the mesh.",
-  "version": "0.49.0",
+  "version": "0.58.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -19,7 +19,7 @@
   },
   "scripts": {
     "test": "tsx smoke/launch-env.smoke.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
     "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/mcp.ts src/hook.ts --bundle --platform=node --format=cjs --target=node20 --outdir=dist --out-extension:.js=.cjs",
     "prepublishOnly": "pnpm run build"
@@ -32,6 +32,7 @@
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@nats-io/transport-node": "^3.4.0",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4"
   },

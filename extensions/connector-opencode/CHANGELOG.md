@@ -1,5 +1,110 @@
 # @cotal-ai/connector-opencode
 
+## 0.58.0
+
+## 0.57.0
+
+### Patch Changes
+
+- 93b98e9: Let a cooperative teardown publish departure after it has given up waiting on a presence write. Presence writes are serialized, so the departure publish queued behind the very write the teardown's intake bound had just abandoned: the wait ended, offline never published, the seat kept its last status until its presence TTL expired, and the plugin process never reached its exit. The agent gains `abandonPresenceWrites()`, which the teardown calls only on the path where it announces the bound expired; ordering behind writes that do settle inside the bound is unchanged (#2207).
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+- baf7596: Fixed the OpenCode 2.x adapter dropping `cotal spawn --prompt`'s kickoff text: `plugin2.ts` now reads `COTAL_OPENCODE_PROMPT` and submits it as its first connector-driven turn, alongside the briefing and the persona as `system`, the same floor the 1.x plugin already runs. A failed first submission keeps the text for the next drive.
+
+## 0.56.0
+
+### Minor Changes
+
+- 7a43218: OpenCode support adds a new supported host line, `@opencode/cli` 2.x, alongside the existing 1.x line. A single directory plugin target now bundles both lines from one entry file. On 2.x the connector adds a 2.x viewer and the model, session, turn, prompt and model.request routes over the plugin's own event stream, since 2.x carries no AG-UI event plane. An unsupported OpenCode version is refused loud at spawn instead of silently degrading. Two 2.x limits: the event plane needs `--no-events`, and `cotal models` is refused because the 2.x catalog is served by a running opencode server rather than the CLI.
+
+### Patch Changes
+
+- e0ed0f5: Re-arm a focus @mention wake when its turn fails after the submission landed, so the seat is retried instead of left never told to look again.
+
+## 0.55.0
+
+### Patch Changes
+
+- a13c8bb: Capture the event plane's start boundary at adopt instead of at the emitter's first read, so a complete record written while the connector is still starting up (the mesh wait, log open, and preflight) is no longer silently dropped. Claude Code and OpenCode both wrap their session source with the shared `BoundStartSource`.
+- 647dcf2: The session-reset mutation fixture registers the removal of the settle barrier between the old holder's chain and the new session's frames, so the ordering cell is proved to notice it.
+- b58918f: The turn-wedge smoke grades the error-retry backoff under sustained failure: the doubling, one timer per window, the thirty-second ceiling, the reset after a completed turn, and a stop landing while a retry is pending.
+- d284ee6: A manifest or spawn prompt on a connector that cannot deliver one is refused at preflight (including `up -f --dry-run`), at spawn and in the manager, the way an unsupported model variant is: connectors now declare `supportsPrompt`, and claude, opencode, codex, jcode and pi declare it; hermes keeps its launch-time throw as the second line of defence.
+
+## 0.54.0
+
+## 0.53.0
+
+## 0.52.1
+
+## 0.52.0
+
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 4668927: The OpenCode connector's AG-UI emitter now waits for the mesh link before it starts. The shim creates
+  the native session before the plugin's endpoint binds, the emitter started from that first event
+  against an endpoint that had not started, and its holder failed terminally, so every armed OpenCode
+  session published nothing for its whole life with one stderr line as the only record. The emitter
+  now awaits the same bounded connection wait the Claude Code connector takes, and past its window it
+  fails into the holder's terminal error rather than hanging the event handler.
+- 37737cc: Refuse an explicit OpenCode model pin before joining the mesh when the running server's provider listing does not serve that model, even if the CLI catalog advertises it.
+
+## 0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- b7e5942: A peer can no longer forge the framing of an auto-injected message
+
+  The block that carries waiting peer messages into a turn interpolated the message body and the
+  sender name raw, and the Hermes sidecar built the same shape by string concatenation. Both were
+  forgeable the two ways the inbox reply used to be: a body carrying a newline produced a second item
+  in the block, reading to the agent as a separate delivered message from a peer that never sent one,
+  and a sender naming itself with a closing bracket ended the real attribution and opened a forged
+  one. These frames are auto-injected rather than returned when the agent asks, so the agent never
+  had a chance to distrust them.
+
+  The rule both surfaces now hold is the one the inbox reply already held, and they hold it through
+  the same code rather than a second convention: a line that begins at column zero is written by the
+  connector, never by a peer. One message is one line plus indented continuations, with the
+  attribution inside a single bracket pair. The neutralization moved into a shared module that the
+  injected block and the inbox reply both render through, so the body, the sender name and role, and
+  the service and channel labels all pass through one implementation. The Python sidecar carries a
+  matching module, kept to the same character class on purpose, since a peer that can forge the frame
+  on either side of the socket has the whole class back.
+
+  Two widenings came out of stating the rule positionally rather than by example. The attribution
+  class now neutralizes the opening bracket as well as the closing one, because stripping only the
+  closing one still let a name render a bracket pair a reader takes as the innermost attribution. The
+  injected block's per-item separator is the bracketed attribution the inbox reply uses, replacing the
+  bullet, so the text of an injected block changed and the wake-path suites that assert on it were
+  updated with it.
+
+  A third injected surface holds the same rule now. A wake hint carries no message body and reads as
+  one short sentence, so it does not look like a frame, but it is written into the agent's context
+  without being asked for and it names a peer-controlled channel label, which three connectors
+  interpolated raw. A label carrying a newline put a second line at column zero reading as another
+  delivered message. That label renders through the shared module too, and the absent-channel fallback
+  moved there with it, since three connectors each spelled it themselves and an absent field is what a
+  per-call-site spelling is most likely to get wrong.
+
+### Patch Changes
+
+- 0a52594: Census the in-process half of the ambient-environment rule. `smoke:suite-ambient-env` grades the environment a suite hands a child; the new `smoke:suite-ambient-env-self` grades a suite that reads its own `process.env` through `configFromEnv` and friends, and requires a module-scope `COTAL_` prefix scrub before that first read. The connector suites in the class now scrub the whole prefix instead of dropping one variable, so running them from inside a connected session no longer dies in its own import on the one-identity-plane refusal.
+
 ## 0.49.0
 
 ### Minor Changes

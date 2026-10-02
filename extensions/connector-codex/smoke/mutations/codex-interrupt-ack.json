@@ -1,0 +1,57 @@
+{
+  "suite": [
+    "extensions/connector-codex/smoke/codex-host.smoke.ts"
+  ],
+  "guard": "an operator interrupt dismisses the surfaced batch instead of redelivering it, and an unknown terminal status stays un-acked rather than being folded into interrupted",
+  "command": "pnpm --filter @cotal-ai/connector-codex... build && pnpm smoke:codex-host",
+  "mutations": [
+    {
+      "name": "M0a keys the driven-turn ledger by raw id, so an empty-id DM never commits",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "          ids = items.map((i) => i.recvKey);",
+      "replace": "          ids = items.map((i) => i.id);",
+      "expectRed": "the driven empty-id DM committed at its boundary (no second turn carries it)",
+      "cell": "two empty-id DMs in one frame both commit (#674)",
+      "note": "The ack addresses the surfaced ledger; an id-less item's raw id is \"\", so drainInboxDeliveries commits nothing and the boundary pump re-drives the message in a hot loop of identical turn starts. The idle-drive cell (4a) catches it on its named assertion.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-codex build"
+    },
+    {
+      "name": "M0b reverts the steer filter to raw-id equality, so an empty-id DM already in the turn is steered twice",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "          .filter((i) => !surfacedSet.has(i.recvKey) && (i.kind !== \"channel\" || i.mentionsMe));",
+      "replace": "          .filter((i) => !surfacedSet.has(i.id) && (i.kind !== \"channel\" || i.mentionsMe));",
+      "expectRed": "an empty-id DM steered mid-turn is not steered twice (#674)",
+      "cell": "an empty-id DM steered mid-turn is not steered twice (#674)",
+      "note": "surfacedSet holds receive keys; an id-less item's raw id (\"\") is never in it, so the filter re-admits an already-steered empty-id item and the loop steers it again for as long as the turn stays open. The suite aborts on the first red assertion, so the steer cell must run before the pair cell — cell order in the suite: idle-drive, then steer-twice, then the one-turn pair.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-codex build"
+    },
+    {
+      "name": "M1 restores the un-acked outcome for an operator interrupt, redelivering the dismissed batch",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      const dismissed = status === \"completed\" || (status === \"interrupted\" && !shuttingDown);",
+      "replace": "      const dismissed = status === \"completed\";",
+      "expectRed": "interrupted turn's batch is dismissed, not redelivered",
+      "cell": "interrupted turn's batch is dismissed, not redelivered",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-codex build"
+    },
+    {
+      "name": "M2 folds an unknown terminal status back into interrupted",
+      "file": "extensions/connector-codex/src/app-server.ts",
+      "find": "        const status: TurnStatus =\n          turn.status === \"completed\" || turn.status === \"failed\" || turn.status === \"interrupted\"\n            ? turn.status\n            : \"unknown\";",
+      "replace": "        const status: TurnStatus =\n          turn.status === \"completed\" || turn.status === \"failed\" || turn.status === \"interrupted\"\n            ? turn.status\n            : \"interrupted\";",
+      "expectRed": "unknown terminal status leaves the batch un-acked",
+      "cell": "unknown terminal status leaves the batch un-acked",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-codex build"
+    },
+    {
+      "name": "M3 lets presence writes race: a turn's start-clear can land after its failure condition",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "  const inOrder = (write: () => Promise<void>): Promise<void> => {\n    const next = presenceChain.then(write, write);\n    presenceChain = next.catch(() => {});\n    return next;\n  };",
+      "replace": "  const inOrder = (write: () => Promise<void>): Promise<void> => {\n    const next = write();\n    presenceChain = next.catch(() => {});\n    return next;\n  };",
+      "expectRed": "failed turn relays Codex's native error as a rate-limit condition",
+      "cell": "failed turn relays Codex's native error as a rate-limit condition",
+      "note": "The fake ends the FAIL turn in the frame it started it, so the host handles the start and the failure in one tick; without the chain the start's clear and the failure's condition can leave the host in either order, and the cell grades the record that stands after the boundary. The losing order is a microtask race, so this mutant can survive a single quiet run; prove it over three runs or under concurrent load.",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-codex build"
+    }
+  ]
+}

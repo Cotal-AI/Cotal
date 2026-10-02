@@ -1,0 +1,21 @@
+{
+  "suite": ["extensions/connector-claude-code/smoke/agui-start-source.smoke.ts"],
+  "guard": "SessionStart preserves presence during an open Claude turn, including compaction and permission waits",
+  "command": "pnpm smoke:claude-start-source",
+  "completionMarker": "claude-start-source smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/compaction-presence.json",
+  "why": [
+    "The live roster reported idle while the Claude event plane still held an open run and new tool events.",
+    "Removing the turn guard restores the unconditional SessionStart idle write. The named cell drives",
+    "the shipped hook handler between UserPromptSubmit and Stop and records its status calls."
+  ],
+  "mutations": [
+    {
+      "name": "C1 reset presence during an open turn on SessionStart",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "          if (!turnOpen) {",
+      "replace": "          {",
+      "expectRed": "presence:compact-during-an-open-turn-keeps-working-without-a-status-write"
+    }
+  ]
+}

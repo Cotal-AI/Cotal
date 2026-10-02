@@ -83,6 +83,12 @@
     "and reddens on it. A survivor in one set is not evidence of an ungraded line until the suites",
     "that reach the line have been asked.",
     "",
+    "MUTATION 10 IS GRADED BY A CHILD WHOSE ONLY LIVE WORK IS THE DEADLINE. Cell I still proves the",
+    "real attach path reaches the same helper around a half-open link, but its resumed PTY stdin now",
+    "keeps the process alive independently and masks ref() versus unref(). Cell K removes that",
+    "environmental premise: no broker, PTY or stdin reader exists, so unref'ing the deadline ends the",
+    "child on an unsettled top-level await before it can report the bound. Keeping the real-path and",
+    "liveness cells separate makes each claim observable without weakening the half-open-link guard.",
     "",
     "UNASSERTED OR UNKILLABLE GUARDS remain in `unkillable`, not in the executable kill set. The",
     "`permission-denied` branch has no end-to-end producer in this static single-owner harness, and the",
@@ -129,7 +135,7 @@
       "replace": "  const t = await resolveControlTarget(v, \"control-caller-admin\", on, reconnect ? { onRefusal: \"throw\" } : {});",
       "expectRed": "...with ONE failure mark, not the doubled one a rethrown refusal renders",
       "cell": "...with ONE failure mark, not the doubled one a rethrown refusal renders",
-      "note": "The shipped defect, restored. `reconnect` is ON by default, so keying the disposition on the flag rather than on `first` sends the very first attach down the path meant only for re-establishments: its refusal escapes as an exception, the dispatcher's generic handler renders it as `✗ ${message}` over a sentence that already opens with `✗`, and the refusal's hint line is dropped. Aimed at the ONE load-bearing check in cell G: non-zero exit, the `no mesh running` sentence, and the absent reconnect banner all stay green under this mutation, because a first-attempt connect failure never announces a reconnect on either path. A kill here is therefore a claim about the failure MARK specifically, which is the whole finding.",
+      "note": "The shipped defect, restored. `reconnect` is ON by default, so keying the disposition on the flag rather than on `first` sends the very first attach down the path meant only for re-establishments: its refusal escapes as an exception, the dispatcher's generic handler renders it as `\u2717 ${message}` over a sentence that already opens with `\u2717`, and the refusal's hint line is dropped. Aimed at the ONE load-bearing check in cell G: non-zero exit, the `no mesh running` sentence, and the absent reconnect banner all stay green under this mutation, because a first-attempt connect failure never announces a reconnect on either path. A kill here is therefore a claim about the failure MARK specifically, which is the whole finding.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
@@ -169,7 +175,17 @@
       "replace": "  if (pending < 1) return undefined;",
       "expectRed": "held: a seat that is GONE took its own sessions with it, so there is nothing to warn about",
       "cell": "held: a seat that is GONE took its own sessions with it, so there is nothing to warn about",
-      "note": "The `gone` verdict exists only when the manager proves the live seat is absent, either by `not-found` or by the durable static-slot observation detail after the process is gone; freeing a seat ends every session bound to it. So the sessions this line would name are already collected and naming them invents work. Aimed at the hand-built cell because the harness cannot produce the state that reaches it end to end: it needs a hand-back that FAILED on the same attempt whose control ask SUCCEEDED, over the same broker. Its sibling is mutation 8, which drives the same function's printing branch through the real binary.",
+      "note": "The `gone` verdict only exists because the manager answered `not-found`, and it only answers that once the seat has been freed; freeing a seat ends every session bound to it. So the sessions this line would name are already collected and naming them invents work. Aimed at the hand-built cell because the harness cannot produce the state that reaches it end to end: it needs a hand-back that FAILED on the same attempt whose control ask SUCCEEDED, over the same broker. Its sibling is mutation 8, which drives the same function's printing branch through the real binary.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the link deadline is unref'd again, so the timer cannot hold the process open while a dead socket is waited on",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  const deadline = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); });",
+      "replace": "  const deadline = new Promise<boolean>((r) => { const t = setTimeout(() => r(false), ms); t.unref?.(); timer = t; });",
+      "expectRed": "the deadline probe stays alive until the bound fires",
+      "cell": "the deadline probe stays alive until the bound fires",
+      "note": "A wait bounded by an unref'd timer is not bounded. Cell I proves the real attach path reaches this helper around a half-open link, but its resumed PTY stdin keeps the event loop alive and masks the timer's ref state. Cell K runs the helper in a child with no broker, PTY or stdin reader and awaits work that never settles. With the deadline ref'd, the child stays alive for the bound, prints `deadline-result=false`, and exits 0. With this mutation, Node abandons the unsettled top-level await and exits 13 before printing. The cell therefore grades timer liveness directly while cell I retains the real-path and held-session assertions.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {

@@ -5,8 +5,8 @@
  * between connector-core and workspace, so parity is enforced HERE, by test:
  *   1. `spawnFlags` ⊇ the shared `launchFlags` bundle (spawn parses the whole grammar).
  *   2. Every launch flag maps onto a manager `start`-op key (the golden op vocabulary).
- *   3. Every MCP `cotal_spawn` schema param IS one of those op keys (subset — the tool may
- *      expose less, e.g. no `resume` by design, but never a divergent name).
+ *   3. Every MCP `cotal_spawn` seat param IS one of those op keys (subset — the tool may
+ *      expose less, e.g. no `resume` by design); routing params mirror CLI spawn-only routing.
  *   4. Every launch client's request window OUTLIVES the manager's readiness wait (#159 B1) —
  *      the manager replies to `start`/`launch` only on a real outcome, so a client timeout at or
  *      under that window kills real spawns while the launch proceeds.
@@ -17,7 +17,7 @@ import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { launchFlags } from "@cotal-ai/workspace";
 import { spawnFlags, launchAgent, START_TIMEOUT_MS } from "@cotal-ai/cli";
 import { configFromEnv, cotalToolSpecs, SPAWN_TIMEOUT_MS } from "@cotal-ai/connector-core";
-import { READINESS_TIMEOUT_MS } from "@cotal-ai/manager";
+import { READINESS_TIMEOUT_MS, SPAWN_INPUT_KEYS } from "@cotal-ai/manager";
 import type { CotalEndpoint } from "@cotal-ai/core";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -38,13 +38,12 @@ process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";
 console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? "INHERITED from the environment" : "suite default"})`);
 process.env.COTAL_CAPABILITIES = "spawn";
 
-/** The manager `start` op's argument vocabulary (StartAgentOpts, minus the internal `resolved`).
- *  Types are erased at runtime, so this list is the golden — a StartAgentOpts change must
- *  consciously edit it. */
-const START_OP_KEYS = new Set([
-  "name", "identity", "agent", "defaultAgent", "role", "config", "model", "variant", "launchOptions", "resume", "events", "cwd",
-  "prompt", "subscribe", "allowSubscribe", "allowPublish", "shareTools",
-]);
+/** The vocabulary is read from the served contract, so this smoke cannot carry a stale copy of it. */
+const START_OP_KEYS = new Set(SPAWN_INPUT_KEYS);
+
+// Routing chooses the manager that receives the request; it does not describe the seat passed to
+// the manager `start` op. Keep this exception paired with the CLI's spawn-only `--on` flag.
+const SPAWN_ROUTING_PARAMS = new Set(["instance"]);
 
 /** CLI kebab flag → op key. `no-events` folds into the `events` tri-state; `--name` is
  *  the presence-identity OVERRIDE (op `identity`) — the persona REF rides the positional as op
@@ -63,6 +62,9 @@ const spawnNames = new Set(spawnFlags.map((f) => f.name));
 for (const f of launchFlags) {
   assert.ok(spawnNames.has(f.name), `spawn is missing launch flag --${f.name}`);
 }
+const launchNames: Set<string> = new Set(launchFlags.map((f) => f.name));
+assert.ok(spawnNames.has("on"), "spawn must expose the manager routing flag --on");
+assert.ok(!launchNames.has("on"), "--on routes a spawn request and must not enter the launch grammar");
 
 // 2 — every launch flag lands on a start-op key.
 for (const f of launchFlags) {
@@ -82,23 +84,20 @@ const spawnTool = cotalToolSpecs(configFromEnv({ COTAL_NAME: "parity-smoke" }), 
 assert.ok(spawnTool, "cotal_spawn tool spec exists");
 const toolParams = Object.keys(spawnTool.schema.shape);
 for (const p of toolParams) {
-  assert.ok(START_OP_KEYS.has(p), `cotal_spawn param "${p}" is not a start-op key — vocabulary drift`);
+  assert.ok(
+    START_OP_KEYS.has(p) || SPAWN_ROUTING_PARAMS.has(p),
+    `cotal_spawn param "${p}" is neither a start-op key nor a routing parameter — vocabulary drift`,
+  );
 }
 // `resume` stays deliberately OFF the peer-facing tool (host-transcript disclosure — see the
 // tool-specs note); this asserts today's intent so re-adding it is a conscious edit here too.
 assert.ok(!toolParams.includes("resume"), "cotal_spawn must not expose resume (deferred, #159)");
 assert.ok(toolParams.includes("prompt"), "cotal_spawn must expose a kickoff prompt so a new session can take its first turn");
-// `events` is likewise OFF the peer-facing tool, and deliberately so: arming another session's event
-// plane publishes that session's full tool inputs and outputs to a channel.
-//
-// BUT READ WHAT THIS CELL ACTUALLY PROVES, because an earlier version of this comment claimed more.
-// The MCP tool and the manager's `spawn` service op are two doors onto one handler, and the service
-// op's schema accepts `events`, `subscribe`, `allowSubscribe` and `allowPublish` in full. So this
-// assertion fences the TOOL SHAPE and nothing else: it is not a control-plane refusal, and a
-// spawn-capable caller that can reach the service door directly is not stopped by it. Stating that
-// here is the point. A cell whose comment claims a guarantee it does not deliver is worse than no
-// cell, because the next reader stops looking.
-assert.ok(!toolParams.includes("events"), "cotal_spawn must not expose events until the admin precheck exists");
+// Event-capable connectors now publish by default, so the peer-facing tool must expose the same
+// explicit opt-out as the operator door. `events: false` disables the plane; omitting it keeps the
+// default. The manager still owns grant attenuation and refuses a connector with no event plane
+// unless this opt-out is present.
+assert.ok(toolParams.includes("events"), "cotal_spawn must expose the explicit event-plane opt-out");
 
 // 4 — every launch client outlives the manager's readiness wait (#159 B1). The tier rule forbids
 // the clients importing READINESS_TIMEOUT_MS, so the relation is enforced here, by test.

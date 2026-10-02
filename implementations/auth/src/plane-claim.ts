@@ -53,6 +53,7 @@ import {
   mintCreds,
   newIdentity,
   parsePlaneLivenessResult,
+  parsePrincipalLivenessResult,
   type PlaneConnTuple,
   type PlaneLivenessQuery,
   type PlaneLivenessResult,
@@ -348,6 +349,51 @@ export function makeDeliveryAdminPlaneOracle(opts: {
       return d;
     } catch (e) {
       return unknown(query, `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); liveness is UNKNOWN and the claim is not reclaimed`);
+    } finally {
+      await ep?.stop().catch(() => {});
+    }
+  };
+}
+
+/** Host-side principal liveness over the same delivery-admin rail. Only `gone` with a complete
+ * sweep is conclusive; every refusal, transport fault, malformed echo, or contradiction is unknown. */
+export function makeDeliveryAdminPrincipalOracle(opts: {
+  space: string;
+  server: string;
+  dataAccount: { pub: string; signingSeed: string };
+  log: (line: string) => void;
+}): (principal: string) => Promise<import("@cotal-ai/core").PrincipalLivenessResult> {
+  const auth: SpaceAuth = {
+    space: opts.space,
+    operator: { seed: "", jwt: "" },
+    account: { pub: opts.dataAccount.pub, seed: "", jwt: "", signingSeed: opts.dataAccount.signingSeed, signingPub: "" },
+    sys: { pub: "", jwt: "" },
+  };
+  const unknown = (principal: string, note: string): import("@cotal-ai/core").PrincipalLivenessResult => {
+    opts.log(`principal-oracle: ${principal}: ${note}`);
+    return { principal, state: "unknown", sweepComplete: false, note };
+  };
+  return async (principal) => {
+    const id = newIdentity();
+    let ep: CotalEndpoint | undefined;
+    try {
+      const creds = await mintCreds(auth, id, "endpoint-evictor", { expiresInSeconds: ORACLE_CRED_TTL_SECONDS });
+      ep = new CotalEndpoint({
+        space: opts.space, servers: opts.server, creds,
+        card: { id: id.id, name: "auth-principal-oracle", kind: "endpoint" },
+        channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
+      });
+      ep.on("error", () => {});
+      await ep.start();
+      const reply = await ep.requestDeliveryAdmin("principalLiveness", { principal }, 15_000);
+      if (!reply.ok) return unknown(principal, `the delivery daemon refused the liveness query: ${reply.error ?? "(no error copy)"}`);
+      const parsed = parsePrincipalLivenessResult(reply.data, principal);
+      if (!parsed) return unknown(principal, `the delivery daemon returned a garbled or foreign liveness result (${JSON.stringify(reply.data ?? null)})`);
+      if (parsed.state === "gone" && parsed.sweepComplete !== true)
+        return unknown(principal, "the delivery daemon claimed gone under an incomplete sweep");
+      return parsed;
+    } catch (e) {
+      return unknown(principal, `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)})`);
     } finally {
       await ep?.stop().catch(() => {});
     }

@@ -15,7 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { MeshAgent } from "../src/agent.js";
-import type { InboxItem } from "../src/types.js";
+import type { InboxItem } from "../src/agent.js";
 
 let pass = 0;
 const failures: string[] = [];
@@ -65,7 +65,7 @@ function harness(): H {
       // The ingest seam mints recvKey (= the wire id for real ids) before buffer() ever sees an
       // item; fabricating below that seam means carrying the invariant here too.
       recvKey: id,
-    } as InboxItem;
+    } as unknown as InboxItem;
     (agent as unknown as { buffer: (i: InboxItem, a: () => void, p: boolean) => void }).buffer(
       item,
       () => acked.add(id),

@@ -59,7 +59,9 @@ const SPACE = "split-verdict";
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
 const TSX = join(WT, "node_modules", ".bin", "tsx");
-const VERDICT = /no manager reachable|did not answer/;
+// Every shape of the reachability verdict, so a NEGATIVE assertion on it cannot be satisfied by
+// a rewording. The rail-scoped form (#1630) is a third spelling of the same claim.
+const VERDICT = /no manager reachable|no manager answered on the ep\.|did not answer/;
 
 // THE SAME LIVE-BROKER GUARD THE SIBLING LIVE SUITES CARRY, and this file needed it: it spawns the
 // REAL binary with the ambient environment, and the binary resolves a mesh from the environment

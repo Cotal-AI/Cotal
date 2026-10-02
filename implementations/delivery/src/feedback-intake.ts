@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER, isReachable, mintLifecycleUid, type ParsedArgs } from "@cotal-ai/core";
+import { CotalEndpoint, DEFAULT_SERVER, isReachable, mintLifecycleUid, type JsonValue, type ParsedArgs } from "@cotal-ai/core";
 
 /** Minimal ANSI helpers — local to the delivery daemon so it never imports the CLI. */
 const c = {
@@ -22,7 +22,10 @@ interface FeedbackTester {
   name?: string;
 }
 
-interface FeedbackPayload {
+// The wire `data` part must be a JSON value (SPEC §5), so the record is typed where JSON actually
+// appears: the parsed HTTP body (readJson) and the string fields this daemon mints. Object-literal
+// type aliases satisfy the JsonValue object arm through their members; interfaces would not.
+type FeedbackPayload = {
   origin: FeedbackOrigin;
   type: FeedbackType;
   summary: string;
@@ -33,9 +36,9 @@ interface FeedbackPayload {
   expected?: string;
   actual?: string;
   source?: string;
-  client?: unknown;
-  diagnostics?: unknown;
-}
+  client?: JsonValue;
+  diagnostics?: JsonValue;
+};
 
 interface FeedbackRecord {
   id: string;
@@ -44,6 +47,13 @@ interface FeedbackRecord {
   remoteAddress?: string;
   feedback: FeedbackPayload;
 }
+type JsonFeedbackRecord = {
+  id: string;
+  receivedAt: string;
+  tester: { tester: string; name?: string };
+  remoteAddress?: string;
+  feedback: FeedbackPayload;
+};
 
 const TYPES = new Set<FeedbackType>(["bug", "idea", "friction", "praise", "other"]);
 const SEVERITIES = new Set<FeedbackSeverity>(["low", "medium", "high"]);
@@ -129,7 +139,7 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
       if (isRateLimited(rate, tester.tester, rateLimit)) throw new HttpError(429, "rate limit exceeded");
 
       const payload = validatePayload(await readJson(req, maxBytes));
-      const record: FeedbackRecord = {
+      const record: JsonFeedbackRecord = {
         id: randomUUID(),
         receivedAt: new Date().toISOString(),
         tester: { tester: tester.tester, name: tester.name },
@@ -230,7 +240,7 @@ function isRateLimited(rate: Map<string, { minute: number; count: number }>, tes
   return current.count > limit;
 }
 
-async function readJson(req: IncomingMessage, maxBytes: number): Promise<unknown> {
+async function readJson(req: IncomingMessage, maxBytes: number): Promise<JsonValue> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of req) {
@@ -240,15 +250,15 @@ async function readJson(req: IncomingMessage, maxBytes: number): Promise<unknown
     chunks.push(buf);
   }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonValue;
   } catch {
     throw new HttpError(400, "invalid JSON body");
   }
 }
 
-function validatePayload(input: unknown): FeedbackPayload {
+function validatePayload(input: JsonValue): FeedbackPayload {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "body must be an object");
-  const raw = input as Record<string, unknown>;
+  const raw = input as Record<string, JsonValue | undefined>;
   const type = enumField(raw.type, TYPES, "type");
   const origin = enumField(raw.origin, ORIGINS, "origin");
   const severity = raw.severity === undefined ? undefined : enumField(raw.severity, SEVERITIES, "severity");

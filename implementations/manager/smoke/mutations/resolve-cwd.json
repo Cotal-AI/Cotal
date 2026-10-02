@@ -1,0 +1,81 @@
+{
+  "suite": [
+    "implementations/manager/smoke/manager-service-ops.smoke.ts"
+  ],
+  "guard": "the manager canonicalizes placed spawn directories, refuses missing paths, and forwards the answered cwd to the real seat",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:manager-service-ops",
+  "progressPattern": "✓",
+  "minTicks": 3,
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/resolve-cwd.json",
+  "why": [
+    "Issue #1616 requires the serving manager to answer the canonical host path and launch the seat there.",
+    "The suite invokes the registered commands through a real authenticated broker and reads process.cwd() from the real child.",
+    "A manager row alone could repeat the requested path while the runtime starts elsewhere.",
+    "Issue #385 item 2: a spawn naming a host-local cwd the serving manager cannot resolve must be refused at admission, before anything is minted, with the path, the reason and the host named."
+  ],
+  "mutations": [
+    {
+      "name": "M1 return the alias spelling instead of the canonical path",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      cwd = realpathSync(resolved);",
+      "replace": "      cwd = resolved;",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "resolve-cwd answers one canonical directory for a symlink and its target",
+      "cell": "resolve-cwd answers one canonical directory for a symlink and its target"
+    },
+    {
+      "name": "M2 fall back to the workspace root for a missing directory",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      return { refusal: `path cannot be resolved: ${(error as Error).message}` };",
+      "replace": "      cwd = this.workspaceRoot;",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "resolve-cwd refuses a missing directory by name with failed-precondition",
+      "cell": "resolve-cwd refuses a missing directory by name with failed-precondition"
+    },
+    {
+      "name": "M3 drop the answered cwd before spawning the real seat",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        cwd: args.cwd ? String(args.cwd) : undefined,",
+      "replace": "        cwd: undefined,",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "a placed spawn's seat starts in the directory resolve-cwd answered",
+      "cell": "a placed spawn's seat starts in the directory resolve-cwd answered"
+    },
+    {
+      "name": "M4 let a spawn naming an unresolvable cwd through admission",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (\"refusal\" in checked)\n        return { ok: false, error: `spawn: cwd does not resolve on this host (${hostname()}): ${JSON.stringify(asked)} (${checked.refusal}); the seat was not launched` };\n      resolvedCwd = checked.cwd;",
+      "replace": "      resolvedCwd = \"refusal\" in checked ? this.workspaceRoot : checked.cwd;",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "a spawn naming a directory the serving host cannot resolve is refused at admission with the path, the reason and the host (#385)",
+      "cell": "a spawn naming a directory the serving host cannot resolve is refused at admission with the path, the reason and the host (#385)"
+    },
+    {
+      "name": "M3 the ps row reads provider from the launch request instead of the presence card",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const providerMeta = roster.get(a.name)?.card.meta?.provider;",
+      "replace": "      const providerMeta = a.launch.model;",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "ps carries the provider the seat's presence card reports",
+      "cell": "ps carries the provider the seat's presence card reports"
+    },
+    {
+      "name": "M4 an absent provider is fabricated as an empty string",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        ...(provider ? { provider } : {}),",
+      "replace": "        provider: provider ?? \"\",",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "...and a seat whose card reports no provider serializes provider ABSENT, never fabricated",
+      "cell": "...and a seat whose card reports no provider serializes provider ABSENT, never fabricated"
+    },
+    {
+      "name": "M5 the row contract drops the provider field's type",
+      "file": "implementations/manager/src/manager-service-contract.ts",
+      "find": "    provider: { type: \"string\" },",
+      "replace": "    provider: {},",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "the row contract admits the reported provider and refuses a non-string one",
+      "cell": "the row contract admits the reported provider and refuses a non-string one"
+    }
+  ]
+}

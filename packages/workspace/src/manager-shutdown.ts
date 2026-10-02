@@ -167,7 +167,12 @@ export function assertManagerCanSpare(
   try {
     value = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    throw new Error(`refusing bare manager stop: ${path} does not prove this manager can detach its agents; use --with-agents or stop the agents explicitly`);
+    throw new Error(
+      `refusing bare manager stop: ${path} does not contain a usable capability, so this CLI cannot ` +
+      "tell whether the manager predates spare-capability reporting or reported that it cannot detach agents. " +
+      "To stop it, stop its managed agents explicitly, then run `cotal down --with-agents` from this mesh root; " +
+      "that command stops the whole stack, and an older manager may not honor its agent-reap request",
+    );
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`refusing bare manager stop: malformed spare capability at ${path}`);
   const row = value as Record<string, unknown>;

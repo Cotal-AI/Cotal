@@ -207,6 +207,16 @@ importers:
         specifier: ^4.22.4
         version: 4.23.0
 
+  examples/07-issue-orchestrator:
+    dependencies:
+      '@cotal-ai/lang':
+        specifier: workspace:*
+        version: link:../../packages/lang
+    devDependencies:
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+
   extensions/cmux:
     devDependencies:
       '@cotal-ai/core':
@@ -230,6 +240,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
@@ -251,6 +264,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -297,6 +313,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
@@ -349,6 +368,9 @@ importers:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@opencode-ai/plugin':
         specifier: ^1.16.2
         version: 1.16.2
@@ -385,6 +407,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@earendil-works/pi-ai':
         specifier: 0.79.10
         version: 0.79.10(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
@@ -523,13 +548,13 @@ importers:
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
     devDependencies:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
-      '@nats-io/jetstream':
-        specifier: ^3.4.0
-        version: 3.4.0
       '@nats-io/kv':
         specifier: ^3.4.0
         version: 3.4.0
@@ -597,12 +622,18 @@ importers:
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../../extensions/connector-core
+      '@cotal-ai/connector-hermes':
+        specifier: workspace:*
+        version: link:../../extensions/connector-hermes
       '@cotal-ai/connector-opencode':
         specifier: workspace:*
         version: link:../../extensions/connector-opencode
       '@cotal-ai/delivery':
         specifier: workspace:*
         version: link:../delivery
+      '@cotal-ai/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
@@ -636,6 +667,10 @@ importers:
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
+    devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
 
   implementations/web:
     devDependencies:
@@ -703,6 +738,10 @@ importers:
       ses:
         specifier: ^2.3.0
         version: 2.3.0
+    devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../smoke-kit
 
   packages/seat:
     dependencies:
@@ -715,6 +754,10 @@ importers:
       '@xterm/headless':
         specifier: ^5.5.0
         version: 5.5.0
+    devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../smoke-kit
 
   packages/smoke-kit: {}
 

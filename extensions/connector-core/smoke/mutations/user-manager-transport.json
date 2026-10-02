@@ -1,0 +1,25 @@
+{
+  "suite": ["extensions/connector-core/smoke/user-manager-transport.smoke.ts"],
+  "guard": "A real MeshAgent user spawn reaches the real Manager, records its requested model and follows the accepted goal.",
+  "command": "pnpm exec tsx extensions/connector-core/smoke/user-manager-transport.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/user-manager-transport.json",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=48",
+  "mutations": [
+    {
+      "name": "omit the recorded model from the real spawn result",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "data: { ...(reply.data as Record<string, unknown> | undefined), model: recorded.model },",
+      "replace": "data: { ...(reply.data as Record<string, unknown> | undefined) },",
+      "expectRed": "first real spawn model pin matched requested 'sonnet'",
+      "cell": "first real spawn model pin matched requested 'sonnet'"
+    },
+    {
+      "name": "bypass accepted-goal following for the real user spawn",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        r = opts.follow\n",
+      "replace": "        r = false\n",
+      "expectRed": "first real spawn followed canonical goal to terminal",
+      "cell": "first real spawn followed canonical goal to terminal"
+    }
+  ]
+}

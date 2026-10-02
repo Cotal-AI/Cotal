@@ -18,7 +18,7 @@
   "mutations": [
     {
       "name": "retry ignores the durable completed set and re-verifies holder1",
-      "file": "implementations/manager/src/reconcile-gate.ts",
+      "file": "packages/core/src/endpoint-reconcile.ts",
       "find": "  const skipped = new Set(cursor.verified);",
       "replace": "  const skipped = new Set<string>();",
       "afterRestore": "pnpm --filter @cotal-ai/core build",

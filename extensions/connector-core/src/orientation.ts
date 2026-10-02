@@ -68,6 +68,8 @@ export interface Orientation {
   /** The tools available to you, grouped so the surface reads small: `core` is the everyday loop. */
   tools: { core: OrientationTool[]; more: OrientationTool[] };
   peers: { present: number; summary: string };
+  /** This endpoint's own presence-publish health. A stuck writer makes the peer snapshot last-known. */
+  presence: { live: boolean; detail?: string };
   status: PresenceStatus;
   attention: AttentionMode;
   unread: { total: number };
@@ -112,6 +114,16 @@ export function buildOrientation(
   const summary = peers.length
     ? shown.join(", ") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : "")
     : "no other peers present";
+  const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
+  // #1229: the roster's trust state, not just the writer's health, decides liveness. A stuck
+  // writer keeps precedence; otherwise an `unpopulated` or `stale` view carries the same shape.
+  const view = agent.presenceView();
+  const viewDetail =
+    view.state === "unpopulated"
+      ? "the presence watch has not completed its initial snapshot, so the peer list may be partial"
+      : view.state === "stale"
+        ? `the presence view has been silent since ${new Date(view.staleSince).toISOString()}, so the peer list is last-known`
+        : undefined;
 
   return {
     v: 1,
@@ -129,6 +141,14 @@ export function buildOrientation(
     capabilities: config.capabilities ?? [],
     tools: { core, more },
     peers: { present: peers.length, summary },
+    presence: writeFailure?.stuck
+      ? {
+          live: false,
+          detail: `bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms`,
+        }
+      : viewDetail
+        ? { live: false, detail: viewDetail }
+        : { live: true },
     status: agent.status,
     attention: agent.attention,
     unread: { total: agent.inboxCount() },
@@ -171,6 +191,7 @@ export function renderOrientation(o: Orientation): string {
     `Right now (snapshot @ ${new Date(o.generatedAt).toISOString()}):`,
     `  • status: ${honestStatus(o.status)} · attention: ${o.attention}`,
     `  • peers present: ${o.peers.present} — ${o.peers.summary}`,
+    `  • presence view: ${o.presence.live ? "live" : `NOT LIVE — ${o.presence.detail}`}`,
     `  • unread: ${o.unread.total}`,
     "",
     `Act → read: ${o.actions.read} · reply on a channel: ${o.actions.replyChannel} · ` +

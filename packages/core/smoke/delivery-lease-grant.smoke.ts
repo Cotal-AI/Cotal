@@ -96,6 +96,30 @@ for (const profile of ["observer", "admin"]) {
     !grants(rows, WRITE_PURGE), { profile, offenders: rows.filter((r) => subjectMatches(r, WRITE_PURGE)) });
 }
 
+// ---------- #1694: the manager's own read of the lease row, and the same confinement over it ----------
+// The supervisor credential is the manager's always-on connection, and the store-identity challenge
+// now settles one question from the lease row rather than from the rail: is the process that
+// answered the queue-grouped admin rail the holder that actually reloads the standing credentials.
+// That was previously taken from what a responder sent, and the rail is served by whichever
+// permitted responder the broker picks. Without this grant the challenge cannot establish the fact
+// itself and every renewal pass refuses; with it, the challenge is a measurement.
+{
+  const rows = pubRows("supervisor");
+  check("CELL: `supervisor` can read the delivery lease record (the challenge verifies the holder itself)",
+    grants(rows, READ_GET), { DLVKV });
+  check("CELL: `supervisor` can see the delivery bucket at all (STREAM.INFO)",
+    grants(rows, READ_INFO), { DLVKV });
+  // THE HALF THAT MATTERS MORE, and the reason this is a point-read pair rather than a convenience:
+  // a credential that could WRITE the row could manufacture the very fact the challenge reads,
+  // which would put the determination back in the hands of a participant.
+  check("CELL: `supervisor` CANNOT write the lease key (reading a claim must never become authority to make one)",
+    !grants(rows, WRITE_PUT), { offenders: rows.filter((r) => subjectMatches(r, WRITE_PUT)) });
+  check("CELL: `supervisor` CANNOT delete the delivery bucket",
+    !grants(rows, WRITE_DELETE), { offenders: rows.filter((r) => subjectMatches(r, WRITE_DELETE)) });
+  check("CELL: `supervisor` CANNOT purge the delivery bucket",
+    !grants(rows, WRITE_PURGE), { offenders: rows.filter((r) => subjectMatches(r, WRITE_PURGE)) });
+}
+
 // ---------- the blast radius: a read grant for operators is not a grant for every agent ----------
 // REFUSE CONTROL in the other direction. `provisioner` and `deprovisioner` are one-shot setup
 // windows, not diagnostics; if the row had been added to a shared array rather than the elevated

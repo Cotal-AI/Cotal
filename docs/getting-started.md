@@ -54,6 +54,8 @@ Requirements:
   schedules and per-message TTLs, and fails loud at connect against an older broker). The
   one that ships with the package is new enough; if you already have `nats-server` on your
   PATH, Cotal uses that instead, so make sure it is 2.12+.
+  For the presence bucket, `cotal up` recommends 2.14.5 or newer, and names the broker when
+  it is older.
 
 To uninstall: `rm -rf ~/.local/share/cotal ~/.local/bin/cotal` removes what the installer wrote,
 `rm -rf ~/.cotal` removes your meshes, agents and credentials, and the `# cotal` block it added
@@ -72,14 +74,18 @@ time, it walks you through:
    missing a required executable is named, and the rest are ready at spawn.
 3. **Seeds one agent.** The generic `default` persona that a bare `cotal spawn` launches;
    edit it to taste. It joins no channels at boot, but may join, create, read, and post to
-   channels on demand. `cotal setup --demo` additionally seeds a guided team to talk to:
+   channels on demand. It declares `capabilities: [spawn, run]`, so it can manage teammates
+   and start [durable workflows](workflows.md#from-an-agent-session) through `cotal_run` on a
+   static-auth mesh. `cotal setup --demo` additionally seeds a guided team to talk to:
    **david** (the engineer, how Cotal works), **sven** (the guide, what to build), and
    **me** (the session you drive). Every file setup writes is announced with a
    `→ wrote …` line.
 
    Re-running setup after an upgrade repairs the earlier untouched `default` template that had an
    empty post ACL. The repair requires a byte-for-byte match, so any persona you edited is left
-   unchanged.
+   unchanged. A default that already has wildcard post access and only `spawn` also stays
+   unchanged. To enable workflows for an existing persona, follow
+   the [capability update steps](workflows.md#if-cotal_run-is-missing).
 4. **Nothing to install for the dashboard.** `@cotal-ai/web` ships inside `cotal-ai` and is
    seeded automatically on first run (like the built-in connectors), so `cotal web` works out
    of the box and tracks your CLI version on upgrade.
@@ -87,19 +93,21 @@ time, it walks you through:
    `npm i -g cotal-ai` so you can just type `cotal`.
 
 When it finishes, nothing is running yet; it prints the commands to start things. The
-whole loop is three commands:
+whole loop is four commands:
 
 ```bash
 cotal up --detach          # start the mesh + delivery daemon + manager (JWT-authed by default)
 cotal spawn                # launch your agent here and talk to it (Ctrl-C to leave)
+cotal web                  # watch the mesh in the browser dashboard
 cotal down                 # stop everything
 ```
 
-Open the browser dashboard with `cotal web` (it ships with `cotal-ai`, seeded automatically). Add the
-guided expert team with `cotal setup --demo`, then `cotal spawn
-david` (or `sven`, or `me`). Watch the mesh in this terminal anytime with `cotal console`:
+The dashboard ships with `cotal-ai` and is seeded automatically, so `cotal web` works out of
+the box. Prefer a terminal? `cotal console` is the same live view as a TUI in this terminal.
+Add the guided expert team with `cotal setup --demo`, then `cotal spawn david` (or `sven`, or
+`me`):
 
-![The cotal console: a live roster of agents and their all-activity feed in a terminal TUI](../assets/quickstart.gif)
+![The cotal console: a live roster of agents and their all-activity feed in a terminal TUI, the terminal alternative to the browser dashboard](../assets/quickstart.gif)
 
 `cotal up` is JWT-authed by default (sender authenticity plus per-agent ACLs), starts the
 server-side [delivery daemon](delivery-daemon.md) as the durable backstop, and starts a
@@ -110,7 +118,8 @@ daemon) for quick local experiments.
 For a mesh where **people sign in** instead of handing out creds files, start it with
 `cotal up --user-auth --idp <auth base URL>`: each human runs `cotal login --idp <url>` once,
 the operator grants their agents with `cotal actor grant <actor> --sub <their id>` (a full
-grant by default: all channels, may spawn; narrow it with `--allow-subscribe` /
+grant by default: all channels, scope `spawn,role:default` so it may spawn and may delegate
+the default role; narrow it with `--allow-subscribe` /
 `--allow-publish` / `--scope`), and every connect is authorized live against that grant
 (revoke and it's gone). See [identity & auth](identity-and-auth.md).
 
@@ -119,7 +128,7 @@ failure context. Type `/exit` to return, and it retries.
 
 ## The primitives
 
-The vocabulary behind those three commands, which every other page builds on:
+The vocabulary behind those four commands, which every other page builds on:
 
 | Primitive | What it is |
 |---|---|
@@ -167,8 +176,8 @@ cotal up --detach                    # start the mesh + delivery daemon + manage
 cotal status                         # detailed setup, process, registry, and live mesh status
 cotal spawn                          # your agent (edit .cotal/agents/default.md)
 cotal spawn david                    # a guided expert, needs `cotal setup --demo` first (also sven, me)
-cotal console --space main           # live mesh view in the terminal (TUI)
 cotal web --space main               # open the browser dashboard
+cotal console --space main           # the same live view as a TUI in the terminal
 cotal down                           # stop the background mesh, delivery daemon, and manager
 ```
 

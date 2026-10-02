@@ -1,7 +1,7 @@
 /**
  * A PRESENCE WATCH WHOSE CONSUMER DIED UNDER A LIVE CONNECTION MUST REBIND, NOT STAY STALE.
  *
- * WHAT WAS MEASURED. netcup, 2026-09-09 21:17Z: the presence stream was deleted and recreated.
+ * WHAT WAS MEASURED. A live deployment, 2026-09-09 21:17Z: the presence stream was deleted and recreated.
  * Its sequence restarted at 1. Every observer already watching held a nats.js ORDERED push
  * consumer that re-created itself from its old cursor (`by_start_sequence`, opt_start_seq
  * 12685862 against a stream whose last sequence was 35337). The broker kept sending idle
@@ -49,9 +49,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { CotalEndpoint, isReachable, setupSpaceStreams } from "../src/index.js";
+import { createServer } from "node:net";
+import { CotalEndpoint, PresenceWriteStuckError, isReachable, setupSpaceStreams } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -75,7 +76,7 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `presrebind-${randomUUID().slice(0, 8)}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", join(dir, "js"), "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
-const releaseBroker = teardownOnSignal(broker, dir);
+const releaseBroker = teardownOnSignal(broker);
 
 const live = (ep: CotalEndpoint) => ep.getRoster().filter((p) => p.status !== "offline");
 const statusOf = (ep: CotalEndpoint) => Object.fromEntries(ep.getRoster().map((p) => [p.card.name, p.status]));
@@ -203,6 +204,90 @@ try {
 
   await sleepy.stop();
 
+  // --- STUCK WRITER: consecutive refused heartbeats cross one full TTL. ---
+  // Drive the shipped publishPresence catch while keeping the live connection and watch intact. The
+  // first failure starts the run. Time alone is insufficient, and one success must reset everything.
+  {
+    const ep = new CotalEndpoint({
+      space, servers: SERVERS,
+      channels: [], consume: false, registerPresence: true, watchPresence: false,
+      heartbeatMs: 30_000, ttlMs: TTL_MS,
+      card: { name: "stuck-writer", kind: "endpoint", role: "manager" },
+    });
+    const warnings: string[] = [];
+    ep.on("error", () => {});
+    ep.on("warning", (error: Error) => warnings.push(error.message));
+    await ep.start();
+    const internal = ep as unknown as {
+      kv: unknown;
+      publishPresence(): Promise<void>;
+      presenceWriteFailure(): { consecutiveFailures: number; stuck: boolean } | undefined;
+    };
+    const liveKv = internal.kv;
+    internal.kv = { put: () => Promise.reject(new Error("store refused presence write")) };
+    await internal.publishPresence().catch(() => {});
+    await internal.publishPresence().catch(() => {});
+    ok("4.4 two immediate refused writes do not escalate before one full TTL",
+      internal.presenceWriteFailure()?.stuck === false &&
+      internal.presenceWriteFailure()?.consecutiveFailures === 2,
+      internal.presenceWriteFailure());
+    await wait(TTL_MS + 100);
+    await internal.publishPresence().catch(() => {});
+    const escalation = warnings.find((message) => /presence writes .* failed 3 consecutive times/.test(message));
+    ok("4.5 consecutive presence write failures crossing one TTL raise the named non-transient condition once",
+      escalation !== undefined &&
+      internal.presenceWriteFailure()?.stuck === true &&
+      new PresenceWriteStuckError("bucket", 0, 2, TTL_MS).transient === false,
+      { warnings, failure: internal.presenceWriteFailure() });
+    await internal.publishPresence().catch(() => {});
+    ok("4.6 later refused heartbeats do not flood the named stuck condition",
+      warnings.filter((message) => /presence writes .* consecutive times/.test(message)).length === 1,
+      warnings);
+    internal.kv = liveKv;
+    await internal.publishPresence();
+    ok("4.7 the next successful presence write clears the stuck condition and resets the consecutive count",
+      internal.presenceWriteFailure() === undefined, internal.presenceWriteFailure());
+    internal.kv = { put: () => Promise.reject(new Error("new refused run")) };
+    await internal.publishPresence().catch(() => {});
+    ok("4.8 a refusal after recovery starts a fresh run at one and is not already stuck",
+      internal.presenceWriteFailure()?.consecutiveFailures === 1 &&
+      internal.presenceWriteFailure()?.stuck === false,
+      internal.presenceWriteFailure());
+    internal.kv = liveKv;
+    await ep.stop();
+  }
+
+  // --- BROKER FLOOR: a below-floor INFO is refused at bind, before any control-surface resource. ---
+  {
+    const floorPort = await pickFreePort();
+    const server = createServer((socket) => {
+      socket.write(
+        'INFO {"server_id":"floor-probe","version":"2.11.9","max_payload":1048576,"proto":1,"headers":true}\r\n',
+      );
+      socket.on("data", (data) => {
+        if (/PING/.test(String(data))) socket.write("PONG\r\n");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(floorPort, "127.0.0.1", resolve));
+    const floorEp = new CotalEndpoint({
+      space, servers: `nats://127.0.0.1:${floorPort}`,
+      channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+      card: { name: "floor-probe", kind: "endpoint", role: "manager" },
+    });
+    floorEp.on("error", () => {});
+    let floorRejected: Error | undefined;
+    try {
+      await floorEp.start();
+    } catch (e) {
+      floorRejected = e as Error;
+    }
+    ok("4.9 a below-floor INFO is refused at bind, before any control-surface resource, with the floor sentence",
+      floorRejected !== undefined && /below the required floor 2\.12/.test(floorRejected.message), floorRejected?.message);
+    ok("4.10 the refused bind closed its connection (the endpoint holds no nc)",
+      (floorEp as unknown as { nc?: unknown }).nc === undefined);
+    server.close();
+  }
+
   // --- THE INCIDENT: the presence stream is deleted and recreated under a live connection. ---
   const errorsBefore = errors.length;
   const warningsBefore = warnings.filter((w) => /rebound/.test(w)).length;
@@ -226,7 +311,7 @@ try {
   ok("5.6 exactly one more rebind was reported for the recreation",
     warnings.filter((w) => /rebound/.test(w)).length === warningsBefore + 1, warnings);
 
-  // --- THE RACE (rev-1421-gpt BLOCK on c67c0bb9): a bind still awaiting the broker when stop()
+  // --- THE RACE (reviewer BLOCK on c67c0bb9): a bind still awaiting the broker when stop()
   // or reconnect() lands must NOT install its watch afterwards. The probe holds the RETURN of the
   // real kv.watch(): the consumer and its iterator exist, the endpoint has not yet seen them.
   type Held = { release?: () => void; bound: number };
@@ -315,7 +400,7 @@ try {
     await ep.stop();
   }
 
-  // --- EMPTY BUCKET (rev-1421-grok BLOCK on c67c0bb9): a rebind onto zero keys delivers no entry,
+  // --- EMPTY BUCKET (second-reviewer BLOCK on c67c0bb9): a rebind onto zero keys delivers no entry,
   // so nothing refreshes lastPresenceWatchAt by delivery. The bind-time pending count is the one
   // fact that says "nobody is present": it must turn the view current, retire the frozen roster,
   // and NOT relapse to stale one window later (a rebind per TTL for as long as the mesh is empty).
@@ -376,7 +461,7 @@ try {
     await ep.stop();
   }
 
-  // --- REGISTERING OBSERVER ON AN EMPTY BUCKET (rev-1421-gpt BLOCK on 2d8be7e3): the incident
+  // --- REGISTERING OBSERVER ON AN EMPTY BUCKET (reviewer BLOCK on 2d8be7e3): the incident
   // shape under a manager-shaped observer. The stream is deleted and recreated BETWEEN its
   // heartbeats, so the rebind lands on zero keys. The observer's own key is one of the missing
   // ones. It must not read the wipe as "everyone left, me included, and I am sure": it re-publishes
@@ -430,8 +515,9 @@ try {
 
   await admin.drain();
 } finally {
+  await killAndAwaitExit(broker, "SIGKILL");
   releaseBroker();
-  broker.kill("SIGKILL");
+  if (broker.exitCode === null && broker.signalCode === null) throw new Error("broker exit unproven; storage preserved");
   rmSync(dir, { recursive: true, force: true });
 }
 

@@ -1,8 +1,14 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { hostname } from "node:os";
 import { basename, join } from "node:path";
 import {
   credentialLifetime,
+  CotalEndpoint,
   inspectCredHealth,
+  mintCreds,
+  mintLifecycleUid,
+  newIdentity,
+  probeConnect,
   type CredHealth,
   type CredentialKind,
   type FlagValues,
@@ -17,11 +23,15 @@ import {
   getSoleSpaceAuth,
   getSpaceAuth,
   hasUserAuthState,
+  legacyRenewalRecord,
   MEMBERSHIP_OBSERVER_CREDS_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
+  MeshTargetError,
   migrateLegacyCotalMaterial,
+  preflightTarget,
   readRenewalRecord,
   remintDaemonCreds,
+  resolveMeshTarget,
   spaceAccountPath,
   staleSystemCreds,
   type StaleSystemCred,
@@ -99,9 +109,79 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   // fix without a live manager is adopted by the daemon's own 75% renewal timer). Then re-diagnose:
   // the doctor reports what IS, never what it hopes the fix did.
   if (values.fix && problems.some((r) => isRemintable(r.kind))) {
-    console.log(c.dim("\n--fix: re-signing the remintable daemon creds…"));
-    const prior = readRenewalRecord(root);
-    const results = await remintDaemonCreds(root, auth.space); // validate the signer against THIS folder's space
+    // Decide reachability with the shipped probe (#1063 fix step 1). `resolveMeshTarget` throws for
+    // an unregistered/not-running mesh (`unknown-space`/`no-meshes`); a reachable-but-unhealthy target
+    // fails `preflightTarget`. Either is read as "no broker" — the offline repair below, unchanged
+    // from before this fix. `getSpaceAuth` above already means this root has a static signer, so a
+    // user-mode root never reaches here (`preflightTarget` throws by design for `mode: "user"`; the
+    // doctor's fix path only runs against a static signer, so that throw can never fire here).
+    let target: ReturnType<typeof resolveMeshTarget> | undefined;
+    try {
+      target = resolveMeshTarget(root, { space: auth.space });
+      const pf = await preflightTarget(target);
+      if (!pf.ok) target = undefined;
+    } catch (e) {
+      if (e instanceof MeshTargetError && (e.code === "unknown-space" || e.code === "no-meshes")) target = undefined;
+      else throw e;
+    }
+
+    const prior = readRenewalRecord(root, auth.space);
+    let results: Awaited<ReturnType<typeof remintDaemonCreds>>;
+    let authority: "lease" | "offline";
+
+    if (target) {
+      // Take the mesh's one renewal lease before re-signing (#1063 fix step 2): a one-shot endpoint,
+      // the `supervisor` profile (the only grant that may publish the `renewal` key), same
+      // one-mint-for-both-mint-and-endpoint shape as `status.ts`'s `componentEp`.
+      const holderId = `doctor:${hostname()}:${process.pid}`;
+      const uid = mintLifecycleUid();
+      const id = newIdentity();
+      const ep = new CotalEndpoint({
+        space: target.space,
+        servers: target.server,
+        tls: target.tlsRequired,
+        creds: await mintCreds(auth, id, "supervisor", { lifecycleUid: uid }),
+        lifecycleUid: uid,
+        channels: [],
+        consume: false,
+        registerPresence: false,
+        watchPresence: false,
+        watchChannels: false,
+        card: { id: id.id, name: "doctor-auth-fix", kind: "endpoint" },
+      });
+      ep.on("error", () => {});
+      await ep.start();
+      try {
+        const held = await ep.holdDaemonRenewalLease(holderId);
+        if (!held) {
+          const row = await ep.readDaemonRenewalLease();
+          const holder = row?.instanceId;
+          const holderIsManager = holder !== undefined && !holder.startsWith("doctor:");
+          const message = holderIsManager
+            ? `✗ daemon credential renewal for space "${auth.space}" is held by manager "${holder}" - stop that manager (\`cotal down\`) or let it renew; --fix changed nothing`
+            : `✗ daemon credential renewal for space "${auth.space}" is held by "${holder ?? "unknown"}" - wait for it to finish (the lease expires in about ten seconds if it died)`;
+          console.error(c.red(message));
+          process.exitCode = 1;
+          return;
+        }
+        console.log(c.dim("\n--fix: re-signing the remintable daemon creds under the mesh's renewal lease…"));
+        results = await remintDaemonCreds(root, auth.space, undefined, {
+          preflight: async (creds) => (await probeConnect(target!.server, { creds, tls: target!.tlsRequired })).ok === true,
+        });
+        authority = "lease";
+      } finally {
+        await ep.releaseDaemonRenewalLease();
+        await ep.stop().catch(() => {});
+      }
+    } else {
+      // Offline stays an explicit offline repair (#1063 fix step 4): continuity proof, no lease, and
+      // it never claims coordination. A stale lease row cannot block it - with no broker there is no
+      // row to read.
+      console.log(c.dim("\n--fix: broker not reachable - re-signing the remintable daemon creds OFFLINE (uncoordinated; the daemon adopts on its own renewal timer)…"));
+      results = await remintDaemonCreds(root, auth.space);
+      authority = "offline";
+    }
+
     // A local re-sign is NOT a broker proof: `--fix` has no live admin rail to adopt through, it
     // relies on the daemon's 75% renewal timer. So it must NEVER erase a KNOWN broker refusal to
     // green — if the last renewal was refused (e.g. the signer the broker rejects), the re-signed
@@ -112,21 +192,21 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     const adoption = prior?.adoption?.ok === false
       ? { ok: false, error: "re-signed locally by `doctor auth --fix`, but the previous renewal was refused by the broker and the re-signed generation is not yet broker-proven - start the mesh's manager (the renewal owner) so it proves and adopts it" }
       : undefined;
-    writeRenewalRecord(root, { ts: new Date().toISOString(), owner: "doctor --fix", results, adoption });
+    writeRenewalRecord(root, auth.space, { ts: new Date().toISOString(), owner: "doctor --fix", results, adoption, authority });
     for (const r of results.filter((x) => !x.ok && !x.skipped)) console.error(c.red(`  ✗ ${r.file}: ${r.error}`));
     reports = inventory(root, auth.space, auth.sys.pub);
     problems = reports.filter((r) => r.problem);
   }
 
   render("Daemon creds (manager-reminted - class 2)", reports.filter((r) => isRemintable(r.kind)));
-  renderRenewalRecord(root);
+  renderRenewalRecord(root, auth.space);
   render("$SYS creds (rotation-renewed - never remintable from disk)", reports.filter((r) => r.kind === "membership-observer" || r.kind === "connection-evictor"));
   render("Agent creds (static, pre-flip)", reports.filter((r) => r.kind === "agent"));
 
   // A broker-REFUSED renewal is a first-class problem for the final verdict + exit status, not just a
   // warning line. Cred-file health alone is not enough: a structurally-valid JWT the broker rejected
   // must never let `auth: healthy` / exit 0 stand (the whole point of the renewal-honesty slice).
-  const rec = readRenewalRecord(root);
+  const rec = readRenewalRecord(root, auth.space);
   const adoptionRefused = rec?.adoption?.ok === false;
   // Superseded leftovers are reported but never block `healthy` (#1576). An operator whose fleet is
   // fine must be told so in one word; the leftovers are a tidy-up, and burying that in an `auth: 15
@@ -410,11 +490,15 @@ function render(title: string, reports: CredReport[]): void {
 /** Render the renewal owner's audit record (written by the manager's pass / doctor --fix): when the
  *  last pass ran, who ran it, and whether the daemon EXPLICITLY adopted — the "file re-signed" vs
  *  "daemon adopted" distinction the D5 panel required. Absence is informational (a mesh started
- *  before the renewal owner existed, or an open mesh). */
-function renderRenewalRecord(root: string): void {
-  const rec = readRenewalRecord(root);
+ *  before the renewal owner existed, or an open mesh). The record is PER-SPACE (`renewal.<spaceKey>.json`);
+ *  a root-only `renewal.json` left by a pre-per-space build names no space, so it is never read as
+ *  this space's verdict — it is named as a leftover, with the exact next command. */
+function renderRenewalRecord(root: string, space: string): void {
+  const rec = readRenewalRecord(root, space);
   if (!rec) {
     console.log(c.dim("    no renewal record yet (written by the manager's renewal pass)"));
+    const legacy = legacyRenewalRecord(root);
+    if (legacy) console.log(c.yellow(`    ⚠ ${legacy.path} is a pre-per-space renewal record that names no space - not read as this space's verdict; remove it with \`cotal clean all --force\` when resetting this root`));
     return;
   }
   const resigned = rec.results.filter((r) => r.ok).map((r) => r.file);
@@ -438,7 +522,7 @@ function renderRenewalRecord(root: string): void {
     : rec.adoption.ok
       ? c.green(`broker-accepted ✓${perComponent}`)
       : c.yellow(`renewal not accepted - ${rec.adoption.error ?? "unknown"}${perComponent}`);
-  console.log(`    ${c.dim(`last renewal pass ${rec.ts} by ${rec.owner}`)} - re-signed [${resigned.join(", ") || "none"}] · ${adoption}`);
+  console.log(`    ${c.dim(`last renewal pass ${rec.ts} by ${rec.owner}`)} - re-signed [${resigned.join(", ") || "none"}] · ${adoption}${rec.authority === "offline" ? c.dim(" · offline") : ""}`);
   for (const f of failed) console.log(`    ${c.red("✗")} last pass failed on ${f.file}: ${f.error}`);
   // #1576: NAME THE DELIVERY RESPONDER, OFFLINE. `doctor auth` resolves no mesh and opens no
   // connection by design (and on a user-auth mesh it is forbidden to mint at all), so it cannot read

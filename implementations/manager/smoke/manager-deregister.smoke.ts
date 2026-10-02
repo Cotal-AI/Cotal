@@ -55,17 +55,21 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm, type KV } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
-import {
+import type { EpCaller } from "@cotal-ai/core";
+import type { InstanceDeregisterRefused as InstanceDeregisterRefusedType, InstanceProbe } from "../src/deregister-instance.js";
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+process.env.COTAL_HOME = join(dir, "home");
+const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, recordsBucket, epAuthBucket,
   freezeExpectedSet, resolveService, scatterCommand, epProbeInstanceInterest,
   instancePinnedInstrumentCapabilities, spacePrefix, endpointToken,
-  type EpCaller,
-} from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
-import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe, type InstanceProbe } from "../src/deregister-instance.js";
+} = await import("@cotal-ai/core");
+const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
+const { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } = await import("../src/deregister-instance.js");
 
 const EXPECTED_CELLS = 30;
 
@@ -86,7 +90,6 @@ const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const SPACE = `mgrdereg-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(SPACE);
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const mkRoot = (tag: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });
@@ -95,7 +98,7 @@ const mkRoot = (tag: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection } };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let live: InstanceType<typeof Manager> | undefined;
@@ -159,6 +162,7 @@ try {
   const OPEN_SERVERS = `nats://127.0.0.1:${OPEN_PORT}`;
   const openSd = join(dir, "open-js");
   const openSrv = spawn("nats-server", ["-js", "-sd", openSd, "-p", String(OPEN_PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+  teardownOnSignal(openSrv, openSd);
   kids.push(openSrv);
   let openUp = false;
   for (let i = 0; i < 60 && !openUp; i++) { openUp = await isReachable(OPEN_SERVERS); if (!openUp) await wait(200); }
@@ -196,6 +200,10 @@ try {
   const IID_CORPSE = (corpse as unknown as MgrPriv).managerInstanceId;
   // The crash shape: its connections drop and it writes NOTHING. A `stop()` here would deregister,
   // which is the opposite of the state being built.
+  // The manager treats any serve-connection close that is not its own stop() as a fault and
+  // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
+  // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
+  (corpse as unknown as MgrPriv).leaseStopping = true;
   await ((corpse as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   check("the corpse's registration SURVIVES its host (nothing expires a record)", (await frozenIds()).includes(IID_CORPSE), IID_CORPSE);
@@ -248,7 +256,7 @@ try {
     finally { await enc.drain().catch(() => enc.close()); }
   };
 
-  let refusedLive: InstanceDeregisterRefused | undefined;
+  let refusedLive: InstanceDeregisterRefusedType | undefined;
   try {
     await withExecutor(IID_LIVE, (kv, authKv) => deregisterEndpointInstance({
       kv, authKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_LIVE,
@@ -256,7 +264,7 @@ try {
       log: () => {},
     }));
   } catch (e) {
-    refusedLive = e as InstanceDeregisterRefused;
+    refusedLive = e as InstanceDeregisterRefusedType;
   }
   check("deregistering a LIVE manager is REFUSED because it answered", refusedLive?.condition === "instance-answered", refusedLive?.message);
   check("the refusal tells the operator to stop the process first, not to retry", /stop the process first/.test(refusedLive?.message ?? ""), refusedLive?.message?.slice(0, 120));
@@ -282,7 +290,7 @@ try {
     afterMs < 1_000 && after.complete === true && after.missing.length === 0, { beforeMs, afterMs, missing: after.missing });
 
   console.log("8. running it twice is not a second removal");
-  let refusedAgain: InstanceDeregisterRefused | undefined;
+  let refusedAgain: InstanceDeregisterRefusedType | undefined;
   try {
     await withExecutor(IID_CORPSE, (kv, authKv) => deregisterEndpointInstance({
       kv, authKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
@@ -290,7 +298,7 @@ try {
       log: () => {},
     }));
   } catch (e) {
-    refusedAgain = e as InstanceDeregisterRefused;
+    refusedAgain = e as InstanceDeregisterRefusedType;
   }
   check("a repeat is refused as NOT-REGISTERED, a distinct condition from a live instance", refusedAgain?.condition === "not-registered", refusedAgain?.message);
   check("and it says how to check the id, since a typo lands here too", /whole id/.test(refusedAgain?.message ?? ""), refusedAgain?.message?.slice(0, 140));
@@ -301,7 +309,7 @@ try {
     kv, authKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
     probeInstance: async () => ({ state: "unestablishable", detail: "the oracle was unreachable" }),
     log: () => {},
-  })).then(() => undefined).catch((e: unknown) => e as InstanceDeregisterRefused);
+  })).then(() => undefined).catch((e: unknown) => e as InstanceDeregisterRefusedType);
   check("an UNESTABLISHABLE probe refuses, and not with the same condition as silence",
     broken?.condition === "liveness-unestablishable", broken?.message?.slice(0, 120));
 
@@ -346,6 +354,7 @@ try {
   let hung: InstanceType<typeof Manager> | undefined = new Manager({ space: openSpace, servers: OPEN_SERVERS, runtime: "pty", workspaceRoot: hungRoot });
   await hung.start();
   const IID_HUNG = (hung as unknown as MgrPriv).managerInstanceId;
+  (hung as unknown as MgrPriv).leaseStopping = true;
   await ((hung as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   const hungCaller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
@@ -363,11 +372,11 @@ try {
   const holding = hungNc.subscribe(`${spacePrefix(openSpace)}.ep.inst.${endpointToken(MANAGER_ENDPOINT)}.${IID_HUNG}.>`, { callback: () => {} });
   await wait(200);
   check("a registration whose rail STILL HAS A SUBSCRIBER probes UNKNOWN, never gone", (await hungProbe()()).state === "unknown");
-  let refusedHung: InstanceDeregisterRefused | undefined;
+  let refusedHung: InstanceDeregisterRefusedType | undefined;
   try {
     await deregisterEndpointInstance({ kv: hungKv, authKv: hungAuthKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_HUNG, probeInstance: hungProbe(), log: () => {} });
   } catch (e) {
-    refusedHung = e as InstanceDeregisterRefused;
+    refusedHung = e as InstanceDeregisterRefusedType;
   }
   check("the verb REFUSES it: silence is not the evidence a record is removed on",
     refusedHung?.condition === "instance-not-affirmed-gone", refusedHung?.message);
@@ -400,7 +409,7 @@ try {
     kv, authKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_LIVE,
     probeInstance: async () => ({ state: "silent", detail: "a verdict this command does not know" }) as unknown as InstanceProbe,
     log: () => {},
-  })).then(() => undefined).catch((e: unknown) => e as InstanceDeregisterRefused);
+  })).then(() => undefined).catch((e: unknown) => e as InstanceDeregisterRefusedType);
   check("an unrecognised probe verdict REFUSES: only a broker-affirmed gone is acted on",
     foreign?.condition === "liveness-unestablishable" && /not a verdict this command acts on/.test(foreign?.message ?? ""), foreign?.message?.slice(0, 160));
   check("...and the live manager it was asked about is still registered", (await frozenIds()).includes(IID_LIVE), IID_LIVE);

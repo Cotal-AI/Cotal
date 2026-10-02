@@ -84,6 +84,13 @@ export interface Command extends Extension {
   /** Providers this invocation needs before {@link run}. The published CLI resolves missing refs
    *  from operator-installed packages; library composition roots still require explicit imports. */
   requiredExtensions?(args: ParsedArgs): readonly ExtensionRef[];
+  /** Optional shared preparation performed after parsing and before `run`. Help and completion do
+   *  not call it. Composition roots use this for cross-command prerequisites such as refreshing a
+   *  machine-local target catalog once, rather than repeating that policy in every command. */
+  prepare?(args: ParsedArgs): Promise<void>;
+  /** Explicitly opt out of composition-root target preparation when `--space` and `--server` are
+   *  daemon/configuration inputs rather than the shared mesh-target grammar. */
+  readonly prepareMeshTarget?: false;
   run(args: ParsedArgs): Promise<void>;
   /** Optional shell-completion provider, owned by the command exactly as `run` is. Given the
    *  args typed so far (everything after the command name; the last element is the word being

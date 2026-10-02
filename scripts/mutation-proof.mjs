@@ -11,7 +11,13 @@
  *   - the target string appears more than once   → you mutated something else as well
  *   - the suite dies EARLY for an unrelated reason → red, but not the red you claimed
  *   - the run never reached the new check at all → green that never executed the test
- *   - the restore silently fails                 → the next person inherits a broken tree
+ *   - the restore silently fails                 → the next person inherits a broken tree, or worse
+ *                                                  a throw during restore escapes with no verdict
+ *                                                  printed at all (#1337: fixed by writing the
+ *                                                  restore from the pre-mutation bytes already held
+ *                                                  in memory, which cannot go missing mid-run the
+ *                                                  way the on-disk backup copy can, and by never
+ *                                                  letting a restore failure raise instead of return)
  *   - the mutation applied and the run NEVER SAW IT → the file changed; the thing under test read a
  *                                                  DIFFERENT copy of it. `@cotal-ai/core` resolves
  *                                                  to `dist/`, so a suite under `implementations/*`
@@ -34,6 +40,13 @@
  *   node scripts/mutation-proof.mjs --config mutations.json
  *   node scripts/mutation-proof.mjs --file <path> --find <str> --replace <str> \
  *        --command "pnpm smoke:x" --expect-red "<substring of the failing assertion>"
+ *   node scripts/mutation-proof.mjs --recover     put back what a killed proof left, and exit
+ *
+ * A killed proof cannot restore anything, so each mutation first writes a breadcrumb outside the
+ * tree: the file, its pre-mutation hash and where the backup is. Every run reads those before it
+ * looks at the tree and puts a recorded mutation back, bytes and timestamp; `--recover` does only
+ * that. A mutation it cannot put back is refused by name rather than measured. This is the one
+ * path that survives SIGKILL, which is what the reproof harness sends a proof past its budget.
  *
  * Every mutation must name the assertion it expects to redden (`expectRed`). "It went red" and "it
  * went red for my reason" are the same exit code until you say which.
@@ -46,7 +59,7 @@
  * Measured here: a subset config keyed on `expectRed` outlived a cell rename and re-ran the
  * pre-fix mutation for a minute before the mismatch was noticed.
  */
-import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync, unlinkSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -64,6 +77,167 @@ const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2
  *  `… 6 earlier line(s) omitted` and the cause was among the six. */
 const EXCERPT_HEAD = 10;
 const EXCERPT_TAIL = 10;
+
+/** Every mutation currently written to disk: the restore that undoes it, by file. */
+const liveRestores = new Map();
+
+const BREADCRUMB_PREFIX = "mutation-proof-bc-";
+
+function getTreeKey(cwd) {
+  try {
+    const top = execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (top) return realpathSync(top);
+  } catch {}
+  return realpathSync(resolve(cwd));
+}
+
+function breadcrumbPathFor(targetPath, cwd) {
+  const treeKey = getTreeKey(cwd);
+  const resolvedTarget = existsSync(targetPath) ? realpathSync(targetPath) : resolve(targetPath);
+  const hash = createHash("sha1").update(`${treeKey}:${resolvedTarget}`).digest("hex").slice(0, 16);
+  return join(tmpdir(), `${BREADCRUMB_PREFIX}${hash}.json`);
+}
+
+function writeBreadcrumb(targetPath, backupPath, shaBefore, cwd, atime, mtime) {
+  const bcPath = breadcrumbPathFor(targetPath, cwd);
+  const resolvedTarget = existsSync(targetPath) ? realpathSync(targetPath) : resolve(targetPath);
+  const data = {
+    targetPath: resolvedTarget,
+    backupPath,
+    shaBefore,
+    cwd,
+    treeKey: getTreeKey(cwd),
+    atimeMs: atime ? atime.getTime() : undefined,
+    mtimeMs: mtime ? mtime.getTime() : undefined,
+    pid: process.pid,
+    time: new Date().toISOString(),
+  };
+  writeFileSync(bcPath, JSON.stringify(data));
+  return bcPath;
+}
+
+function clearBreadcrumb(targetPath, cwd) {
+  const bcPath = breadcrumbPathFor(targetPath, cwd);
+  rmSync(bcPath, { force: true });
+}
+
+function checkAndRecoverBreadcrumbs(cwd) {
+  const treeKey = getTreeKey(cwd);
+  let breadcrumbFiles = [];
+  try {
+    breadcrumbFiles = readdirSync(tmpdir()).filter((f) => f.startsWith(BREADCRUMB_PREFIX) && f.endsWith(".json"));
+  } catch {
+    return;
+  }
+
+  for (const bf of breadcrumbFiles) {
+    const fullBcPath = join(tmpdir(), bf);
+    let record;
+    try {
+      record = JSON.parse(readFileSync(fullBcPath, "utf8"));
+    } catch {
+      continue;
+    }
+    if (record?.treeKey !== treeKey) continue;
+
+    const { targetPath, backupPath, shaBefore, atimeMs, mtimeMs } = record;
+    say(`${C.yellow}! found leftover mutation breadcrumb for ${targetPath} from an interrupted proof (pid ${record.pid ?? "unknown"})${C.off}`);
+
+    let restored = false;
+    if (existsSync(targetPath) && existsSync(backupPath)) {
+      try {
+        copyFileSync(backupPath, targetPath);
+        if (sha(targetPath) === shaBefore) {
+          if (atimeMs !== undefined && mtimeMs !== undefined) {
+            utimesSync(targetPath, new Date(atimeMs), new Date(mtimeMs));
+          }
+          rmSync(backupPath, { force: true });
+          rmSync(fullBcPath, { force: true });
+          say(`${C.green}  restored original contents of ${targetPath} from breadcrumb backup${C.off}`);
+          restored = true;
+        }
+      } catch (err) {
+        say(`${C.red}  failed to restore ${targetPath} from breadcrumb: ${err.message}${C.off}`);
+      }
+    }
+
+    if (!restored && existsSync(targetPath)) {
+      const currentSha = sha(targetPath);
+      if (currentSha !== shaBefore) {
+        say(`${C.red}REFUSING: ${targetPath} has a live unrecovered mutation from an interrupted proof.${C.off}`);
+        say(`Current sha: ${currentSha}, expected baseline: ${shaBefore}`);
+        say("The target does not match its recorded baseline hash. Recover with `git checkout -- " + targetPath + "` before running again.");
+        process.exit(3);
+      } else {
+        rmSync(fullBcPath, { force: true });
+      }
+    }
+  }
+}
+
+function releaseEverything() {
+  for (const [undo] of [...liveRestores]) {
+    try {
+      undo();
+    } catch {
+      // Nothing useful to do from an exit handler; best-effort restore
+    }
+  }
+}
+
+// `exit` covers a normal return and an uncaught throw; the signals cover the kill
+// that skips it. Re-raised with the default disposition afterwards, so the exit
+// status still reports the signal rather than becoming a tidy 0 — a wrapper
+// reading `$?` must not be told the run merely finished.
+process.on("exit", releaseEverything);
+process.on("uncaughtException", (err) => {
+  releaseEverything();
+  throw err;
+});
+process.on("unhandledRejection", (err) => {
+  releaseEverything();
+  throw err;
+});
+/** Set once a signal handler has re-raised. The loop below must not run past it: `process.kill`
+ *  QUEUES the signal, it does not deliver it, so the module body keeps going and can reach its own
+ *  `process.exit(...)` first — the parent then reads a tidy status for a run that was killed. */
+let terminating = false;
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    say(`${C.yellow}! ${signal} — restoring ${liveRestores.size} mutated file(s) before exit${C.off}`);
+    releaseEverything();
+    terminating = true;
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+  });
+}
+/** Hand a signal that arrived during synchronous work its turn, then stand aside.
+ *
+ *  `process.kill` in the handler above QUEUES the signal; the handler itself only runs when the
+ *  event loop reaches its poll phase. Every point that wants to know "were we killed?" is reached
+ *  from synchronous code, so reading `terminating` there reads it BEFORE any dispatch could have
+ *  happened, and the answer is false no matter what was sent.
+ *
+ *  The previous guard was `if (!terminating) setTimeout(resolve, 0)`, which papered over this by
+ *  accident: on an idle machine the loop reaches its timers phase in microseconds, the 1ms timer is
+ *  not ripe yet, poll runs first and the signal wins. Lose 3ms to the scheduler between scheduling
+ *  that timer and checking it, which a loaded CI runner does constantly, and the timer is already
+ *  overdue, fires first, and the module runs on to its own `process.exit` while the kill is still
+ *  queued. The parent then reads a tidy status for a run that was killed (#1701).
+ *
+ *  Measured with an isolated harness on Linux x64 and macOS arm64, Node 22, 40 runs per cell:
+ *  with 0ms of injected jitter the old guard died by signal 40/40; with 3ms it died by signal 0/40
+ *  and exited 1 instead; with 10ms, 0/40. This shape held 40/40 in all three.
+ *
+ *  `setImmediate` resolves in the check phase, which is strictly after poll, so a pending handler
+ *  has always been dispatched by the time this returns. The wait afterwards is bounded rather than
+ *  indefinite: if some platform swallows the re-raise, falling through still reports a non-zero
+ *  status instead of hanging the run forever. */
+async function settleSignals() {
+  await new Promise((resolve) => setImmediate(resolve));
+  if (terminating) await new Promise((resolve) => setTimeout(resolve, 5_000));
+}
+
 /** Failing lines to rescue from the MIDDLE of a transcript, on top of head and tail.
  *
  *  MEASURED, not anticipated: a WRONG-RED on `creds-supply-expiry` echoed
@@ -146,6 +320,31 @@ function parseArgs(argv) {
 const countOccurrences = (hay, needle) => hay.split(needle).length - 1;
 
 /** The tree must be recoverable WITHOUT this tool before a destructive experiment starts. */
+function assertNoLiveProof(cwd) {
+  const lockPath = join(cwd, ".cotal", "mutation-proof.lock");
+  if (!existsSync(lockPath)) return;
+  try {
+    const raw = readFileSync(lockPath, "utf8");
+    const owner = JSON.parse(raw);
+    if (owner && typeof owner.pid === "number" && owner.pid > 0) {
+      let alive = false;
+      try {
+        process.kill(owner.pid, 0);
+        alive = true;
+      } catch (e) {
+        if (e.code === "EPERM") alive = true;
+        else if (e.code === "ESRCH") alive = false;
+      }
+      if (alive) {
+        say(`${C.red}REFUSING: a mutation proof is already live against the tree (PID ${owner.pid}).${C.off}`);
+        process.exit(3);
+      }
+    }
+  } catch {
+    // unparseable or error reading lock file -> treat as stale / ignore
+  }
+}
+
 function assertCleanTree(cwd, allowDirty) {
   const out = execSync("git status --porcelain", { cwd, encoding: "utf8" }).trim();
   if (!out) return;
@@ -189,17 +388,29 @@ function run(command, cwd, timeoutMs) {
   return { status: r.status, signal: r.signal, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
 }
 
+// A line-initial pass mark: optional leading whitespace, optional ANSI colour escapes, then the
+// glyph. Not a bare glyph match — a suite can carry a `✓` inside an assertion LABEL (printed on
+// pass and often on fail alike), and counting that glyph inflates both the baseline and the
+// mutated run by however many such labels the transcript prints, padding a `minTicks` floor with
+// marks that were never a pass line. The ANSI allowance is load-bearing:
+// `packages/core/smoke/spawn-name-actor-token.smoke.ts` prints `  \x1b[32m✓\x1b[0m ${what}`, and its
+// fixture has no `progressPattern`, so a default without the escape allowance would count that
+// suite at zero marks and silently drop its reached-the-check floor.
+const DEFAULT_PROGRESS_PATTERN = "^[ \t]*(?:\x1b\\[[0-9;]*m)*✓";
+
 /**
  * How far into the suite did the run get? Counting a suite's own progress markers separates
  * "failed at my assertion" from "died before reaching it" and from "ran an older copy of the file".
- * Convention-bound by nature, so it is advisory unless the caller supplies `progressPattern`.
+ * Convention-bound by nature, so it is advisory unless the caller supplies `progressPattern`. The
+ * default counts line-initial pass marks, not every occurrence of the glyph, because a suite's own
+ * assertion label can carry one too.
  */
 const progressCount = (output, pattern) => {
   // `m`, not just `g`: a caller-supplied pattern that anchors with `^` (the natural way to say "a
   // progress line", since a suite's marks are line-initial) matches ONCE without it — against the
   // start of the whole transcript. The floor then compares 1 to 1 forever and silently never fires,
   // while the baseline banner prints "1 progress marks" as though it had measured something.
-  const re = new RegExp(pattern ?? "✓", "gm");
+  const re = new RegExp(pattern ?? DEFAULT_PROGRESS_PATTERN, "gm");
   return (output.match(re) ?? []).length;
 };
 
@@ -246,7 +457,11 @@ function proveOne(m, opts) {
   if (unknown.length) return { label, verdict: "ERROR", why: `unknown mutation key(s): ${unknown.join(", ")}` };
   if (!existsSync(path)) return { label, verdict: "ERROR", why: `target file not found: ${m.file}` };
 
-  const before = readFileSync(path, "utf8");
+  // Read as bytes as well as text: `before` (decoded utf8) drives the find/replace, `beforeBytes`
+  // is what restore() writes back, so a file that does not round-trip through utf8 still comes
+  // back byte-identical rather than through a lossy re-encode.
+  const beforeBytes = readFileSync(path);
+  const before = beforeBytes.toString("utf8");
   const hits = countOccurrences(before, m.find);
   // Assert the target is present AND unambiguous BEFORE grading anything. Zero means the mutation
   // would be a no-op and the verdict would be an accusation about nothing; more than one means the
@@ -273,28 +488,52 @@ function proveOne(m, opts) {
   // produced from the mutant, which is gitignored and therefore outside the recovery this tool
   // insists on before it starts. `afterRestore` runs AFTER the source is back, so whatever it
   // regenerates is regenerated from the original.
+  //
+  // Set by restore() when it fails, so the two call sites below can quote a reason instead of a
+  // bare "restore failed". Declared outside restore() so a throw inside it (caught below) can still
+  // leave a message behind for the verdict that reports it.
+  let restoreError;
+  // Never throws: it writes the ORIGINAL BYTES HELD IN MEMORY (`beforeBytes`), not a copy of the
+  // on-disk backup, so a lost backup file (deleted by the suite under test, reaped by whatever else
+  // cleans tmpfs, or just unreadable) can no longer stop the tree going back. Everything that can
+  // still fail (a write to an unwritable path, a sha mismatch) is caught here and reported as
+  // `false`, never as an exception — a throw escaping this function is exactly #1337: it reaches
+  // `proveOne`'s catch, whose own `restore()` call would throw the same way and escape THAT too,
+  // killing the process with no verdict printed and the mutant left in the tree.
   const restore = () => {
-    copyFileSync(backup, path);
-    const ok = sha(path) === shaBefore;
-    // Restore the TIMESTAMP as well as the bytes. `copyFileSync` is a write, so the file's mtime
-    // becomes now even though the line above proves the content is what it was. Anything that
-    // compares source mtimes against a build then reports a stale artefact for a file nobody
-    // edited: `smoke:dist-freshness` does exactly that, and after a graded run it named
-    // `packages/core` stale and refused the 261-suite chain at its first entry.
-    //
-    // Only when the content is verified identical. If `ok` is false the file is NOT what it was,
-    // and back-dating it would hide a failed restore from the tools that compare timestamps —
-    // the one case where a bumped mtime is telling the truth.
-    if (ok) utimesSync(path, atimeBefore, mtimeBefore);
-    rmSync(backup, { force: true });
-    if (ok && m.afterRestore) {
-      const rr = run(m.afterRestore, cwd, opts.timeoutMs);
-      if (rr.status !== 0) {
-        say(`${C.red}  afterRestore FAILED (exit ${rr.status}): derived artefacts may still be built from the mutant${C.off}`);
-        return false;
+    try {
+      writeFileSync(path, beforeBytes);
+      const ok = sha(path) === shaBefore;
+      // Restore the TIMESTAMP as well as the bytes. `writeFileSync` is a write, so the file's mtime
+      // becomes now even though the line above proves the content is what it was. Anything that
+      // compares source mtimes against a build then reports a stale artefact for a file nobody
+      // edited: `smoke:dist-freshness` does exactly that, and after a graded run it named
+      // `packages/core` stale and refused the 261-suite chain at its first entry.
+      //
+      // Only when the content is verified identical. If `ok` is false the file is NOT what it was,
+      // and back-dating it would hide a failed restore from the tools that compare timestamps —
+      // the one case where a bumped mtime is telling the truth.
+      if (ok) utimesSync(path, atimeBefore, mtimeBefore);
+      liveRestores.delete(restore);
+      clearBreadcrumb(path, cwd);
+      // Best-effort only: the on-disk backup and the breadcrumb stay as they are for `--recover` (a
+      // LATER process, which cannot read this one's memory) and the SIGKILL recovery cells, but this
+      // restore no longer depends on the backup surviving, so its own absence here is not a failure.
+      rmSync(backup, { force: true });
+      if (ok && m.afterRestore) {
+        const rr = run(m.afterRestore, cwd, opts.timeoutMs);
+        if (rr.status !== 0) {
+          say(`${C.red}  afterRestore FAILED (exit ${rr.status}): derived artefacts may still be built from the mutant${C.off}`);
+          restoreError = new Error(`afterRestore exited ${rr.status}`);
+          return false;
+        }
       }
+      if (!ok) restoreError = new Error(`restored bytes do not match the pre-mutation sha (${m.file})`);
+      return ok;
+    } catch (err) {
+      restoreError = err;
+      return false;
     }
-    return ok;
   };
 
   // Declared OUTSIDE the try so the catch can read it. `const` inside the block made the catch's
@@ -304,6 +543,8 @@ function proveOne(m, opts) {
   // before the run, and the excerpt for a throw after it.
   let transcript;
   try {
+    liveRestores.set(restore, m.file);
+    writeBreadcrumb(path, backup, shaBefore, cwd, atimeBefore, mtimeBefore);
     writeFileSync(path, before.split(m.find).join(m.replace));
     // Assert the mutation APPLIED. A no-op mutation makes a green uninterpretable and leaves a red
     // sound only by accident.
@@ -323,7 +564,10 @@ function proveOne(m, opts) {
     const ticks = progressCount(r.output, opts.progressPattern);
 
     const restored = restore();
-    if (!restored) return { label, transcript, verdict: "ERROR", why: `RESTORE FAILED for ${m.file} — backup at ${backup}`, ticks };
+    if (!restored) {
+      return { label, transcript, verdict: "ERROR",
+        why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"}`, ticks };
+    }
 
     if (r.timedOut) return { label, transcript, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
 
@@ -473,7 +717,17 @@ function proveOne(m, opts) {
     }
     return { label, transcript, verdict: "KILLED", why: `red, and named: ${m.expectRed}`, ticks };
   } catch (e) {
-    restore();
+    // #1337: restore() used to throw here too (it copied the on-disk backup, which can be exactly
+    // as gone as it was on the call above), and the second throw had nothing left to catch it —
+    // it escaped `proveOne` outright, killing the process with a stack trace instead of a verdict.
+    // restore() no longer throws (see above), so its result is graded instead: if it also failed,
+    // that failure — not the harness error that triggered this catch — is the more urgent fact,
+    // since it means the tree is still mutated on exit.
+    const restored = restore();
+    if (!restored) {
+      return { label, transcript, verdict: "ERROR",
+        why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"} (harness had already thrown: ${e.message})` };
+    }
     return { label, transcript, verdict: "ERROR", why: `harness threw: ${e.message}` };
   }
 }
@@ -481,6 +735,11 @@ function proveOne(m, opts) {
 // ---- entry ------------------------------------------------------------------------------------
 const a = parseArgs(process.argv.slice(2));
 const cwd = a.cwd ?? process.cwd();
+
+checkAndRecoverBreadcrumbs(cwd);
+if (a.recover) {
+  process.exit(0);
+}
 let mutations;
 let opts = {
   cwd,
@@ -510,7 +769,15 @@ if (a.config) {
 }
 if (!opts.command) usage("no --command given (and none in the config)");
 
+assertNoLiveProof(cwd);
 assertCleanTree(cwd, a["allow-dirty"] !== undefined);
+
+const proofLockPath = join(cwd, ".cotal", "mutation-proof.lock");
+mkdirSync(join(cwd, ".cotal"), { recursive: true });
+writeFileSync(proofLockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+process.on("exit", () => {
+  try { unlinkSync(proofLockPath); } catch {}
+});
 
 // A baseline is not optional: a suite that is ALREADY red grades every mutation as KILLED.
 //
@@ -584,6 +851,7 @@ for (const m of mutations) {
   // when it may have run to completion.
   results.push({ ...proveOne(m, opts), file: m.file, command: m.command ?? opts.command,
     baseTicks: baseTicksBy.get(m.command ?? opts.command) });
+  await settleSignals();
 }
 
 // ---- APPLIES IS NOT MUTATES: a SURVIVED needs a positive control in the same file ----------
@@ -672,4 +940,5 @@ if (bad === 0) {
 } else {
   say(`${C.red}${bad} of ${results.length} mutation(s) did not produce a clean, named red.${C.off}`);
 }
+await settleSignals();
 process.exit(bad === 0 ? 0 : 1);

@@ -1,17 +1,29 @@
 /**
- * Fail-closed live-shaped command policy for the mutation tools.
+ * Fail-closed safety policy for the mutation tools. Two rules, both about blast radius.
  *
- * Discovery can be broad; execution cannot. A config whose command resolves to a live-named
- * suite, or to a suite whose source declares real infrastructure (REAL Manager, REAL agent
- * processes, REAL pty children, REAL broker), is refused before any child is spawned. The
- * `:live` / `-live` suffix is not enough on its own: several broker-starting suites carry no
- * such marker in the script name.
+ * RULE 1 — what a config may EXECUTE. Discovery can be broad; execution cannot. A config whose
+ * command resolves to a live-named suite, to a suite whose source declares real infrastructure
+ * (REAL Manager, REAL agent processes, REAL pty children, REAL broker), or to a suite whose
+ * resolved source starts a stack by invoking the CLI's `up` verb, is refused before any child
+ * is spawned. A name is not behaviour: several stack-starting suites carry no live marker in
+ * the script name, and the only safe question is what the resolved file calls (#1410).
  *
  * Unresolvable `smoke:*` tokens refuse rather than run. A command with no smoke token and no
  * inspectable suite source is allowed only when it also lacks a live-shaped name.
+ *
+ * RULE 2 — what a suite's own cleanup may DELETE (`containmentRefusal`, `removeSelfTestDir`). A
+ * self-test creates its working directory with `mkdtempSync(join(tmpdir(), ...))` and removes it in
+ * a `finally`. Under a mutation run the directory helper is itself under test, so a mutant that made
+ * the helper return the PARENT of the directory it created handed `tmpdir()` to that cleanup, which
+ * then walked the shared temp directory and unlinked every entry it could reach. Among them were the
+ * listening control sockets of every connector on the host, whose sessions kept a listener on an
+ * unlinked path and lost their whole tool surface until respawn (#1625).
+ *
+ * The two rules live together because they are the same policy read twice: the mutation tools take
+ * a config from disk and must bound what it can reach, before spawning and before deleting.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { isAbsolute, join, sep } from "node:path";
 
 export const INFRASTRUCTURE_MARKERS = Object.freeze([
   "REAL Manager",
@@ -21,7 +33,36 @@ export const INFRASTRUCTURE_MARKERS = Object.freeze([
 ]);
 
 const SMOKE_TOKEN = /\bsmoke:[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*/g;
-const LIVE_NAMED = /(?::live|-live)$/;
+// A `live` SEGMENT, not only a suffix: `smoke:evict-live:auth` is as live as `smoke:foo:live`. The
+// first segment after `smoke` names the area (`smoke:live-suite`), so a leading `live` is not one.
+const LIVE_NAMED = /(?<=smoke:[A-Za-z0-9_-]*[:\-])live(?=$|[:\-])/;
+// A resolved source file whose basename ends `-live.smoke.<ext>` is live by file, with or without a
+// live-named script pointing at it (`smoke:up-tls-routes` -> `up-tls-routes-live.smoke.ts`).
+const LIVE_SOURCE_FILE = /-live\.smoke\.[cm]?[jt]s$/;
+// The stack-starting invocation: an argv array whose FIRST element is the string "up" — `cotal(["up",
+// "--detach"])` in every suite that boots a mesh. `["setup"]`, `["upstream"]` or a bare `up` word do
+// not match. Shape alone cannot tell `cotal(["up"])` from `completionOut(["up"])` (a tab-completion
+// query in command-kernel.smoke.ts), so the ENCLOSING CALL NAME is the rule, recorded here: a hit on
+// a line that opens a `completionOut(` call is a query about argv, not an invocation of the CLI.
+const UP_ARGV = /\[\s*"up"\s*(?:,|\])/;
+const COMPLETION_QUERY = /completionOut\s*\(/;
+const basename = (file) => file.split(/[\\/]/).pop() ?? "";
+
+/**
+ * Whether a suite source invokes the CLI's `up` verb (starts a stack). Every completionOut call in
+ * the tree opens and closes on one line, so a hit sharing a line with a `completionOut(` open is
+ * inside that query's argument list and exempt; any other `["up", ...]` hit is an invocation.
+ *
+ * @param {string} source
+ * @returns {boolean}
+ */
+function invokesCliUp(source) {
+  if (typeof source !== "string") return false;
+  return source
+    .split(/\r?\n/)
+    .some((line) => UP_ARGV.test(line) && !COMPLETION_QUERY.test(line));
+}
+
 const TOKEN = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;|&]+/g;
 const SOURCE_FILE = /[\\/]|\.(?:[cm]?[jt]s|tsx)$/;
 const EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print"]);
@@ -55,6 +96,10 @@ export function smokeTokens(command) {
 
 export function isLiveNamedToken(token) {
   return typeof token === "string" && LIVE_NAMED.test(token);
+}
+
+export function isLiveNamedSourceFile(file) {
+  return typeof file === "string" && LIVE_SOURCE_FILE.test(basename(file));
 }
 
 export function infrastructureMarkerIn(source) {
@@ -189,6 +234,8 @@ export function liveShapedCommandReason(command, options = {}) {
     }
     const marker = infrastructureMarkerIn(source);
     if (marker !== undefined) return `${file} declares ${marker}`;
+    if (isLiveNamedSourceFile(file)) return `${file} is a live suite source`;
+    if (invokesCliUp(source)) return `${file} invokes cotal up`;
   }
 
   return null;
@@ -212,4 +259,55 @@ export function liveShapedFixtureReason(fixture, options = {}) {
     if (reason) return reason;
   }
   return null;
+}
+
+/**
+ * RULE 2. The reason `dir` may not be removed, or undefined when the removal is contained.
+ *
+ * Two independent conditions, because either one alone leaves the escape open. `dir !== created`
+ * catches a helper that returned something other than the path `mkdtemp` made, which is the exact
+ * mutant shape that started #1625. The strict-descendant test catches the case where `created`
+ * itself is wrong, so trusting it would be circular.
+ *
+ * `created` is the exact string `mkdtempSync` returned; `base` is the directory it was created in.
+ *
+ * @param {string} dir
+ * @param {string} base
+ * @param {string} created
+ * @returns {string | undefined}
+ */
+export function containmentRefusal(dir, base, created) {
+  if (dir !== created) return `cleanup target ${dir} is not the path mkdtemp returned (${created})`;
+  let realDir;
+  let realBase;
+  try {
+    realDir = realpathSync(dir);
+    realBase = realpathSync(base);
+  } catch (error) {
+    return `cleanup target ${dir} could not be resolved against ${base}: ${error.message}`;
+  }
+  if (!realDir.startsWith(realBase + sep)) return `cleanup target ${realDir} is not strictly beneath ${realBase}`;
+  return undefined;
+}
+
+/**
+ * Remove a self-test's own `mkdtemp` directory, or refuse and exit 2.
+ *
+ * Refusing EXITS rather than returning: an escaped cleanup is a defect in the suite, and a caller
+ * that could continue past it would report a tidy summary for a run whose own premise was broken.
+ * Exit 2 rather than 1 so it is not read as an ordinary assertion failure.
+ *
+ * @param {string} dir
+ * @param {string} base
+ * @param {string} created
+ * @returns {void}
+ */
+export function removeSelfTestDir(dir, base, created) {
+  const refusal = containmentRefusal(dir, base, created);
+  if (refusal !== undefined) {
+    console.error(`\nREFUSING to clean up: ${refusal}`);
+    console.error("A recursive delete outside its own mkdtemp root would take other processes' files with it.");
+    process.exit(2);
+  }
+  rmSync(dir, { recursive: true, force: true });
 }

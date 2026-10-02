@@ -29,7 +29,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir, readFile, rename, unlink } from "node:fs/promises";
+import { lstat, open, readdir, rename, unlink } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { dirname, join } from "node:path";
 import { fsyncDir } from "./agui-wal-path.js";
@@ -92,6 +92,11 @@ export interface SubjectFrontier {
 
 const isSafeNonNegInt = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
 
+// The one value in that family that is well formed and operationally fatal: `MAX_SAFE_INTEGER`
+// makes the successor at event-wal.ts unrepresentable and the ack check unsatisfiable, so a
+// frontier tip must stay strictly below it while every other safe non-negative integer is fine.
+const isFrontierTip = (n: unknown): n is number => isSafeNonNegInt(n) && n < Number.MAX_SAFE_INTEGER;
+
 /** The durable implementation, one file per principal beside that principal's thread directories. */
 export class FileSubjectFrontier implements SubjectFrontier {
   private constructor(
@@ -104,6 +109,44 @@ export class FileSubjectFrontier implements SubjectFrontier {
   }
 
   /**
+   * Read the record's bytes with no follow, or `undefined` when it is absent.
+   *
+   * SHARED BY `open` AND BY {@link readDiskTip} on purpose, the same reason {@link parse} is
+   * shared: the read side has exactly one policy about what a subject.json is allowed to be, and a
+   * second copy would drift. `lstat` first so a symlink is refused before any content is read
+   * (following it would hand a writer another file's tip through the record's own name); the open
+   * itself adds `O_NOFOLLOW` for the TOCTOU window between that `lstat` and the open. The portable
+   * `?? 0` shape follows {@link recoverTipFromThreadLogs}: Windows has no `O_NOFOLLOW` and a
+   * junction is not a symlink to `lstat`, so on that platform the `lstat` refusal alone is the
+   * coverage, exactly as it is for the scan.
+   */
+  private static async readRecord(path: string): Promise<Buffer | undefined> {
+    let st;
+    try {
+      st = await lstat(path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw e;
+    }
+    if (st.isSymbolicLink())
+      throw new SubjectFrontierCorruptError(path, "a real subject record, never a symlink", "the writer never wrote a symlink");
+    try {
+      const fh = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        return await fh.readFile();
+      } finally {
+        await fh.close();
+      }
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return undefined;
+      if (code === "ELOOP")
+        throw new SubjectFrontierCorruptError(path, "a real subject record, never a symlink", "the record became a symlink between the check and the open");
+      throw e;
+    }
+  }
+
+  /**
    * Open, or create a virgin record.
    *
    * A MISSING file is virgin and legal: this principal has never published, which is the ordinary
@@ -113,12 +156,7 @@ export class FileSubjectFrontier implements SubjectFrontier {
    * mechanism exists to remove.
    */
   static async open(path: string, opts: { space: string; principal: string }): Promise<FileSubjectFrontier> {
-    let bytes: Buffer | undefined;
-    try {
-      bytes = await readFile(path);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
+    const bytes = await FileSubjectFrontier.readRecord(path);
     if (bytes === undefined) {
       // ABSENT, so this record has never existed. Before calling the principal virgin, look at the
       // thread logs that already sit beside it. See {@link recoverTipFromThreadLogs}.
@@ -165,15 +203,19 @@ export class FileSubjectFrontier implements SubjectFrontier {
     // The principal is the whole key of this record: a file belonging to another identity would
     // hand this writer another principal's tip, which is a fabricated frontier of exactly the kind
     // the write-ahead log refuses for the same reason.
+    //
+    // A BYTE COMPARE, NOT A DECODED ONE: `assertValidOwnerToken` and `principalKey` fold nothing,
+    // and the principal directory is `h(principal)` over the exact bytes, so a decoded or
+    // case-folded compare here would accept a key that names a different directory on disk.
     if (d.principal !== opts.principal)
       throw new SubjectFrontierCorruptError(path, "principal matches", `file=${String(d.principal)} caller=${opts.principal}`);
-    if (!isSafeNonNegInt(d.tip)) throw new SubjectFrontierCorruptError(path, "tip is a safe non-negative integer", String(d.tip));
+    if (!isFrontierTip(d.tip)) throw new SubjectFrontierCorruptError(path, "tip is a safe non-negative integer below Number.MAX_SAFE_INTEGER", String(d.tip));
     return { v: d.v, space: d.space, principal: d.principal, tip: d.tip };
   }
 
   async advance(seq: number): Promise<void> {
     return this.serialize(async () => {
-      if (!isSafeNonNegInt(seq)) throw new Error(`subject frontier ${this.path}: seq must be a safe non-negative integer, got ${String(seq)}`);
+      if (!isFrontierTip(seq)) throw new Error(`subject frontier ${this.path}: seq must be a safe non-negative integer below Number.MAX_SAFE_INTEGER, got ${String(seq)}`);
       // VALIDATE BEFORE THE DURABLE WRITE. A bad value written first bricks the record permanently
       // while the call that wrote it reports success, and the next open refuses a file nothing can
       // repair. Fail-closed has to happen before the write, not on the boot after it.
@@ -209,13 +251,8 @@ export class FileSubjectFrontier implements SubjectFrontier {
    * number, and a number taken from a document that failed its own shape checks is not evidence.
    */
   private async readDiskTip(): Promise<number | undefined> {
-    let bytes: Buffer;
-    try {
-      bytes = await readFile(this.path);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw e;
-    }
+    const bytes = await FileSubjectFrontier.readRecord(this.path);
+    if (bytes === undefined) return undefined;
     return FileSubjectFrontier.parse(this.path, bytes, { space: this.doc.space, principal: this.doc.principal }).tip;
   }
 
@@ -403,6 +440,18 @@ export class FileSubjectFrontier implements SubjectFrontier {
       await fh.close();
     }
     try {
+      // A planted link at the record's name must never receive the rename: that would leave the
+      // link's TARGET holding the stale document while this principal's own history moved on.
+      // Absence is fine (creation stays legal); only a symlink is refused, the same class {@link
+      // readRecord} throws on the read side, so the create and read paths agree about links here too.
+      let st;
+      try {
+        st = await lstat(this.path);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+      if (st?.isSymbolicLink())
+        throw new SubjectFrontierCorruptError(this.path, "a real subject record, never a symlink", "the writer never wrote a symlink");
       await rename(tmp, this.path);
     } catch (e) {
       await unlink(tmp).catch(() => {});

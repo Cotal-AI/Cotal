@@ -315,11 +315,11 @@
     {
       "name": "a retired divergence is repaired by re-pinning both arms instead of being deleted",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "  [\"issue 646: an update's operand is a numeric string\", 'let n = \"5\"; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', \"L4018 logs [] shapes []\"],\n",
-      "replace": "  [\"issue 646: an update's operand is a numeric string\", 'let n = 5; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', 'logs [[6]] shapes [[\"number\"]]'],\n",
+      "find": "  [\"a log line is data on the engine: a namespace\", \"log(json);\", {}, 'logs [[{}]] shapes [[\"object+code\"]]', \"L4016 logs [] shapes []\"],\n",
+      "replace": "  [\"a log line is data on the engine: a namespace\", \"log(json);\", {}, 'logs [[{}]] shapes [[\"object+code\"]]', 'logs [[{}]] shapes [[\"object+code\"]]'],\n",
       "expectRed": "every declared divergence names two different answers",
       "cell": "every declared divergence names two different answers, so a retired one cannot be re-pinned into a permanent row",
-      "note": "The failure this list is built to prevent, in the shape it actually arrives in. Issue 646 lands, the walker stops coercing, the row reds - and the repair that costs least is to re-pin BOTH sides to the new common answer, which leaves a program that agrees on both arms sitting inside the declared-divergence list, passing forever and counted as a divergence in the line printed above it. The mutant is exactly that repair: the row's own cell still passes by construction, and only the guard sees it."
+      "note": "The failure this list is built to prevent, in the shape it actually arrives in, now anchored to a row that still stands after issue 646 retired its own two rows. The repair that costs least when a divergence is settled is to re-pin BOTH sides to the new common answer rather than delete the row, which would leave `a log line is data on the engine: a namespace` sitting inside the declared-divergence list agreeing on both arms, passing forever and counted as a divergence in the line printed above it. The mutant is exactly that repair: the row's own cell still passes by construction, and only the guard sees it."
     },
     {
       "name": "a refusing arm's answer collapses to its code again, so a divergence that aborts compares nothing else",

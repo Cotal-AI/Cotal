@@ -63,6 +63,16 @@
   ],
   "mutations": [
     {
+      "name": "the defect restored: the raw --creds refusal blames the credential's age and prescribes a re-mint that cannot work",
+      "file": "packages/workspace/src/control-target.ts",
+      "find": "    return { refusal: \"this control call has no endpoint-caller triple (owner, actor, lifecycle uid), and a raw --creds invocation cannot mint one; minting the file again changes nothing. Run the command from the mesh's project folder, or name the mesh with --space against its registry entry, so the CLI mints the one-shot instrument for you\" };",
+      "replace": "    return { refusal: \"this --creds file predates the v0.4 control surface (no endpoint-serve rows); re-mint it with a current cotal, or drive the manager from its project folder which mints the instrument for you\" };",
+      "expectRed": "a bare --creds auth with no endpoint-caller triple is refused naming the missing triple and the routes that mint one",
+      "cell": "a bare --creds auth with no endpoint-caller triple is refused naming the missing triple and the routes that mint one",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build",
+      "note": "Issue #752 verbatim. The branch is selected by creds-present/epCaller-absent, never by anything read from the file, so the sentence claims an age it cannot know and its remedy loops. The broker-free cell catches it before the binary cell, which asserts the same four conditions on the command's output."
+    },
+    {
       "name": "the defect restored: redemption walks up from the cwd for the seed instead of using the one the mesh resolved",
       "file": "implementations/cli/src/commands/agents.ts",
       "find": "  const material = attachSessionMaterial(t);",

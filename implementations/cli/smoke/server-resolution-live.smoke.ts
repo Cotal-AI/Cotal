@@ -19,6 +19,7 @@ import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 /** An ephemeral, collision-safe loopback port (ask the OS for a free one, then release it). */
 const freePort = (): Promise<number> =>
@@ -66,7 +67,8 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function startBroker(port: number): ChildProcess {
-  const cp = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port)], { stdio: "ignore" });
+  const cp = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+  teardownOnSignal(cp);
   kids.push(cp);
   return cp;
 }

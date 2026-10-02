@@ -48,6 +48,24 @@ try {
   publishManagerSpareCapability(context, true, tokens);
   assertManagerCanSpare(context, tokens, attempt.target as { pid: number; token: string });
   check("matching exact stop target accepts the manager spare capability", existsSync(capabilityPath));
+  rmSync(capabilityPath);
+  let missingCapabilityRefusal: Error | undefined;
+  try {
+    assertManagerCanSpare(context, tokens, attempt.target as { pid: number; token: string });
+  } catch (e) { missingCapabilityRefusal = e as Error; }
+  assert.ok(missingCapabilityRefusal, "a pinned manager without a spare capability must refuse before signal");
+  check(
+    "a missing capability names the one legacy-safe stop route and none of the dead routes",
+    missingCapabilityRefusal.message ===
+      `refusing bare manager stop: ${capabilityPath} does not contain a usable capability, so this CLI cannot ` +
+      "tell whether the manager predates spare-capability reporting or reported that it cannot detach agents. " +
+      "To stop it, stop its managed agents explicitly, then run `cotal down --with-agents` from this mesh root; " +
+      "that command stops the whole stack, and an older manager may not honor its agent-reap request" &&
+      !missingCapabilityRefusal.message.includes("use --with-agents") &&
+      !missingCapabilityRefusal.message.includes("or stop the agents explicitly"),
+    missingCapabilityRefusal.message,
+  );
+  publishManagerSpareCapability(context, true, tokens);
   let targetRefusal: Error | undefined;
   try {
     assertManagerCanSpare(

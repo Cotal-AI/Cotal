@@ -8,7 +8,7 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, reclaimDeadPreUpgradeRecord, segmentedKey, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -35,24 +35,40 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  information the daemon can do without: it cannot derive the transport itself (see the note at
  *  the argv site), and omitting it leaves a standing-credential daemon connecting
  *  plaintext-capable to a TLS broker while looking entirely healthy.
- *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager. */
-type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number };
+ *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager.
+ *  `noManager` (#1417) is broker-only mode: ensure the delivery daemon and NOT the manager. The
+ *  caller that sets it has already refused it against a live manager (a refresh under the flag
+ *  exits non-zero before reaching here), so this side never silently KEEPS or STOPS one either. */
+type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number; noManager?: boolean };
 
 /** The recorded daemon's liveness, THREE-VALUED plus absent. See {@link managerLiveness} for why the
  *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp
  *  `SECCOMP_RET_ERRNO` filter or an LSM policy answers `kill(pid, 0)` with an arbitrary errno and
- *  libuv preserves it), and both ways of folding it into a boolean fail silently. */
+ *  libuv preserves it), and both ways of folding it into a boolean fail silently.
+ *
+ *  `foreign` is the same fifth state {@link managerLiveness} already carries, for the same reason and
+ *  under the same rule (#1528): a live pid is believed only once the process behind it has been READ
+ *  and names the delivery daemon. A record outliving its daemon is eventually re-pointed at an
+ *  unrelated process by pid reuse, and from `kill(pid, 0)` alone that reads as a healthy daemon
+ *  forever. ATTRIBUTION MAY ONLY DOWNGRADE ON PROOF: a read that failed, a platform with no argv
+ *  source, and a process that died during the read all leave the record trusted, which is exactly
+ *  how every caller behaved before this existed. */
 export function deliveryLiveness(
   probe: LivenessProbe = probeLiveness,
   space: string = folderSpace(),
-): "alive" | "dead" | "unknown" | "absent" | "unattributable" {
+  readCommand: CommandReader = readProcessCommand,
+): "alive" | "dead" | "unknown" | "absent" | "unattributable" | "foreign" {
   const p = PID_PATH(space);
   if (!existsSync(p)) return "absent";
   const raw = readFileSync(p, "utf8").trim();
   if (raw === "") return "absent";
   const pid = parsePid(raw);
   if (pid === undefined) return "unattributable"; // see managerLiveness: never fold this into absent
-  return probe(pid);
+  const liveness = probe(pid);
+  if (liveness !== "alive") return liveness;
+  const cmd = readCommand(pid);
+  if (cmd.kind !== "command") return "alive"; // gone/unreadable: nothing was established about it
+  return commandIsCotalDelivery(cmd.command) ? "alive" : "foreign";
 }
 
 /** True only if the daemon is PROVABLY running. Callers that ACT on the answer take
@@ -122,11 +138,13 @@ export async function stopOldHostingManagerIfPresent(
  *  never sees the signer. */
 export function startDeliveryDetached(o: Opts = {}): number {
   const space = o.space ?? folderSpace();
-  // See startManagerDetached: reclaim a provably dead pre-upgrade record before claiming the
-  // canonical slot, and refuse rather than start a second daemon beside a live one.
+  // First, for the reason startManagerDetached states: a `selfArgv` refusal (#1629) must not reclaim a
+  // pre-upgrade record, or leave a delivery log and a leaked descriptor behind. Then, as there,
+  // reclaim a provably dead pre-upgrade record before claiming the canonical slot, and refuse rather
+  // than start a second daemon beside a live one.
+  const [node, ...self] = selfArgv();
   reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));
   const fd = openSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), "a");
-  const [node, ...self] = selfArgv();
   const args = [
     ...self,
     "deliver",
@@ -134,10 +152,10 @@ export function startDeliveryDetached(o: Opts = {}): number {
     space,
     "--server",
     o.server ?? DEFAULT_SERVER,
-    // Propagate the broker's transport decision. The daemon cannot derive it: it learns everything
-    // from argv by design - it is a pre-minted scoped-cred client, injectable behind a SecretStore,
-    // and making it read the machine-local mesh registry to pick a transport would couple a
-    // hosted-composable daemon to a workstation artifact. So the launcher, which DOES know, tells it.
+    // Propagate the broker's transport decision. The daemon cannot derive it: an INJECTED-store
+    // (hosted) daemon learns everything from argv and the store by design, and a workstation daemon
+    // resolves the recorded mesh itself (#756) without a transport-requirement API of its own - so
+    // the launcher, which DOES know, tells it in both compositions.
     //
     // Without this the daemon connects plaintext-capable to a TLS broker and nothing looks wrong,
     // because it still upgrades on the server's INFO. It holds a STANDING credential and reconnects
@@ -149,10 +167,10 @@ export function startDeliveryDetached(o: Opts = {}): number {
   const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
   closeSync(fd);
   child.unref();
-  const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx(space));
-  writeFileSync(pidPath, String(child.pid)); // canonical, never a pre-upgrade name
-  // #969: pin the pid to its process start so a later teardown can refuse a reused pid.
-  writeIdentityPin(pidPath, child.pid ?? 0);
+  const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx(space)); // canonical, never a pre-upgrade name
+  if (!child.pid) throw new Error("delivery daemon spawned with no pid");
+  // #969/#1238: publish the pair by rename so a later teardown never sees a torn pairing.
+  writePidPair(pidPath, child.pid);
   return child.pid ?? 0;
 }
 
@@ -167,8 +185,12 @@ export function startDeliveryDetached(o: Opts = {}): number {
  *  the same question, and collapsing them into one boolean is how a mesh came to report healthy for
  *  22 hours while none of those three operations could complete. `responderBound` is false when the
  *  readiness wait elapsed without the lease flipping ready, and absent when no daemon applies. */
-export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeLiveness): Promise<{ running: boolean; responderBound?: boolean }> {
+export async function ensureDelivery(
+  o: Opts = {},
+  probe: LivenessProbe = probeLiveness,
+): Promise<{ running: boolean; started?: boolean; pid?: number; responderBound?: boolean }> {
   if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
+
   const space = o.space ?? folderSpace();
   if (oldHostingManagerVerdict(probe, space) === "stop-it") {
     console.error(
@@ -253,7 +275,7 @@ export async function ensureDelivery(o: Opts = {}, probe: LivenessProbe = probeL
   // there" (unchanged for every existing caller), but a caller that needs the responder — anything
   // that is about to spawn, retire or join — can now ask instead of assuming, which it could not do
   // when this returned a bare `running: true` over an admittedly unbound responder.
-  return { running: true, responderBound: ready };
+  return { running: true, started: launched !== undefined, ...(launched !== undefined ? { pid: launched } : {}), responderBound: ready };
 }
 
 /** Stop the detached delivery daemon if we started one, and drop its creds from the store. The pid
@@ -264,6 +286,7 @@ export async function stopDelivery(
   probe: LivenessProbe = probeLiveness,
   signal?: SignalFn,
   space: string = folderSpace(),
+  readCommand: CommandReader = readProcessCommand,
 ): Promise<void> {
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = PID_PATH(space);
@@ -309,6 +332,19 @@ export async function stopDelivery(
     await removeRecords();
     return;
   }
+  // A LIVE pid that is provably NOT a delivery daemon is never signalled, the same rule
+  // `stopManager` applies (#1528). The record outlived its daemon and the number was reused, so
+  // SIGTERM here would kill an unrelated process. The record is removed because it is PROVABLY
+  // stale, and what was found is printed: an operator told only "already stopped" would not learn
+  // that their pidfile was pointing at a stranger.
+  if (before === "alive") {
+    const cmd = readCommand(pid);
+    if (cmd.kind === "command" && !commandIsCotalDelivery(cmd.command)) {
+      console.error(`! recorded delivery daemon pid ${pid} is alive but is running \`${cmd.command}\`, which is not a delivery daemon - not signalling it; removing the stale record instead.`);
+      await removeRecords();
+      return;
+    }
+  }
   if (before === "unknown")
     throw new Error(
       `refusing to stop the delivery daemon (pid ${pid}): its liveness cannot be determined (a seccomp filter or LSM policy answers kill(pid,0) with an arbitrary errno).\n` +
@@ -349,8 +385,20 @@ export async function stopDelivery(
  *  (auth only, fails closed on a live old manager) → manager (lifecycle, writes the delivery-aware
  *  marker). The manager no longer depends on the daemon (it hosts no Plane-3), so the daemon is started
  *  first only to close the old-manager double-bind window and so freshly-spawned agents find the
- *  `ctl.delivery` responder for their boot self-join (a miss honest-degrades to live-only). */
-export async function ensureControlPlane(o: Opts = {}): Promise<{ running: boolean; responderBound?: boolean }> {
+ *  `ctl.delivery` responder for their boot self-join (a miss honest-degrades to live-only).
+ *  `noManager` (#1417) stops after the daemon: a broker-only host gets delivery (auth mode) and no
+ *  manager, so there is no manager pidfile to leave stale and no slot to strand. The preflight still
+ *  runs above it — an old Plane-3-hosting manager must not double-bind the daemon's durables even on a
+ *  host that wants no manager of its own. */
+export async function ensureControlPlane(
+  o: Opts = {},
+): Promise<{
+  running: boolean;
+  started?: boolean;
+  pid?: number;
+  delivery?: { started: boolean; pid?: number };
+  responderBound?: boolean;
+}> {
   // One space for all three steps. The preflight used to resolve its own from the cwd while the two
   // ensures took `o.space`; with per-space records that would preflight one tenant's manager and then
   // start another's.
@@ -361,6 +409,11 @@ export async function ensureControlPlane(o: Opts = {}): Promise<{ running: boole
   // dependency every spawn/retirement/join needs had not come up — the boot line inside
   // `ensureDelivery` was the only trace, and it read as a progress note.
   const delivery = await ensureDelivery({ ...o, space });
+  const deliveryStarted = { started: delivery.started ?? false, ...(delivery.pid !== undefined ? { pid: delivery.pid } : {}) };
+  if (o.noManager) return { running: false, delivery: deliveryStarted, responderBound: delivery.responderBound };
+  // `started`/`pid` distinguish a manager `ensureManager` just launched from one it found already
+  // alive (#883) — carried through unchanged so the caller can name a restore instead of reprinting
+  // the same line for both.
   const manager = await ensureManager({ ...o, space });
-  return { ...manager, responderBound: delivery.responderBound };
+  return { ...manager, delivery: deliveryStarted, responderBound: delivery.responderBound };
 }

@@ -10,21 +10,35 @@
  * Run: pnpm smoke:shard-never-ran
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 // @ts-expect-error - plain .mjs helper, imported by bin/smoke/shard.mjs.
 import { neverRanBlock } from "./shard-never-ran.mjs";
 
 const SHARD = fileURLToPath(new URL("./shard.mjs", import.meta.url));
+const { packageManager } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+if (typeof packageManager !== "string") throw new Error("repository package-manager pin is missing");
 
 /** Drive the shipped shard runner over a four-suite fixture. Never the repo registry. */
 function runShippedShard(scripts: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), "cotal-shard-never-ran-"));
   try {
     const names = Object.keys(scripts);
-    writeFileSync(join(dir, "package.json"), JSON.stringify({ private: true, scripts }));
+    const entries: Record<string, string> = {
+      "smoke:attach-stdin": "implementations/manager/smoke/attach-stdin.smoke.ts",
+      "smoke:opencode": "extensions/connector-opencode/smoke/turn-wedge.smoke.ts",
+    };
+    for (const name of names) {
+      const entry = entries[name];
+      if (!entry) continue;
+      const body: string = JSON.parse(scripts[name]!.slice("node -e ".length));
+      mkdirSync(dirname(join(dir, entry)), { recursive: true });
+      writeFileSync(join(dir, entry), body);
+      scripts[name] = `tsx ${entry}`;
+    }
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ private: true, packageManager, scripts }));
     const listPath = join(dir, "ci-suites.txt");
     writeFileSync(listPath, `${names.join("\n")}\n`);
     // The shipped shard runner reads exactly one COTAL_ name, COTAL_CI_SUITES, which is set on top
@@ -34,7 +48,7 @@ function runShippedShard(scripts: Record<string, string>) {
     for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
     const r = spawnSync(process.execPath, [SHARD, "0", "1"], {
       cwd: dir,
-      env: { ...env, COTAL_CI_SUITES: listPath },
+      env: { ...env, COTAL_CI_SUITES: listPath, SMOKE_CI_JOBS: process.platform === "linux" ? "2" : "1" },
       encoding: "utf8",
       timeout: 60_000,
       maxBuffer: 2 * 1024 * 1024,
@@ -117,8 +131,8 @@ check(
 );
 
 const broken = runShippedShard({
-  "smoke:a": "node -e \"console.log('COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0')\"",
-  "smoke:b": "node -e \"process.exit(7)\"",
+  "smoke:attach-stdin": "node -e \"console.log('COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0')\"",
+  "smoke:opencode": "node -e \"process.exit(7)\"",
   "smoke:c": "node -e \"process.exit(0)\"",
   "smoke:d": "node -e \"process.exit(0)\"",
 });
@@ -136,8 +150,8 @@ check(
   /NEVER RAN — 2 of 4/.test(broken.out) &&
     broken.out.includes("pnpm smoke:c") &&
     broken.out.includes("pnpm smoke:d") &&
-    !/NEVER RAN[\s\S]*pnpm smoke:a/.test(broken.out) &&
-    !/NEVER RAN[\s\S]*pnpm smoke:b/.test(broken.out),
+    !/NEVER RAN[\s\S]*pnpm smoke:attach-stdin/.test(broken.out) &&
+    !/NEVER RAN[\s\S]*pnpm smoke:opencode/.test(broken.out),
   broken.out.slice(-500),
 );
 

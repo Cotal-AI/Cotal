@@ -127,6 +127,12 @@ export const CATALOG = {
   // program: a deadline that elapsed while this process was off the CPU is evidence about the box
   // it runs on. It has its own code because `L4000` sends a reader looking at their own source.
   L4025: "Host did not schedule the run",
+  // The PLANE did not answer this host's reads before their own client deadline, while the host's
+  // loop was demonstrably running. Its own code because it is the other half of L4025's question
+  // and the opposite answer: there the process was off the CPU, here it was on it and the reply was
+  // late, and the remedy differs (capacity for this host versus a broker that is behind). `L4000`
+  // would send a reader to their own program for a condition in neither the program nor the effect.
+  L4026: "Pause plane did not answer before the client deadline",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",
@@ -394,6 +400,20 @@ export function messageOf(v: unknown): string {
   if (v instanceof Error) return v.message;
   const m = (v as { message?: unknown } | null | undefined)?.message;
   return typeof m === "string" ? m : String(v);
+}
+
+/**
+ * The stack off anything a foreign body throws, or `undefined` when there is none to keep.
+ *
+ * Read with the same defensiveness as {@link messageOf} and for the same reason: a handler is other
+ * people's code, it may throw a primitive or an object whose `stack` is a getter returning a
+ * number, and a recorder that trusted the field would replace the handler's failure with its own.
+ * Absent, empty, or not a string is NOT recorded: the field says "here is where this came from",
+ * and `"undefined"` stringified into it would be a place that does not exist.
+ */
+export function stackOf(v: unknown): string | undefined {
+  const s = (v as { stack?: unknown } | null | undefined)?.stack;
+  return typeof s === "string" && s !== "" ? s : undefined;
 }
 
 /** A recorded step's inputs changed, so its recorded result may no longer be the truth. */

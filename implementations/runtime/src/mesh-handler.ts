@@ -52,6 +52,7 @@ import {
   writeRunNotice,
   actionContext,
   invokeCommand,
+  replyRefusedBeforeEffect,
   readGoalResult,
   readGoalStatus,
   resolveService,
@@ -68,6 +69,7 @@ import {
   type CotalMessage,
   type EpAttributedReply,
   type EpCaller,
+  type EpVerbTarget,
   type GoalRef,
   type GoalResultFact,
   type Presence,
@@ -259,6 +261,59 @@ export class MeshHandler {
         throw e;
       });
     return this.managerService;
+  }
+
+  /**
+   * One manager call, with a SPEC 13.2 bind refusal REPAIRED rather than raised.
+   *
+   * A run resolves the manager on the class rail and binds the incarnation that answered its
+   * describe. The invoke is a second, independent trip through the same anycast queue, so in a
+   * space with more than one manager it routinely reaches another member, and that member refuses
+   * before dispatching. The refusal is honest for one command and destructive for a run: it says
+   * the command did not run and its remedy is to re-issue, but raised as the effect's own failure
+   * it ends the run and consumes the run id and its journal (#1638).
+   *
+   * So a refusal the responder MARKS as pre-effect is re-issued instead of returned. It is a first
+   * attempt and not a second: the marker together with `not-executed` is the responder's own
+   * statement that no effect of the command exists, which is what {@link replyRefusedBeforeEffect}
+   * checks, and it is the same licence core's `Endpoint.invokeService` re-issues on. The stale
+   * class handle is dropped first, so the re-issue re-describes rather than rebinding the
+   * incarnation that was just refused.
+   *
+   * BOUNDED, because a re-issue draws the same queue again. The describe and the invoke stay two
+   * independent trips, so a space of m managers still splits (m-1)/m of the time and the repair
+   * converges geometrically rather than deterministically; after {@link BIND_SPLIT_REISSUES} of
+   * them the refusal surfaces unchanged, still stating that the command did not run. What removes
+   * the residual is addressing one instance, and the run's caller holds no instance-rail grant for
+   * a command its program did not place (SPEC 13.9, `run-driver-grants.ts`), so that is a wider
+   * change than this one.
+   *
+   * A PINNED handle is never repaired. It addresses one instance by name, so a refusal from it is
+   * that incarnation answering about itself, and re-resolving onto the class rail would reinstate
+   * the anycast fallback #1616 removed.
+   */
+  private async invokeManager(
+    service: ResolvedService,
+    command: string,
+    args: Record<string, unknown> | undefined,
+    opts: { target?: EpVerbTarget; deadlineMs?: number; id?: string },
+  ): Promise<EpAttributedReply> {
+    let handle = service;
+    for (let reissues = 0; ; reissues += 1) {
+      const reply = await invokeCommand(this.nc, this.binding.space, handle, command, args, opts);
+      if (reply.reply.ok !== false || !replyRefusedBeforeEffect(reply.reply.error)) return reply;
+      if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return reply;
+      this.managerService = undefined;
+      try {
+        handle = await this.manager();
+      } catch {
+        // The repair could not be attempted. The REFUSAL is what surfaces, not the resolve failure:
+        // every caller of this method already reads a refused reply as "the manager declined", and
+        // this one states that nothing ran, which is the fact a describe timeout raised in its
+        // place would lose.
+        return reply;
+      }
+    }
   }
 
   /**
@@ -705,8 +760,7 @@ export class MeshHandler {
       console.error(`! discharge: the cancelled spawn goal "${goalId}" settled ${fact.state} with no readable agent identity; if its seat is up it must be despawned by hand (cotal ps)`);
       return;
     }
-    const service = await this.manager();
-    const reply = await invokeCommand(this.nc, this.binding.space, service, "despawn", { graceful: true }, {
+    const reply = await this.invokeManager(await this.manager(), "despawn", { graceful: true }, {
       target: { mode: "owner", ...target },
       deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
     });
@@ -1321,7 +1375,7 @@ export class MeshHandler {
             // a launched seat whose directory no record names.
             await ctx.bind({ resolution });
           }
-          reply = await invokeCommand(this.nc, this.binding.space, service, "spawn",
+          reply = await this.invokeManager(service, "spawn",
             spawnArgs(resolution === undefined ? req : { ...req, cwd: resolution.cwd }), {
               id: goalId,
               deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
@@ -1488,7 +1542,7 @@ export class MeshHandler {
       }
       const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });
       const submit = async (): Promise<EpAttributedReply> =>
-        invokeCommand(this.nc, this.binding.space, await this.manager(), "turn",
+        this.invokeManager(await this.manager(), "turn",
           { payload, deadlineMs, ...(handoffFrom !== undefined ? { handoffFrom } : {}) }, {
             id: goalId,
             deadlineMs: TURN_ACCEPT_DEADLINE_MS,
@@ -1866,7 +1920,7 @@ export class MeshHandler {
     if ((await readGoalStatus(actx, ref)) !== undefined) return;
     let reply: EpAttributedReply;
     try {
-      reply = await invokeCommand(this.nc, this.binding.space, await this.manager(), "turn",
+      reply = await this.invokeManager(await this.manager(), "turn",
         { payload, deadlineMs: Math.max(1_000, deadlineAt - this.now()) }, {
           id: goalId,
           deadlineMs: TURN_ACCEPT_DEADLINE_MS,
@@ -2350,6 +2404,18 @@ export class MeshHandler {
       ]);
     } finally {
       wait.over = true;
+      // THE PUMP IS DRAINED BEFORE THE SETTLE RETURNS (#1460). The race above has already decided
+      // — the fact, the failure, or the cancellation is this call's answer — but the pump's
+      // in-flight `takeFire` is a journal replay under the run's takeover id, created, read and
+      // deleted inside one `replayRunJournal` call with nothing serialising it across two
+      // authorities for the same run and lease. A settle that returned past it let a completed
+      // `driveRun` hold the replay open after it resolved, and the next reader under the same
+      // takeover hit `RunJournalReplayRaced` about a driver that did not exist. So only the RETURN
+      // is delayed, until the pump has ended: `wait.over` stops it after its current `takeFire`
+      // without starting another, and awaiting it here means no pump fire is left in flight on any
+      // exit. A pump that FAILED raises through this await on its way out, exactly as it did
+      // through the race; the settle's own answer is decided either way and is what this returns.
+      await pump;
     }
   }
 
@@ -2377,6 +2443,12 @@ export class MeshHandler {
   private async pumpFires(ref: CheckpointRef, wait: { over: boolean }): Promise<void> {
     while (!wait.over) {
       await this.takeFire(ref);
+      // THE FLAG IS RE-READ AFTER THE FIRE, before the poll sleeps (#1460): `takeFire` is a journal
+      // replay under the run's takeover id, so the wait can have ENDED while this one was in
+      // flight — and a pump that slept another poll on a wait that is over keeps exactly one more
+      // fire in flight past the drain `settleOnce` awaits. Checked here, the pump ends right after
+      // its current fire without starting another.
+      if (wait.over) break;
       // Unrefed: the loop is ended by the flag, not by this timer, and a wait that is already over
       // must not hold the process open for one more poll on its way out.
       await new Promise((r) => setTimeout(r, FIRE_POLL_MS).unref());
@@ -2487,6 +2559,14 @@ const GOAL_POLL_MS = 2_000;
 const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
 /** Bound on the manager's synchronous `turn` ACCEPT reply (the relay registration, not the yield). */
 const TURN_ACCEPT_DEADLINE_MS = 30_000;
+/** How many times {@link MeshHandler.invokeManager} re-issues one manager call after a
+ *  `not-executed` bind refusal. Every re-issue is a first attempt, so the bound is a loop guard and
+ *  not a duplication guard: it stops a class whose describe and invoke never agree from re-issuing
+ *  forever. Nine attempts leave a two-manager space a 1-in-512 residual where the unrepaired refusal
+ *  was 1-in-2 (#1638). The loop turns only on a refusal that has already been ANSWERED, so an
+ *  attempt costs a describe and an invoke round trip and never an elapsed deadline: a call nobody
+ *  answers raises its own `deadline-exceeded`, which is not a bind refusal and is not re-issued. */
+const BIND_SPLIT_REISSUES = 8;
 /** A step key's enclosing scope: the journal's own rendering (`entry.scope`), re-derived so the
  *  live path and the adoption rebuild key the handoff memos identically. */
 function scopeOf(key: Parameters<typeof stepKeyString>[0]): string {

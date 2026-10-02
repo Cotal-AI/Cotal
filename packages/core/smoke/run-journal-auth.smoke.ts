@@ -32,6 +32,7 @@ import {
   wfjSubject,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const S = "wfjauth";
 const RUN_A = "run-a";
@@ -44,7 +45,7 @@ const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-wfjauth-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}wfjauth-`));
 
 // The driver's rows are EXACTLY what the grant builder returns, plus the two rows any JetStream
 // client needs to exist at all: the API's own info endpoint and its inbox. Nothing else — a suite
@@ -65,6 +66,7 @@ writeFileSync(join(sd, "server.conf"), [
 ].join("\n"));
 
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(broker);
 const conns: NatsConnection[] = [];
 const done = () => {
   for (const nc of conns) { try { nc.close(); } catch { /* closing */ } }

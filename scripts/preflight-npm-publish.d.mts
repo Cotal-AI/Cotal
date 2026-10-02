@@ -63,6 +63,18 @@ export function preflightFromRepository({ root, registryBase, env, fetchImpl, lo
     state: NpmPublishPreflightState;
     rows: any[];
 }>;
+export function isUnknownRegistry(registry: any): any;
+export function isPresentRegistry(registry: any): boolean;
+export function isAbsentRegistry(registry: any): boolean;
+/**
+ * The bucket predicates in ladder order, paired with the names the ladder and the census use.
+ * Exported as one array so a caller enumerating the buckets cannot silently miss one that a
+ * later commit adds: a new bucket is a new element here, not a new line in somebody's copy.
+ */
+export const CENSUS_BUCKETS: {
+    name: string;
+    matches: (registry: any) => any;
+}[];
 /**
  * The census verdict this preflight can return. Every other outcome throws, so these two
  * names are the complete contract a caller may branch on. Naming the union here is what puts

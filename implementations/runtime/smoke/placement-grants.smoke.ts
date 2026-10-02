@@ -56,6 +56,7 @@ import {
 import { runMediatorGrants, runDriverCaller, PLACEMENT_COMMANDS } from "@cotal-ai/core";
 import { canonicalCwd } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "placegrants";
 const EP = "manager";                       // BASELINE_LIFECYCLE_ENDPOINT: the endpoint the rows name
@@ -97,7 +98,7 @@ const VARIANTS = [
 
 // ── broker ─────────────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-placegrants-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}placegrants-`));
 writeFileSync(join(sd, "server.conf"), [
   `port: ${PORT}`,
   `jetstream { store_dir: ${JSON.stringify(join(sd, "js"))} }`,
@@ -109,6 +110,7 @@ writeFileSync(join(sd, "server.conf"), [
   "}",
 ].join("\n"));
 const broker = spawnProc("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(broker);
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
   rmSync(sd, { recursive: true, force: true });

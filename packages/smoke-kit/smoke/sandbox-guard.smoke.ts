@@ -382,47 +382,142 @@ try {
     return undefined;
   };
 
-  const files: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === "node_modules" || entry.name === ".git") continue;
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) walk(path);
-      else if (entry.name.endsWith(".smoke.ts")) files.push(path);
-    }
-  };
-  walk(repo);
-  const unguarded: string[] = [];
-  const downArg = /(?<=[\[,(]\s*)["']down["']/g;
-  for (const file of files) {
-    const relative = file.slice(repo.length + 1);
-    const source = readFileSync(file, "utf8");
-    const code = codeOf(source);
-    if (semanticDownOnly.has(relative)) continue;
-    const sites = [...code.matchAll(downArg)];
-    if (sites.length === 0) continue;
-    const fns = extractFunctions(code);
-    const cliSites = sites.flatMap((site) => {
-      if (site.index === undefined) return [];
-      const call = callNameAt(code, site.index);
-      if (!call) return [];
-      if (call.name === "assertSmokeSandboxDown" || call.name === "assertSmokeSandboxTargetDown") return [];
-      return [{ ...call, index: site.index }];
-    });
-    if (cliSites.length === 0) continue;
-    const guardCalls = [...source.matchAll(/assertSmokeSandboxDown\s*\(/g)];
-    if (guardCalls.length < 1) unguarded.push(`${relative}: no shared guard call`);
-    for (const site of cliSites) {
-      const line = lineOf(code, site.index);
-      if (site.name === "spawn" || site.name === "spawnSync") {
-        if (!windowBefore(code, site.callStart).includes("assertSmokeSandboxDown"))
-          unguarded.push(`${relative}:${line}: raw down spawn is not immediately guarded`);
+  type DownSite = { name: string; callStart: number; index: number };
+  const unclassifiedDown = (relative: string, code: string, index: number): string =>
+    `${relative}:${lineOf(code, index)}: unclassified down site, cannot prove a guard`;
+
+  /**
+   * Issue 1282 shape 1: a down literal bound to an identifier makes every argument-position
+   * use of that identifier a down site, under the same call resolution and guard rules.
+   * Only single-assignment string constants resolve; a name assigned twice or bound from an
+   * expression is reported as unclassified when the file cannot prove a guard either.
+   */
+  const downVerbSites = (
+    code: string,
+    relative: string,
+    fns: Map<string, string>,
+    guardCalls: number,
+    findings: string[],
+  ): DownSite[] => {
+    const sites: DownSite[] = [];
+    for (const decl of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_][\w]*)\s*=\s*([^;\n]*)/g)) {
+      const name = decl[1]!;
+      const init = (decl[2] ?? "").trim();
+      const exact = init === "\"down\"" || init === "'down'";
+      const mentionsDown = /["']down["']/.test(init.replace(/(?<=[\[,(]\s*)["']down["']/g, ""));
+      if (!exact && !mentionsDown) continue;
+      if (decl.index === undefined) continue;
+      const decls = [...code.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*=`, "g"))].length;
+      const assigns = [...code.matchAll(new RegExp(`\\b${name}\\s*=(?![=>])`, "g"))].length;
+      if (!exact || decls !== 1 || assigns !== 1) {
+        if (guardCalls < 1) findings.push(unclassifiedDown(relative, code, decl.index));
         continue;
       }
-      if (wrapperReachesSpawn(site.name, fns) && !wrapperGuardsDown(site.name, fns))
-        unguarded.push(`${relative}:${line}: down wrapper call is not immediately guarded`);
+      for (const use of code.matchAll(new RegExp(`(?<=[\\[,(]\\s*)${name}\\b`, "g"))) {
+        if (use.index === undefined) continue;
+        const call = callNameAt(code, use.index);
+        // A verb use the walk cannot classify is reported like shape 2, never dropped.
+        if (!call) {
+          if (guardCalls < 1) findings.push(unclassifiedDown(relative, code, use.index));
+          continue;
+        }
+        if (call.name === "assertSmokeSandboxDown" || call.name === "assertSmokeSandboxTargetDown") continue;
+        sites.push({ ...call, index: use.index });
+      }
     }
-  }
+    return sites;
+  };
+
+  /**
+   * Issue 1282: the walk root is a parameter so a scratch probe tree is scanned exactly like
+   * the repo. A matched site the backwards walk cannot classify is reported unless the file
+   * itself proves a shared guard call; it is never silently dropped.
+   */
+  const scanDownSites = (scanRoot: string): string[] => {
+    const files: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === "node_modules" || entry.name === ".git") continue;
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (entry.name.endsWith(".smoke.ts")) files.push(path);
+      }
+    };
+    walk(scanRoot);
+    const findings: string[] = [];
+    const downArg = /(?<=[\[,(]\s*)["']down["']/g;
+    for (const file of files) {
+      const relative = file.slice(scanRoot.length + 1);
+      const source = readFileSync(file, "utf8");
+      const code = codeOf(source);
+      if (semanticDownOnly.has(relative)) continue;
+      const guardCalls = [...source.matchAll(/assertSmokeSandboxDown\s*\(/g)].length;
+      const fns = extractFunctions(code);
+      const cliSites = [...code.matchAll(downArg)].flatMap((site): DownSite[] => {
+        if (site.index === undefined) return [];
+        const call = callNameAt(code, site.index);
+        if (!call) {
+          if (guardCalls < 1) findings.push(unclassifiedDown(relative, code, site.index));
+          return [];
+        }
+        if (call.name === "assertSmokeSandboxDown" || call.name === "assertSmokeSandboxTargetDown") return [];
+        return [{ ...call, index: site.index }];
+      });
+      const verbSites = downVerbSites(code, relative, fns, guardCalls, findings);
+      const downSites = [...cliSites, ...verbSites];
+      if (downSites.length === 0) continue;
+      if (guardCalls < 1) findings.push(`${relative}: no shared guard call`);
+      for (const site of downSites) {
+        const line = lineOf(code, site.index);
+        if (site.name === "spawn" || site.name === "spawnSync") {
+          if (!windowBefore(code, site.callStart).includes("assertSmokeSandboxDown"))
+            findings.push(`${relative}:${line}: raw down spawn is not immediately guarded`);
+          continue;
+        }
+        if (wrapperReachesSpawn(site.name, fns) && !wrapperGuardsDown(site.name, fns))
+          findings.push(`${relative}:${line}: down wrapper call is not immediately guarded`);
+      }
+    }
+    return findings;
+  };
+
+  const shape1Root = join(base, "scan-shape1");
+  mkdirSync(shape1Root, { recursive: true });
+  writeFileSync(
+    join(shape1Root, "probe.smoke.ts"),
+    `import { spawnSync } from "node:child_process";
+function runCli(args: string[]): void {
+  spawnSync("cotal", args, { encoding: "utf8" });
+}
+const verb = "down";
+runCli([verb]);
+`,
+  );
+  assert.deepEqual(
+    scanDownSites(shape1Root),
+    ["probe.smoke.ts: no shared guard call", "probe.smoke.ts:6: down wrapper call is not immediately guarded"],
+    "shape 1 verb constant must be scanned as a down site",
+  );
+
+  const shape2Root = join(base, "scan-shape2");
+  mkdirSync(shape2Root, { recursive: true });
+  writeFileSync(
+    join(shape2Root, "probe.smoke.ts"),
+    `import { spawnSync } from "node:child_process";
+function runCli(args: string[]): void {
+  spawnSync("cotal", args, { encoding: "utf8" });
+}
+const args = ["down"];
+runCli(args);
+`,
+  );
+  assert.deepEqual(
+    scanDownSites(shape2Root),
+    ["probe.smoke.ts:5: unclassified down site, cannot prove a guard"],
+    "shape 2 bound argv must be reported as unclassified",
+  );
+
+  const unguarded = scanDownSites(repo);
   assert.deepEqual(unguarded, [], `unguarded smoke cotal down call sites:\n${unguarded.join("\n")}`);
   assert.deepEqual(failures, [], `sandbox guard failed named cells:\n${failures.join("\n")}`);
 

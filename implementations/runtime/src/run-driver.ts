@@ -25,7 +25,6 @@
  * as an outcome would be writing down a conclusion about work it can no longer see.
  */
 import {
-  replayRunJournal,
   wfjStreamName,
   wfjSubject,
   EpEnvelopeError,
@@ -66,7 +65,7 @@ import {
   type RunResult,
 } from "@cotal-ai/lang";
 import { runOnHostedEngine } from "./engine-host.js";
-import { RunJournalStore } from "./journal-store.js";
+import { RunJournalStore, replayOwnJournal } from "./journal-store.js";
 
 /**
  * What an entry in the engine table is handed: everything `drive()` prepared, with the pieces the
@@ -181,7 +180,7 @@ class RunRecordMalformed extends Error {
  * including on diagnostic paths.
  */
 async function noRecordToResume(js: JetStreamClient, jsm: JetStreamManager, req: DriveRequest): Promise<Error> {
-  const replay = await replayRunJournal(js, jsm, req.space, req.runId, req.lease.takeoverId);
+  const replay = await replayOwnJournal(js, jsm, req.space, req.runId, req.lease.takeoverId);
   const journalled = replay.records.length !== 0;
   if (!journalled) return new RunNotResumable(req.runId, wfjSubject(req.space, req.runId));
   return new Error(

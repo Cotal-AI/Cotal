@@ -1,0 +1,3 @@
+# Every seat name the attribution grader must catch, one cell per name, so a name that stops
+# being caught reddens its own row instead of hiding inside a bundled fixture (#1560).
+smoke:attribution-seat-names

@@ -174,8 +174,8 @@
     {
       "name": "a new arm of the DESTRUCTIVE export's parameter, whose generated call would kill brokers",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
-      "find": "export function reapSmokeBrokers({ dryRun = false } = {}) {\n",
-      "replace": "export function reapSmokeBrokers(/** @type {{ dryRun?: boolean } | boolean} */ opts = {}) {\n  const { dryRun = false } = /** @type {{ dryRun?: boolean }} */ (/** @type {unknown} */ (opts));\n",
+      "find": "export function reapSmokeBrokers({ dryRun = false, scope } = {}) {\n",
+      "replace": "export function reapSmokeBrokers(/** @type {{ dryRun?: boolean, scope?: string } | boolean} */ opts = {}) {\n  const { dryRun = false, scope } = /** @type {{ dryRun?: boolean, scope?: string }} */ (/** @type {unknown} */ (opts));\n",
       "expectRed": "and the half that RUNS reaps nothing: every call it makes to the one export that kills a process is a dry run",
       "cell": "and the half that RUNS reaps nothing: every call it makes to the one export that kills a process is a dry run",
       "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",

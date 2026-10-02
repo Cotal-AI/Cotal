@@ -48,6 +48,7 @@ import { getSpaceAuth, putSpaceAuth, rotateSystemCreds, spaceMaterialDir, staleS
 import { doctor } from "../src/commands/doctor.js";
 import { up } from "../src/commands/up.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0,
   fail = 0;
@@ -64,7 +65,7 @@ const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SPACE = "sysrot";
-const root = mkdtempSync(join(tmpdir(), "cotal-sysrot-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}sysrot-`));
 // Sandbox the machine home BEFORE anything reads it. `assertRootBrokerStopped` sweeps the mesh
 // registry, and `up` consults it for the port-in-use decision, so without this the smoke would read
 // (and reason about) the developer's or runner's real meshes.
@@ -87,6 +88,7 @@ let broker: ReturnType<typeof spawn> | undefined;
 
 async function startBroker(): Promise<void> {
   broker = spawn("nats-server", ["-c", confPath], { stdio: "ignore" });
+  teardownOnSignal(broker);
   for (let i = 0; i < 60 && !(await isReachable(SERVERS)); i++) await wait(100);
 }
 async function stopBroker(): Promise<void> {

@@ -252,8 +252,8 @@
     {
       "name": "makeWorkdir returns a path that is not the realpath'd directory its guard accepted",
       "file": "scripts/check-operator-literals.celltamper.selftest.mjs",
-      "find": "    if (guardSafe(candidate)) return candidate;",
-      "replace": "    if (guardSafe(candidate)) return candidate + \"/\";",
+      "find": "    if (guardSafe(candidate)) return { dir: candidate, base, created: candidate };",
+      "replace": "    if (guardSafe(candidate)) return { dir: candidate + \"/\", base, created: candidate };",
       "expectRed": "makeWorkdir returns a realpath'd directory its own guard accepts",
       "cell": "makeWorkdir returns a realpath'd directory its own guard accepts"
     }

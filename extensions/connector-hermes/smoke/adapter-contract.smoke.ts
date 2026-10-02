@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
  * sentinel anyway so that adding it to a shard later is a one-line change and not a fresh failure.
  */
 let cells = 0;
-const assert = new Proxy(nodeAssert, {
+const assert: typeof nodeAssert = new Proxy(nodeAssert, {
   get(target, prop, receiver) {
     const value = Reflect.get(target, prop, receiver);
     if (typeof value !== "function") return value;

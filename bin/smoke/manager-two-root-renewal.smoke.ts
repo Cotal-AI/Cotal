@@ -18,9 +18,10 @@
  *
  * The CONTROL phase runs the IDENTICAL path over a UNIFIED root (manager and daemon share one
  * root, the stock single-host composition): adoption succeeds, proving the phase-1 refusal is
- * caused by the divergence and not by the rig. Each phase gets its own space AND its own broker:
- * the per-space artifact store reserves 4 GiB of JetStream capacity, so two spaces on one broker
- * overrun a small CI disk - and a virgin broker per phase also rules out cross-phase carryover.
+ * caused by the divergence and not by the rig. Each phase gets its own space AND its own broker, so a
+ * virgin broker per phase rules out cross-phase carryover. Capacity used to force the same split -
+ * the per-space artifact store reserved 4 GiB of JetStream capacity, so two spaces on one broker
+ * overran a small CI disk - and that reservation is gone.
  *
  * COTAL_HOME is sandboxed and ambient COTAL_* is scrubbed; kills ONLY the PIDs it spawns.
  * Run: pnpm smoke:manager-two-root-renewal   (needs `nats-server` on PATH; auth mode; ~60s)
@@ -50,8 +51,9 @@ const {
   probeConnect,
   serverConfig,
   setupSpaceStreams,
+  MANAGER_LEASE_TTL_MS,
 } = await import("@cotal-ai/core");
-const { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, authDir, readRenewalRecord, saveSpaceAuth, spaceSegment } = await import("@cotal-ai/workspace");
+const { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, authDir, readRenewalRecord, saveSpaceAuth, spaceSegment, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { Manager } = await import("@cotal-ai/manager");
 type SpaceAuth = Awaited<ReturnType<typeof createSpaceAuth>>;
 
@@ -86,7 +88,7 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 /** Every cell above is enumerated: a run that silently skipped cells must not read as green. */
-const EXPECTED_CELLS = 18;
+const EXPECTED_CELLS = 21;
 
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -139,6 +141,8 @@ const spawnDaemon = (root: string, space: string, servers: string, credsPath: st
 const rootA = mkdtempSync(join(tmpdir(), "cotal-773-mgr-root-")); // the manager's workspace root
 const rootB = mkdtempSync(join(tmpdir(), "cotal-773-daemon-root-")); // the daemon's DIVERGENT root
 const rootC = mkdtempSync(join(tmpdir(), "cotal-773-unified-root-")); // control: one shared root
+const rootD = mkdtempSync(join(tmpdir(), "cotal-1634-peer-root-"));  // a manager on the daemon's store
+const rootE = mkdtempSync(join(tmpdir(), "cotal-1634-peer2-root-")); // a SECOND manager on that SAME store
 
 let daemonB: ChildProcess | undefined;
 let daemonC: ChildProcess | undefined;
@@ -146,6 +150,8 @@ const sinkB = { out: "", exited: false };
 const sinkC = { out: "", exited: false };
 let mgrA: InstanceType<typeof Manager> | undefined;
 let mgrC: InstanceType<typeof Manager> | undefined;
+let mgrD: InstanceType<typeof Manager> | undefined;
+let mgrE: InstanceType<typeof Manager> | undefined;
 let broker1: ReturnType<typeof startBroker> | undefined;
 let broker2: ReturnType<typeof startBroker> | undefined;
 try {
@@ -180,7 +186,7 @@ try {
   must("daemon B's membership feed is up (the membership component is a real adopter here)", await until(() => sinkB.out.includes("membership feed up"), 15_000), sinkB.out.slice(-500));
 
   // The renewal owner is the REAL Manager: `start()` runs the initial class-2 renewal pass inline
-  // (re-sign through ITS store, request `reloadCreds {expected}`, persist `renewal.json`).
+  // (re-sign through ITS store, request `reloadCreds {expected}`, persist the per-space renewal record).
   mgrA = new Manager({ space: SPACE_DIVERGED, servers: servers1, runtime: "pty", workspaceRoot: rootA });
   let startRefusal: string | undefined;
   try {
@@ -189,21 +195,65 @@ try {
     startRefusal = (e as Error).message;
   }
   ok(
-    "#773: the divergent manager-store/daemon-store composition is refused at start, naming both roots",
-    startRefusal !== undefined && startRefusal.includes(rootA) && startRefusal.includes(rootB),
+    "#1634: the divergent manager-store/daemon-store composition STARTS (a second root serves the space)",
+    startRefusal === undefined,
     { startRefusal, rootA, rootB },
   );
 
-  const rec = readRenewalRecord(rootA);
+  // COUPLING: the four cells below are ABSENCE-detectors - they assert the non-owner did nothing,
+  // which is also true if nothing happened at all. The unified-root CONTROL at the end of this file
+  // is their positive twin and is what reds when renewal breaks for everyone. Keep them together.
+  const rec = readRenewalRecord(rootA, SPACE_DIVERGED);
   ok(
-    "#773: the refused start never reminted (no manager renewal record, no write into A)",
+    "#1634: the non-owner never reminted (no manager renewal record, no write into A)",
     rec === undefined,
     rec,
   );
   ok("#773: root A's delivery cred still holds the ORIGINAL generation (remint did not run)", readFileSync(join(segA, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
   ok("#773: root B's delivery cred still holds the ORIGINAL generation", readFileSync(join(segB, DELIVERY_CREDS_KIND), "utf8") === dlvGen1);
   ok("#773: root B's membership rw cred still holds the ORIGINAL generation", readFileSync(join(segB, MEMBERSHIP_RW_CREDS_KIND), "utf8") === rwGen1);
-  ok("daemon B outlives the refused start (refusal is a manager construction error, not a daemon death)", !sinkB.exited);
+  ok("daemon B outlives the second manager's start", !sinkB.exited);
+
+  // ---- #1634 / rev-1642-o F5: TWO managers that BOTH match the daemon's ONE store ---------------
+  // The premise "the daemon names one store, so at most one manager can match it" is false.
+  // `sameSecretStoreIdentity` is pure equality with no holder and no tiebreak, so both managers
+  // below pass the identity challenge, and without a lease BOTH remint into the daemon's store.
+  // That is the composition docs/embedding.md tells hosted operators to build (one injected
+  // coordinate on both processes), and it reintroduces the #773 adoption refusal: two owners on
+  // independent timers have no ordering, so one's write lands between the other's re-sign and its
+  // fingerprint-only reloadCreds. Reviewer-reproduced, and asserted nowhere before this cell.
+  saveSpaceAuth(authDir(rootB), auth1); // the signer must exist in the store both now mint through
+  mgrD = new Manager({ space: SPACE_DIVERGED, servers: servers1, runtime: "pty", workspaceRoot: rootD, secretStore: workspaceSecretStore(rootB) });
+  mgrE = new Manager({ space: SPACE_DIVERGED, servers: servers1, runtime: "pty", workspaceRoot: rootE, secretStore: workspaceSecretStore(rootB) });
+  let peerRefusal: string | undefined;
+  try {
+    await mgrD.start();
+    // PAST the lease TTL, not back to back: a lease that is claimed once and never heartbeat-kept
+    // expires seconds after start, and a second manager arriving inside that window takes it too.
+    // Starting E immediately would pass against exactly that defect.
+    await wait(MANAGER_LEASE_TTL_MS + 2_000);
+    await mgrE.start();
+  } catch (e) {
+    peerRefusal = (e as Error).message;
+  }
+  const recD = readRenewalRecord(rootD, SPACE_DIVERGED);
+  const recE = readRenewalRecord(rootE, SPACE_DIVERGED);
+  ok("#1634: two managers sharing the daemon's ONE store BOTH start", peerRefusal === undefined, peerRefusal);
+  ok(
+    "#1634: exactly ONE of them owns daemon renewal ACROSS the lease TTL (the lease breaks the tie, store identity cannot)",
+    (recD !== undefined) !== (recE !== undefined),
+    { rootDRecorded: recD !== undefined, rootERecorded: recE !== undefined },
+  );
+  ok(
+    // Asserts BOTH directions: "the non-owner did nothing" alone is satisfied when NOBODY reminted.
+    "#1634: the owner reminted and the non-owner of that pair reminted nothing",
+    ((recD?.results?.length ?? 0) === 0) !== ((recE?.results?.length ?? 0) === 0),
+    { rootDResults: recD?.results?.length ?? 0, rootEResults: recE?.results?.length ?? 0 },
+  );
+  try { await mgrE.stop({ withAgents: true }); } catch { /* never started */ }
+  mgrE = undefined;
+  try { await mgrD.stop({ withAgents: true }); } catch { /* never started */ }
+  mgrD = undefined;
 
   await mgrA.stop({ withAgents: true });
   mgrA = undefined;
@@ -242,7 +292,7 @@ try {
   mgrC = new Manager({ space: SPACE_UNIFIED, servers: servers2, runtime: "pty", workspaceRoot: rootC });
   await mgrC.start();
 
-  const recC = readRenewalRecord(rootC);
+  const recC = readRenewalRecord(rootC, SPACE_UNIFIED);
   ok("control: the SAME Manager renewal path over a UNIFIED root ADOPTS (adoption.ok:true)", recC?.adoption?.ok === true, recC?.adoption);
   const detailC = (recC?.adoption?.detail ?? {}) as {
     delivery?: { ok?: boolean; brokerAccepted?: { identity?: string } };
@@ -266,11 +316,13 @@ try {
 } finally {
   try { await mgrA?.stop({ withAgents: true }); } catch { /* already stopped or never started */ }
   try { await mgrC?.stop({ withAgents: true }); } catch { /* already stopped or never started */ }
+  try { await mgrD?.stop({ withAgents: true }); } catch { /* already stopped or never started */ }
+  try { await mgrE?.stop({ withAgents: true }); } catch { /* already stopped or never started */ }
   try { if (daemonB && !sinkB.exited) daemonB.kill("SIGKILL"); } catch { /* gone */ }
   try { if (daemonC && !sinkC.exited) daemonC.kill("SIGKILL"); } catch { /* gone */ }
   if (broker1) await killAndAwaitExit(broker1.srv, "SIGKILL");
   if (broker2) await killAndAwaitExit(broker2.srv, "SIGKILL");
-  for (const d of [broker1?.dir, broker2?.dir, rootA, rootB, rootC, home]) if (d) rmSync(d, { recursive: true, force: true });
+  for (const d of [broker1?.dir, broker2?.dir, rootA, rootB, rootC, rootD, rootE, home]) if (d) rmSync(d, { recursive: true, force: true });
   broker1?.release();
   broker2?.release();
 }

@@ -80,6 +80,7 @@ import {
 import { readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
+import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 
 const RESTORE_TIMEOUT_MS = 30 * 60 * 1000;
 const CHUNK_BYTES = 1024 * 1024;
@@ -97,6 +98,9 @@ export interface RestoreFlags {
   open?: boolean;
   "user-auth"?: boolean;
   idp?: string;
+  /** Consent for admission gate 3, as the ordinary resume path takes it: a restored journal's
+   *  retained seats pass the same gates, so they need the same override available. */
+  "accept-stale-checkpoint"?: boolean;
 }
 
 export interface PreparedRestore {
@@ -821,6 +825,18 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
     await broker.stop();
     broker = undefined;
 
+    // The seats this restore is about to resume owe the same admission and the same restore as an
+    // ordinary one: the retained inventory here is this root's own preserved cut, and the manager
+    // operation it ends in is the same `resumePreserved`. Run them after the store is restored and
+    // validated, before commit intent is journaled and long before a manager launches, so a refusal
+    // costs a rollback rather than a live seat on an unrestored tree.
+    //
+    // A registry-only restore resumes no seat (the agents are dropped from the inventory it hands
+    // the manager), so there is nothing to admit and nothing to restore.
+    const staleConsent = onlyRegistry
+      ? []
+      : admitAndRestoreSeatCheckpoints(root, journal.space, journal.cut.attemptId, flags, resume.inventory);
+
     lock = acquireMaintenanceLock(root);
     const resumeLaunch = (resume.launch ?? {}) as { server?: unknown };
     const effectiveServer = canonicalServerEndpoint(flags.server ?? (typeof resumeLaunch.server === "string" ? resumeLaunch.server : "nats://127.0.0.1:4222"));
@@ -841,6 +857,11 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
       acceptMissingSource: Boolean(flags["accept-missing-source"]),
       serverName,
       serverNonce,
+      // Durable evidence of consent, as the ordinary resume journals it: an operator asking later
+      // why a seat resumed from a checkpoint past its horizon reads it from the journal.
+      ...(staleConsent.length
+        ? { acceptedStaleCheckpoints: staleConsent.map((seat) => ({ ...seat })) as unknown as JsonValue }
+        : {}),
     } as { [key: string]: JsonValue });
     releaseMaintenanceLock(lock);
     lock = undefined as never;

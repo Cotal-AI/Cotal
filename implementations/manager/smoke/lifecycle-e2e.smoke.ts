@@ -35,12 +35,15 @@ import {
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 import { registry } from "@cotal-ai/core";
-import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, renewalRecordPath, saveSpaceAuth } from "@cotal-ai/workspace";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../.."); // worktree root — the agent process runs here so `@cotal-ai/core` resolves
 const STUB = join(here, "e2e-stub.mjs");
+const prevSeatRoot = process.env.COTAL_SEAT_ROOT;
+const seatRoot = mkdtempSync(join(tmpdir(), "s"));
+process.env.COTAL_SEAT_ROOT = seatRoot;
 // OS-assigned free port (collision-safe at allocation) — the old random port had no bind guard, so
 // a rare collision could attach isReachable() to a FOREIGN broker and fail auth downstream.
 const freePort = (): Promise<number> =>
@@ -61,13 +64,18 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const space = `life-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const prevHome = process.env.COTAL_HOME;
+process.env.COTAL_HOME = join(dir, "home");
+mkdirSync(process.env.COTAL_HOME, { recursive: true });
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // seeds the FS composition; the manager's start() reads it via getSpaceAuth(this.secrets) (FS default)
 for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1", "wrongreg1", "bypass1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
-const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-const releaseBroker = teardownOnSignal(srv, dir);
+const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], {
+  stdio: "ignore", env: { PATH: process.env.PATH, HOME: process.env.COTAL_HOME, TMPDIR: dir },
+});
+const releaseBroker = teardownOnSignal(srv);
 let delivery: CotalEndpoint | undefined;
 
 const DM = dmStream(space), DLV = dlvStream(space);
@@ -165,18 +173,20 @@ try {
   });
   delivery.on("error", () => {});
   await delivery.start();
+  const dlvRevision = await delivery.acquireDeliveryLease(0);
   await delivery.startPlane3(async () => undefined, {
     evictPrincipal: (principal) => evictDeniedPrincipalWithCreds({
       servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
     }),
     reloadStoreIdentity: () => ({ kind: "fs", root: resolve(workspaceRoot) }),
   });
+  await delivery.markDeliveryLeaseReady(0, dlvRevision);
   await mgr.start();
 
   // 0 — the manager is the CLASS-2 RENEWAL OWNER (D5 slice 5): a real start runs the ordered
   // renewal pass and persists the audit record — here with both daemon files absent (no delivery
   // daemon staged), recorded honestly as skips, never a fabricated adoption.
-  const renewalPath = join(workspaceRoot, ".cotal", "renewal.json");
+  const renewalPath = renewalRecordPath(workspaceRoot, space);
   check("manager start writes the renewal audit record", existsSync(renewalPath));
   {
     const rec = JSON.parse(readFileSync(renewalPath, "utf8")) as { owner?: string; results?: Array<{ file: string; ok: boolean; skipped?: string }>; adoption?: unknown };
@@ -186,7 +196,7 @@ try {
 
   // 1 — STARTED via real presence + footprint exists.
   console.log("1. real spawn → started via presence:");
-  const r1 = await mgr.startAgent({ name: "w1", agent: "e2e-stub", cwd: repoRoot });
+  const r1 = await mgr.startAgent({ name: "w1", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("startAgent reports started (agent joined the mesh)", r1.ok === true, r1);
   const id1 = (r1.data as { id?: string } | undefined)?.id ?? "";
   const uid1 = uidOf("w1"); // capture the manager-minted uid while w1 is still managed (despawn clears it)
@@ -211,7 +221,7 @@ try {
 
   // 3 — FAILED launch: process exits on arrival → {ok:false} + footprint rolled back.
   console.log("3. die-on-arrival → failed + footprint rolled back:");
-  const r3 = await mgr.startAgent({ name: "bad1", agent: "e2e-die", cwd: repoRoot });
+  const r3 = await mgr.startAgent({ name: "bad1", agent: "e2e-die", cwd: repoRoot, events: false });
   check("startAgent reports {ok:false}", r3.ok === false, r3);
   check("failure names 'exited on launch'", /exited on launch/.test((r3 as { error?: string }).error ?? ""), (r3 as { error?: string }).error);
   // The die connector still provisioned before it exited; that footprint must be torn down. Its id isn't
@@ -225,7 +235,7 @@ try {
   // backstop → {ok:false} uncertain, and the agent is KEPT (not deprovisioned; it may still be booting).
   console.log("3b. runs-but-never-joins → uncertain + kept:");
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 3000; // shrink the backstop for the test
-  const r3b = await mgr.startAgent({ name: "idle1", agent: "e2e-idle", cwd: repoRoot });
+  const r3b = await mgr.startAgent({ name: "idle1", agent: "e2e-idle", cwd: repoRoot, events: false });
   check("startAgent reports {ok:false}", r3b.ok === false, r3b);
   check("failure names it 'uncertain'", /uncertain/i.test((r3b as { error?: string }).error ?? ""), (r3b as { error?: string }).error);
   const idleId = (mgr as unknown as { agents: Map<string, { id: string; agent: string }> }).agents.get("idle1")?.id ?? "";
@@ -250,11 +260,11 @@ try {
         return Object.keys(info.state.subjects ?? {});
       });
     const before = new Set(await presenceKeys());
-    const rNo = await mgr.startAgent({ name: "nouid1", agent: "e2e-nouid", cwd: repoRoot });
+    const rNo = await mgr.startAgent({ name: "nouid1", agent: "e2e-nouid", cwd: repoRoot, events: false });
     check("a launch whose connector DROPS the launcher uid never reports started", rNo.ok === false, rNo);
-    const rWrong = await mgr.startAgent({ name: "wrong1", agent: "e2e-wronguid", cwd: repoRoot });
+    const rWrong = await mgr.startAgent({ name: "wrong1", agent: "e2e-wronguid", cwd: repoRoot, events: false });
     check("a consuming launch that LIES a different uid never reports started (bind denied)", rWrong.ok === false, rWrong);
-    const rWrongReg = await mgr.startAgent({ name: "wrongreg1", agent: "e2e-wronguid-reg", cwd: repoRoot });
+    const rWrongReg = await mgr.startAgent({ name: "wrongreg1", agent: "e2e-wronguid-reg", cwd: repoRoot, events: false });
     check("a REGISTER-ONLY (consume:false) launch that lies a uid never reports started (dm_ proof denied)", rWrongReg.ok === false, rWrongReg);
     const added = (await presenceKeys()).filter((k) => !before.has(k));
     check("NONE of the fail-before-presence launches left a presence ghost (dropped/lying uid, consume or register-only)", added.length === 0, added);
@@ -264,7 +274,7 @@ try {
     // readiness LIFECYCLE FENCE rejects it anyway - client-authored kind is not the authority
     // boundary; the manager owns the expected uid, so the ghost never reports STARTED.
     (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 3000;
-    const rBypass = await mgr.startAgent({ name: "bypass1", agent: "e2e-bypass-kind", cwd: repoRoot });
+    const rBypass = await mgr.startAgent({ name: "bypass1", agent: "e2e-bypass-kind", cwd: repoRoot, events: false });
     check("a kind:endpoint child with a lied uid never reports STARTED (manager readiness lifecycle fence, not client kind)",
       rBypass.ok === false && /uncertain/i.test((rBypass as { error?: string }).error ?? ""), rBypass);
     (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 30000;
@@ -272,7 +282,7 @@ try {
 
   // 4 — EXPLICIT SHUTDOWN teardown: withAgents deprovisions the still-managed agents (w2 + the kept idle1).
   console.log("4. manager stop({ withAgents: true }) → still-managed footprint torn down:");
-  const r4 = await mgr.startAgent({ name: "w2", agent: "e2e-stub", cwd: repoRoot });
+  const r4 = await mgr.startAgent({ name: "w2", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("second agent started", r4.ok === true, r4);
   const id2 = (r4.data as { id?: string } | undefined)?.id ?? "";
   const uid2 = uidOf("w2"); // capture before stop() clears the managed set
@@ -290,11 +300,18 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
-  try { await mgr.stop({ withAgents: true }); } catch { /* already stopped */ }
-  await delivery?.stop().catch(() => {});
-  srv.kill("SIGKILL");
-  await wait(300);
+  let cleanupError: unknown;
+  try { await mgr.stop({ withAgents: true }); } catch (error) { cleanupError = error; }
+  try { await delivery?.stop(); } catch (error) { cleanupError ??= error; }
+  await killAndAwaitExit(srv, "SIGKILL");
+  releaseBroker();
+  if (prevHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = prevHome;
+  if (prevSeatRoot === undefined) delete process.env.COTAL_SEAT_ROOT;
+  else process.env.COTAL_SEAT_ROOT = prevSeatRoot;
+  if (cleanupError) throw cleanupError;
+  if (srv.exitCode === null && srv.signalCode === null) throw new Error("broker exit unproven; storage preserved");
   rmSync(dir, { recursive: true, force: true });
-  releaseBroker(); // last: ownership is held until this teardown has actually finished
-  process.exit(process.exitCode ?? 0);
+  rmSync(seatRoot, { recursive: true, force: true });
 }
+process.exit(process.exitCode ?? 0);

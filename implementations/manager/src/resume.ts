@@ -86,12 +86,20 @@ const agent = z.strictObject({
     shareTools: z.string().max(4096).optional(),
     forkSource: z.string().min(1).max(4096).optional(),
     sessionId: z.string().min(1).max(4096).optional(),
+    // The connector's session pointer file. Optional because a seat whose connector declares no
+    // continuation has none, and because an inventory written before this field existed must still
+    // resume rather than be refused by a stricter reader.
+    sessionStatePath: path.optional(),
     unresolvedLaunchOptionKeys: z.array(label).max(64).optional(),
   }),
   dependencies: z.array(path).max(16),
   spawner: z.string().min(1).max(256),
   authorityParent: z.string().min(1).max(256).optional(),
   startedAt: z.string().min(1).max(64),
+  // The CHAT stream frontier at the preservation cut (issue #545). Optional because an inventory
+  // written before this field existed must still resume rather than be refused, exactly as
+  // sessionStatePath's absence means no pointer rather than a stricter refusal.
+  backfillFloor: z.number().int().nonnegative().optional(),
 });
 
 const inventory = z.strictObject({

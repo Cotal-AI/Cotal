@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isReachable, seedChannelRegistry } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // #839: a startup/readiness failure must not return (and let the manager retire the seat's mesh
 // credential) while the private Jcode daemon tree it launched is still executing. The fake bridge
@@ -55,7 +56,7 @@ const alive = (pid: number): boolean => {
   return true;
 };
 
-const root = mkdtempSync(join(tmpdir(), "cotal-jcode-lifecycle-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-lifecycle-`));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -64,12 +65,13 @@ const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+teardownOnSignal(nats);
 let child: ChildProcess | undefined;
 const foreignProcesses: ChildProcess[] = [];
 let pass = 0;
 const leaked: number[] = [];
 const check = (name: string, condition: boolean, actual?: unknown): void => {
-  assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  assert.ok(condition, `${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -138,7 +140,7 @@ try {
   child = failing.child;
   const daemonRecord = (await waitFor("private daemon", () =>
     entriesOf(failing.log).find((entry) => entry.ev === "daemon"),
-  )) as { pid: number; mcp: number };
+  )) as unknown as { pid: number; mcp: number };
   leaked.push(daemonRecord.pid, daemonRecord.mcp);
   check(
     "private daemon and its MCP child are live before the failure (instrument control)",
@@ -173,7 +175,7 @@ try {
   child = late.child;
   const lateDaemon = (await waitFor("late-record private daemon", () =>
     entriesOf(late.log).find((entry) => entry.ev === "daemon"),
-  )) as { pid: number; mcp: number };
+  )) as unknown as { pid: number; mcp: number };
   leaked.push(lateDaemon.pid, lateDaemon.mcp);
   await Promise.race([once(late.child, "exit"), sleep(30_000)]);
   check("late-record startup failure returns non-zero", late.child.exitCode !== null && late.child.exitCode !== 0, {
@@ -202,7 +204,7 @@ try {
   failureForeign.unref();
   const foreignRecord = (await waitFor("startup-failure foreign process", () =>
     entriesOf(join(root, "foreign-failure.jsonl")).find((entry) => entry.ev === "foreign"),
-  )) as { pid: number; child: number };
+  )) as unknown as { pid: number; child: number };
   leaked.push(foreignRecord.pid, foreignRecord.child);
   check("foreign detached process and child live before poisoned teardown (instrument control)", alive(foreignRecord.pid) && alive(foreignRecord.child), foreignRecord);
 
@@ -228,7 +230,7 @@ try {
   gracefulForeign.unref();
   const gracefulForeignRecord = (await waitFor("graceful foreign process", () =>
     entriesOf(join(root, "foreign-graceful.jsonl")).find((entry) => entry.ev === "foreign"),
-  )) as { pid: number; child: number };
+  )) as unknown as { pid: number; child: number };
   leaked.push(gracefulForeignRecord.pid, gracefulForeignRecord.child);
   check("graceful foreign detached process and child live before poisoned teardown (instrument control)", alive(gracefulForeignRecord.pid) && alive(gracefulForeignRecord.child), gracefulForeignRecord);
 
@@ -253,7 +255,7 @@ try {
   child = healthy.child;
   const healthyDaemon = (await waitFor("healthy private daemon", () =>
     entriesOf(healthy.log).find((entry) => entry.ev === "daemon"),
-  )) as { pid: number; mcp: number };
+  )) as unknown as { pid: number; mcp: number };
   leaked.push(healthyDaemon.pid, healthyDaemon.mcp);
   await waitFor("readiness turn", () =>
     entriesOf(healthy.log).find(

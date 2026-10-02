@@ -13,6 +13,13 @@ name: Attribution
 #
 # The grammar is closed and lives in scripts/check-attribution.mjs with its own self-test,
 # which runs first so a broken grader cannot report clean.
+#
+# The author and committer fields are graded too, and by one extra rule the message body does not
+# get: an identity that is a machine slug carrying a serial segment is refused whatever role word
+# it uses. A seat name in permanent history's author field needs a rewrite to remove, and the rule
+# that used to guard it was a list of the seat names that existed when it was written, so it went
+# quiet when the fleet was renamed (#1560). Both halves are now derived from how such names are
+# BUILT, and every name in the self-test is graded on its own row.
 
 on:
   pull_request:
@@ -28,7 +35,7 @@ concurrency:
 jobs:
   attribution:
     timeout-minutes: 5
-    runs-on: tenki-standard-small-2c-4g
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:

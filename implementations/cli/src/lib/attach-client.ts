@@ -25,6 +25,44 @@ export function detachKey(): { byte: number; label: string; overridden: boolean 
 }
 
 /**
+ * Whether a whole chunk `d` is exactly one press of the detach key `byte`, in any of three
+ * encodings: the legacy single control byte; the kitty keyboard protocol's `CSI <codepoint> ;
+ * <mods> u`; or xterm `modifyOtherKeys`'s `CSI 27 ; <mods> ; <codepoint> ~`. `<codepoint>` is the
+ * decimal codepoint kitty/xterm report for the unshifted key: `byte | 0x40` for the control
+ * punctuation (`@ [ \ ] ^ _`) and `byte | 0x60` for a letter (kitty reports the lowercase key even
+ * though Ctrl was held). `<mods>` is 1 + the modifier bitmask and must carry the Ctrl bit
+ * (`(mods - 1) & 4`), so plain Ctrl (5) and Ctrl+Shift (6) match but a modifier field without Ctrl
+ * does not, and a field of 0, which neither protocol emits, is not a press either (the test needs
+ * that floor: `(0 - 1) & 4` is 4 in ToInt32 arithmetic, so 0 would otherwise read as Ctrl). The match is on the WHOLE chunk:
+ * a sequence with company (a paste, a second keystroke, a trailing byte) is not a press, which is
+ * the same paste-safety property the one-byte test already had. This assumes one press arrives in
+ * one read, as measured on a pty (issue #598); a sequence split across two reads is not buffered
+ * and is not recognised. A kitty `CSI u` with an alternate-key `<codepoint>:<shifted>:<base>` triple
+ * is accepted by matching only the leading codepoint before an optional `:...` group; no other
+ * kitty event type (release, repeat) is recognised.
+ */
+export function isDetachPress(d: Buffer, byte: number): boolean {
+  if (d.length === 0) return false;
+  if (d.length === 1 && d[0] === byte) return true;
+  const s = d.toString("latin1");
+  const codepoints = byte >= 0x01 && byte <= 0x1a ? [byte | 0x40, byte | 0x60] : [byte | 0x40];
+  const hasCtrl = (mods: number) => mods >= 1 && ((mods - 1) & 4) !== 0;
+  const kitty = /^\x1b\[(\d+)(?::\d+(?::\d+)?)?;(\d+)u$/.exec(s);
+  if (kitty) {
+    const cp = Number(kitty[1]);
+    const mods = Number(kitty[2]);
+    if (codepoints.includes(cp) && hasCtrl(mods)) return true;
+  }
+  const xterm = /^\x1b\[27;(\d+);(\d+)~$/.exec(s);
+  if (xterm) {
+    const mods = Number(xterm[1]);
+    const cp = Number(xterm[2]);
+    if (codepoints.includes(cp) && hasCtrl(mods)) return true;
+  }
+  return false;
+}
+
+/**
  * Terminal modes a full-screen child (a fullscreen TUI: OpenCode, or Claude under `/tui fullscreen`)
  * commonly turns on but that we must undo locally on detach/exit: the agent keeps running after
  * Ctrl-], so it never restores OUR terminal. Without this, detaching from a mouse-tracking TUI leaves
@@ -310,8 +348,14 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
 
     const sendResize = () =>
       transport.resize(process.stdout.columns ?? 80, process.stdout.rows ?? 24);
-    const onInput = (d: Buffer) => {
-      if (d.length === 1 && d[0] === detach.byte) {
+    const onInput = (data: Buffer | string) => {
+      // Under the console, Ink has called `stdin.setEncoding("utf8")`, and an encoding persists on
+      // the stream after Ink releases raw mode, so data arrives as a STRING there (the standalone
+      // command gets Buffers). Normalize first: the one-byte detach compare below would otherwise
+      // silently never match (a one-character string is not the number 0x1d), Ctrl-] would just
+      // forward to the child, and detaching from a console attach would be impossible.
+      const d = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
+      if (isDetachPress(d, detach.byte)) {
         clearWheel();
         transport.close();
         return;

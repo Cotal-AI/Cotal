@@ -19,7 +19,8 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { processStartToken as posixStartToken } from "./advisory-lock.js";
 
 /** A Node/POSIX-signalable pid: a positive INTEGER within the signed 32-bit range `process.kill`
@@ -138,6 +139,23 @@ export function readProcessCommand(pid: number): ProcessCommand {
  */
 export function commandIsCotalSupervisor(command: string): boolean {
   return /(^|\s)supervise(\s|$)/.test(command);
+}
+
+/**
+ * Does this command line belong to a Cotal delivery daemon?
+ *
+ * Same rule and same direction as {@link commandIsCotalSupervisor}, one component over: the test is
+ * the `deliver` ARGV TOKEN, which is the daemon's own subcommand and is present however it was
+ * started — `cotal up`'s detached re-exec, a container entrypoint, systemd, or an operator typing
+ * `cotal deliver --space …`. A token, not a substring, so `delivery-thing` and a `--creds
+ * .../delivery.creds` path are not mistaken for the daemon.
+ *
+ * IT FAILS TOWARD "OURS" for the reason the manager's does: a live pid whose argv cannot be read is
+ * still trusted, which is exactly the behaviour every reader had before attribution existed. Only
+ * affirmative evidence that the live process is something else may downgrade a record.
+ */
+export function commandIsCotalDelivery(command: string): boolean {
+  return /(^|\s)deliver(\s|$)/.test(command);
 }
 
 // ---- CREATION IDENTITY: one stable scheme across launch, record, status and teardown (#969) ----
@@ -330,6 +348,57 @@ export function writeIdentityPin(pidfilePath: string, pid: number, tokenAt: Proc
   const rec = identityRecord(pid, tokenAt);
   if (!("token" in rec)) return; // no start could be established: leave the legacy bare-pid shape, loud
   writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));
+}
+
+/** One step of {@link writePidPair}'s publish, passed to `onStep` right after it completes. Production
+ *  passes no `onStep`; tests use it to plant a crash between two named steps and read what survives. */
+export type PidPairStep = "temporaries" | "unlink-old-pin" | "publish-pid" | "publish-pin";
+
+/** Publish the pidfile and its identity pin as ONE transition, never as the two adjacent
+ *  `writeFileSync` calls #969 left behind (issue #1238): both halves are written to temporaries
+ *  first, the OLD pin is unlinked, then each half is renamed into place in a fixed order, so a crash
+ *  at any point leaves one of exactly three shapes - never a torn pair (old pid with a new pin, or a
+ *  new pid with an old one).
+ *
+ *  Reachable on-disk states, in order: before `publish-pid`, the OLD complete record (or nothing, on
+ *  a first start) - a crash here is invisible, nothing published yet. After `unlink-old-pin`, the OLD
+ *  pid with no pin - the legacy shape, warned. After `publish-pid`, the NEW pid with no pin - legacy
+ *  again, never torn. After `publish-pin`, the NEW complete record. When `identityRecord` cannot
+ *  establish a token (ps-less host, or a pid whose start could not be read - same rule as
+ *  {@link writeIdentityPin}), no pin temporary is ever written and the publish ends at `publish-pid`:
+ *  the legacy shape, exactly as `writeIdentityPin` would have left it, never invented.
+ *
+ *  On any throw, both temporaries are removed (`finally`, best-effort) and the error rethrown; the
+ *  temporary names are never read by any reader (`${path}.publish.<pid>.<hex>`, the same claim-file
+ *  pattern {@link claimAuthPidSlot} uses for `.claim.`). */
+export function writePidPair(
+  pidfilePath: string,
+  pid: number,
+  opts: { tokenAt?: ProcessStartTokenReader; onStep?: (step: PidPairStep) => void } = {},
+): void {
+  const tokenAt = opts.tokenAt ?? defaultStartToken;
+  const onStep = opts.onStep ?? (() => {});
+  const pinPath = identityPinPath(pidfilePath);
+  const suffix = `${process.pid}.${randomBytes(4).toString("hex")}`;
+  const pidTemp = `${pidfilePath}.publish.${suffix}`;
+  const rec = identityRecord(pid, tokenAt);
+  const pinTemp = "token" in rec ? `${pinPath}.publish.${suffix}` : undefined;
+  try {
+    writeFileSync(pidTemp, String(pid));
+    if (pinTemp !== undefined && "token" in rec) writeFileSync(pinTemp, formatRecord(rec));
+    onStep("temporaries");
+    rmSync(pinPath, { force: true });
+    onStep("unlink-old-pin");
+    renameSync(pidTemp, pidfilePath);
+    onStep("publish-pid");
+    if (pinTemp !== undefined) {
+      renameSync(pinTemp, pinPath);
+      onStep("publish-pin");
+    }
+  } finally {
+    rmSync(pidTemp, { force: true });
+    if (pinTemp !== undefined) rmSync(pinTemp, { force: true });
+  }
 }
 
 /** What {@link verifyIdentityPin} found for one pidfile. */

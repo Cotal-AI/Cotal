@@ -32,6 +32,7 @@ import {
 import { authDir, saveSpaceAuth, workspaceSecretStore, agentSecretKeyForFile } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { bootDeliveryDaemon, type DeliveryDaemon } from "./_boot-delivery.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -63,7 +64,10 @@ const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `secseam-${mintLifecycleUid().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-secseam-"));
+const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}secseam-`));
+const prevHome = process.env.COTAL_HOME;
+process.env.COTAL_HOME = join(dir, "home");
+mkdirSync(process.env.COTAL_HOME, { recursive: true });
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
@@ -75,6 +79,7 @@ writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: 
 
 const kids: ChildProcess[] = [];
 const srv = spawnProc("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(srv);
 kids.push(srv);
 let mgr: InstanceType<typeof Manager> | undefined;
 let delivery: DeliveryDaemon | undefined;
@@ -123,11 +128,11 @@ try {
     renewDaemonCreds(): Promise<void>;
     renewManagedStaticCred(a: unknown): Promise<void>;
     deprovision(a: { id: string; name: string; lifecycleUid: string; secretPaths?: { creds?: string } }): Promise<void>;
-    freeSlot(a: unknown, floor: boolean): void;
+    freeSlot(a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause): void;
     retiring: Map<string, unknown>;
   };
 
-  const spawned = await mgr.startAgent({ name: "worker", agent: "smoke-ss" });
+  const spawned = await mgr.startAgent({ name: "worker", agent: "smoke-ss", events: false });
   check("fixture: the agent spawned with a materialized static credential", spawned.ok === true, spawned);
   const a = M.agents.get("worker")!;
   const credsPath = a.secretPaths?.creds;
@@ -182,7 +187,7 @@ try {
   console.log("D. the retirement teardown deletes the credential through the injected store");
   {
     const before = store.seen.length;
-    M.freeSlot(a, false);
+    M.freeSlot(a, false, "process-exit");
     await M.deprovision({ id: a.id, name: a.name, lifecycleUid: a.lifecycleUid, secretPaths: a.secretPaths });
     for (let i = 0; i < 150 && M.retiring.has("worker"); i++) await wait(200);
     check("the teardown really happened (the credential file is gone)", !existsSync(credsPath!));
@@ -196,6 +201,8 @@ try {
   await delivery?.stop();
   for (const k of kids) { k.kill("SIGKILL"); }
   await wait(200);
+  if (prevHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = prevHome;
 }
 
 process.exit(fail > 0 ? 1 : 0);

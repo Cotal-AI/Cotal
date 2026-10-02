@@ -19,8 +19,9 @@ import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, sta
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
-import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
+import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
 
@@ -53,13 +54,38 @@ const tok = (s: string): string => s.trim().replace(ILLEGAL, "_").slice(0, 40) |
 const PKG_DIR = fileURLToPath(new URL("..", import.meta.url));
 const PLUGIN_SRC = join(PKG_DIR, "plugin", "cotal");
 
-function bridgeSocketPath(space: string, name: string): string {
-  return join(tmpdir(), `cotal-hermes-bridge-${tok(space)}-${tok(name)}.sock`);
+/** The bridge socket's path id is unpredictable, unlike the control endpoint's: `id` folds in the
+ *  launch's own control token alongside space/name/pid, so a same-uid process cannot compute the
+ *  path from public identity the way the old `space`+`name` name let it. The token is what
+ *  authenticates the socket (see bridge.ts); the path merely stops it being guessed at a glance. */
+function bridgeSocketPath(space: string, name: string, token: string): string {
+  const id = createHash("sha256")
+    .update(`${space}\0${name}\0${process.pid}\0${token}\0bridge`)
+    .digest("base64url")
+    .slice(0, 32);
+  const path = join(tmpdir(), `cotal-hermes-bridge-${id}.sock`);
+  const bytes = Buffer.byteLength(path);
+  if (bytes > SUN_PATH_MAX_BYTES) {
+    const tail = `/cotal-hermes-bridge-${id}.sock`.length;
+    throw new Error(
+      `bridge socket path is ${bytes} bytes, over the ${SUN_PATH_MAX_BYTES}-byte sun_path limit on ` +
+        `${process.platform}, so it cannot be bound and the kernel would report only EINVAL: ${path}. ` +
+        `The socket name is a fixed ${tail} bytes, so the temp root must be at most ` +
+        `${SUN_PATH_MAX_BYTES - tail} bytes — TMPDIR is ${Buffer.byteLength(tmpdir())} bytes ` +
+        `(${tmpdir()}). Point TMPDIR at a shorter directory.`,
+    );
+  }
+  return path;
 }
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-hermes] ${msg}\n`);
 }
+
+/** A launch this connector refuses on what it was given. The message is the whole diagnosis, so
+ *  it is printed without a stack: a stack names lines in a bundle and points the operator at
+ *  this code, when what they need to change is their own invocation. */
+export class LaunchRefused extends Error {}
 
 /** A double-quoted YAML basic-string literal (escaped). */
 const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
@@ -69,7 +95,19 @@ const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g
  * Drops the cotal plugin into the profile's plugins dir, enables it + the cotal platform, and
  * turns approvals off (an autonomous spawned gateway has no human at the TUI to approve commands).
  */
-function setupProfile(home: string, opts: { model?: string; persona?: string }): void {
+export function setupProfile(home: string, opts: { model: string | undefined; persona?: string }): void {
+  // A managed profile is a temporary directory and reads nothing from ~/.hermes, so the model the
+  // operator configured there is not a model this gateway has. With none resolved here, hermes
+  // would pick a default of its own over a provider this profile may hold no key for, and that is
+  // the one degradation the launch cannot see: the seat still joins the mesh and still accepts a
+  // turn, and the first sign is a provider refusal mid-turn whose advice points at the operator's
+  // credentials. Refuse before anything is written, so a refused launch leaves no directory a
+  // later spawn could take for a working profile.
+  if (!opts.model)
+    throw new LaunchRefused(
+      "a managed Hermes profile does not read ~/.hermes, and no model was resolved for it — " +
+        `set one with --model, the agent file's model:, or HERMES_MODEL, or run the gateway on your own profile with ${ADOPT_HOME_ENV}=$HOME/.hermes`,
+    );
   mkdirSync(home, { recursive: true });
   const pluginDst = join(home, "plugins", "cotal");
   rmSync(pluginDst, { recursive: true, force: true });
@@ -87,7 +125,7 @@ function setupProfile(home: string, opts: { model?: string; persona?: string }):
     "approvals:",
     "  mode: off",
   ];
-  if (opts.model) lines.push(`model: ${yamlStr(opts.model)}`);
+  lines.push(`model: ${yamlStr(opts.model)}`);
   writeFileSync(join(home, "config.yaml"), lines.join("\n") + "\n");
 
   // Persona → SOUL.md (Hermes' identity file) — the one place a system prompt can be set. Append the
@@ -230,7 +268,7 @@ async function main(): Promise<void> {
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
   const control = controlEndpoint(config.space, config.name);
-  const bridgeSock = bridgeSocketPath(config.space, config.name);
+  const bridgeSock = bridgeSocketPath(config.space, config.name, control.token);
   const toolsFile = join(home, "cotal-tools.json");
   // This launcher mints the control endpoint itself, so it has to hand the token onward to two
   // readers: the in-process sidecar below, and the gateway child. It rides the launch-material file
@@ -311,7 +349,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   main().catch((e) => {
-    log(`fatal: ${(e as Error).stack ?? String(e)}`);
+    log(e instanceof LaunchRefused ? `refused: ${e.message}` : `fatal: ${(e as Error).stack ?? String(e)}`);
     process.exit(1);
   });
 }

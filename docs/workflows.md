@@ -66,7 +66,10 @@ bounded decision record, not prose.
 - **Concurrency is visible.** `parallel`, `race`, `fanOut` and `conclave` are the only ways to do
   two things at once, each branch gets its own journal namespace, and the scope writes its own
   entry saying how it settled: which arm won a race is a recorded fact, decided by the arms'
-  recorded clocks and declaration order, never by a scheduler. A branch may not write to anything
+  recorded clocks and declaration order, never by a scheduler. A failure the program itself caused
+  inside the scope settles the entry under its own catalog code (`fanOut` without a stable key is
+  `L3021`, kind `runtime`), so a resume reads the same code the live run threw; a plain failure
+  from the handler records the generic `L4000` `scope-fault`. A branch may not write to anything
   declared outside it; return the value and read it out of the scope's result.
 - **Time and randomness are tamed.** `now()` is the branch's run clock, the end of the last effect
   it awaited; `random()` is a seeded stream derived per scope. Both replay identically.
@@ -87,6 +90,9 @@ Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 **Resume** is re-execution: the driver replays the journal, the program runs from the top, recorded
 steps return instantly, and the first unrecorded step is performed live. It refuses a journal that
 belongs to another run, a pin that differs from the recorded ones, and a different language version.
+
+A failed journal entry replays its error, while a pending entry lets the handler recover the
+external work it bound before the interruption.
 
 **Migrate** moves a run onto edited source. A dry walk of the new program over the recorded journal
 finds every recorded step the edit changed (a divergence) and every one it no longer reaches (an
@@ -115,6 +121,44 @@ journal, without a live effect handler or durable store. Inspection stops before
 step or any effect that needs new work. Program catch and finally blocks cannot extend the cut.
 The recorded pins are preserved.
 
+## From an agent session
+
+Fresh `cotal setup` defaults declare `capabilities: [spawn, run]`. On a static-auth mesh,
+that exposes `cotal_run` alongside the teammate tools. The manager must be running.
+Read `cotal_docs` pages `lang-card` and `workflows`, then try:
+
+```json
+{
+  "verb": "start",
+  "source": "await sleep(\"1s\", { name: \"first-run\" });",
+  "file": "first-run.cotal.js"
+}
+```
+
+Pass this object to `cotal_run`. `source` contains the program; `file` only labels diagnostics
+and reads nothing from disk. The response returns a run ID before execution finishes. Call
+`cotal_run` with `verb: "status"` and that `runId` to inspect the state and step journal.
+A completed timer records its sleep step as `ok`.
+
+### If `cotal_run` is missing
+
+1. Call `cotal_orientation` and check the connector version, capabilities and tool list.
+   Upgrade an older installation using the [upgrade guide](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
+2. Have the operator add `run` to the persona's existing `capabilities` list, for example
+   `capabilities: [spawn, run]`. `spawn` alone does not expose `cotal_run`. Setup leaves existing
+   personas unchanged except for its [byte-exact legacy migration](getting-started.md).
+   Peer persona-definition tools cannot grant capabilities.
+3. Relaunch the agent through the manager from the updated persona so it receives newly issued
+   credentials and a fresh connector configuration. Editing the file or reconnecting with the
+   old credential does not grant new broker permissions. If the launch sets `COTAL_CAPABILITIES`,
+   update that override too; it takes precedence over the file.
+4. Check `cotal_orientation` again, then call `cotal_run` with `verb: "ps"` before starting work.
+
+Tool visibility alone does not establish execution support. Hosted runs currently require
+static authentication with issued caller authority. Open meshes can expose the tool but refuse
+hosted runs; user-auth meshes also refuse them. A legacy credential without issued authority
+must be replaced through the current issuance path before it can start a hosted run.
+
 ## Operating a run
 
 The manager hosts runs. `cotal run start` hands the program to the manager of the resolved mesh
@@ -126,19 +170,31 @@ names a run the manager recorded and is refused while the manager is already dri
 `journal` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
 or agent that holds the `run` capability.
 
+`journal` prints an open pause's question under its step. Once a checkpoint or `ask` settles with an
+accepted answer, it instead prints the answer value as JSON, who answered, the artifact when one was
+cited, the recorded time, and the accepted answer id. Expired pauses and ordinary steps print no
+answer line.
+
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage
 cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
 cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
+cotal run migrate run-3f2a90c41b7e0d5a6c884e19b02df4a1 --local --file build-v2.cotal.js   # check an edited program against the journal
 ```
 
 A program that does not validate is refused before anything is recorded, with every problem in the
 answer as the validator would print it. The driver records the program beside the run, so `resume`
 takes the run id alone and the manager reads the source back; an edited program is a `migrate` or a
-`fork`, never a resume. An answer is recorded under the answerer the manager knows from the
-caller's credential: a managed agent by its name, anyone else by their principal. The request
+`fork`, never a resume. `cotal run migrate <runId> --local --file <program>` is that check: it
+replays the run's journal and walks the edited program over it, prints whether the migration is
+admissible, how many journal rows the walk accounted for, every orphaned step with its verdict and
+code, and exits 0 on admissible and non-zero on not. It reads only, under the same credential
+`journal` reads on, and the commit side is not reachable yet: the report itself says what a commit
+would file and that this invocation filed nothing. An answer is recorded under the answerer the
+manager knows from the caller's credential: a managed agent by its name, anyone else by their
+principal. The request
 carries no name. An agent with `capabilities: [run]` has the same five verbs as the `cotal_run`
 tool ([MCP tools](mcp-tools.md)), so a program can be written and started from inside a session.
 A `start` or `resume` answers once the run's record is written, within a bounded wait; a manager
@@ -152,9 +208,11 @@ mints the run's own credential from the folder's trust material, so it runs from
 project folder. A local start also names the run's channel ceiling itself:
 `--admit-read <channels> --admit-publish <channels>`, comma-separated patterns or `none`, both
 required. The record it writes says an operator admitted the run and why, and the host checks
-it the same way it checks a hosted admission. A user-auth mesh runs no programs yet, hosted or
-local: the manager refuses the family by name, since a hosted run's seats would be spawned under
-the static owner, which a user mesh refuses, and a user bearer holds no run rows. An open mesh
+it the same way it checks a hosted admission. A registered remote user-auth manager can host a
+run through its issuing host. The host resolves the versioned caller against live issuance,
+admits the run, and signs only the run's fixed driver, mediator and one-shot operator credentials
+for manager-held nkeys. Renewal checks the activated attempt; the manager holds no signer.
+Local user-auth runs remain unavailable because a user bearer holds no run rows. An open mesh
 hosts none either, since it issues no caller authority to admit a run under.
 
 A hosted run is **admitted** under the caller that started it. The caller's credential is an
@@ -168,11 +226,20 @@ whose caller had no channels can still sleep, checkpoint and turn agents; its `w
 is refused at the effect.
 
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
-from the project folder. The admission itself is never rewritten. Every host reads the marker
+from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
+admission itself is never rewritten. Every host reads the marker
 before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
 takeover or manager restart continues the run. Revoking twice is not an error, and the first
 reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
 reconcile, named in its log.
+
+`run ps --local` reads the marker beside each run record and prints `revoked` for a run that
+carries one, whatever state the record itself holds, with the revoker and the reason under the
+table. The record is display only here: a revoke writes no terminal state, because no host drove
+the run to one and the journal owns the facts. A marker the listing cannot read, whether the store
+is unreachable or the marker has a version or shape it does not know, prints `unchecked` in the
+`STATE` column. The reason and the state the record carries go to stderr, and the command exits 1
+once every row is printed. The hosted `run ps` reads the record alone.
 
 A run whose step was refused (L5016) stays held; a
 resume on a host that can perform the step performs it live and continues from there.
@@ -212,7 +279,14 @@ recorded ownership flag must match its step-derived channel before registry writ
 The mediator retains endpoint-wide checkpoint rights and stream-wide leader reads as trusted
 host authority. Record reads exposed to the driver are restricted to its own run's keys. Reads
 that decide writes remain leader-served. A read of the journal uses the run's filtered replay
-durable, including the diagnostic for a journal with no run record.
+durable, including the diagnostic for a journal with no run record. That durable is named after
+the takeover, and an attempt reads it many times, so reads under one takeover run one at a time in
+the hosting process and a replay removes a durable of its own name that an interrupted earlier read
+left behind. A durable that survives a replay's own delete belongs to a reader the process cannot
+account for, and reading its tail is refused. A drive handles that refusal as a takeover does: the
+reads behind its steps, and the diagnostic for a journal with no run record, replay up to three
+times before the refusal is raised. An operator read runs under a takeover minted for that read and
+reports the refusal on its first read.
 
 A served read uses a one-shot `run-operator` credential. An answer uses a read to find the open
 pause, then a second credential pinned to that token for the answer and settlement.
@@ -245,7 +319,9 @@ is the in-process route, yours to drive with your own handler; a run the driver 
 the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the five record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
-`@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
+`@cotal-ai/runtime` (`implementations/runtime`). The migrate check is reachable as
+`cotal run migrate <runId> --local --file <program>`; committing a migration it judged admissible
+is not reachable from any surface yet. On the mesh handler, `sleep`, `checkpoint`,
 `wait(message(...))`, `wait(idle(...))`, `wait(down(...))`, `wait(replied(...))`, `notify`,
 `spawn`, `conclave`, `ask`, `monitor` and `turn` are durable.
 `spawn` is
@@ -274,7 +350,13 @@ conclave cancelled on a losing branch is released by the same cancellation sweep
 checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is, and
 tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
 token, carrying the schema, the attempt count, the deadline and the previous refusal, which the
-seat's connector renders as the record wanted and the command that answers it. An ask addresses
+seat's connector renders as the record wanted and the hosted command that answers it. When that
+literal command is run inside the managed seat, the CLI reuses the seat's lifecycle credential and
+issued caller identity rather than minting an operator instrument. The command
+does not take `--by`: the manager records the authenticated caller as the answerer. A spawned seat's
+baseline credential carries only the self-targeted `run-answer` row, and the manager accepts it only
+for the open ask or escalation relayed to that exact incarnation. It cannot answer another seat's
+ask, an unrelayed checkpoint, another run, or start and resume commands. An ask addresses
 an agent the run spawned (anything else refuses before an attempt opens), a resumed attempt tells
 the seat nothing twice, and a seat gone at the relay is L4002. On the pause itself:
 the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
@@ -283,7 +365,10 @@ answerer to read, exhausted attempts (default one) are the catchable L4006, and 
 absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`).
 `checkpoint` binds what it asks on its own entry, so `cotal run journal` prints the question under
 the step key an answer is addressed by while the pause is open: the address alone left whoever was
-asked reading the source to find out what "approve" meant. An `escalate` addressed to an agent this
+asked reading the source to find out what "approve" meant. After a checkpoint or `ask` accepts an
+answer, the journal prints that accepted answer's recorded value and attribution under the settled
+step. It never substitutes another filed answer or invents fields the frozen result does not hold.
+An `escalate` addressed to an agent this
 run spawned is relayed to that seat through the same turn relay an `ask` uses, carrying the prompt
 and the token to answer under; a `to` naming anyone else is a person, and their pause stays the
 one anybody can answer, with the addressee recorded and rendered beside the question.
@@ -312,7 +397,7 @@ catchable L4002, and a death the manager marked on the deadline terminal reads t
 turns on one seat, from two branches or from two runs, reach it one at a time: the language
 dispatches the second when the first settles, and the manager shows a seat the oldest unsettled
 turn alone. On an auth mesh the relay needs no extra grant: every spawned seat's baseline
-credential carries its own pull and yield rows, the run driver's operator instrument carries the
+credential carries its own pull, yield, and caller-bound answer rows, the run driver's operator instrument carries the
 turn request, and the manager arms the deadline hold over its own serve grant and expires it
 itself once due. An accept the manager cannot finish is unwound to a failed terminal on the goal
 it bound, and a retry of that submission is refused naming the terminal rather than accepted a
@@ -335,7 +420,22 @@ bringing one up is the catchable L4008, a spawn that ends without a handle gives
 and the tree is reusable the moment a holder's presence row is gone, so a discharged race loser
 or a crashed seat releases its tree with no bookkeeping. A spawn the endpoint refuses at accept
 is the catchable L4000 (L4001 when the refusal is the endpoint's seat capacity), and one whose
-seat never came up is L4002. A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
+seat never came up is L4002. A refusal that states the command did not run is answered
+before it gets that far. In a space served by more than one manager the resolve and the invoke
+are separate trips through the same anycast queue, so a run's call can reach an instance it did
+not resolve against, and that instance refuses ahead of any effect. The run drops its resolved
+handle, re-describes and re-issues, for a bounded number of attempts; after them the refusal
+surfaces as the effect's own failure and still states that nothing ran. A spawn that names a
+`placement` addresses one instance by name, so a refusal from it is that incarnation answering
+about itself and is never re-issued. When the spawn also names `cwd`, that manager resolves the
+existing absolute directory to its canonical host path before accepting the spawn. A missing,
+relative or non-directory path refuses with no seat and never falls back to the manager workspace.
+One hosted run may name one placement instance; a program naming several is refused instead of
+widening one run credential across hosts. Placement is accepted only from an object-literal spawn
+option bag whose `endpoint` and `instanceId` are string literals. A computed option bag, a computed
+placement field, or a spread in either object refuses at `run-start`. The option argument may be
+absent, and an object-literal bag without placement is accepted.
+A turn handoff across worktrees is the L4004 described above. Recovery keeps these honest: a resumed run
 reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
 recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
 loser a crash left alive does not keep its seat or its tree while the resumed run works on. The

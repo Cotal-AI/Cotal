@@ -34,7 +34,8 @@
  *
  * #1614 added four cells while this branch sat in review, moving the scanner from 61 to 65 cells
  * and this suite from 149 to 173 checks; the inline-registry check added in this revision takes
- * the suite to 175. That is why the labelled figures below read 61 and 149.
+ * the suite to 175. The pinned-total regression check added later takes it to 176. That is why the
+ * labelled figures below read 61 and 149.
  *
  * THE MEASUREMENT. A discriminator is alive only if it can still say NO. For each subject cell we
  * TAMPER the cell's planted subject so the property the secondary asserts is genuinely destroyed,
@@ -88,6 +89,15 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// Namespace, for the same reason as mutation-proof.selftest.mjs: a tree without the #1625 cleanup
+// guard must still RUN this suite (it grades the scanner's cells, not the guard) rather than die at
+// link time on an export that tree does not have.
+import * as safety from "./mutation-command-safety.mjs";
+
+const removeSelfTestDir = (dir, dirBase, created) =>
+  typeof safety.removeSelfTestDir === "function"
+    ? safety.removeSelfTestDir(dir, dirBase, created)
+    : rmSync(dir, { recursive: true, force: true });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCANNER = join(HERE, "check-operator-literals.mjs");
@@ -883,20 +893,20 @@ const INLINE_CELLS = [
 /**
  * A working directory the scanner's self-execute guard can survive.
  *
- * The guard is ``import.meta.url === `file://${process.argv[1]}` ``, comparing a real URL against a
- * string built by concatenation. Those agree only for paths needing no URL escaping, so TWO host
- * conditions silently break it, and each makes a spawned copy exit 0 having run NOTHING:
+ * The guard used to be ``import.meta.url === `file://${process.argv[1]}` ``, comparing a real URL
+ * against a string built by concatenation. Those agree only for paths needing no URL escaping, so
+ * TWO host conditions silently broke it, and each made a spawned copy exit 0 having run NOTHING:
  *   symlinked TMPDIR   `import.meta.url` resolves symlinks, `process.argv[1]` does not
  *   a space in TMPDIR  the URL percent-encodes it, the concatenated string does not
  * Neither was found by reading. The first was caught by the untampered-copy control below, the
  * second by an adversarial reviewer who set TMPDIR to a directory containing a space.
  *
- * The scanner is the product and this suite does not modify it, so the workdir is chosen to avoid
- * both conditions: realpath'd, then REJECTED outright when its URL form differs from the naive
- * concatenation. The repository is the fallback base, since a checkout needing escaping would
- * already be breaking the scanner in production. If no usable base exists this THROWS with the
- * reason, because one accurate sentence is a better report than a cascade of confusing cell
- * failures that all share a cause the reader cannot see.
+ * The scanner now asks `isMainEntry`, which resolves both sides to a real path, so neither
+ * condition can disable a copy today. The workdir is still realpath'd and still REJECTED outright
+ * when its URL form differs from the naive concatenation, and that is deliberate rather than
+ * leftover: it is the one place a regression of that guard turns into a single named refusal
+ * instead of sixty-six spawned copies reporting phantom reds whose cause no reader can see. The
+ * repository is the fallback base. If no usable base exists this THROWS with the reason.
  */
 const guardSafe = (path) => pathToFileURL(path).href === `file://${path}`;
 
@@ -911,8 +921,8 @@ const makeWorkdir = () => {
       rejected.push(`${base}: ${error.message}`);
       continue;
     }
-    if (guardSafe(candidate)) return candidate;
-    rmSync(candidate, { recursive: true, force: true });
+    if (guardSafe(candidate)) return { dir: candidate, base, created: candidate };
+    removeSelfTestDir(candidate, base, candidate);
     rejected.push(`${candidate}: needs URL escaping, so the scanner's self-execute guard cannot fire there`);
   }
   throw new Error(
@@ -920,7 +930,15 @@ const makeWorkdir = () => {
   );
 };
 
-const workdir = makeWorkdir();
+const workspace = makeWorkdir();
+const workdir = workspace.dir;
+
+// The scanner imports `./main-entry.mjs`, so a copy needs that sibling next to it or every spawned
+// copy dies on module resolution instead of grading anything. Copied once, untampered: the tampers
+// below are edits to the scanner's own source and none of them touches this file. A copy that
+// arrives without it fails the untampered-copy control loudly, which is where that control earns
+// its place.
+writeFileSync(join(workdir, "main-entry.mjs"), readFileSync(join(HERE, "main-entry.mjs"), "utf8"));
 
 /**
  * GRADE THE TWO FUNCTIONS THAT CHOOSE WHERE EVERY TAMPER RUNS.
@@ -987,6 +1005,63 @@ try {
     copyRun.exitCode === 0 && copySummary !== undefined
       && copySummary.status === "PASS" && copySummary.passed === copySummary.total,
     `exit=${copyRun.exitCode}/0 cells=${copySummary?.passed}/${copySummary?.total} status=${copySummary?.status}`,
+  );
+
+  // The scanner's required-cell membership is derived from CELL_EXPECTATIONS, so deleting a cell
+  // and its registration used to shrink both sides of the summary to 64/64 and exit 0. Remove the
+  // body through the same block-scoped helper every discriminator tamper uses, then remove its one
+  // registration entry with the same exact-once refusal. The pinned total must reject the copy
+  // before any remaining cell runs.
+  const removedCellBody = tamperCell(
+    tracked,
+    "missing-subject",
+    "  scanCell('missing-subject', 'broken', 'missing', 1, missingSubjectResult),",
+    "",
+  );
+  const emptyCellBlock = [
+    "// SELFTEST_CELL missing-subject START",
+    "",
+    "  // SELFTEST_CELL missing-subject END",
+  ].join("\n");
+  const cellBlockOccurrences = removedCellBody.split(emptyCellBlock).length - 1;
+  if (cellBlockOccurrences !== 1) {
+    throw new Error(
+      `cell missing-subject: empty block occurs ${cellBlockOccurrences} time(s), expected exactly 1`,
+    );
+  }
+  const removedCellBlock = removedCellBody.replace(`${emptyCellBlock}\n`, "");
+  const removedRegistration = "  ['missing-subject', 'scanner=broken missing=1/1'],\n";
+  const registrationOccurrences = removedCellBlock.split(removedRegistration).length - 1;
+  if (registrationOccurrences !== 1) {
+    throw new Error(
+      `cell missing-subject: registration tamper occurs ${registrationOccurrences} time(s), expected exactly 1`,
+    );
+  }
+  const missingCellSource = removedCellBlock.replace(removedRegistration, "");
+  if (missingCellSource === removedCellBlock) {
+    throw new Error("cell missing-subject: registration tamper was a no-op");
+  }
+  const missingCellPath = join(workdir, "tampered-missing-cell-registration.mjs");
+  writeFileSync(missingCellPath, missingCellSource);
+  const missingCellRun = runSelftest(missingCellPath);
+  const countMismatchRows = missingCellRun.rows
+    .filter((row) => row.startsWith("SELFTEST_CELL_COUNT_ROW "))
+    .map((row) => /\bexpected=(\d+) registered=(\d+) status=FAIL\b/.exec(row))
+    .filter(Boolean);
+  const mismatchExpected = Number(countMismatchRows[0]?.[1]);
+  const mismatchRegistered = Number(countMismatchRows[0]?.[2]);
+  const missingCellResultRows = missingCellRun.rows.filter(
+    (row) => row.startsWith("SELFTEST_RESULT_ROW "),
+  );
+  check(
+    "pinned cell total: removing one registration and its cell body reports both totals and exits nonzero before any cell runs",
+    missingCellRun.exitCode === 2 && countMismatchRows.length === 1
+      && baseSummary !== undefined
+      && mismatchExpected === baseSummary.total
+      && mismatchRegistered === baseSummary.total - 1
+      && missingCellRun.rows.some((row) => row.includes("increment EXPECTED_SELFTEST_CELL_TOTAL deliberately"))
+      && missingCellResultRows.length === 0,
+    `exit=${missingCellRun.exitCode}/2 expected=${mismatchExpected}/${baseSummary?.total} registered=${mismatchRegistered}/${baseSummary === undefined ? "undefined" : baseSummary.total - 1} mismatch_rows=${countMismatchRows.length}/1 result_rows=${missingCellResultRows.length}/0`,
   );
 
   // THE CENSUS, over CELLS. The denominator is every cell the scanner declares, not every factory.
@@ -1849,7 +1924,9 @@ try {
     );
   }
 } finally {
-  rmSync(workdir, { recursive: true, force: true });
+  // The cleanup may only remove the directory mkdtemp handed `makeWorkdir`, and only beneath the
+  // base it was created in. A mutant that makes that helper return a parent must not delete it.
+  removeSelfTestDir(workdir, workspace.base, workspace.created);
 }
 
 const total = passed + failures.length;

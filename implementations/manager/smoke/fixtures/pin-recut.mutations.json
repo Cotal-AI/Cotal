@@ -12,7 +12,7 @@
     {
       "name": "PREDICTED KILLED (2 red) - the client counts and drops but never re-issues, so the heal publishes no second request",
       "file": "packages/core/src/endpoint.ts",
-      "find": "          return await invokeCommand(nc, this.space, reissueTarget, command, args, invokeOpts);",
+      "find": "          return await invokeResolved(reissueTarget, signal);",
       "replace": "          return r;",
       "expectRed": "...and that heal re-issued (more than one `ps` REQUEST left the caller, not merely more traffic)",
       "note": "Re-pointed 2026-08-17 with the cell it grades. It previously read the connection's raw outMsgs (`> 1`), which across that window is ~51 on a healthy run, so it was satisfied by the scenario's own describes and KV traffic and could not fail for the reason it stated - measured SURVIVED at 51 marks with the call gutted and 51 without. The cells now count requests per (endpoint, command) off the shipped subject parser. The `purge` cell reds too; the third arm does NOT, because its re-issue target is resolved before this line and its describe still goes out.",

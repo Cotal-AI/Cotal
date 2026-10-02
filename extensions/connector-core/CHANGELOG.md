@@ -1,5 +1,254 @@
 # @cotal-ai/connector-core
 
+## 0.58.0
+
+### Patch Changes
+
+- a058bf9: Clarify that publication preflight rejects npm credential environment variables before enumerating workspace packages.
+- 417b5f0: Replay a drive's own journal again when a read loses a round, instead of failing the step
+
+  A drive reads its journal through one replay durable named after its takeover, before every effect
+  and at every poll of a parked pause. When another reader held that durable, the read raised
+  `RunJournalReplayRaced` and the interpreter recorded it on the step as `L4000 handler-fault`, so one
+  branch of a `parallel` failed on a healthy run. `activateRun` already treats the same error as a
+  lost round and replays again.
+
+  The reads behind a drive's steps (`RunScopeAuthority`, hosted and under `cotal run --local`) and the driver's diagnostic for a
+  journal with no run record now do the same, with the takeover's bound: up to three replays, one
+  straight after another, and the race is raised unchanged when the third is lost too. An operator
+  read runs under a takeover id minted for that one read (the manager and `cotal run` mint a fresh one
+  per call), so `RunHost.status`, `RunHost.locate` and `cotal run journal` still report the race on
+  their first read.
+
+  Only the race is retried. A reader in another process can also tear a fetch or return an empty
+  replay; neither is retried here.
+
+  A new suite, `smoke:runtime-run-host-replay`, drives the manager's run host through a `parallel` of
+  three `ask` steps answered within the same second: once while `RunHost.status` reads the drive's
+  own takeover id, and once while another connection takes records off the drive's durable. No branch
+  fails in either.
+
+  The `connector-core` docs bundle is regenerated for the updated paragraph in `docs/workflows.md`.
+
+## 0.57.0
+
+### Patch Changes
+
+- 93b98e9: Let a cooperative teardown publish departure after it has given up waiting on a presence write. Presence writes are serialized, so the departure publish queued behind the very write the teardown's intake bound had just abandoned: the wait ended, offline never published, the seat kept its last status until its presence TTL expired, and the plugin process never reached its exit. The agent gains `abandonPresenceWrites()`, which the teardown calls only on the path where it announces the bound expired; ordering behind writes that do settle inside the bound is unchanged (#2207).
+- e7c702a: The jcode connector now reports the provider route serving a seat's model to presence, and `cotal ps --wide`/`--json` surface it as `provider`.
+- 42448fa: A DM send now reports the stored sequence and the recipient's status at send instead of a bare success, and `cotal deliver pending <name>` reads a recipient's held DMs from the broker.
+- 8b64d64: The per-principal subject record now refuses a tip of `Number.MAX_SAFE_INTEGER` on read and write and refuses a symlinked record at open, at the re-read and before the rename.
+- ad809a2: Keep Jcode seats alive when session checkpoints interrupt tool observations or temporarily remove the journal. Validate the session snapshot, preserve pending journal reads, restore tool brackets from the event WAL, and publish explicit discontinuities without weakening event validation.
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+- 8137d83: The Hermes bridge's local Unix-socket listener now authenticates the first frame of every connection against the launch's control token, dropping an unauthenticated or wrongly-tokened connection before it ever reaches the adapter or a tool call, and the Python-side client now presents that same token on every connect and reconnect.
+
+## 0.56.0
+
+### Patch Changes
+
+- 5cf0861: `spawn` refuses at admission a `cwd` the serving manager's host cannot resolve, naming the path, the reason and the host, so a misplaced spawn in a multi-manager space fails before anything is minted instead of at launch (#385 item 2). `cotal_spawn` documents that an unresolvable `cwd` is refused before launch.
+
+## 0.55.0
+
+### Minor Changes
+
+- 357af9f: `cotal_spawn` accepts an optional manager instance id. Core resolves and invokes that exact instance without placing the pinned handle in the class cache, while malformed, unreachable, or credential-conflicting pins fail instead of falling back to class anycast.
+
+### Patch Changes
+
+- a13c8bb: Capture the event plane's start boundary at adopt instead of at the emitter's first read, so a complete record written while the connector is still starting up (the mesh wait, log open, and preflight) is no longer silently dropped. Claude Code and OpenCode both wrap their session source with the shared `BoundStartSource`.
+- 7c7c853: A dead AG-UI emitter holder reports itself not running, so a health read after a refused rebind or a failed start no longer sees a live event plane.
+- 8472dc3: `cotal_channels` reports a durable channel's delivery health from the daemon's own answer: `active` requires a live lease and a membership round-trip that lists the channel for this lifecycle, a daemon that answers nothing renders `degraded`, and a reader that cannot establish it (a responder-present error) renders `unknown` instead of omitting the clause. `CotalEndpoint.fetchMemberships()` is public for that round-trip (issue #445).
+- 67bbcc5: Report a Jcode session-journal fold as a terminal event without stopping the seat.
+- eddc5f0: Serialize presence writes from one agent so they land in the order they were made, and publish departure only after every write already in flight has settled. This fixes overlapping status writes interleaving their puts (#2055) and an offline record landing before an earlier in-flight status write (#636).
+- eddc5f0: Refuse a presence write admitted after stop() began, instead of queueing it behind departure: departure's offline publish is now itself a presence-chain entry ordered after every write already admitted, and any write admitted after it rejects at once with a fixed error, so a straggler can neither sit out the connect grace behind the chain nor land after the offline record (#636).
+- db9a969: Escalate consecutive presence write failures after one liveness TTL and label connector roster snapshots as not live until a write succeeds.
+- 5418d1f: Consult `presenceView()` on every roster read in the connector, so a partial reconnect refill is not rendered or enforced as a complete roster: `cotal_roster` and `cotal_orientation` label an `unpopulated` view as a snapshot still in progress and a `stale` view as last-known, and a send or DM to a name that cannot be verified waits once for the presence snapshot and is then refused with the observer's condition instead of reporting a live peer as absent.
+
+## 0.54.0
+
+### Minor Changes
+
+- 34beea1: Route user-auth manager calls through a short-lived, instance-bound control credential. Discovery and invocation address the same authorized manager while the agent's standing connection, credentials and conversation remain unchanged. Managed launches retain their manager selection across launch and resume. Static and open mesh routing is unchanged. Confirm the standing goal-progress subscription at the broker before submitting on the separate control connection, so fast terminal events cannot outrun the subscription. Recover accepted goal results through the manager's caller-scoped `goal-result` command after connection replacement, without repeating the mutation or granting clients raw JetStream reads. Followed calls now require a compatible manager before submission; update the issuer, participant manager and client together. Stopping a caller cancels its observation without cancelling the accepted goal. Retain Linux custody records across clean child exit so retirement can prove process identity and finish cleanup even after the custodian removes its file; socket loss alone never frees the alias.
+
+## 0.53.0
+
+## 0.52.1
+
+## 0.52.0
+
+### Minor Changes
+
+- 5ee8eef: Let a workflow-spawned seat answer an ask or escalated checkpoint addressed to its own incarnation with its baseline credential. `run-answer` is now self-targeted, the manager checks the caller against the pending relay before writing an answer, connector turn text renders the hosted command without `--by`, and that literal command reuses the managed seat's issued caller identity. Other seats, unrelayed checkpoints, other runs, and run start or resume remain refused. Fixes #1877.
+- 6595c48: The console can drive the mesh as well as watch it. Every operator action (kill, spawn, status, purge, channel delete, attach) rides the CLI's own per-action control path over the endpoint rails, never the observer, using only the manager commands that already exist; `a` attaches through the full `cotal attach` loop in place; on an open mesh the operator's first send starts a presence-only peer under the observer's card so agents can reply, with concurrent sends sharing that startup result; multi-manager reads keep silent instances separate from reachable error replies; the topology lens overlays the broker-authoritative membership feed and says live, stale, traffic-only, or unreadable; channel tabs carry unread badges, the roster tags each agent's harness, the agent detail lists runs, model, and skills, and the status bar draws a 60-second activity sparkline.
+
+### Patch Changes
+
+- 794acb1: The version-exact docs bundle `cotal_docs` serves is generated during the connector's build instead of being committed. Any two branches that regenerated the same region of the checked-in artifact conflicted in it while their source pages merged cleanly, so editing a docs page now means editing the page and nothing else. `check:docsbundle` can no longer diff a committed file, so it regenerates into a temporary path and refuses a generator failure or a hollow bundle, which keeps a release unable to ship empty docs; the upgrade-section gate regenerates the same way instead of reading the tree behind an `existsSync` that silently dropped its shipped-copy check when the file was absent. Fixes #1713.
+- 9269fc2: Keep a jcode seat with events enabled alive through a mesh rebuild window. Previously an event
+  flush or run close that ran while the endpoint was reconnecting read `max_payload` off a connection
+  that was not there, and the seat exited 1 with `AG-UI emitter stopped: ... max_payload is only
+known while connected`. `AguiEmitterHolder` takes an optional `waitLive` hook that a queued step
+  awaits before it measures and publishes. The jcode host waits on both the Cotal bind and the raw
+  transport, so the queued records publish in order once the connection is live, with none dropped or
+  duplicated. A seat stopped during the outage still exits, and its unpublished records stay in
+  the journal behind the stored cursor. Every other emitter failure stays terminal. Connectors that do
+  not pass the hook behave as before. Fixes #1868.
+
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- 491e923: The public user-auth exchange now mints `channel-writer` and `channel-purger` for a signed-in
+  human whose ledger row carries `admin`, so a remote owner can run `cotal channels set/default`
+  and a dashboard channel delete without a loopback capability. `admin`, `purger`, `deployer`, and
+  `manager-service` stay loopback-only. A managed-agent secret exchange still never mints a view.
+  This is not full remote channel management: `cotal web` still asks for the read-only admin view
+  at startup.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 4dd4b90: Add harness-reported presence conditions, opaque environment references, binding diagnostics, and compact roster rendering.
+- 21407fd: Allow foreground seats to redeem one-time remote user-auth enrollments, bootstrap stock mesh records, and launch without a cached human login.
+
+## 0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- 6f248ac: Enumerate broker spawn sites so an unmigrated suite fails the gate instead of leaking
+
+  The reaper claims a leaked `nats-server` by matching the store-dir token in its argv, and its header
+  states the standing condition: it "is only ever as complete as the migration that mints the token".
+  #1008 measured what that costs, 108 orphaned brokers on one box in a day, all holding loopback ports
+  inside the OS ephemeral range that suites draw from. The five suites it named were migrated, and
+  nothing was left behind that could notice the sixth.
+
+  `pnpm smoke:broker-migration` is that missing piece. It names no filenames: it walks `git ls-files`,
+  finds every call that starts a `nats-server`, and fails when one is not claimable by the reaper or
+  killable by the teardown helper. A suite added next week is in the population on the commit that
+  adds it. The census currently reads 319 spawn sites across 297 files, and the gate checks all 315
+  that are in scope.
+
+  The census found 98 unadopted sites, not five. Two conditions each break the chain on their own and
+  both are now required: the token has to be in a path the broker is STARTED with, since the reaper
+  reads argv and nothing else, and the handle has to reach `teardownOnSignal`, since the token only
+  helps once the owner is dead. Three shapes were leaking for reasons a named list would never have
+  surfaced. A suite minting a tokened store dir but launching with `-c <conf>` put the token somewhere
+  argv never carries, so it was unclaimable despite looking migrated. Brokers started with neither
+  `-sd` nor `-c` left no evidence at all; those now pass a tokened `-sd` purely as a marker, which
+  `nats-server` accepts without JetStream and writes nothing into. And suites that owned one broker
+  while leaving a sibling unowned read as clean under any file-level check, so ownership is decided per
+  spawn site.
+
+  A deliberate negative control opts out with a `SMOKE_BROKER_UNADOPTED_OK` marker, which is greppable
+  and per-site rather than a silent exclusion: `reaper.smoke.ts` must be able to start an untokened
+  broker, since that is the case it exists to detect.
+
+  The teardown helper no longer stalls three seconds and then reports a false alarm on every green
+  run. It waited on `process.kill(pid, 0)`, which keeps succeeding for a child that has been killed but
+  not yet waited on, so a suite whose own `finally` kills the broker first left a zombie that read as
+  alive until the deadline elapsed, and the helper then printed `did not exit before path cleanup`
+  about a process that was already dead. Liveness now distinguishes a zombie from a running process,
+  and a genuinely running broker is still waited on before its store dir is removed.
+
+- fc6f0b1: Scope an unanswered endpoint verdict to the rail the request rode
+
+  A CLI whose caller carries an issued generation rides the versioned `ep.v1` rail. SPEC 13.15 makes
+  that rail a separate subject space from the legacy `ep` rail and requires an endpoint to serve
+  both, so a manager built before the versioned rail serves `ep` alone and never receives the
+  request. The describe waited out its whole budget and every hosted `cotal run` verb reported that
+  no manager answered on the endpoint rails, asked whether one was running, and offered `--local`,
+  against a manager that was up, on the roster and answering `cotal ps` throughout. `--local` drives
+  the run from the calling process and names the caller as the run's answerer, so an operator who
+  took the suggestion would submit an answer under the wrong identity.
+
+  The unanswered marker now carries the `ep` plane the request was published on, and `describe`
+  names it in its own refusal. `cotal ps` and the other manager verbs state the reachability verdict
+  against that rail instead of against the mesh, and say what silence on a versioned rail does not
+  establish. `cotal run`'s hosted verbs do the same and drop both the question and the `--local`
+  suggestion there, since neither follows from what was observed. On the legacy rail every message is
+  unchanged: there is no second rail its silence could be hiding a manager on.
+
+  No fallback describe is issued on the other rail. A caller holds broker rows for its own rail only,
+  so the request would be refused at publish rather than answered.
+
+- b7e5942: A peer can no longer forge the framing of an auto-injected message
+
+  The block that carries waiting peer messages into a turn interpolated the message body and the
+  sender name raw, and the Hermes sidecar built the same shape by string concatenation. Both were
+  forgeable the two ways the inbox reply used to be: a body carrying a newline produced a second item
+  in the block, reading to the agent as a separate delivered message from a peer that never sent one,
+  and a sender naming itself with a closing bracket ended the real attribution and opened a forged
+  one. These frames are auto-injected rather than returned when the agent asks, so the agent never
+  had a chance to distrust them.
+
+  The rule both surfaces now hold is the one the inbox reply already held, and they hold it through
+  the same code rather than a second convention: a line that begins at column zero is written by the
+  connector, never by a peer. One message is one line plus indented continuations, with the
+  attribution inside a single bracket pair. The neutralization moved into a shared module that the
+  injected block and the inbox reply both render through, so the body, the sender name and role, and
+  the service and channel labels all pass through one implementation. The Python sidecar carries a
+  matching module, kept to the same character class on purpose, since a peer that can forge the frame
+  on either side of the socket has the whole class back.
+
+  Two widenings came out of stating the rule positionally rather than by example. The attribution
+  class now neutralizes the opening bracket as well as the closing one, because stripping only the
+  closing one still let a name render a bracket pair a reader takes as the innermost attribution. The
+  injected block's per-item separator is the bracketed attribution the inbox reply uses, replacing the
+  bullet, so the text of an injected block changed and the wake-path suites that assert on it were
+  updated with it.
+
+  A third injected surface holds the same rule now. A wake hint carries no message body and reads as
+  one short sentence, so it does not look like a frame, but it is written into the agent's context
+  without being asked for and it names a peer-controlled channel label, which three connectors
+  interpolated raw. A label carrying a newline put a second line at column zero reading as another
+  delivered message. That label renders through the shared module too, and the absent-channel fallback
+  moved there with it, since three connectors each spelled it themselves and an absent field is what a
+  per-call-site spelling is most likely to get wrong.
+
+- baed5d1: Report a session as stalled when its queue head is not moving, not merely when nothing moves
+
+  A session could report `state: ready` with a live transport while its oldest automatic deliveries
+  were never handed over: one reported seat held 96 of them, the oldest more than two hours old, with
+  nothing drained for 75 minutes, and every health field green throughout. The stall measure keyed on
+  any automatic commit, so a seat that kept committing the traffic arriving on top of a head it could
+  not deliver reset its own clock on every turn and reported healthy indefinitely, while the messages
+  actually owed to it aged without bound.
+
+  Progress is now measured at the head of the automatic queue: the clock resets when the commit takes
+  the oldest queued delivery, not when it takes any of them. A seat that is genuinely draining still
+  reports `ready` however busy it is, and a queue that is merely deep was never a stall. The status
+  route reports `lastAutomaticHeadDrainedAt` beside the existing `lastAutomaticDrainedAt`, because the
+  gap between the two marks is what names this fault: the first keeps moving while the second stands
+  still.
+
+### Patch Changes
+
+- 0a52594: Census the in-process half of the ambient-environment rule. `smoke:suite-ambient-env` grades the environment a suite hands a child; the new `smoke:suite-ambient-env-self` grades a suite that reads its own `process.env` through `configFromEnv` and friends, and requires a module-scope `COTAL_` prefix scrub before that first read. The connector suites in the class now scrub the whole prefix instead of dropping one variable, so running them from inside a connected session no longer dies in its own import on the one-identity-plane refusal.
+- 1112755: Give fresh setup defaults the run capability alongside spawn. Document workflow tool setup, credential refresh for existing personas, and supported authentication modes.
+- cd9c8dd: Grade the frozen-body egress guard against the predicate it actually replaced, instead of a pinned historical floor. The differential resolved its base as a fixed sha, so a guard could become stricter than that floor, be weakened back toward it, and still report zero weaker rows. The base is now resolved from history: the newest ancestor whose `agui.ts` differs from the source under test and still carries a classifier role, with the working tree as the head so an uncommitted weakening is graded, and an on-demand deepen so the pair exists in a depth-1 CI checkout. `COTAL_EGRESS_DIFF_BASE` adds a pair against an explicit PR base and never replaces one. Two holes the resolved run exposed are closed with it: the loader folded an unrecognised verdict into a throw, which would have read a new publishing verdict as withheld, and the closed-schema branch had no row naming it.
+- 7875182: A Jcode seat whose soft interrupts time out now keeps consuming its queue, and stops reporting itself healthy while it is not.
+
+  Peer messages that arrive while a Jcode session is busy are handed to it mid-turn. When that handoff got no reply, nothing else ever looked at the queue: it was served only by a new message arriving or the session going idle, and on a busy seat neither has to happen. Messages piled up behind a seat that was working normally and answering direct questions, and the seat was indistinguishable from a wedged one. Measured on a live seat: 27 messages held for 13.8 hours.
+
+  A seat now serves its own queue on a schedule rather than waiting for an event. If the mid-turn handoff stops answering, the queued messages are delivered as an ordinary turn instead, which needs no reply from it, so they arrive late rather than never. Nothing is dropped and nothing is delivered twice.
+
+  `cotal_connection_status` also stops calling such a seat `ready`. A bound session with a live transport whose queued messages have made no progress for ten minutes now reports `stalled`, alongside how long the queue has gone without committing anything, and `cotal_reconnect` says plainly when rebuilding the connection did not deliver them, instead of answering with a bare success over an untouched queue.
+
+- da119c6: A control socket path longer than the kernel's `sun_path` limit is refused at construction with a message naming the path, its byte length, the limit and the temp root budget, instead of surfacing as a bare `EINVAL` from the bind.
+- 0fdca5b: Describe Cotal Lang as programmable multi-step agent coordination. Explain each workflow tool call, required arguments, execution prerequisites and completion checks, with start and yield examples. Distinguish workflow answers from assigned-turn outcomes and point to validation and simulation before execution.
+
 ## 0.49.0
 
 ### Minor Changes

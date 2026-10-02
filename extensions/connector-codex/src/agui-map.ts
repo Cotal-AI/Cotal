@@ -32,6 +32,7 @@ import {
   reasoningMessageEnd,
   type AguiEvent,
 } from "@cotal-ai/connector-core";
+import type { PresenceCondition, PresenceConditionCode } from "@cotal-ai/core";
 
 /** One rollout line. `payload` is `unknown` on purpose: it crosses in from a file this process did
  *  not write, so every field is checked at the point it is read rather than trusted by its type. */
@@ -52,6 +53,38 @@ const asRecord = (v: unknown): Record<string, unknown> | undefined =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
 
 const asString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+const CODEX_ERROR_CONDITIONS: Record<string, PresenceConditionCode> = {
+  contextWindowExceeded: "context",
+  sessionBudgetExceeded: "budget",
+  usageLimitExceeded: "billing",
+  rateLimitExceeded: "rate_limit",
+  serverOverloaded: "overloaded",
+  internalServerError: "server",
+  unauthorized: "auth",
+  badRequest: "request",
+  httpConnectionFailed: "server",
+  cyberPolicy: "request",
+  misalignmentPolicyViolation: "request",
+  threadRollbackFailed: "failed",
+  sandboxError: "failed",
+  other: "failed",
+};
+
+/** Map the failed-turn record Codex emits, preserving its native codexErrorInfo verbatim. */
+export function codexCondition(error: unknown, since = Date.now()): PresenceCondition | undefined {
+  if (error === null || error === undefined) return undefined;
+  const record = asRecord(error);
+  const source = asString(record?.codexErrorInfo) ?? asString(record?.codex_error_info);
+  const message = asString(record?.message) ?? asString(error);
+  const willRetry = record?.willRetry === true || record?.will_retry === true;
+  return {
+    code: willRetry ? "retrying" : source === undefined ? "failed" : (CODEX_ERROR_CONDITIONS[source] ?? "failed"),
+    ...(source ? { source } : {}),
+    ...(message ? { message } : {}),
+    since,
+  };
+}
 
 /** A record's clock. Rollout timestamps are ISO strings; a record without a parseable one falls
  *  back to the last good clock rather than to `Date.now()`, because a wall clock read at replay

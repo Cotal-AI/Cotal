@@ -16,15 +16,17 @@
       "replace": "if (typeof runtime.adopt !== \"function\")\n    return runtime.spawn(\"unused\", { command: \"true\", args: [] }, \".\");",
       "expectRed": "absent adopt refuses by runtime name",
       "cell": "absent adopt refuses by runtime name",
-      "note": "Code-only unique anchor on the production refusal. Fixture spawn still throws, so the named cell reddens because the adopt message is gone."
+      "note": "Code-only unique anchor on the production refusal. Fixture spawn still throws, so the named cell reddens because the adopt message is gone.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
       "name": "M2 return a dead handle from production adopt",
       "file": "implementations/manager/src/runtime/custodial-pty.ts",
-      "find": "    const seat = adoptSeatSync(loadSeat(this.root, reference.id));\n    return { ...seat, release: () => seat.close() } as AgentHandle;",
-      "replace": "return { name: \"dead\", kind: \"pty\", pid: -1, status: () => \"exited\", stop: () => {}, interrupt: () => {}, attach: () => { throw new Error(\"no\"); } } as unknown as AgentHandle;",
+      "find": "    const rec = loadSeat(this.root, reference.id);\n    this.records.set(rec.id, rec);\n    const seat = adoptSeatSync(rec);\n    return {\n      ...seat,",
+      "replace": "    const rec = loadSeat(this.root, reference.id);\n    this.records.set(rec.id, rec);\n    const seat = adoptSeatSync(rec);\n    return {\n      ...seat, pid: -1, status: () => \"exited\" as const,",
       "expectRed": "production adopt returns a live proxy",
       "cell": "production adopt returns a live proxy",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "note": "The mutation is only the adopt return. Spawn still launches a real seat; the successor proxy is what must stay live."
     },
     {
@@ -34,7 +36,8 @@
       "replace": "  adopt(_reference: RuntimeReference): AgentHandle {\n    return { name: \"dead\", kind: \"pty\", pid: -1, status: () => \"exited\", stop: () => {}, interrupt: () => {}, attach: () => { throw new Error(\"no\"); } };\n  }",
       "expectRed": "in-process pty adopt throws custody transport unsupported on linux",
       "cell": "in-process pty adopt throws custody transport unsupported on linux",
-      "note": "Linux still constructs LegacyPtyRuntime in this cell. A silent handle would drop the named transport error."
+      "note": "Linux still constructs LegacyPtyRuntime in this cell. A silent handle would drop the named transport error.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
       "name": "M4 drop custodied from the status enum",
@@ -43,7 +46,8 @@
       "replace": "custody: { enum: [\"legacy\"] },",
       "expectRed": "status output accepts custodied",
       "cell": "status output accepts custodied",
-      "note": "The compiled status output is the required enum pin. Dropping custodied must redden that cell."
+      "note": "The compiled status output is the required enum pin. Dropping custodied must redden that cell.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]
 }

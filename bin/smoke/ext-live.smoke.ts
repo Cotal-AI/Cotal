@@ -64,6 +64,39 @@ const cotal = (args: string[], timeout = 180_000) => {
 };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** `cotal ext add` installs the fixture from the real registry, so every refusal assertion below is
+ *  also satisfiable by npm failing to RESOLVE a `@cotal-ai/*` package at the workspace version. The
+ *  exit status is 1 either way, and only stderr tells the two apart.
+ *
+ *  That is not hypothetical. On 2026-10-01 the `live` job ran between the `chore(release): version
+ *  packages` merge and the publish finishing, npm answered ETARGET for `@cotal-ai/core@0.58.0`, and
+ *  the cell reddened against a refusal path the command never reached. 0.58.0 was on the registry as
+ *  `latest` within the hour and a re-run was green, so the product was never in question; what cost
+ *  time was a failure message pointing at `ext add`.
+ *
+ *  So name it. This still FAILS rather than passing, because the assertion genuinely was not
+ *  measured and a green here would be a lie, but it fails saying which package could not be resolved
+ *  and that the fix is to re-run after the release publishes.
+ *
+ *  ETARGET only, and the wording is measured off npm rather than recalled: `npm error notarget No
+ *  matching version found for <pkg>@<version>.` A missing PACKAGE answers E404 instead, and that is
+ *  deliberately NOT matched here. The versions under test belong to published packages, so an E404
+ *  for one of them would mean it had been unpublished, which is a real finding and has to stay a
+ *  plain loud failure. */
+const UNPUBLISHED = /[Nn]o matching version found for (@cotal-ai\/[^@\s]+@[^\s"\\]+)/;
+const refusedBecause = (name: string, r: { status: number | null; stderr: string }, reason: RegExp) => {
+  const stderr = r.stderr ?? "";
+  const miss = UNPUBLISHED.exec(stderr);
+  if (miss !== null && !reason.test(stderr))
+    throw new Error(
+      `UNMEASURED: ${name}: npm could not resolve ${miss[1].replace(/\.$/, "")}, so the refusal `
+      + `under test was never reached. That is the publish window after a version commit rather `
+      + `than a product failure: re-run this job once the release has published. `
+      + `stderr tail: ${stderr.slice(-200)}`,
+    );
+  ok(name, r.status === 1 && reason.test(stderr), stderr.slice(-300));
+};
+
 const target = cotal(["meshes", "add", "main", "--server", "nats://127.0.0.1:1", "--root", sandbox, "--mode", "open", "--force"]);
 ok("fixture mesh target is registered", target.status === 0, target.stderr);
 
@@ -294,11 +327,11 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
 
   const dep = fixture("cotal-ext-dep", GOOD, { dependencies: { "@cotal-ai/core": "*" }, peerDependencies: undefined });
   const r2 = cotal(["ext", "add", dep]);
-  ok("core-as-dependency fails with the exact reason", r2.status === 1 && /regular dependency/.test(r2.stderr), r2.stderr.slice(-300));
+  refusedBecause("core-as-dependency fails with the exact reason", r2, /regular dependency/);
 
   const nopeer = fixture("cotal-ext-nopeer", GOOD, { peerDependencies: undefined });
   const r3 = cotal(["ext", "add", nopeer]);
-  ok("missing core peerDep fails with the exact reason", r3.status === 1 && /peerDependency/.test(r3.stderr), r3.stderr.slice(-300));
+  refusedBecause("missing core peerDep fails with the exact reason", r3, /peerDependency/);
 
   const empty = fixture("cotal-ext-empty", "export {};\n");
   const r4 = cotal(["ext", "add", empty]);
@@ -310,7 +343,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   // binary doesn't carry fails; a workspace peer is LINKED and importable.
   const wsdep = fixture("cotal-ext-wsdep", GOOD, { dependencies: { "@cotal-ai/workspace": "*" } });
   const r6 = cotal(["ext", "add", wsdep]);
-  ok("@cotal-ai/* as a regular dependency fails with the exact reason", r6.status === 1 && /must be peerDependencies/.test(r6.stderr), r6.stderr.slice(-300));
+  refusedBecause("@cotal-ai/* as a regular dependency fails with the exact reason", r6, /must be peerDependencies/);
 
   const alien = fixture("cotal-ext-alien", GOOD, { peerDependencies: { "@cotal-ai/core": "*", "@cotal-ai/nonexistent": "*" } });
   const r7 = cotal(["ext", "add", alien]);

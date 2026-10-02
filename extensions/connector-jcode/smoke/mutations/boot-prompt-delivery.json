@@ -69,6 +69,14 @@
       "replace": "    wakeQueued = false;",
       "expectRed": "ordinary dnd traffic deferred by kickoff reaches the following turn without another wake",
       "cell": "ordinary dnd traffic deferred by kickoff reaches the following turn without another wake"
+    },
+    {
+      "name": "a no-prompt seat's post-join notice is dropped instead of routed through pendingKickoff",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "      pendingKickoff = joinNotice;\n",
+      "replace": "\n",
+      "expectRed": "a no-prompt seat's post-join notice is delivered as a driven turn, not a noReply append",
+      "cell": "a no-prompt seat's post-join notice is delivered as a driven turn, not a noReply append"
     }
   ]
 }

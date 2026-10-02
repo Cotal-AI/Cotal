@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 const logPath = process.env.FAKE_JCODE_LOG;
 const log = (entry) => {
@@ -121,13 +121,49 @@ const initialSessionModel = process.env.FAKE_JCODE_DEFAULT_MODEL ?? "deepseek-v4
 let sessionModel = initialSessionModel;
 const sessionStatePath = process.env.FAKE_JCODE_SESSION_STATE;
 const journalPath = process.env.FAKE_JCODE_JOURNAL;
+const sessionJournalPaths = (sessionId) => [...new Set([
+  journalPath,
+  process.env.FAKE_JCODE_SESSION_JOURNAL,
+].filter(Boolean))];
+const appendJournal = (path, record) => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, (existsSync(path) ? readFileSync(path, "utf8") : "") + `${JSON.stringify(record)}\n`);
+};
 const writeJournal = (sessionId) => {
   if (!journalPath) return;
   writeFileSync(
     journalPath,
     `${JSON.stringify({ meta: { model: sessionModel, session_id: sessionId ?? "fake-session" } })}\n`,
   );
+  if (process.env.FAKE_JCODE_SESSION_JOURNAL)
+    appendJournal(process.env.FAKE_JCODE_SESSION_JOURNAL, { meta: { model: sessionModel, session_id: sessionId ?? "fake-session" } });
 };
+// Opt-in (#1868): append one durable `append_messages` record per EXECUTED turn, the shape the
+// real harness journals and the AG-UI emitter reads. The default journal stays meta-only so no
+// existing suite changes; with the knob, each turn_run leaves a durable record at the exact
+// cursor boundary the emitter resumes from.
+const foldJournal = () => {
+  if (!journalPath || existsSync(`${journalPath}.folded`)) return;
+  for (const path of sessionJournalPaths("fake-session")) {
+    const records = readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    writeFileSync(join(dirname(path), `${basename(path, ".journal.jsonl")}.json`), JSON.stringify({ id: basename(path, ".journal.jsonl"), messages: records.flatMap((record) => record.append_messages ?? []) }));
+    writeFileSync(path, "");
+  }
+  writeFileSync(`${journalPath}.folded`, "1");
+  log({ ev: "journal_folded", path: journalPath });
+};
+const appendTurnRecord = process.env.FAKE_JCODE_APPEND_RECORDS === "1"
+  ? (frame) => {
+      const content = process.env.FAKE_JCODE_FOLD_WITH_TOOL === "1" && String(frame.content ?? "").includes(process.env.FAKE_JCODE_FOLD_ON_CONTENT ?? "JCODE-JOURNAL-FOLD-1984")
+        ? [{ type: "tool_use", id: "checkpoint-tool", name: "bash", input: {} }]
+        : [{ type: "text", text: `turn output ${String(frame.content ?? "").slice(0, 40)}` }];
+      const rec = { append_messages: [{ role: "assistant", content, timestamp: new Date().toISOString() }] };
+      for (const path of sessionJournalPaths(frame.session_id)) {
+        mkdirSync(dirname(path), { recursive: true });
+        appendJournal(path, rec);
+      }
+    }
+  : undefined;
 const storedSession = () => {
   if (sessionStatePath && existsSync(sessionStatePath)) return JSON.parse(readFileSync(sessionStatePath, "utf8"));
   if (!createdFresh && !attachedExisting) return undefined;
@@ -173,6 +209,7 @@ function runTurn(frame, socket) {
   // was handed this and dropped it" — which is exactly the distinction between a late delivery and a
   // lost one. Carries the content so a fixture can ask whether ITS message ever ran.
   log({ ev: "turn_run", session_id: frame.session_id, content: String(frame.content ?? "") });
+  appendTurnRecord?.(frame);
   // Where the deferred persistence failure lands. Real jcode logs SESSION_PERSISTENCE at this
   // point, fails to persist the session close state, and the session dies under the turn. Ordered
   // after turn_run deliberately: the real seat does execute the turn before the persistence of its
@@ -276,23 +313,40 @@ function runTurn(frame, socket) {
       }
     }
     event({ ev: "text_delta", session_id: frame.session_id, text: "fake reply" });
-    log({ ev: "turn_done_emitted", content: frame.content });
-    event({ ev: "turn_done", session_id: frame.session_id });
-    turnBusy = false;
-    busyOwner = undefined;
-    const next = queuedTurns.shift();
-    if (next) next();
-    // v8's measured boot, opt-in so no existing suite changes: its TUI submitted a recovered
-    // continuation that begins after the readiness turn finishes, so the host sees a real working
-    // transition before it sends the post-join notice. Emit this after readiness turn_done: putting
-    // working before that event lets the host immediately clear turnActive again and makes the
-    // supposedly deterministic busy fixture race its own completion frame.
-    if (process.env.FAKE_JCODE_BUSY_AFTER_READINESS === "1" && String(frame.content).includes("cotal_orientation")) {
-      turnBusy = true;
+    const foldAfterRecord =
+      process.env.FAKE_JCODE_FOLD_AFTER_RECORD === "1" &&
+      (!process.env.FAKE_JCODE_FOLD_ON_CONTENT ||
+        String(frame.content ?? "").includes(process.env.FAKE_JCODE_FOLD_ON_CONTENT) ||
+        JSON.stringify(frame).includes(process.env.FAKE_JCODE_FOLD_ON_CONTENT));
+    const completeTurn = () => {
+      log({ ev: "turn_done_emitted", content: frame.content });
+      event({ ev: "turn_done", session_id: frame.session_id });
+      turnBusy = false;
       busyOwner = undefined;
-      if (process.env.FAKE_JCODE_BUSY_AFTER_READINESS_STATUS !== "1")
-        setTimeout(() => { turnBusy = false; }, Number(process.env.FAKE_JCODE_BUSY_HOLD_MS ?? "5000"));
-    }
+      const next = queuedTurns.shift();
+      if (next) next();
+      // v8's measured boot, opt-in so no existing suite changes: its TUI submitted a recovered
+      // continuation that begins after the readiness turn finishes, so the host sees a real working
+      // transition before it sends the post-join notice. Emit this after readiness turn_done: putting
+      // working before that event lets the host immediately clear turnActive again and makes the
+      // supposedly deterministic busy fixture race its own completion frame.
+      if (process.env.FAKE_JCODE_BUSY_AFTER_READINESS === "1" && String(frame.content).includes("cotal_orientation")) {
+        turnBusy = true;
+        busyOwner = undefined;
+        if (process.env.FAKE_JCODE_BUSY_AFTER_READINESS_STATUS !== "1")
+          setTimeout(() => { turnBusy = false; }, Number(process.env.FAKE_JCODE_BUSY_HOLD_MS ?? "5000"));
+      }
+    };
+    if (!foldAfterRecord) return completeTurn();
+    const foldDelay = Number(process.env.FAKE_JCODE_FOLD_DELAY_MS ?? "0");
+    log({ ev: "journal_fold_scheduled", delay_ms: foldDelay });
+    if (Number.isFinite(foldDelay) && foldDelay > 0)
+      return void setTimeout(() => {
+        foldJournal();
+        completeTurn();
+      }, foldDelay);
+    foldJournal();
+    completeTurn();
   }, Number(process.env.FAKE_JCODE_TURN_DELAY_MS ?? "10"));
 }
 

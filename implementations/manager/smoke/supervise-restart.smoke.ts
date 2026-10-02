@@ -144,7 +144,7 @@ try {
 
   const spawnGoal = "spawn-seat".padEnd(43, "s");
   const spawned = await call("spawn", {
-    name: "seat", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1, windowMs: 60_000 },
+    name: "seat", agent: "supervise-stub", cwd: repoRoot, events: false, supervise: { restarts: 1, windowMs: 60_000 },
   }, { id: spawnGoal }).then((r) => r.reply, asValue);
   const readiness = await resultOf(spawnGoal, 60_000);
   c("the seat started under supervise",
@@ -219,7 +219,7 @@ try {
   writeFileSync(join(workspaceRoot, ".cotal", "agents", "fail.md"), "---\nname: fail\nrole: worker\n---\n");
   const failGoal = "spawn-fail".padEnd(43, "f");
   const failSpawned = await call("spawn", {
-    name: "fail", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 2, windowMs: 60_000 },
+    name: "fail", agent: "supervise-stub", cwd: repoRoot, events: false, supervise: { restarts: 2, windowMs: 60_000 },
   }, { id: failGoal }).then((r) => r.reply, asValue);
   const failReady = await resultOf(failGoal, 60_000);
   const failRow = M.agents.get("fail");

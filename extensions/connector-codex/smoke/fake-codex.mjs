@@ -4,7 +4,7 @@
 // the injected text: TOOL:roster → call the cotal_* MCP endpoint the host is serving;
 // TOOLREC → also leave in the rollout the two records a real tool call leaves;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
-// arrives, else self-interrupt after ~1s; FAIL → complete with status "failed";
+// arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
 // default → complete.
 //
 // Like the real thing, this fake is an MCP *client*: the cotal_* tools are not on the
@@ -288,6 +288,7 @@ let turnSeq = Number(process.env.FAKE_CODEX_TURN_SEQ_START ?? "0");
 let activeTurn;
 let interruptWaiter;
 let hangUsed = false; // HANG is one-shot: its REDELIVERED batch must complete normally
+let unknownStatusUsed = false; // UNKNOWNSTATUS is one-shot: its REDELIVERED batch must complete normally
 let failUsed = false; // FAIL is one-shot: its RETRIED batch must complete normally
 let rejectStartUsed = false; // REJECTSTART rejects the first matching turn/start RPC, once
 let activeTurnIsRace = false; // RACE: answer a steer and complete the turn in ONE write
@@ -300,6 +301,35 @@ async function runTurn(text) {
   activeTurn = turnId;
   activeTurnIsRace = text.includes("RACE");
   rolloutRecord("event_msg", { type: "task_started", turn_id: turnId, started_at: stamp() });
+  if (text.includes("FAIL") && !failUsed) {
+    // A turn that fails on its first request (what a rate limit looks like) ends in the SAME
+    // frame it started in, so the client processes the start and the failed terminal in one
+    // tick. That is the ordering in which the turn's own start-clear can overwrite the failure
+    // condition it publishes; a fixed host keeps the two in call order.
+    failUsed = true;
+    rolloutRecord("event_msg", {
+      type: "task_complete",
+      turn_id: turnId,
+      completed_at: stamp(),
+      error: { message: "fake failure", codex_error_info: "fake" },
+    });
+    if (ROLLOUT_LATE && turnSeq >= 2) materializeRollout();
+    activeTurn = undefined;
+    raw(
+      JSON.stringify({ jsonrpc: "2.0", method: "turn/started", params: { threadId: THREAD, turn: { id: turnId, status: "inProgress" } } }) +
+        "\n" +
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: {
+            threadId: THREAD,
+            turn: { id: turnId, status: "failed", error: { message: "fake rate limit", codexErrorInfo: "rateLimitExceeded", willRetry: false } },
+          },
+        }) +
+        "\n",
+    );
+    return;
+  }
   notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
 
   if (activeTurnIsRace) {
@@ -348,6 +378,9 @@ async function runTurn(text) {
     });
     rolloutRecord("response_item", { type: "function_call_output", call_id: callId, output: `tooloutput:${turnSeq}` });
   }
+  if (text.includes("APPROVAL")) {
+    await serverRequest("item/commandExecution/requestApproval", { threadId: THREAD, turnId, itemId: `cmd_${turnSeq}` });
+  }
   await waitForOutageGate(text);
   await waitForOpenWalGate(text, turnId);
   if (text.includes("SOLOTUI") && !soloUsed) {
@@ -372,8 +405,10 @@ async function runTurn(text) {
     // The discriminator: the FOREIGN turn completes successfully while OUR turn is still open,
     // and our turn then ends INTERRUPTED. A host that treats any terminal as its own boundary
     // acks the batch on the foreign `completed` and the message is lost forever; a host that
-    // only finalizes turns it started leaves it un-acked, so it redelivers. One-shot, so the
-    // redelivery completes normally.
+    // only finalizes turns it OWNS never mistakes the foreign completion for its own boundary.
+    // Our own turn's later `interrupted` IS our boundary, though — an interrupt this host did
+    // not issue dismisses the batch, same as an operator's Escape. One-shot, so a second FOREIGN
+    // has no special case to fall back on.
     foreignUsed = true;
     const foreign = `turn_tui_${turnSeq}`;
     notify("turn/started", { threadId: THREAD, turn: { id: foreign, status: "inProgress" } });
@@ -396,6 +431,15 @@ async function runTurn(text) {
     notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "interrupted" } });
     return;
   }
+  if (text.includes("UNKNOWNSTATUS") && !unknownStatusUsed) {
+    // A terminal with no recognizable `status` at all — not one of "completed" / "failed" /
+    // "interrupted". One-shot, following HANG's shape, so its REDELIVERED batch completes
+    // normally on the next turn.
+    unknownStatusUsed = true;
+    activeTurn = undefined;
+    notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "confused" } });
+    return;
+  }
   if (text.includes("DIE") && !existsSync(DIED_MARK)) {
     // The app-server crashes mid-turn. One-shot ACROSS PROCESSES (a marker file — the restart is
     // a brand-new process): the host respawns us, re-drives the same un-acked batch, and THAT
@@ -404,33 +448,23 @@ async function runTurn(text) {
     journal({ ev: "died", turnId });
     process.exit(3);
   }
-  const status = text.includes("FAIL") && !failUsed ? "failed" : "completed";
-  if (status === "failed") failUsed = true;
-  if (status === "completed") {
-    rolloutRecord("response_item", {
-      type: "message",
-      role: "assistant",
-      id: `msg_${turnSeq}`,
-      content: [{ type: "output_text", text: `ok:${turnSeq}` }],
-    });
-  }
-  rolloutRecord("event_msg", {
-    type: "task_complete",
-    turn_id: turnId,
-    completed_at: stamp(),
-    error: status === "failed" ? { message: "fake failure", codex_error_info: "fake" } : null,
+  rolloutRecord("response_item", {
+    type: "message",
+    role: "assistant",
+    id: `msg_${turnSeq}`,
+    content: [{ type: "output_text", text: `ok:${turnSeq}` }],
   });
+  rolloutRecord("event_msg", { type: "task_complete", turn_id: turnId, completed_at: stamp(), error: null });
   // The SECOND turn is what materializes the file in `late` mode: the first turn's records are
   // buffered and land the moment it is created, so nothing written before the bind is lost.
   if (ROLLOUT_LATE && turnSeq >= 2) materializeRollout();
-  if (status === "completed")
-    notify("item/completed", {
-      threadId: THREAD,
-      turnId,
-      item: { type: "agentMessage", id: `msg_${turnSeq}`, text: `ok:${turnSeq}`, phase: "final_answer" },
-    });
+  notify("item/completed", {
+    threadId: THREAD,
+    turnId,
+    item: { type: "agentMessage", id: `msg_${turnSeq}`, text: `ok:${turnSeq}`, phase: "final_answer" },
+  });
   activeTurn = undefined;
-  notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status } });
+  notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });
 }
 
 // One websocket frame is a complete unit (no partial message carries across frames), but it may

@@ -22,7 +22,7 @@ import {
   isReachable, chatSubject, DEV_OWNER, type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Fresh OS-assigned port per run: a fixed port means a single leaked broker (from a crashed/failed
 // prior run) collides with — or serves stale JetStream state to — every subsequent run, which reads
@@ -44,9 +44,9 @@ const until = async (cond: () => boolean, timeoutMs = 8000, stepMs = 50): Promis
 const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
 
 interface Rec { channel?: string; text: string; historical: boolean; kind?: MessageMeta["kind"] }
-function recorder(name: string, id: string, channels: string[]) {
+function recorder(name: string, id: string, channels: string[], opts: { backfillFloor?: number } = {}) {
   const got: Rec[] = [];
-  const ep = new CotalEndpoint({ space, servers, card: { name, kind: "agent", id }, channels, lifecycleUid: mintLifecycleUid() });
+  const ep = new CotalEndpoint({ space, servers, card: { name, kind: "agent", id }, channels, lifecycleUid: mintLifecycleUid(), ...opts });
   ep.on("error", () => {});
   ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
     got.push({ channel: m.channel, text: textOf(m), historical: meta?.historical ?? false, kind: meta?.kind });
@@ -67,7 +67,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 try {
-  for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
 
   // ---- registry round-trip ----
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { log: { replay: true }, incident: { replay: true }, chat: { replay: false }, review: { description: "Design critique", instructions: "Be specific." } } } });
@@ -196,9 +196,70 @@ try {
   await until(() => B2.got.filter((g) => g.channel === "log" && g.historical).length >= 2);
   check("a fresh instance backfills its boot channel's replay history", B2.got.filter((g) => g.channel === "log" && g.historical).length >= 2);
 
-  // ---- restart with a CHANGED config backfills the full (replay) boot set ----
+  // ---- backfill floor: a resumed seat catches up from its prior incarnation's cut, not the window ----
   await B2.ep.stop();
   await sleep(300);
+  const frontier = await A.chatFrontier();
+
+  // (a) floor at the current frontier: nothing before it is re-delivered, and the live tail still works.
+  const Bf1 = recorder("B", "B_join", ["log"], { backfillFloor: frontier });
+  await Bf1.ep.start();
+  await sleep(800);
+  check("backfill floor at the frontier receives no historical", Bf1.got.filter((g) => g.historical).length === 0);
+  await A.multicast("log-floor-live", { channel: "log" });
+  await until(() => has(Bf1.got, "log-floor-live").length === 1);
+  check("live multicast still arrives with a floor set, not historical", has(Bf1.got, "log-floor-live").length === 1 && has(Bf1.got, "log-floor-live")[0].historical === false);
+  await Bf1.ep.stop();
+
+  // (b) a message posted after the floor is the only one backfilled.
+  const frontier2 = await A.chatFrontier();
+  await A.multicast("log-hist-3", { channel: "log" });
+  await sleep(300);
+  const Bf2 = recorder("B", "B_join", ["log"], { backfillFloor: frontier2 });
+  await Bf2.ep.start();
+  await until(() => Bf2.got.filter((g) => g.historical).length >= 1);
+  check("backfill floor catches up on exactly what was posted after it", Bf2.got.filter((g) => g.historical).length === 1 && has(Bf2.got, "log-hist-3")[0]?.historical === true);
+  await Bf2.ep.stop();
+
+  // (c) no floor: the fresh-joiner contract is unchanged (still backfills the retained window).
+  const Bf3 = recorder("B", "B_join", ["log"]);
+  await Bf3.ep.start();
+  await until(() => Bf3.got.filter((g) => g.historical).length >= 3);
+  check("no floor: a fresh joiner still backfills at least three historical", Bf3.got.filter((g) => g.historical).length >= 3);
+  await Bf3.ep.stop();
+
+  // (d) a floor above the frontier: nothing to read, no throw, live still works.
+  const Bf4 = recorder("B", "B_join", ["log"], { backfillFloor: frontier + 1000 });
+  await Bf4.ep.start();
+  await sleep(800);
+  check("backfill floor above the frontier receives no historical and does not throw", Bf4.got.filter((g) => g.historical).length === 0);
+  await A.multicast("log-floor-above-live", { channel: "log" });
+  await until(() => has(Bf4.got, "log-floor-above-live").length === 1);
+  check("live multicast still arrives with a floor above the frontier", has(Bf4.got, "log-floor-above-live").length === 1);
+  await Bf4.ep.stop();
+
+  // (e) the manager's own shape: a non-consuming endpoint reads the frontier the cut records.
+  const M = new CotalEndpoint({
+    space, servers, card: { name: "m", kind: "endpoint", id: "m_pub" }, channels: [],
+    consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+  });
+  M.on("error", () => {});
+  await M.start();
+  let managerFrontier: number | undefined;
+  let managerFrontierError = "";
+  try {
+    managerFrontier = await M.chatFrontier();
+  } catch (e) {
+    managerFrontierError = (e as Error).message;
+  }
+  await M.stop();
+  check(
+    "a non-consuming endpoint reads the chat frontier for a preservation cut",
+    managerFrontier !== undefined && managerFrontier === (await A.chatFrontier()),
+    managerFrontierError || managerFrontier,
+  );
+
+  // ---- restart with a CHANGED config backfills the full (replay) boot set ----
   const B3 = recorder("B", "B_join", ["log", "incident"]); // boot set now log + incident (both have history)
   await B3.ep.start();
   await until(() => B3.got.filter((g) => g.channel === "incident" && g.historical).length >= 1 && B3.got.filter((g) => g.channel === "log" && g.historical).length >= 2);

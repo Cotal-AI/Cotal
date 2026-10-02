@@ -43,6 +43,16 @@
       "completionMarker": "CI SUITES FREEZE DROP SMOKE",
       "expectRed": "ci-suites-freeze is red when BASE and HEAD are unset",
       "cell": "ci-suites-freeze is red when BASE and HEAD are unset"
+    },
+    {
+      "name": "the freeze suite throws before the committed-list check runs, under unset BASE and HEAD",
+      "file": "bin/smoke/ci-suites-freeze.smoke.ts",
+      "find": "if (legacy.length < 2) throw new Error(`${CI_SUITES_PATH} parsed to fewer than two suites`);",
+      "replace": "if (legacy.length >= 2) throw new Error(`${CI_SUITES_PATH} parsed to fewer than two suites`);",
+      "command": "pnpm smoke:ci-suites-freeze-drop",
+      "completionMarker": "CI SUITES FREEZE DROP SMOKE",
+      "expectRed": "the red names the committed frozen-list cell",
+      "cell": "the red names the committed frozen-list cell"
     }
   ]
 }

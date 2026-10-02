@@ -1,0 +1,5 @@
+# Triaged 2026-10-01, when the UNGATED entry reading only "UNTRIAGED" hit its recheckBy date and
+# reddened the inventory gate. Ran it: AUTH ATTENTION TESTS PASSED (14 checks).
+# Gated rather than re-explained, which is the exit the gate asks for and the one that takes the
+# untriaged count down instead of resetting its clock.
+smoke:attention:auth

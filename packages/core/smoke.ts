@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   CotalEndpoint,
@@ -26,6 +27,7 @@ import {
   isReachable,
   mintLifecycleUid,
   principalKey,
+  presenceBucket,
   setupSpaceStreams,
   type CotalMessage,
   type Delivery,
@@ -146,6 +148,7 @@ try {
 
   const aliceActor = `alice_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const bobActor = `bob_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  process.env.COTAL_ENVIRONMENT = "env:core-smoke";
   const alice = new CotalEndpoint({
     space: SPACE,
     servers: SERVERS,
@@ -155,6 +158,7 @@ try {
     heartbeatMs: 300,
     ttlMs: 1_500,
   });
+  delete process.env.COTAL_ENVIRONMENT;
   const bob = new CotalEndpoint({
     space: SPACE,
     servers: SERVERS,
@@ -166,13 +170,15 @@ try {
   });
   watchEndpointErrors("alice", alice);
   watchEndpointErrors("bob", bob);
+  const bobWarnings: string[] = [];
+  bob.on("warning", (error: Error) => bobWarnings.push(error.message));
 
-  const bobReceived: Array<{ kind: string; text: string }> = [];
+  const bobReceived: Array<{ kind: string; text: string; id: string }> = [];
   let bobMentions: string[] | undefined;
   bob.on("message", (message: CotalMessage, delivery: Delivery) => {
     const kind = message.to ? "dm" : message.toService ? `any:${message.toService}` : `channel:${message.channel ?? ""}`;
     const text = textOf(message);
-    bobReceived.push({ kind, text });
+    bobReceived.push({ kind, text, id: message.id });
     if (text === "hello team") bobMentions = message.mentions;
     delivery.ack();
   });
@@ -187,11 +193,51 @@ try {
     ),
   );
 
+  const bindingProbe = await connect({ servers: SERVERS });
+  try {
+    const presenceKv = await new Kvm(bindingProbe).open(presenceBucket(SPACE));
+    await presenceKv.put(
+      "local.binding_probe",
+      JSON.stringify({
+        card: { id: "local.someone_else", name: "spoof", kind: "agent" },
+        status: "idle",
+        ts: Date.now(),
+      }),
+    );
+    check(
+      "the roster drops and diagnoses a presence row whose card id differs from its KV key",
+      await until(() => bob.presenceBindingDropCount === 1)
+        && !bob.getRoster().some((peer) => peer.card.name === "spoof")
+        && bobWarnings.some((message) => message.includes("does not match its KV key")),
+      { roster: bob.getRoster(), warnings: bobWarnings, drops: bob.presenceBindingDropCount },
+    );
+    await presenceKv.delete("local.binding_probe");
+  } finally {
+    await bindingProbe.close();
+  }
+
   await alice.setStatus("working");
+  await alice.setCondition({ code: "rate_limit", source: "native_rate_limit", since: 123 });
   check(
     "presence status propagates",
     await until(() => bob.getRoster().find((peer) => peer.card.id === alice.card.id)?.status === "working"),
     bob.getRoster().find((peer) => peer.card.id === alice.card.id)?.status,
+  );
+  check(
+    "presence condition and opaque environment reference propagate",
+    await until(() => {
+      const presence = bob.getRoster().find((peer) => peer.card.id === alice.card.id);
+      return presence?.condition?.code === "rate_limit"
+        && presence.condition.source === "native_rate_limit"
+        && presence.condition.since === 123
+        && presence.environment === "env:core-smoke";
+    }),
+    bob.getRoster().find((peer) => peer.card.id === alice.card.id),
+  );
+  await alice.setCondition(null);
+  check(
+    "presence condition clears explicitly",
+    await until(() => bob.getRoster().find((peer) => peer.card.id === alice.card.id)?.condition === undefined),
   );
 
   const sent = await alice.multicast("hello team", {
@@ -199,7 +245,12 @@ try {
     mentions: ["BOB", " bob ", "carol", ""],
   });
   const omitted = await alice.multicast("no ping", { channel: "general", mentions: [""] });
-  await alice.unicast(bob.card.id, "private hello");
+  let liveDmAck: { seq: number; duplicate: boolean } | undefined;
+  let liveDmMsgId: string | undefined;
+  await alice.unicastAttributed(bob.card.id, "private hello").then(({ msg, ack }) => {
+    liveDmAck = ack;
+    liveDmMsgId = msg.id;
+  });
   await alice.anycast("builder", "build the thing");
   await until(
     () => bobReceived.some((entry) => entry.kind === "channel:general" && entry.text === "hello team")
@@ -216,6 +267,16 @@ try {
     "unicast reaches the addressed principal",
     bobReceived.some((entry) => entry.kind === "dm" && entry.text === "private hello"),
     bobReceived,
+  );
+  check(
+    "unicastAttributed returns a real stored sequence",
+    typeof liveDmAck?.seq === "number" && liveDmAck.seq >= 1,
+    liveDmAck,
+  );
+  check(
+    "bob received the exact id unicastAttributed returned",
+    bobReceived.some((entry) => entry.kind === "dm" && entry.id === liveDmMsgId),
+    { liveDmMsgId, bobReceived },
   );
   check(
     "anycast reaches the builder role",
@@ -260,7 +321,17 @@ try {
   check("carol's lifecycle creates its DM durable before the offline gap", carolDurableExists);
 
   await stopEndpoint(carol);
-  await alice.unicast(carol.card.id, "held during the offline gap");
+  const { ack: carolOfflineAck } = await alice.unicastAttributed(carol.card.id, "held during the offline gap");
+
+  const carolDurable = dmDurable(DEV_OWNER, carolActor, carolLifecycleUid);
+  const pendingProbe = await connect({ servers: SERVERS });
+  let carolNumPending = -1;
+  try {
+    carolNumPending = (await (await jetstreamManager(pendingProbe)).consumers.info(dmStream(SPACE), carolDurable)).num_pending;
+  } finally {
+    await pendingProbe.close();
+  }
+  check("carol's durable holds exactly the one offline send", carolNumPending === 1, carolNumPending);
 
   const carolRestarted = new CotalEndpoint({
     space: SPACE,
@@ -284,12 +355,51 @@ try {
     carolReceived,
   );
 
+  const carolAckFloorProbe = await connect({ servers: SERVERS });
+  let carolAckFloor = -1;
+  try {
+    await until(async () => {
+      carolAckFloor = (await (await jetstreamManager(carolAckFloorProbe)).consumers.info(dmStream(SPACE), carolDurable)).ack_floor.stream_seq;
+      return carolAckFloor >= carolOfflineAck.seq;
+    });
+  } finally {
+    await carolAckFloorProbe.close();
+  }
+  check(
+    "the restart's ack floor caught up to the offline send's stored sequence",
+    carolAckFloor >= carolOfflineAck.seq,
+    { carolAckFloor, storedSeq: carolOfflineAck.seq },
+  );
+
   const daveActor = `dave_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-  await alice.unicast(principalKey(DEV_OWNER, daveActor).key, "published before activation");
+  const { ack: davePreActivationAck } = await alice.unicastAttributed(
+    principalKey(DEV_OWNER, daveActor).key,
+    "published before activation",
+  );
+  check(
+    "a pre-activation attributed publish still returns a stored sequence",
+    typeof davePreActivationAck?.seq === "number" && davePreActivationAck.seq >= 1,
+    davePreActivationAck,
+  );
+  const daveLifecycleUid = mintLifecycleUid();
+  const daveNotYetActiveDurable = dmDurable(DEV_OWNER, daveActor, daveLifecycleUid);
+  let daveDurableThrewBeforeActivation = false;
+  const daveDurableProbe = await connect({ servers: SERVERS });
+  try {
+    await (await jetstreamManager(daveDurableProbe)).consumers.info(dmStream(SPACE), daveNotYetActiveDurable);
+  } catch {
+    daveDurableThrewBeforeActivation = true;
+  } finally {
+    await daveDurableProbe.close();
+  }
+  check(
+    "a stream append is not an active durable before the lifecycle ever ran",
+    daveDurableThrewBeforeActivation,
+  );
   const dave = new CotalEndpoint({
     space: SPACE,
     servers: SERVERS,
-    lifecycleUid: mintLifecycleUid(),
+    lifecycleUid: daveLifecycleUid,
     card: { id: daveActor, name: "dave", role: "tester", kind: "agent" },
     channels: [],
     heartbeatMs: 300,
@@ -386,7 +496,7 @@ try {
   if (brokerExited && storeRemoved) releaseBroker();
 }
 
-const EXPECTED_BEFORE_COUNT = 21;
+const EXPECTED_BEFORE_COUNT = 30;
 check(
   `every scenario cell ran — ${EXPECTED_BEFORE_COUNT} expected`,
   pass + fail === EXPECTED_BEFORE_COUNT,

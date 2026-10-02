@@ -14,20 +14,26 @@
  *      with a prompt issues EXACTLY ONE `prompt_async` carrying that text, and later readiness
  *      events (a turn end, a `/new` top-level session) do not issue a second one; a boot without a
  *      prompt issues none at all.
+ *   3. THE 2.x ADAPTER (`plugin2.ts`, `setupCotal` against a fake `/api` server): the same floor,
+ *      ported — a boot prompt drives a turn with no peer traffic, the turn carries the briefing and
+ *      the persona as `system`, a later DM drives a turn carrying the DM and not the boot text
+ *      again, no prompt means no turn until a peer speaks, and a failed first submission keeps the
+ *      text for the next drive.
  *
  * Run: pnpm smoke:opencode-boot-prompt
  */
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedChannelRegistry, isReachable, CotalEndpoint } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
-import { bootPlugin } from "./_boot-plugin.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { opencodeLine } from "../src/opencode-line.js";
+import { bootPlugin, bootPlugin2, fakeOpenCode2Context } from "./_boot-plugin.js";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
@@ -51,7 +57,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 // ── 1. the launch spec: does the connector hand the prompt over at all? ──────────────────────────
 const BOOT_TEXT = "Introduce yourself in #general, then wait.";
 {
-  const withPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-1", prompt: BOOT_TEXT });
+  const withPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-1", prompt: BOOT_TEXT, events: false });
   check(
     "the launch spec carries the initial prompt to the plugin",
     withPrompt.env?.COTAL_OPENCODE_PROMPT === BOOT_TEXT,
@@ -70,7 +76,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     withPrompt.env?.OPENCODE_CONFIG_CONTENT,
   );
 
-  const noPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-2" });
+  const noPrompt = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-2", events: false });
   check(
     "no initial prompt means no carrier in the launch spec",
     !("COTAL_OPENCODE_PROMPT" in (noPrompt.env ?? {})),
@@ -80,7 +86,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
   // A prompt the connector cannot turn into a turn is refused at launch — never accepted and dropped.
   let refused = "";
   try {
-    opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-3", prompt: "   " });
+    opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-3", prompt: "   ", events: false });
   } catch (e) {
     refused = (e as Error).message;
   }
@@ -91,6 +97,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     const pinned = opencodeConnector.buildLaunch({
       space: "bootspace",
       name: "boot-pinned",
+      events: false,
       resolvedBinaries: { opencode: "/boot/resolved-opencode" },
     });
     check(
@@ -102,6 +109,34 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
   } finally {
     delete process.env.COTAL_OPENCODE_BIN;
   }
+
+  // The line is `serve.ts`'s own fact (detected from the running binary's `--version`), not the
+  // connector's launch spec — the spec stays binary-free.
+  const plain = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-line", events: false });
+  check(
+    "the launch spec does not set COTAL_OPENCODE_LINE (the shim detects it, not the launcher)",
+    !("COTAL_OPENCODE_LINE" in (plain.env ?? {})),
+    plain.env?.COTAL_OPENCODE_LINE,
+  );
+
+  check("opencodeLine parses 'opencode v2.0.18' as line 2", opencodeLine("opencode v2.0.18", "/bin/opencode") === 2);
+  check("opencodeLine parses '1.18.23' as line 1", opencodeLine("1.18.23", "/bin/opencode") === 1);
+
+  let threw3 = "";
+  try {
+    opencodeLine("3.0.0", "/bin/opencode");
+  } catch (e) {
+    threw3 = (e as Error).message;
+  }
+  check("opencodeLine throws on '3.0.0', naming it", threw3.includes("3.0.0"), threw3);
+
+  let threwG = "";
+  try {
+    opencodeLine("garbage", "/bin/opencode");
+  } catch (e) {
+    threwG = (e as Error).message;
+  }
+  check("opencodeLine throws on 'garbage', naming it", threwG.includes("garbage"), threwG);
 }
 
 // ── 2. the plugin: does a boot with a prompt actually drive a turn? ──────────────────────────────
@@ -126,6 +161,8 @@ const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 let sessionSeq = 0;
 let sessionID = "";
 const prompts: { session: string; text: string }[] = [];
+let serverModels: Record<string, unknown> = { "catalog-only": {} };
+let providerReads = 0;
 let sessionGate: Promise<void> | undefined;
 let forcedSessionId: string | undefined;
 const oc = createHttpServer((req, res) => {
@@ -137,6 +174,11 @@ const oc = createHttpServer((req, res) => {
   req.setEncoding("utf8");
   req.on("data", (d) => (raw += d));
   req.on("end", () => {
+    if (req.method === "GET" && req.url === "/provider") {
+      providerReads++;
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ all: [{ id: "or1stub", models: serverModels }], connected: ["or1stub"], default: {} }));
+      return;
+    }
     if (req.method === "POST" && req.url === "/session") {
       // GATED FOR ARM C ONLY. The boot task awaits session creation, so holding this is what lets a
       // native turn get in front of the boot prompt deterministically instead of by racing it.
@@ -208,19 +250,54 @@ const enterFocus = async (hooks: PluginHooks): Promise<boolean> => {
   return false;
 };
 try {
-  for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { general: { replay: false } } } });
   watcher = new CotalEndpoint({ space, servers, card: { id: "watch", name: "watch", role: "watcher", kind: "agent" }, channels: ["general"], heartbeatMs: 500, ttlMs: 30_000 });
   watcher.on("error", () => undefined);
   await watcher.start();
 
+  // The CLI catalog can advertise an id absent from this server's provider listing. The same
+  // server and real broker are used by the normal boot arms below; only its available models change.
+  const catalog = { source: "opencode models --pure --verbose", models: [{ id: "or1stub/catalog-only" }] };
+  const beforeSession = sessionSeq;
+  process.env.COTAL_NAME = "ModelReadiness";
+  process.env.COTAL_ID = "model_readiness";
+  process.env.COTAL_MODEL = catalog.models[0].id;
+  serverModels = { "served-only": {} };
+  let modelRefusal = "";
+  let exitCode: number | undefined;
+  const originalExit = process.exit;
+  const originalStderrWrite = process.stderr.write;
+  process.exit = ((code?: number) => { exitCode = code; }) as typeof process.exit;
+  process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+    const line = String(chunk);
+    if (line.includes("or1stub/catalog-only")) modelRefusal = line;
+    return originalStderrWrite.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
+  }) as typeof process.stderr.write;
+  clearPluginGuard();
+  await bootPlugin();
+  for (let i = 0; i < 30 && exitCode === undefined; i++) await sleep(100);
+  process.exit = originalExit;
+  process.stderr.write = originalStderrWrite;
+  check("catalog/server model mismatch refuses before mesh join",
+    exitCode === 1 && providerReads === 1 && sessionSeq === beforeSession &&
+    !watcher.getRoster().some((p) => p.card.name === "ModelReadiness") &&
+    modelRefusal.includes("or1stub/catalog-only") &&
+    modelRefusal.includes(catalog.source) && modelRefusal.includes("server /provider"),
+    { exitCode, providerReads, sessionSeq, beforeSession, modelRefusal });
+  delete process.env.COTAL_MODEL;
+  serverModels = { "catalog-only": {} };
+
   // ARM A — booted WITH a prompt. Exactly one turn, carrying that text.
   process.env.COTAL_NAME = "Booty";
   process.env.COTAL_ID = "booty";
+  process.env.COTAL_MODEL = "or1stub/catalog-only";
   process.env.COTAL_OPENCODE_PROMPT = BOOT_TEXT;
   clearPluginGuard();
   armA = await bootPlugin();
   await waitForPrompts(1);
+  check("a model served by the running server boots normally", providerReads === 2, providerReads);
+  delete process.env.COTAL_MODEL;
   check("a boot prompt drives a turn without any peer traffic", prompts.length === 1, prompts);
   check("the boot turn carries the operator's prompt text", prompts[0]?.text.includes(BOOT_TEXT) === true, prompts[0]);
 
@@ -356,6 +433,182 @@ try {
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
+
+// ── 3. the 2.x adapter: the same floor, ported ────────────────────────────────────────────────
+{
+  const PORT2 = await freePort();
+  const servers2 = `nats://127.0.0.1:${PORT2}`;
+  const space2 = "ocboot2";
+  const SID2 = "ses_boot2";
+  const dir2 = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  const nats2 = spawn("nats-server", ["-js", "-p", String(PORT2), "-sd", join(dir2, "js")], { stdio: "ignore" });
+  const releaseBroker2 = teardownOnSignal(nats2, dir2);
+  const auth2 = `Basic ${Buffer.from("opencode:test-secret-3").toString("base64")}`;
+  const prompts2: { session: string; text: string; system?: string }[] = [];
+  let firstPromptFails = false;
+  let firstPromptFailed = false;
+
+  const oc2 = createHttpServer((req, res) => {
+    if (req.headers.authorization !== auth2) {
+      res.writeHead(401).end();
+      return;
+    }
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (d) => (raw += d));
+    req.on("end", () => {
+      if (req.method === "POST" && req.url === "/api/session") {
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: SID2 } }));
+        return;
+      }
+      if (req.method === "POST" && req.url === `/api/session/${SID2}/prompt`) {
+        const body = raw ? (JSON.parse(raw) as { text?: string; system?: string }) : {};
+        prompts2.push({ session: SID2, text: body.text ?? "", system: body.system });
+        if (firstPromptFails && !firstPromptFailed) {
+          firstPromptFailed = true;
+          res.writeHead(500).end();
+          return;
+        }
+        res.writeHead(204).end();
+        return;
+      }
+      res.writeHead(404).end();
+    });
+  });
+  oc2.listen(0, "127.0.0.1");
+  await once(oc2, "listening");
+  const ocPort2 = (oc2.address() as { port: number }).port;
+
+  // Cell 2's persona: `loadAgentFile`'s minimal accepted shape (packages/core/src/agent-file.ts:123-150) —
+  // frontmatter `name`, `role`, `agent`, a one-line body.
+  const PERSONA_TEXT = "You are Booty2, the boot-prompt probe.";
+  const agentFile = join(dir2, "booty2.md");
+  writeFileSync(agentFile, `---\nname: booty2\nrole: probe\nagent: opencode\n---\n\n${PERSONA_TEXT}\n`);
+
+  for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
+  Object.assign(process.env, {
+    COTAL_SPACE: space2,
+    COTAL_SERVERS: servers2,
+    COTAL_SUBSCRIBE: "general",
+    COTAL_OPENCODE_SERVER_URL: `http://127.0.0.1:${ocPort2}`,
+    OPENCODE_SERVER_USERNAME: "opencode",
+    OPENCODE_SERVER_PASSWORD: "test-secret-3",
+  });
+  // No COTAL_MODEL set for the 2.x arms — the `GET /api/model` check is skipped (plugin2.ts:110-113).
+
+  const clearSetupGuard = () => delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+  const waitForPrompts2 = async (n: number, ms = 8000): Promise<void> => {
+    for (let i = 0; i < ms / 100 && prompts2.length < n; i++) await sleep(100);
+  };
+
+  let watcher2: CotalEndpoint | undefined;
+  let dispose2: (() => Promise<void>) | void = undefined;
+  try {
+    await awaitBrokerReady(() => isReachable(servers2), { servers: servers2, attempts: 50, delayMs: 200 });
+    await seedChannelRegistry({ servers: servers2, space: space2, file: { defaults: { replay: false }, channels: { general: { replay: false } } } });
+    watcher2 = new CotalEndpoint({ space: space2, servers: servers2, card: { id: "watch2", name: "watch2", role: "watcher", kind: "agent" }, channels: ["general"], heartbeatMs: 500, ttlMs: 30_000 });
+    watcher2.on("error", () => undefined);
+    await watcher2.start();
+
+    // CELLS 1-2: a boot prompt, with no peer traffic, drives a turn carrying the boot text, the
+    // briefing and the persona as system.
+    process.env.COTAL_NAME = "Booty2";
+    process.env.COTAL_ID = "booty2";
+    process.env.COTAL_AGENT_FILE = agentFile;
+    process.env.COTAL_OPENCODE_PROMPT = BOOT_TEXT;
+    clearSetupGuard();
+    const ctxA = fakeOpenCode2Context();
+    dispose2 = await bootPlugin2(ctxA);
+    await waitForPrompts2(1);
+    check("on 2.x a boot prompt drives a turn without any peer traffic", prompts2.length === 1, prompts2);
+    check(
+      "the 2.x boot turn carries the operator's prompt text, the briefing and the persona as system",
+      prompts2[0]?.text.includes(BOOT_TEXT) === true && prompts2[0]?.system?.includes(PERSONA_TEXT) === true,
+      prompts2[0],
+    );
+
+    // CELL 3: the boot turn ends, then a DM drives a turn carrying the DM and not the boot text again.
+    for (let i = 0; i < 50; i++) {
+      if (watcher2.getRoster().some((p) => p.card.name === "Booty2")) break;
+      await sleep(100);
+    }
+    const bootyId = watcher2.getRoster().find((p) => p.card.name === "Booty2")?.card.id;
+    ctxA.feed({ type: "session.execution.succeeded", data: { sessionID: SID2 } });
+    await sleep(300);
+    await watcher2.unicast(bootyId!, "a DM after the boot turn");
+    await waitForPrompts2(2);
+    check(
+      "after the boot turn ends a DM drives a turn carrying the DM and not the boot text again",
+      prompts2.length === 2 && prompts2[1]?.text.includes("a DM after the boot turn") === true && !prompts2[1]?.text.includes(BOOT_TEXT),
+      prompts2[1],
+    );
+    await dispose2?.();
+    dispose2 = undefined;
+
+    // CELL 4: no prompt at all — no turn until a peer speaks (the positive control that the arm
+    // is alive, the shape arm B above uses).
+    delete process.env.COTAL_OPENCODE_PROMPT;
+    process.env.COTAL_NAME = "Quiety2";
+    process.env.COTAL_ID = "quiety2";
+    const before2 = prompts2.length;
+    clearSetupGuard();
+    const ctxB = fakeOpenCode2Context();
+    dispose2 = await bootPlugin2(ctxB);
+    await sleep(1500);
+    check("on 2.x a boot with no prompt drives no turn until a peer speaks (before a DM)", prompts2.length === before2, prompts2.slice(before2));
+    for (let i = 0; i < 50; i++) {
+      if (watcher2.getRoster().some((p) => p.card.name === "Quiety2")) break;
+      await sleep(100);
+    }
+    const quietyId = watcher2.getRoster().find((p) => p.card.name === "Quiety2")?.card.id;
+    await watcher2.unicast(quietyId!, "a DM to the quiet seat");
+    await waitForPrompts2(before2 + 1);
+    check(
+      "on 2.x a boot with no prompt drives no turn until a peer speaks",
+      prompts2.length === before2 + 1 && prompts2[before2]?.text.includes("a DM to the quiet seat") === true,
+      prompts2.slice(before2),
+    );
+    await dispose2?.();
+    dispose2 = undefined;
+
+    // CELL 5: a failed first submission keeps the boot text, and the next drive submits it.
+    process.env.COTAL_NAME = "Retry2";
+    process.env.COTAL_ID = "retry2";
+    process.env.COTAL_OPENCODE_PROMPT = BOOT_TEXT;
+    firstPromptFails = true;
+    firstPromptFailed = false;
+    const beforeRetry = prompts2.length;
+    clearSetupGuard();
+    const ctxC = fakeOpenCode2Context();
+    dispose2 = await bootPlugin2(ctxC);
+    for (let i = 0; i < 50 && !firstPromptFailed; i++) await sleep(100);
+    check("a failed boot submission is attempted (drive failed, logged)", firstPromptFailed, firstPromptFailed);
+    for (let i = 0; i < 50; i++) {
+      if (watcher2.getRoster().some((p) => p.card.name === "Retry2")) break;
+      await sleep(100);
+    }
+    const retryId = watcher2.getRoster().find((p) => p.card.name === "Retry2")?.card.id;
+    await watcher2.unicast(retryId!, "a DM while the boot retries");
+    await waitForPrompts2(beforeRetry + 2);
+    check(
+      "a failed boot submission keeps the prompt and the next drive submits it",
+      prompts2.length === beforeRetry + 2 && prompts2[beforeRetry + 1]?.text.includes(BOOT_TEXT) === true,
+      prompts2.slice(beforeRetry),
+    );
+  } catch (e) {
+    fail++;
+    console.error("  ✗ scenario threw:", (e as Error).message);
+  } finally {
+    await dispose2?.();
+    await watcher2?.stop?.();
+    nats2.kill("SIGKILL");
+    oc2.close();
+    await sleep(150);
+    rmSync(dir2, { recursive: true, force: true });
+    releaseBroker2();
+  }
+}
+
 // The marker prints on EVERY exit path, pass or fail: a grader that cannot tell an unfinished run
 // from a finished red run cannot grade this suite at all.
 console.log(

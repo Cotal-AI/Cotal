@@ -1,14 +1,17 @@
 import { useState } from "react";
 import { Box, Text, useInput } from "ink";
 
-/** A destructive action awaiting confirmation. `kill` is a quick y/n; `deleteSpace` (irreversible)
- *  requires typing the space name. */
+/** A destructive action awaiting confirmation. `kill` is a quick y/n (with `f` for a hard kill);
+ *  `deleteSpace` and `purge` (irreversible) require typing the space name, `delchan` the channel name. */
 export type ConfirmTarget =
   | { kind: "kill"; name: string }
-  | { kind: "deleteSpace"; space: string };
+  | { kind: "deleteSpace"; space: string }
+  | { kind: "purge"; space: string }
+  | { kind: "delchan"; channel: string };
 
 /** Full-screen red danger overlay. Owns input while shown. Calls onConfirm only when the gate is
- *  satisfied (y for kill, exact name typed for deleteSpace); Esc/n cancels. */
+ *  satisfied (y/f for kill, exact name typed for deleteSpace/purge); Esc/n/Enter cancels. Kill's
+ *  choice travels in the callback: `y` is a graceful stop, `f` a force-kill. */
 export function Confirm({
   target,
   width,
@@ -19,20 +22,26 @@ export function Confirm({
   target: ConfirmTarget;
   width: number;
   height: number;
-  onConfirm: () => void;
+  onConfirm: (opts?: { force?: boolean }) => void;
   onCancel: () => void;
 }) {
   const [typed, setTyped] = useState("");
-  const match = target.kind === "deleteSpace" && typed === target.space;
+  const wanted = target.kind === "kill" ? undefined : target.kind === "delchan" ? target.channel : target.space;
+  const match = wanted !== undefined && typed === wanted;
 
   useInput((input, key) => {
     if (key.escape) return onCancel();
     if (target.kind === "kill") {
+      // Enter CANCELS, and only `y`/`f` arm the stop. Enter is the key a hurried operator hits to
+      // dismiss an overlay, and it cancelled this one until now; making it confirm turns that
+      // reflex into a kill of whatever the roster had selected. The two typed-name confirms below
+      // arm Enter deliberately, but only after the name has been typed out in full.
       if (input === "y" || input === "Y") return onConfirm();
+      if (input === "f" || input === "F") return onConfirm({ force: true });
       if (input === "n" || input === "N" || key.return) return onCancel();
       return;
     }
-    // deleteSpace: type the name to arm Enter
+    // deleteSpace / purge / delchan: type the name to arm Enter
     if (key.return) {
       if (match) onConfirm();
       return;
@@ -60,14 +69,28 @@ export function Confirm({
             Stop agent <Text bold>{target.name}</Text> via the manager?
           </Text>
           <Box marginTop={1}>
-            <Text dimColor>y = stop · n / Esc = cancel</Text>
+            <Text dimColor>y = stop (graceful) · f = force-kill · n / Esc = cancel</Text>
           </Box>
         </Box>
       ) : (
         <Box marginTop={1} flexDirection="column">
           <Text>
-            Delete space <Text bold>{target.space}</Text> -{" "}
-            <Text color="red">irreversible</Text> (all history + presence gone).
+            {target.kind === "deleteSpace" ? (
+              <>
+                Delete space <Text bold>{target.space}</Text> -{" "}
+                <Text color="red">irreversible</Text> (all history + presence gone).
+              </>
+            ) : target.kind === "delchan" ? (
+              <>
+                Delete channel <Text bold>#{target.channel}</Text> -{" "}
+                <Text color="red">irreversible</Text> (its history + registry entry gone; other channels stay).
+              </>
+            ) : (
+              <>
+                Purge <Text bold>{target.space}</Text>'s history (all channels) -{" "}
+                <Text color="red">irreversible</Text> (agents stay up).
+              </>
+            )}
           </Text>
           <Box marginTop={1}>
             <Text dimColor>type the name to confirm: </Text>
@@ -75,7 +98,7 @@ export function Confirm({
             <Text inverse> </Text>
           </Box>
           <Box marginTop={1}>
-            <Text dimColor>{match ? "Enter = delete" : "Esc = cancel"}</Text>
+            <Text dimColor>{match ? (target.kind === "purge" ? "Enter = purge" : "Enter = delete") : "Esc = cancel"}</Text>
           </Box>
         </Box>
       )}

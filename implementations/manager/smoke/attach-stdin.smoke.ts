@@ -535,7 +535,7 @@ try {
 
   manager = new Manager({ space, servers: BROKER, runtime: "pty", workspaceRoot: root });
   await manager.start();
-  const s = await manager.startAgent({ name: SEAT, agent: "stdin-seat", cwd: repoRoot });
+  const s = await manager.startAgent({ name: SEAT, agent: "stdin-seat", cwd: repoRoot, events: false });
   if (!s.ok) throw new Error(`seat did not start: ${JSON.stringify(s)}`);
   for (let i = 0; i < 60 && !seatAlive(); i++) await wait(200);
   const live = (): number => (manager as unknown as { sessionPlane?: { liveSessions: number } }).sessionPlane?.liveSessions ?? -1;
@@ -766,6 +766,30 @@ try {
   }
 
   // -----------------------------------------------------------------------------------------
+  console.log("\nF2. the kitty encoding pressed between sessions ends the attach and hands the slot back");
+  // The between-sessions reader's own encoded twin of cell E: the byte's kitty CSI form struck in
+  // the same window must end the attach and hand the slot back exactly as the legacy byte does.
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    await loseTheLink(a);
+    await nextDial();
+    await closeLink();
+    await heal();
+    const tPress = Date.now();
+    a.write("\x1b[93;5u");
+    const ended = await a.waitExit(30_000);
+    console.log(`    (press to exit: ${ended ? `${Date.now() - tPress}ms` : "never, inside 30s"})`);
+    check("the kitty-encoded press ends the attach, though it landed with no session to detach from",
+      ended, a.seen().slice(-300));
+    check("...exiting clean", a.exit()?.code === 0, a.exit());
+    check("...without any byte of the sequence reaching the agent as data",
+      !sink().subarray(mark).includes(0x1b), { got: sink().subarray(mark).toString("utf8") });
+    check("...and the manager is back on the session count it started with, with no slot left behind",
+      await settle(base, 25_000) === base, { base, now: live(), pressToExitMs: Date.now() - tPress });
+  }
+
+  // -----------------------------------------------------------------------------------------
   console.log("\nG. the same chunk in a LIVE session is data, forwarded to the agent, and still not a detach");
   {
     const base = live();
@@ -781,6 +805,74 @@ try {
       { got: sink().subarray(mark).toString("utf8") });
     check("...and the attach is still up", a.exit() === undefined, a.exit());
     await detachAndSettle(a, base, "G");
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nG2. the kitty encoding of the detach key ends a LIVE session");
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    a.write("\x1b[93;5u");
+    check("the attach detaches and exits clean", await a.waitExit(30_000) && a.exit()?.code === 0, a.exit());
+    check("...without any byte of the sequence reaching the agent",
+      !sink().subarray(mark).includes(0x1b), { got: sink().subarray(mark).toString("utf8") });
+    check("...and the manager is back on the session count it started with", await settle(base, 20_000) === base, { base, now: live() });
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nG3. the xterm modifyOtherKeys encoding of the detach key ends a LIVE session");
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    a.write("\x1b[27;5;93~");
+    check("the attach detaches and exits clean", await a.waitExit(30_000) && a.exit()?.code === 0, a.exit());
+    check("...without any byte of the sequence reaching the agent",
+      !sink().subarray(mark).includes(0x1b), { got: sink().subarray(mark).toString("utf8") });
+    check("...and the manager is back on the session count it started with", await settle(base, 20_000) === base, { base, now: live() });
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nG4. an encoded detach key with company is data, forwarded, and not a detach");
+  // The encoded twin of cell G: the same chunk-with-company rule must hold for the kitty form too.
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    const n = nonce();
+    a.write(`${n}\x1b[93;5u\r`);
+    let carried = false;
+    for (let i = 0; i < 75 && !carried; i++) { carried = sink().subarray(mark).includes(0x1b); if (!carried) await wait(200); }
+    check("the agent receives it, escape byte included", carried, { got: sink().subarray(mark).toString("utf8") });
+    check("...with the nonce it was typed with", sink().subarray(mark).includes(Buffer.from(n)),
+      { got: sink().subarray(mark).toString("utf8") });
+    check("...and the attach is still up", a.exit() === undefined, a.exit());
+    await detachAndSettle(a, base, "G4");
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nG5. an encoded detach key whose modifier field is 0 is data, forwarded, and not a detach");
+  // Found by review: the Ctrl test is `(mods - 1) & 4`, and with no floor a field of 0 reads as Ctrl
+  // because `(0 - 1) & 4` is 4 in JavaScript's ToInt32 arithmetic. Neither protocol emits 0 (the
+  // field is 1 + bitmask, 1 meaning no modifier), so a chunk carrying it is not a press of the key.
+  // The chunk is written WHOLE and alone, so the whole-chunk rule is the only thing between it and a
+  // detach; the seat's pty is cooked and holds it until a newline, so a bare CR follows as its own
+  // chunk to flush what the line discipline held, which is how the forwarded bytes reach the sink.
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    a.write("\x1b[93;0u");
+    check("the attach is still up after a kitty chunk with modifier 0 (not a press)", !(await a.waitExit(3_000)) && a.exit() === undefined, a.exit());
+    a.write("\r");
+    let carried = false;
+    for (let i = 0; i < 75 && !carried; i++) { carried = sink().subarray(mark).includes(0x1b); if (!carried) await wait(200); }
+    check("...and the kitty chunk reached the agent as data", carried, { got: sink().subarray(mark).toString("utf8") });
+    const mark2 = sink().length;
+    a.write("\x1b[27;0;93~");
+    check("the attach is still up after an xterm chunk with modifier 0 (not a press)", !(await a.waitExit(3_000)) && a.exit() === undefined, a.exit());
+    a.write("\r");
+    carried = false;
+    for (let i = 0; i < 75 && !carried; i++) { carried = sink().subarray(mark2).includes(0x1b); if (!carried) await wait(200); }
+    check("...and the xterm chunk reached the agent as data", carried, { got: sink().subarray(mark2).toString("utf8") });
+    await detachAndSettle(a, base, "G5");
   }
 
   // -----------------------------------------------------------------------------------------

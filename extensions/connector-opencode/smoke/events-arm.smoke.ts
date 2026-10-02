@@ -1,7 +1,8 @@
 /**
  * ARMING IS NOT AUTHORIZATION, and this suite keeps the two apart for the OpenCode launch path.
  *
- * A session publishes its AG-UI event plane only when the launch ARMED it: `opts.events` goes in and
+ * A session publishes its AG-UI event plane unless the launch explicitly opts out: `opts.events`
+ * is false only for `--no-events`, and
  * `COTAL_EVENTS` comes out. The manager separately mints a
  * publish GRANT on the channel that plane lands on. Those are two different facts, and the dangerous
  * confusion is to treat the second as the first: an agent file or a manifest can hand-write anything
@@ -32,7 +33,7 @@
  *
  * Run: pnpm smoke:opencode-events-arm
  */
-import { eventChannel } from "@cotal-ai/core";
+import { eventChannel, readLaunchMaterial } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
 
 let pass = 0;
@@ -48,7 +49,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const WS = "/tmp/cotal-opencode-events-arm-workspace";
 const env = (extra: Record<string, unknown>): Record<string, string> =>
-  opencodeConnector.buildLaunch({ space: "s", name: "seat", ...extra } as never).env as Record<string, string>;
+  opencodeConnector.buildLaunch({ space: "s", name: "seat", workspaceRoot: WS, ...extra } as never).env as Record<string, string>;
 const refusalFor = (extra: Record<string, unknown>): string | null => {
   try {
     env(extra);
@@ -58,36 +59,36 @@ const refusalFor = (extra: Record<string, unknown>): string | null => {
   }
 };
 
-// ---- CONTROL: the default is OFF, so every positive cell below is measuring the flag ------------
+// ---- CONTROL: the default is ON -----------------------------------------------------------------
 {
-  const e = env({ workspaceRoot: WS });
-  check("CONTROL: an ordinary launch carries no COTAL_EVENTS", e.COTAL_EVENTS === undefined, e.COTAL_EVENTS);
-  check("CONTROL: an ordinary launch carries no COTAL_WORKSPACE_ROOT either", e.COTAL_WORKSPACE_ROOT === undefined, e.COTAL_WORKSPACE_ROOT);
+  const e = env({});
+  check("CONTROL: an ordinary launch carries COTAL_EVENTS", e.COTAL_EVENTS === "1", e.COTAL_EVENTS);
+  check("CONTROL: an ordinary launch carries the durable workspace root", e.COTAL_WORKSPACE_ROOT === WS, e.COTAL_WORKSPACE_ROOT);
 }
 
 // ---- ARMED: the flag, and only the flag, turns the plane on ------------------------------------
 {
-  const e = env({ events: true, workspaceRoot: WS });
+  const e = env({ events: true });
   check("--events arms the emitter (COTAL_EVENTS=1)", e.COTAL_EVENTS === "1", e.COTAL_EVENTS);
   check("an armed launch carries the workspace root the write-ahead log lives under", e.COTAL_WORKSPACE_ROOT === WS, e.COTAL_WORKSPACE_ROOT);
 }
 {
-  const e = env({ events: false, workspaceRoot: WS });
+  const e = env({ events: false });
   check("--no-events leaves the plane off", e.COTAL_EVENTS === undefined, e.COTAL_EVENTS);
 }
 
 // ---- THE SEPARATION: a grant cannot arm --------------------------------------------------------
 const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" });
 {
-  const e = env({ workspaceRoot: WS, allowPublish: ["general", HANDWRITTEN] });
-  check("a hand-written event-channel grant does NOT arm the emitter", e.COTAL_EVENTS === undefined,
+  const e = env({ events: false, allowPublish: ["general", HANDWRITTEN] });
+  check("a hand-written event-channel grant does NOT override an explicit opt-out", e.COTAL_EVENTS === undefined,
     { COTAL_EVENTS: e.COTAL_EVENTS, allowPublish: HANDWRITTEN });
   check("and it does not smuggle the workspace root in either", e.COTAL_WORKSPACE_ROOT === undefined, e.COTAL_WORKSPACE_ROOT);
 }
 
 // ---- THE WAL HOME: an absent workspace root REFUSES, it does not fall back ---------------------
 {
-  const msg = refusalFor({ events: true });
+  const msg = refusalFor({ events: true, workspaceRoot: undefined });
   check("an armed launch with no workspace root refuses", msg !== null, msg);
   check("and the refusal NAMES the write-ahead log, so the operator can act on it",
     msg !== null && /write-ahead log/.test(msg), msg);
@@ -97,13 +98,20 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
 {
   // The neighbouring fallback is deliberate and is asserted here so that a later reader does not
   // "fix" the asymmetry by making one match the other. They serve different consumers.
-  const e = env({ events: true, workspaceRoot: WS });
+  const e = env({ events: true });
   check("the SQLite/pidfile home still tracks the workspace root when there is one",
     e.COTAL_OPENCODE_HOME === WS, e.COTAL_OPENCODE_HOME);
-  const unarmed = env({});
+  const unarmed = env({ events: false, workspaceRoot: undefined });
   check("and it still falls back to the launch cwd when events are off, which the log may never do",
     unarmed.COTAL_OPENCODE_HOME === process.cwd() && unarmed.COTAL_WORKSPACE_ROOT === undefined,
     { home: unarmed.COTAL_OPENCODE_HOME, root: unarmed.COTAL_WORKSPACE_ROOT });
+}
+{
+  const e = env({ events: true, eventsRequired: true, userAuth: {
+    owner: "u_abcdefghijklmnopqrstuvwxyz", actor: "seat", sentinelCredsPath: "/dev/null", bearerCmd: ["true"],
+  } });
+  const material = readLaunchMaterial(e.COTAL_LAUNCH_MATERIAL);
+  check("required policy rides OpenCode launch material", material.eventsRequired === true, material);
 }
 {
   // THE GATE ABOVE `buildLaunch`, and the one a live spawn hits FIRST. Both the CLI and the manager
@@ -131,7 +139,7 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
 }
 
 // ---- Cell count, because a buildLaunch that threw on every input would DELETE cells, not fail them
-const EXPECTED = 15;
+const EXPECTED = 16;
 check(`every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

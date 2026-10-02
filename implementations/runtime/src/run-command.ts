@@ -17,7 +17,7 @@
  * resolves, it just cannot expire a pause.
  */
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
@@ -30,16 +30,20 @@ import {
   newTakeoverId,
   newIdentity,
   mintCreds,
+  readAcceptedRow,
   openRecordsBucket,
   admissionBucket,
   createRunAdmission,
   readRunAdmission,
+  readRunRevocation,
   revokeRunAdmission,
   chatSubject,
   DEV_OWNER,
   type RunAdmission,
   type RunAdmissionView,
+  type RunRevocation,
   type IssuedSubjectAllow,
+  type IssuedCaller,
   readRunProgram,
   readRunRecord,
   renderLifecycleBlocked,
@@ -48,6 +52,7 @@ import {
   runDriverCaller,
   RUN_LAUNCH_DEADLINE_MS,
   standaloneConnectOpts,
+  unansweredRail,
   unansweredRequest,
   walkKvEntries,
   type EpErrorDetail,
@@ -59,16 +64,18 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
-import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, type ConnectOpts, type Connection, type ControlAuth } from "@cotal-ai/workspace";
+import { type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { agentLifecycleSecretFilePaths, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveMeshTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
+import { migrateRun, type MigrateReport } from "./migrate.js";
+import { journalStepRow } from "./run-host.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -88,6 +95,12 @@ interface RunValues {
   "admit-publish"?: string;
   /** `revoke --local` only: why the run's admission is being revoked, recorded on the marker. */
   reason?: string;
+  /** `migrate` only: commit-side overrides, parsed so the verb can REFUSE them by name rather than
+   *  let the dispatcher reject them as unknown flags. Each decides what a commit does with an
+   *  orphan; this verb only checks, so none is taken. */
+  adopt?: string;
+  release?: string;
+  "discard-approvals"?: boolean;
 }
 
 interface Planes {
@@ -158,11 +171,12 @@ async function openMediator(driver: Planes, pin: RunDriverGrantArgs): Promise<Ru
  * drives of one run derive the same fencing token and epoch from one record read, and the
  * activation barrier deliberately relaxes the exact (token, holder, epoch) tuple as a process
  * picking its own run back up — so a constant id would let a second concurrent drive co-activate
- * through that relaxation instead of being refused.
+ * through that relaxation instead of being refused. The local admission also uses this id as
+ * its actor, so it must use the owner-token alphabet.
  */
 function cliHolder(): { id: string; lifecycleUid: string; instanceId: string } {
   const uid = randomUUID().replaceAll("-", "");
-  return { id: `cli-run-${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };
+  return { id: `cli_run_${uid.slice(0, 8)}`, lifecycleUid: `u_${uid.slice(0, 20)}`, instanceId: uid.slice(0, 26) };
 }
 
 function readProgram(values: RunValues): string {
@@ -299,6 +313,10 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     await revokeRunAdmission(kv, endpoint, { version: 1, runId, reason: values.reason, by: values.by, revokedAt: Date.now() });
     const view = await readRunAdmission(await jetstreamManager(nc), conn.space, endpoint, runId);
     console.log(`run ${runId} on ${endpoint}: revoked by ${view.revoked!.by} (${view.revoked!.reason}); its hosts refuse the next channel effect, and it is not resumed or taken back`);
+    // What the operator will see NEXT, because the two surfaces disagreed for as long as one of
+    // them never read the marker. Saying it here means the acknowledgement and the table cannot
+    // drift apart without somebody noticing at the moment of the revoke.
+    console.log(`run ps now lists ${runId} as revoked; the status record is left as its driver last wrote it`);
   } finally {
     await nc.drain().catch(() => nc.close());
   }
@@ -388,6 +406,12 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   // is an authority stream whose consumer surface is an exact audited list (SPEC 13.9).
   const seen = new Set<string>();
   const rows: string[][] = [];
+  /** Why each revoked row reads `revoked`, printed under the table: the marker carries `by` and the
+   *  reason, and the table has no column for either. */
+  const revocations = new Map<string, RunRevocation>();
+  /** Rows whose revocation could not be read at all, each with the reason and its record's state,
+   *  printed to stderr after the table. */
+  const unchecked: string[] = [];
   for (const e of await walkKvEntries(planes.kv, "run.*.*.spec")) {
     const parts = e.key.split(".");
     if (parts.length !== 4 || parts[3] !== "spec") continue;
@@ -401,10 +425,37 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
     if (record === undefined) continue;
     const st = record.status?.value;
     const lineage = record.spec.value.forkedFrom;
+    // THE ADMISSION STORE, not the status record alone. A revocation is a create-only marker under
+    // its own key and nothing rewrites the record (SPEC 14.8, docs/workflows.md), while the record
+    // is written only by a driver. A driver that dies mid-run therefore leaves `running` behind
+    // with nothing left to write anything else, and this table listed that run as live for as long
+    // as it existed. `resume` already reads the marker and refuses; the table was the one surface
+    // that never learned.
+    //
+    // DISPLAY ONLY. A revoke does not make a run `failed` or `released`: nobody drove it there, the
+    // journal owns the facts, and fabricating a terminal state here would put a fact in front of an
+    // operator that no host ever recorded.
+    let state = st?.state ?? "(no status)";
+    try {
+      const revoked = await readRunRevocation(planes.jsm, planes.space, endpoint, runId);
+      if (revoked !== undefined) {
+        revocations.set(dedupe, revoked);
+        state = "revoked";
+      }
+    } catch (e) {
+      // Absence of EVIDENCE, and the STATE column itself says so. A marker this call could not read
+      // (a store it could not reach, a marker version or shape it does not know) says nothing about
+      // whether the run was revoked. The record's own word is what a revoked run printed before
+      // this table read the marker, so the column says `unchecked` and the record's word goes to
+      // stderr with the reason, where `awk '{print $3}'` and `grep running` over stdout never see it.
+      // The row itself still prints: one unreadable marker does not hide the rest of the listing.
+      state = "unchecked";
+      unchecked.push(`${dedupe}: revocation marker could not be read (${(e as Error).message}); its record reads ${st?.state ?? "(no status)"}`);
+    }
     rows.push([
       runId,
       endpoint,
-      st?.state ?? "(no status)",
+      state,
       st?.holder ?? "-",
       st === undefined ? "-" : String(st.journalHigh),
       lineage === undefined ? "-" : `${lineage.run}@${lineage.step}`,
@@ -419,6 +470,16 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   const line = (r: string[]) => r.map((cell, i) => cell.padEnd(widths[i] as number)).join("  ");
   console.log(line(header));
   for (const r of rows) console.log(line(r));
+  // WHO revoked it and WHY, under the table rather than in it. The marker carries both and the
+  // columns carry neither, and a state of `revoked` with no attribution anywhere sends the
+  // operator to a second command to learn what they are looking at.
+  for (const [key, r] of revocations)
+    console.log(`${key}: revoked by ${r.by} (${r.reason}); the status record is left as its driver last wrote it`);
+  // A listing with an unchecked row is incomplete, and the exit status says so after every row
+  // has been printed, as `ls` and `find` do when one entry cannot be read: the rows on stdout, the
+  // failed reads on stderr, and a non-zero status a caller can test without parsing the column.
+  for (const u of unchecked) console.error(u);
+  if (unchecked.length > 0) process.exitCode = 1;
 }
 
 async function journal(planes: Planes, runId: string | undefined, takeoverId: string): Promise<void> {
@@ -432,28 +493,9 @@ async function journal(planes: Planes, runId: string | undefined, takeoverId: st
     console.log(`run ${runId}: no journal records (never started, or retired)`);
     return;
   }
-  for (const { record } of replay.records) {
-    if (record.kind === "activation") {
-      console.log(`#${record.n}  activation  holder=${record.holder} epoch=${record.epoch} replayedTo=${record.replayedTo}`);
-      continue;
-    }
-    const e = record.entry as JournalEntry;
-    // The key the operator sees is the key `answer <stepKey>` takes back, so it is rendered by
-    // the same export the journal itself keys with, never a second hand-rolled copy of the rule.
-    const step = journalEntryKeyString(e);
-    const outcome = e.state === "pending" ? "pending" : `${e.status}${e.error?.code ? ` (${e.error.code})` : ""}`;
-    console.log(`#${record.n}  step        ${step}  ${outcome}`);
-    // WHAT AN OPEN PAUSE ASKS, under the step an answer is addressed by. `answer <run> <stepKey>`
-    // is the whole interface to a checkpoint, and without this the operator on the other end of it
-    // had the address and not the question: everything durable held the input HASH, so learning
-    // what "approve" meant took a trip back to the source. Only while it is open, because a
-    // settled pause is answered and the render is a worklist rather than a transcript.
-    const asks = e.state === "pending" ? (e.external as { asks?: unknown } | undefined)?.asks : undefined;
-    if (typeof asks === "string") {
-      const addressee = (e.external as { addressee?: unknown } | undefined)?.addressee;
-      console.log(`            asks        ${asks}${typeof addressee === "string" ? `  (escalates to ${addressee})` : ""}`);
-    }
-  }
+  printJournal(runId, replay.records.map(({ record }): RunJournalRow => record.kind === "activation"
+    ? { n: record.n, kind: "activation", holder: record.holder, epoch: record.epoch, replayedTo: record.replayedTo }
+    : journalStepRow(record.n, record.entry as JournalEntry)));
 }
 
 /** `answer --local`: the pause is found under the READ credential this call was opened on, then
@@ -503,13 +545,104 @@ function parseAnswerValue(values: RunValues): unknown {
   }
 }
 
+/** `migrate`: the migrate check over an edited program, read-only. Everything it needs — the run
+ *  record (for the pins, read back rather than re-derived), the journal (replayed as the barrier
+ *  replays it), the edited source — is read under the same one-shot `run-operator` credential
+ *  `journal` reads on. `commitMigration` is NOT wired here: the verb decides, it does not file. */
+async function migrate(values: RunValues, planes: Planes, runId: string | undefined, takeoverId: string): Promise<void> {
+  if (runId === undefined || values.file === undefined) {
+    console.error(USAGE);
+    console.error("run migrate: <runId> and --file <program> are required");
+    process.exit(1);
+  }
+  // Commit-side overrides, refused by name: each one records a person's decision on a report the
+  // commit would file, and a check that accepted one would be reporting a decision nobody filed.
+  for (const [flag, what] of [
+    ["adopt", "--adopt <handle>"],
+    ["release", "--release <handle>"],
+    ["discard-approvals", "--discard-approvals"],
+  ] as const) {
+    if (values[flag] !== undefined) {
+      console.error(`run migrate: ${what} decides what a COMMIT does with an orphan, and this verb only checks; nothing was written`);
+      process.exit(1);
+    }
+  }
+  const endpoint = values.endpoint ?? "manager";
+  const record = await readRunRecord(planes.kv, endpoint, runId);
+  if (record === undefined) {
+    console.error(`run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be migrated`);
+    process.exit(1);
+  }
+  const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
+  const source = readFileSync(values.file, "utf8");
+  const report = await migrateRun({
+    endpoint,
+    runId,
+    source,
+    file: values.file,
+    entries: replay.records.flatMap((r) => (r.record.kind === "step" ? [r.record.entry as JournalEntry] : [])),
+    pins: record.spec.value.pins as RunPins,
+    kv: planes.kv,
+    actor: "cotal run migrate",
+    now: () => Date.now(),
+  });
+  printMigrateReport(report);
+  if (!report.admissible) process.exitCode = 1;
+}
+
+/** The report an operator reads: admissible or not, how far the walk accounted for the journal,
+ *  every orphan with its verdict (and its code, on a rejection), the divergence and the unwalkable
+ *  step when there is one, and the one line that says what this verb did NOT do. */
+function printMigrateReport(r: MigrateReport): void {
+  console.log(`run ${r.run}: ${r.admissible ? "admissible" : "not admissible"} — the edited program accounts for ${r.consumedThrough} journal row(s); moves to ${r.toHash}`);
+  for (const o of r.orphans) {
+    console.log(`  orphan  ${o.step}  ${o.kind}  ${o.verdict}${o.code !== undefined ? ` (${o.code})` : ""}`);
+    console.log(`          ${o.why}`);
+  }
+  if (r.divergence !== undefined) {
+    console.log(`  divergence  ${r.divergence.step}: recorded input ${r.divergence.recordedHash}, edited program hashes ${r.divergence.programHash}`);
+  }
+  if (r.unwalkable !== undefined) {
+    console.log(`  unwalkable  ${r.unwalkable.step}: ${r.unwalkable.why}`);
+  }
+  console.log("a commit would file this report as a migration record and mark it applied; this verb filed nothing (the commit is not reachable yet)");
+}
+
 // ── the manager-hosted path (SPEC 14.3) ─────────────────────────────────────────────────────
+
+/**
+ * What a hosted `run` verb prints when its manager describe drew no answer, SCOPED TO THE RAIL the
+ * describe rode ({@link unansweredRail}, SPEC 13.15).
+ *
+ * On the LEGACY `ep` rail there is one rail and nothing answered on it, so "is a manager running?"
+ * is the right question and `--local` is the right remedy.
+ *
+ * On the VERSIONED (issued) rail it is not. SPEC 13.15 keeps the two rails disjoint at the broker
+ * and requires an endpoint to serve both, so a manager older than the versioned rail subscribes
+ * `ep` alone: it is running, it is on the roster, and this caller cannot reach it. #1630 measured
+ * both halves of the damage. The question ASSERTS one of two causes, and `--local` is the remedy
+ * that follows from it: it drives the run from this process and NAMES THE CALLER as its answerer,
+ * so an operator who takes the tool's advice on a mesh whose manager is merely old submits an
+ * answer under the wrong identity.
+ *
+ * So the versioned wording names BOTH causes and asserts neither, because this side cannot tell
+ * them apart: the service registry records no package version. Naming only the skew is the same
+ * defect one step over, and it is reachable - `bin/smoke/control-transport-dial.smoke.ts` runs a
+ * fixture with no manager at all, and an operator there would have been sent to check a version.
+ */
+export function unansweredManagerRefusal(e: EpEnvelopeError): string {
+  const detail = `${e.code}: ${e.message}`;
+  const rail = unansweredRail(e);
+  if (rail === undefined || rail === "ep")
+    return `no manager answered on the endpoint rails (${detail}); is a manager running for this mesh? A run can still be driven from this terminal with --local`;
+  return `no manager answered on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
+}
 
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
  *  fetch, digest-verified recompile), then the invoke. The reply's data on success; on a refusal
  *  the manager's own sentence, printed, and a non-zero exit. */
 async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined): Promise<unknown> {
-  const t = await resolveControlTarget(values, "control-caller-privileged");
+  const t = await resolveRunControlTarget(values);
   const who = controlCaller(t.auth);
   if ("refusal" in who) {
     console.error(who.refusal);
@@ -522,11 +655,17 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     maxReconnectAttempts: 0,
   });
   try {
-    const service = await resolveService(nc, t.space, BASELINE_LIFECYCLE_ENDPOINT, who.caller, { deadlineMs: 10_000 });
+    const service = await resolveService(nc, t.space, BASELINE_LIFECYCLE_ENDPOINT, who.caller, {
+      deadlineMs: 10_000,
+      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),
+    });
     // A start or resume is answered only once the drive has activated, which the manager waits on
     // for a bounded time; the deadline here outlives that wait, so the manager's own "still
     // launching" refusal is what a slow activation reads as, never a manager that did not answer.
-    const r = await invokeCommand(nc, t.space, service, command, args, { deadlineMs: RUN_LAUNCH_DEADLINE_MS });
+    const r = await invokeCommand(nc, t.space, service, command, args, {
+      deadlineMs: RUN_LAUNCH_DEADLINE_MS,
+      ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+    });
     if (r.reply.ok !== true) {
       const err = r.reply.error;
       console.error(`run ${command.slice(4)}: ${renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err)}`);
@@ -538,12 +677,51 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     return r.reply.data;
   } catch (e) {
     if (e instanceof EpEnvelopeError) {
-      console.error(unansweredRequest(e)
-        ? `no manager answered on the endpoint rails (${e.code}: ${e.message}); is a manager running for this mesh? A run can still be driven from this terminal with --local`
-        : `${e.code}: ${e.message}`);
+      console.error(unansweredRequest(e) ? unansweredManagerRefusal(e) : `${e.code}: ${e.message}`);
       process.exit(1);
     }
     throw e;
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+}
+
+/** A spawned static seat that shells out to the rendered `cotal run answer …` command must answer as
+ *  THAT seat, not as a freshly minted operator instrument. Connection material is intentionally not
+ *  inherited by shell children; the non-secret launch identity points back to the manager-owned
+ *  lifecycle credential, and the accepted-row token resolves its issuer-bound generation. Outside a
+ *  managed seat, keep the ordinary operator target resolution unchanged. */
+async function resolveRunControlTarget(values: RunValues): Promise<ControlTarget> {
+  if (values.creds !== undefined) return resolveControlTarget(values, "control-caller-privileged");
+  const name = process.env.COTAL_NAME?.trim();
+  const actor = process.env.COTAL_ID?.trim();
+  const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
+  const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim();
+  if (!name || !actor || !uid || !acceptedToken) return resolveControlTarget(values, "control-caller-privileged");
+  const mesh = resolveMeshTarget(process.cwd(), { space: values.space, server: values.server });
+  if (mesh.mode !== "auth") return resolveControlTarget(values, "control-caller-privileged");
+  const path = agentLifecycleSecretFilePaths(mesh.root, mesh.space, name, uid).creds;
+  if (!existsSync(path))
+    throw new Error(`run: managed seat credential is missing at ${path}; refusing to answer as a different caller`);
+  const creds = readFileSync(path, "utf8");
+  const tls = mesh.tlsRequired;
+  const nc = await dialerFor(mesh.server)({
+    servers: mesh.server,
+    ...standaloneConnectOpts({ creds, tls }),
+    maxReconnectAttempts: 0,
+  });
+  try {
+    const ref = await readAcceptedRow(nc, mesh.space, acceptedToken);
+    if (ref.owner !== DEV_OWNER || ref.actor !== actor || ref.uid !== uid)
+      throw new Error(`run: managed seat issuance resolves to ${ref.owner}.${ref.actor}/${ref.uid}, not ${DEV_OWNER}.${actor}/${uid}`);
+    return {
+      space: mesh.space,
+      server: mesh.server,
+      auth: { creds, tls: mesh.tlsRequired, epCaller: { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation } as IssuedCaller },
+      root: mesh.root,
+      mode: mesh.mode,
+      ...(mesh.policy ? { policy: mesh.policy } : {}),
+    };
   } finally {
     await nc.drain().catch(() => nc.close());
   }
@@ -567,6 +745,16 @@ function printJournal(runId: string, rows: readonly RunJournalRow[]): void {
     }
     console.log(`#${r.n}  step        ${r.step}  ${r.outcome}`);
     if (r.asks !== undefined) console.log(`            asks        ${r.asks}${r.addressee !== undefined ? `  (escalates to ${r.addressee})` : ""}`);
+    if (r.answer !== undefined) {
+      const facts = [
+        ...(Object.hasOwn(r.answer, "value") ? [`value=${JSON.stringify(r.answer.value)}`] : []),
+        ...(r.answer.by !== undefined ? [`by=${JSON.stringify(r.answer.by)}`] : []),
+        ...(r.answer.artifact !== undefined ? [`artifact=${JSON.stringify(r.answer.artifact)}`] : []),
+        ...(r.answer.at !== undefined ? [`at=${JSON.stringify(r.answer.at)}`] : []),
+        `answerId=${JSON.stringify(r.answer.answerId)}`,
+      ];
+      console.log(`            answered    ${facts.join("  ")}`);
+    }
   }
 }
 
@@ -600,6 +788,12 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   }
   if (verb === "answer" && values.by !== undefined) {
     console.error("run answer: --by is not taken on the hosted path; the manager records you as the answerer from your credential. `--local --by <who>` names the answerer when driving from this process");
+    process.exit(1);
+  }
+  // The manager serves no `run-migrate` command, so there is nothing to route to: the check reads
+  // the run's record, journal and program itself, which is what `--local` does.
+  if (verb === "migrate") {
+    console.error("run migrate: the manager serves no run-migrate command; the check reads the run from this terminal. Run `cotal run migrate <runId> --local --file <program>`");
     process.exit(1);
   }
   if (verb === "start") {
@@ -659,7 +853,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
 export async function runWorkflow(args: ParsedArgs): Promise<void> {
   const values = args.values as RunValues;
   const [verb, a, b] = args.positionals;
-  if (verb === undefined || !["start", "resume", "ps", "journal", "answer", "revoke"].includes(verb)) {
+  if (verb === undefined || !["start", "resume", "ps", "journal", "answer", "revoke", "migrate"].includes(verb)) {
     console.error(USAGE);
     process.exit(1);
   }
@@ -689,6 +883,7 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   try {
     if (verb === "ps") await ps(values, planes);
     else if (verb === "journal") await journal(planes, a, takeoverId);
+    else if (verb === "migrate") await migrate(values, planes, a, takeoverId);
     else await answer(values, planes, a, b, takeoverId);
   } finally {
     await planes.close();

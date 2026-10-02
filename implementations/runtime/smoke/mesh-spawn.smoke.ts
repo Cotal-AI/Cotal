@@ -56,11 +56,13 @@ import {
   goalRefOf,
   submissionFingerprint,
   readGoalResult,
+  resolveService,
   replayRunJournal,
   readRunRecord,
   newTakeoverId,
   EpEnvelopeError,
   type EpCommandDef,
+  type ResolvedService,
   type EpServeContext,
   type EpCaller,
   type GoalRef,
@@ -73,6 +75,7 @@ import { MeshHandler, EpfSettleWatcher, startRun, driveRun, migrateRun, commitMi
 import { runMediatorGrants, PLACEMENT_COMMANDS } from "@cotal-ai/core";
 import { PRIMITIVES } from "@cotal-ai/lang";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshspawn";
 const EP = "manager";
@@ -105,7 +108,7 @@ const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise
 
 // ── broker + planes ────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-meshspawn-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}meshspawn-`));
 const managerRoot = join(sd, "manager-root");
 const preparedRoot = join(sd, "prepared-writer");
 const makeRepo = (dir: string, marker: string): string => {
@@ -121,6 +124,7 @@ const makeRepo = (dir: string, marker: string): string => {
 const managerHead = makeRepo(managerRoot, "manager");
 const preparedHead = makeRepo(preparedRoot, "prepared");
 const broker = spawnProc("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+teardownOnSignal(broker, sd);
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
   rmSync(sd, { recursive: true, force: true });
@@ -843,6 +847,78 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   await MGR_C.stop();
 }
 
+// ── 3f) an unpinned spawn survives the class-queue split (#1638) ──────────────────────────────
+{
+  console.log("• 3f — an unpinned spawn survives a not-executed bind refusal");
+  // A run resolves the manager on the CLASS rail and binds the incarnation that answered its
+  // describe. The invoke is a second, independent trip through the same anycast queue, so with two
+  // managers up it routinely reaches the other member, which refuses BEFORE dispatching (SPEC 13.2:
+  // `not-executed`, no effect of the command exists). Raised as L4000 that refusal ends the run and
+  // consumes its id, which is the composition #1638 reports: honest per command, destructive per run.
+
+  // THE SPLIT FORCED, NOT AWAITED. Which member wins the queue is the run's luck, so an arm that
+  // waits for a split can decline to grade. The handler's memoized class handle is rewritten to bind
+  // an incarnation nothing is serving, the same device the manager's describe-split probe uses, so
+  // every responder is the wrong one and the refusal is guaranteed. Only one instance is serving
+  // here, so the re-issue's re-resolve can land nowhere else: the arm is deterministic on both tips,
+  // red before the repair and green after it.
+  const UNSERVED_IID = "z".repeat(26);
+  const forced = mk("sp-3f");
+  const real = await resolveService(nc, SPACE, EP, CALLER);
+  (forced as unknown as { managerService?: Promise<ResolvedService> }).managerService =
+    Promise.resolve({ ...real, responder: { instanceId: UNSERVED_IID, epoch: real.responder.epoch } });
+  // Read back through the handler, not the local literal: this is what proves the memo the handler
+  // will actually send from was rewritten, rather than a copy. If it is ever false the cells below
+  // are measuring an unforced spawn.
+  const armed = await (forced as unknown as { managerService: Promise<ResolvedService> }).managerService;
+  c("the forced arm is installed: the handler's class handle binds an incarnation nothing serves",
+    armed.responder.instanceId === UNSERVED_IID && UNSERVED_IID !== MGR_IID,
+    { bound: armed.responder.instanceId, serving: MGR_IID });
+  const fAlloc0 = allocations.length, fInvoke0 = spawnInvokes.length;
+  const repaired = await withDeadline(
+    forced.spawn({ persona: "builder" }, stepCtx(token("q")).ctx)
+      .then((v) => v, (e: unknown) => { console.log("  ! the unpinned spawn rejected:", (e as Error)?.message?.slice(0, 170)); return undefined; }),
+    45_000, "the unpinned spawn under a guaranteed bind refusal");
+  c("an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
+    repaired !== undefined, { agent: repaired?.agent });
+  // The refusal states that nothing ran, so a re-issue is a FIRST attempt and must leave exactly one
+  // seat. A repair that duplicated the effect would be worse than the failure it replaces, and the
+  // refused attempt reached no handler at all, so the far side must have seen ONE submission.
+  c("the repair submitted once and allocated one seat: a re-issue after a not-executed refusal is not a second attempt",
+    allocations.length === fAlloc0 + 1 && spawnInvokes.length === fInvoke0 + 1,
+    { allocations: allocations.length - fAlloc0, submissions: spawnInvokes.length - fInvoke0 });
+
+  // THE NATURAL FACE, through the ordinary entry point. The arm above proves the repair answers a
+  // bind this suite installed; this one proves the class rail produces that bind on its own, with
+  // two live instances and nothing rewritten. Every attempt gets its own handler, so every attempt
+  // pays its own describe and draws the queue afresh.
+  const MGR_D = await extraManager("e".repeat(26), "mesh-spawn-smoke-host-d");
+  const N = 12;
+  const nA0 = spawnInvokes.length, nD0 = MGR_D.invokes.length;
+  let served = 0, rejected = 0;
+  for (let i = 0; i < N; i += 1) {
+    const v = await withDeadline(
+      mk(`sp-3f-${i}`).spawn({ persona: "builder" }, stepCtx(token(`q${i}`)).ctx)
+        .then((x) => x, () => undefined),
+      45_000, `the unpinned spawn ${i}`);
+    if (v !== undefined) served += 1; else rejected += 1;
+  }
+  const submissions = (spawnInvokes.length - nA0) + (MGR_D.invokes.length - nD0);
+  console.log(`     ${N} unpinned spawns, two managers serving: ${served} returned a handle, ${rejected} did not; ${spawnInvokes.length - nA0} landed on A, ${MGR_D.invokes.length - nD0} on B`);
+  // CONSERVATION, which holds on any correct tip: a refusal that says nothing ran must have
+  // submitted nothing, and a handle must be backed by one submission. It is the guard the repair
+  // must not break; the split rate printed above is what the repair moves.
+  c("with two managers serving, every unpinned spawn is accounted for: one submission per handle returned, and a refused attempt submits nothing",
+    served + rejected === N && submissions === served,
+    { served, rejected, submissions, N });
+  // The positive control for the row above: without it a tip where the queue happened to send all
+  // twelve to one member would score it green while proving nothing about a multi-instance space.
+  c("and the class queue really did spread across both members, so the split condition was present rather than assumed",
+    spawnInvokes.length > nA0 && MGR_D.invokes.length > nD0,
+    { a: spawnInvokes.length - nA0, b: MGR_D.invokes.length - nD0 });
+  await MGR_D.stop();
+}
+
 // ── 2) an idempotent resubmission is served, never re-allocated ───────────────────────────────
 {
   console.log("• 2 — the same pinned id resubmitted is served, not re-allocated");
@@ -1198,7 +1274,7 @@ log("winner", out.index);
 // Pure over the grant builder and the normalizer: no broker reach is needed to prove the SHAPE of
 // what would be minted, and shape is exactly what the design bounds.
 {
-  const GSPACE = "netcup";
+  const GSPACE = "grant-space";
   const GTAKE = newTakeoverId();
   const legacy = runMediatorGrants(GSPACE, { endpoint: EP, runId: "sp-g1", takeoverId: GTAKE, instanceId: "abcdefghijklmnopqrstuvwxyz", epoch: 1 }, "01234567890123456789012");
   const pinned = runMediatorGrants(GSPACE, { endpoint: EP, runId: "sp-g1", takeoverId: GTAKE, instanceId: "abcdefghijklmnopqrstuvwxyz", epoch: 1, placement: { instanceId: "zyxwvutsrqponmlkjihgfedcba" } }, "01234567890123456789012");
@@ -1235,7 +1311,7 @@ log("winner", out.index);
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
-const EXPECTED_CELLS = 65;
+const EXPECTED_CELLS = 70;
 const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -1,6 +1,7 @@
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
+  assertLifecycleToken,
   GOAL_BEARING_COMMANDS,
   epProbeInstanceInterest,
   freezeExpectedSet,
@@ -10,6 +11,7 @@ import {
   parseEpSubject,
   respondedButUnbound,
   unansweredRequest,
+  unansweredRail,
   registryReadFailed,
   renderLifecycleBlocked,
   submitAndFollowGoal,
@@ -23,6 +25,7 @@ import {
   type EpCaller,
   type EpInstanceLiveness,
   type EpVerbTarget,
+  type FlagSpec,
   type Profile,
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
@@ -59,6 +62,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   input: { command: "input", targeted: true },
   status: { command: "inspect" },
   ps: { command: "ps" },
+  slots: { command: "slots" },
   models: { command: "models" },
   launch: { command: "launch" },
   purge: { command: "purge" },
@@ -95,7 +99,9 @@ async function askManagerEp(
   timeoutMs?: number,
   pin?: ManagerPin,
 ): Promise<ManagerReply> {
-  const instanceId = pin?.instanceId;
+  if (pin?.instanceId !== undefined && auth.managerInstanceId !== undefined && pin.instanceId !== auth.managerInstanceId)
+    return { ok: false, error: "the manager pin differs from this credential's instance authority", code: "permission-denied" };
+  const instanceId = pin?.instanceId ?? auth.managerInstanceId;
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
   const caller = auth.epCaller!;
@@ -169,7 +175,7 @@ async function askManagerEp(
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, ...(data !== undefined ? { data } : {}) };
   } catch (e) {
-    return epRailFailure(e, pin);
+    return epRailFailure(e, instanceId === undefined ? pin : { instanceId });
   } finally {
     // Drain waits for in-flight NATS work. A dead broker never finishes that, and
     // attach-auth-root hung here after spawn once nats-server exited.
@@ -205,16 +211,32 @@ export interface ManagerPin {
   instanceId?: string;
 }
 
+/** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
+ *  ps/stop/attach/input/describe so they cannot drift. For stop and attach it is the seat-locality
+ *  escape hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily
+ *  the one that wins the class queue. */
+export const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not the roster's `local.…` principal id" } as const satisfies FlagSpec;
+
 /** Read `--on` at the site that declares it. Absent stays absent (class rails). An EMPTY value
  *  (`--on=`, `--on ""`, or `--on "$INSTANCE"` with the variable unset) is refused here, up front:
  *  it is falsy, so every `if (on)` branch would treat it as absent and drop the pin (a `stop` would
  *  fall through to seat locality, an open-mesh `ps` to the scatter), while the mint and core's
  *  route builder treat it as PRESENT and refuse it as an invalid token. Two answers for one input;
- *  a dropped pin is a silent fallback, so neither branch gets to see it. */
+ *  a dropped pin is a silent fallback, so neither branch gets to see it. A non-empty value is also
+ *  shape-checked here now, against core's own lifecycle-token grammar: the mint's bare grammar
+ *  error named neither the identifier `--on` wants nor where to read it, which cost operators
+ *  spawn attempts on a format mismatch (#423). */
 export function onInstanceOrExit(on: string | undefined, verb: string): string | undefined {
   if (on === undefined) return undefined;
   if (on === "") {
     console.error(c.red(`✗ --on requires a manager instance id (the whole id, as \`cotal ps\` prints it): \`${verb} --on <instance>\`. An empty value is refused, not dropped`));
+    process.exit(1);
+  }
+  try {
+    assertLifecycleToken(on, "instanceId");
+  } catch (e) {
+    const principalClause = on.startsWith("local.") ? `; "${on}" is a principal id` : "";
+    console.error(c.red(`✗ ${(e as Error).message}. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`manager <id>\` header in a multi-manager space, the \`instance <id>\` fact under \`cotal ps --wide\`), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${principalClause}: \`${verb} --on <instance>\``));
     process.exit(1);
   }
   return on;
@@ -228,7 +250,9 @@ export function onInstanceOrExit(on: string | undefined, verb: string): string |
  *    reachability verdict "no manager reachable" is stated here and only here, and only unpinned:
  *    an unanswered PINNED call names the instance instead, since three managers may be answering
  *    while the one the operator typed is not there, and "no manager reachable" sends them to the
- *    broker for a typo. Measured on a live three-manager mesh during review.
+ *    broker for a typo. Measured on a live three-manager mesh during review. The verdict is also
+ *    scoped to the RAIL ({@link unansweredRail}): on the versioned rail it names that rail and says what the
+ *    silence does not establish, because SPEC 13.15 keeps the two rails disjoint at the broker.
  *  - a REGISTRY READ on this side failed ({@link registryReadFailed}: the scatter's freeze or its
  *    reconcile). The managers were not the failure and may all be up; a verdict on them here sent
  *    the operator to the managers for a broker read.
@@ -243,11 +267,27 @@ export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
   if (!(e instanceof EpEnvelopeError)) return { ok: false, unanswered: false, error: e instanceof Error ? e.message : String(e) };
   const detail = `${e.code}: ${e.message}`;
   if (unansweredRequest(e)) {
+    // The verdict is SCOPED TO THE RAIL the request rode (SPEC 13.15). The legacy and versioned rails are
+    // disjoint subject spaces at the broker and an endpoint is required to serve both, so a manager
+    // built before the versioned rail subscribes `ep` alone and an issued caller can never see it.
+    // "No manager reachable" is then a claim about the mesh drawn from silence on one half of it,
+    // and #1630 measured it against a manager that was up, idle on the roster and starting runs the
+    // whole time. On the legacy rail there is no other half, so the verdict stands as it was.
+    const rail = unansweredRail(e);
+    const versioned = rail !== undefined && rail !== "ep" ? rail : undefined;
+    // TWO CAUSES, BOTH NAMED. Silence on a versioned rail is consistent with no manager at all AND
+    // with one older than the rail, and this side cannot tell them apart: the registry records no
+    // package version. An earlier wording named only the skew, which sent an operator whose manager
+    // was simply down to go and check a version.
+    const skew = versioned === undefined ? "" :
+      ` The ${versioned} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${versioned}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, its version.`;
     return {
       ok: false, unanswered: true,
       error: instanceId !== undefined
-        ? `manager instance ${instanceId} did not answer (${detail})`
-        : `no manager reachable on the ep rails (${detail})`,
+        ? `manager instance ${instanceId} did not answer${versioned === undefined ? "" : ` on the ${versioned} rail`} (${detail})${skew}`
+        : versioned === undefined
+          ? `no manager reachable on the ep rails (${detail})`
+          : `no manager answered on the ${versioned} rail (${detail})${skew}`,
     };
   }
   if (registryReadFailed(e))

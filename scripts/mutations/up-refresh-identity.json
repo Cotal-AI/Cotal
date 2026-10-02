@@ -1,11 +1,12 @@
 {
   "suite": [
-    "implementations/cli/smoke/up-refresh-identity-live.smoke.ts"
+    "implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
+    "packages/core/smoke/presence-ttl-refresh-cli.smoke.ts"
   ],
   "grades": "suite",
   "guard": "an explicit cotal up refresh chooses the requested same-root space record rather than the first same-server registry record",
   "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/up-refresh-identity.json",
   "mutations": [
     {
@@ -16,6 +17,66 @@
       "expectRed": "explicit refresh selects omega-root even with same-server records",
       "cell": "explicit refresh selects omega-root even with same-server records",
       "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the recorded-store substitution dropped (values[\"store-dir\"] untouched)",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "            values[\"store-dir\"] = heldForRepair.storeDir;\n",
+      "replace": "",
+      "expectRed": "(4) the log's last Store Directory: line names store-a/jetstream",
+      "cell": "(4) the log's last Store Directory: line names store-a/jetstream",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the refusal condition forced false",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "            if (heldForRepair.storeDir !== undefined && requestedStoreDir !== heldForRepair.storeDir) {",
+      "replace": "            if (heldForRepair.storeDir !== undefined && requestedStoreDir !== heldForRepair.storeDir && process.env.FX121_NEVER_SET !== undefined) {",
+      "expectRed": "(5) a disagreeing --store-dir repair refuses",
+      "cell": "(5) a disagreeing --store-dir repair refuses",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the intended-stop gate removed from the exit handler (unconditional removeMesh)",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    if (stopping) {",
+      "replace": "    if (true) {",
+      "expectRed": "the record survives the crash",
+      "cell": "the record survives the crash",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "the crash arm's exit line removed",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "      if (activationFinished) process.exit(code ?? 1);\n",
+      "replace": "",
+      "expectRed": "a killed broker makes the foreground `up` exit 1, the crash arm's code, not Node's unsettled-await 13",
+      "cell": "a killed broker makes the foreground `up` exit 1, the crash arm's code, not Node's unsettled-await 13",
+      "command": "pnpm build >/dev/null && pnpm smoke:up-refresh-identity:live",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "F2 the already-running arm's broker-version read and #1356 warning are dropped, so a repeat cotal up against a stale broker says nothing",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "        const v = await brokerVersion(server, reconcileCreds);\n        if (belowPresenceSafeBroker(v))\n          console.error(\n            c.yellow(\n              `! nats-server ${v} is below 2.14.5: its file-backed presence bucket can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,\n            ),\n          );\n",
+      "replace": "",
+      "expectRed": "the refresh also printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
+      "cell": "the refresh also printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
+      "command": "pnpm build >/dev/null && pnpm smoke:presence-ttl-refresh-cli",
+      "afterRestore": "pnpm build"
+    },
+    {
+      "name": "F3 belowPresenceSafeBroker's patch comparison inverted, so a broker at or above the safe floor is misreported as below it",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  return p.patch < 5;\n",
+      "replace": "  return p.patch >= 5;\n",
+      "expectRed": "the CLI printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
+      "cell": "the CLI printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
+      "command": "pnpm build >/dev/null && pnpm smoke:presence-ttl-refresh-cli",
       "afterRestore": "pnpm build"
     }
   ]

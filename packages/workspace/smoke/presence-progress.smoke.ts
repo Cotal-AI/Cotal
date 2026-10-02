@@ -7,7 +7,7 @@
  *
  * Pure: no broker. Run: pnpm smoke:presence-progress
  */
-import { progressSignal, PROGRESS_STALL_MS } from "../src/progress.ts";
+import { progressSignal, PROGRESS_STALL_MS } from "../src/progress.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -93,7 +93,7 @@ check(
 );
 check(
   "connector roster names unknown progress for a textual working peer",
-  /working · progress unknown/.test(toolSpecs),
+  /working(?:\${condition})? · progress unknown/.test(toolSpecs),
 );
 check(
   "CLI shared textual working badge names unknown progress",

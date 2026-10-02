@@ -1,0 +1,3 @@
+# A dry run must mutate nothing: the boot-gate seed ran before parsing, so an invalid `--dry-run`
+# rewrote the operator-global seed store and only then printed the usage refusal (#1620).
+smoke:dry-run-no-seed

@@ -1,14 +1,27 @@
 /**
- * Subject naming — the routing half of the wire contract (v0).
+ * Subject naming — the routing half of the wire contract (v0). SPEC.md §3 is normative.
  *
- *   cotal.<space>.chat.<channel>      multicast to a channel (dotted + hierarchical: team.backend, subscribe team.>)
- *   cotal.<space>.svc.<service>       anycast to any one instance of a service (queue group)
- *   cotal.<space>.inst.<instance>     unicast to one specific instance
- *   cotal.<space>.ctl.<service>       control request/reply to a SERVER-SIDE service — the delivery
+ * Every principal rides the subject as two tokens, `<owner>.<actor>`. The builders below
+ * (chatSubject, anycastSubject, unicastSubject, controlServiceSubject) emit these shapes.
+ *
+ *   cotal.<space>.chat.<owner>.<actor>.<channel>
+ *                                     multicast to a channel (dotted + hierarchical: team.backend,
+ *                                     subscribe chat.*.*.team.>)
+ *   cotal.<space>.svc.<service>.<owner>.<actor>
+ *                                     anycast to any one instance of a service (queue group)
+ *   cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>
+ *                                     unicast to one principal; the sender is the last two tokens
+ *   cotal.<space>.ctl.<service>.<owner>.<actor>
+ *                                     control request/reply to a SERVER-SIDE service — the delivery
  *                                     daemon's delivery/delivery-admin carve-outs ONLY.
  *                                     The manager's ctl tiers were deleted in 1d, and the auth
  *                                     plane's rail moved to ep.one.auth in #350: both serve their
  *                                     control surface as v0.4 endpoints on the ep.* rails.
+ *   cotal.<space>.ep.<one|all|inst|reply>.…
+ *                                     v0.4 endpoint control surface; SPEC.md §13.2 defines each rail
+ *   cotal.<space>.ep.<generation>.<one|all|inst|reply>.…
+ *                                     the same rails for an issued caller; the generation segment is
+ *                                     spelled only by the builders in endpoint-subjects.ts (SPEC.md §13.15)
  *   cotal.<space>.trace.<instance>    ambient lifecycle trace (later)
  *
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
@@ -118,6 +131,11 @@ export function subjectMatches(pattern: string, subject: string): boolean {
  *  never named (and two distinct policy strings could collide on one token). Returns the channel
  *  unchanged when valid so callers can use it inline. */
 export function assertValidChannel(channel: string): string {
+  if (channel.length > MAX_CHANNEL_LENGTH)
+    throw new Error(
+      `invalid channel "${channel.slice(0, 32)}…": ${channel.length} characters exceeds the ` +
+        `${MAX_CHANNEL_LENGTH}-character limit (every grant line a channel mints rides the CONNECT line)`,
+    );
   const segs = channel.split(".");
   if (!channel.length || segs.some((s) => s.length === 0))
     throw new Error(`invalid channel "${channel}": empty segment (no leading/trailing/double dots)`);
@@ -135,6 +153,25 @@ export function assertValidChannel(channel: string): string {
   });
   return channel;
 }
+
+/** Maximum length of a policy channel, in UTF-16 code units (whole string, dots included).
+ *
+ *  Derived from the transport budget, not picked. A channel becomes at least one grant row in
+ *  every list it appears on (a `chatSubject`-shaped row per allowSubscribe/allowPublish
+ *  entry, plus the per-channel JetStream history-consumer create row on the subscribe side),
+ *  and those rows ride the user JWT inside the client's CONNECT line, which the broker caps at
+ *  `max_control_line` (`MAX_CONTROL_LINE_BYTES`, provision.ts). Measured on this repo (decoded
+ *  JWT, not the encoded credential): a channel on `allowSubscribe` alone contributes 2 grant
+ *  rows and ~11.1 KB per 4096 characters; the same channel on BOTH `allowSubscribe` and
+ *  `allowPublish` contributes a 3rd row and ~16.6 KB. This bound refuses the absurd single input
+ *  early with a message that names it - it is NOT what keeps a real credential under the cap.
+ *  The COMPOSITION is bounded at the mint (`MAX_MINTED_JWT_BYTES`, provision.ts): a caller may
+ *  legally list many channels each under this bound, and only the mint-time byte check on the
+ *  assembled JWT catches that (issue #375's review finding).
+ *  The bound is on the whole string; a single segment cannot exceed the whole, so the per-segment
+ *  charset rule needs no separate length arm.
+ */
+export const MAX_CHANNEL_LENGTH = 4096;
 
 /** Validate an **owner or actor token** of the owner+actor grammar (the per-user-auth cutover).
  *  Defined AHEAD of use: today this has no call sites — persisted owner-bearing keys
@@ -253,13 +290,21 @@ export interface DeprovisionTarget {
   principal: string;
   /** The retired/target incarnation's lifecycle UID — the successor's differs by construction. */
   lifecycleUid: string;
+  /** Concrete channels whose durable membership rows (`memberKey(channel, principal, uid)`) this
+   *  teardown purges. Each becomes one exact-key grant, so the cred still names only this lifecycle. */
+  memberChannels?: readonly string[];
 }
 
 /** Resolve a deprovision target to its `(owner, actor, lifecycleUid)` triple. Shared by the
  *  deprovisioner permission pin and the teardown helper so they can't diverge. */
-export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: string; actor: string; lifecycleUid: string } {
+export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: string; actor: string; lifecycleUid: string; memberChannels: string[] } {
   const pr = parsePrincipalKey(target.principal) ?? { owner: DEV_OWNER, actor: target.principal };
-  return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid) };
+  const memberChannels = [...new Set(target.memberChannels ?? [])].map((ch) => {
+    assertValidChannel(ch);
+    if (!isConcreteChannel(ch)) throw new Error(`deprovision target: member channel "${ch}" must be concrete (membership rows are per concrete channel)`);
+    return ch;
+  });
+  return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid), memberChannels };
 }
 
 export function parsePrincipalKey(key: string): { owner: string; actor: string } | null {
@@ -1013,6 +1058,15 @@ export const MANAGER_LEASE_KEY = "lease";
 export function managerLeaseKey(instanceId: string): string {
   return `${MANAGER_LEASE_KEY}.${instanceId}`;
 }
+
+/** The per-SPACE daemon-credential renewal lease in {@link managerBucket} (#1634). Store identity
+ *  alone cannot pick one renewal owner: `sameSecretStoreIdentity` is pure equality, carrying no
+ *  holder and no tiebreak, so N managers sharing one store (a shared root, or one injected
+ *  coordinate on both) all satisfy it at once and all remint. Whoever holds this one key remints;
+ *  everyone else serves the space and skips it. Bucket TTL expires a crashed holder's key so a
+ *  survivor takes over. Deliberately OUTSIDE the `lease.*` subtree, which is per-instance liveness:
+ *  a manager's own-lease-only grant must not reach this one. */
+export const MANAGER_RENEWAL_LEASE_KEY = "renewal";
 
 /** Deterministic FNV-1a (32-bit) hash of `key` into `[0, n)` — stable across processes/restarts, so a
  *  shard assignment never moves under a running daemon. The Plane-3 partition seam (sharding):

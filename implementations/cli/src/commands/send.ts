@@ -1,3 +1,4 @@
+import { hostname, userInfo } from "node:os";
 import {
   resolvePeer,
   AmbiguousPeerError,
@@ -25,6 +26,22 @@ function targetAndText(positionals: string[], strip: RegExp): { target?: string;
   return { target: positionals[0]?.replace(strip, ""), text: positionals.slice(1).join(" ").trim() };
 }
 
+/** Derive the one-shot send's display name from the OS login and host, `<login>@<host>` — never
+ *  from `COTAL_NAME` (#680). `userInfo()` throws on a system with no passwd entry for the uid;
+ *  let it propagate. No fallback to a fixed literal (per AGENTS.md). */
+function senderName(): string {
+  const login = userInfo().username.trim();
+  const host = hostname().trim();
+  if (!login || !host)
+    throw new Error("cotal send cannot derive a sender name: empty login or host from the OS");
+  const name = `${login}@${host}`;
+  if (name.length > 128)
+    throw new Error(`cotal send cannot derive a sender name: "${name}" exceeds 128 characters`);
+  if (/[/\\\r\n]/.test(name))
+    throw new Error(`cotal send cannot derive a sender name: "${name}" contains a reserved character`);
+  return name;
+}
+
 /** `cotal send <dm|msg|ask> …` — dispatch one-shot send by delivery mode, then exit. */
 export async function send(args: ParsedArgs): Promise<void> {
   const { values, positionals } = args;
@@ -35,7 +52,9 @@ export async function send(args: ParsedArgs): Promise<void> {
     );
     process.exit(1);
   }
-  const opened = await openTransient(values, "cotal-send");
+  // Display text beside the credential-derived principal: the login and host are what a reader
+  // needs to find the shell that sent it, taken from the OS, never from `COTAL_NAME` (#680).
+  const opened = await openTransient(values, senderName());
   if (mode === "dm") return dm(opened, rest);
   if (mode === "msg") return msg(opened, rest);
   return ask(opened, rest);
@@ -70,8 +89,11 @@ async function dm(opened: Awaited<ReturnType<typeof openTransient>>, positionals
     await ep.stop();
     process.exit(1);
   }
-  await ep.unicast(peer.card.id, text);
-  console.log(c.green(`→ ${peer.card.name}`) + c.dim(`  ${text}`));
+  const { ack } = await ep.unicastAttributed(peer.card.id, text);
+  console.log(
+    c.green(`→ ${peer.card.name}`) +
+      c.dim(`  stored seq ${ack.seq}; recipient ${peer.status} at send; delivery not confirmed  ${text}`),
+  );
   await ep.stop();
 }
 

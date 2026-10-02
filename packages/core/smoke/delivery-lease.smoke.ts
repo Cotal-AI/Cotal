@@ -12,8 +12,9 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor, controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, deliveryBucket, leaseKey, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor, controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER } from "../src/index.js";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { Kvm } from "@nats-io/kv";
 import { jetstreamManager, AckPolicy } from "@nats-io/jetstream";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -41,6 +42,34 @@ const mkDaemon = async () =>
     consume: false, watchPresence: false, registerPresence: false,
     card: { name: "delivery", role: "delivery", kind: "endpoint" },
   });
+
+/** Overwrite the shard-3 lease row from a THIRD-party cred (previousSeq CAS), the shape of a
+ *  foreign takeover this suite needs: a write the daemon did not make, landing on the row it holds. */
+const overwriteLeaseRow = async (previousSeq: number, info: Record<string, unknown>): Promise<void> => {
+  const id = newIdentity();
+  const nc = await connect({
+    servers: SERVERS,
+    authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, id, "delivery"))),
+    inboxPrefix: `_INBOX_${id.id}`,
+    maxReconnectAttempts: 0,
+  });
+  try { await (await new Kvm(nc).open(deliveryBucket(space))).update(leaseKey(3), new TextEncoder().encode(JSON.stringify(info)), previousSeq); }
+  finally { await nc.close(); }
+};
+
+/** DELETE the shard-3 lease row from a third-party cred (previousSeq CAS) — the shape of the
+ *  bucket-TTL expiry or an operator clear the watch must also feel. */
+const deleteLeaseRow = async (previousSeq: number): Promise<void> => {
+  const id = newIdentity();
+  const nc = await connect({
+    servers: SERVERS,
+    authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auth, id, "delivery"))),
+    inboxPrefix: `_INBOX_${id.id}`,
+    maxReconnectAttempts: 0,
+  });
+  try { await (await new Kvm(nc).open(deliveryBucket(space))).delete(leaseKey(3), { previousSeq }); }
+  finally { await nc.close(); }
+};
 
 let d1: CotalEndpoint | undefined, d2: CotalEndpoint | undefined;
 try {
@@ -155,7 +184,83 @@ try {
   try { await d2.acquireDeliveryLease(0); reacquired = true; } catch { /* still held */ }
   check("after release, a fresh daemon CAN acquire the freed lease", reacquired);
 
-  // ---- Q: A REARM THAT FAILS PART-WAY MUST LEAVE THE ENDPOINT QUIESCED (found in review) ----
+  // ---- W: THE LEASE-LOSS WATCH — a row that changes hands must be FELT, not polled into view ----
+  // (#1596) Nothing but the renew interval observed the lease row, so a daemon whose shard was
+  // taken served a full renew period (~15s) before its next CAS failure said so: two processes on
+  // one shard's fan-out durable, reader and ctl.delivery responder for the whole window. The watch
+  // is the native JetStream answer: a KV watch FILTERED to the daemon's own lease key, the same
+  // ordered-consumer mechanism the presence and channel watchers ride, pushed the moment the
+  // broker applies the row's change. These cells grade the ENDPOINT surface (the daemon-side cell
+  // with the real process is in delivery-broker-coupling.smoke.ts):
+  //   W1 an own write (markReady) does NOT fire the trigger for a foreign row — no self-quiesce;
+  //   W2 a row overwritten by another incarnation fires the trigger within delivery latency
+  //      (bounded far under the renew period; the named bound is 5s, ~10x the measured latency);
+  //   W3 a DEL on the key fires the trigger too (gone's territory, same tree);
+  //   W4 the stop handle stops it, and a later write lands unobserved.
+  console.log("\nW. the lease-loss watch fires on foreign writes and deletes, not on our own");
+  const w1 = await mkDaemon(); w1.on("error", () => {}); await w1.start();
+  try {
+   const wrev = await w1.acquireDeliveryLease(3);
+   const events: Array<{ kind: string; holder?: string; mine: boolean }> = [];
+   const stopWatch = await w1.watchDeliveryLease(3, (info) => {
+     events.push({ kind: info === undefined ? "gone" : "put", holder: info?.holder, mine: info !== undefined && w1.ownsDeliveryLease(info) });
+   });
+   // W1: our own markReady replays/streams through the watch and must NOT count as a loss
+   // trigger. The cell asserts the daemon-side contract at the endpoint level: the event for an
+   // OWN row is an ordinary input the daemon answers itself (no quiesce). Here that is graded as
+   // "the event arrived and says mine" — the ownership test is the daemon's, `mine` proves the
+   // row content suffices for it.
+   await w1.markDeliveryLeaseReady(3, wrev);
+   let sawOwn = false;
+   for (let i = 0; i < 20 && !sawOwn; i++) {
+     sawOwn = events.some((e) => e.mine);
+     if (!sawOwn) await wait(100);
+   }
+   check("W1 a watch event for the daemon's OWN write reads as its own row (no loss trigger)", sawOwn);
+   // W2: overwrite the row from a second endpoint as a DIFFERENT incarnation (a replacement
+   // daemon re-reading the same creds file would present the same holder; the incarnation is
+   // what distinguishes runs), exactly the takeover the daemon must feel at once.
+   const taker = await mkDaemon(); taker.on("error", () => {}); await taker.start();
+   try {
+     const row = await w1.readDeliveryLeaseEntry(3);
+     if (row === undefined) throw new Error("no lease row to overwrite");
+     await overwriteLeaseRow(row.revision, { ...row.info, holder: taker.card.id, incarnation: "w2-overtaker", since: Date.now() });
+     const t0 = Date.now();
+     let foreign: { kind: string; holder?: string; mine: boolean } | undefined;
+     for (let i = 0; i < 50 && !foreign; i++) {
+       foreign = events.find((e) => !e.mine && e.kind === "put");
+       if (!foreign) await wait(100);
+     }
+     const foreignMs = Date.now() - t0;
+     check("W2 a row overwritten by another incarnation fires the trigger within 5s (delivery latency, not the renew period)",
+       foreign !== undefined && foreignMs < 5000, { foreignMs, foreign });
+     // W3: a DEL on the key must fire too (the gone branch runs the same tree).
+     const delRow = await w1.readDeliveryLeaseEntry(3);
+     if (delRow === undefined) throw new Error("no lease row to delete");
+     await deleteLeaseRow(delRow.revision);
+     let goneEvt: { kind: string; mine: boolean } | undefined;
+     for (let i = 0; i < 50 && !goneEvt; i++) {
+       goneEvt = events.find((e) => e.kind === "gone");
+       if (!goneEvt) await wait(100);
+     }
+     check("W3 a DELETE on the key fires the trigger (gone runs the same tree)", goneEvt !== undefined);
+   } finally { await taker.stop(); }
+   // W4: the stop handle stops the watch; later writes land unobserved. W3 deleted the key, so a
+   // fresh own-row is created (an event in itself, if the watch were still live) and then MOVED
+   // once more; both must land unobserved after the stop.
+   stopWatch();
+   const w4rev = await w1.acquireDeliveryLease(3);
+   await w1.markDeliveryLeaseReady(3, w4rev);
+   const before = events.length;
+   const w4row = await w1.readDeliveryLeaseEntry(3);
+   if (w4row === undefined) throw new Error("no lease row after re-acquire");
+   await overwriteLeaseRow(w4row.revision, { ...w4row.info, since: Date.now() });
+   await wait(1200);
+   check("W4 after the stop handle, later writes on the key land unobserved", events.length === before, { before, after: events.length });
+   await w1.releaseDeliveryLease(3, (await w1.readDeliveryLeaseEntry(3))?.revision);
+ } finally { await w1.stop(); }
+
+ // ---- Q: A REARM THAT FAILS PART-WAY MUST LEAVE THE ENDPOINT QUIESCED (found in review) ----
   // `armPlane3` binds in four stages, so it can fail with some of them up. The first version of
   // `rearmPlane3` cleared `plane3Quiesced` BEFORE calling it, which looks equivalent and is not: on a
   // throw the endpoint recorded itself un-quiesced while unbound, every later `rearmPlane3` returned at

@@ -21,7 +21,7 @@ import type { EndpointRef } from "./types.js";
 // use them without dragging in schema-profile's load-time digest (node:crypto). Re-exported here so
 // every existing `@cotal-ai/core` consumer keeps its import path.
 import { EP_ERROR_CODES, EpEnvelopeError, type EpErrorCode, type EpError, type EpErrorDetail, type EpEffectOutcome } from "./endpoint-error.js";
-export { EP_ERROR_CODES, EpEnvelopeError, EP_UNBOUND_RESPONDER, respondedButUnbound, EP_UNANSWERED, unansweredRequest, EP_REGISTRY_READ_FAILED, registryReadFailed, EP_BIND_REFUSED, replyRefusedBeforeEffect, bindRefusalMarked, EP_LIFECYCLE_BLOCKED, lifecycleBlocked, lifecycleBlockedDetail, lifecycleBlockedFrom, renderLifecycleBlocked, type EpErrorCode, type EpError, type EpErrorDetail, type EpUnboundResponderDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpBindRefusedDetail, type EpLifecycleBlockedDetail, type LifecycleBlockedFacts, type LifecycleBlockedOp, type LifecycleHeadState, type EpEffectOutcome } from "./endpoint-error.js";
+export { EP_ERROR_CODES, EpEnvelopeError, EP_UNBOUND_RESPONDER, respondedButUnbound, EP_UNANSWERED, unansweredRequest, unansweredRail, EP_REGISTRY_READ_FAILED, registryReadFailed, EP_BIND_REFUSED, replyRefusedBeforeEffect, bindRefusalMarked, EP_LIFECYCLE_BLOCKED, lifecycleBlocked, lifecycleBlockedDetail, lifecycleBlockedFrom, renderLifecycleBlocked, type EpErrorCode, type EpError, type EpErrorDetail, type EpUnboundResponderDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpBindRefusedDetail, type EpLifecycleBlockedDetail, type LifecycleBlockedFacts, type LifecycleBlockedOp, type LifecycleHeadState, type EpEffectOutcome } from "./endpoint-error.js";
 
 /** The envelope schema version — independent of the wire `protocolVersion`; starts at its own
  *  v1 inside the v0.4 revision. Other values are rejected (`unsupported-version`). */
@@ -371,8 +371,8 @@ export function checkRequestSubjectAgreement(env: EndpointRequest, subject: Pars
     if (!env.target) fail("target-mismatch", `the "${t.mode}" form requires a body target (SPEC 13.3)`);
     if (env.target.owner !== t.tOwner)
       fail("target-mismatch", `target.owner "${env.target.owner}" does not equal the subject target owner "${t.tOwner}"`);
-    if (t.mode === "handle" && (env.target.actor !== t.tActor || env.target.lifecycleUid !== t.tUid))
-      fail("target-mismatch", "in handle mode the body target actor and lifecycleUid must equal the subject redemption triple");
+    if ((t.mode === "handle" || t.mode === "exact") && (env.target.actor !== t.tActor || env.target.lifecycleUid !== t.tUid))
+      fail("target-mismatch", `in ${t.mode} mode the body target actor and lifecycleUid must equal the subject target triple`);
   }
 
   const sender = `${subject.caller.owner}.${subject.caller.actor}`;

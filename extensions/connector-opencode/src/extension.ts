@@ -3,12 +3,16 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { opencodeLine } from "./opencode-line.js";
 
-/** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
- *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
- *  Resolved relative to this module — beside the built `dist/extension.js`, so the connector must be
- *  built+bundled (`pnpm build`). */
-const PLUGIN_ENTRY = fileURLToPath(new URL("./plugin.bundle.js", import.meta.url));
+/** The bundled in-process plugin (esbuild → `dist/plugin/index.js`). A DIRECTORY target, not a
+ *  file: OpenCode 2.x drops a file plugin path (`configured plugin path must be a directory`,
+ *  measured in `fx105/measurements.md`) but loads a directory whose `index.js` is the module, and
+ *  1.x loads the same directory too — one bundle target serves both lines. `opencode serve` loads
+ *  it by absolute path from the inline config, so it runs *inside* the server and shares its SDK
+ *  client. Resolved relative to this module — beside the built `dist/extension.js`, so the
+ *  connector must be built+bundled (`pnpm build`). */
+const PLUGIN_DIR = fileURLToPath(new URL("./plugin", import.meta.url));
 
 /** The launcher shim (`dist/serve.js`): starts `opencode serve` with the plugin, then attaches a
  *  foreground `opencode` TUI to the exact session the plugin drives (see serve.ts). */
@@ -73,12 +77,26 @@ function parseModels(stdout: string): ModelInfo[] {
 }
 
 function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
+  const env = discoveryEnv();
+  // Detect the line first (same rule serve.ts uses), on the same binary the discovery below would
+  // run, before running any 2.x-incompatible subcommand: `opencode models --pure --verbose` exits 1
+  // on 2.x with the help text (measured, fx105/measurements.md M4) rather than a real catalog.
+  const versionRaw = execFileSync("opencode", ["--version"], {
+    encoding: "utf8",
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  const line = opencodeLine(versionRaw, "opencode");
+  if (line === 2)
+    throw new Error(
+      "opencode connector: 'cotal models' is not available for OpenCode 2.x (the catalog is served by a running opencode server, not the CLI); pass --model provider/model",
+    );
   const args = ["models", "--pure", "--verbose"];
   if (opts.refresh) args.push("--refresh");
   try {
     const stdout = execFileSync("opencode", args, {
       encoding: "utf8",
-      env: discoveryEnv(),
+      env,
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 16 * 1024 * 1024,
     });
@@ -108,6 +126,10 @@ export const opencodeConnector: Connector = {
   supportsFreshStart: true,
   requires: ["opencode"],
   supportsModelVariant: true,
+  supportsPrompt: true, // OpenCode serves a first turn from an initial message — see buildLaunch
+  // OpenCode can spend longer than the generic 30s window bootstrapping a cold server before
+  // loading the plugin; readiness also checks that server's provider list before mesh presence.
+  readinessTimeoutMs: 120_000,
   listModels: listOpenCodeModels,
   // DECLARING THIS IS WHAT MAKES `--events` REACHABLE. Both the CLI and the manager refuse an armed
   // launch whose connector does not implement it, before anything is provisioned, rather than mint a
@@ -157,14 +179,15 @@ export const opencodeConnector: Connector = {
       // executes the session's tool calls, so a shell this seat runs inherits neither the material
       // nor a reference to it. The shim itself keeps the reference, because the server it starts is
       // the reader; it runs no tools of its own.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
     // Preserve an operator's machine-wide COTAL_OPENCODE_BIN pin from launchEnv. The manager's
     // boot-resolved executable is a fallback, not permission to overwrite that explicit choice.
     if (opts.resolvedBinaries?.opencode) env.COTAL_OPENCODE_RESOLVED_BIN = opts.resolvedBinaries.opencode;
-    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
+    // The AG-UI event plane. Supporting connectors arm by default; `events: false` is the explicit
+    // opt-out. `COTAL_EVENTS` arms the emitter, and arming is not authorization: a
     // publish grant on a channel is not a request to publish to it, so an agent file that can write
     // `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by doing so.
     // `COTAL_WORKSPACE_ROOT` rides with it because the emitter's write-ahead log has to live
@@ -176,7 +199,7 @@ export const opencodeConnector: Connector = {
     // process cwd. That fallback is safe for a SQLite file and a pidfile, which only ever have to be
     // found by the process that wrote them. It is not safe for the log, which exists to be found by
     // a process that has not started yet.
-    if (opts.events === true) {
+    if (opts.events !== false) {
       env.COTAL_EVENTS = "1";
       if (!opts.workspaceRoot)
         throw new Error(
@@ -189,6 +212,7 @@ export const opencodeConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.backfillFloor !== undefined) env.COTAL_BACKFILL_FLOOR = String(opts.backfillFloor);
     if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     // The auto-submitted first turn (`cotal spawn --prompt`). It rides the child ENV, the same
     // carrier codex uses (COTAL_CODEX_PROMPT): the plugin runs inside `opencode serve`, which
@@ -214,7 +238,7 @@ export const opencodeConnector: Connector = {
     const config: Record<string, unknown> = {
       $schema: "https://opencode.ai/config.json",
       permission: "allow",
-      plugin: [PLUGIN_ENTRY],
+      plugin: [PLUGIN_DIR],
       // `/reconnect` — the manual recovery surface for a wedged mesh link. OpenCode has no
       // host reconnect (unlike Claude Code's /mcp reconnect), and a plugin can't register a
       // slash command via the Hooks API, so inject it through the config layer we already own.

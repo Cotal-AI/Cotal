@@ -6,8 +6,8 @@
   "command": "pnpm smoke:cli-kernel",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/legacy-manager-update.json",
   "why": [
-    "The old packaged-manager fixture proves a real published manager without the custody seam receives the report and is left alive. This focused kernel cell proves the updater's decision boundary: after disk reconciliation, a legacy report returns before the extension mutation lock and before any extension replay subprocess.",
-    "The mutation removes only the legacy stop so a none verdict still continues. The named cell's first forbidden mutation-pass assertion is the earliest red that observes fallthrough."
+    "The old packaged-manager fixture proves a real published manager without the custody seam receives the report and is left alive. This focused kernel cell proves the updater's decision boundary: a legacy report returns before the global seed store is rewritten, before the extension mutation lock, and before any extension replay subprocess.",
+    "The mutation removes only the legacy stop so a none verdict still continues. Since #1620 the observation precedes the seed reconcile, so the earliest red that observes fallthrough is the seed-store assertion rather than the mutation-pass one."
   ],
   "mutations": [
     {
@@ -15,9 +15,9 @@
       "file": "implementations/cli/src/commands/update.ts",
       "find": "if (await rt.reportRunningManager(target) === \"legacy\") return finish(false);",
       "replace": "await rt.reportRunningManager(target);",
-      "expectRed": "legacy report refuses before extension replay can mutate packages",
+      "expectRed": "a legacy custody verdict refuses BEFORE the seed store is rewritten",
       "cell": "a running legacy manager is reported, then blocks an update before replay",
-      "note": "The result remains type-correct. A none verdict still continues. A legacy verdict falls through to claimUpdatePass. The named cell's first forbidden mutation-pass assertion is the observation."
+      "note": "The result remains type-correct. A none verdict still continues. A legacy verdict falls through to the seed reconcile and then to claimUpdatePass. The named cell's first forbidden assertion is the observation; since #1620 moved the reconcile after the report, that is the seed-store assertion."
     }
   ]
 }

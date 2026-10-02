@@ -1,0 +1,1 @@
+smoke:user-bearer-goal-lifetime

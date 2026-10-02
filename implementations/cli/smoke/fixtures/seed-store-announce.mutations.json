@@ -1,12 +1,34 @@
 {
   "suite": [
-    "implementations/cli/smoke/seed.smoke.ts"
+    "implementations/cli/smoke/seed.smoke.ts",
+    "implementations/cli/smoke/seed-cases/harness.ts",
+    "implementations/cli/smoke/seed-cases/first-boot.smoke.ts",
+    "implementations/cli/smoke/seed-cases/supervise.smoke.ts",
+    "implementations/cli/smoke/seed-cases/removal.smoke.ts",
+    "implementations/cli/smoke/seed-cases/cursor-repair.smoke.ts",
+    "implementations/cli/smoke/seed-cases/manifest-reset.smoke.ts",
+    "implementations/cli/smoke/seed-cases/manifest-repair.smoke.ts",
+    "implementations/cli/smoke/seed-cases/invalid-stamp.smoke.ts",
+    "implementations/cli/smoke/seed-cases/corrupt-stamp.smoke.ts",
+    "implementations/cli/smoke/seed-cases/recovery-obligation.smoke.ts",
+    "implementations/cli/smoke/seed-cases/malformed-recovery.smoke.ts",
+    "implementations/cli/smoke/seed-cases/partial-tear.smoke.ts",
+    "implementations/cli/smoke/seed-cases/authority-union.smoke.ts",
+    "implementations/cli/smoke/seed-cases/same-generation.smoke.ts",
+    "implementations/cli/smoke/seed-cases/store-gc.smoke.ts",
+    "implementations/cli/smoke/seed-cases/operator-pinned.smoke.ts",
+    "implementations/cli/smoke/seed-cases/forged-environment.smoke.ts",
+    "implementations/cli/smoke/seed-cases/ambiguous-marker.smoke.ts",
+    "implementations/cli/smoke/seed-cases/parallel-boots.smoke.ts",
+    "implementations/cli/smoke/seed-cases/symlinked-bin.smoke.ts",
+    "implementations/cli/smoke/seed-cases/downgrade.smoke.ts",
+    "implementations/cli/smoke/seed-cases/downgrade-hint.smoke.ts"
   ],
   "guard": "the operator-global seed store announces what it WRITES and what it REMOVES, names the exact path, and stays silent when it copies nothing",
   "command": "pnpm smoke:seed",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-store-announce.mutations.json",
   "why": [
-    "FIVE MUTATIONS. Four break a guard; one models a failure that no single edit to the product can",
+    "NINE MUTATIONS. Eight break a guard; one models a failure that no single edit to the product can",
     "produce. The distinction is stated because a reader who assumes all five are the same kind will",
     "over-read the third.",
     "",
@@ -38,6 +60,11 @@
     "single edit makes a steady-state boot copy bytes. M5 emits the line from the NOOP return itself,",
     "which is precisely the failure the cell exists to catch.",
     "",
+    "M6 drops the plausible-semver rule at the reconcile input. M7 drops the separator rule that",
+    "refuses a valid semver whose build metadata carries a separator. M8 drops the resolved-root",
+    "containment check at the write path. M9 drops the dot-segment rule. Each must redden its named",
+    "seed path cell first.",
+    "",
     "ORDER, because the suite is fail-fast and a red on the wrong leg is not a kill of the assertion",
     "named. Each mutation's expectRed is the FIRST assertion that mutation can reach: M1 and M2 reach",
     "the first-boot cells, M5 reaches the second-boot cell in the same block, M3 reaches nothing until",
@@ -55,40 +82,72 @@
       "file": "implementations/cli/src/seed/store.ts",
       "find": "  provenance.wrote(`operator-global seed store payload (${name})`, dest);\n  return dest;",
       "replace": "  return dest;",
-      "expectRed": "✗ FAIL: provenance: the machine-wide seed-store write is announced with its path (not silent)",
-      "cell": "✗ FAIL: provenance: the machine-wide seed-store write is announced with its path (not silent)"
+      "expectRed": "\u2717 FAIL: provenance: the machine-wide seed-store write is announced with its path (not silent)",
+      "cell": "\u2717 FAIL: provenance: the machine-wide seed-store write is announced with its path (not silent)"
     },
     {
       "name": "the write announce names the store root instead of the payload directory it wrote",
       "file": "implementations/cli/src/seed/store.ts",
       "find": "  provenance.wrote(`operator-global seed store payload (${name})`, dest);",
       "replace": "  provenance.wrote(`operator-global seed store payload (${name})`, seedStoreDir());",
-      "expectRed": "✗ FAIL: provenance: the announced destination is the payload directory itself, not just the store root",
-      "cell": "✗ FAIL: provenance: the announced destination is the payload directory itself, not just the store root"
+      "expectRed": "\u2717 FAIL: provenance: the announced destination is the payload directory itself, not just the store root",
+      "cell": "\u2717 FAIL: provenance: the announced destination is the payload directory itself, not just the store root"
     },
     {
       "name": "the announce moves onto the idempotent early return, so a re-seed that copied nothing announces",
       "file": "implementations/cli/src/seed/store.ts",
       "find": "  if (!opts.force && existsSync(join(dest, \"package.json\"))) return dest;",
       "replace": "  if (!opts.force && existsSync(join(dest, \"package.json\"))) {\n    provenance.wrote(`operator-global seed store payload (${name})`, dest);\n    return dest;\n  }",
-      "expectRed": "✗ FAIL: provenance: a re-seed that reuses an intact payload announces no seed-store write",
-      "cell": "✗ FAIL: provenance: a re-seed that reuses an intact payload announces no seed-store write"
+      "expectRed": "\u2717 FAIL: provenance: a re-seed that reuses an intact payload announces no seed-store write",
+      "cell": "\u2717 FAIL: provenance: a re-seed that reuses an intact payload announces no seed-store write"
     },
     {
       "name": "the machine-wide generation DELETE is silent again (the removal announce is deleted)",
       "file": "implementations/cli/src/seed/store.ts",
       "find": "    provenance.removed(`operator-global seed store generation (${gen})`, genDir);",
       "replace": "",
-      "expectRed": "✗ FAIL: provenance: the machine-wide seed-store DELETE is announced with its path (not silent)",
-      "cell": "✗ FAIL: provenance: the machine-wide seed-store DELETE is announced with its path (not silent)"
+      "expectRed": "\u2717 FAIL: provenance: the machine-wide seed-store DELETE is announced with its path (not silent)",
+      "cell": "\u2717 FAIL: provenance: the machine-wide seed-store DELETE is announced with its path (not silent)"
     },
     {
       "name": "the announce is emitted from the steady-state NOOP boot, so a boot that copied nothing announces anyway",
       "file": "implementations/cli/src/seed/reconcile.ts",
       "find": "      return NOOP;\n    }\n  }",
       "replace": "      process.stderr.write(\"wrote operator-global seed store payload (noop)\\n\");\n      return NOOP;\n    }\n  }",
-      "expectRed": "✗ FAIL: provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)",
-      "cell": "✗ FAIL: provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)"
+      "expectRed": "\u2717 FAIL: provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)",
+      "cell": "\u2717 FAIL: provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)"
+    },
+    {
+      "name": "a non-semver traversal generation reaches reconcile",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "  if (!isValidSemver(generation)) invalid(\"not plausible semver\");",
+      "replace": "",
+      "expectRed": "\u2717 FAIL: seed generation: reconcile input refuses a traversal version before any write",
+      "cell": "\u2717 FAIL: seed generation: reconcile input refuses a traversal version before any write"
+    },
+    {
+      "name": "a semver build-metadata separator reaches reconcile",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "  if (/[\\\\/]/.test(generation)) invalid(\"path separator\");",
+      "replace": "",
+      "expectRed": "\u2717 FAIL: seed generation: reconcile input refuses a semver build-metadata separator",
+      "cell": "\u2717 FAIL: seed generation: reconcile input refuses a semver build-metadata separator"
+    },
+    {
+      "name": "the seed-store write no longer checks resolved-root containment",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "  if (pathFromRoot === \"\" || pathFromRoot === \"..\" || pathFromRoot.startsWith(`..${sep}`)) {\n    throw new Error(`refusing seed-store destination ${destination}: it is not strictly inside ${root}`);\n  }",
+      "replace": "",
+      "expectRed": "\u2717 FAIL: seed path: containment refuses a traversal destination before a write",
+      "cell": "\u2717 FAIL: seed path: containment refuses a traversal destination before a write"
+    },
+    {
+      "name": "a semver build-metadata dot segment reaches reconcile",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "  if (generation === \".\" || generation.includes(\"..\")) invalid('\"..\" segment');",
+      "replace": "",
+      "expectRed": "\u2717 FAIL: seed generation: reconcile input refuses a semver build-metadata dot segment",
+      "cell": "\u2717 FAIL: seed generation: reconcile input refuses a semver build-metadata dot segment"
     }
   ]
 }

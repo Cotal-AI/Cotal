@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
-const raw = execFileSync(
+const generate = (type) => JSON.parse(execFileSync(
   "pnpm",
   [
     "exec",
@@ -9,17 +9,21 @@ const raw = execFileSync(
     "-p",
     "packages/core/src/types.ts",
     "-t",
-    "CotalMessage",
+    type,
     "--additional-properties",
   ],
   { encoding: "utf8" },
-);
+));
 
-const schema = JSON.parse(raw);
+const schema = generate("CotalMessage");
 const definitions = schema.definitions ?? {};
 const message = definitions.CotalMessage;
 const part = definitions.Part;
 const extensionPartKind = definitions.ExtensionPartKind;
+for (const type of ["Presence", "AgentCard"]) {
+  const extra = generate(type).definitions ?? {};
+  for (const [name, definition] of Object.entries(extra)) definitions[name] ??= definition;
+}
 
 if (!message?.anyOf || message.anyOf.length !== 3) {
   throw new Error("expected CotalMessage to generate three routing variants");

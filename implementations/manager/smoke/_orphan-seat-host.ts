@@ -38,8 +38,8 @@ await manager.start();
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);
 (manager as unknown as { runtime: Runtime }).runtime = new DetachedRuntime();
-let reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo });
-for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) { await wait(250); reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo }); }
+let reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo, events: false });
+for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) { await wait(250); reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo, events: false }); }
 if (!reply.ok) {
   process.stdout.write(`REPRO_SPAWN ${JSON.stringify({ managerPid: process.pid, managerInstanceId, reply, managedNames: [...(manager as unknown as { agents: Map<string, unknown> }).agents.keys()] })}\n`);
   await new Promise<void>(() => {});

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { isReachable } from "@cotal-ai/core";
 import { cacheConnector, extensionsDir, saveExtensionsManifest } from "../../../packages/workspace/src/index.js";
 import { Manager } from "../../../implementations/manager/src/manager.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 type HermesConnector = (typeof import("../src/extension.js"))["hermesConnector"];
 const { hermesConnector } = await import("../dist/index.js") as { hermesConnector: HermesConnector };
@@ -34,7 +35,7 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
   console.log(`  ${condition ? "✓" : "✗"} ${name}${condition || actual === undefined ? "" : ` - ${JSON.stringify(actual)}`}`);
 };
 
-const root = mkdtempSync(join(tmpdir(), "cotal-hermes-boot-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}hermes-boot-`));
 const configHome = join(root, "config");
 const oldConfigHome = process.env.XDG_CONFIG_HOME;
 const oldPath = process.env.PATH;
@@ -54,6 +55,7 @@ saveExtensionsManifest({
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const broker = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+teardownOnSignal(broker);
 const managers: Manager[] = [];
 
 try {

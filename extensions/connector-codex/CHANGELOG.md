@@ -1,5 +1,105 @@
 # @cotal-ai/connector-codex
 
+## 0.58.0
+
+## 0.57.0
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+
+## 0.56.0
+
+### Patch Changes
+
+- fdc2c35: The codex host persists the event plane's bind boundary into the log as soon as the start
+  succeeds, instead of waiting for the emitter's first read. A host that dies between a successful
+  bind and its first pump now resumes from the recorded boundary instead of taking a fresh one at
+  the file's later end, so it no longer drops what the thread wrote in between.
+- ff2851c: Compare receive keys in the codex steer filter, so an empty-id message already steered into a turn is not steered again.
+
+  `surfaced` holds receive keys (a minted one for an id-less delivery), but the steer filter tested the raw `item.id`. For a message whose wire id is the empty string that test never matched, so every pass of the steer loop re-admitted an already-steered empty-id item and injected it again into the live turn for as long as the turn stayed open. The filter now tests `item.recvKey` against the set, with a one-line comment stating that `surfaced` holds receive keys.
+
+## 0.55.0
+
+### Patch Changes
+
+- d5dd72a: The codex-host smoke tolerates a torn JSONL tail at every poll: the two remaining direct parse chains inside `waitFor` polls now read through `readJsonLines`, which drops a partial trailing line a live child is still appending.
+- 2525286: Every settle-dependent cell in the codex lifecycle smoke carries its wait's margin, so a timed-out wait fails as a timed-out wait.
+- 59ca157: The codex host logs the rollout path it publishes from as a quoted value, and the lifecycle smoke reads the path from that value instead of from the sentence around it.
+- d284ee6: A manifest or spawn prompt on a connector that cannot deliver one is refused at preflight (including `up -f --dry-run`), at spawn and in the manager, the way an unsupported model variant is: connectors now declare `supportsPrompt`, and claude, opencode, codex, jcode and pi declare it; hermes keeps its launch-time throw as the second line of defence.
+
+## 0.54.0
+
+### Patch Changes
+
+- cf0e1da: Dismiss a Codex turn's batch on an operator interrupt instead of redelivering it, and stop folding an unknown terminal status into "interrupted". Presence writes from the Codex host go out in call order, so a turn that fails or asks for approval in the tick it started no longer loses its condition to its own start.
+
+## 0.53.0
+
+## 0.52.1
+
+## 0.52.0
+
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- 4dd4b90: Add harness-reported presence conditions, opaque environment references, binding diagnostics, and compact roster rendering.
+
+## 0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- b7e5942: A peer can no longer forge the framing of an auto-injected message
+
+  The block that carries waiting peer messages into a turn interpolated the message body and the
+  sender name raw, and the Hermes sidecar built the same shape by string concatenation. Both were
+  forgeable the two ways the inbox reply used to be: a body carrying a newline produced a second item
+  in the block, reading to the agent as a separate delivered message from a peer that never sent one,
+  and a sender naming itself with a closing bracket ended the real attribution and opened a forged
+  one. These frames are auto-injected rather than returned when the agent asks, so the agent never
+  had a chance to distrust them.
+
+  The rule both surfaces now hold is the one the inbox reply already held, and they hold it through
+  the same code rather than a second convention: a line that begins at column zero is written by the
+  connector, never by a peer. One message is one line plus indented continuations, with the
+  attribution inside a single bracket pair. The neutralization moved into a shared module that the
+  injected block and the inbox reply both render through, so the body, the sender name and role, and
+  the service and channel labels all pass through one implementation. The Python sidecar carries a
+  matching module, kept to the same character class on purpose, since a peer that can forge the frame
+  on either side of the socket has the whole class back.
+
+  Two widenings came out of stating the rule positionally rather than by example. The attribution
+  class now neutralizes the opening bracket as well as the closing one, because stripping only the
+  closing one still let a name render a bracket pair a reader takes as the innermost attribution. The
+  injected block's per-item separator is the bracketed attribution the inbox reply uses, replacing the
+  bullet, so the text of an injected block changed and the wake-path suites that assert on it were
+  updated with it.
+
+  A third injected surface holds the same rule now. A wake hint carries no message body and reads as
+  one short sentence, so it does not look like a frame, but it is written into the agent's context
+  without being asked for and it names a peer-controlled channel label, which three connectors
+  interpolated raw. A label carrying a newline put a second line at column zero reading as another
+  delivered message. That label renders through the shared module too, and the absent-channel fallback
+  moved there with it, since three connectors each spelled it themselves and an absent field is what a
+  per-call-site spelling is most likely to get wrong.
+
+### Patch Changes
+
+- 0a52594: Census the in-process half of the ambient-environment rule. `smoke:suite-ambient-env` grades the environment a suite hands a child; the new `smoke:suite-ambient-env-self` grades a suite that reads its own `process.env` through `configFromEnv` and friends, and requires a module-scope `COTAL_` prefix scrub before that first read. The connector suites in the class now scrub the whole prefix instead of dropping one variable, so running them from inside a connected session no longer dies in its own import on the one-identity-plane refusal.
+
 ## 0.49.0
 
 ### Minor Changes

@@ -41,8 +41,8 @@
  *   - The broker-side footprint (dm_/dlv_ durables, ACL row) is not asserted; the on-disk creds
  *     file is the asserted deprovision observable.
  *
- * Throwaway everything: own authed nats-server on an OS-assigned free port (ONE space - each
- * space reserves a 4 GiB artifact store on the broker's tmpfs store dir), sandboxed COTAL_HOME,
+ * Throwaway everything: own authed nats-server on an OS-assigned free port (ONE space is all the rig
+ * needs; the artifact Object Store reserves nothing, so the count is not a capacity choice), sandboxed COTAL_HOME,
  * scratch workspace root, kills only PIDs it spawned or that its own children wrote to pidfiles.
  * No live stack is touched, no `cotal up`/`down` anywhere. Needs nats-server on PATH.
  * Run: pnpm smoke:manager-stop-reap
@@ -120,7 +120,7 @@ const SPACE = "reap964";
 const BIN = join(import.meta.dirname, "..", "cotal.ts");
 const REPO = join(import.meta.dirname, "..", "..");
 
-const base = mkdtempSync(join(scratch, "rig-"));
+const base = mkdtempSync(join(scratch, `${SMOKE_BROKER_TOKEN}rig-`));
 const root = join(base, "root");
 const pidDir = join(base, "pids");
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
@@ -178,7 +178,7 @@ const spawnSeat = async (name: string): Promise<void> => {
   const prev = process.cwd();
   process.chdir(root);
   try {
-    await cmd("spawn").run(parseCommandArgs(cmd("spawn"), ["probe", "--detach", "--agent", "seatcon", "--space", SPACE, "--name", name]));
+    await cmd("spawn").run(parseCommandArgs(cmd("spawn"), ["probe", "--detach", "--no-events", "--agent", "seatcon", "--space", SPACE, "--name", name]));
   } finally {
     process.chdir(prev);
   }
@@ -306,7 +306,7 @@ try {
   const prev = process.cwd();
   process.chdir(rootB);
   try {
-    await cmd("spawn").run(parseCommandArgs(cmd("spawn"), ["probe", "--detach", "--agent", "seatcon", "--space", SPACE, "--name", "seatB"]));
+    await cmd("spawn").run(parseCommandArgs(cmd("spawn"), ["probe", "--detach", "--no-events", "--agent", "seatcon", "--space", SPACE, "--name", "seatB"]));
   } finally {
     process.chdir(prev);
   }

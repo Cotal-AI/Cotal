@@ -157,7 +157,7 @@ const SEAT = "seat1";
 const BIN = join(import.meta.dirname, "..", "cotal.ts");
 const rootOpen = mkdtempSync(join(tmpdir(), "cotal-openattach-root-"));
 const rootOpenWithSeed = mkdtempSync(join(tmpdir(), "cotal-openseeded-root-"));
-const rootSealedNoSeed = mkdtempSync(join(tmpdir(), "cotal-sealednoseed-root-"));
+const rootSealedNoSeed = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}sealednoseed-root-`));
 // Fixtures for the RESOLVER cells (1b). These are roots the registry has never heard of, which is
 // what an operator has when a mesh was never recorded here: a genuine `.cotal/` and no
 // entry anywhere. NOT what `cotal up --open` leaves behind - that path calls `recordMesh`
@@ -528,7 +528,7 @@ try {
   process.chdir(rootOpen);
   try {
     await cmd("spawn").run(
-      parseCommandArgs(cmd("spawn"), ["seat", "--detach", "--agent", "e2e", "--space", SPACE, "--name", SEAT]),
+      parseCommandArgs(cmd("spawn"), ["seat", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", SEAT]),
     );
   } finally {
     process.chdir(prevCwd);

@@ -67,6 +67,85 @@
       "replace": "  broker.kill(\"SIGTERM\");",
       "expectRed": "the owned broker exits before its JetStream tree is removed",
       "cell": "the owned broker exits before its JetStream tree is removed"
+    },
+    {
+      "name": "drop the publish-time JSON-value guard on message parts",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!recip) throw new Error(`unicast: \"${instanceId}\" is not a valid recipient principal <owner>.<actor>`);\n    assertPartsSerializable(msg.parts);",
+      "replace": "    if (!recip) throw new Error(`unicast: \"${instanceId}\" is not a valid recipient principal <owner>.<actor>`);\n    void msg.parts;",
+      "expectRed": "publish refuses a data part with top-level undefined (the key stringify drops)",
+      "command": "pnpm smoke:dm-history-subject",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "dm-history-subject smoke: ",
+      "cell": "publish refuses a data part with top-level undefined (the key stringify drops)"
+    },
+    {
+      "name": "drop the publishMsg copy of the parts guard",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!this.js) throw new Error(this.notLiveMsg());\n    assertPartsSerializable(msg.parts);",
+      "replace": "    if (!this.js) throw new Error(this.notLiveMsg());\n    void msg.parts;",
+      "expectRed": "multicast refuses a non-JSON data value through publishMsg (NaN stores as null if unchecked)",
+      "command": "pnpm smoke:cas-publish",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "cas-publish smoke: ",
+      "cell": "multicast refuses a non-JSON data value through publishMsg (NaN stores as null if unchecked)"
+    },
+    {
+      "name": "drop the multicastExpecting copy of the parts guard",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    assertPartsSerializable(message.parts);",
+      "replace": "    void message.parts;",
+      "expectRed": "multicastExpecting refuses a non-JSON data value (NaN stores as null if unchecked)",
+      "command": "pnpm smoke:cas-publish",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "cas-publish smoke: ",
+      "cell": "multicastExpecting refuses a non-JSON data value (NaN stores as null if unchecked)"
+    },
+    {
+      "name": "drop the non-finite-number arm of the structural JSON check",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (t === \"number\") return Number.isFinite(value) ? undefined : `${path} is not a finite number`;",
+      "replace": "  if (t === \"number\") return undefined;",
+      "expectRed": "publish refuses NaN (a non-finite number stringify stores as null)",
+      "command": "pnpm smoke:dm-history-subject",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "dm-history-subject smoke: ",
+      "cell": "publish refuses NaN (a non-finite number stringify stores as null)"
+    },
+    {
+      "name": "drop the undefined-member skip so a key-drop object is refused",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (value[key as keyof typeof value] === undefined) continue;",
+      "replace": "        void key;",
+      "expectRed": "an undefined object member publishes and the stored row drops just that key",
+      "command": "pnpm smoke:dm-history-subject",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "dm-history-subject smoke: ",
+      "cell": "an undefined object member publishes and the stored row drops just that key"
+    },
+    {
+      "name": "drop the display-name length bound",
+      "file": "packages/core/src/resolve.ts",
+      "find": "  if (name.length > MAX_NAME_LENGTH)",
+      "replace": "  if (false)",
+      "expectRed": "a name one past MAX_NAME_LENGTH (129) is refused naming the limit",
+      "command": "pnpm smoke:valid-name",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "valid-name smoke: ",
+      "cell": "a name one past MAX_NAME_LENGTH (129) is refused naming the limit",
+      "note": "The issue #375 mutant exactly: without the bound a 70,000-character name is accepted end to end and the credential it rides hangs the connect past max_control_line. The valid-name suite imports ../src/resolve.js by source path, so the mutation is seen without a build; afterRestore keeps dist consistent with the restored source per the fixture census rule."
+    },
+    {
+      "name": "drop the policy-channel length bound",
+      "file": "packages/core/src/subjects.ts",
+      "find": "  if (channel.length > MAX_CHANNEL_LENGTH)",
+      "replace": "  if (false)",
+      "expectRed": "a channel one past MAX_CHANNEL_LENGTH (4097) is refused naming the limit",
+      "command": "pnpm smoke:valid-name",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "completionMarker": "valid-name smoke: ",
+      "cell": "a channel one past MAX_CHANNEL_LENGTH (4097) is refused naming the limit",
+      "note": "The channel twin of the name bound: one 70,000-character channel minted a 193,754-byte credential (measured on this repo), 3x past the 65536 control line, and the connect timed out at 10s. The suite imports ../src/subjects.js by source path; the refusal cell names the bound so a neighbouring rule cannot take the credit."
     }
   ],
   "grades": "tool"

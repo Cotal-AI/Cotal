@@ -24,7 +24,7 @@ const base = {
   instanceId,
   lifecycleUid: managerUid,
   identities,
-  supervisorCreds: "", executorCreds: "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
+  supervisorCreds: "", executorCreds: "", renewExecutor: async () => "", serveCreds: "", goalWriterCreds: "", sessionLedgerCreds: "",
   serveGrant: {} as never,
   agentBearerExchangeUrl: "https://auth.example.test",
   mintSessionServing: async () => "",

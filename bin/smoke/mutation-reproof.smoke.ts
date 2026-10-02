@@ -16,9 +16,9 @@
  *   - a guarded source RENAMED away (a dangling fixture — the fixture still points at the old path).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse } from "yaml";
 
@@ -425,6 +425,59 @@ try {
         && empty.out.includes("No selected mutation fixtures are assigned to shard ")
         && !empty.out.includes("no fixture config, suite, or guarded source intersects the diff"),
       empty?.out ?? "neither probe found an empty shard");
+  }
+
+  // Git may refresh and lock an index even for a status read. The scanner has to pass the guard to
+  // every git child, rather than relying on a caller's environment. The probe delegates to the real
+  // Git binary through its original PATH, so this is a shipped scanner invocation rather than a mock.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "console.log('green');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({
+          suite: ["suites/a.suite.mjs"], command: "node suites/a.suite.mjs",
+          mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "red" }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "README.md"), "unrelated\n"),
+    );
+    const probeBin = mkdtempSync(join(tmpdir(), "mutation-reproof-git-probe-"));
+    repos.push(probeBin);
+    const probe = join(probeBin, "git.env");
+    const originalPath = childEnv().PATH ?? "";
+    const wrapper = join(probeBin, "git");
+    writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "${"${GIT_OPTIONAL_LOCKS-ABSENT}"}" >> "$GIT_OPTIONAL_LOCKS_PROBE"\nPATH=${JSON.stringify(originalPath)} exec git "$@"\n`);
+    chmodSync(wrapper, 0o755);
+    const run = scan(root, base, head, {
+      ...childEnv(), PATH: `${probeBin}${delimiter}${originalPath}`, GIT_OPTIONAL_LOCKS_PROBE: probe,
+    });
+    const observed = existsSync(probe) ? readFileSync(probe, "utf8").trim().split("\n") : [];
+    check("git children receive GIT_OPTIONAL_LOCKS=0 through a real scanner invocation",
+      run.status === 0 && observed.length > 0 && observed.every((value) => value === "0"),
+      JSON.stringify({ status: run.status, observed, out: run.out }),
+    );
+  }
+
+  // The optional-lock guard must preserve the dirty-root refusal and its diagnostics.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "a.mjs"), "export const a = () => 1;\n");
+        writeFileSync(join(r, "suites", "a.suite.mjs"), "console.log('green');\n");
+        writeFileSync(join(r, "smoke", "mutations", "a.mutations.json"), JSON.stringify({
+          suite: ["suites/a.suite.mjs"], command: "node suites/a.suite.mjs",
+          mutations: [{ name: "a changes", file: "a.mjs", find: "() => 1", replace: "() => 2", expectRed: "red" }],
+        }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "README.md"), "unrelated\n"),
+    );
+    writeFileSync(join(root, "dirty.txt"), "dirty\n");
+    const run = scan(root, base, head);
+    check("the dirty-root refusal output is unchanged",
+      run.status === 1 && run.out === "mutation reproof: UNMEASURED — root must be clean and checked out at the requested head before comparison\n?? dirty.txt\n",
+      JSON.stringify({ status: run.status, out: run.out }),
+    );
   }
 
   // #1582: the base the selector diffs from, under the ref CI actually checks out.
@@ -2543,6 +2596,113 @@ try {
         && eq(unmeasuredPreRedPaths(out), ["smoke/mutations/depth-zero.mutations.json"])
         && out.includes("root execution-state contamination detected"),
       `status=${status}\n${out}`,
+    );
+  }
+
+  // 28. A suite red at root, base and head whose failure line carries a fresh random token each run
+  //     hashes differently every execution, so the provenance comparison cannot hold. That is not
+  //     contamination and not a verdict change: it is an unstable signature, named as such (#1409).
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "unstable.mjs"), "export const value = 1;\n");
+        writeFileSync(join(r, "suites", "unstable.suite.mjs"), "import { randomUUID } from 'node:crypto';\nconsole.error(`AssertionError: seat ${randomUUID()} never answered`);\nprocess.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "unstable.mutations.json"), JSON.stringify({ suite: ["suites/unstable.suite.mjs"], command: "node suites/unstable.suite.mjs", mutations: [{ name: "unstable", file: "unstable.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "never answered" }] }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "unstable.mjs"), "// select\nexport const value = 1;\n"),
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "an unstable per-run failure signature is UNMEASURED with the instability reason, never contamination",
+      status === 1
+        && eq(unmeasuredPreRedPaths(out), ["smoke/mutations/unstable.mutations.json"])
+        && out.includes("the failure signature of `node suites/unstable.suite.mjs` is not stable across two runs of the clean head snapshot")
+        && !out.includes("contamination detected")
+        && !out.includes("MUTATION REPROOF OK"),
+      `status=${status}\n${out}`,
+    );
+  }
+
+  // 28b. The probe must not weaken the true check. A deterministic red with a root-only marker (the
+  //      shape of cell 20) is STABLE across two head runs, so its differing provenance hash stays
+  //      contamination; and a suite stably red at head and base with the same text still clears as
+  //      inherited, probe notwithstanding.
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, ".gitignore"), "unstable-root-marker\n");
+        writeFileSync(join(r, "probe-control.mjs"), "export const value = 1;\n");
+        writeFileSync(join(r, "suites", "probe-control.suite.mjs"), "import { existsSync } from 'node:fs';\nif (existsSync('unstable-root-marker')) console.error('probe control root failure X');\nelse console.error('probe control clean failure Y');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "probe-control.mutations.json"), JSON.stringify({ suite: ["suites/probe-control.suite.mjs"], command: "node suites/probe-control.suite.mjs", mutations: [{ name: "probe control", file: "probe-control.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "probe control clean failure Y" }] }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "probe-control.mjs"), "// select\nexport const value = 1;\n"),
+    );
+    writeFileSync(join(root, "unstable-root-marker"), "root X\n");
+    const { status, out } = scan(root, base, head);
+    check(
+      "a stable root-vs-snapshot signature difference still reports contamination beside the instability probe",
+      status === 1
+        && eq(unmeasuredPreRedPaths(out), ["smoke/mutations/probe-control.mutations.json"])
+        && out.includes("root execution-state contamination detected")
+        && !out.includes("not stable across two runs"),
+      `status=${status}\n${out}`,
+    );
+  }
+  {
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "stably-red.mjs"), "export const value = 1;\n");
+        writeFileSync(join(r, "suites", "stably-red.suite.mjs"), "console.error('AssertionError: deterministic seat never answered');\nprocess.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "stably-red.mutations.json"), JSON.stringify({ suite: ["suites/stably-red.suite.mjs"], command: "node suites/stably-red.suite.mjs", mutations: [{ name: "stably red", file: "stably-red.mjs", find: "export const value = 1;", replace: "export const value = 2;", expectRed: "deterministic seat never answered" }] }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "stably-red.mjs"), "// select\nexport const value = 1;\n"),
+    );
+    const { status, out } = scan(root, base, head);
+    check(
+      "a suite stably red at head and base with the same text still clears as inherited",
+      status === 1
+        && eq(preRedPaths(out), ["smoke/mutations/stably-red.mutations.json"])
+        && !out.includes("not stable across two runs")
+        && !out.includes("contamination detected"),
+      `status=${status}\n${out}`,
+    );
+  }
+
+  // 28c. The second run happens only on a mismatch and only once. Each suite appends to a counter
+  //      file under a directory the cell passes through the environment, so root, base and head
+  //      executions all land in one observable place. The unstable suite is the fixture's own
+  //      command, so its root refusal reaches the probe twice: from the provenance comparison and
+  //      again from the head-versus-base comparison. Two callers, one repeat, because the second
+  //      reads the cache. The stable command (base green, head red) never reaches the probe.
+  {
+    const countDir = mkdtempSync(join(tmpdir(), "mutation-reproof-run-counts-")); repos.push(countDir);
+    const { root, base, head } = makeSingle(
+      (r) => {
+        writeFileSync(join(r, "counted.mjs"), "export const value = 1;\n");
+        // The head commit flips this suite's verdict, so head runs are red while base runs are
+        // green: compareSnapshots returns attributable on the status pair and never probes.
+        writeFileSync(join(r, "suites", "counted.suite.mjs"), "import { appendFileSync, mkdirSync } from 'node:fs';\nconst dir = process.env.MUTATION_REPROOF_COUNT_DIR;\nmkdirSync(dir, { recursive: true });\nappendFileSync(dir + '/stable.log', 'x');\nprocess.exit(0);\n");
+        // Red everywhere with a fresh token: the root baseline refuses on it, and every signature
+        // comparison of it mismatches.
+        writeFileSync(join(r, "suites", "counted-unstable.suite.mjs"), "import { appendFileSync, mkdirSync } from 'node:fs';\nimport { randomUUID } from 'node:crypto';\nconst dir = process.env.MUTATION_REPROOF_COUNT_DIR;\nmkdirSync(dir, { recursive: true });\nappendFileSync(dir + '/unstable.log', 'x');\nconsole.error(`AssertionError: seat ${randomUUID()} never answered`);\nprocess.exit(1);\n");
+        writeFileSync(join(r, "smoke", "mutations", "counted.mutations.json"), JSON.stringify({ suite: ["suites/counted.suite.mjs", "suites/counted-unstable.suite.mjs"], command: "node suites/counted-unstable.suite.mjs", mutations: [
+          { name: "unstable", file: "counted.mjs", find: "export const value = 1;", replace: "export const value = 3;", expectRed: "never answered" },
+          { name: "stable", file: "counted.mjs", find: "export const value = 1;", replace: "export const value = 2;", command: "node suites/counted.suite.mjs", expectRed: "stable count" },
+        ] }, null, 2));
+      },
+      (r) => writeFileSync(join(r, "suites", "counted.suite.mjs"), "import { appendFileSync, mkdirSync } from 'node:fs';\nconst dir = process.env.MUTATION_REPROOF_COUNT_DIR;\nmkdirSync(dir, { recursive: true });\nappendFileSync(dir + '/stable.log', 'x');\nconsole.error('AssertionError: stable count red');\nprocess.exit(1);\n"),
+    );
+    const { status, out } = scan(root, base, head, { ...childEnv(), MUTATION_REPROOF_COUNT_DIR: countDir });
+    const stableCount = () => { try { return readFileSync(join(countDir, "stable.log"), "utf8").length; } catch { return 0; } };
+    const unstableCount = () => { try { return readFileSync(join(countDir, "unstable.log"), "utf8").length; } catch { return 0; } };
+    check(
+      "the repeat run happens only on a mismatch: the stable command keeps its execution count, the unstable one gains exactly one",
+      status === 1
+        && eq(attributablePreRedPaths(out), ["smoke/mutations/counted.mutations.json"])
+        && eq(unmeasuredPreRedPaths(out), ["smoke/mutations/counted.mutations.json"])
+        && stableCount() === 2 // head run + base run; the status pair never reaches the probe
+        && unstableCount() === 4, // root baseline + head run + base run + one repeat shared by both callers
+      `status=${status} stable=${stableCount()} unstable=${unstableCount()}\n${out}`,
     );
   }
 } finally {

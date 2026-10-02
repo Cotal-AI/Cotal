@@ -17,7 +17,7 @@ import {
   standaloneConnectOpts, registry, DEV_OWNER, setupSpaceStreams, recordsBucket, epAuthBucket,
   parseLedgerRow, credRowKey, type AgentHandle, type AttachSession,
   type Connector, type LaunchSpec, type Presence, type CredentialLedgerRow,
-  type EvictionResult, type LifecycleStateTransport, type SecretStore,
+  type EvictionResult, type LifecycleStateTransport, type SecretStore, type ControlReply,
 } from "@cotal-ai/core";
 import { agentSecretKeyForFile, putSpaceAuth } from "@cotal-ai/workspace";
 import {
@@ -25,6 +25,7 @@ import {
 } from "../src/static-lifecycle.js";
 import { Manager } from "../src/manager.js";
 import { bootBroker } from "./_boot-broker.js";
+import { requestDeliveryAdminZeroMemberships } from "./_fake-delivery-admin.js";
 
 const SCENARIOS = [
   { name: "racer_despawn", renewal: "direct", terminal: "despawn" },
@@ -189,6 +190,7 @@ const handles = new Map<string, ControlledHandle>();
 (mgr as unknown as { ep: Record<string, unknown> }).ep = {
   ref: () => ({ id: "smoke-mgr" }), on: () => {}, off: () => {},
   waitForPresenceSnapshot: () => Promise.resolve(), getRoster: (): Presence[] => [],
+  requestDeliveryAdmin: requestDeliveryAdminZeroMemberships,
 };
 registry.register({ kind: "connector", name: "smoke-race", requires: ["node"], buildLaunch: () => ({ command: "true", args: [], env: {} }) } as Connector);
 
@@ -254,12 +256,20 @@ async function stageExpiringCredential(agent: Agent, transport: LifecycleStateTr
 try {
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   await mgr.start();
+  const mgrEp = (mgr as unknown as { ep: { requestDeliveryAdmin: (op: string, args?: unknown, t?: number) => Promise<ControlReply> } }).ep;
+  const origRequestDeliveryAdmin = mgrEp.requestDeliveryAdmin.bind(mgrEp);
+  mgrEp.requestDeliveryAdmin = async (op: string, args?: unknown, t?: number) => {
+    if (op === "lifecycleMemberships") {
+      return requestDeliveryAdminZeroMemberships(op, args);
+    }
+    return origRequestDeliveryAdmin(op, args, t);
+  };
   (mgr as unknown as { awaitReadiness(): Promise<{ ok: true }> }).awaitReadiness = async () => ({ ok: true });
 
   for (const scenario of SCENARIOS) {
     const { name } = scenario;
     console.log(`\n${name}: ${scenario.renewal} renewal then ${scenario.terminal}`);
-    const spawned = await mgr.startAgent({ name, agent: "smoke-race" });
+    const spawned = await mgr.startAgent({ name, agent: "smoke-race", events: false });
     check(`${name}: spawn succeeds`, spawned.ok, spawned);
     const agent = M.agents.get(name);
     check(`${name}: the spawned lifecycle is managed`, agent !== undefined);

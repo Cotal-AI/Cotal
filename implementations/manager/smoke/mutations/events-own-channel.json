@@ -107,8 +107,8 @@
     {
       "name": "E7 the refusal names a mint profile that ignores the channel it prints",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
-      "replace": "      : `\\`cotal mint <reader> --profile observer --allow-subscribe ${channel}\\`, where there ` +",
+      "find": "          `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
+      "replace": "          `\\`cotal mint <reader> --profile observer --allow-subscribe ${channel}\\`, where there ` +",
       "expectRed": "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
       "cell": "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
       "note": "This is the shipped state of the text until a live mint decoded what it produced. `mint` reads --allow-subscribe only for the agent profile and the observer arm of permissionsFor hardcodes chat.>, so the printed command handed an operator a reader of the whole chat plane while the sentence around it promised one channel. Section 9 parses the profile out of the refusal rather than hardcoding one, so this mutant is the drift it exists to catch."
@@ -116,8 +116,8 @@
     {
       "name": "E8 the refusal prints a channel other than the one it refused",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
-      "replace": "      : `\\`cotal mint <reader> --profile agent --allow-subscribe events.local.UNOTTHEONEREFUSED --provision\\`, where there ` +",
+      "find": "          `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
+      "replace": "          `\\`cotal mint <reader> --profile agent --allow-subscribe events.local.UNOTTHEONEREFUSED --provision\\`, where there ` +",
       "expectRed": "the channel it prints is the channel it refused",
       "cell": "the channel it prints is the channel it refused",
       "note": "E7's sibling, one field over, and an engineering lens is why it exists: a section that grades the PROFILE the refusal names while minting the suite's own channel leaves the channel field ungraded, and a refusal pointing an operator at the wrong plane is the same defect class as one naming the wrong profile. Section 9 now mints on the channel the refusal printed and compares the result against the channel the manager refused, so this mutant reddens twice."
@@ -141,13 +141,22 @@
       "note": "The resume door shipped `entry.identity.mode === \"user\"`, the resumed DOCUMENT's mode rather than the manager's, which on the shape section 8 builds selects the user route under a static manager. That expression is now unwritable, since the method takes no mode, so the mutant inlines the route it used to select. E9 and E10 are separate because they are separate doors: one graded door would leave the other free."
     },
     {
-      "name": "E11 the single selector, inverted",
+      "name": "E11 the single selector, swapped",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    return this.userMode\n",
-      "replace": "    return !this.userMode\n",
+      "find": "  private get meshMode(): \"open\" | \"static\" | \"user\" {\n    if (this.userMode) return \"user\";\n    if (this.auth !== undefined) return \"static\";\n    return \"open\";\n  }",
+      "replace": "  private get meshMode(): \"open\" | \"static\" | \"user\" {\n    if (this.userMode) return \"static\";\n    if (this.auth !== undefined) return \"user\";\n    return \"open\";\n  }",
       "expectRed": "the refusal prints a mint command, naming a profile and a channel",
       "cell": "the refusal prints a mint command, naming a profile and a channel",
-      "note": "After the fold there is exactly ONE mode expression for both doors, and this is it. The mutant reddens the spawn cell AND the resume cell in this suite, which is the point: a single selector cannot be wrong at one door and right at the other. The named cell is the spawn one. On the user mesh the opposite polarity is graded by R2 in the auth config. It exists because an engineering lens asked for the selector to be closed by construction rather than by assertion, and the fold is what made a single-selector mutant writable at all."
+      "note": "There is exactly ONE selector for all three doors, and this swaps the two non-open arms rather than inverting a boolean (there is no boolean left to invert; the fold in #567 made the selector three-valued so a fourth mode could not fall into an existing arm). The suite runs a STATIC mesh, so under this mutant a static manager reads meshMode as \"user\" and the refusal hands a static operator `cotal actor grant` against a ledger that does not exist, reddening the same cell E9 named. Re-anchored for #567: the prior E11 found the single-line ternary `return this.userMode` the earlier boolean selector used, which #567 replaced with this switch."
+    },
+    {
+      "name": "E12 the open arm collapses back into the static route (#567)",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      case \"open\":\n        return (\n          `there is nothing to grant on an open mesh: it has no credentials and no ACLs, so any peer ` +\n          `may read \\`${channel}\\` by connecting bare and listing that channel (\\`cotal join\\` or an ` +\n          `endpoint whose channels include it); this refusal stands because the own-channel rule ` +\n          `applies to every mesh, and a spawn is not the place to hand out a read on another agent's ` +\n          `tool inputs and outputs.`\n        );",
+      "replace": "      case \"open\":\n        return (\n          `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +\n          `is no actor ledger for \\`actor grant\\` to write to. The AGENT profile, not the observer ` +\n          `one: \\`mint\\` reads --allow-subscribe only for that profile, so an observer mint is ` +\n          `refused outright and writes no creds file.`\n        );",
+      "expectRed": "...and its remedy is the open-mesh arm, not the static route: no mint --provision, no actor grant (#567)",
+      "cell": "...and its remedy is the open-mesh arm, not the static route: no mint --provision, no actor grant (#567)",
+      "note": "This is the pre-fix defect reproduced exactly: an open mesh handed the STATIC route (`cotal mint … --provision`), which `mint` refuses outright on an open mesh before anything ACL-related is reached (#567). Without this mutant, a change that quietly reverted the open arm's text back to the static one would leave every other cell in this file green, since E9/E10/E11 all exercise the user/static boundary and none of them touch the open arm."
     }
   ]
 }

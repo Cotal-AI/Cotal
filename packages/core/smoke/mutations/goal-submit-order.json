@@ -1,0 +1,18 @@
+{
+  "suite": ["packages/core/smoke/goal-submit-order.smoke.ts"],
+  "guard": "A goal followed on the standing connection and submitted on another requires the standing SUB to be broker-confirmed before the borrowed callback.",
+  "command": "pnpm exec tsx packages/core/smoke/goal-submit-order.smoke.ts",
+  "completionMarker": "goal-submit-order smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/goal-submit-order.json",
+  "mutations": [
+    {
+      "name": "the standing subscription is not broker-confirmed before borrowed submit",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "      try { await bounded(() => preparing.flush(), deadline); }",
+      "replace": "      try { await Promise.resolve(); }",
+      "expectRed": "held standing subscription receives borrowed terminal after gate release",
+      "cell": "held standing subscription receives borrowed terminal after gate release",
+      "note": "Removing the standing connection's await nc.flush() before submit leaves SUB queued. The borrowed publisher emits the terminal first, and the held-path cell goes red on missed delivery."
+    }
+  ]
+}

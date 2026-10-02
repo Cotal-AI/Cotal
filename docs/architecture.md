@@ -195,7 +195,7 @@ laterally; the manager only births and configures them.
   logical instance id across restarts and advances its process epoch when it comes back, so
   peers address a specific manager without caring which process currently serves it. `cotal
   spawn <persona> --detach --on <instance>` pins one instance (`ps`, `stop` and `attach` take
-  the same flag); an untargeted spawn rides class anycast and the acceptance records which
+  the same flag), and MCP `cotal_spawn` accepts the equivalent `instance` argument. An untargeted spawn rides class anycast and the acceptance records which
   instance took it. `ps` and `status` scatter across every registered instance and label a
   non-answering one as registered with no answer within the deadline, never dropping it.
 - **A manager holds a liveness lease, and nothing about it ends the process.** Each instance
@@ -207,6 +207,8 @@ laterally; the manager only births and configures them.
   broker cannot be asked at all it keeps serving and asks again, for as long as that takes. A
   manager that cannot reach its broker gains nothing by ending itself, and the seats it holds
   lose everything. Each change of state is one line in the manager's log, not one line per tick.
+  A clean stop waits for a renew already in flight and then releases the key at the broker's own
+  revision, so a same-root restart never waits out the bucket TTL.
 - **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on

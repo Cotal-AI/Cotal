@@ -2,7 +2,7 @@ import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import type { AgentHandle, AttachSession, LaunchSpec, Runtime, RuntimeReference } from "@cotal-ai/core";
-import { StartupConfirmMatcher, unmatchedConfirmMessage, unsupportedTransport } from "@cotal-ai/seat";
+import { StartupConfirmMatcher, unmatchedConfirmMessage, unsupportedTransport, preferSeatForOomKill } from "@cotal-ai/seat";
 import { preparePtyLaunch } from "./windows-launch.js";
 
 const DEFAULT_COLS = 120;
@@ -42,6 +42,10 @@ export class LegacyPtyRuntime implements Runtime {
       // PATH) instead of silently inheriting the manager's env.
       env: spec.env ?? {},
     });
+    const oomPref = preferSeatForOomKill(proc.pid);
+    if (!oomPref.applied) {
+      console.error(`oom preference not applied to child ${proc.pid}: ${oomPref.reason}`);
+    }
 
     const dataSubs = new Set<(c: Buffer) => void>();
     const exitSubs = new Set<() => void>();

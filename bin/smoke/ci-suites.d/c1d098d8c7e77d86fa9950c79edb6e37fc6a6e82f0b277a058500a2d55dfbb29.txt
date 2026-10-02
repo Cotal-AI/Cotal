@@ -1,0 +1,4 @@
+# A delivery daemon must write and remove its own liveness record, so a stale pidfile cannot make a
+# dead daemon look alive to the next process that reads it. Added with the suite in #1674, which
+# defined the script but not this fragment, so nothing ran it.
+smoke:delivery-pidfile-ownership

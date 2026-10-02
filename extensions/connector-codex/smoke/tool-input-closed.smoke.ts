@@ -20,18 +20,24 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { configFromEnv, cotalToolSpecs, type MeshAgent } from "@cotal-ai/connector-core";
 import { startCotalMcp } from "../src/mcp.js";
 
+// WHATEVER RUNS THIS SUITE MAY BE A MANAGED AGENT SESSION, and `configFromEnv` below reads the
+// AMBIENT environment, so that session's live identity becomes an input this suite never chose.
+// The whole COTAL_ prefix goes here, at module scope, before the first read: a scrub of one
+// variable leaves the twelve beside it, and a scrub inside a function is a promise that the
+// function runs first. Graded by `pnpm smoke:suite-ambient-env-self`.
+const inheritedBroker = process.env.COTAL_SERVERS !== undefined;
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+
 process.env.COTAL_SPACE ||= "toolclosed";
 process.env.COTAL_NAME ||= "codex-1";
-// `||=` KEEPS an already-set value, so this suite is loopback only where nothing set the
-// variable. In any shell that already exports COTAL_SERVERS — an agent's, an operator's — it
-// resolves to that instead, and an archived run gave no way to tell which. It names its target
-// now: a suite that names its target cannot silently change it. Measured, and true today: this
+// After that scrub this `||=` always takes the default, so the line below discloses the value the
+// suite RESOLVED plus whether an ambient one was discarded on the way in. The second half is only
+// knowable BEFORE the scrub, which is why it is captured above. Measured, and true today: this
 // suite opens no TCP connection to the value at all (verified against a listener that counted
 // zero accepts), so the line discloses a CONFIG input, not traffic. If that ever stops being
 // true, this line is already where a reader would look.
-const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;
 process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";
-console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? "INHERITED from the environment" : "suite default"})`);
+console.log(`• broker: ${process.env.COTAL_SERVERS} (suite default; an inherited COTAL_SERVERS was ${inheritedBroker ? "DISCARDED by the ambient scrub" : "absent"})`);
 
 let failures = 0;
 const check = (label: string, ok: boolean, extra?: unknown): void => {
@@ -40,11 +46,6 @@ const check = (label: string, ok: boolean, extra?: unknown): void => {
   console.log(`  FAIL  ${label}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
 };
 
-// A launcher-spawned seat exports COTAL_LAUNCH_MATERIAL. This suite then defaults
-// COTAL_SERVERS, a direct material var, and configFromEnv refuses the pair. Drop the
-// POINTER only. Unlinking the file is wrong: the session that launched this process
-// may still need it.
-delete process.env.COTAL_LAUNCH_MATERIAL;
 const config = configFromEnv();
 const reached: string[] = [];
 const agent = new Proxy({} as MeshAgent, {

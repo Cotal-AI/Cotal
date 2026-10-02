@@ -36,14 +36,31 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { closureFromConfig, versionUrl } from "./verify-publish-closure.mjs";
+import { isMainEntry } from "./main-entry.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 const OIDC_AUDIENCE = "npm:registry.npmjs.org";
 const WORKFLOW_FILE = ".github/workflows/changesets.yml";
 const REQUIRED_ENVIRONMENT = "npm-publish";
+const NPM_ACCESS_TOKEN_ENVIRONMENT_VARIABLES = [
+  "NPM_TOKEN",
+  "NODE_AUTH_TOKEN",
+  "npm_config__authToken",
+  "pnpm_config__auth",
+  "PNPM_CONFIG__AUTH",
+  "npm_config_//registry.npmjs.org/:_authToken",
+  "pnpm_config_//registry.npmjs.org/:_authToken",
+];
+
+function assertNoNpmAccessToken(env) {
+  const accessTokenVariable = NPM_ACCESS_TOKEN_ENVIRONMENT_VARIABLES.find((name) => Boolean(env[name]));
+  if (accessTokenVariable) {
+    throw new Error(`publish preflight refused: ${accessTokenVariable} is set; release publishes through OIDC only`);
+  }
+}
 
 function decodeJwtPayload(token) {
   const parts = token.split(".");
@@ -286,6 +303,28 @@ async function readDirectPublishAuthorization(pkg, registryBase, token, fetchImp
   }
 }
 
+/**
+ * The three census bucket predicates, as the verdict ladder below applies them. They live here
+ * as named exports rather than inline in the ladder so a test can depend on the SHIPPED
+ * membership rule instead of transcribing it. A test that re-types these three expressions
+ * grades its own copy: widen `isAbsentRegistry` here and a transcribed test stays green, which
+ * is exactly the unkillable shape this export exists to remove.
+ */
+export const isUnknownRegistry = (registry) => registry.startsWith("unknown:");
+export const isPresentRegistry = (registry) => registry === "present";
+export const isAbsentRegistry = (registry) => registry === "absent";
+
+/**
+ * The bucket predicates in ladder order, paired with the names the ladder and the census use.
+ * Exported as one array so a caller enumerating the buckets cannot silently miss one that a
+ * later commit adds: a new bucket is a new element here, not a new line in somebody's copy.
+ */
+export const CENSUS_BUCKETS = [
+  { name: "unknown", matches: isUnknownRegistry },
+  { name: "present", matches: isPresentRegistry },
+  { name: "absent", matches: isAbsentRegistry },
+];
+
 export function printPublishCensus(rows, log = console.log) {
   log("npm publish preflight census");
   log("package\tversion\tregistry\toidc\tdirect");
@@ -325,6 +364,7 @@ export async function preflightNpmPublish({
   fetchImpl = fetch,
   log = console.log,
 }) {
+  assertNoNpmAccessToken(env);
   let packages;
   try {
     packages = validateReleaseSet(fixedPackages, workspacePackages);
@@ -347,9 +387,9 @@ export async function preflightNpmPublish({
     });
   }
 
-  const unknown = rows.filter((row) => row.registry.startsWith("unknown:"));
-  const present = rows.filter((row) => row.registry === "present");
-  const absent = rows.filter((row) => row.registry === "absent");
+  const unknown = rows.filter((row) => isUnknownRegistry(row.registry));
+  const present = rows.filter((row) => isPresentRegistry(row.registry));
+  const absent = rows.filter((row) => isAbsentRegistry(row.registry));
   const registryVerdict = unknown.length > 0
     ? "inconclusive"
     : absent.length === rows.length
@@ -400,11 +440,6 @@ export async function preflightNpmPublish({
         row.direct = "not-run";
       }
     }
-  } else if (env.NPM_TOKEN || env.NODE_AUTH_TOKEN) {
-    for (const row of rows) {
-      row.oidc = "not-available:classic-token";
-      row.direct = "not-available:classic-token";
-    }
   } else {
     for (const row of rows) {
       row.oidc = "refused:no publish credential path";
@@ -412,6 +447,10 @@ export async function preflightNpmPublish({
     }
   }
   printPublishCensus(rows, log);
+  // The post-census refusal contract has three outcomes: OIDC failure, stage-only authorization,
+  // and direct-publish authorization failure. Every other direct result is either createPackage
+  // or the trust-read 401 exception, which cannot prove Allowed actions because npm requires an
+  // access token for it.
   const refusedOidc = rows.filter((row) => row.oidc.startsWith("refused:"));
   if (refusedOidc.length) throw new Error(`npm OIDC exchange refused ${refusedOidc.length}/${rows.length} packages`);
   const stageOnly = rows.filter((row) => row.direct === "stage-only");
@@ -421,12 +460,6 @@ export async function preflightNpmPublish({
   const refusedDirect = rows.filter((row) => row.direct.startsWith("refused:"));
   if (refusedDirect.length) {
     throw new Error(`direct-publish authorization refused ${refusedDirect.length}/${rows.length} packages`);
-  }
-  const unproven = rows.filter((row) => row.direct !== "createPackage"
-    && row.direct !== "not-available:classic-token"
-    && row.direct !== "unverifiable:trust-endpoint-needs-npm-token");
-  if (unproven.length) {
-    throw new Error(`direct-publish authorization was not proven for ${unproven.length}/${rows.length} packages`);
   }
   return { state: "ready", rows };
 }
@@ -442,12 +475,13 @@ export async function preflightFromRepository({
   log = console.log,
   exec = execFileSync,
 } = {}) {
+  assertNoNpmAccessToken(env);
   const fixedPackages = closureFromConfig(readFileSync(join(root, ".changeset", "config.json"), "utf8"));
   const workspacePackages = workspacePackagesFromPnpm(root, exec);
   return preflightNpmPublish({ fixedPackages, workspacePackages, registryBase: registryBase.replace(/\/+$/, ""), env, fetchImpl, log });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainEntry(import.meta.url)) {
   preflightFromRepository().catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;

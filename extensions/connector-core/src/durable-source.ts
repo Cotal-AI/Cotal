@@ -69,6 +69,14 @@ export interface DurableSource<T> {
   read(cursor: string | undefined): Promise<SourceRead<T>>;
 }
 
+/** The file no longer has the identity or consumed prefix recorded by its cursor. */
+export class JsonlFileResetError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "JsonlFileResetError";
+  }
+}
+
 /**
  * A durable source over an append-only JSONL file — the shape both the Claude session transcript
  * and the Codex rollout log take.
@@ -172,17 +180,21 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
    * connector would duplicate the opaque cursor format and eventually drift from it.
    */
   async readFromBeginning(): Promise<SourceRead<T>> {
-    const fh = await open(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    let cursor: string;
-    try {
-      const st = await fh.stat();
-      cursor = `${String(st.dev)}:${String(st.ino)}:0:${await JsonlFileSource.sealAt(fh, 0)}`;
-    } finally {
-      await fh.close();
-    }
+    const cursor = await this.cursorAtBeginning();
     // A replacement between the two opens is detected by `read`'s file-identity check. Appends are
     // ordinary: starting at zero still means consuming every complete record now present.
     return this.read(cursor);
+  }
+
+  /** Cursor at byte zero for this file's current identity. */
+  async cursorAtBeginning(): Promise<string> {
+    const fh = await open(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const st = await fh.stat();
+      return `${String(st.dev)}:${String(st.ino)}:0:${await JsonlFileSource.sealAt(fh, 0)}`;
+    } finally {
+      await fh.close();
+    }
   }
 
   async read(cursor: string | undefined): Promise<SourceRead<T>> {
@@ -194,6 +206,8 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
     // adding this stops being a fix and becomes a compatibility argument with whoever is already
     // relying on the old behaviour. The same rule the maintenance reader already applies to its
     // resume document (`O_RDONLY | O_NOFOLLOW`), for the same reason.
+    // Invalid persisted state must refuse even when the file is temporarily absent.
+    const from = cursor === undefined ? undefined : JsonlFileSource.parseCursor(cursor);
     const fh = await open(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const st = await fh.stat();
@@ -207,22 +221,20 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
       // still appending: adopt at byte 1 of `{"i":1`, let the writer finish `2}\n`, and the source
       // emits `2}` while the real record is `{"i":12}`. That is the truncated-record corruption the
       // partial-line rule exists to prevent, reached through the adopt path instead of the read one.
-      if (cursor === undefined)
+      if (from === undefined)
         return { records: [], cursor: await here(await JsonlFileSource.lastCompleteBoundary(fh, size)) };
-
-      const from = JsonlFileSource.parseCursor(cursor);
 
       // Replacement is DETECTED by identity, not inferred from size — a replacement that is the
       // same size or larger looks exactly like an append, and resuming at the old offset emits
       // fragments of a document this reader has never seen. Re-adopting silently loses records and
       // restarting resends them, so neither is guessed here: the caller decides.
       if (from.dev !== dev || from.ino !== ino)
-        throw new Error(
+        throw new JsonlFileResetError(
           `JsonlFileSource: ${this.path} is not the file this cursor came from ` +
             `(cursor ${from.dev}:${from.ino}, now ${dev}:${ino}) — it was replaced or rotated`,
         );
       if (from.offset > size)
-        throw new Error(
+        throw new JsonlFileResetError(
           `JsonlFileSource: cursor offset ${from.offset} is past end ${size} for ${this.path} — the file was truncated`,
         );
       // The last 512 bytes of the consumed prefix must still be the bytes we consumed. dev/ino catch
@@ -231,7 +243,7 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
       // confined to bytes before `offset - 512` passes here. See `sealAt` for the bound and its edges.
       const seal = await JsonlFileSource.sealAt(fh, from.offset);
       if (seal !== from.seal)
-        throw new Error(
+        throw new JsonlFileResetError(
           `JsonlFileSource: the bytes before offset ${from.offset} in ${this.path} have changed ` +
             `(seal ${from.seal} -> ${seal}) — the file was rewritten in place, not appended to`,
         );
@@ -304,5 +316,42 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
     } finally {
       await fh.close();
     }
+  }
+}
+
+/**
+ * Substitutes a captured boundary for the caller's cursor on the ONE read where that cursor is
+ * `undefined` — a virgin log positioning itself for the first time.
+ *
+ * **Why this exists.** A lazily-built emitter's source otherwise positions itself on its own FIRST
+ * read, and that read happens only after everything else the bind does first: a mesh wait, the
+ * write-ahead log's directory, the subject frontier, the log open, a channel resolve, a
+ * single-replica preflight. Anything the session writes to its record file during that window lands
+ * behind the position the source discovers later, is treated as already published, and is dropped —
+ * silently, under a line that has by then already announced the stream as started. Measured on the
+ * Codex connector, the shape this wrapper first closed there: 17ms and 36ms on an idle machine, and
+ * a whole turn lost at a widened window.
+ *
+ * So the boundary is captured by the caller BEFORE the bind announces itself, and substituted here,
+ * on the one read that would otherwise ask the source where it currently ends.
+ *
+ * **The limit, stated once.** This positions only a log with no cursor. A log that already carries
+ * one is a resume, and passes through to the inner source untouched: a cursor written by a live
+ * emitter is the honest one, and overwriting it would re-read or skip a live session's records
+ * depending on which one it disagreed with. Nothing is written into the log by this wrapper itself;
+ * it only changes what is asked for, never what is stored.
+ */
+export class BoundStartSource<T> implements DurableSource<T> {
+  readonly kind: string;
+
+  constructor(
+    private readonly inner: DurableSource<T>,
+    private readonly start: string,
+  ) {
+    this.kind = inner.kind;
+  }
+
+  read(cursor: string | undefined): Promise<SourceRead<T>> {
+    return this.inner.read(cursor ?? this.start);
   }
 }

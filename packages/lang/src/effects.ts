@@ -431,6 +431,19 @@ export interface EffectContext {
   bind(external: Readonly<Record<string, unknown>>): Promise<void>;
 }
 
+/**
+ * An effect method that throws settles its journal entry `failed`, and a resume replays that
+ * failure without calling the handler again, no matter how healthy the handler is on the next
+ * attempt. For work that is in flight, call {@link EffectContext.bind} with the facts that
+ * identify it before awaiting the external result, and leave the entry pending if the host is
+ * interrupted there: a resume then calls the handler with those facts in {@link
+ * EffectContext.resume} so it can reattach rather than issue a second action. A bind followed
+ * by a throw is still a throw: the entry settles `failed` with the external attached, and a
+ * resume replays it, so report what happened rather than throwing it, the way
+ * {@link applyCheckpointPolicy} does for an expiry. Throw {@link EffectRefused} when the host
+ * has no substrate for the step at all, so a resume performs it live instead of replaying a
+ * failure for work that never happened.
+ */
 export interface EffectHandler {
   /**
    * The host clock, which the interpreter uses to stamp `startedAt` and `endedAt` on journal

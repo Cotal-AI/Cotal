@@ -70,15 +70,27 @@ check(
   up.includes("No broker config is (re)written"),
 );
 
-// ── 2. up always starts a manager; split is topology, not singleton ──────────
+// ── 2. up starts a manager by default; --no-manager is the explicit broker-only mode ──
 check(
-  "claim 2: operator guide names the split (up then down manager, supervise --server)",
-  runAMesh.includes("There is no broker-only `up`") &&
+  "claim 2: operator guide names the split (--no-manager boot, supervise --server)",
+  runAMesh.includes("A broker-only host is a first-class `up` mode") &&
+    runAMesh.includes("cotal up --no-manager") &&
     runAMesh.includes("cotal down manager") &&
     runAMesh.includes("cotal supervise --space main --server") &&
-    cli.includes("There is no broker-only mode") &&
+    cli.includes("`--no-manager` is the broker-only mode") &&
     control.includes("Only one manager per space") &&
     control.includes("cotal supervise"),
+);
+check(
+  "claim 2: the broker-only refusal and the flag's wiring are pinned",
+  /`cotal up --no-manager` will not keep or stop one/.test(up.replace(/\\`/g, "`")) &&
+    /noManager && values\.runtime/.test(up) &&
+    /noManager && values\["max-sessions"\]/.test(up) &&
+    up.includes("broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager") &&
+    /if \(o\.noManager\) return \{\s*running: false\b[^}]*responderBound: delivery\.responderBound[^}]*\}/.test(deliveryProc) &&
+    !cli.includes("There is no broker-only mode") &&
+    !runAMesh.includes("There is no broker-only `up`") &&
+    !runAMesh.includes("Broker-only `up` remains a product request"),
 );
 check(
   "claim 2: wait signal is supervise post-start, not detach stdout",
@@ -95,8 +107,8 @@ check(
 check(
   "claim 2: detach summary and ensureManager are pidfile-live; supervise prints manager up after start",
   upReport.includes("return `✓ running in the background: ${components.join(\", \")} - stop with: cotal down`;") &&
-    managerProc.includes('if (state === "alive") return { running: true }') &&
-    /startManagerDetached\(o\);\n  return \{ running: true \};/.test(managerProc) &&
+    /if \(state === "alive"\) return \{\s*running: true,\s*started: false\b[^}]*\}/.test(managerProc) &&
+    /const pid = startManagerDetached\(o\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
     supervise.includes('await mgr.start();') &&
     supervise.includes('c.green("✓ manager up")'),
 );
@@ -147,8 +159,9 @@ check(
   systemd.includes('export const DETACHED_SUPERVISION_DOC_SECTION = "Supervising the detached stack"'),
 );
 check(
-  "claim 6: docs state no installer and the example-unit cgroup tradeoff",
-  runAMesh.includes("no supported `cotal service install`") &&
+  "claim 6: docs state the manager service installer and the example-unit cgroup tradeoff",
+  runAMesh.includes("`cotal service install` is the supported way to run the manager as a user service") &&
+    runAMesh.includes("It installs only") &&
     runAMesh.includes("examples of process models") &&
     runAMesh.includes("Type=simple") &&
     runAMesh.includes("nats in the unit's cgroup") &&
@@ -161,7 +174,8 @@ check(
     runAMesh.includes("`cotal status --components` liveness check, not a") &&
     runAMesh.includes("`--detach` launcher") &&
     !runAMesh.includes("nats is orphaned outside the cgroup") &&
-    !runAMesh.includes("oneshot + `--detach` launcher"),
+    !runAMesh.includes("oneshot + `--detach` launcher") &&
+    !runAMesh.includes("There is no supported `cotal service install`"),
 );
 
 console.log(`SPLIT TOPOLOGY DOCS: ${pass}/${pass + fail}`);

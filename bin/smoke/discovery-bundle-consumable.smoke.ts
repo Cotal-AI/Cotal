@@ -81,7 +81,7 @@ const worktree = resolve(import.meta.dirname, "..", "..");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-dbc-home-"));
 process.env.COTAL_HOME = home;
-const root = mkdtempSync(join(tmpdir(), "cotal-dbc-root-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}dbc-root-`));
 
 // This smoke may itself run inside a managed mesh session. The auth-service child must receive only
 // this fixture's sandboxed Cotal configuration, never the runner's live broker/credential material.

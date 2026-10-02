@@ -8,7 +8,7 @@
  * calls it directly. ONE function over ONE table: a second copy of a projection would be a
  * divergence the differential suite could only find program-by-program.
  */
-import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf } from "./errors.js";
+import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf, stackOf } from "./errors.js";
 import { digest, requestId, stepKeyString, type KeyScope, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
@@ -337,10 +337,17 @@ export async function performEffect(
     const raised = (e as { code?: unknown } | null | undefined)?.code;
     const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
     const recorded = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
-    const error: EntryError =
-      recorded !== undefined
+    // THE STACK IS THE ONLY FIELD THAT NAMES THE HOST CODE. A handler fault happens outside both the
+    // program and the language, so `message` alone ("timeout") is the symptom with no origin, and
+    // the durable entry is usually the only look anyone gets at it. Read defensively, by the same
+    // rule as `messageOf` one line up: a primitive throw carries no stack and none is recorded.
+    const stack = stackOf(e);
+    const error: EntryError = {
+      ...(recorded !== undefined
         ? recorded.error
-        : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) };
+        : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
+      ...(stack !== undefined ? { stack } : {}),
+    };
     await host.journal.settle(key, { status: "failed", error }, endedAt);
     frame.clock.advance(endedAt);
     // THE CALLER AND THE RECORD SAY THE SAME THING. Rethrowing the handler's own error unchanged is
@@ -497,8 +504,12 @@ async function performWaitUntil(
       const raised = (e as { code?: unknown } | null | undefined)?.code;
       const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
       const rec = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
-      const error: EntryError =
-        rec !== undefined ? rec.error : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) };
+      // The same rule as the effect site above: the probe is other people's code too.
+      const stack = stackOf(e);
+      const error: EntryError = {
+        ...(rec !== undefined ? rec.error : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
+        ...(stack !== undefined ? { stack } : {}),
+      };
       await host.journal.settle(key, { status: "failed", error }, endedAt);
       frame.clock.advance(endedAt);
       throw rec?.faithful === true ? e : new EffectError(error.code, error.kind, error.message);
@@ -1381,6 +1392,14 @@ export async function performScope(
     // A HELD RUN IS THE SAME SHAPE: the refusal's halt is not this scope's outcome. The refused
     // entry inside the branch is already settled; the scope stays pending and re-enters on resume.
     if (reason instanceof RunHeld) throw reason;
+    // A DIVERGENCE IS NOT AN OUTCOME EITHER. It is the journal saying this program is not the one
+    // that wrote it, and the interpreter already treats it as uncatchable (next to `RunReleased`
+    // and `Cancelled` there); recording it here would convert that run-level signal into a durable
+    // statement that the scope failed for a reason of its own, and the next resume would replay an
+    // `EffectError` a program's `try` could swallow, spending the loudness before anyone sees it.
+    // Settling nothing is the same shape `RunReleased` above takes: the scope stays pending, a
+    // resume re-enters it, and the step that broke diverges again.
+    if (reason instanceof RunDivergence) throw reason;
     // A CAPABILITY REFUSAL OF THE SCOPE'S OWN DISPATCH (a conclave's open): nothing was entered
     // and nothing was attempted, so the scope settles `refused` exactly as an effect does, and
     // the run is held for a host that can open it.
@@ -1398,10 +1417,21 @@ export async function performScope(
     // effect path hands it one. That asymmetry predates this rule (measured with a plain throw on
     // both paths) and it is recorded as a finding rather than repaired here, because repairing it
     // moves the spec, the walker and the engine together.
+    //
+    // A `RuntimeFault` KEEPS ITS OWN CODE (#1519). It is a classified refusal the LANGUAGE raised
+    // (`L3021` for a fanOut with no stable key), and flattening it to `L4000` wrote a code the spec
+    // says an UNCLASSIFIED failure carries, with the real sentence still inside the message. The
+    // record and the rethrow then disagreed with every resume, which replayed the recorded `L4000`
+    // as an `EffectError` while the live run had thrown the `RuntimeFault` itself. The kind is
+    // `runtime`, the kind a program's `catch` already binds for this class on both engines'
+    // `toProgramError` (a fault the PROGRAM caused), so a reader branching on `kind` reads the same
+    // verdict from the record that the program read live.
     const err: EntryError =
       reason instanceof EffectError
         ? recordableError(reason, "scope-fault").error
-        : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
+        : reason instanceof RuntimeFault
+          ? { code: reason.code, kind: "runtime", message: messageOf(reason) }
+          : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
     // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
     // carries the intent too, and a conclave that closed says so even when its body failed.
     await host.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, {
@@ -1545,8 +1575,11 @@ export async function runScope(
         // in-flight entries `cancelled`, a durable fact about a run that was merely stopped, and
         // a resume then replays that cancellation into a healthy run. So the siblings run to
         // their own boundary (each releases there in turn, or finishes work already in flight)
-        // and the unwind propagates bare, with nothing cancelled and nothing settled.
-        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {
+        // and the unwind propagates bare, with nothing cancelled and nothing settled. A
+        // divergence is the same non-fact about the branches: it says the program is not the one
+        // that wrote this journal, so cancelling a sibling would record a consequence of the
+        // disagreement on a run the program has no standing to speak for.
+        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {
           await Promise.allSettled(running);
           throw e;
         }
@@ -1608,11 +1641,14 @@ export async function runScope(
         () => onSettle(i, false),
         // A branch that rejected with `Cancelled` reached no outcome, and one that rejected with
         // a host-side unwind (a release, a held run, a refused append) reached none either:
-        // neither is a candidate, and neither may cancel the arms that are still running.
+        // neither is a candidate, and neither may cancel the arms that are still running. A
+        // diverging arm is in that set too: its rejection is a fact about the program, not an
+        // outcome this run reached, and the hoist below the settle surfaces it before any winner
+        // is chosen.
         (e: unknown) =>
           onSettle(
             i,
-            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected,
+            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence,
           ),
       );
     });
@@ -1653,10 +1689,15 @@ export async function runScope(
     // decision this driver may keep (its own cell). A HELD run rides the same hoist: the refused
     // step is settled `refused` and heals only when a resume REACHES it, and a resume
     // short-circuits a settled scope, so a race that completed over a held arm would bury the
-    // heal forever.
+    // heal forever. A DIVERGENCE rides it too, and for the run's own sake rather than a step's:
+    // an arm whose journal lookup refused the program must not be discarded by the tie-break,
+    // because the winner scan's `find` below would otherwise drop the losing arm's rejection on
+    // the floor and hand the program a value recorded by a run this source no longer is. Measured
+    // before this line: a losing arm's divergence, a pure sibling winning, and the run COMPLETED.
     const refusedAppend = settled.find(
       (r): r is PromiseRejectedResult =>
-        r.status === "rejected" && (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected),
+        r.status === "rejected" &&
+        (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected || r.reason instanceof RunDivergence),
     );
     if (refusedAppend !== undefined) throw refusedAppend.reason as Error;
 
@@ -1763,9 +1804,9 @@ export async function runScope(
       frame.clock.join(frames.map((f) => f.clock));
       return { branches: branchKeys, value: results };
     } catch (e) {
-      // The same host-side rule as `parallel`: a release, a held run, or a refused append
-      // cancels nothing.
-      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected) {
+      // The same host-side rule as `parallel`: a release, a held run, a refused append, or a
+      // divergence cancels nothing.
+      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {
         await Promise.allSettled(launched);
         throw e;
       }

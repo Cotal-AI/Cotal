@@ -1,5 +1,70 @@
 # @cotal-ai/seat
 
+## 0.58.0
+
+### Patch Changes
+
+- 5831ef8: Pty seats are marked more killable than the broker (`oom_score_adj` 500 on the seat's PTY child), with a logged reason when the kernel refuses and an explicit unavailable line off Linux.
+- 66ef843: Export the existing Linux socket peer-credentials reader and its type from the seat package root so embedders can apply their own UID policy without importing private native-helper paths. Verify the public API with real separate-process Unix sockets and explicit unsupported-platform refusal.
+- a726a3d: Register the hosted service and renewal checks with stable CI suite fragments, mark the restart fixture's broker for owned teardown, and verify unsupported seat reaping on other platforms without claiming Linux process-group coverage. Let the continuity fixture observe an already-started transport reconnect before preparing its recovery command.
+- fd0cf70: Retain custody records on disk across seat exit until verified reaping confirms kernel process identities and purges the directory, enabling manager process restart reconciliation. Refuse reaping when a dead leader leaves a nonempty group whose generation cannot be proved, retaining the custody record without signalling that group.
+
+## 0.57.0
+
+## 0.56.1
+
+## 0.56.0
+
+## 0.55.0
+
+## 0.54.0
+
+### Minor Changes
+
+- 34beea1: Route user-auth manager calls through a short-lived, instance-bound control credential. Discovery and invocation address the same authorized manager while the agent's standing connection, credentials and conversation remain unchanged. Managed launches retain their manager selection across launch and resume. Static and open mesh routing is unchanged. Confirm the standing goal-progress subscription at the broker before submitting on the separate control connection, so fast terminal events cannot outrun the subscription. Recover accepted goal results through the manager's caller-scoped `goal-result` command after connection replacement, without repeating the mutation or granting clients raw JetStream reads. Followed calls now require a compatible manager before submission; update the issuer, participant manager and client together. Stopping a caller cancels its observation without cancelling the accepted goal. Retain Linux custody records across clean child exit so retirement can prove process identity and finish cleanup even after the custodian removes its file; socket loss alone never frees the alias.
+
+## 0.53.0
+
+## 0.52.1
+
+## 0.52.0
+
+## 0.51.0
+
+## 0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- e72dd07: Bound the life of an unattended seat custodian, and make a census of them cheap.
+
+  A custodian whose manager crashed or whose suite returned without reaping it waited forever for a
+  controller that no longer existed, holding roughly 65 MB each. A full smoke shard left about
+  eighteen behind per run, and they accumulated across runs until the host was under memory pressure.
+  They were also hard to find: the only thing tying one to its worktree was its cwd, so a census had
+  to walk `/proc/*/cwd`, which needs the owner's uid for every pid it inspects.
+
+  A custodian with no authenticated controller now stops its child and exits after `UNATTENDED_MS`
+  (ten minutes; `COTAL_SEAT_UNATTENDED_MS` overrides it at launch, and a malformed or non-positive
+  value throws rather than restoring the default). The window restarts at each disconnect, so a
+  manager that detaches and re-adopts keeps its seats.
+
+  Every custodian now carries `--cotal-run <marker>` on its argv and `COTAL_RUN` in its environment,
+  and `censusCustodians(run?)` reads that marker back out of `/proc/<pid>/cmdline`. The smoke shard
+  runner names each run and kills the custodians carrying that marker after every suite, failing the
+  shard for a suite that passed but leaked one, and leaving other runs' custodians alone.
+
+  The transport also refuses a socket path the kernel would truncate. `sun_path` holds 108 bytes
+  including its NUL; past that libuv copies into the fixed buffer, truncates, and `listen` succeeds on
+  the shortened name, so the custodian cleaned up a socket it never created and died without writing
+  its log. `launchSeat` now refuses an oversized path by name, the custodian verifies the path it
+  bound and logs any startup failure instead of dying uncaught, and `@cotal-ai/smoke-kit` gains
+  `makeSeatRoot` so a suite's custody root stays short whatever `TMPDIR` says.
+
+  `runMarker` recovers `COTAL_RUN` from the nearest ancestor that still carries it, so a suite that
+  scrubs `COTAL_` from a child environment does not make its custodians unattributable.
+
 ## 0.49.0
 
 ### Minor Changes

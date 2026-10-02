@@ -4,6 +4,7 @@ import {
   JcodeEffortUnsupported,
   JcodeReadinessProviderRefusal,
   JcodeSessionsEnumerationFailure,
+  JcodeSessionsUnwritableFailure,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
 
@@ -22,6 +23,7 @@ const STARTUP_FAILURE_CODES = new Set([
   "private_state",
   "readiness_timeout",
   "sessions_enumeration_failed",
+  "sessions_unwritable",
 ]);
 
 function startupFailureCode(error: unknown): string {
@@ -64,6 +66,10 @@ runJcodeHost().catch((error) => {
   } else if (error instanceof JcodeSessionsEnumerationFailure) {
     writeJcodeDiagnostic(
       `[cotal-jcode] fatal: Jcode host startup failed (sessions_enumeration_failed): ${error.causeText} while reading ${error.sessionsPath}\n`,
+    );
+  } else if (error instanceof JcodeSessionsUnwritableFailure) {
+    writeJcodeDiagnostic(
+      `[cotal-jcode] fatal: Jcode host startup failed (sessions_unwritable): the harness cannot persist sessions at ${error.sessionsPath} (${error.errnoCode}); fix the directory's permissions on the seat's private state\n`,
     );
   } else {
     writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\n`);

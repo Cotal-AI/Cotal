@@ -263,11 +263,14 @@ Only strict equality exists (`===`, `!==`; §2.2 refuses `==`). On **primitives*
 bitwise, comparison and logical operator has its ECMAScript meaning, including coercion (`"a" + 1`
 is `"a1"`, `+"3"` is `3`); a program that wants a number from text uses `parseNumber`. An array, a
 record or a function never coerces: the arithmetic, bitwise and ordering operators, unary `-`, `+`
-and `~`, template interpolation, a computed member key (`o[k]`, read or written), and a builtin or
-method parameter that takes a primitive (§5.4) refuse such an operand (L4018), because ECMAScript's
-answer would pass through a `toString` this language does not give its values. `===`/`!==` (identity),
-`!`, `typeof` and the logical operators take every value. `??` is the recovery operator: `wait`
-resolves `null` on timeout (§6.5), so `await wait(...) ?? fallback` reads as Orc's `otherwise`.
+and `~`, the update operators (`++`, `--`) on a binding or a member, template interpolation, a
+computed member key (`o[k]`, read or written), and a builtin or method parameter that takes a
+primitive (§5.4) refuse such an operand (L4018), because ECMAScript's answer would pass through a
+`toString` this language does not give its values. An update's operand must already be a number; a
+numeric string or null is refused rather than counted, so `x++`, `x + 1` and `x += 1` agree.
+`===`/`!==` (identity), `!`, `typeof` and the logical operators take every value. `??` is the
+recovery operator: `wait` resolves `null` on timeout (§6.5), so `await wait(...) ?? fallback` reads
+as Orc's `otherwise`.
 
 ### 4.6 Durations
 
@@ -628,10 +631,10 @@ the write, so the effect is still not dispatched and the entry settles `cancelle
 reaches a branch asynchronously, but from the moment it is raised no new effect starts. Work
 already in flight is
 the handler's: an agent reply already in progress completes and is ignored. Cancellation is issued only by the scope's own semantics: a race's decision, and a
-branch's failure cancelling its siblings. A host release (L5012) and a refused append (L5010,
-L5006) are not failures of a branch: a scope such an unwind passes through cancels no sibling and
-settles nothing, its in-flight branches run to their own next boundary (where each releases in
-turn), and the journal stays exactly where it was (§9.2, §10.5). A `catch` never sees a
+branch's failure cancelling its siblings. A host release (L5012), a refused append (L5010,
+L5006) and a divergence (L5001) are not failures of a branch: a scope such an unwind passes
+through cancels no sibling and settles nothing, its in-flight branches run to their own next
+boundary (where each releases in turn), and the journal stays exactly where it was (§9.2, §10.5). A `catch` never sees a
 cancellation (§9.2). A `race` may additionally cut a loser's pure work at a yield point once it can
 no longer win (§7.3); a pure loop in an arm that could still win ends on the step budget (L4013).
 
@@ -724,9 +727,12 @@ it is not a promise that every version-1 record replays: a revision that narrows
 what a version-1 program means on the current walker, and a record whose program relied on the
 older, wider behaviour is refused rather than replayed. The known case is `len` over a kind other
 than an array or a string (§5.4): such a run completed under the earlier walker, answering
-`undefined`, and is now refused L4016 at that line, before any recorded entry is consumed. The two
-statements are consistent because they answer different questions: which engine serves a recorded
-version, and what that engine's current semantics are.
+`undefined`, and is now refused L4016 at that line, before any recorded entry is consumed. The
+second known case is an update operator (§4.5): a version-1 record whose program incremented or
+decremented a value other than a number completed under the earlier walker, and is now refused
+L4018 at that line, before any recorded entry is consumed. The two statements are consistent
+because they answer different questions: which engine serves a recorded version, and what that
+engine's current semantics are.
 
 The version is a property of the ENGINE that runs a program, not of this document. An engine MUST
 stamp the pins it resolves with **its own** version and MUST compare a recorded version against
@@ -814,7 +820,8 @@ The journal is an append-only log of entries. An entry is JSON:
   state,               // "pending" | "settled"
   status?,             // "ok" | "failed" | "cancelled" | "refused"
   result?,             // status ok: the recorded value
-  error?,              // status failed or refused: { code, kind, message, detail? }
+  error?,              // status failed or refused: { code, kind, message, stack?, detail? }
+                       //   stack: where the throw came from, when the thrown value carried one
   external?,           // what the handler bound (recovery)
   observations?,       // a waitUntil: [{ at, value }], what it has seen so far (§6.5)
                        //   NOT results: a resumed run RE-OBSERVES rather than replaying these
@@ -843,10 +850,13 @@ crossable, where it is written, and a resume MUST refuse a journal whose recorde
 the two fields, because "this journal cannot load" is otherwise not actionable. A value refused
 where it is written is a failure of the handler's own dispatch and carries `L4000` with kind
 `handler-fault` (or `scope-fault` inside a scope); it is not a catalog code of its own, because the
-catalog already says exactly that. A failure whose `detail` is refused is recorded under `L4000`
-rather than under the code the handler chose, and the recorded message MUST say that the detail
-could not be kept: dropping the field while keeping the code would hand a program a classified
-failure whose recorded form is missing the field sent to explain it.
+catalog already says exactly that. Inside a scope a classified refusal the language itself raised
+(a `RuntimeFault`, which carries its own catalog code) settles under that code with kind `runtime`,
+because `L4000` is for failures the catalog does not name and this one it does. A failure whose
+`detail` is refused is recorded under `L4000` rather than under the code the handler chose, and
+the recorded message MUST say that the detail could not be kept: dropping the field while keeping
+the code would hand a program a classified failure whose recorded form is missing the field sent
+to explain it.
 
 The rule makes a binding **canonical, not round-trip-exact**, and the difference is a property of
 the store rather than of the language. A crossable value has a canonical form (§10.3), but a store
@@ -906,9 +916,12 @@ of that namespace; its branches live under it. On success `result` is `{ branche
 where `value` is the scope's result (`{ index, value }` for a `race`); on failure `branches` is
 carried as a fact. The settled `value` MUST have a canonical form (§4.4), exactly as an effect's
 result must: a value the record cannot carry is refused AT THE SETTLE, and the scope is recorded as
-a fault under `L4000` with kind `scope-fault` rather than settled `ok`. ABSENCE IS EXEMPT, and where
-it is exempt follows the scope's kind. `parallel`, `fanOut` and `race` settle an assembly of branch
-outcomes, so a BRANCH that produced no value is absence and its slot is not put through the rule;
+a fault under `L4000` with kind `scope-fault` rather than settled `ok`. A failure the program
+itself caused (§9) keeps its own catalog code with kind `runtime`, and a failure the handler
+raised keeps its code and kind (§10.1); `L4000` `scope-fault` is for everything else. ABSENCE IS
+EXEMPT, and where it is exempt follows the scope's kind. `parallel`, `fanOut` and `race` settle an
+assembly of branch outcomes, so a BRANCH that produced no value is absence and its slot is not put
+through the rule;
 anything deeper is, including a field the branch's own value carries. A `conclave` settles the
 body's own value and assembles nothing, so only a body that produced NO VALUE AT ALL is absence, and
 every field of a value it did produce answers to the rule. A resume refuses a loaded record whose
@@ -1105,6 +1118,7 @@ time, L5xxx durability, L6xxx simulation.
 | L4023 | `waitUntil` deadline elapsed |
 | L4024 | `waitUntil` probe or predicate answered the wrong shape |
 | L4025 | Host did not schedule the run |
+| L4026 | Pause plane did not answer before the client deadline |
 | L5001 | Run divergence |
 | L5002 | Program hash not available |
 | L5003 | Orphaned `spawn` on migrate |
@@ -1135,8 +1149,10 @@ time, L5xxx durability, L6xxx simulation.
 
 `L4000` is not a catalog code: it is the generic code an unclassified failure carries (`kind`
 `handler-fault`, `scope-fault`, or `host`), and it is what a program sees for a failure the catalog
-does not name. L3022, L4001 to L4006, L4008 and L4025 are the effect handler's failure vocabulary: a host
-reports them, the interpreter journals and delivers them, and none is raised by the language itself.
+does not name. A catalog code the language itself raised is never recorded as `L4000`: inside a
+scope it settles under its own code with kind `runtime` (§10.6). L3022, L4001 to L4006, L4008,
+L4025 and L4026 are the effect handler's failure vocabulary: a host reports them, the interpreter
+journals and delivers them, and none is raised by the language itself.
 L1006, L1014, L5005, L5007 and L6002 are reserved: no path in this revision raises them.
 L6001 and L6002 belong to the reference implementation's simulator (`SimHandler`, `dryRun`), which
 runs a program against a script of scripted answers and refuses an effect the script does not
@@ -1161,3 +1177,7 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-09-01 | The `ask` schema shorthand is the handler-side reply contract (§6.5): a handler enforcing it refuses a schema it cannot read (L4022) and reports exhausted `attempts` as L4006; the reference simulator enforces it. A journal MAY carry a result bound, refusing an oversized `ok` result ahead of the settling append (L5006, §12), which leaves the reserved list. A host release or refused append inside a scope cancels no sibling and settles nothing (§7.6): the run unwinds with the journal exactly where it was, so a stopped run resumes past the scope instead of replaying a cancellation it never chose. A refused append among a race's settled arms unwinds the run ahead of the winner scan: a race may not settle over an entry the journal refused to record, whichever arm won. |
 | 2026-09-01 | A capability refusal is durable and retryable: a handler's refusal settles the entry `refused` under the handler's code (§10.1), the run unwinds with the uncatchable L5025 and is held (§9.2); a resume on a capable host finds the **refused** verdict (§10.7) and performs the step live (§11.1). A held arm among a race's settled arms unwinds ahead of the winner scan for the same reason a refused append does: a race that completed over it would settle the scope a resume short-circuits, burying the heal it owes (§7.3, §9.2). Two concurrent `turn`s on one handle are serialized at the dispatch (§6.5). A fork's child records its lineage: the run record's `forkedFrom` names the parent and the cut step (§11.3, SPEC.md §14.3). |
 | 2026-09-12 | A host that cannot schedule the run's own process reports that, and not a failed effect (L4025): a pause-plane deadline that elapsed while the process was demonstrably off the CPU is evidence about the host, so the operation is re-entered on the durable pause it already holds and a `sleep` whose deadline passed during the starvation completes LATE, which is what a lower-bound wait promises. The distinction is measured rather than assumed, by event-loop lag across the window AND a shortfall in the ticks that window should have contained, because a wall clock alone cannot separate "the timer did not fire" from "this process never ran". A caller that still cannot be served after a bounded number of consecutive starved attempts fails with L4025 naming the measurement, never hangs; a deadline on a loop that was running, and every failure that is not a client deadline, is unchanged and still `L4000`. |
+| 2026-09-17 | A pause plane that answers LATE is not a failed effect either (L4026): while a step is parked the host issues roughly one plane read per second, each with its own client deadline, so a single slow reply used to end the step and the run under `L4000` with most of its deadline unspent — and the exposure grew with how long the step waited. A deadline-shaped failure on a loop that WAS running is now read as one late reply rather than as a broken plane: the pause is durable and still answerable, so the read is re-issued with bounded exponential backoff and the step settles on the answer it was waiting for. Bounded separately from L4025 and never reset, so neither condition nor any interleaving of them retries forever; after that bound the step fails with L4026 naming the measurement. Every failure that is not a client deadline is unchanged and still `L4000`. |
+| 2026-09-23 | A refusal the language itself raised inside a scope keeps its catalog code in the scope's failure record (§10.1, §10.6, Appendix A): a `RuntimeFault` settles under its own code with kind `runtime`, because `L4000` is the generic code an unclassified failure carries and this one is classified. Measured before it: a `fanOut` with no stable key raised L3021 inside the scope, the program caught `L3021` live, and the settled entry said `L4000` `scope-fault` with the L3021 sentence still inside the message, so every resume replayed `L4000` where the live run had thrown `L3021`. A plain non-`EffectError` throw inside a scope still records `L4000` `scope-fault`, and a handler's `EffectError` still keeps its code and kind. |
+| 2026-09-25 | A divergence inside a scope settles nothing (§7.6, §9.2): it is the journal saying this program is not the one that wrote it, so the scope entry stays pending and the next resume re-enters it and diverges again at the step that broke, instead of replaying a recorded `L4000` `scope-fault` a program's `catch` can swallow. Measured before it: a resume whose edited `sleep` diverged inside a pending `parallel` settled the scope `failed` under `L4000`, a second resume threw the replayed scope-fault rather than the divergence, and inside `try`/`catch` the program caught it and performed a new effect against the journal it had diverged from. A divergence among a race's settled arms unwinds the run ahead of the winner scan for the same reason a refused append and a held arm do (§7.3): a race may not hand back a winner's value over a run-level fault, whichever arm raised it. |
+| 2026-09-27 | An update operator's operand (`x++`, `x--`) must already be a number, on the walker as it already did on the compiled engine (§4.5): a record, a numeric string or null is refused L4018 rather than settled as NaN or silently counted, so `x++`, `x + 1` and `x += 1` agree. A version-1 record whose program incremented or decremented a value other than a number is the second known case of §8.4's replay posture: it completed under the earlier walker and is now refused L4018 at that line, before any recorded entry is consumed. |

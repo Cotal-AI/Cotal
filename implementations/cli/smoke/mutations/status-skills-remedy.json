@@ -17,7 +17,8 @@
       "replace": "return c.yellow(`${skills.version ? `v${skills.version} ≠ v${cliVersion()} · ` : \"\"}stale · ${displayCmd()} setup`);",
       "expectRed": "stale Claude skills recommend setup --skills",
       "cell": "stale Claude skills recommend setup --skills",
-      "note": "Restores the issue's Claude skills row. Typecheck stays green. The status subprocess still prints the header."
+      "note": "Restores the issue's Claude skills row. Typecheck stays green. The status subprocess still prints the header.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "S2 restore unscoped .agents skills remedy",
@@ -26,7 +27,8 @@
       "replace": "return c.yellow(`${label} · ${displayCmd()} setup`);",
       "expectRed": "stale .agents skills recommend setup --skills",
       "cell": "stale .agents skills recommend setup --skills",
-      "note": "Restores the issue's Skills (.agents) row while leaving the Claude row scoped."
+      "note": "Restores the issue's Skills (.agents) row while leaving the Claude row scoped.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "S3 add persona setup to the skills-only dispatch",
@@ -35,7 +37,8 @@
       "replace": "async function runSkillsOnly(): Promise<void> {\n  await reconcileConnectorSkills();\n  seedDefaultAgent();\n  seedAgentSkills();",
       "expectRed": "setup --skills dispatches only provider and cross-vendor skills reconcile",
       "cell": "setup --skills dispatches only provider and cross-vendor skills reconcile",
-      "note": "Adds an unrelated persona write to the scoped dispatch; the source-shape cell names it."
+      "note": "Adds an unrelated persona write to the scoped dispatch; the source-shape cell names it.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "S4 allow --skills with --full",
@@ -44,7 +47,8 @@
       "replace": "    if (false && (values.full || values.demo)) throw new Error(\"--skills cannot be combined with --full or --demo\");",
       "expectRed": "setup --skills --full is refused",
       "cell": "setup --skills --full is refused",
-      "note": "Compile-clean no-op of the combination fence. First-run --full then writes personas."
+      "note": "Compile-clean no-op of the combination fence. First-run --full then writes personas.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
 }

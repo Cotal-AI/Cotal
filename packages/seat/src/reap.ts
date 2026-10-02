@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { bootToken, processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
+import { RUN_MARKER_FLAG } from "./launcher.js";
 import { unsupportedTransport } from "./protocol.js";
 
 /** What a reap proved. `absent`: no custody record exists for that seat id, so there is no process
@@ -65,14 +66,64 @@ async function until(predicate: () => boolean, timeoutMs: number): Promise<boole
   return true;
 }
 
+/** One live custodian as a census sees it: its pid and the run that started it. */
+export interface CustodianSighting {
+  pid: number;
+  run: string;
+}
+
 /**
- * Reap one custodied seat that this process did not spawn: a crashed manager's, or a seat whose
- * custodian is lingering after its child exited. Signals only a pid whose current start identity
- * matches the record, verifies the custodian, the child and the child's whole process group gone,
- * then removes the custody record. A record written without start identities refuses: a bare pid
- * cannot be told from an unrelated process that inherited it. Linux only, like the custodian.
+ * Every live seat custodian on this host, with the run that started it (#1648).
+ *
+ * This reads `/proc/<pid>/cmdline` only, which is world-readable, so a census costs one readdir plus
+ * one small read per pid and never needs the uid of the process it is looking at. That is the whole
+ * reason the marker is on argv: the orphans carried their worktree only as their CWD, and
+ * `/proc/<pid>/cwd` is a readlink the owner alone may follow, so a census of somebody else's
+ * leftovers could not even see them.
+ *
+ * `run` filters to one run's custodians. Omitted, it reports every one on the host, which is what a
+ * reaper sweeping before a run wants. A custodian started before this change carries no marker and
+ * is not reported: it cannot be attributed, and claiming it as the caller's would be a guess.
  */
-export async function reapSeat(root: string, id: string, opts: { graceMs?: number } = {}): Promise<SeatReapEvidence> {
+export function censusCustodians(run?: string): CustodianSighting[] {
+  if (process.platform !== "linux") throw unsupportedTransport();
+  const out: CustodianSighting[] = [];
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    let cmdline: string;
+    try {
+      cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+    } catch {
+      continue; // exited between the readdir and the read, or not ours to read
+    }
+    const argv = cmdline.split("\0").filter((s) => s.length > 0);
+    // Both halves are required. The entry path alone matches any process whose argv happens to name
+    // the file; the marker alone would match this package's own tests.
+    if (!argv.some((a) => a.endsWith("/dist/custodian.js"))) continue;
+    const at = argv.indexOf(RUN_MARKER_FLAG);
+    if (at < 0) continue;
+    const marker = argv[at + 1];
+    if (marker === undefined) continue;
+    if (run !== undefined && marker !== run) continue;
+    out.push({ pid, run: marker });
+  }
+  return out;
+}
+
+/**
+ * Reap one custodied seat: a crashed manager's orphan, a lingering custodian, or a cleanly exited seat
+ * whose custodian unlinked its on-disk record.
+ *
+ * When the record exists on disk, it is verified against the live kernel state. When the on-disk record
+ * is absent, `opts.pinnedRecord` allows the launching/adopting runtime to supply its authoritative pinned
+ * start identities to execute the same kernel identity and group checks. An unknown reference with neither
+ * on-disk file nor pinned record returns `absent` (failing closed as RuntimeReapUnproven).
+ *
+ * Signals only a pid whose current start identity matches the record, verifies the custodian, the child
+ * and the child's whole process group gone, then removes the custody record directory.
+ */
+export async function reapSeat(root: string, id: string, opts: { graceMs?: number; pinnedRecord?: SeatRecord } = {}): Promise<SeatReapEvidence> {
   if (process.platform !== "linux") throw unsupportedTransport();
   const graceMs = opts.graceMs ?? 10_000;
   const path = recordPath(root, id);
@@ -80,8 +131,15 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
   try {
     rec = readRecord(path);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "absent" };
-    throw new Error(`seat ${id} record at ${path} is unreadable: ${(e as Error).message}`);
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      if (opts.pinnedRecord && opts.pinnedRecord.id === id) {
+        rec = opts.pinnedRecord;
+      } else {
+        return { outcome: "absent" };
+      }
+    } else {
+      throw new Error(`seat ${id} record at ${path} is unreadable: ${(e as Error).message}`);
+    }
   }
   if (rec.custodianStart === undefined)
     throw new Error(`seat ${id} record carries no process start identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (a bare pid may belong to an unrelated process)`);
@@ -115,7 +173,11 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     throw new Error(`seat ${id}: custodian ${rec.custodianPid} or child ${rec.childPid} still holds its recorded start identity ${graceMs}ms after SIGKILL; exit not proved`);
   // The group after the leader: a member that re-parented to init keeps the pgid, and the pgid
   // cannot be reused while any member lives, so an empty group is proof for the descendants.
+  // A retained record may outlive its original group and numeric PGID. Without a live leader
+  // identity, remaining members might belong to a later generation, so retain unproved custody.
   let group = 0;
+  if (!groupKilled && processStartToken(rec.childPid) === undefined && groupMembers(rec.childPid).length > 0)
+    throw new Error(`seat ${id}: group ownership is unproved for absent leader ${rec.childPid}; custody retained`);
   if (groupKilled) {
     const empty = await until(() => {
       const members = groupMembers(rec.childPid);
@@ -125,6 +187,7 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     }, graceMs);
     if (!empty) throw new Error(`seat ${id}: ${group} process(es) still in group ${rec.childPid} ${graceMs}ms after SIGKILL; exit not proved`);
   }
+  const hadPath = existsSync(path);
   const dir = dirname(path);
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
   return {
@@ -132,6 +195,6 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     custodian,
     child,
     group,
-    detail: `custodian ${rec.custodianPid} ${custodian}, child ${rec.childPid} ${child}${groupKilled ? `, group ${rec.childPid} empty` : ""}; custody record removed`,
+    detail: `custodian ${rec.custodianPid} ${custodian}, child ${rec.childPid} ${child}${groupKilled || group > 0 ? `, group ${rec.childPid} empty` : ""}; custody record ${hadPath ? "removed" : "verified gone"}`,
   };
 }

@@ -15,6 +15,9 @@
  *   - the whole prove-then-adopt transaction is bounded by an ABSOLUTE deadline < the manager's request
  *     bound, including the single-flight queue wait (case 5 / mirrors the endpoint's reload-deadline-queue);
  *   - a startup that REJECTS after conn A is open leaves no observer connection behind (#1557);
+ *   - after conn B has closed at expiry, an explicit reload of a fresh same-nkey cred REVIVES the
+ *     data connection (broker table shows one `cotal-membership-rw`, heartbeat advances); a reload
+ *     whose fresh connect the broker refuses throws and leaves nothing half-bound (#1558);
  *   - the missed-remint refusal compares GENERATIONS, so a reformatted envelope carrying the same JWT is
  *     still refused and still does not churn (#1563).
  *
@@ -146,7 +149,7 @@ async function waitReachable(tries = 75): Promise<void> {
 // Read the feed's freshness heartbeat (re-stamped by conn B on EVERY successful poll) with a throwaway
 // reader on a valid rw cred — a real broker round-trip, so it advances iff conn B is genuinely live.
 async function heartbeatAt(readerCred: string): Promise<number> {
-  const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(readerCred)), inboxPrefix: `_INBOX_${feedId.id}`, maxReconnectAttempts: 0 });
+  const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(readerCred)), inboxPrefix: `_INBOX_${idFromCreds(readerCred)}`, maxReconnectAttempts: 0 });
   try {
     const kv = await new Kvm(nc).open(membershipBucket(space));
     const e = await kv.get(MEMBERSHIP_FEED_KEY);
@@ -352,13 +355,20 @@ try {
   const expiringId = newIdentity();
   let expiringReads = 0;
   const expiringLog: string[] = [];
+  // After the 3s JWT dies, the source can be flipped to a fresh same-nkey cred (or a rogue) so the
+  // post-refusal reload grades revival, not the initial connect.
+  let expiringServed: () => Promise<string> = async () => {
+    throw new Error("fixture renewal source offline"); // renewal keeps failing, as in the report
+  };
+  const revivedRw = await mintCreds(auth, expiringId, "membership-rw", { expiresInSeconds: 3600 });
+  const rogueExpiring = await mintCreds(rogue, expiringId, "membership-rw", { expiresInSeconds: 3600 });
   const expiringFeed = await startMembershipFeed({
     servers: SERVERS, space, accountId, observerCreds, intervalMs: 60_000,
     log: (m) => { expiringLog.push(m); },
     rwCreds: async () => {
       expiringReads++;
       if (expiringReads === 1) return mintCreds(auth, expiringId, "membership-rw", { expiresInSeconds: 3 });
-      throw new Error("fixture renewal source offline"); // renewal keeps failing, as in the report
+      return expiringServed();
     },
   });
   feed = expiringFeed;
@@ -382,6 +392,51 @@ try {
     expiredCids.size === 1,
     { cids: [...expiredCids], reads: expiringReads },
   );
+  // ACCEPT CONTROL: conn B must actually be gone before the reload is asked to revive it, or
+  // "exactly one rw connection after reload" would pass on a wire that never died.
+  let rwAfterExpiry = -1;
+  const rwDied = await until(async () => {
+    rwAfterExpiry = await countRwConns();
+    return rwAfterExpiry === 0;
+  }, 8_000, 100);
+  check("after expiry the broker holds no cotal-membership-rw connection (accept control)", rwDied, { rwAfterExpiry });
+  const hbBeforeRevive = await heartbeatAt(revivedRw);
+  expiringServed = async () => revivedRw;
+  const revive = await expiringFeed.reloadRwCreds().then((w) => ({ ok: true, w }), (e: Error) => ({ ok: false, e: e.message }));
+  check(
+    "reload after expiry ADOPTS a fresh same-nkey cred (broker-accepted window returned)",
+    revive.ok && (revive as { w: { identity: string } }).w.identity === expiringId.id,
+    revive,
+  );
+  let rwAfterRevive = -1;
+  const revivedOnBroker = await until(async () => {
+    rwAfterRevive = await countRwConns();
+    return rwAfterRevive === 1;
+  }, 8_000, 100);
+  check(
+    "after the successful reload the broker table shows exactly one cotal-membership-rw connection",
+    revivedOnBroker,
+    { rwAfterRevive },
+  );
+  const hbAfterRevive = await provesLive(expiringFeed, revivedRw, hbBeforeRevive);
+  check("after the successful reload the heartbeat advances", hbAfterRevive > hbBeforeRevive, { hbAfterRevive, hbBeforeRevive });
+  // A candidate the broker will not authenticate: the preflight (and any fresh conn-B dial) must
+  // refuse it, and the revived feed must stay on the last proven wire — no extra/half-bound rw conn.
+  expiringServed = async () => rogueExpiring;
+  const refusedRevive = await expiringFeed.reloadRwCreds().then(() => ({ ok: true, e: "" }), (e: Error) => ({ ok: false, e: e.message }));
+  check(
+    "a reload whose fresh connect is refused by the broker throws",
+    !refusedRevive.ok && /broker did not accept/i.test(refusedRevive.e),
+    refusedRevive,
+  );
+  let rwAfterRefuse = -1;
+  const stillOne = await until(async () => {
+    rwAfterRefuse = await countRwConns();
+    return rwAfterRefuse === 1;
+  }, 5_000, 100);
+  check("a refused revive leaves nothing half-bound (still exactly one rw connection)", stillOne, { rwAfterRefuse });
+  const hbAfterRefuse = await provesLive(expiringFeed, revivedRw, hbAfterRevive);
+  check("conn B stays live on the last proven cred after a refused revive", hbAfterRefuse > hbAfterRevive, { hbAfterRefuse, hbAfterRevive });
   await expiringFeed.stop();
   feed = undefined;
 

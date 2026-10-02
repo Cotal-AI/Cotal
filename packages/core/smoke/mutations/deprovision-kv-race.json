@@ -1,0 +1,16 @@
+{
+  "suite": ["packages/core/smoke/deprovision-agent-auth.smoke.ts"],
+  "guard": "A lost native KV CAS preserves the distinction between prior absence and observed disappearance",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:deprovision",
+  "completionMarker": "DEPROVISION SMOKE",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/deprovision-kv-race.json",
+  "mutations": [{
+    "name": "report a live row lost to a competing purge as previously absent",
+    "file": "packages/core/src/streams.ts",
+    "find": "return { outcome: before.live ? \"disappeared\" : \"absent\", status: \"raced-loss\" };",
+    "replace": "return { outcome: \"absent\", status: \"raced-loss\" };",
+    "expectRed": "RACE: acls CAS loser reports disappearance rather than prior absence",
+    "cell": "RACE: acls CAS loser reports disappearance rather than prior absence",
+    "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:deprovision"
+  }]
+}

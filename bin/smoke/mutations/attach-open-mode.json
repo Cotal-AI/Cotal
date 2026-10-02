@@ -114,8 +114,8 @@
     {
       "name": "the recorded mesh mode is dropped on its way to the redeem decision",
       "file": "packages/workspace/src/control-target.ts",
-      "find": "    ...(conn.mode !== undefined ? { mode: conn.mode } : {}),\n  };\n}",
-      "replace": "  };\n}",
+      "find": "    ...(conn.mode !== undefined ? { mode: conn.mode } : {}),\n    ...(conn.policy ? { policy: conn.policy } : {}),\n  };\n}",
+      "replace": "    ...(conn.policy ? { policy: conn.policy } : {}),\n  };\n}",
       "expectRed": "open-without-seed attaches",
       "cell": "open-without-seed attaches",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build",

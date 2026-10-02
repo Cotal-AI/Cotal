@@ -166,7 +166,7 @@ export interface StartAuthCalloutOpts {
    *  it. The client picks and passes this nonce because neither it nor this callout knows the per-connect
    *  nkey pre-connect; core's `assertInboxConnId` rejects a nonce with subject metacharacters, so it
    *  cannot widen the grant. An absent/invalid nonce makes the builder throw → a signed deny. */
-  permissionsFor: (t: ValidatedUserToken, connId: string) => Record<string, unknown>;
+  permissionsFor: (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
   /** Diagnostics sink (default: console.error). Never carries bearer contents. */
   log?: (line: string) => void;
   /** Audit hook fired on each successful mint, BEFORE the response is sent — the minted user JWT
@@ -268,7 +268,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         // injected permissionsFor hook (which could be any implementation). assertInboxConnId throws on a
         // missing/wildcard name → the catch below turns it into a signed deny (fail-closed).
         const inboxNonce = assertInboxConnId(req.connect_opts?.name ?? "");
-        const perms = opts.permissionsFor(validated, inboxNonce);
+        const perms = await opts.permissionsFor(validated, inboxNonce);
         // Stamp the principal into the minted JWT so the live identity is recoverable server-side: the
         // connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the principal,
         // so CONNZ-based attribution (the membership feed, live eviction) needs owner+actor carried

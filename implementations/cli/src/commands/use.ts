@@ -14,7 +14,7 @@ export async function use(args: ParsedArgs): Promise<void> {
   }
   const sweep = await pruneStaleMeshes();
   const m = findMesh(space);
-  if (!m || sweep.offline.includes(space)) {
+  if (!m || (m.origin !== "catalog" && sweep.offline.includes(space))) {
     console.error(c.red(`✗ no mesh named "${space}" is running - see \`cotal meshes\``));
     process.exit(1);
   }

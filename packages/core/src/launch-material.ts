@@ -64,6 +64,8 @@ export type LaunchMaterial = {
   token?: string;
   /** Shared secret authenticating the first frame on the session's local control socket. */
   controlToken?: string;
+  /** The selected registration requires this session's structured event plane. */
+  eventsRequired?: boolean;
   /** User-mode launch identity: principal, sentinel creds path, and the exec-able bearer command. */
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
 };
@@ -156,6 +158,11 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
   str("creds");
   str("token");
   str("controlToken");
+  if (raw.eventsRequired !== undefined) {
+    if (raw.eventsRequired !== true)
+      throw new Error(`launch material: ${path} has eventsRequired that is not exactly true`);
+    material.eventsRequired = true;
+  }
   if (raw.userAuth !== undefined) {
     const u = raw.userAuth;
     if (typeof u !== "object" || u === null || Array.isArray(u))

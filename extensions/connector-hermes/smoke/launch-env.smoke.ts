@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
-import { ADOPT_HOME_ENV, adoptedHome, assertHermesVersion, setupAdoptedProfile } from "../src/launch.js";
+import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
 
 /**
  * Count every assertion, so the terminal tally is derived from what actually ran.
@@ -26,7 +26,7 @@ import { ADOPT_HOME_ENV, adoptedHome, assertHermesVersion, setupAdoptedProfile }
  * line was edited. Counting the calls means the number cannot drift from the work again.
  */
 let cells = 0;
-const assert = new Proxy(nodeAssert, {
+const assert: typeof nodeAssert = new Proxy(nodeAssert, {
   get(target, prop, receiver) {
     const value = Reflect.get(target, prop, receiver);
     if (typeof value !== "function") return value;
@@ -46,7 +46,7 @@ const assert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 156;
+const EXPECTED_CELLS = 167;
 
 if (process.platform === "win32") {
   console.log("✓ launch-env smoke skipped on Windows (the Hermes connector is Unix-only; buildLaunch throws)");
@@ -85,7 +85,7 @@ const PER_SESSION = [
   "COTAL_LIFECYCLE_UID", "COTAL_ID", "COTAL_ROLE", "COTAL_MODEL", "COTAL_VARIANT",
   "COTAL_AGENT_FILE", "COTAL_LINK", "COTAL_SUBSCRIBE", "COTAL_ALLOW_SUBSCRIBE",
   "COTAL_ALLOW_PUBLISH", "COTAL_CAPABILITIES", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT",
-  "COTAL_CHANNEL", "COTAL_CODEX_HOME", "COTAL_OPENCODE_PROMPT", "COTAL_TOKEN",
+  "COTAL_CHANNEL", "COTAL_CODEX_HOME", "COTAL_OPENCODE_PROMPT", "COTAL_TOKEN", "COTAL_BACKFILL_FLOOR",
 ] as const;
 
 /** Machine-wide operator knobs that DO cross: no connector assigns them per spawn. */
@@ -115,6 +115,10 @@ assert.ok(env.PATH !== undefined, "PATH is forwarded so the seat can still launc
 
 for (const k of OPERATOR_KNOBS)
   assert.equal(env[k], `parent-${k}`, `${k} is a machine-wide operator knob and must cross`);
+
+// A floor request DOES forward, distinct from the per-session ambient reset asserted above.
+const withFloor = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1", backfillFloor: 42 }).env ?? {};
+assert.equal(withFloor.COTAL_BACKFILL_FLOOR, "42", "a requested backfill floor is forwarded");
 
 // ── Allow-list extras (the operator declared `spawn.env`) ─────────────────────────────────────────
 const confined = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-2", envAllow: ["NOUS_API_KEY"] }).env ?? {};
@@ -309,6 +313,32 @@ assert.throws(
   "an unenabled profile must be reported, not silently reconfigured",
 );
 assert.equal(readFileSync(join(opBare, "config.yaml"), "utf8"), BARE_CONFIG, "a refused adopt still leaves the operator's config untouched");
+
+// The MANAGED profile is the default, and it cannot see ~/.hermes. With no model resolved it used to
+// write no `model:` key at all, and hermes then chose a default of its own; a seat whose operator
+// holds no key for that provider only found out mid-turn, from a provider refusal whose advice pointed
+// at their own credentials. A launch with no model is refused, naming what sets one, and writes no
+// profile at all, so nothing is left behind that a later spawn could take for a working one.
+const mgdNone = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-none-"));
+assert.throws(
+  () => setupProfile(mgdNone, { model: undefined }),
+  /no model was resolved/,
+  "a managed profile with no resolved model refuses the launch",
+);
+assert.throws(() => setupProfile(mgdNone, { model: undefined }), new RegExp(ADOPT_HOME_ENV), "and names the variable that runs the gateway on the operator's own profile instead");
+assert.equal(existsSync(mgdNone), true, "the probe's own directory is still there");
+assert.equal(existsSync(join(mgdNone, "plugins")), false, "a refused launch installs no plugin, so nothing under the profile says a gateway was ever set up here");
+assert.equal(existsSync(join(mgdNone, "config.yaml")), false, "and writes no config.yaml");
+const mgdFresh = join(tmpdir(), `cotal-hermes-managed-fresh-${process.pid}`);
+rmSync(mgdFresh, { recursive: true, force: true });
+assert.throws(() => setupProfile(mgdFresh, { model: undefined }), LaunchRefused, "the refusal is the connector's own class, so the launcher prints it as a diagnosis rather than a stack");
+assert.equal(existsSync(mgdFresh), false, "a profile directory that did not exist before the refusal does not exist after it");
+
+const mgdSet = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-set-"));
+setupProfile(mgdSet, { model: "vendor/some-model" });
+assert.match(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^model: "vendor\/some-model"$/m, "a resolved model is written as a quoted scalar");
+rmSync(mgdNone, { recursive: true, force: true });
+rmSync(mgdSet, { recursive: true, force: true });
 
 // The opt-in has to survive the launch env or the launcher never sees it: every other COTAL_* name
 // is deliberately reset per session, and this one would be stripped with them.

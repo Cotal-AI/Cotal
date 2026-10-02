@@ -35,7 +35,7 @@ const H = (v: unknown) => digest(v);
 
   ok("a fresh key misses", live.lookup(k, h).verdict === "miss");
   await live.begin(k, h, 1000);
-  await live.settle(k, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await live.settle(k, { status: "ok", result: { status: "done" } }, 1100);
 
   // Resume: re-run from the top, so a NEW KeyScope allocates the same key again.
   const resumed = new Journal({ run: "r-1", entries: live.entries() });
@@ -115,7 +115,7 @@ const H = (v: unknown) => digest(v);
   const h1 = H({ agent: "warmer" });
   const h2 = H({ agent: "builder" });
   await j.begin(first, h1, 1000);
-  await j.settle(first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(first, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(second, h2, 1000);
   await j.bind(second, { goalId: "g-88" });
 
@@ -189,7 +189,7 @@ const H = (v: unknown) => digest(v);
   const second = s.nextEffect("turn", "build");
   const h = H({ agent: "builder" });
   await j.begin(first, h, 1000);
-  await j.settle(first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(first, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(second, h, 1200);
   await j.bind(second, { goalId: "g-second" });
 
@@ -224,7 +224,7 @@ const H = (v: unknown) => digest(v);
   const cp = s.nextEffect("checkpoint", "build");
   const h = H({ agent: "builder" });
   await j.begin(turn, h, 1000);
-  await j.settle(turn, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(turn, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(cp, h, 1200);
   await j.bind(cp, { goalId: "g-checkpoint" });
 
@@ -260,7 +260,7 @@ const H = (v: unknown) => digest(v);
   const second = s.branch("parallel", "review", secondRun, "left").nextEffect("turn", "build");
   const h = H({ agent: "builder" });
   await j.begin(first, h, 1000);
-  await j.settle(first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(first, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(second, h, 1200);
   await j.bind(second, { goalId: "g-second-run" });
 
@@ -302,7 +302,7 @@ const H = (v: unknown) => digest(v);
   const keys = nested(new KeyScope());
   const h = H({ agent: "builder" });
   await j.begin(keys.first, h, 1000);
-  await j.settle(keys.first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(keys.first, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(keys.second, h, 1200);
   await j.bind(keys.second, { goalId: "g-inner-second" });
 
@@ -340,7 +340,7 @@ const H = (v: unknown) => digest(v);
   const keys = rows(new KeyScope());
   const h = H({ agent: "builder" });
   await j.begin(keys.review, h, 1000);
-  await j.settle(keys.review, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(keys.review, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(keys.audit, h, 1200);
   await j.bind(keys.audit, { goalId: "g-audit" });
 
@@ -375,7 +375,7 @@ const H = (v: unknown) => digest(v);
   const keys = rows(new KeyScope());
   const h = H({ agent: "builder" });
   await j.begin(keys.par, h, 1000);
-  await j.settle(keys.par, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(keys.par, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(keys.race, h, 1200);
   await j.bind(keys.race, { goalId: "g-race" });
 
@@ -423,7 +423,7 @@ const H = (v: unknown) => digest(v);
   await j.settle(k0, { status: "failed", error: { code: "L4002", kind: "agent-down", message: "died" } }, 1100);
   const k1 = s.nextEffect("turn", "build");
   await j.begin(k1, H({ agent: "b2" }), 1200);
-  await j.settle(k1, { status: "ok", result: { status: "done", at: 1300 } }, 1300);
+  await j.settle(k1, { status: "ok", result: { status: "done" } }, 1300);
 
   const r = new Journal({ run: "r-5", entries: j.entries() });
   const s2 = new KeyScope();
@@ -520,7 +520,7 @@ const H = (v: unknown) => digest(v);
   ok("a begin reaches the store", trace[0] === "store:pending:turn:build", trace);
   await j.bind(k, { goalId: "g-1" });
   ok("a bind reaches the store, so a crash finds what the handler learned", trace[1] === "store:pending:turn:build");
-  await j.settle(k, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(k, { status: "ok", result: { status: "done" } }, 1100);
   ok("a settle reaches the store", trace[2] === "store:settled:turn:build", trace);
   ok("every write went to the store, none silently skipped", trace.length === 3, trace);
 
@@ -552,7 +552,7 @@ const H = (v: unknown) => digest(v);
       order.push(`append:${e.state}:${e.kind}`);
     },
   };
-  const sim = new SimHandler({ turns: { build: [{ status: "done", at: 0 }] } });
+  const sim = new SimHandler({ turns: { build: [{ status: "done" }] } });
   // Built method by method rather than spread: a class instance's methods live on its prototype,
   // so a spread wrapper is an object with none of them.
   const watched: EffectHandler = {
@@ -1093,7 +1093,7 @@ await sleep("3h", { name: "after-the-catch" });
   // THE WRITE SIDE, ON THE REAL PATH: a handler calling its own `ctx.bind` from inside its dispatch,
   // which is how every shipped binder reaches it (sim.ts binds on spawn, turn, ask and checkpoint;
   // the mesh handler binds a chat sequence). Not a hand-built context.
-  const sim = new SimHandler({ turns: { build: { status: "done", at: 0 } } });
+  const sim = new SimHandler({ turns: { build: { status: "done" } } });
   // Object.create, NOT a spread: spreading a class instance drops its prototype methods and the run
   // dies on `options.handler.now is not a function`, measured twice within an hour on two sides, and
   // once with a zero that agreed with the hypothesis under test.
@@ -1135,7 +1135,7 @@ await sleep("3h", { name: "after-the-catch" });
   // scope's own context, so this is a real program reaching the second wrapper, not a hand-built
   // ctx. Before this cell, that wrapper was executed by NOTHING in the corpus in either direction:
   // 275 reaches of the effect wrapper across the lang suites, 0 of this one.
-  const sim = new SimHandler({ turns: { huddle: { status: "done", at: 0 } } });
+  const sim = new SimHandler({ turns: { huddle: { status: "done" } } });
   const binder = Object.create(sim) as EffectHandler;
   binder.openConclave = async (req, ctx) => {
     await ctx.bind({ when: new Date(0) });
@@ -1396,7 +1396,7 @@ await sleep("3h", { name: "after-the-catch" });
 {
   // THE SCOPE SITE. Its own guard, because a fix at the effect site alone leaves this one open,
   // the same half-fence the two bind wrappers had.
-  const sim = new SimHandler({ turns: { huddle: { status: "done", at: 0 } } });
+  const sim = new SimHandler({ turns: { huddle: { status: "done" } } });
   const thrower = Object.create(sim) as EffectHandler;
   thrower.openConclave = async () => {
     throw new EffectError("L6002", "handler-fault", "the room refused", { cb: () => 1 });
@@ -1415,6 +1415,111 @@ await sleep("3h", { name: "after-the-catch" });
     "the same rule on the scope's own failure record, which a fix at the effect site alone would leave open",
     scoped?.error?.code === "L4000" && scoped?.error?.kind === "scope-fault" && scoped?.error?.detail === undefined,
     scoped?.error,
+  );
+}
+
+{
+  // A PROGRAM'S OWN REFUSAL KEEPS ITS CODE IN THE SCOPE'S RECORD (#1519). `fanOut` over a literal
+  // list with no ids and no key raises the RuntimeFault L3021 INSIDE the scope (the validator only
+  // warns; the runtime decides on the value), and the settle used to flatten it to `L4000`
+  // scope-fault with the L3021 sentence still inside the message. The same fault outside any scope
+  // always kept its code, so the record and the rethrow disagreed with every resume: live the
+  // program caught `L3021`, every replay read `L4000` off the entry. `runtime` is the kind both
+  // engines' `toProgramError` already bind for this class, so the record answers as the program's
+  // catch does.
+  const journal = new Journal({ run: "r-sf1-a" });
+  let caught: unknown;
+  try {
+    await run(
+      'const a = await spawn("a");\nawait fanOut(["x", "y"], async (x) => { await turn(a, { name: "check" }); return x; }, { name: "sweep" });',
+      { runId: "r-sf1-a", journal, handler: new SimHandler({}) },
+    );
+  } catch (e) {
+    caught = e;
+  }
+  const settled = journal.entries().find((e) => e.kind === "fanOut");
+  ok(
+    "a program refusal raised inside a scope settles under its own catalog code, not the generic L4000",
+    settled?.status === "failed" && settled?.error?.code === "L3021" && settled?.error?.kind === "runtime",
+    { status: settled?.status, error: settled?.error?.code, kind: settled?.error?.kind },
+  );
+  ok(
+    "...and the run still throws the fault itself, which is what the program catches live",
+    (caught as { code?: string })?.code === "L3021",
+    String((caught as Error)?.message).slice(0, 90),
+  );
+
+  // THE RESUME HALF, which is where the flattening did its damage: a replayed failed scope is
+  // delivered as an EffectError built FROM THE RECORD, so a flattened code was not a cosmetic loss
+  // but a different answer on every resume.
+  const seen: unknown[][] = [];
+  let r!: Awaited<ReturnType<typeof run>>;
+  let threw: unknown;
+  try {
+    r = await run(
+      'const a = await spawn("a");\nlet saw = null;\ntry {\n  await fanOut(["x", "y"], async (x) => { await turn(a, { name: "check" }); return x; }, { name: "sweep" });\n} catch (e) { saw = e.code; }\nlog(saw);',
+      { runId: "r-sf1-b", journal: new Journal({ run: "r-sf1-b" }), handler: new SimHandler({}), onLog: (l) => seen.push([...l.values]) },
+    );
+  } catch (e) {
+    threw = e;
+  }
+  ok("the live run catches its own refusal by code", threw === undefined && JSON.stringify(seen) === '[["L3021"]]', { threw: String(threw).slice(0, 60), seen });
+  await resume(
+    'const a = await spawn("a");\nlet saw = null;\ntry {\n  await fanOut(["x", "y"], async (x) => { await turn(a, { name: "check" }); return x; }, { name: "sweep" });\n} catch (e) { saw = e.code; }\nlog(saw);',
+    r.journal,
+    { runId: "r-sf1-b", pins: r.pins, handler: new SimHandler({}), onLog: (l) => seen.push([...l.values]) },
+  );
+  ok(
+    "and a resume over the same journal reads the SAME code the live run caught, not a flattened L4000",
+    JSON.stringify(seen) === '[["L3021"],["L3021"]]',
+    seen,
+  );
+}
+
+{
+  // THE TWO CONTROLS beside it: the classes the ladder must keep recording as it did before.
+  // A plain non-EffectError throw from the handler stays the generic scope fault, and a handler's
+  // own coded EffectError keeps its code and kind through `recordableError`. Both are the same
+  // conclave shape the cells above use, so the only variable is the thrown class.
+  const sim = new SimHandler({});
+  const plain = Object.create(sim) as EffectHandler;
+  plain.openConclave = async () => {
+    throw new Error("plain handler boom");
+  };
+  const journal = new Journal({ run: "r-sf1-c" });
+  try {
+    await run(
+      'const a = await spawn("a");\nconst b = await spawn("b");\nawait conclave([a, b], () => turn(a, { name: "huddle" }), { name: "triage" });',
+      { runId: "r-sf1-c", journal, handler: plain },
+    );
+  } catch {
+    // The scope path rethrows its raw reason; the record is the subject here.
+  }
+  const plainEntry = journal.entries().find((e) => e.kind === "conclave");
+  ok(
+    "a handler's plain throw inside a scope still settles as the generic L4000 scope-fault, unchanged by the program-refusal rule",
+    plainEntry?.status === "failed" && plainEntry?.error?.code === "L4000" && plainEntry?.error?.kind === "scope-fault",
+    { status: plainEntry?.status, error: plainEntry?.error?.code, kind: plainEntry?.error?.kind },
+  );
+
+  const coded = Object.create(sim) as EffectHandler;
+  coded.openConclave = async () => {
+    throw new EffectError("L6002", "handler-fault", "the room refused");
+  };
+  const codedJournal = new Journal({ run: "r-sf1-d" });
+  try {
+    await run(
+      'const a = await spawn("a");\nconst b = await spawn("b");\nawait conclave([a, b], () => turn(a, { name: "huddle" }), { name: "triage" });',
+      { runId: "r-sf1-d", journal: codedJournal, handler: coded },
+    );
+  } catch {
+    // Same: the record is the subject.
+  }
+  const codedEntry = codedJournal.entries().find((e) => e.kind === "conclave");
+  ok(
+    "and a handler's own coded failure keeps its code and kind through the same settle",
+    codedEntry?.status === "failed" && codedEntry?.error?.code === "L6002" && codedEntry?.error?.kind === "handler-fault",
+    { status: codedEntry?.status, error: codedEntry?.error?.code, kind: codedEntry?.error?.kind },
   );
 }
 
@@ -1452,6 +1557,75 @@ await sleep("3h", { name: "after-the-catch" });
     "an ordinary failure detail still loads, so the door reads the value rather than the field's presence",
     (loaded.entries()[0]?.error?.detail as { why?: string })?.why === "no capacity",
     loaded.entries()[0]?.error,
+  );
+}
+
+// ---- and a handler fault carries WHERE it was thrown from --------------------------------------
+
+/**
+ * #1619's field. A handler fault is the one failure class whose cause is in neither the program nor
+ * the language, so the recorded `message` ("timeout") is the symptom with no origin at all, and the
+ * durable entry is usually the only look anyone gets. The stack is what says which host code threw.
+ *
+ * Read back OUT OF A RECORDED ENTRY, through the real interpreter path, rather than off the raised
+ * error: the raised error has a stack whatever the recorder does, so asserting there would pass with
+ * the field dropped. The two guards have their own cells, because "read `.stack` off whatever came"
+ * is the recorder replacing the handler's failure with its own on a primitive throw.
+ */
+{
+  const throwing = async (thrown: unknown, runId: string): Promise<JournalEntry | undefined> => {
+    const sim = new SimHandler({});
+    const thrower = Object.create(sim) as EffectHandler;
+    thrower.turn = async () => { throw thrown; };
+    const journal = new Journal({ run: runId });
+    await run(
+      'const b = await spawn("b");\nlet caught = null;\ntry {\n  await turn(b, { name: "build" });\n} catch (e) {\n  caught = "caught";\n}\ncaught;',
+      { runId, journal, handler: thrower },
+    );
+    return journal.entries().find((e) => e.status === "failed");
+  };
+
+  // The ordinary case: a handler throws an Error, and the entry keeps where it came from.
+  const thrown = new Error("the plane never answered");
+  const failed = await throwing(thrown, "r-stk-a");
+  ok(
+    "a handler fault records the STACK of the error that was thrown, read back off the recorded entry",
+    typeof failed?.error?.stack === "string" && failed.error.stack === thrown.stack,
+    { recorded: String(failed?.error?.stack).split("\n")[0], kind: failed?.error?.kind },
+  );
+  ok(
+    "...and it is the stack, not the message repeated into the field",
+    /journal\.smoke/.test(String(failed?.error?.stack)) && String(failed?.error?.stack).includes("\n"),
+    String(failed?.error?.stack).slice(0, 120),
+  );
+
+  // AND IT SURVIVES THE STORE, which is the only form a later reader meets.
+  const reloaded = new Journal({
+    run: "r-stk-a",
+    entries: JSON.parse(JSON.stringify([failed])) as readonly JournalEntry[],
+  });
+  ok(
+    "the recorded stack survives a serialized round trip, which is the form a later reader gets",
+    reloaded.entries()[0]?.error?.stack === thrown.stack,
+    String(reloaded.entries()[0]?.error?.stack).split("\n")[0],
+  );
+
+  // GUARD 1: other people's code may throw a primitive, which has no stack to keep.
+  const primitive = await throwing("just a string", "r-stk-b");
+  ok(
+    "a primitive throw records NO stack rather than inventing one, and still records the fault",
+    primitive?.error?.stack === undefined && primitive?.error?.kind === "handler-fault"
+      && primitive?.error?.message === "just a string",
+    primitive?.error,
+  );
+
+  // GUARD 2: and `stack` is not always a string, so the field is read rather than trusted.
+  const notAString = await throwing({ message: "shaped like an error", stack: 42 }, "r-stk-c");
+  ok(
+    "a thrown value whose `stack` is not a string records no stack, and the rest of the fault is unharmed",
+    notAString?.error?.stack === undefined && notAString?.error?.code === "L4000"
+      && notAString?.error?.message === "shaped like an error",
+    notAString?.error,
   );
 }
 

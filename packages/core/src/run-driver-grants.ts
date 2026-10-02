@@ -4,7 +4,7 @@
  * which exposes run-bound operations and never hands this credential to the driver.
  */
 import { createHash } from "node:crypto";
-import { spacePrefix, chatStream, presenceBucket, channelBucket, membersBucket, assertInboxConnId, DEV_OWNER } from "./subjects.js";
+import { spacePrefix, chatStream, presenceBucket, channelBucket, membersBucket, assertInboxConnId, assertPrincipalOwnerToken, DEV_OWNER } from "./subjects.js";
 import { endpointToken, assertIdToken, assertLifecycleToken, epCallerReplyFilter, type EpCaller } from "./endpoint-subjects.js";
 import { recordsBucket } from "./endpoint-records.js";
 import { admissionBucket } from "./run-admission.js";
@@ -19,16 +19,16 @@ import {
 import { epRequestGrantRows, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT } from "./endpoint-grants.js";
 
 /**
- * The RUN-STABLE caller triple a run's durable actions ride, derived from the run id and nothing
- * else. Goal facts key on the submitting triple, so a resume on any host must re-derive the same
- * one or it polls terminals its own submissions never wrote. The grant rows and the mesh handler
- * both call this, so the credential's rails and the subjects the handler publishes on cannot
- * disagree. Grammar: the actor is `[A-Za-z0-9_]+` and the uid `[a-z0-9]{26,32}`, both satisfied
- * by hex slices of the digest.
+ * The run-stable caller triple used by durable actions. Actor and uid derive from the run id;
+ * the trusted host supplies the admitted owner. Omitting owner preserves the static/local caller.
+ * This validates the owner's grammar, not its authority: a program cannot choose its owner here.
+ * Goal facts key on this triple, so grants and effects must use the same original owner on resume.
+ * Grammar: actor is `[A-Za-z0-9_]+` and uid is `[a-z0-9]{26,32}`, both satisfied by digest slices.
  */
-export function runDriverCaller(runId: string): EpCaller {
+export function runDriverCaller(runId: string, owner: string = DEV_OWNER): EpCaller {
+  assertPrincipalOwnerToken(owner, { allowLocal: true });
   const h = createHash("sha256").update(assertIdToken(runId, "runId"), "utf8").digest("hex");
-  return { owner: DEV_OWNER, actor: `wf_${h.slice(0, 12)}`, uid: h.slice(12, 38) };
+  return { owner, actor: `wf_${h.slice(0, 12)}`, uid: h.slice(12, 38) };
 }
 
 /** Coordinates for the driver/host pair: replay is takeover-pinned; host schedules also pin instance and epoch. */
@@ -36,6 +36,8 @@ export interface RunDriverGrantArgs {
   /** The endpoint hosting the driver: the manager daemon. Leads every record key. */
   endpoint: string;
   runId: string;
+  /** The authenticated admission owner. Omitted only on the existing static/local path. */
+  owner?: string;
   /** The takeover attempt this credential is minted for; names the replay durable (SPEC 14.6). */
   takeoverId: string;
   /** The driving instance's id and epoch: the coordinates its timer schedules are addressed by. */
@@ -51,6 +53,7 @@ export interface RunDriverGrantArgs {
 export function runDriverGrants(space: string, args: RunDriverGrantArgs, connId: string): { publish: string[]; subscribe: string[] } {
   const endpoint = endpointToken(args.endpoint);
   const run = assertIdToken(args.runId, "runId");
+  if (args.owner !== undefined) assertPrincipalOwnerToken(args.owner, { allowLocal: true });
   assertLifecycleToken(args.instanceId, "instanceId");
   if (!Number.isSafeInteger(args.epoch) || args.epoch < 0) throw new Error(`epoch ${args.epoch} is not an unsigned integer`);
   const records = recordsBucket(space);
@@ -82,7 +85,7 @@ export function runMediatorGrants(space: string, args: RunDriverGrantArgs, connI
   if (!Number.isSafeInteger(args.epoch) || args.epoch < 0) throw new Error(`epoch ${args.epoch} is not an unsigned integer`);
   const p = spacePrefix(space);
   const records = recordsBucket(space);
-  const caller = runDriverCaller(run);
+  const caller = runDriverCaller(run, args.owner);
   const CHAT = chatStream(space);
   const PKV = `KV_${presenceBucket(space)}`;
   const publish = [

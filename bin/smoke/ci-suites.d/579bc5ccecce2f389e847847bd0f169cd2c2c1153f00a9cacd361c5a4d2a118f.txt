@@ -1,0 +1,3 @@
+# A peer must not be able to forge the framing of an auto-injected Hermes turn: the body and the
+# attribution both go through one neutralization, graded against the pre-fix rendering as a control.
+smoke:hermes-injection-framing

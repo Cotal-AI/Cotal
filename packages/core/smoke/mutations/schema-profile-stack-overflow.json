@@ -1,0 +1,34 @@
+{
+  "suite": [
+    "packages/core/smoke/schema-profile.smoke.ts"
+  ],
+  "guard": "a compile-time RangeError from a wide but legal schema is renamed to the compiler's generated-code shape and the overflowing width, and the flipped allErrors pin is load-bearing for the raised ceiling",
+  "command": "pnpm smoke:schema-profile",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/schema-profile-stack-overflow.json",
+  "why": [
+    "#1551: a wide but legal object schema overflows the call stack at compile under the profile's",
+    "Ajv pin, and the caller-facing ContractInvalidError named the caller's schema rather than the",
+    "compiler's own generated-code shape. The fix catches the RangeError specifically and reports",
+    "the shape and the overflowing width instead, and flips allErrors to true (a flat code shape,",
+    "measured to change no validation verdict) which raises the same stack-bounded ceiling ~3.4x."
+  ],
+  "mutations": [
+    {
+      "name": "drop the RangeError-specific catch arm so an overflow is reported generically again",
+      "file": "packages/core/src/schema-profile.ts",
+      "find": "    if (e instanceof RangeError) {\n      const width = widestClosurePropertyCount(bundle);\n      throw new ContractInvalidError(\n        `schema does not compile under the 2020-12 profile: the generated validator's code shape overflowed `\n        + `the call stack (${(e as Error).message}) compiling a ${width}-property object, which every profile `\n        + `ceiling (document/closure bytes, depth, ref-chain, pattern length, admitted vocabulary) had already `\n        + `admitted; this is the compiler's generated-code shape running out of stack, not a defect in the schema`,\n      );\n    }\n",
+      "replace": "",
+      "expectRed": "the overflow names the compiler's generated-code shape, the overflowing width, and that every profile ceiling had already admitted the schema — not the caller's schema",
+      "cell": "the overflow names the compiler's generated-code shape, the overflowing width, and that every profile ceiling had already admitted the schema — not the caller's schema"
+    },
+    {
+      "name": "revert the allErrors pin to false, collapsing the raised ceiling back down",
+      "file": "packages/core/src/schema-profile.ts",
+      "find": "  allErrors: true,",
+      "replace": "  allErrors: false,",
+      "expectRed": "positive control: the smoke's 1000-property width still compiles at the reduced stack budget",
+      "cell": "positive control: the smoke's 1000-property width still compiles at the reduced stack budget"
+    }
+  ],
+  "grades": "tool"
+}

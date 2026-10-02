@@ -15,7 +15,11 @@
     "M1 keeps Cotal-owned drive() steering but restores the TUI-owned skip (sessionBusy -> driving).",
     "M2 restores the inner turnActive abort so an advisory idle pulse during drive() drops the DM.",
     "M3 keeps delivery but clears the presence activity string, so the queue is invisible from outside.",
-    "M4 restores the initial drive's bare working status, so its first uncommitted batch is invisible."
+    "M4 restores the initial drive's bare working status, so its first uncommitted batch is invisible.",
+    "",
+    "M5 removes the host's live wait for the event holder (#1868), which restores the base behavior: a flush queued in a",
+    "mesh rebuild window reads max_payload off a missing connection and the seat exits 1.",
+    "M6 keeps the wait but drops the shutdown abort, so a stop during a standing outage never exits."
   ],
   "mutations": [
     {
@@ -51,6 +55,23 @@
       "expectRed": "presence activity names the initial automatic inbound batch while its run is open (#1075)",
       "cell": "presence activity names the initial automatic inbound batch while its run is open (#1075)",
       "note": "Re-anchored for #1233: the reservation fix inserted `releaseUnheldReservations()` between `surfacedIds = [...ids]` and this call, so the old three-line anchor no longer matched and the mutation ERRORed instead of running. The line severed is unchanged: `publishInboundHealth()` is still replaced by the bare status write, so the mutant still publishes presence without naming the batch."
+    },
+    {
+      "name": "M5 the event holder is not given the live wait",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "        () =>\n          new Promise<void>((resolve, reject) => {\n            const live = (): boolean => agent.connected && agent.transportConnected;",
+      "replace": "        undefined,\n        () =>\n          new Promise<void>((resolve, reject) => {\n            const live = (): boolean => agent.connected && agent.transportConnected;",
+      "expectRed": "the held run's flush was queued inside the outage and still unpublished when the broker came back (#1868)",
+      "cell": "the held run's flush was queued inside the outage and still unpublished when the broker came back (#1868)",
+      "note": "The inserted `undefined` fills the waitLive slot, so the holder takes its pre-fix path. The named cell is the outage-flush assertion: the held turn completes while the broker is down, and without the wait the flush reads max_payload off the missing connection and the seat exits 1 before the broker is restarted."
+    },
+    {
+      "name": "M6 shutdown does not end a pending live wait",
+      "file": "extensions/connector-jcode/src/host.ts",
+      "find": "    stopping = true;\n    eventWaitStop.abort();\n",
+      "replace": "    stopping = true;\n",
+      "expectRed": "a seat stopped while its mesh connection is down exits instead of waiting for the broker (#1868)",
+      "cell": "a seat stopped while its mesh connection is down exits instead of waiting for the broker (#1868)"
     }
   ]
 }

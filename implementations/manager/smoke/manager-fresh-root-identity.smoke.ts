@@ -15,14 +15,18 @@
  * Run: pnpm smoke:manager-fresh-root-identity
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type AddressInfo } from "node:net";
-import { probeConnect } from "@cotal-ai/core";
-import { loadManagerInstanceIdentity, recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const home = mkdtempSync(join(tmpdir(), "cotal-i1263-home-"));
+process.env.COTAL_HOME = home;
+const { probeConnect } = await import("@cotal-ai/core");
+const { loadManagerInstanceIdentity, recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -67,7 +71,8 @@ const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const kids: ChildProcess[] = [];
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-i1263-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}i1263-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   for (let i = 0; i < 60; i++) { if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break; await wait(120); }
 
@@ -149,6 +154,7 @@ try {
   check("losers refuse with already-serves (adopt then lease CAS)", missingRefuse === 0, { missingRefuse });
 } finally {
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
+  rmSync(home, { recursive: true, force: true });
 }
 
 console.log(`COTAL_SMOKE_SENTINEL cells=${pass + fail} passed=${pass} failed=${fail}`);

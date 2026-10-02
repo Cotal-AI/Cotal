@@ -152,7 +152,7 @@ try {
 
   manager = new Manager({ space, servers: BROKER, runtime: "pty", workspaceRoot: root });
   await manager.start();
-  const started = await manager.startAgent({ name: SEAT, agent: "rc-seat", cwd: repoRoot });
+  const started = await manager.startAgent({ name: SEAT, agent: "rc-seat", cwd: repoRoot, events: false });
   if (!started.ok) throw new Error(`seat did not start: ${JSON.stringify(started)}`);
   console.log(`seat ${SEAT} is running on the manager\n`);
 

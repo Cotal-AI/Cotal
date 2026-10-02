@@ -11,6 +11,7 @@ import {
   resolvePeer as resolvePeerInRoster,
   CotalEndpoint,
   BASELINE_LIFECYCLE_ENDPOINT,
+  assertLifecycleToken,
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
@@ -22,13 +23,17 @@ import {
   partsToText,
   type MessageMeta,
   type Presence,
+  type PresenceCondition,
   type PresenceStatus,
+  type PresenceView,
   type TransportState,
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
+  type GoalResultFact,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
+import { invokeUserManager } from "./manager-call.js";
 
 // Attention modes + per-channel overrides are defined in core (they're published in presence now);
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
@@ -77,9 +82,9 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
 /** Exec the spawner-provided bearer argv and return the one line it prints. The command owns
  *  discovery, the exchange protocol, and the secret file — a failure here is ITS operator-exact
  *  stderr sentence, surfaced verbatim (the endpoint emits it as a loud "error" and retries). */
-function execBearerCmd(argv: string[]): Promise<string> {
+function execBearerCmd(argv: string[], signal?: AbortSignal, timeout = 30_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(argv[0], argv.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
+    execFile(argv[0], argv.slice(1), { timeout, signal, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(stderr.trim() || err.message));
       const bearer = stdout.trim();
       if (!bearer) return reject(new Error(`bearer command printed nothing (${argv[0]})`));
@@ -243,8 +248,8 @@ export const AUTOMATIC_QUEUE_STALL_MS = 600_000;
 /** An `ask` relayed as a turn: the record the run needs, the attempt it is on, the previous
  *  refusal when there was one, and the command that answers it (`cotal run answer`, the same door
  *  a checkpoint is answered through). Empty when the payload carries no ask. */
-function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; checkpoint?: unknown }, seatName: string): string {
-  const escalation = renderEscalation(p, seatName);
+function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; checkpoint?: unknown }): string {
+  const escalation = renderEscalation(p);
   if (escalation !== "") return escalation;
   const ask = p.ask;
   if (ask === null || typeof ask !== "object") return "";
@@ -255,14 +260,14 @@ function renderAskRequest(p: { run?: unknown; step?: unknown; ask?: unknown; che
   const refused = typeof a.refused === "string" ? `\nYour last answer was refused: ${a.refused}` : "";
   return `\nThis turn is an ask: the run needs a record from you at step ${String(p.step)} with fields ${fields}`
     + ` (attempt ${String(a.attempt)} of ${String(a.attempts)}${by}).${refused}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json record>'`;
+    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json record>'`;
 }
 
 /** An escalated `checkpoint` relayed as a turn: the question, the record wanted when the pause
  *  carries a schema, and the same answer command an ask uses. The runtime submitted this shape from
  *  the day escalations were relayed, and the seat read `ask` alone: the addressee was woken with a
  *  context block and no question, auto-yielded `done`, and the pause ran to its own expiry. */
-function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unknown }, seatName: string): string {
+function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unknown }): string {
   const cp = p.checkpoint;
   if (cp === null || typeof cp !== "object") return "";
   const c = cp as { prompt?: unknown; schema?: unknown; deadlineAt?: unknown };
@@ -270,7 +275,7 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
   const wanted = entries.length === 0 ? "" : `\nAnswer with a record with fields ${entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ")}.`;
   const by = typeof c.deadlineAt === "number" ? ` It expires at ${new Date(c.deadlineAt).toISOString()}.` : "";
   return `\nThis turn is a checkpoint escalated to you at step ${String(p.step)}: ${String(c.prompt)}${by}${wanted}`
-    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --by ${seatName} --value '<json>'`;
+    + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'`;
 }
 
 export class MeshAgent extends EventEmitter {
@@ -319,6 +324,14 @@ export class MeshAgent extends EventEmitter {
    *  13.8 hours. A progress mark that counts a pull-only drain as progress would have reported that
    *  seat as making progress, which is the exact lie this field exists to refuse. */
   private _lastAutomaticDrainedAt?: number;
+  /** The latest commit that took the OLDEST automatic delivery then queued (#1526).
+   *
+   *  Distinct from {@link _lastAutomaticDrainedAt}, and the distinction is the defect: any automatic
+   *  commit used to count, so a seat that kept committing fresh arrivals over a head it could not
+   *  deliver reset its own stall clock on every turn and reported `ready` indefinitely, while the
+   *  entries at the front of its queue aged past two hours. A queue drains when its head moves; a
+   *  queue that serves only its newest arrivals is not draining, it is skipping. */
+  private _lastAutomaticHeadDrainedAt?: number;
   /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
    * explain why an otherwise healthy host never joined the mesh. */
   private lastConnectionError?: string;
@@ -361,6 +374,14 @@ export class MeshAgent extends EventEmitter {
   private focusExcludedIds = new Map<string, string>();
   private focusRecallUnsafeChannels = new Set<string>();
   private _stopping = false;
+  /** Presence writes go out IN CALL ORDER (#636, #2055). setStatus is two awaited puts and every
+   *  connector fires it without awaiting, so two overlapping calls interleave their puts and the
+   *  record that lands last is whichever call's second put finished last, not the call made last;
+   *  at a driven turn's end the measured order was working, idle, working, and the seat then read
+   *  working forever. Every write below runs its whole body through this chain, so the later
+   *  call's puts start only after the earlier call's have settled. A rejected write must not
+   *  poison the chain: the tail is swallowed and the next write still runs. */
+  private presenceChain: Promise<void> = Promise.resolve();
 
   constructor(config: AgentConfig) {
     super();
@@ -377,6 +398,7 @@ export class MeshAgent extends EventEmitter {
       pass: config.pass,
       creds: config.creds,
       lifecycleUid: config.lifecycleUid,
+      backfillFloor: config.backfillFloor,
       acceptedToken: config.acceptedToken,
       // USER MODE: the endpoint execs the spawner-provided argv per bearer refresh — the exchange
       // protocol lives entirely behind that command, this runtime just runs it and reads a line.
@@ -461,7 +483,14 @@ export class MeshAgent extends EventEmitter {
    *  incident: connected, serving, and silently unable to publish presence.
    *
    *  Presence writes are the CANARY, not the scope — see CotalEndpoint.presenceWriteFailure. */
-  get presenceWriteFailure(): { since: number; forMs: number; error?: string; bucket: string } | undefined {
+  get presenceWriteFailure(): {
+    since: number;
+    forMs: number;
+    error?: string;
+    bucket: string;
+    consecutiveFailures: number;
+    stuck: boolean;
+  } | undefined {
     return this.ep.presenceWriteFailure();
   }
 
@@ -475,14 +504,48 @@ export class MeshAgent extends EventEmitter {
     return this._lastAutomaticDrainedAt;
   }
 
+  /** The latest drain that committed the automatic delivery that was then at the FRONT of the queue
+   *  (#1526). This is the fact {@link automaticQueueStalledForMs} measures progress by; the looser
+   *  {@link lastAutomaticDrainedAt} is still reported beside it, because the two disagreeing is
+   *  precisely the shape of a wedged head being served around. */
+  get lastAutomaticHeadDrainedAt(): number | undefined {
+    return this._lastAutomaticHeadDrainedAt;
+  }
+
+  /** The receive key of the oldest still-queued automatic delivery: the queue's head, and the entry
+   *  whose commit counts as progress. */
+  private oldestAutomaticKey(): string | undefined {
+    let head: Pending | undefined;
+    for (const pending of this.inbox) {
+      if (pending.pullOnly) continue;
+      if (head === undefined || pending.receivedAt < head.receivedAt) head = pending;
+    }
+    return head?.item.recvKey;
+  }
+
+  /** Record head progress when this batch takes the current head of the automatic queue. Call
+   *  BEFORE the batch leaves {@link inbox}, since the head is read from the live queue. */
+  private noteAutomaticHeadProgress(selected: readonly Pending[]): void {
+    const head = this.oldestAutomaticKey();
+    if (head === undefined) return;
+    if (selected.some((p) => !p.pullOnly && p.item.recvKey === head)) this._lastAutomaticHeadDrainedAt = Date.now();
+  }
+
   /**
    * How long a non-empty automatic queue has been making no progress, or `undefined`.
    *
-   * PROGRESS, not depth. The queue is not stalled because it is deep; it is stalled because nothing
-   * has come off it. The clock therefore starts at the later of the last automatic commit and the
-   * arrival of the oldest still-queued delivery, so a seat that is steadily committing keeps
-   * resetting it however busy it is, and a seat that has committed nothing since its queue formed
-   * accrues from the moment that queue formed.
+   * PROGRESS AT THE HEAD, not depth and not throughput. The queue is not stalled because it is deep;
+   * it is stalled because the entries at the front of it are not coming off. The clock therefore
+   * starts at the later of the arrival of the oldest still-queued delivery and the last commit that
+   * took the queue's head, so a seat that is steadily draining keeps resetting it however busy it
+   * is, and a seat that has not moved its head since that queue formed accrues from the moment it
+   * formed.
+   *
+   * Keyed on the HEAD rather than on any automatic commit (#1526). The reported session held 96
+   * deliveries with the oldest over two hours old and reported `ready` throughout: it was committing
+   * fresh arrivals, and under a looser measure each of those reset the clock for the backlog behind
+   * them. A seat that serves only its newest traffic is skipping its queue, not draining it, and the
+   * messages that are actually undelivered are the ones the measure must speak for.
    *
    * Measured from the oldest ARRIVAL rather than from session start so a session that never drained
    * anything is still measurable — that is precisely the shape of a seat whose first soft interrupt
@@ -491,7 +554,7 @@ export class MeshAgent extends EventEmitter {
   automaticQueueStalledForMs(now = Date.now()): number | undefined {
     const oldest = this.oldestAutomaticReceivedAt();
     if (oldest === undefined) return undefined;
-    const since = Math.max(oldest, this._lastAutomaticDrainedAt ?? 0);
+    const since = Math.max(oldest, this._lastAutomaticHeadDrainedAt ?? 0);
     const held = now - since;
     return held > 0 ? held : 0;
   }
@@ -573,6 +636,13 @@ export class MeshAgent extends EventEmitter {
         this.log(
           `connected to ${this.config.servers} as ${this.who()} in space "${this.config.space}" on #${this.config.subscribe.join(", #")}`,
         );
+        // The one user-visible surface of the boot backfill (M2, issue #545): the count is exact
+        // right here, before anything else can drain the pull-only lane the backfill filled.
+        const historicalBuffered = this.peekInbox("pull-only").filter((i) => i.historical).length;
+        this.log(
+          `joined ${this.config.subscribe.length} boot channel(s): ${historicalBuffered} historical message(s) buffered pull-only` +
+            (this.config.backfillFloor !== undefined ? ` (backfill floor ${this.config.backfillFloor})` : ""),
+        );
         this.ensureTurnPoll();
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e));
@@ -622,6 +692,14 @@ export class MeshAgent extends EventEmitter {
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop() is
     // idempotent (early-returns once stopped), so calling it when already-down is a noop.
+    // #636: departure is the last write. Running it THROUGH the chain (as its own inOrder entry,
+    // not merely awaited alongside it) orders offline behind every write already admitted,
+    // whichever method admitted it — setStatus's requireConnected included. The race is bounded so
+    // a wedged write cannot hang shutdown; on the timeout path the chain is abandoned but the
+    // endpoint must still stop, so ep.stop() runs directly once there. Every write admitted AFTER
+    // this point is refused at once by inOrder() (see there) rather than queued behind departure,
+    // so a straggler cannot land after offline and does not sit out setStatus's connect grace.
+    await Promise.race([this.inOrder(() => this.ep.stop(), true), sleep(3_000)]);
     await this.ep.stop();
   }
 
@@ -957,6 +1035,9 @@ export class MeshAgent extends EventEmitter {
     const eligible = this.inbox.filter((p) => this.inScope(p, scope));
     const n = limit && limit > 0 ? Math.min(limit, eligible.length) : eligible.length;
     const selected = eligible.slice(0, n);
+    // Head progress is read from the LIVE queue, so it must be recorded while the batch is still in
+    // it (#1526).
+    this.noteAutomaticHeadProgress(selected);
     // Remove by OBJECT IDENTITY, not by a set of wire ids (#624): the id-less entries share "", so
     // an id set would remove every id-less neighbor beyond the limit and outside the scope while
     // acking only the selected — silent loss by selection. Identity removes exactly what was taken.
@@ -983,6 +1064,7 @@ export class MeshAgent extends EventEmitter {
     const requested = [...new Set(keys)];
     const wanted = new Set(requested);
     const selected = this.inbox.filter((p) => wanted.has(p.item.recvKey));
+    this.noteAutomaticHeadProgress(selected);
     const present = new Set(selected.map((p) => p.item.recvKey));
     const pullOnly = new Map(selected.map((p) => [p.item.recvKey, p.pullOnly]));
     for (const id of requested) {
@@ -1225,9 +1307,11 @@ export class MeshAgent extends EventEmitter {
       throw new Error(`"${channel}" must be a concrete channel (no wildcard) to set its attention`);
     if (!channelInAllow(this.config.allowSubscribe, channel))
       throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]`);
-    if (mode === "normal") this.channelModes.delete(channel);
-    else this.channelModes.set(channel, mode);
-    await this.ep.setChannelModes(this.channelModeEntries());
+    await this.inOrder(() => {
+      if (mode === "normal") this.channelModes.delete(channel);
+      else this.channelModes.set(channel, mode);
+      return this.ep.setChannelModes(this.channelModeEntries());
+    });
   }
 
   /** Set the attention mode. Entering `focus` captures the chat frontier as the focus-watermark
@@ -1238,6 +1322,7 @@ export class MeshAgent extends EventEmitter {
     *  it landed just before or after the captured frontier. Only ambient arriving after the local
     *  switch is ack-dropped. */
   async setAttention(mode: AttentionMode): Promise<void> {
+    await this.inOrder(async () => {
     if (mode === "focus") {
       await this.requireConnected();
       this.focusExcludedIds.clear();
@@ -1264,6 +1349,7 @@ export class MeshAgent extends EventEmitter {
     // Mirror to presence (advisory observability — peers can see "they're in focus"). Best-effort:
     // a no-op until the KV is bound, and never read back into delivery.
     await this.ep.setAttention(mode);
+    });
   }
 
   /** Focus recall: the channel ambient + @mentions ack-dropped since this agent entered focus,
@@ -1305,7 +1391,7 @@ export class MeshAgent extends EventEmitter {
   async send(text: string, channel?: string, mentions?: string[]): Promise<CotalMessage> {
     await this.requireConnected();
     const clean = normalizeMentions(mentions);
-    if (clean) this.assertKnownMentions(clean);
+    if (clean) await this.assertKnownMentions(clean);
     return this.ep.multicast(text, { channel, mentions: clean, contextId: this._contextId });
   }
 
@@ -1335,14 +1421,35 @@ export class MeshAgent extends EventEmitter {
    *  wrongly reject it), case-insensitively. Send is all-or-nothing: one unknown @name aborts
    *  the whole broadcast (fail-loud on typos). Caveat: only catches peers THIS client has seen
    *  — an offline peer lingers in the roster, but one never observed (or not yet filled in
-   *  after connect) throws. See docs/architecture.md. */
-  private assertKnownMentions(mentions: string[]): void {
-    const names = new Set(this.ep.getRoster().map((p) => p.card.name.toLowerCase()));
-    const unknown = mentions.filter((m) => !names.has(m));
-    if (unknown.length)
+   *  after connect) throws. See docs/architecture.md.
+   *
+   *  #1229: the roster can only support an ABSENCE verdict while `presenceView()` is `current`.
+   *  `clearConnectionScoped()` empties it on every reconnect and the watch refills entry by
+   *  entry, so a refusal under an unsafe view would reject a mention of a live peer. A name
+   * already in the roster is accepted in every state; an absent name under `unpopulated`
+   *  waits once for the initial snapshot and re-reads; a still-unverifiable name refuses with
+   *  the observer's own condition (never "no such peer") and the send does not go out. */
+  private async assertKnownMentions(mentions: string[]): Promise<void> {
+    const names = () => new Set(this.ep.getRoster().map((p) => p.card.name.toLowerCase()));
+    const view = this.ep.presenceView();
+    if (view.state === "unpopulated") {
+      const unknown = mentions.filter((m) => !names().has(m));
+      if (unknown.length) await this.ep.waitForPresenceSnapshot();
+    }
+    const after = this.ep.presenceView();
+    const unknown = mentions.filter((m) => !names().has(m));
+    if (!unknown.length) return;
+    if (after.state === "current")
       throw new Error(
         `unknown mention${unknown.length > 1 ? "s" : ""}: ${unknown.map((u) => `@${u}`).join(", ")} — no such peer observed in space "${this.config.space}"`,
       );
+    const condition =
+      after.state === "stale"
+        ? `the presence view is stale since ${new Date(after.staleSince).toISOString()} (${Math.max(0, Date.now() - after.staleSince)}ms silent)`
+        : "the presence view is unpopulated — the watch has not completed its initial snapshot";
+    throw new Error(
+      `cannot verify mention${unknown.length > 1 ? "s" : ""} ${unknown.map((u) => `@${u}`).join(", ")} in space "${this.config.space}": ${condition}, so absence is not a verdict — the peer may be present but unobserved. The send was not published.`,
+    );
   }
 
   async anycast(role: string, text: string): Promise<CotalMessage> {
@@ -1357,12 +1464,45 @@ export class MeshAgent extends EventEmitter {
     return resolvePeerInRoster(this.ep.getRoster(), target, { selfId: this.id });
   }
 
-  async dm(target: string, text: string): Promise<{ msg: CotalMessage; peer: Presence }> {
+  async dm(
+    target: string,
+    text: string,
+  ): Promise<{
+    msg: CotalMessage;
+    peer: Presence;
+    ack: { seq: number; duplicate: boolean };
+    recipientStatusAtSend: Presence["status"];
+  }> {
     await this.requireConnected();
-    const peer = this.resolvePeer(target);
-    if (!peer) throw new Error(`no peer "${target}" in space "${this.config.space}"`);
-    const msg = await this.ep.unicast(peer.card.id, text, { contextId: this._contextId });
-    return { msg, peer };
+    // #1229: a miss is only a real "no peer" while the view is current. Under `unpopulated`
+    // the roster may be a reconnect refill in progress, so wait once for the snapshot and
+    // re-resolve; a still-unverifiable target refuses naming the observer's condition (never
+    // "no peer"), and the DM does not go out.
+    const view = this.ep.presenceView();
+    let peer = this.resolvePeer(target);
+    if (!peer && view.state === "unpopulated") {
+      await this.ep.waitForPresenceSnapshot();
+      peer = this.resolvePeer(target);
+    }
+    if (!peer) {
+      const after = this.ep.presenceView();
+      if (after.state === "current")
+        throw new Error(`no peer "${target}" in space "${this.config.space}"`);
+      const condition =
+        after.state === "stale"
+          ? `the presence view is stale since ${new Date(after.staleSince).toISOString()} (${Math.max(0, Date.now() - after.staleSince)}ms silent)`
+          : "the presence view is unpopulated — the watch has not completed its initial snapshot";
+      throw new Error(
+        `cannot verify peer "${target}" in space "${this.config.space}": ${condition}, so absence is not a verdict — the peer may be present but unobserved. The DM was not sent.`,
+      );
+    }
+    // The only status we can truthfully attribute is the roster snapshot taken right before the
+    // publish: recipient state can change the instant after, and the ack never tells us either way.
+    const recipientStatusAtSend = peer.status;
+    const { msg, ack } = await this.ep.unicastAttributed(peer.card.id, text, {
+      contextId: this._contextId,
+    });
+    return { msg, peer, ack, recipientStatusAtSend };
   }
 
   // ---- supervision ---------------------------------------------------------
@@ -1379,16 +1519,24 @@ export class MeshAgent extends EventEmitter {
    *  the agent and operator spawn doors share one control-op contract. (Session `resume` is
    *  intentionally NOT forwarded here: forking a host-local `~/.claude` transcript is an
    *  operator-local intent, kept off the peer-facing spawn door — see #159.) */
-  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string }): Promise<ControlReply> {
+  async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; instance?: string }): Promise<ControlReply> {
     await this.requireConnected();
     const raw = opts?.model;
     if (raw !== undefined && !raw.trim())
       return { ok: false, error: "model: must not be empty" };
     const requested = raw?.trim();
-    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt };
+    let instance: string | undefined;
+    try {
+      instance = opts?.instance === undefined ? undefined : assertLifecycleToken(opts.instance, "instance");
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    if (this.config.userAuth && instance !== undefined && this.config.managerInstanceId !== undefined && instance !== this.config.managerInstanceId)
+      return { ok: false, error: "the requested manager instance differs from this credential's instance authority" };
+    const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
-    const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true });
+    const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });
     if (!requested) return reply;
     // A requested pin that the manager did not record is the silent-drop failure (#972): the spawn
     // looks successful, the seat comes up on the harness default, and nothing in the spawn result
@@ -1396,7 +1544,7 @@ export class MeshAgent extends EventEmitter {
     // A wait-timeout is still a timeout, not evidence the pin landed — annotate it, never upgrade it.
     const actual = reply.data as { name?: string } | undefined;
     const seat = actual?.name ?? name;
-    const recorded = await this.inspectModel(seat);
+    const recorded = await this.inspectModel(seat, instance);
     const recordedLabel = !recorded.ok
       ? `could not inspect the recorded pin: ${recorded.error}`
       : recorded.model === undefined
@@ -1430,8 +1578,8 @@ export class MeshAgent extends EventEmitter {
 
   /** The manager's recorded model pin for a managed seat (`inspect.model`). Absence is a real
    *  state: a launch may pin none. Distinct from a failed inspect, which cannot attest. */
-  async inspectModel(name: string): Promise<{ ok: true; model?: string } | { ok: false; error: string }> {
-    const info = await this.managerInvoke("inspect", { name });
+  async inspectModel(name: string, instance?: string): Promise<{ ok: true; model?: string } | { ok: false; error: string }> {
+    const info = await this.managerInvoke("inspect", { name }, instance === undefined ? undefined : { instanceId: instance });
     if (!info.ok) return { ok: false, error: info.error ?? "inspect refused" };
     const model = (info.data as { model?: unknown } | undefined)?.model;
     if (model === undefined) return { ok: true };
@@ -1449,12 +1597,50 @@ export class MeshAgent extends EventEmitter {
   private async managerInvoke(
     command: string,
     args: Record<string, unknown> | undefined,
-    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean } = {},
+    opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; instanceId?: string } = {},
   ): Promise<ControlReply> {
     const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
     let r: EpAttributedReply;
     try {
-      r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, clean && Object.keys(clean).length ? clean : undefined, opts);
+      const input = clean && Object.keys(clean).length ? clean : undefined;
+      if (this.config.userAuth) {
+        const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
+        const { instanceId: _instanceId, ...invokeOpts } = opts;
+        const submit = async (signal?: AbortSignal) => {
+          const bearer = await execBearerCmd([
+            ...this.config.userAuth!.bearerCmd,
+            "--manager-call",
+            ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : []),
+          ], signal);
+          return invokeUserManager({ ...this.config, managerInstanceId }, bearer, command, input, { ...invokeOpts, signal });
+        };
+        // Subscribe before submission on the renewing main connection. A long accepted launch
+        // must not inherit the short-lived control credential's expiry.
+        r = opts.follow
+          ? await this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {
+              reconcile: async (goalId, attributed, context) => {
+                const instanceId = attributed.responder?.instanceId;
+                if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
+                const bearer = await execBearerCmd([
+                  ...this.config.userAuth!.bearerCmd,
+                  "--manager-call", "--manager-instance", instanceId,
+                ], context.signal, Math.min(30_000, context.deadlineMs));
+                // Validate the renewed bearer against the accepting identity, not mutable session state.
+                const config = {
+                  ...this.config, managerInstanceId: instanceId, lifecycleUid: context.caller.uid,
+                  userAuth: { ...this.config.userAuth!, owner: context.caller.owner, actor: context.caller.actor },
+                };
+                const queryRes = await invokeUserManager(config, bearer, "goal-result", { goalId }, {
+                  signal: context.signal, deadlineMs: Math.min(invokeOpts.deadlineMs ?? 10_000, context.deadlineMs),
+                });
+                if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error?.message ?? "goal-result query refused");
+                return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
+              },
+            })
+          : await submit();
+      } else {
+        r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, opts);
+      }
     } catch (e) {
       // The verdict "nobody answered" comes from core's answer-provenance marker, NEVER from the
       // catalog code. `deadline-exceeded` has two producers that call for opposite responses: the
@@ -1529,7 +1715,10 @@ export class MeshAgent extends EventEmitter {
    *  as a manager that did not answer. */
   async run(verb: "start" | "resume" | "answer" | "status" | "ps", args: Record<string, unknown>): Promise<ControlReply> {
     await this.requireConnected();
-    return this.managerInvoke(`run-${verb}`, args, { deadlineMs: RUN_LAUNCH_DEADLINE_MS });
+    return this.managerInvoke(`run-${verb}`, args, {
+      deadlineMs: RUN_LAUNCH_DEADLINE_MS,
+      ...(verb === "answer" ? { target: { mode: "self" as const } } : {}),
+    });
   }
 
   // ---- the turn relay (seat side) ------------------------------------------------------------
@@ -1604,7 +1793,7 @@ export class MeshAgent extends EventEmitter {
       try {
         const p = JSON.parse(t.payload) as { run?: unknown; step?: unknown; context?: unknown; ask?: unknown; checkpoint?: unknown };
         if (typeof p.context === "string" && p.context.length > 0) context = p.context;
-        ask = renderAskRequest(p, this.config.name);
+        ask = renderAskRequest(p);
       } catch { /* opaque payload — surface it as it came */ }
       return `— turn ${t.goalId} (deadline ${new Date(t.deadlineAt).toISOString()}):\n${context}${ask}`;
     });
@@ -1776,15 +1965,61 @@ export class MeshAgent extends EventEmitter {
     return this.ep.getRoster();
   }
 
+  /** Trust state of this observer's presence watch (`CotalEndpoint.presenceView()`): the roster
+   *  above can only support an absence verdict while this is `current` (#1229). */
+  presenceView(): PresenceView {
+    return this.ep.presenceView();
+  }
+
   /** Our last self-reported presence status. */
   get status(): PresenceStatus {
     return this._status;
   }
 
+  /** Run one presence write through the chain (#636): the write starts only after every earlier
+   *  admitted write has settled, and a rejection is swallowed at the TAIL only, so it propagates
+   *  to this write's own caller while the next admitted write still runs.
+   *
+   *  The straggler rule: departure is the last write, later writes are refused, not reordered.
+   *  Once `stop()` has begun, any write admitted here rejects AT ONCE (no put queued, no wait on
+   *  the chain) with a fixed error, instead of running after — or, for a write that calls
+   *  `requireConnected` (e.g. `setStatus`), sitting out the ten-second connect grace before
+   *  rejecting anyway. `stop()` itself submits departure's own put through this same method (the
+   *  `forDeparture` escape) so departure keeps landing after every write already admitted, even
+   *  though `_stopping` is already true by the time it does. */
+  private inOrder(write: () => Promise<void>, forDeparture = false): Promise<void> {
+    if (this._stopping && !forDeparture) return Promise.reject(new Error("agent is stopping; presence writes are refused"));
+    const next = this.presenceChain.then(write, write);
+    this.presenceChain = next.catch(() => {});
+    return next;
+  }
+
+  /** Detach the chain from writes the CALLER has abandoned, so the next write is ordered behind
+   *  what has actually settled rather than behind work nobody is waiting for any more.
+   *
+   *  The chain above orders departure after every admitted write, which is right while those writes
+   *  are still progressing and wrong once a teardown has given up on them. A host bounds its wait on
+   *  admitted intake and then attempts departure; without this, that attempt queues behind the very
+   *  write the bound just abandoned, so the bound buys nothing, offline never publishes, and the seat
+   *  stays at its last status until its presence TTL expires. The host says in its own log that
+   *  abandoned work is uncancelled and may land after departure, and the chain quietly contradicted
+   *  it.
+   *
+   *  ABANDONED IS NOT CANCELLED here either. The detached writes keep running and may still publish,
+   *  which is the same residual the caller already announces; what changes is only that departure
+   *  stops waiting on them. Call it exactly where the give-up is decided, never as a general reset:
+   *  a caller that invokes this while its writes are still progressing has reintroduced the race the
+   *  chain exists to close. */
+  abandonPresenceWrites(): void {
+    this.presenceChain = Promise.resolve();
+  }
+
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    await this.inOrder(async () => {
     await this.requireConnected();
     const prev = this._status;
     try {
+      if (prev !== "working" && status === "working") await this.ep.setCondition(null);
       await this.publishStatus(status, activity);
     } finally {
       // The transition is a fact about the SEAT, not about whether its presence row was written:
@@ -1797,6 +2032,7 @@ export class MeshAgent extends EventEmitter {
       // not finished, and its deadline is what bounds a stuck one.
       if (prev === "working" && status === "idle") this.onTurnBoundary();
     }
+    });
   }
 
   /**
@@ -1810,17 +2046,24 @@ export class MeshAgent extends EventEmitter {
    * than an ending.
    */
   async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {
+    await this.inOrder(async () => {
     await this.requireConnected();
     try {
       await this.publishStatus(status, activity);
     } finally {
       this._status = status;
     }
+    });
   }
 
   private async publishStatus(status: PresenceStatus, activity?: string): Promise<void> {
     if (activity !== undefined) await this.ep.setActivity(activity);
     await this.ep.setStatus(status);
+  }
+
+  /** Relay a harness-reported condition into presence, or clear it. */
+  async setCondition(condition: PresenceCondition | null): Promise<void> {
+    await this.inOrder(() => this.ep.setCondition(condition));
   }
 
   /** The working→idle boundary: yield `done` for every SURFACED turn (its payload was in the
@@ -1839,11 +2082,13 @@ export class MeshAgent extends EventEmitter {
 
   /** Record the host's actual model and optional variant learned after launch, so peers see the
    *  selection in `cotal_roster` and the web roster even when the operator never pinned one. Explicit
-   *  `model:` / `variant:` config wins; this only fills the gap. Best-effort presence mirror (no
-   *  `requireConnected` — safe pre-connect; it rides the first publish). */
-  async setModel(model: string, variant?: string): Promise<void> {
-    if (this.config.model) return; // operator pin is authoritative — never override it with the runtime value
-    await this.ep.setCardModel(model, this.config.variant ?? variant);
+   *  `model:` / `variant:` config wins; this only fills the gap. `provider` is best-effort and
+   *  reported independently of the model pin: a pinned seat can still report which provider is
+   *  serving it, so the early return only short-circuits when no provider was given either. Best-
+   *  effort presence mirror (no `requireConnected` — safe pre-connect; it rides the first publish). */
+  async setModel(model: string, variant?: string, provider?: string): Promise<void> {
+    if (this.config.model && provider === undefined) return; // operator pin is authoritative for the model
+    await this.inOrder(() => this.ep.setCardModel(this.config.model ?? model, this.config.variant ?? variant, provider));
   }
 
   // ---- channel registry ----------------------------------------------------
@@ -1890,7 +2135,7 @@ export class MeshAgent extends EventEmitter {
       replay: boolean;
       joined: boolean;
       durableUnclosed: boolean;
-      deliveryHealth?: "active" | "degraded";
+      deliveryHealth?: "active" | "degraded" | "unknown";
       messages: number;
       mode: ChannelMode | "normal";
     }[]
@@ -1898,29 +2143,55 @@ export class MeshAgent extends EventEmitter {
     const mine = this.ep.joinedChannels();
     const pending = this.ep.pendingDurableLeaves();
     const unclosed = new Set(pending);
-    // Non-gating delivery-health signal: read the server-side daemon's lease ONCE (a durable-joined
-    // channel must not render as ordinary "subscribed, replay on" when the daemon is down). A read that
-    // throws = open mode / no delivery bucket / no grant → no health surface (left undefined).
+    // Non-gating delivery-health signal (#445): "active" requires an AFFIRMATIVE bounded round-trip
+    // to the delivery daemon's ctl.delivery responder — the one signal a killed daemon cannot leave
+    // behind. The lease read alone was residue (a SIGKILLed daemon's KV row stays `ready: true` for
+    // the bucket TTL) and the session-local membership map never notices daemon death at all, so
+    // together they certified a corpse. Two separable facts, read separately:
+    //   `leaseReadable` — the reader may read the delivery plane (an under-granted read throws);
+    //   `daemonMemberships` — the daemon's OWN answer (undefined ⇒ no responder answered, so no
+    //   daemon is serving this plane; a throw ⇒ responder-present error, fail closed below).
     let leaseLive = false;
-    let daemonKnown = false;
+    let leaseReadable = false;
+    let daemonMemberships: { channel: string }[] | undefined;
     try {
       // "ready" (responder bound), not mere lease existence (single-flight slot claimed mid-startup).
       leaseLive = (await this.ep.readDeliveryLease(0))?.ready === true;
-      daemonKnown = true;
+      leaseReadable = true;
     } catch {
       /* open dev mode or no delivery plane here — health surface does not apply */
     }
-    // Membership-aware: "active" requires BOTH a live daemon lease AND an established owner membership.
-    // A joined durable channel whose boot self-join hasn't landed yet (daemon was down at connect, now
-    // reconciling) has no backstop for this owner even if the lease is live — render it degraded, never
-    // a false "active" off the lease alone (ux honesty blocker).
-    const health = (channel: string, joined: boolean): "active" | "degraded" | undefined =>
-      daemonKnown && joined && this.ep.channelDeliveryClass(channel) === "durable"
-        ? (leaseLive && this.ep.hasDurableMembership(channel) ? "active" : "degraded")
+    if (leaseReadable) {
+      try {
+        daemonMemberships = await this.ep.fetchMemberships();
+      } catch {
+        /* responder present but errored — health cannot be established, never "active" */
+        daemonMemberships = undefined;
+        leaseReadable = false;
+      }
+    }
+    // Membership-aware: "active" requires a daemon that ANSWERED and lists this channel for this
+    // lifecycle (the round-trip is scoped to it), plus a live lease (the lease still carries
+    // information the round-trip does not: it distinguishes a serving daemon from one whose loops
+    // are still binding). A SIGKILLed daemon leaves the lease row behind with ready:true and the
+    // local map set, but answers nothing — degraded. A joined durable channel whose health cannot
+    // be established (the reader lacks the grant, or the responder errored) renders "unknown",
+    // distinct from the degraded of a daemon that answered but holds no membership for this owner —
+    // and from the undefined of a channel where health does not apply (not durable-class, not
+    // joined, open mode).
+    const health = (channel: string, joined: boolean): "active" | "degraded" | "unknown" | undefined =>
+      joined && this.ep.channelDeliveryClass(channel) === "durable"
+        ? !leaseReadable
+          ? "unknown"
+          : daemonMemberships === undefined
+            ? "degraded"
+            : daemonMemberships.some((m) => m.channel === channel) && leaseLive
+              ? "active"
+              : "degraded"
         : undefined;
     const rows: {
       channel: string; description?: string; replay: boolean; joined: boolean;
-      durableUnclosed: boolean; deliveryHealth?: "active" | "degraded"; messages: number; mode: ChannelMode | "normal";
+      durableUnclosed: boolean; deliveryHealth?: "active" | "degraded" | "unknown"; messages: number; mode: ChannelMode | "normal";
     }[] = (await this.ep.listChannels()).map((c) => {
       const joined = mine.some((p) => subjectMatches(p, c.channel));
       return {

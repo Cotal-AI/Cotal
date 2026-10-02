@@ -46,11 +46,12 @@ export interface SimFault {
 }
 
 export interface SimScript {
-  readonly turns?: Readonly<Record<string, Scripted<TurnResultValue>>>;
+  /** See the `at` rule on checkpoints below: turns are stamped from virtual time too, and a scripted `at` is refused. */
+  readonly turns?: Readonly<Record<string, Scripted<Omit<TurnResultValue, "at">>>>;
   readonly asks?: Readonly<Record<string, Scripted<unknown>>>;
   /**
-   * ⚠️ `at` IS NOT SCRIPTABLE. Both of `checkpoint()`'s return paths stamp it from virtual time
-   * and neither one reads a scripted value, so anything written here was required by the type and
+   * ⚠️ `at` IS NOT SCRIPTABLE for turns or checkpoints. `turn()` and both of `checkpoint()`'s return
+   * paths stamp it from virtual time, and neither one reads a scripted value, so anything written here was required by the type and
    * then silently discarded. Demanding a field the implementation overwrites makes every fixture
    * carry a number that means nothing, and reads to the next author as though it were honoured.
    *

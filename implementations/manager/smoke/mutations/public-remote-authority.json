@@ -1,0 +1,35 @@
+{
+  "suite": ["implementations/manager/smoke/public-remote-authority.smoke.ts"],
+  "guard": "The public Manager package exposes its stock closed client helpers, native registration and canonical activation artifacts",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:public-remote-authority",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/public-remote-authority.json",
+  "mutations": [
+    {
+      "name": "remove the public remote client namespace",
+      "file": "implementations/manager/src/index.ts",
+      "find": "export * as remoteManagerClient from \"./remote-authority.js\";",
+      "replace": "",
+      "expectRed": "public manager root exposes remoteManagerClient",
+      "cell": "public manager root exposes remoteManagerClient",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:public-remote-authority"
+    },
+    {
+      "name": "remove public native registration",
+      "file": "implementations/manager/src/index.ts",
+      "find": "export { registerRemoteManagerAuthority } from \"./remote-register.js\";",
+      "replace": "",
+      "expectRed": "public manager root exposes native manager registration",
+      "cell": "public manager root exposes native manager registration",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:public-remote-authority"
+    },
+    {
+      "name": "remove public canonical activation artifacts",
+      "file": "implementations/manager/src/index.ts",
+      "find": "export { managerClusterArtifacts } from \"./manager-service-contract.js\";",
+      "replace": "",
+      "expectRed": "public manager root exposes canonical activation artifacts",
+      "cell": "public manager root exposes canonical activation artifacts",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:public-remote-authority"
+    }
+  ]
+}

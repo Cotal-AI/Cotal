@@ -3,7 +3,7 @@
     "packages/core/smoke/membership-rw-renewal.smoke.ts"
   ],
   "guard": "the membership feed's conn B never presents its cached rw credential after that credential has expired",
-  "command": "pnpm smoke:membership-rw-renewal",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:membership-rw-renewal",
   "completionMarker": "MEMBERSHIP-RW RENEWAL",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-rw-expiry.json",
   "why": [
@@ -23,7 +23,18 @@
       "replace": "    if (typeof exp !== \"number\" || exp * 1000 > 0) return;",
       "expectRed": "conn B's own wire expires ONCE and no redial presents the dead cred to the broker",
       "cell": "conn B's own wire expires ONCE and no redial presents the dead cred to the broker",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
       "note": "A real cred's exp is always > 0, so the guard returns before it can refuse: the issue's pre-fix behavior with the tree still compiling and the helper still referenced. Under the mutation the cell reports two distinct cids on the feed's nkey (the original wire plus the redial); with the guard armed it reports one."
+    },
+    {
+      "name": "a closed conn B still swallows reconnect() instead of opening a fresh data connection",
+      "file": "packages/core/src/membership-feed.ts",
+      "find": "    if (!connB.isClosed()) {\n      await connB.reconnect().catch(() => {});\n      return;\n    }",
+      "replace": "    if (!connB.isClosed()) {\n      await connB.reconnect().catch(() => {});\n      return;\n    }\n    await connB.reconnect().catch(() => {});\n    return;",
+      "expectRed": "after the successful reload the broker table shows exactly one cotal-membership-rw connection",
+      "cell": "after the successful reload the broker table shows exactly one cotal-membership-rw connection",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "Puts the swallowed reconnect() back on the revive path: a closed client still calls reconnect(), the rejection is caught, and reload reports the adopted window while the broker table stays empty. The named cell is the first red. The command builds core, so afterRestore rebuilds it; dist/ is gitignored and cannot be the recovery."
     }
   ]
 }

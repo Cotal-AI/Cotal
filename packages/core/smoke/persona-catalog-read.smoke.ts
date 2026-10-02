@@ -95,7 +95,15 @@ check(
 
 /** The manager's list projection, inlined so this file grades the SAME ownership predicate
  *  the handler uses rather than a second copy of the catalog walk. */
-const projected = catalog.flatMap((e) => {
+type ProjectedPersona = {
+  name: string;
+  error?: "unparseable";
+  role?: string;
+  model?: string;
+  description?: string;
+  owner?: string;
+};
+const projected = catalog.flatMap((e): ProjectedPersona[] => {
   if (e.error) return [{ name: e.name, error: "unparseable" as const }];
   const def = e.def!;
   if (!personaCatalogReadable(def.owner, "alice", false)) return [{ name: e.name }];

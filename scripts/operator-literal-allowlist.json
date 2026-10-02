@@ -51,16 +51,6 @@
       "reason": "macOS home path mutation fixture"
     }
   },
-  "extensions/connector-core/src/docs-bundle.generated.ts": {
-    "home-path": {
-      "count": 2,
-      "reason": "generated documentation mirror; count moves with the generator"
-    },
-    "shared-ipv4": {
-      "count": 2,
-      "reason": "generated user-facing address examples"
-    }
-  },
   "implementations/cli/smoke/install.smoke.ts": {
     "home-path": {
       "count": 2,
@@ -111,7 +101,7 @@
       "reason": "illustrative address in user-facing guidance"
     }
   },
-  "implementations/cli/src/lib/join-target.ts": {
+  "packages/workspace/src/join-target.ts": {
     "shared-ipv4": {
       "count": 3,
       "reason": "shared address range and user-facing examples, including a range boundary constant closing a sentence in a comment"
@@ -145,16 +135,6 @@
     "home-path": {
       "count": 1,
       "reason": "attribution scrubber fixture"
-    }
-  },
-  "scripts/feedback-remote.mjs": {
-    "public-ipv4": {
-      "count": 2,
-      "reason": "feedback service endpoint default"
-    },
-    "home-path": {
-      "count": 2,
-      "reason": "feedback service remote root default"
     }
   }
 }

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // #781: a provider stream can make Jcode close the Harness API connection while a seat is in an
 // inbox-driven turn. That failed turn must not take the mesh seat down with it. This uses the real
@@ -40,7 +41,7 @@ const startupOnly = process.argv.includes("--startup-only");
 const steadyOnly = process.argv.includes("--steady-only");
 assert.ok(!(startupOnly && steadyOnly), "choose at most one recovery group");
 
-const root = mkdtempSync(join(tmpdir(), "cotal-jcode-provider-disconnect-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-provider-disconnect-`));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -69,6 +70,7 @@ const ambiguousSessionState = join(root, "ambiguous-session.json");
 const ambiguousRequestClosed = join(root, "ambiguous-request-closed");
 const ambiguousCloseRelease = join(root, "ambiguous-close-release");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
+teardownOnSignal(nats);
 let child: ChildProcess | undefined;
 let safetyChild: ChildProcess | undefined;
 let kickoffChild: ChildProcess | undefined;
@@ -77,7 +79,7 @@ let guardChild: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
-  assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  assert.ok(condition, `${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -332,12 +334,16 @@ try {
     await waitFor("mesh presence", () => peerId);
     check("Jcode host joins before the provider stall", Boolean(peerId));
 
+    // Presence can precede the post-join kickoff's turn boundary. A DM arriving during that
+    // turn takes the soft-interrupt path, which does not exercise this fixture's send-message
+    // disconnect trigger. Observe the real boundary before starting the provider-stall case.
+    await waitFor("post-join kickoff turn boundary", () => entries().find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("You are now connected to the Cotal mesh as")));
     await operator.unicast(peerId!, "SIMULATE_PROVIDER_STALL");
     await waitFor("simulated provider disconnect", () => existsSync(closeOnce) ? closeOnce : undefined);
     await waitFor("synthetic transient recovery attach failure", () => existsSync(failAttachOnce) ? failAttachOnce : undefined).catch(() => undefined);
     check("the recovery attempt deterministically loses its first attach race (#971)", entries().some((entry) => entry.ev === "attach_failed_once"), entries());
     await waitFor("recovery retry or seat exit after the transient attach loss", () =>
-      stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child.exitCode !== null
+      stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child!.exitCode !== null
         ? true
         : undefined,
     );
@@ -447,6 +453,7 @@ try {
     safetyChild.stderr?.on("data", (chunk: Buffer) => (safetyStderr += chunk.toString()));
     await waitFor("safety initial bridge", () => entriesOf(safetyLog).find((entry) => entry.ev === "listening"));
     await waitFor("safety mesh presence", () => safetyPeerId);
+    await waitFor("safety post-join kickoff turn boundary", () => entriesOf(safetyLog).find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("You are now connected to the Cotal mesh as")));
     await operator.unicast(safetyPeerId!, "SIMULATE_UNPROVEN_TEARDOWN");
     await waitFor("safety replacement attach failure", () => existsSync(safetyFailAttachOnce) ? true : undefined);
     const safetyDeadline = Date.now() + 10_000;

@@ -68,7 +68,9 @@ prompt** (who the agent is), while `prompt` is a **kickoff message** auto-submit
 the session is up (what to do right now). This is the declarative form of `cotal spawn --prompt`.
 It is submitted on first boot and again on a stale-restart (it is part of the launch form,
 so changing it marks a running agent `stale` like any other launch field); a manager
-reclaiming a still-live session does not re-submit it.
+reclaiming a still-live session does not re-submit it. A connector that cannot deliver a
+kickoff prompt refuses the manifest at preflight (today: hermes), the same way an
+unsupported `variant:` is refused.
 
 ## Channel grants
 

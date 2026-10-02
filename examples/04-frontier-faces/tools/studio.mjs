@@ -36,7 +36,7 @@ const EX = join(HERE, ".."); // the example dir (serves web/, personas.mjs, qr-c
 const ROOT = join(EX, "..", ".."); // repo root (agent data dirs live under ROOT/.cotal/opencode/<name>)
 const CONN = join(ROOT, "extensions", "connector-opencode", "dist");
 const SERVE = join(CONN, "serve.js");
-const PLUGIN = join(CONN, "plugin.bundle.js");
+const PLUGIN = join(CONN, "plugin", "index.js");
 
 const PORT = Number(process.env.PORT || 4097);
 const MODEL = process.env.MODEL || ""; // overrides each agent file's model

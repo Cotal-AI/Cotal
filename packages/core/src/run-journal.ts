@@ -305,6 +305,13 @@ export class RunJournalPrefixTruncated extends Error {
   }
 }
 
+/** A consumer that has delivered nothing and holds no ack: the one this replay just created. */
+function replayConsumerIsFresh(
+  info: { delivered: { consumer_seq: number }; num_ack_pending: number },
+): boolean {
+  return info.delivered.consumer_seq === 0 && info.num_ack_pending === 0;
+}
+
 /**
  * The freshness test itself, separate so it can be put to a consumer that really was inherited.
  *
@@ -316,7 +323,7 @@ export function assertReplayConsumerFresh(
   durable: string,
   info: { delivered: { consumer_seq: number }; num_ack_pending: number },
 ): void {
-  if (info.delivered.consumer_seq !== 0 || info.num_ack_pending !== 0) {
+  if (!replayConsumerIsFresh(info)) {
     throw new RunJournalReplayRaced(run, durable, info.delivered.consumer_seq);
   }
 }
@@ -375,6 +382,56 @@ export interface RunJournalReplay {
 }
 
 /**
+ * Remove the replay durable. ONLY "already gone" is swallowed.
+ *
+ * A catch-all here would rest on the stream's limits reaping the leftovers, and they do not: WFJ
+ * sets neither `max_consumers` nor `consumer_limits`, which the server normalizes to unlimited with
+ * an inactive threshold of zero, and a durable at zero gets no delete timer at all, so a failed
+ * delete leaves a consumer behind for good, one per takeover. The consumer carries its own threshold
+ * (see `runJournalConsumerConfig`) so the server reaps it regardless, and a delete that fails for a
+ * reason we did not name is raised.
+ */
+async function dropReplayConsumer(jsm: JetStreamManager, stream: string, durable: string): Promise<void> {
+  try {
+    await jsm.consumers.delete(stream, durable);
+  } catch (e) {
+    if (!isConsumerNotFound(e)) throw e;
+  }
+}
+
+/** The replays still queued on one durable name, keyed `<stream>/<durable>`. */
+const replaysOnDurable = new Map<string, Promise<void>>();
+
+/**
+ * One replay at a time per replay durable, in THIS process.
+ *
+ * The name is unique per TAKEOVER, and the number of replays under one takeover is not one: a drive
+ * re-reads its journal at every effect and at every poll of a parked pause, all under the takeover
+ * id its credential was minted for. `RunScopeAuthority` serializes the reads it makes itself, and
+ * nothing serializes them against the driver's own other readers on the same id — `activateRun`, the
+ * no-record diagnostic, and a `RunHost.status` or `locate` handed the drive's lease id, which run on
+ * the driver's connection rather than the mediator's. Two of those overlapping share one durable:
+ * `add` hands the second the first's half-read consumer and each one's delete tears down the other's
+ * fetch. Measured on a live broker at 17 records: overlapping by 1ms tore the fetch, and overlapping
+ * at 0ms returned a silent EMPTY replay, which reads as a run with no history.
+ *
+ * The lock belongs to the NAME rather than to any one caller, because the name is what is shared.
+ * A caller cannot opt out of it and a new caller cannot forget to join it.
+ */
+async function exclusively<T>(key: string, body: () => Promise<T>): Promise<T> {
+  const ahead = replaysOnDurable.get(key);
+  const mine = ahead === undefined ? body() : ahead.then(body);
+  const settled = mine.then(() => undefined, () => undefined);
+  replaysOnDurable.set(key, settled);
+  // The map holds only the queue that is still live: the last replay off the chain removes it, and a
+  // long-running mesh does not accumulate one entry per takeover it has ever driven.
+  void settled.then(() => {
+    if (replaysOnDurable.get(key) === settled) replaysOnDurable.delete(key);
+  });
+  return await mine;
+}
+
+/**
  * Read the run's whole journal, in append order, from the beginning.
  *
  * The replay durable is DELETED and recreated rather than reused. A durable remembers how far it
@@ -383,6 +440,10 @@ export interface RunJournalReplay {
  * as if nothing had happened. Deleting is also why a rival's interference is bounded — it can only
  * disturb a pre-activation replay, and a disturbed replay either fails its count check or loses its
  * activation CAS, both of which end in "replay again".
+ *
+ * Both halves of that sentence are enforced here rather than assumed of the caller: one replay at a
+ * time per durable in this process (see `exclusively`), and a durable of that name left behind by an
+ * earlier replay is removed before this one reads (see below).
  */
 export async function replayRunJournal(
   js: JetStreamClient,
@@ -399,22 +460,29 @@ export async function replayRunJournal(
   // the other's live fetch.
   const cfg = runJournalConsumerConfig(space, runId, takeoverId);
   const durable = cfg.durable_name as string;
-  const created = await jsm.consumers.add(stream, cfg);
-  try {
-    return await readReplay(js, stream, durable, created, subject, runId);
-  } finally {
-    // ONLY "already gone" is swallowed. A catch-all here would rest on the stream's limits reaping
-    // the leftovers, and they do not: WFJ sets neither `max_consumers` nor `consumer_limits`, which
-    // the server normalizes to unlimited with an inactive threshold of zero, and a durable at zero
-    // gets no delete timer at all, so a failed delete leaves a consumer behind for good, one per
-    // takeover. The consumer carries its own threshold (see `runJournalConsumerConfig`) so the
-    // server reaps it regardless, and a delete that fails for a reason we did not name is raised.
-    try {
-      await jsm.consumers.delete(stream, durable);
-    } catch (e) {
-      if (!isConsumerNotFound(e)) throw e;
+  return await exclusively(`${stream}/${durable}`, async () => {
+    let created = await jsm.consumers.add(stream, cfg);
+    if (!replayConsumerIsFresh(created)) {
+      // A durable of this replay's OWN name, holding a tail, that no live replay in this process
+      // owns: the deletion below did not run. A replay is interrupted by whatever ends its
+      // connection — a drive's standing connection reconnecting under it, a host closing one on a
+      // parked drive — and the delete is the part that does not land. Measured on a live broker:
+      // closing the connection 2ms into a 17-record replay left the durable at `delivered=17`, and
+      // every later replay on that takeover id then read it as another driver's half-fed consumer,
+      // which is a fault reported to a healthy run about a rival that does not exist.
+      //
+      // So it is removed and remade rather than refused. This is NOT the guard being widened: the
+      // consumer that gets read is a new one, and if THAT comes back holding a tail then someone
+      // this process cannot account for is on the name, which is what `RunJournalReplayRaced` says.
+      await dropReplayConsumer(jsm, stream, durable);
+      created = await jsm.consumers.add(stream, cfg);
     }
-  }
+    try {
+      return await readReplay(js, stream, durable, created, subject, runId);
+    } finally {
+      await dropReplayConsumer(jsm, stream, durable);
+    }
+  });
 }
 
 /** A takeover id: what a driver asks its credential to be minted for. Callers that mint their own
