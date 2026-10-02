@@ -250,7 +250,13 @@ try {
   console.log("5. D y despawns it gracefully");
   await select("seat3");
   m = s.mark();
-  await s.keys("D", 800);
+  // Through `openKill`, like the w2 cells above, rather than a single unretried D. A bare `D` that
+  // does not take sends the following `y` nowhere, nothing is stopped, and the cell below spends 60
+  // seconds waiting for a notice that was never going to come. Shard 2 failed exactly that way on
+  // 2026-10-02 (b664ec9ac), with an EMPTY evidence payload because the screen held no stopping,
+  // stopped or stop: text at all, and the roster still carrying seat3:idle. `select`'s own comment
+  // says why keystrokes here are retried rather than asserted; this one was not.
+  check("D opens the graceful kill confirm on seat3", await openKill(m), clean(s.out.slice(m)).slice(-300));
   await s.keys("y", 300);
   check("y: the notice reports the graceful stop", await s.waitFor(/stopped seat3/, 60_000, m), clean(s.out.slice(m)).match(/(stopping|stopped|stop:)[^│\n]*/g)?.join(" | "));
   check("...and seat3 leaves the roster", !!(await until(() => (live("seat3") ? undefined : true), 15_000)), watcher.getRoster().map((p) => `${p.card.name}:${p.status}`));
