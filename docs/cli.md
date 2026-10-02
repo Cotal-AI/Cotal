@@ -1784,8 +1784,9 @@ account's discovered registry entries. See
 ## actor
 
 ```bash
-# an upsert of the WHOLE row: a flag left off is the WIDE default below, not "unchanged"
-cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>]
+# an upsert of the WHOLE row: name all three ACL flags, or pass --full for the wide defaults below
+cotal actor grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b [--role <r>] [--label <l>]
+cotal actor grant <actor> --sub <IdP subject> --full [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>]
 cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>)
 cotal actor list
 ```
@@ -1795,19 +1796,20 @@ cotal actor list
 | `--space <s>` | the folder's | Space whose ledger to manage |
 | `--sub <subject>` | none | The IdP subject (shown by `cotal login`) the actor belongs to |
 | `--owner <u_…>` | none | The derived owner token (alternative to `--sub`) |
-| `--scope <a,b>` | `spawn,role:default` | Capability scope (`''` = none; `spawn` = may run agents; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it) |
-| `--allow-subscribe <a,b>` | `>` (all channels) | Channel read ACL; the user's envelope, their agents can never read beyond it |
-| `--allow-publish <a,b>` | `>` (all channels) | Channel post ACL; also the envelope for their agents' posting |
+| `--full` | off | Fill each ACL flag left off with its wide default; without it, `grant` refuses unless all three are named |
+| `--scope <a,b>` | `spawn,role:default` with `--full` | Capability scope (`''` = none; `spawn` = may run agents; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it) |
+| `--allow-subscribe <a,b>` | `>` (all channels) with `--full` | Channel read ACL; the user's envelope, their agents can never read beyond it |
+| `--allow-publish <a,b>` | `>` (all channels) with `--full` | Channel post ACL; also the envelope for their agents' posting |
 | `--role <r>` | none | Role (scopes the task-queue consumer) |
 | `--label <l>` | none | Display label for `actor list` (never the IdP subject) |
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
-A bare `grant` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role); the flags narrow it. A
-re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
+`grant --full` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role). A
+`grant` that leaves off `--scope`, `--allow-subscribe` or `--allow-publish` without `--full` is
+refused and writes nothing. A re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
 every field out: the new scope plus the row's current read set, post set, role and label
-(`cotal actor list` shows what a row holds). A field left off does not stay as it was, it
-reverts to the wide default in the table above, which is how a narrow reader becomes a reader
-of every channel. A re-grant retires the current interactive lifecycle through the running auth
+(`cotal actor list` shows what a row holds). Under `--full`, a field left off does not stay as it
+was: it reverts to the wide default in the table above. A re-grant retires the current interactive lifecycle through the running auth
 service before it rotates the row, so copied bearers cannot cross an authorization update. If that
 retirement cannot be confirmed, the row is left unchanged and the command fails with the recovery
 action. `revoke` uses the same retirement before deleting the row, which lets a later grant create a

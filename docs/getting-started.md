@@ -118,10 +118,9 @@ daemon) for quick local experiments.
 
 For a mesh where **people sign in** instead of handing out creds files, start it with
 `cotal up --user-auth --idp <auth base URL>`: each human runs `cotal login --idp <url>` once,
-the operator grants their agents with `cotal actor grant <actor> --sub <their id>` (a full
-grant by default: all channels, scope `spawn,role:default` so it may spawn and may delegate
-the default role; narrow it with `--allow-subscribe` /
-`--allow-publish` / `--scope`), and every connect is authorized live against that grant
+the operator grants their agents with `cotal actor grant <actor> --sub <their id> --full` (all
+channels, scope `spawn,role:default` so it may spawn and may delegate the default role; for a
+narrow row, name `--scope`, `--allow-subscribe` and `--allow-publish` instead of `--full`), and every connect is authorized live against that grant
 (revoke and it's gone). See [identity & auth](identity-and-auth.md).
 
 If a step fails, setup offers to hand you to an interactive Claude session that has the

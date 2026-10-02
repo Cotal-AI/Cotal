@@ -328,10 +328,9 @@ On a **user-auth** mesh:
 cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe 'events.<owner>.<actor>' --allow-publish ''
 ```
 
-Every field, deliberately. `actor grant` is an upsert of the whole row, and an omitted flag is not
-"leave it alone": it is the wide default, `>` read, `>` post, and `spawn,role:default` scope. A bare
-`cotal actor grant <reader>` therefore grants a reader of every channel in the space, which is the
-opposite of what a scoped watcher is for.
+Every field, deliberately. `actor grant` is an upsert of the whole row, so it refuses a grant that
+leaves off any of the three ACL flags. Only `--full` turns an omitted flag into the wide default
+(`>` read, `>` post, `spawn,role:default` scope), which is the opposite of what a scoped watcher is for.
 
 On a **static** mesh there is no actor ledger for `actor grant` to write to, and the refusal says
 so; mint the reader instead:
