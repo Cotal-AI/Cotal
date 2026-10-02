@@ -286,9 +286,9 @@ export function renderInbox(opts: {
     if (strict && strictGap) continue;
     const cost = itemCost(i);
     if (used + cost > budget) {
-      // A message nothing could ever carry is not a gap: it will never become deliverable, so the
-      // walk steps over it and the note says so. Anything else IS a gap, and the ordered lane waits.
-      if (strict && !stuck.has(i.id)) strictGap = true;
+      // In the ordered lane even a message no response could carry whole is a gap: the mark would
+      // pass it if the walk stepped over it, so the lane waits for it to go out in parts (#613).
+      if (strict) strictGap = true;
       continue;
     }
     shown.push(i);
@@ -392,16 +392,16 @@ function heldNote(
  *
  * It lives beside the agent rather than in the reply, so a reconnect, which keeps the agent and its
  * buffer, resumes where the last part ended. A process restart loses it, and the redelivered message
- * starts again from its first part: repeated, never skipped. An entry goes when its message leaves
- * the buffer, whether by its last part or by anything else that consumed it.
+ * starts again from its first part: repeated, never skipped. An entry goes when its message is no
+ * longer offered, whether by its last part or by anything else that consumed it.
  */
 const partOffsets = new WeakMap<MeshAgent, Map<string, number>>();
 
-/** The read position for an oversized message, after dropping positions of messages no longer buffered. */
-function partCursor(agent: MeshAgent, buffered: readonly InboxItem[]): Map<string, number> {
+/** The read position for an oversized message, after dropping positions of messages no longer offered. */
+function partCursor(agent: MeshAgent, offered: readonly InboxItem[]): Map<string, number> {
   let m = partOffsets.get(agent);
   if (!m) partOffsets.set(agent, (m = new Map()));
-  const live = new Set(buffered.map((i) => i.recvKey));
+  const live = new Set(offered.map((i) => i.recvKey));
   for (const k of m.keys()) if (!live.has(k)) m.delete(k);
   return m;
 }
@@ -454,33 +454,36 @@ function renderPart(opts: {
 }
 
 /**
- * The reply for a call that could carry no whole message: the next part of the first buffered
- * message too large for any response, or `undefined` when there is none. The read position moves
- * only when the part went out, and the message is cleared only with its last part, so nothing is
- * cleared before it was handed over (#603).
+ * The reply for a call that could carry no whole message: the next part of `item`, a message too
+ * large for any response, or `undefined` when there is none. The read position moves only when the
+ * part went out, and `last` records the message as handed over only with its last part, so nothing
+ * is cleared before it was handed over (#603). `last` is a buffered message's ack, or for focus
+ * recall the mark or the ahead record that a whole recalled item would have moved.
  */
-function partReply(
-  agent: MeshAgent,
-  buffered: readonly InboxItem[],
-  held: readonly InboxItem[],
-  stuck: ReadonlySet<string>,
-  peek: boolean,
-  warning?: string,
-): string | undefined {
-  const item = buffered.find((i) => stuck.has(i.id));
+function partReply(opts: {
+  agent: MeshAgent;
+  item: InboxItem | undefined;
+  /** Everything this call offered, so read positions of messages no longer offered are dropped. */
+  offered: readonly InboxItem[];
+  stuck: ReadonlySet<string>;
+  peek: boolean;
+  last: (item: InboxItem) => void;
+  warning?: string;
+}): string | undefined {
+  const { agent, item, peek } = opts;
   if (!item) return undefined;
-  const cursor = partCursor(agent, buffered);
+  const cursor = partCursor(agent, opts.offered);
   const part = renderPart({
     item,
     offset: cursor.get(item.recvKey) ?? 0,
     peek,
-    others: held.filter((i) => i !== item),
-    stuck,
-    warning,
+    others: opts.offered.filter((i) => i !== item),
+    stuck: opts.stuck,
+    warning: opts.warning,
   });
   if (!peek) {
     if (part.done) {
-      agent.drainInboxDeliveries([item.recvKey]);
+      opts.last(item);
       cursor.delete(item.recvKey);
     } else cursor.set(item.recvKey, part.end);
   }
@@ -852,7 +855,14 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
                 : "Inbox empty, no new messages.",
             );
           if (!shown.length) {
-            const part = partReply(agent, buffered, held, stuck, peek ?? false);
+            const part = partReply({
+              agent,
+              item: buffered.find((i) => stuck.has(i.id)),
+              offered: buffered,
+              stuck,
+              peek: peek ?? false,
+              last: (i) => agent.drainInboxDeliveries([i.recvKey]),
+            });
             if (part) return ok(part);
           }
           // The response exists before anything is acked: an ack is a claim that these messages were
@@ -929,9 +939,26 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               : "Inbox empty, no new messages, and no channel chatter since you entered focus.",
           );
         if (!all.length) {
-          // Only a buffered message can be read in parts: recall is re-derived on every call and
-          // has no delivery of its own to clear.
-          const part = partReply(agent, buffered, [...buffered, ...fresh], stuck, peek ?? false, warning);
+          // A recalled message goes out in parts too, and its last part moves what a whole one would
+          // have: the mark for the ordered lane, whose first item is the only one it may take, or the
+          // ahead record, so the mark never passes a message that has not been handed over.
+          const first = clocked[0];
+          const item =
+            buffered.find((i) => stuck.has(i.id)) ??
+            (first && stuck.has(first.id) ? first : aheadFresh.find((i) => stuck.has(i.id)));
+          const part = partReply({
+            agent,
+            item,
+            offered: [...buffered, ...fresh],
+            stuck,
+            peek: peek ?? false,
+            warning,
+            last: (i) => {
+              if (bufferedIds.has(i.recvKey)) agent.drainInboxDeliveries([i.recvKey]);
+              else if (aheadIds.has(i.recvKey)) agent.noteRecalledAhead(i.recvKey);
+              else agent.noteRecalled({ ts: i.ts, id: i.recvKey });
+            },
+          });
           if (part) return ok(part);
         }
         // Render first, ack second, and only ever ids from the buffered lane: acking a recall id

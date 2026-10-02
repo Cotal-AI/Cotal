@@ -329,8 +329,8 @@ try {
     check("a buffer holding only undeliverable mail does not report an empty inbox",
       !text.includes("Inbox empty") && text.includes("stays buffered and uncleared"), text.slice(0, 200));
 
-    // Focus recall has no delivery to clear, so it is never read in parts. An oversized recall item
-    // with nothing else to show still has to be named in the reply.
+    // Focus recall is read in parts too: an oversized recall item with nothing else to show is the
+    // next part of it, and the mark moves past it only with its last part.
     const focused = new MeshAgent(cfg);
     focused.on("error", () => {});
     Object.defineProperty(focused, "attention", { get: () => "focus" });
@@ -339,8 +339,13 @@ try {
       droppedChannels: [],
     });
     const recallText = textOf(await inboxSpec().run(focused, cfg, {}));
-    check("an oversized recall item with nothing else to show is named in the reply",
-      recallText.startsWith("Nothing could be delivered") && recallText.includes("larger than one response"), recallText.slice(0, 200));
+    const recallRest = textOf(await inboxSpec().run(focused, cfg, {}));
+    const recallAfter = textOf(await inboxSpec().run(focused, cfg, {}));
+    check("an oversized recall item with nothing else to show is read in parts, then cleared",
+      recallText.startsWith("Part of a message larger than one response") && recallText.length <= INBOX_WINDOW_CHARS &&
+        (recallText + recallRest).split("r").length - 1 >= 60_000 && recallRest.includes("last part") &&
+        recallAfter.startsWith("Inbox empty"),
+      { first: recallText.slice(0, 200), rest: recallRest.slice(0, 200), after: recallAfter.slice(0, 120) });
   }
 
   // ── 12) THE NOTE ABOUT UNDELIVERABLE MAIL IS ITSELF BOUNDED ───────────────────────────────────
@@ -703,7 +708,7 @@ try {
   //   TOTAL PROGRESS  every item that any response could carry is eventually delivered
   //   NO DUPLICATES   nothing is delivered twice
   //   IN BOUND        every response fits the window
-  //   HONEST          what is never delivered is exactly what no response could carry, and is named
+  //   WHOLE           what no response could carry is delivered in parts, once, and the mark waits for it
   //
   // A budget-skipped TAIL is not a stall: when nothing was shown behind the skip the mark does not
   // move that call, and the next call leads with the skipped item. The assertion is eventual.
@@ -774,9 +779,10 @@ try {
         const seen = new Map<string, number>();
         let calls = 0;
         let progressed = true;
+        let parts = ""; // the parts of an oversized item so far, counted once the last one is in
         // The late pair lands after call one, so a scenario whose first call delivers nothing (four
         // giants) must still take a second call rather than reporting a stall before they arrive.
-        while (calls < 12 && (progressed || calls < 2)) {
+        while (calls < 16 && (progressed || calls < 2)) {
           const before = new Map(seen);
           const text = textOf(await inboxSpec().run(agent, cfg, {}));
           if (calls === 0)
@@ -798,21 +804,26 @@ try {
             text.length <= INBOX_WINDOW_CHARS,
             `${UNIVERSE} :: [${shape.join(",")}${tied ? ",tied" : ""}${ahead ? ",ahead" : ""}] call ${calls} returned ${text.length} chars`,
           );
+          const part = text.startsWith("Part of a message larger than one response");
+          // A part's body runs from its own indented line to the held-note, and a cut can land inside
+          // a marker, so the marks of an oversized item are counted on its reassembled parts.
+          if (part) parts += text.slice(text.indexOf("\n  ") + 3).split("\n\n… ")[0];
+          const counted = part ? (text.includes("This was its last part") ? parts : "") : text;
+          if (part && counted) parts = "";
           for (let n = 0; n < items.length; n++) {
-            const hits = (text.match(new RegExp(` MARK_${n}(?![0-9])`, "g")) ?? []).length;
+            const hits = (counted.match(new RegExp(` MARK_${n}(?![0-9])`, "g")) ?? []).length;
             if (hits) seen.set(`MARK_${n}`, (seen.get(`MARK_${n}`) ?? 0) + hits);
           }
           calls++;
-          progressed = seen.size > before.size;
+          progressed = seen.size > before.size || part;
         }
 
         const label = `[${shape.join(",")}${tied ? ",tied" : ""}${ahead ? ",ahead" : ""}]`;
         const all: Size[] = [...shape, ...late];
         for (let n = 0; n < all.length; n++) {
-          const deliverable = all[n] !== "giant"; // a giant cannot ride any response of its own
           const count = seen.get(`MARK_${n}`) ?? 0;
           assert.ok(
-            deliverable ? count === 1 : count === 0,
+            count === 1,
             `${UNIVERSE} :: ${label} MARK_${n} (${all[n]}) was delivered ${count} times after ${calls} calls`,
           );
           deliveries += count;
