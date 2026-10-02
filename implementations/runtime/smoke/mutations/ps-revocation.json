@@ -131,8 +131,8 @@
     {
       "name": "a listing with an unchecked row exits 0",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  if (unchecked.length > 0) process.exitCode = 1;",
-      "replace": "  void unchecked;",
+      "find": "  for (const u of unchecked) console.error(u);\n  if (unchecked.length > 0) process.exitCode = 1;",
+      "replace": "  for (const u of unchecked) console.error(u);\n  void unchecked;",
       "cell": "...and exits 1, because the listing is incomplete",
       "expectRed": "...and exits 1, because the listing is incomplete",
       "note": "The panel measured exit 0 through the real binary. A caller that tests the status is then told the listing is complete."
@@ -140,8 +140,8 @@
     {
       "name": "POSITIVE CONTROL for the exit-status control: every listing exits 1",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  if (unchecked.length > 0) process.exitCode = 1;",
-      "replace": "  process.exitCode = 1;",
+      "find": "  for (const u of unchecked) console.error(u);\n  if (unchecked.length > 0) process.exitCode = 1;",
+      "replace": "  for (const u of unchecked) console.error(u);\n  process.exitCode = 1;",
       "cell": "a listing whose every marker was read leaves the exit code alone",
       "expectRed": "a listing whose every marker was read leaves the exit code alone",
       "note": "Block 9's control asserts a complete listing leaves the exit code alone. This mutant shows the control can see the wrong answer, so its pass in the green run is a measurement."
