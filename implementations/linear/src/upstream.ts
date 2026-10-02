@@ -45,7 +45,7 @@ import {
 import { contractDigest } from "@cotal-ai/core";
 import type { LinearAccount } from "./account.js";
 import { credentialFor, type LinearCredential } from "./oauth.js";
-import { linearMcpUrl, OriginRefusedError, pinnedFetch, ResponseTooLargeError } from "./origin.js";
+import { linearMcpUrl, OriginRefusedError, RedirectRefusedError, pinnedFetch, ResponseTooLargeError } from "./origin.js";
 
 export interface LinearLimits {
   /** Cap on one HTTP response body, checked before it is accumulated. */
@@ -416,7 +416,7 @@ export class LinearUpstream {
   /** A failure as a status or class, with the bearer scrubbed. Response bodies are never kept. */
   private describeError(e: unknown): string {
     if (e instanceof StreamableHTTPError) return `HTTP ${e.code ?? "error"} from the Linear MCP server`;
-    if (e instanceof OriginRefusedError || e instanceof ResponseTooLargeError || e instanceof DeadlineError) return e.message;
+    if (e instanceof OriginRefusedError || e instanceof RedirectRefusedError || e instanceof ResponseTooLargeError || e instanceof DeadlineError) return e.message;
     if (e instanceof McpError) return this.scrub(`MCP error ${e.code}: ${e.message}`);
     return this.scrub(e instanceof Error ? `${e.name}: ${e.message}` : "an unexpected failure");
   }
@@ -442,6 +442,7 @@ export class LinearUpstream {
   private classify(e: unknown, why: "timeout" | "cancelled" | undefined): UpstreamReply {
     const detail = this.describeError(e);
     if (e instanceof OriginRefusedError) return { kind: "failed", reason: "transport", detail, outcome: "not-executed" };
+    if (e instanceof RedirectRefusedError) return { kind: "failed", reason: "transport", detail, outcome: "unknown" };
     if (why) return { kind: "failed", reason: why, detail: `${why} after dispatch; the request may or may not have run`, outcome: "unknown" };
     // Attributed only when THIS request's own response crossed the cap. A streamed overflow on
     // another request's stream ends that request, not this one.

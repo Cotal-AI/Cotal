@@ -142,6 +142,13 @@ class FileOAuthProvider implements OAuthClientProvider {
     this.store({ tokens, obtainedAt: Date.now() });
   }
 
+  prepareTokenRequest(): URLSearchParams | undefined {
+    if (this.redirect !== undefined) return undefined;
+    const refreshToken = this.tokens()?.refresh_token;
+    if (!refreshToken) return undefined;
+    return new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken });
+  }
+
   redirectToAuthorization(url: URL): void {
     if (!this.redirect) throw new Error(`the Linear OAuth session for ${this.name} has ended; run \`cotal linear account login ${this.name}\` again`);
     if (url.protocol !== "https:") throw new OriginRefusedError(`refusing a non-https authorization URL (${url.origin})`);
