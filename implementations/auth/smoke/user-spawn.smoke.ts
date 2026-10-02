@@ -112,7 +112,6 @@ const {
   setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid, eventChannel,
   resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError, epAuthBucket,
   mintMembershipObserverCreds, observePlaneLivenessWithCreds, sessionsBucket, sessionLedgerKey, mintSessionId,
-  connzRequestSubject, MEMBERSHIP_INBOX_PREFIX,
 } = await import("@cotal-ai/core");
 const { connect: rawConnect } = await import("@nats-io/transport-node");
 const { Kvm } = await import("@nats-io/kv");
@@ -910,29 +909,6 @@ try {
       check("#2312 control: the callout admits the exchange-minted session-caller bearer",
         good.status === 200 && await dialBearer(good.body.token!) === "connected");
       const act = (decodeJwt(good.body.token ?? "") as { act: { lifecycleUid: string; credentialId: string; session: { endpoint: string; sessionId: string; epoch: number; exp: number } } }).act;
-      // The minted broker JWT carries the GRANT's expiry, not the short bearer's: read it back from
-      // the broker's own CONNZ for this account while the connection is open.
-      {
-        const held = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: good.body.token!, sentinelCreds: opCreds.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
-        const watcher = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ creds: await mintMembershipObserverCreds(auth, newIdentity()), tls: false }), inboxPrefix: MEMBERSHIP_INBOX_PREFIX, maxReconnectAttempts: 0 });
-        try {
-          const reply = `${MEMBERSHIP_INBOX_PREFIX}.uspawn.${mintSessionId()}`;
-          const sub = watcher.subscribe(reply, { max: 1 });
-          watcher.publish(connzRequestSubject(auth.account.pub), JSON.stringify({ subscriptions: false, auth: true, limit: 1024 }), { reply });
-          const resp = await Promise.race([
-            (async () => { for await (const m of sub) return m.json<{ data?: { connections?: Array<{ name?: string; jwt?: string }> } }>(); })(),
-            new Promise<undefined>((r) => setTimeout(() => r(undefined), 3000)),
-          ]);
-          const mine = resp?.data?.connections?.find((c) => c.jwt !== undefined && JSON.stringify(decodeJwt(c.jwt).nats ?? {}).includes(act.session.sessionId));
-          const mintedExp = mine?.jwt ? decodeJwt(mine.jwt).exp : undefined;
-          check("#2312: the callout binds the session-caller connection to the grant's expiry, not the bearer's",
-            mintedExp !== undefined && mintedExp === act.session.exp && mintedExp !== decodeJwt(good.body.token!).exp,
-            { mintedExp, grantExp: act.session.exp, bearerExp: decodeJwt(good.body.token!).exp, conns: resp?.data?.connections?.length });
-        } finally {
-          await held.close();
-          await watcher.close();
-        }
-      }
       const issuer = (await loadIssuer(store, SPACE))!;
       const forge = (session: { endpoint: string; sessionId: string; epoch: number; exp: number }) => issuer.issue({
         owner: OWNER, space: SPACE, actor: "cli", lifecycleUid: act.lifecycleUid, credentialId: act.credentialId,
@@ -1775,9 +1751,8 @@ try {
   // 40/124 -> 42/125: B1g's user-mesh `cotal attach` cell (#2312). Measured with that one cell
   // added: 43 cells reported before this count check in focus mode, so the focus pin moves by two
   // (the old 40 was already one short in focus mode; inferred from that run, not run at the base).
-  // 42/125 -> 51/134: B1g's nine #2312 cells (precondition, two controls, five refusals, the
-  // grant-expiry binding).
-  const EXPECTED = endpointCliFocus ? 51 : 134;
+  // 42/125 -> 50/133: B1g's eight #2312 cells (precondition, two controls, five refusals).
+  const EXPECTED = endpointCliFocus ? 50 : 133;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

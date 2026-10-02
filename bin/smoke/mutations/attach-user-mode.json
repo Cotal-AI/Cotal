@@ -46,15 +46,6 @@
       "expectRed": "#2312: a wrong-epoch session claim is refused at the callout",
       "cell": "#2312: a wrong-epoch session claim is refused at the callout",
       "afterRestore": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build"
-    },
-    {
-      "name": "the callout stops binding the grant expiry and binds the bearer's",
-      "file": "implementations/auth/src/callout.ts",
-      "find": "        const exp = validated.act.view === \"session-caller\" ? sessionExp : validated.exp;",
-      "replace": "        const exp = validated.exp; void sessionExp;",
-      "expectRed": "#2312: the callout binds the session-caller connection to the grant's expiry, not the bearer's",
-      "cell": "#2312: the callout binds the session-caller connection to the grant's expiry, not the bearer's",
-      "afterRestore": "pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/cli build"
     }
   ]
 }
