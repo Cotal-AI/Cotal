@@ -13,7 +13,7 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore } from "@cotal-ai/core";
+import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
@@ -442,6 +442,14 @@ export const cotalAuthProvider: AuthProvider = {
   async prepareRemoteManagedAgentRetirement({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagedAgentPrepareRetirementRequest }): Promise<RemoteManagedAgentPrepareRetirementResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "preparing a managed agent retirement");
     return postManagerAuthority(endpoint, idpUrl, authorization, request, "managed agent retirement preparation") as Promise<RemoteManagedAgentPrepareRetirementResult>;
+  },
+
+  /** Client half of a hosted runtime create or status read. The body comes back verbatim; the
+   *  manager binds it to its request before reading the state. */
+  async requestRemoteManagedAgentRuntime({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagedAgentRuntimeRequest }): Promise<RemoteManagedAgentRuntimeResult> {
+    const what = request.kind === "manager-managed-agent-runtime-create" ? "managed agent runtime create" : "managed agent runtime status";
+    const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, `requesting a ${what}`);
+    return postManagerAuthority(endpoint, idpUrl, authorization, request, what) as Promise<RemoteManagedAgentRuntimeResult>;
   },
 
   /** WHO the local login is, as this space's derived owner — offline (cached session sub + the

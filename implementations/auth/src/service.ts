@@ -69,7 +69,7 @@ import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
 import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
-import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement } from "./managed-agent-enrollment.js";
+import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
@@ -183,6 +183,12 @@ export interface AuthAuthorityPlane {
     scope: string[];
     request: import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest;
   }) => Promise<import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest>;
+  /** Decide one hosted runtime create or status read. The plane reads the manager actor's ledger
+   *  row, the gate, and the proof itself; it touches no provider and writes nothing. */
+  verifyManagedAgentRuntime: (args: {
+    owner: string;
+    request: import("@cotal-ai/core").RemoteManagedAgentRuntimeRequest;
+  }) => Promise<RemoteManagedAgentRuntimeDecision>;
   scanManagerGoalIndex: (args: {
     owner: string;
     scope: string[];
@@ -1045,6 +1051,22 @@ export async function openAuthAuthorityPlane(opts: {
         },
       });
     },
+    verifyManagedAgentRuntime: async ({ owner, request }) => {
+      refuseIfFenced();
+      const args = {
+        owner,
+        dir: opts.dir,
+        proofSecret: dataAccount.signingSeed,
+        space,
+        observeManagerGate: async (instanceId: string) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+      };
+      return request.kind === "manager-managed-agent-runtime-status"
+        ? authorizeRemoteManagedAgentRuntimeStatus({ ...args, request })
+        : authorizeRemoteManagedAgentRuntimeCreate({ ...args, request });
+    },
     scanManagerGoalIndex: async ({ owner, scope, request }) => {
       refuseIfFenced();
       const authorized = await authorizeRemoteManagerGoalIndexScan({
@@ -1528,6 +1550,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ url: string; p
       validateRetainedAgent: plane.validateRetainedAgent,
       verifyManagedAgentEnrollment: plane.verifyManagedAgentEnrollment,
       verifyManagedAgentPrepareRetirement: plane.verifyManagedAgentPrepareRetirement,
+      verifyManagedAgentRuntime: plane.verifyManagedAgentRuntime,
       scanManagerGoalIndex: plane.scanManagerGoalIndex,
       authorizeManagerAdmin: plane.authorizeManagerAdmin,
       admitManagerRun: plane.admitManagerRun,
@@ -1642,6 +1665,7 @@ interface HandlerCtx {
   validateRetainedAgent: AuthAuthorityPlane["validateRetainedAgent"];
   verifyManagedAgentEnrollment: AuthAuthorityPlane["verifyManagedAgentEnrollment"];
   verifyManagedAgentPrepareRetirement: AuthAuthorityPlane["verifyManagedAgentPrepareRetirement"];
+  verifyManagedAgentRuntime: AuthAuthorityPlane["verifyManagedAgentRuntime"];
   scanManagerGoalIndex: AuthAuthorityPlane["scanManagerGoalIndex"];
   authorizeManagerAdmin: AuthAuthorityPlane["authorizeManagerAdmin"];
   admitManagerRun: AuthAuthorityPlane["admitManagerRun"];
@@ -1679,6 +1703,9 @@ export async function dispatchManagerAuthorityRequest(
   // would answer a manager-lifecycle phase for an agent-lifecycle request.
   if (request.kind === "manager-managed-agent-enrollment" || request.kind === "manager-managed-agent-prepare-retirement")
     throw new EpEnvelopeError("unimplemented", "managed agent enrollment and retirement preparation must be handled by host platform interception");
+  // The hosted runtime kinds read and drive host-owned intent state that stock does not hold.
+  if (request.kind === "manager-managed-agent-runtime-create" || request.kind === "manager-managed-agent-runtime-status")
+    throw new EpEnvelopeError("unimplemented", "managed agent runtime create and status must be handled by host platform interception");
   if (request.kind === "manager-retained-agent-validation") {
     const retained = await ctx.validateRetainedAgent({
       owner,
@@ -1960,8 +1987,9 @@ async function handleVerifyManagedAgentEnrollment(
   if (typeof raw.owner !== "string" || raw.request === null || typeof raw.request !== "object" || Array.isArray(raw.request))
     return send(res, 400, { error: "managed agent enrollment verification needs a string owner and an object request" });
   const request = raw.request as { kind?: unknown; actor?: unknown };
-  if (request.kind !== "manager-managed-agent-enrollment" && request.kind !== "manager-managed-agent-prepare-retirement")
-    return send(res, 400, { error: 'managed agent enrollment verification serves only kind "manager-managed-agent-enrollment" or "manager-managed-agent-prepare-retirement"' });
+  const runtimeKind = request.kind === "manager-managed-agent-runtime-create" || request.kind === "manager-managed-agent-runtime-status";
+  if (request.kind !== "manager-managed-agent-enrollment" && request.kind !== "manager-managed-agent-prepare-retirement" && !runtimeKind)
+    return send(res, 400, { error: 'managed agent enrollment verification serves only kind "manager-managed-agent-enrollment", "manager-managed-agent-prepare-retirement", "manager-managed-agent-runtime-create" or "manager-managed-agent-runtime-status"' });
   if (typeof request.actor !== "string")
     return send(res, 400, { error: "managed agent enrollment verification request requires an actor" });
   try {
@@ -1971,6 +1999,14 @@ async function handleVerifyManagedAgentEnrollment(
     // caller. An ungranted actor throws the ledger's own operator-exact sentence.
     const row = ledgerAuthorizeGrant(ctx.dir)(owner, request.actor);
     const scope = row.scope ?? [];
+    if (runtimeKind) {
+      // The plane re-reads the same ledger row itself: the runtime decision never takes a scope.
+      const decision = await ctx.verifyManagedAgentRuntime({
+        owner,
+        request: raw.request as import("@cotal-ai/core").RemoteManagedAgentRuntimeRequest,
+      });
+      return send(res, 200, { authorized: true, ...decision });
+    }
     if (request.kind === "manager-managed-agent-enrollment") {
       const verified = await ctx.verifyManagedAgentEnrollment({
         owner,

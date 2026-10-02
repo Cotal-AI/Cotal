@@ -1,0 +1,97 @@
+{
+  "suite": [
+    "implementations/auth/smoke/managed-agent-runtime.smoke.ts"
+  ],
+  "guard": "A hosted runtime create or status request is decided only for a manager actor whose own ledger row holds supervise, at its own instance's current open manager gate, at the current serve epoch, with the host-issued registration proof, for a target owned by the authenticated owner; both closed schemas refuse any provider reference; the decision carries only owner, instanceId, actor and target; stock refuses both kinds rather than answering them",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/managed-agent-runtime.smoke.ts",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/managed-agent-runtime.json",
+  "completionMarker": "MANAGED-AGENT-RUNTIME SMOKE",
+  "why": [
+    "The ledger mutation decides without reading the manager actor's ledger row. A host composing the door would then authorize a manager actor the owner never granted; the suite names the cell for an actor with no row.",
+    "The supervise mutation accepts any row. spawn and admin are ordinary agent capabilities, and the suite proves a row holding both is still refused.",
+    "The gate-state mutation accepts a frozen gate. A frozen gate is a takeover in flight, so a create admitted there would launch a runtime for a registration that is being replaced.",
+    "The epoch mutation accepts a stale serveEpoch, so a superseded manager process could keep creating runtimes after its successor took the gate.",
+    "The proof mutation drops the constant-time proof comparison. The proof is the only host-issued fact in the request, so without it every other coordinate is participant-supplied.",
+    "The target-owner mutation lets a request name another owner's target, which would let one owner's manager drive or read another owner's runtime.",
+    "The two closed-schema mutations let a providerRef through at the top level or a handle through in the target. The contract refuses a provider reference rather than ignoring it, so a host can never be handed one as if it were authority.",
+    "The dispatch mutation removes the unimplemented refusal, so a runtime request falls through to the manager-lifecycle issuer."
+  ],
+  "mutations": [
+    {
+      "name": "runtime door decides without reading the manager actor's ledger row",
+      "file": "implementations/auth/src/managed-agent-enrollment.ts",
+      "find": "    scope = ledgerAuthorizeGrant(args.dir)(args.owner, r.actor).scope ?? [];\n",
+      "replace": "    scope = [\"supervise\"];\n",
+      "expectRed": "FAIL: runtime-create: an owner with no ledger grant for the manager actor is refused",
+      "cell": "runtime-create: an owner with no ledger grant for the manager actor is refused"
+    },
+    {
+      "name": "runtime door accepts a manager row without supervise",
+      "file": "implementations/auth/src/managed-agent-enrollment.ts",
+      "find": "  if (!scope.includes(\"supervise\"))\n    throw new EpEnvelopeError(\"permission-denied\", `${what} needs scope \"supervise\"; spawn/admin do not imply it`);\n",
+      "replace": "",
+      "expectRed": "FAIL: runtime-create: a manager row without \"supervise\" is refused even holding spawn and admin",
+      "cell": "runtime-create: a manager row without \"supervise\" is refused even holding spawn and admin"
+    },
+    {
+      "name": "runtime door accepts a frozen manager gate",
+      "file": "implementations/auth/src/managed-agent-enrollment.ts",
+      "find": "  if (!gate || gate.state !== \"open\")\n    throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${r.instanceId}`);\n",
+      "replace": "  if (!gate) throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${r.instanceId}`);\n",
+      "expectRed": "FAIL: runtime-create: a FROZEN gate is refused",
+      "cell": "runtime-create: a FROZEN gate is refused"
+    },
+    {
+      "name": "runtime door accepts a stale serve epoch",
+      "file": "implementations/auth/src/managed-agent-enrollment.ts",
+      "find": "  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", `manager ${what} proof does not match current host registration`);\n",
+      "replace": "  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", `manager ${what} proof does not match current host registration`);\n",
+      "expectRed": "FAIL: runtime-create: a stale serve epoch is refused as a conflict",
+      "cell": "runtime-create: a stale serve epoch is refused as a conflict"
+    },
+    {
+      "name": "runtime door stops checking the host-issued registration proof",
+      "file": "implementations/auth/src/managed-agent-enrollment.ts",
+      "find": "  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", `manager ${what} proof does not match current host registration`);\n",
+      "replace": "",
+      "expectRed": "FAIL: runtime-create: a forged registration proof is refused",
+      "cell": "runtime-create: a forged registration proof is refused"
+    },
+    {
+      "name": "runtime door accepts a foreign target owner",
+      "file": "implementations/auth/src/managed-agent-enrollment.ts",
+      "find": "  if (r.target.owner !== args.owner)\n    throw new EpEnvelopeError(\"permission-denied\", `${what} target owner \"${r.target.owner}\" does not match authenticated owner \"${args.owner}\"`);\n",
+      "replace": "",
+      "expectRed": "FAIL: runtime-create: a target owner that is not the authenticated owner is refused",
+      "cell": "runtime-create: a target owner that is not the authenticated owner is refused"
+    },
+    {
+      "name": "runtime parser lets a top-level providerRef through",
+      "file": "packages/core/src/remote-manager-authority.ts",
+      "find": "    \"registrationProof\", \"serveEpoch\", \"target\", \"identities\",\n  ]);\n  for (const key of Object.keys(o))\n    if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);\n  const envelope = parseManagedAgentEnvelope(o, what, kind);",
+      "replace": "    \"registrationProof\", \"serveEpoch\", \"target\", \"identities\", \"providerRef\",\n  ]);\n  for (const key of Object.keys(o))\n    if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);\n  const envelope = parseManagedAgentEnvelope(o, what, kind);",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/managed-agent-runtime.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "FAIL: runtime-create refuses a top-level providerRef",
+      "cell": "runtime-create refuses a top-level providerRef"
+    },
+    {
+      "name": "runtime parser lets a target handle through",
+      "file": "packages/core/src/remote-manager-authority.ts",
+      "find": "  const targetAllowed = new Set([\"owner\", \"actor\", \"lifecycleUid\"]);",
+      "replace": "  const targetAllowed = new Set([\"owner\", \"actor\", \"lifecycleUid\", \"handle\"]);",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/managed-agent-runtime.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "FAIL: runtime-create refuses target.handle",
+      "cell": "runtime-create refuses target.handle"
+    },
+    {
+      "name": "stock dispatch answers a runtime request instead of refusing it",
+      "file": "implementations/auth/src/service.ts",
+      "find": "  if (request.kind === \"manager-managed-agent-runtime-create\" || request.kind === \"manager-managed-agent-runtime-status\")\n    throw new EpEnvelopeError(\"unimplemented\", \"managed agent runtime create and status must be handled by host platform interception\");\n",
+      "replace": "",
+      "expectRed": "FAIL: dispatch refuses a runtime-create request with unimplemented",
+      "cell": "dispatch refuses a runtime-create request with unimplemented"
+    }
+  ]
+}

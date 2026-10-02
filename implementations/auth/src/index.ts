@@ -139,8 +139,12 @@ export { parseRemoteManagerAdminAuthorizationRequest, authorizeRemoteManagerAdmi
 export {
   authorizeRemoteManagedAgentEnrollment,
   authorizeRemoteManagedAgentPrepareRetirement,
+  authorizeRemoteManagedAgentRuntimeCreate,
+  authorizeRemoteManagedAgentRuntimeStatus,
   type AuthorizeRemoteManagedAgentEnrollmentArgs,
   type AuthorizeRemoteManagedAgentPrepareRetirementArgs,
+  type AuthorizeRemoteManagedAgentRuntimeArgs,
+  type RemoteManagedAgentRuntimeDecision,
   type ObserveManagerGate,
 } from "./managed-agent-enrollment.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
