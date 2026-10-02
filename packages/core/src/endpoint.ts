@@ -512,6 +512,12 @@ export class CotalEndpoint extends EventEmitter {
      *  The manager challenges it at start and before every remint so a two-root composition
      *  is refused rather than twelve hours later on a fingerprint mismatch. */
     reloadStoreIdentity?: () => SecretStoreIdentity;
+    /** Composition-root hook: has the daemon finished starting? While it answers `false`,
+     *  `reloadCreds` is refused with nothing adopted (#2304). The responder is bound and the lease
+     *  reads ready before the rest of start-up is up, and an adoption accepted in that window
+     *  schedules a resident reconnect underneath start-up awaits that are still pending on this
+     *  connection. Absent means the composition has no such phase. */
+    startupComplete?: () => boolean;
   };
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
@@ -4404,10 +4410,10 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void } = {},
+    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
   ): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
-    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity, onDeliveryCredsAdopted: opts.onDeliveryCredsAdopted };
+    this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity, onDeliveryCredsAdopted: opts.onDeliveryCredsAdopted, startupComplete: opts.startupComplete };
     await this.armPlane3();
   }
 
@@ -4738,6 +4744,12 @@ export class CotalEndpoint extends EventEmitter {
     // FENCE: same reason as the runtime rail above.
     if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     if (req.op === "reloadCreds") {
+      // NOT BEFORE START-UP IS DONE (#2304). Both halves below would run: the delivery half commits
+      // and schedules `nc.reconnect()`, which lands underneath start-up awaits still in flight on
+      // this connection (the lease watch's consumer create times out and the daemon exits). Refuse
+      // before either half acts, so nothing is adopted and the renewal owner records why.
+      if (this.plane3?.startupComplete?.() === false)
+        return { ok: false, error: "delivery: this daemon has not finished starting; nothing adopted - the next renewal pass or the daemon's 75% re-read adopts the re-signed creds" };
       // The renewal owner's EXPECTED-generation tokens (SHA-256 of each JWT it re-signed), per
       // component. A missing entry means "no expectation" (the passive backstop still adopts).
       const expected = (req.args?.expected ?? {}) as { delivery?: string; membership?: string };
