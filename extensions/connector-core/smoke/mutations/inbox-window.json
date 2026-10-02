@@ -223,9 +223,9 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "            if (afterRecallMark({ ts: i.ts, id: i.recvKey }, agent.recallCursor)) clocked.push(i);",
       "replace": "            clocked.push(i);",
-      "cell": "successive calls walk the whole of focus recall instead of repeating its first window",
-      "expectRed": "successive calls walk the whole of focus recall instead of repeating its first window",
-      "note": "Reproduced by the second lens on a live broker: recall is re-derived from an unchanged frontier, so windowing its prefix returned the same fifteen of thirty messages three times while every reply promised a next batch. The window created that starvation, so the cursor is part of this change rather than a later one."
+      "cell": "an oversized recall item with nothing else to show is read in parts, then cleared",
+      "expectRed": "an oversized recall item with nothing else to show is read in parts, then cleared",
+      "note": "Reproduced by the second lens on a live broker: recall is re-derived from an unchanged frontier, so windowing its prefix returned the same fifteen of thirty messages three times while every reply promised a next batch. The window created that starvation, so the cursor is part of this change rather than a later one. The oversized recall cell reddens first: with the mark ignored, a recall item read through its last part is offered again from its first part, which is the same re-serving on one item. The walking cell asserts it across thirty."
     },
     {
       "name": "K17 the fresh filter compares timestamps only, so a tie is skipped",
