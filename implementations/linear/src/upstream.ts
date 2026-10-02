@@ -95,7 +95,7 @@ export type Outcome = "not-executed" | "unknown";
 export type UpstreamReply =
   | { kind: "result"; result: Json; inventoryDigest: string }
   | { kind: "protocol-error"; code: number; message: string; data?: unknown; outcome: Outcome }
-  | { kind: "refused"; reason: "queue-full" | "unknown-tool" | "not-advertised" | "stale-inventory" | "closed"; detail: string; outcome: "not-executed" }
+  | { kind: "refused"; reason: "queue-full" | "unknown-tool" | "not-advertised" | "stale-inventory" | "discovery-failed" | "closed"; detail: string; outcome: "not-executed" }
   | {
       kind: "failed";
       reason: "timeout" | "cancelled" | "output-too-large" | "session-expired" | "unauthenticated" | "permission-denied" | "rate-limited" | "transport";
@@ -179,7 +179,12 @@ export class LinearUpstream {
     client.setNotificationHandler(ResourceListChangedNotificationSchema, markStale);
     client.setNotificationHandler(PromptListChangedNotificationSchema, markStale);
     client.onclose = () => this.drop(client);
-    await client.connect(transport, { timeout: this.limits.defaultTimeoutMs });
+    try {
+      await client.connect(transport, { timeout: this.limits.defaultTimeoutMs });
+    } catch (e) {
+      await client.close().catch(() => {});
+      throw e;
+    }
     this.client = client;
     this.transport = transport;
     // A new session may negotiate differently, so the inventory is re-read before the next call.
@@ -187,11 +192,13 @@ export class LinearUpstream {
     return client;
   }
 
+  /** Forget a session the server ended or that failed. Its in-flight requests reject. */
   private drop(client: Client): void {
     if (this.client !== client) return;
     this.client = undefined;
     this.transport = undefined;
     this.stale = true;
+    void client.close().catch(() => {});
   }
 
   /** Complete discovery. Refuses on any cap rather than returning a partial inventory. */
@@ -245,7 +252,7 @@ export class LinearUpstream {
       const body = {
         endpoint: this.url.href,
         mode: this.account.mode,
-        server: { name: version?.name, version: version?.version },
+        server: { ...(version?.name !== undefined ? { name: version.name } : {}), ...(version?.version !== undefined ? { version: version.version } : {}) },
         ...(client.getInstructions() !== undefined ? { instructions: client.getInstructions() } : {}),
         capabilities: caps,
         tools,
@@ -259,6 +266,7 @@ export class LinearUpstream {
       return inv;
     } catch (e) {
       this.stale = true;
+      if (e instanceof StreamableHTTPError && e.code === 404 && this.client) this.drop(this.client);
       throw e;
     } finally {
       release();
@@ -297,8 +305,14 @@ export class LinearUpstream {
     if (this.closed) return { kind: "refused", reason: "closed", detail: "the Linear upstream is closed", outcome: "not-executed" };
     const timeoutMs = Math.min(req.timeoutMs ?? this.limits.defaultTimeoutMs, this.limits.maxTimeoutMs);
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error(`timeoutMs must be a positive integer`);
-    // Discovery happens before dispatch: a stale or never-read inventory is re-read first.
-    const inv = await this.inventory();
+    // Discovery happens before dispatch: a stale or never-read inventory is re-read first. The
+    // request itself has not been sent if discovery fails.
+    let inv: LinearInventory;
+    try {
+      inv = await this.inventory();
+    } catch (e) {
+      return { kind: "refused", reason: "discovery-failed", detail: `Linear discovery failed: ${e instanceof Error ? e.message : String(e)}`, outcome: "not-executed" };
+    }
     if (req.inventoryDigest !== undefined && req.inventoryDigest !== inv.digest)
       return { kind: "refused", reason: "stale-inventory", detail: `the inventory changed (now ${inv.digest}); describe again before calling`, outcome: "not-executed" };
     const absent = precheck(inv);
@@ -318,8 +332,9 @@ export class LinearUpstream {
     req.signal?.addEventListener("abort", onCancel, { once: true });
     const overflowsBefore = this.overflows;
     try {
+      const client = this.client;
+      if (!client) return { kind: "refused", reason: "discovery-failed", detail: "the MCP session ended after discovery; describe again", outcome: "not-executed" };
       if (req.signal?.aborted) return { kind: "refused", reason: "closed", detail: "cancelled before dispatch", outcome: "not-executed" };
-      const client = await this.session();
       // The SDK sends notifications/cancelled when the signal aborts. Its own timeout sits past ours.
       const result = (await client.request(request as never, schema, { signal: ctl.signal, timeout: timeoutMs + 5_000 })) as unknown as Json;
       return { kind: "result", result, inventoryDigest: inv.digest };
