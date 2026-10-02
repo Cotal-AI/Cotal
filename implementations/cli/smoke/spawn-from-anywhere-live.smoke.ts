@@ -7,7 +7,7 @@
  *     actually CONNECTS to it (not the hardcoded DEFAULT_SERVER).
  *  B. probeConnect's split against REAL brokers: ok (live, open) vs auth-required (real auth broker)
  *     vs unreachable (killed) — the input that drives preflight's error routing.
- *  C. prune-on-real-death: a killed broker's entry is dropped by pruneStaleMeshes.
+ *  C. keep-on-real-death: a killed broker's entry is kept as offline by pruneStaleMeshes.
  *  D. the registry dir is really 0700 after a real recordMesh.
  *
  * Needs `nats-server` on PATH (like the other broker smokes). Kills ONLY the PIDs it spawns —
@@ -18,6 +18,7 @@ import { createServer, type AddressInfo, type Server } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 /** An ephemeral, collision-safe loopback port (ask the OS for a free one, then release it). */
 const freePort = (): Promise<number> =>
@@ -58,9 +59,14 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 
 /** A real nats-server on an isolated port; `auth` requires user/pass so a credless probe is rejected. */
 function startBroker(port: number, auth: boolean): ChildProcess {
-  const args = ["-a", "127.0.0.1", "-p", String(port)];
+  // A tokened store dir is passed even though this broker runs without JetStream: `-sd` alone is
+  // accepted and writes nothing, and it is the only way the argv-matching reaper can ever claim
+  // this process if the suite is SIGKILLed.
+  const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  const args = ["-a", "127.0.0.1", "-p", String(port), "-sd", store];
   if (auth) args.push("--user", "u", "--pass", "p");
   const cp = spawn("nats-server", args, { stdio: "ignore" });
+  teardownOnSignal(cp, store);
   kids.push(cp);
   return cp;
 }
@@ -148,7 +154,7 @@ try {
   await new Promise<void>((res) => notNats!.listen(PORT_NOTNATS, "127.0.0.1", res));
   ok("E: isReachable(non-NATS listener) → false (not 'any open port')", (await isReachable(SRV_NOTNATS)) === false);
 
-  // C: prune-on-real-death. Kill ONLY our 4455 child, then the entry must prune.
+  // C: keep-on-real-death. Kill ONLY our 4455 child, then the entry is kept as offline.
   const opener = kids[0]!;
   opener.kill("SIGTERM");
   for (let i = 0; i < 50 && opener.exitCode === null && opener.signalCode === null; i++) await sleep(100);
@@ -157,7 +163,7 @@ try {
   ok("E: isReachable(killed broker) → false", (await isReachable(SRV_OPEN)) === false);
   ok("C: registry still holds alpha before prune", loadMeshes().some((m) => m.space === "alpha"));
   await pruneStaleMeshes();
-  ok("C: pruneStaleMeshes drops the dead entry", !loadMeshes().some((m) => m.space === "alpha"), loadMeshes());
+  ok("C: pruneStaleMeshes keeps the dead entry as offline", loadMeshes().some((m) => m.space === "alpha"), loadMeshes());
 
   console.log(`\nspawn-from-anywhere live e2e: ${pass} checks passed`);
 } finally {

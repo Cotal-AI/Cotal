@@ -14,7 +14,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { SignJWT, generateKeyPair } from "jose";
+import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import { createSpaceAuth, isReachable, serverConfig, mintLifecycleUid } from "@cotal-ai/core";
 // One lifecycle for the smoke's minted agent grants (SPEC 13.1: grants are lifecycle-keyed).
 const smokeUid = mintLifecycleUid();

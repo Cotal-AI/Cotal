@@ -1,0 +1,36 @@
+{
+  "suite": [
+    "implementations/cli/smoke/up-refresh-identity-live.smoke.ts"
+  ],
+  "guard": "a URL or host:port typed into `cotal up --host` is refused by name at the flag (pointing at --server) before any bracketing or registry comparison, and the --host/--server mismatch path prints its own diagnostic rather than anything a raw parse error could produce (#1697)",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/up-host-url.json",
+  "why": [
+    "The suite drives the shipped binary (`tsx bin/cotal.ts`), whose `@cotal-ai/*` imports resolve from `dist/`, so both the mutated run and the restore must rebuild — a stale build would grade the pre-change tree and report a vacuous verdict.",
+    "Each mutation removes exactly one limb of the fix while leaving the other refusal live, so a green run after it means the suite observed some refusal rather than the one it names. The negative cells (`...not as a raw parse error`, `...not as the manual-record registry refusal it used to misfire as`) are what distinguish the fixed refusal from the two failure modes the issue reported; the control cell (a bare host still reaching the registry refusal) is what proves the guard did not widen."
+  ],
+  "mutations": [
+    {
+      "name": "let a URL through --host to the bracketing",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    console.error(\n      c.red(\n        `✗ ${source} ${host} looks like a URL - it takes a bind host only (an IP or hostname, no scheme); pass the broker URL with ${urlSource} instead`,\n      ),\n    );\n    process.exit(1);",
+      "replace": "",
+      "expectRed": "...naming --host and pointing at --server",
+      "cell": "...naming --host and pointing at --server",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "Removes only the scheme refusal; the parse refusal below it stays live, so a URL still exits 1 — but with the WRONG message (the bracketed literal does not parse, so the fallback fires with `is not a valid bind host`). The red must therefore land on the cell that greps for `looks like a URL`, which is the by-name half of the fix; `a URL passed to --host is refused` (bare exit-code check) is expected to stay green under this mutant and is named here so the verdict cannot be argued from it. This is exactly the distinction the issue reported: a refusal that does not name the operator's mistake."
+    },
+    {
+      "name": "drop the bind-host parse refusal (the parse guard)",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    console.error(\n      c.red(\n        `✗ ${source} ${host} is not a valid bind host - an IP or hostname only, with no port; the port comes from ${urlSource} (or its default), never from the bind host`,\n      ),\n    );\n    process.exit(1);",
+      "replace": "    throw new Error(\"Invalid URL\");",
+      "expectRed": "a host:port spelling is refused as a bind host",
+      "cell": "a host:port spelling is refused as a bind host",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "With the scheme refusal still live a scheme:// URL is still refused by name; only the host:port spelling loses its refusal, and its cell must go red because the value then flows on as a silently bracketed literal instead of exiting. This mutation is also the parse guard for the mismatch path: with the try/catch gone an unparseable literal would throw a raw `Invalid URL` from the comparison, which is the exact mode-2 failure, so killing this mutant proves the parse is load-bearing for BOTH cells that assert `...never a raw Invalid URL`."
+    }
+  ]
+}

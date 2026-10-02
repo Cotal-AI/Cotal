@@ -1,5 +1,276 @@
 # @cotal-ai/auth
 
+## 0.58.0
+
+### Minor Changes
+
+- 95ae645: The auth retirement rail is a conforming registered endpoint with a describable contract. The requester calls it through the generic client in the exact target mode. A legacy body is refused as unsupported-version.
+
+### Patch Changes
+
+- 274c783: Start the bootstrap membership renewal fixture with a genuinely expired credential and verify broker refusal before renewal. This avoids depending on different JWT bytes when two fresh issuances occur in the same wall-clock second. Keep the native renewed-credential, stable-identity and broker-acceptance checks, with explicit mutation controls.
+- 2cb1d72: Add `startAuthService`, an account-scoped auth-service context with readiness, drain and close that installs no process signal handlers, never exits the process and never selects a root from the working directory. `openAuthAuthorityPlane` now takes its local manager identity as an explicit `localManager` input instead of reading it from the cwd-selected root.
+- 7c54825: Distinguish native consumer deletion acknowledgments and observed disappearance from uniquely attributable removals. Refuse live KV CAS successors, preserve exact-target INFO grants, and propagate unknown uniqueness through Manager reconciliation. Count ACL and membership rows removed by a competing purge as observed disappearances, not prior absence or this caller's deletion.
+- 397bc60: Deprovisioning returns truthful bounded resource accounting distinguishing deleted resources from absent no-ops across repeated teardown attempts. Key existence and tombstone state are verified through exact Direct Get checks before purging KV keys, ensuring repeated deprovisioning reports zero deleted entries. Partial broker failures record refused resources and raise DeprovisionError with partial accounting rather than discarding earlier progress.
+- 7b3924c: Retire a lifecycle's durable membership rows through target-pinned exact-key grants. Complete inventory derives channels from validated native keys, including wildcard-covered and unnamed channels, so unreadable values cannot hide rows from cleanup. An unavailable inventory retains undiscovered rows and holds retirement pending retry. Other principals and successor lifecycles remain untouched. Retirement fixtures now use complete zero-row responses only for empty synthetic inventories, and the user-mode test verifies held retirement until genuine delivery returns.
+- 59672dd: Register the remaining hosted-runtime smoke entrypoints in stable CI fragments and report native assertion counts through canonical completion markers. Refresh the explicit-TLS call-site census. Make the resume fixture retain its first successful held-slot observation or require durable completion with a new epoch, and exercise completion before the probe as a separate regression gate.
+- 1721738: Support signerless manager run hosting through typed host admission, initial-attempt and renewal operations. Renew the complete standing credential family while preserving held identities, serve epochs and last-good credentials on refusal. Keep pooled managers off local PTY launch paths and enforce the execution host boundary. Update the native lifecycle and mutation checks for these paths.
+- Updated dependencies [0589316]
+- Updated dependencies [59a7e64]
+- Updated dependencies [95ae645]
+- Updated dependencies [fba1537]
+- Updated dependencies [576f622]
+- Updated dependencies [2457692]
+- Updated dependencies [ee6de5d]
+- Updated dependencies [e9ef5b3]
+- Updated dependencies [7c54825]
+- Updated dependencies [2c31f95]
+- Updated dependencies [397bc60]
+- Updated dependencies [7b3924c]
+- Updated dependencies [1721738]
+  - @cotal-ai/core@0.58.0
+  - @cotal-ai/workspace@0.58.0
+
+## 0.57.0
+
+### Patch Changes
+
+- Updated dependencies [e7c702a]
+- Updated dependencies [6f64bcc]
+- Updated dependencies [42448fa]
+- Updated dependencies [33357d9]
+  - @cotal-ai/core@0.57.0
+  - @cotal-ai/workspace@0.57.0
+
+## 0.56.1
+
+### Patch Changes
+
+- Updated dependencies [6b76946]
+  - @cotal-ai/core@0.56.1
+  - @cotal-ai/workspace@0.56.1
+
+## 0.56.0
+
+### Patch Changes
+
+- ac53a09: `cotal update` no longer reads a remote user mesh's manager for continuity, since that manager runs
+  under another install and its exchange's answer cannot change the local install; the mesh is named
+  and skipped, and the install proceeds. A refused remote exchange that supplies no reason now says
+  the face withheld it instead of presenting the HTTP status as the reason (#2158).
+- Updated dependencies [e506040]
+- Updated dependencies [8dc7c92]
+- Updated dependencies [99cad7b]
+- Updated dependencies [1218786]
+- Updated dependencies [ef8889d]
+  - @cotal-ai/core@0.56.0
+  - @cotal-ai/workspace@0.56.0
+
+## 0.55.0
+
+### Minor Changes
+
+- 92ae52c: Add a loopback door, `POST /managed-lifecycle/retire` (`MANAGED_RETIRE_PATH`), that lets a host finish a managed agent's terminal retirement when the remote manager that should request it is gone. It carries the interactive door's guards, requires the managed grant to be revoked at that lifecycle first, and runs the rail's `managedRetirementOpId(uid)` operation. The rail and the door share one in-process flight, so they never execute the same retirement twice.
+- 2e13607: Let a remote participant supervisor spawn and terminally release a HOST-OWNED managed agent (#1972). A registered participant holds no ledger writer, no JetStream provisioner, and no signing seed, so `cotal spawn <actor> -d --on <instanceId>` previously failed in auth preflight and a despawn refused outright.
+
+  `@cotal-ai/core` adds the two closed wire operations and their parsers: `manager-managed-agent-enrollment` and `manager-managed-agent-prepare-retirement`. An enrollment carries the SHA-256 digest of the agent's standing actor token and never the token, and carries no lifecycle UID at all; a prepare-retirement's `opId` must be `managedRetirementOpId(target.lifecycleUid)`.
+
+  `@cotal-ai/auth` adds `authorizeRemoteManagedAgentEnrollment` and `authorizeRemoteManagedAgentPrepareRetirement`, which require `supervise` at the caller instance's current open manager gate with the host-issued registration proof, plus the loopback door `POST /manager-service-authority/verify-enrollment` (`VERIFY_ENROLLMENT_PATH`) that a host platform calls for the decision while it owns every write. The door derives the caller's scope from the local ledger rather than the request body. `dispatchManagerAuthorityRequest` refuses both kinds with `unimplemented`, since stock owns no such storage, and the provider gains the `enrollRemoteManagedAgent` and `prepareRemoteManagedAgentRetirement` clients.
+
+  `@cotal-ai/manager` adds the `remoteAuthority.enrollManagedAgent` hook and takes it in `provisionUserAgent`: the participant generates the actor token, writes it at 0600 before the request, sends only the digest, adopts the HOST's chosen lifecycle UID, and launches `agent-bearer --exchange-url`. `prepareAgentRetirement` now performs the host release instead of throwing.
+
+### Patch Changes
+
+- 84e0175: The bare-grant default is described as `spawn,role:default` everywhere it is described, and the launch smoke asserts the full scope.
+- e4f1d2d: A managed grant without a lifecycle uid is refused at the ledger instead of being minted one.
+- f7f23d3: The user-spawn smoke grades the remedy's route selector in its own cell, so the two remedy mutants are held by two cells.
+- Updated dependencies [888e9bc]
+- Updated dependencies [810814b]
+- Updated dependencies [8472dc3]
+- Updated dependencies [f272f71]
+- Updated dependencies [a83dd80]
+- Updated dependencies [db9a969]
+- Updated dependencies [d284ee6]
+- Updated dependencies [4f48629]
+- Updated dependencies [2e13607]
+- Updated dependencies [d3d6742]
+- Updated dependencies [fd58782]
+- Updated dependencies [357af9f]
+  - @cotal-ai/core@0.55.0
+  - @cotal-ai/workspace@0.55.0
+
+## 0.54.0
+
+### Patch Changes
+
+- b4317fd: Add a short-lived manager-caller view that binds user-auth control requests to one live manager instance on the instance rail.
+- Updated dependencies [e6badb8]
+- Updated dependencies [34beea1]
+- Updated dependencies [b4317fd]
+  - @cotal-ai/core@0.54.0
+  - @cotal-ai/workspace@0.54.0
+
+## 0.53.0
+
+### Minor Changes
+
+- 104921c: Let remote user-auth managers renew registration executors and recover stopped or frozen manager registrations through host-scoped eviction and guarded reconciliation.
+
+### Patch Changes
+
+- Updated dependencies [d1f9703]
+- Updated dependencies [104921c]
+- Updated dependencies [83617ab]
+  - @cotal-ai/workspace@0.53.0
+  - @cotal-ai/core@0.53.0
+
+## 0.52.1
+
+### Patch Changes
+
+- 5784ec9: Bind the user-auth service readiness wait to the daemon process, not a clock alone. A same-root `cotal up` refresh run right after a broker reload killed the old auth-service daemon used to give up at a fixed 15s while the replacement daemon it launched was still binding, then a second identical `up` succeeded: a one-shot false "auth service not ready". `ensureAuthService` now passes the pid it launched (or found live) into the provider's `ready()`, which waits past the base timeout up to 60s while that pid is provably alive, ends the wait at once when the pid exits ("exited before becoming ready"), and refuses at the bound naming the live pid, the pid record, and the service log ("alive and still starting"). `AuthServiceSpec.ready` in core gains optional `pid`/`maxWaitMs` inputs; callers that pass none keep the old clock-only behavior.
+- Updated dependencies [5784ec9]
+- Updated dependencies [f17791d]
+  - @cotal-ai/core@0.52.1
+  - @cotal-ai/workspace@0.52.1
+
+## 0.52.0
+
+### Patch Changes
+
+- 50998a8: `cotal status` answers for a user-auth space whose material is a remote registry entry (a discovered space or a `meshes add --from` registration) instead of a local provisioning: the bare-status login row shows the signed-in subject from the entry's pinned IdP (grant reads as "not checkable on this machine", since the ledger runs where the space was provisioned), and `status --components` probes the manager as the signed-in login — the same credential `ps` uses — instead of minting static creds or connecting with none. A user-mode components row that cannot obtain that credential states the reason on the row (verdict `refused`), never a raw Authorization Violation. In user mode the manager row grades `serving` on the manager's own typed service answer, because the manager-lease sweep is a host credential an interactive bearer does not hold. The bare-status delivery responder axis stays `unknown` in user mode, as its comment states. Status still never static-mints on a user-auth mesh, and a signed-out machine still gets the offline "not signed in" row with the exact login command and no network round trip. Refs #1832.
+- Updated dependencies [5ee8eef]
+- Updated dependencies [2e7558d]
+- Updated dependencies [5b2c19f]
+- Updated dependencies [d69aefd]
+- Updated dependencies [b3db3a2]
+- Updated dependencies [c44aaf8]
+- Updated dependencies [fe81419]
+- Updated dependencies [93b42cd]
+- Updated dependencies [a069948]
+- Updated dependencies [cf5a5cb]
+- Updated dependencies [ab0808c]
+- Updated dependencies [6b375c8]
+  - @cotal-ai/core@0.52.0
+  - @cotal-ai/workspace@0.52.0
+
+## 0.51.0
+
+### Minor Changes
+
+- 491e923: The public user-auth exchange now mints `channel-writer` and `channel-purger` for a signed-in
+  human whose ledger row carries `admin`, so a remote owner can run `cotal channels set/default`
+  and a dashboard channel delete without a loopback capability. `admin`, `purger`, `deployer`, and
+  `manager-service` stay loopback-only. A managed-agent secret exchange still never mints a view.
+  This is not full remote channel management: `cotal web` still asks for the read-only admin view
+  at startup.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+### Patch Changes
+
+- db18070: Apply a signed-in account's space catalog to the registry under the provider's catalog lock, and
+  record in the cache whether the snapshot was applied in full. A command that dies or is stopped
+  while applying no longer leaves a partial registry that fresh and not-modified refreshes accept:
+  the next command applies the cached snapshot again first. `prepareSpaceCatalogs` and
+  `syncSpaceCatalogAfterLogin` now take the consumer's `apply`.
+- a0c8a59: Discover a signed-in account's advertised spaces lazily, cache validated snapshots, and add `cotal sync` for explicit refreshes.
+- f178611: Preload every persisted per-space auth-callout account when a shared broker starts, and refuse incomplete user-auth state before writing its resolver config.
+- 21407fd: Allow foreground seats to redeem one-time remote user-auth enrollments, bootstrap stock mesh records, and launch without a cached human login.
+- Updated dependencies [db18070]
+- Updated dependencies [64d723e]
+- Updated dependencies [ade42d5]
+- Updated dependencies [4f153ab]
+- Updated dependencies [eb65c9b]
+- Updated dependencies [314a12c]
+- Updated dependencies [4dd4b90]
+- Updated dependencies [92a8938]
+- Updated dependencies [ec8649b]
+- Updated dependencies [949d4d1]
+- Updated dependencies [949d4d1]
+- Updated dependencies [f50e20d]
+- Updated dependencies [a0c8a59]
+- Updated dependencies [c18c055]
+- Updated dependencies [f178611]
+- Updated dependencies [21407fd]
+- Updated dependencies [26d864b]
+  - @cotal-ai/core@0.51.0
+  - @cotal-ai/workspace@0.51.0
+
+## 0.50.1
+
+### Patch Changes
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+  - @cotal-ai/workspace@0.50.1
+
+## 0.50.0
+
+### Patch Changes
+
+- Updated dependencies [ba91ad5]
+- Updated dependencies [06eccc3]
+- Updated dependencies [6f248ac]
+- Updated dependencies [5e23b1d]
+- Updated dependencies [44cdcc2]
+- Updated dependencies [6cc504b]
+- Updated dependencies [87dda9f]
+- Updated dependencies [fc6f0b1]
+- Updated dependencies [aaedc42]
+- Updated dependencies [4ab8b4b]
+- Updated dependencies [fe813fe]
+- Updated dependencies [55dae63]
+- Updated dependencies [7df3498]
+- Updated dependencies [438c629]
+- Updated dependencies [a211c52]
+  - @cotal-ai/workspace@0.50.0
+  - @cotal-ai/core@0.50.0
+
+## 0.49.0
+
+### Minor Changes
+
+- 18f3df0: Validate retained remote managed agents through the authenticated host authority service
+
+  Remote supervisors now send the retained actor token and sentinel credential only to the manager
+  authority route derived from the verified exchange origin. The host fresh-checks the interactive
+  operator's `supervise` grant, the host-authenticated current manager registration proof, the open
+  gate and serving epoch, the target owner, and the current retained managed row. It returns only the
+  non-secret authority shape.
+
+  The manager requires the host-issued activation receipt and independently binds every response
+  coordinate and authority field to the retained inventory. Missing, malformed, substituted, stale,
+  redirected, cross-origin, and widened responses fail closed.
+
+- 6fd855f: Add a target-pinned hosted manager retirement phase that preserves host release ordering, uses the existing crash-resumable auth barrier, bounds activation to the canonical contract artifacts, and keeps remote manager maintenance on fresh host-owned admin authorization without copying host ledger state to participants.
+
+### Patch Changes
+
+- Updated dependencies [a9c9849]
+- Updated dependencies [b0aeca4]
+- Updated dependencies [348b8b7]
+- Updated dependencies [9a334ae]
+- Updated dependencies [18f3df0]
+- Updated dependencies [9ff5c22]
+- Updated dependencies [cf6ced5]
+- Updated dependencies [36d1779]
+- Updated dependencies [e3f2d21]
+- Updated dependencies [062881a]
+- Updated dependencies [159c5f0]
+- Updated dependencies [c9ea091]
+- Updated dependencies [5079c89]
+- Updated dependencies [5395c7c]
+- Updated dependencies [6fd855f]
+- Updated dependencies [186fc62]
+- Updated dependencies [1636927]
+- Updated dependencies [dd6fea0]
+- Updated dependencies [6fb1d64]
+- Updated dependencies [b00f3c1]
+- Updated dependencies [13f29e1]
+  - @cotal-ai/core@0.49.0
+  - @cotal-ai/workspace@0.49.0
+
 ## 0.48.2
 
 ### Patch Changes

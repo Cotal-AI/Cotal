@@ -41,9 +41,11 @@ c("manager.ts is readable and is the file carrying the serve wiring",
 
 console.log("\n── WRONG-TODAY (1/2): both action commands are served by the Model-B goal path ──");
 // `serveSpawnGoal` is the Model-B chokepoint: goalId = request id, acceptance on the reply rail.
-// J2 deletes it and routes both commands through the journal rail instead.
+// J2 deletes it and routes both commands through the journal rail instead. The pin below is on
+// the wiring shape, gated and then the chokepoint, not on the arrow's synchrony, so a reformat of
+// the arrow is re-pinned here rather than read as the flip landing.
 c("WRONG-TODAY: `spawn` is wired through serveSpawnGoal",
-  count("spawn: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(") === 1);
+  count("spawn: (ctx) => this.serveGated(ctx, async () => this.serveSpawnGoal(") === 1);
 c("WRONG-TODAY: `launch` is wired through the SAME serveSpawnGoal chokepoint",
   count("launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(") === 1);
 // The count is the point: it pins TWO and only two. A third action command wired the same way

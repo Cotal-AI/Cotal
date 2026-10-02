@@ -13,7 +13,8 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { executeUpdate, parseNpmVersion, update, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { MeshTargetError } from "@cotal-ai/workspace";
+import { executeUpdate, parseNpmVersion, reportRunningManagers, update, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
 
@@ -277,11 +278,229 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const legacy = updateRuntime({ reportRunningManager: async () => "legacy" });
   const code = await executeUpdate(false, legacy.rt);
-  assert.ok(legacy.events.includes("reconcile"), "disk reconciliation completes before the running-manager report");
   assert.ok(legacy.events.includes("report-running-manager"), "the running manager is classified before refusal");
+  assert.ok(!legacy.events.includes("reconcile"), "a legacy custody verdict refuses BEFORE the seed store is rewritten");
   assert.ok(!legacy.events.includes("claim-mutation"), "legacy report refuses before extension replay can mutate packages");
   assert.ok(!legacy.events.some((event) => event.startsWith("spawn:")), "legacy report starts no extension replay subprocess");
   assert.equal(code, 1);
+}
+
+// --- #1879: the continuity refusal carries the workspace renderer's remedy ------------------------
+// The resolver's own text is command-agnostic by design ("multiple meshes running: …") and carries
+// no recovery. Every other command renders the same error through `renderWorkspaceError`, which adds
+// the `--space` / `cotal use` sentence. This one printed the bare text, so a refusal that STANDS
+// (several tenants on one root: no running manager to enumerate) left the operator with no next step.
+{
+  const refused = updateRuntime({
+    reportRunningManager: async () => {
+      throw new MeshTargetError("ambiguous-target", "/root's broker holds accounts for 2 spaces (a, b) - name one with --space", {
+        root: "/root",
+        available: ["a", "b"],
+      });
+    },
+  });
+  assert.equal(await executeUpdate(false, refused.rt), 1);
+  const line = refused.events.find((event) => event.includes("running manager continuity check"));
+  assert.ok(line, "the refusal is printed under the continuity-check marker");
+  assert.ok(
+    line.includes("Pick one with `--space <name>` or set a default with `cotal use <name>`"),
+    "the standing refusal carries the workspace renderer's remedy sentence",
+  );
+  assert.ok(!refused.events.includes("reconcile"), "a standing refusal still writes nothing");
+  // One marker, not two: the command prints its own `✗` and the rendered line's is dropped.
+  assert.equal(line.match(/✗/g)?.length, 1, "the rendered marker is not doubled under the command's own");
+}
+
+// --- #1879: several running meshes report each manager's continuity in turn -----------------------
+// `update --self` replaces the single `cotal-ai` install every running manager shares. With no
+// selector it refused outright (no report at all), and with `--space` it reported one and never
+// named the others — a silent partial answer about a machine-wide install.
+{
+  // A declaration, not a `const` arrow: TypeScript only narrows on a `never` return through a
+  // declared function, so the callers below can treat a non-string space as unreachable.
+  function ambiguous(): never {
+    throw new MeshTargetError("ambiguous-target", "multiple meshes running: alpha (/a), beta (/b)", {
+      available: ["alpha (/a)", "beta (/b)"],
+      spaces: ["alpha", "beta"],
+    });
+  }
+
+  // The refusal is CAUGHT rather than allowed to propagate: an implementation that stops enumerating
+  // rethrows it, and an uncaught throw would end the suite on a stack trace instead of the assertion
+  // that names what was lost. The assertions below are the verdict either way.
+  const enumerate = async (
+    read: (space: string) => "none" | "legacy",
+  ): Promise<{ seen: string[]; verdict?: "none" | "legacy"; threw?: unknown }> => {
+    const seen: string[] = [];
+    try {
+      const verdict = await reportRunningManagers({}, async (flags) => {
+        const space = flags.space;
+        if (typeof space !== "string") ambiguous();
+        seen.push(space);
+        return read(space);
+      });
+      return { seen, verdict };
+    } catch (e) {
+      return { seen, threw: e };
+    }
+  };
+
+  const all = await enumerate(() => "none");
+  assert.deepEqual(all.seen, ["alpha", "beta"], "every running manager is read, in turn");
+  assert.equal(all.threw, undefined, "several running managers are reported rather than refused");
+  assert.equal(all.verdict, "none", "all-current custody is not a legacy verdict");
+
+  // A `legacy` verdict on EITHER manager makes the whole run not a hot update, and every manager is
+  // still observed before the answer comes back (#1620 stands for all of them, not just the first).
+  for (const legacySpace of ["alpha", "beta"]) {
+    const mixed = await enumerate((space) => (space === legacySpace ? "legacy" : "none"));
+    assert.deepEqual(mixed.seen, ["alpha", "beta"], "a legacy verdict does not stop the remaining managers being observed");
+    assert.equal(mixed.verdict, "legacy", `a legacy verdict on ${legacySpace} makes the whole run not a hot update`);
+  }
+
+  // Through the command: two managers, one legacy, nothing written.
+  let asked = 0;
+  const twoManagers = updateRuntime({
+    reportRunningManager: () => reportRunningManagers({}, async (flags) => {
+      if (typeof flags.space !== "string") ambiguous();
+      asked++;
+      return flags.space === "beta" ? "legacy" : "none";
+    }),
+  });
+  assert.equal(await executeUpdate(false, twoManagers.rt), 1);
+  assert.equal(asked, 2, "both managers are observed before the update answers");
+  assert.ok(!twoManagers.events.includes("reconcile"), "a legacy verdict on either manager writes nothing");
+
+  // A selector flag still selects exactly one: the enumeration is the UNSELECTED case only.
+  for (const flags of [{ space: "alpha" }, { server: "nats://example:4222" }, { creds: "/c.creds" }]) {
+    const one: Array<Record<string, unknown>> = [];
+    assert.equal(
+      await reportRunningManagers(flags, async (f) => {
+        one.push(f);
+        return "none";
+      }),
+      "none",
+    );
+    assert.deepEqual(one, [flags], "a selected target is read once, exactly as given");
+  }
+  // And a selected target's refusal still stands rather than fanning out.
+  await assert.rejects(
+    reportRunningManagers({ space: "alpha" }, async () => ambiguous()),
+    /multiple meshes running/,
+    "a selected target never enumerates",
+  );
+}
+
+// --- #2158: a remote user mesh is skipped before the manager-caller mint ------------------------
+{
+  const { readManagerContinuity } = await import("../src/commands/update.js");
+  const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  const realHome = process.env.COTAL_HOME;
+  const tmpHome = mkdtempSync(join(realpathSync(tmpdir()), "cotal-2158-"));
+  const tmpRoot = mkdtempSync(join(realpathSync(tmpdir()), "cotal-2158-root-"));
+  process.env.COTAL_HOME = tmpHome;
+  try {
+    recordMesh({
+      space: "hosted",
+      server: "nats://127.0.0.1:9",
+      mode: "user",
+      origin: "manual",
+      root: tmpRoot,
+      tlsRequired: false,
+      userAuth: {
+        provider: "cotal",
+        remote: true,
+        idp: { url: "http://127.0.0.1:9/idp", issuer: "http://127.0.0.1:9/idp", audience: "cotal-mesh" },
+        endpoints: { url: "http://127.0.0.1:9/" },
+        sentinelCredsPath: join(tmpRoot, "sentinel.creds"),
+      },
+      ts: new Date().toISOString(),
+    });
+
+    let out = "";
+    const realLog = console.log;
+    console.log = (s?: unknown) => void (out += `${s}\n`);
+    let verdict: "none" | "legacy" | undefined;
+    let thrown: unknown;
+    const started = Date.now();
+    try {
+      verdict = await readManagerContinuity({ space: "hosted" });
+    } catch (e) {
+      thrown = e;
+    } finally {
+      console.log = realLog;
+    }
+    const elapsedMs = Date.now() - started;
+
+    assert.equal(thrown, undefined, "#2158: a remote user mesh is skipped before the manager-caller mint");
+    assert.equal(verdict, "none", "#2158: a remote user mesh is skipped before the manager-caller mint");
+    assert.ok(
+      out.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
+      "#2158: the skip names the mesh and says its manager runs elsewhere",
+    );
+    assert.ok(!out.includes("manager-caller"), "#2158: the skip names the mesh and says its manager runs elsewhere");
+    assert.ok(
+      !out.includes("running manager continuity check"),
+      "#2158: the skip names the mesh and says its manager runs elsewhere",
+    );
+    assert.ok(elapsedMs < 1_000, "#2158: the skip reaches no exchange");
+
+    // A remote entry among several running meshes contributes none and does not clear a legacy verdict.
+    function ambiguous2158(): never {
+      throw new MeshTargetError("ambiguous-target", "multiple meshes running: alpha (/a), hosted (/h)", {
+        available: ["alpha (/a)", "hosted (/h)"],
+        spaces: ["alpha", "hosted"],
+      });
+    }
+    let out2 = "";
+    const realLog2 = console.log;
+    console.log = (s?: unknown) => void (out2 += `${s}\n`);
+    let verdict2: "none" | "legacy";
+    try {
+      verdict2 = await reportRunningManagers({}, async (flags) => {
+        if (typeof flags.space !== "string") ambiguous2158();
+        return flags.space === "hosted" ? readManagerContinuity(flags) : "legacy";
+      });
+    } finally {
+      console.log = realLog2;
+    }
+    assert.equal(
+      verdict2,
+      "legacy",
+      "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
+    );
+    assert.ok(
+      out2.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
+      "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
+    );
+  } finally {
+    if (realHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = realHome;
+    removeMesh("hosted");
+  }
+}
+
+// --- #1620: update observes the running manager BEFORE it rewrites the global seed store ----------
+// `rt.reconcile()` is `runSeed({force: true})` — it rewrites the operator-global seed store,
+// manifest and npm prefix. Running it before the continuity check meant an `update --self` against
+// an older mesh migrated the machine and only THEN failed the check, leaving it migrated by a run
+// that refused to proceed. Observation is a pure read and must come first.
+{
+  const failedCheck = updateRuntime({
+    reportRunningManager: async () => { throw new Error("stream not found"); },
+  });
+  assert.equal(await executeUpdate(false, failedCheck.rt), 1);
+  assert.ok(
+    !failedCheck.events.includes("reconcile"),
+    "a failed running-manager observation must leave the global seed store untouched",
+  );
+
+  const ordered = updateRuntime({});
+  assert.equal(await executeUpdate(false, ordered.rt), 0);
+  const observed = ordered.events.indexOf("report-running-manager");
+  const wrote = ordered.events.indexOf("reconcile");
+  assert.ok(observed !== -1 && wrote !== -1, "both the observation and the seed write happen on a clean update");
+  assert.ok(observed < wrote, "the running-manager observation precedes the seed store rewrite");
 }
 
 // --- malformed npm fails after local reconcile; extension failures continue and aggregate --------

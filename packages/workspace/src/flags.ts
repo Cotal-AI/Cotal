@@ -16,6 +16,14 @@ export const credsFlag = { name: "creds", type: "string", value: "<path>", descr
  *  folder's project > the registry. */
 export const targetFlags = [spaceFlag, serverFlag, credsFlag] as const satisfies readonly FlagSpec[];
 
+/** Whether a command declares the shared mesh-target grammar. Compare names, not object identity:
+ * self-registering packages may spell the same public flags without importing these singleton specs. */
+export function hasMeshTargetFlags(flags: readonly FlagSpec[] | undefined): boolean {
+  if (!flags) return false;
+  const names = new Set(flags.map((flag) => flag.name));
+  return names.has(spaceFlag.name) && names.has(serverFlag.name);
+}
+
 /**
  * The launch grammar: every knob for bringing an agent onto the mesh, shared verbatim by the
  * foreground and detached (`--detach`, manager-run) paths of `cotal spawn` — one bundle, so the
@@ -34,8 +42,8 @@ export const launchFlags = [
   { name: "cwd", type: "string", value: "<dir>", description: "working directory to root the agent at" },
   { name: "prompt", type: "string", value: "<text>", description: "initial prompt auto-submitted at start" },
   { name: "resume", type: "string", value: "<id>", description: "fork an existing session id into the mesh (only where the connector declares resume support; detached: pair with --cwd)" },
-  { name: "events", type: "boolean", description: "publish the session's AG-UI event plane to its own event channel" },
-  { name: "no-events", type: "boolean", description: "explicit default: no event plane" },
+  { name: "events", type: "boolean", description: "force the session's AG-UI event plane on (already the default where supported)" },
+  { name: "no-events", type: "boolean", description: "opt out of the session's AG-UI event plane" },
   { name: "share-tools", type: "string", value: "<sel>", description: "share named operator MCP servers with the agent" },
   { name: "subscribe", type: "string", value: "<a,b>", description: "channel read set override" },
   { name: "allow-subscribe", type: "string", value: "<a,b>", description: "read ACL override" },
@@ -70,4 +78,17 @@ export function mergeLaunchOptions(
   if (!base && !override) return undefined;
   const merged = { ...base, ...override };
   return Object.keys(merged).length ? merged : undefined;
+}
+
+/**
+ * Parse a positive integer CLI flag. Absent stays undefined (the callee's default); anything else
+ * that is not a safe integer ≥ 1 fails loud naming the flag, never silently becoming NaN or the
+ * default. Used by `--max-sessions` so a typo cannot drop the live-session ceiling to 64.
+ */
+export function parsePositiveIntegerFlag(flag: string, raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 1)
+    throw new Error(`${flag} must be a positive integer (got ${JSON.stringify(raw)})`);
+  return n;
 }

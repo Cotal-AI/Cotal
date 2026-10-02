@@ -12,10 +12,12 @@
     "children, and the refusal happens in the suite's OWN process.",
     "",
     "N1 restores the reported defect: hermes tool-parity loses its pointer drop. It must redden",
-    "the per-file cell, which is the census's only real output for a missing drop.",
+    "the per-file cell, which is the census's only real output for a missing drop. The drop it",
+    "removes is the whole-prefix form, which is what those files carry now: the pointer starts with",
+    "COTAL_, so the prefix scrub is the drop.",
     "",
-    "N2 is order, not presence. A drop after configFromEnv still looks like a scrub and still",
-    "throws. The cell that names 'before configFromEnv' is the one that has to go red.",
+    "N2 removes the scrub from the suite issue #833 names by file, which is the live refusal a",
+    "reporter hits from inside a connected session.",
     "",
     "N3 is the census shrinking silently. Every per-file cell is generated from the census, so",
     "walking only connector-hermes deletes cells rather than failing them, and a suite with",
@@ -26,22 +28,22 @@
   ],
   "mutations": [
     {
-      "name": "N1 hermes tool-parity loses its COTAL_LAUNCH_MATERIAL drop, which is the reported defect",
+      "name": "N1 hermes tool-parity loses its COTAL_ scrub, which is the reported defect",
       "file": "extensions/connector-hermes/smoke/tool-parity.smoke.ts",
-      "find": "delete process.env.COTAL_LAUNCH_MATERIAL;\nconst config = configFromEnv();\nconst specNames = cotalToolSpecs(config, \"hermes\").map((s) => s.name);",
-      "replace": "const config = configFromEnv();\nconst specNames = cotalToolSpecs(config, \"hermes\").map((s) => s.name);",
+      "find": "const inheritedBroker = process.env.COTAL_SERVERS !== undefined;\nfor (const key of Object.keys(process.env)) if (key.startsWith(\"COTAL_\")) delete process.env[key];\n",
+      "replace": "const inheritedBroker = process.env.COTAL_SERVERS !== undefined;\n",
       "expectRed": "extensions/connector-hermes/smoke/tool-parity.smoke.ts drops COTAL_LAUNCH_MATERIAL from process.env",
       "cell": "extensions/connector-hermes/smoke/tool-parity.smoke.ts drops COTAL_LAUNCH_MATERIAL from process.env",
-      "note": "The exact regression #995 names. Without the drop, a managed seat's pnpm test manufactures the two-carrier launch and is refused."
+      "note": "The exact regression #995 names, in the form the file carries after #833. Without the scrub, a managed seat's pnpm test manufactures the two-carrier launch and is refused."
     },
     {
-      "name": "N2 the drop sits AFTER configFromEnv, so the pair is still present when the refusal runs",
+      "name": "N2 the scrub sits AFTER configFromEnv, so the pair is still present when the refusal runs",
       "file": "extensions/connector-core/smoke/tool-input-closed.smoke.ts",
-      "find": "delete process.env.COTAL_LAUNCH_MATERIAL;\nconst config = configFromEnv();\nconst specs = cotalToolSpecs(config, \"smoke\");",
-      "replace": "const config = configFromEnv();\ndelete process.env.COTAL_LAUNCH_MATERIAL;\nconst specs = cotalToolSpecs(config, \"smoke\");",
-      "expectRed": "extensions/connector-core/smoke/tool-input-closed.smoke.ts drops the pointer before configFromEnv() reads the pair",
-      "cell": "extensions/connector-core/smoke/tool-input-closed.smoke.ts drops the pointer before configFromEnv() reads the pair",
-      "note": "Presence-not-position: the drop is still in the file, so a census that only asked 'is the line there' would stay green while the live refusal still fires."
+      "find": "for (const key of Object.keys(process.env)) if (key.startsWith(\"COTAL_\")) delete process.env[key];\n\nprocess.env.COTAL_SPACE ||= \"toolclosed\";",
+      "replace": "\nprocess.env.COTAL_SPACE ||= \"toolclosed\";",
+      "expectRed": "extensions/connector-core/smoke/tool-input-closed.smoke.ts drops COTAL_LAUNCH_MATERIAL from process.env",
+      "cell": "extensions/connector-core/smoke/tool-input-closed.smoke.ts drops COTAL_LAUNCH_MATERIAL from process.env",
+      "note": "Removing the scrub from the one suite issue #833 names by file. The pair is present when configFromEnv runs, which is the refusal the reporter hit."
     },
     {
       "name": "N3 the census is scoped to connector-hermes, the package that reported the defect",

@@ -99,7 +99,8 @@ export function kvManagerSessionLedger(kv: KV): SessionLedger {
 /** The default global live-session ceiling. Configurable per manager
  *  ({@link ManagerSessionPlaneDeps.maxSessions}) because the right number is deployment-shaped: the
  *  browser console opens a session PER PANE, so a dashboard over a large mesh legitimately holds
- *  many at once, and a ceiling low enough to feel like a bound would break it. */
+ *  many at once, and a ceiling low enough to feel like a bound would break it. Operators set it with
+   *  `--max-sessions` (`cotal supervise` / `cotal up`); this constant is the default when they do not. */
 export const MAX_LIVE_SESSIONS_DEFAULT = 64;
 
 export interface ManagerSessionPlaneDeps {
@@ -349,7 +350,7 @@ export class ManagerSessionPlane {
     if (this.#live.size + this.#reserved >= this.#maxSessions)
       throw new EpEnvelopeError(
         "resource-exhausted",
-        `the manager is already serving its maximum of ${this.#maxSessions} concurrent sessions (raise ManagerOptions.maxSessions); no session was established and no credential was minted (SPEC 13.6)`,
+        `the manager is already serving its maximum of ${this.#maxSessions} concurrent sessions (raise --max-sessions); no session was established and no credential was minted (SPEC 13.6)`,
       );
     this.#reserved++;
     let released = false;

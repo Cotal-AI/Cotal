@@ -116,7 +116,7 @@ const ANNOTATIONS = {
   cotal_run: {
     effect: "starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only",
     availability:
-      "capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode); open mode is permissive",
+      "capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode). Open mode exposes the tool, but hosted runs require static authentication with issued caller authority; open and user-auth meshes refuse execution ([workflow setup](workflows.md#from-an-agent-session))",
     notes:
       "`start` sends the program source inline and returns the run id at once; the manager validates first and a refusal lists every problem with its line, cause, and fix. The run continues on the manager after your session ends and is taken back after a manager restart. `answer` records you as the answerer: the manager takes your name from your credential, and the tool sends none.",
   },
@@ -245,6 +245,12 @@ for (const s of specs) {
     lines.push("");
   } else {
     lines.push("No arguments.");
+    lines.push("");
+  }
+  if (s.name === "cotal_dm") {
+    lines.push(
+      "On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it.",
+    );
     lines.push("");
   }
 }

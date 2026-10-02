@@ -1,0 +1,46 @@
+{
+  "suite": [
+    "packages/core/smoke/serverconfig-shapes.smoke.ts"
+  ],
+  "guard": "Both broker renderers render `max_file_store` inside the `jetstream{}` block when `maxFileStore` is set, render byte-identical config when it is unset, and refuse a non-positive or non-integer cap naming the option (#1888).",
+  "command": "pnpm smoke:serverconfig-shapes",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/serverconfig-store-cap.json",
+  "why": [
+    "The suite imports the renderers from `src`, so no build is needed and each mutant is what the suite reads.",
+    "The first mutant keeps the option accepted and validated but drops the rendered line, which is the silent-ignore shape: the operator asks for a cap and the broker runs on the dynamic default. The others break the unset bytes, the refusal, and the serverConfig hand-off one at a time."
+  ],
+  "mutations": [
+    {
+      "name": "a set cap is validated but not rendered",
+      "file": "packages/core/src/provision.ts",
+      "find": "  return `jetstream { store_dir: ${JSON.stringify(storeDir)}, max_file_store: ${maxFileStore} }`;\n",
+      "replace": "  return `jetstream { store_dir: ${JSON.stringify(storeDir)} }`;\n",
+      "expectRed": "openServerConfig: a set maxFileStore renders max_file_store inside the jetstream block",
+      "cell": "openServerConfig: a set maxFileStore renders max_file_store inside the jetstream block"
+    },
+    {
+      "name": "unset renders a different jetstream line",
+      "file": "packages/core/src/provision.ts",
+      "find": "  if (maxFileStore === undefined) return `jetstream { store_dir: ${JSON.stringify(storeDir)} }`;\n",
+      "replace": "  if (maxFileStore === undefined) return `jetstream { store_dir: ${JSON.stringify(storeDir)}, }`;\n",
+      "expectRed": "openServerConfig: unset maxFileStore renders byte-identical config",
+      "cell": "openServerConfig: unset maxFileStore renders byte-identical config"
+    },
+    {
+      "name": "an invalid cap is rendered instead of refused",
+      "file": "packages/core/src/provision.ts",
+      "find": "  if (!Number.isSafeInteger(maxFileStore) || maxFileStore <= 0)\n",
+      "replace": "  if (Number.isNaN(maxFileStore))\n",
+      "expectRed": "openServerConfig: maxFileStore 0 is refused naming the option",
+      "cell": "openServerConfig: maxFileStore 0 is refused naming the option"
+    },
+    {
+      "name": "serverConfig drops the cap on the way to the block",
+      "file": "packages/core/src/provision.ts",
+      "find": "renderJetStreamBlock(\"serverConfig\", opts.storeDir, opts.maxFileStore)",
+      "replace": "renderJetStreamBlock(\"serverConfig\", opts.storeDir, undefined)",
+      "expectRed": "serverConfig: a set maxFileStore renders max_file_store inside the jetstream block",
+      "cell": "serverConfig: a set maxFileStore renders max_file_store inside the jetstream block"
+    }
+  ]
+}

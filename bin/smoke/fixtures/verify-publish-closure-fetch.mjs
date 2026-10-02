@@ -9,9 +9,13 @@
  *
  * SMOKE_CLOSURE_MISSING — comma-separated package names that answer 404. Everything else answers
  * 200. Empty or unset means the whole closure is live.
+ * SMOKE_CLOSURE_ERRORED — comma-separated package names that answer 500.
  */
 const missing = new Set(
   (process.env.SMOKE_CLOSURE_MISSING ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+);
+const errored = new Set(
+  (process.env.SMOKE_CLOSURE_ERRORED ?? "").split(",").map((s) => s.trim()).filter(Boolean),
 );
 
 globalThis.fetch = async (url) => {
@@ -20,8 +24,15 @@ globalThis.fetch = async (url) => {
   // package name the test actually named.
   const decoded = decodeURIComponent(path.slice(path.indexOf("/", path.indexOf("://") + 3)));
   const name = decoded.slice(1, decoded.lastIndexOf("/"));
-  return new Response("{}", {
-    status: missing.has(name) ? 404 : 200,
-    headers: { "content-type": "application/json" },
-  });
+  const version = decoded.slice(decoded.lastIndexOf("/") + 1);
+  if (errored.has(name)) {
+    return new Response("{}", { status: 500, headers: { "content-type": "application/json" } });
+  }
+  if (missing.has(name)) {
+    return new Response("{}", { status: 404, headers: { "content-type": "application/json" } });
+  }
+  // A 200 must carry a body that identifies the package at the requested version, or the gate
+  // treats it as no-evidence (#1257). The fixture returns the minimum viable body.
+  const body = JSON.stringify({ name, version });
+  return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
 };

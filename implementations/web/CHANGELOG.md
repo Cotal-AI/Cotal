@@ -1,5 +1,42 @@
 # @cotal-ai/web
 
+## 0.58.0
+
+## 0.57.0
+
+## 0.56.1
+
+## 0.56.0
+
+### Patch Changes
+
+- 99cad7b: A membership watch that closes after setup now reaches its caller through a second callback on `watchMembership`, instead of leaving the caller holding a stale snapshot with no signal. The dashboard broadcasts the existing membership-read-failed event and the console marks the feed unreadable, instead of both keeping the last snapshot silently (#485).
+- 03912bb: Close the connection an auth-gate refusal rides on when the request announced a body, so an unauthenticated caller cannot hold the dashboard reading an upload it refused (#2024)
+- 4f288bd: Move the two header reads that compute the announced-body fact below the auth gate, so the pre-gate prefix stays a parse and nothing else; refusal bytes and the no-body guard are unchanged (#2178)
+
+## 0.55.0
+
+### Patch Changes
+
+- e1351c2: Take a DM sender's display name and role from the roster by authenticated id instead of the message payload, so one peer cannot spoof another's name or role in the CLI DM lens or the web feed.
+- 8c037f5: Refuse announced request bodies on dashboard routes that do not read one before the server accepts the upload.
+
+## 0.54.0
+
+## 0.53.0
+
+## 0.52.1
+
+## 0.52.0
+
+## 0.51.0
+
+## 0.50.1
+
+## 0.50.0
+
+## 0.49.0
+
 ## 0.48.2
 
 ## 0.48.1

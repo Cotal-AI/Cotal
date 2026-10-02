@@ -35,6 +35,8 @@ export interface MeshTarget {
    *  the dangerous default, because a client with none still connects to a TLS broker and looks
    *  fine, while remaining downgradeable by a forged plaintext INFO. */
   tlsRequired: boolean;
+  /** Required session behavior from the selected registration. */
+  policy?: MeshEntry["policy"];
   /** Trust material, for a STATIC-auth mesh only — undefined for open AND for user mode (a
    *  user-mode root may still hold `auth.json` on disk; deliberately not loaded here so no caller
    *  can drift into minting static creds for a user-auth space). */
@@ -70,6 +72,13 @@ export interface ResolveFlags {
   server?: string;
   /** `--space <name>` — pick a specific running mesh from the registry. */
   space?: string;
+  /**
+   * Spaces whose broker the last liveness sweep already found dead. Their records
+   * stay (that is the registry's job); they are not live candidates for unflagged
+   * resolution. Named `--space` still resolves a dead record so preflight can
+   * name its root. Callers that do not sweep omit this; TAB completion must.
+   */
+  offline?: readonly string[];
 }
 
 /** The distinct, command-agnostic reasons {@link resolveMeshTarget} can't pick a single mesh. Each
@@ -95,6 +104,12 @@ export interface MeshTargetErrorDetails {
   root?: string;
   /** Running meshes, for the ambiguous case — each formatted `"<space> (<root>)"`. */
   available?: string[];
+  /** The same running meshes by SPACE NAME, in `available`'s order — set only where the ambiguity is
+   *  a set of meshes that are recorded AND running, so a caller that must act on each (rather than
+   *  print them) can select one by name. Absent for every other ambiguity: several tenants on one
+   *  root's disk, or an unreadable account record, name no running manager to act on, and there the
+   *  refusal stands. */
+  spaces?: string[];
   /** What the caller asked for that didn't match (e.g. an unknown `--space`). */
   requested?: string;
   /** For `stale-auth-root`: the space the on-disk auth now claims, diverging from the record. */
@@ -212,7 +227,7 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
     if (!auth) {
       const found = listSpaceAccounts(authDir(m.root));
       if (found.length) {
-        const removed = pruneMesh(m.space);
+        const removed = pruneMesh(m.space, "mismatch");
         throw new MeshTargetError(
           "stale-auth-root",
           `registry entry "${m.space}" points at ${m.root}, whose on-disk auth is now for "${found.join('", "')}"`,
@@ -237,6 +252,7 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
     space: m.space,
     mode: m.mode,
     tlsRequired: m.tlsRequired === true,
+    ...(m.policy ? { policy: m.policy } : {}),
     auth,
     ...(userAuth ? { userAuth } : {}),
     ...(m.origin ? { origin: m.origin } : {}),
@@ -293,10 +309,13 @@ function isGenuineSpace(root: string): boolean {
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
  *  3. The live `current` selected by `cotal use` — from any directory.
  *  4. A genuine local project (`cwd` walks up to a real `.cotal/`).
- *  5. The registry: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming each + its root.
+ *  5. The registry's *running* meshes: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming
+ *     each + its root. `flags.offline` (from a sweep) is excluded here and from
+ *     a dangling `current`; a named `--space` is not filtered.
  * No silent fallback — an unresolved target throws one human sentence.
  */
 export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTarget {
+  const offline = new Set(flags.offline ?? []);
   if (flags.space) {
     const m = findMesh(flags.space);
     if (!m)
@@ -316,7 +335,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // server URL - so "the entry on that server" is not a single thing. `.find()` would silently
     // hand back whichever sorted first, connecting the caller to an arbitrary tenant; refuse and
     // name them instead (`--space` picks one explicitly, handled above).
-    const onServer = loadMeshes().filter((e) => e.server === flags.server);
+    const onServer = loadMeshes().filter((e) => e.server === flags.server && !offline.has(e.space));
     if (onServer.length > 1)
       throw new MeshTargetError(
         "ambiguous-target",
@@ -338,7 +357,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   const meshes = loadMeshes();
   const current = getCurrent();
   const cur = current ? meshes.find((m) => m.space === current) : undefined;
-  if (cur) return targetFromEntry(cur, cur.server, "current");
+  // A `current` whose broker the sweep already found dead is not a live target.
+  // Fall through so one remaining running mesh can still resolve, the way a
+  // deleted record used to; the record itself stays.
+  if (cur && !offline.has(cur.space)) return targetFromEntry(cur, cur.server, "current");
 
   const root = findCotalRoot(cwd);
   if (isGenuineSpace(root)) {
@@ -399,7 +421,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // consequence of the early return above, not a property of this line. Change that return and the
     // `resolve` spelling silently becomes load-bearing and wrong.
     const onDefault = meshes.find(
-      (m) => m.server === DEFAULT_SERVER && canonicalRoot(m.root) !== canonicalRoot(root),
+      (m) =>
+        m.server === DEFAULT_SERVER &&
+        canonicalRoot(m.root) !== canonicalRoot(root) &&
+        !offline.has(m.space),
     );
     if (onDefault)
       throw new MeshTargetError(
@@ -410,11 +435,23 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     return localTarget(root, DEFAULT_SERVER, "local-space");
   }
 
-  if (meshes.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
-  if (meshes.length === 1) return targetFromEntry(meshes[0], meshes[0].server, "registry");
+  // The fallback names *running* meshes. A liveness miss used to delete the record and
+  // shrink this set; the record now stays, so a known-dead entry must not count here
+  // or the error ("no mesh running" / "multiple meshes running") would name a mesh
+  // that is not running. Named `--space` above is unfiltered: preflight still has to
+  // resolve a dead record to name its root. Zero running includes "recorded but all
+  // offline": that is still `no-meshes`. The named-space / preflight path is what
+  // reports "recorded at <root> but not running".
+  const running = meshes.filter((m) => !offline.has(m.space));
+  if (running.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
+  if (running.length === 1) return targetFromEntry(running[0], running[0].server, "registry");
 
-  const names = meshes.map((m) => `${m.space} (${m.root})`);
+  const names = running.map((m) => `${m.space} (${m.root})`);
+  // `spaces` rides alongside the display strings: this is the one ambiguity whose members are each a
+  // running mesh a caller can select by name, so a caller that must visit every one of them (`update`,
+  // which replaces the single binary they all share) gets the names without parsing `available`.
   throw new MeshTargetError("ambiguous-target", `multiple meshes running: ${names.join(", ")}`, {
     available: names,
+    spaces: running.map((m) => m.space),
   });
 }

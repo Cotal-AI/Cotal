@@ -1,0 +1,2 @@
+# An interrupted probe must fail the gate rather than exit 0 and be graded as a completed run.
+smoke:hermes-probe-interrupt

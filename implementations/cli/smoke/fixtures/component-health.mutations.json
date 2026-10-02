@@ -1,13 +1,13 @@
 {
   "command": "pnpm smoke:component-health",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "minTicks": 13,
   "mutations": [
     {
       "name": "a failed reconciliation state overrides a reachable manager service holding its lease",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "return { name: \"manager\", verdict: lease ? \"serving\" : \"not-serving\", facts };",
-      "replace": "const reconcileFailed = reconcile?.state === \"failed\";\n    return { name: \"manager\", verdict: lease && !reconcileFailed ? \"serving\" : \"not-serving\", facts };",
+      "find": "return { name: \"manager\", verdict: lease || credential.kind === \"user\" ? \"serving\" : \"not-serving\", facts };",
+      "replace": "const reconcileFailed = reconcile?.state === \"failed\";\n    return { name: \"manager\", verdict: (lease || credential.kind === \"user\") && !reconcileFailed ? \"serving\" : \"not-serving\", facts };",
       "expectRed": "benign foreign-owned reconciliation stays serving with exact failure facts",
       "cell": "benign foreign-owned reconciliation stays serving with exact failure facts",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -33,8 +33,8 @@
     {
       "name": "a delivery lease that has not reached ready is reported as healthy",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "return { name: \"delivery\", verdict: lease.ready ? \"serving\" : \"not-serving\", facts };",
-      "replace": "return { name: \"delivery\", verdict: \"serving\", facts };",
+      "find": "    return { name: \"delivery\", verdict: state === \"bound\" ? \"serving\" : \"not-serving\", facts };",
+      "replace": "    return { name: \"delivery\", verdict: \"serving\", facts };",
       "expectRed": "delivery ready lease and renewal adoption report independently from its own surfaces",
       "cell": "delivery ready lease and renewal adoption report independently from its own surfaces",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -46,6 +46,15 @@
       "replace": "",
       "expectRed": "a live non-web pidfile is a probe refusal (3), never a healthy default-port guess",
       "cell": "a live non-web pidfile is a probe refusal (3), never a healthy default-port guess",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "bare status greens a live manager pid without asking its rail (#2073)",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "    if (noService) return `${c.red(`not serving (pid ${state.pid})`)}${c.dim(\" \u00b7 service endpoint not answering\")}`;",
+      "replace": "    if (noService) return `${unprobed}${c.dim(\" \u00b7 service unchecked\")}`;",
+      "expectRed": "bare status says not serving for a live pid whose rail does not answer (#2073)",
+      "cell": "bare status says not serving for a live pid whose rail does not answer (#2073)",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ],

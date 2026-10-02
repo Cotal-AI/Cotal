@@ -25,6 +25,9 @@
  * duplex byte flow through the echo child, resize, close BOTH ways surfaces a distinct end state, and
  * backpressure emits an explicit DROP-NOTICE (never silent loss).
  */
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
@@ -54,6 +57,7 @@ import {
 } from "../src/session/index.js";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
 import { meshSessionTransport } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import: the real CLI caller consumer
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // A portable pty echo child: it pipes stdin straight back to stdout, so a keystroke the caller
 // sends comes back as output — a genuine duplex byte stream over the two eps rails. `process.execPath`
@@ -212,7 +216,8 @@ console.log("B. the framing codec (raw bytes base64-in-JSON + JSON control frame
 console.log("C. the PTY bridge over a real broker + a real pty (the echo child mirrors the byte stream)");
 
 const PORT = 14261;
-const broker = spawn("nats-server", ["-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-p", String(PORT), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+teardownOnSignal(broker);
 process.on("exit", () => broker.kill("SIGKILL"));
 let up = false;
 for (let i = 0; i < 50 && !up; i++) { try { const t = await connect({ servers: `nats://127.0.0.1:${PORT}` }); await t.close(); up = true; } catch { await wait(100); } }

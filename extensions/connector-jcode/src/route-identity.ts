@@ -1,12 +1,11 @@
 /**
  * Say which provider is actually carrying a seat's model.
  *
- * The connector already refuses to join under a model label it did not receive, and that guarantee
- * stopped at the model. A seat could be truthfully labelled with the model an operator asked for
- * while its traffic was carried by a component nobody named: one seat was requested as a given
- * model, logged every line under a different provider's name, and died inside a third component's
- * plugin. Nothing in the roster, the spawn confirmation, or the manager's exit line named the route,
- * so establishing it meant reading the seat's private log by hand (#785).
+ * A seat can be pinned to the model an operator asked for while its traffic is carried by a component
+ * nobody named: one seat was requested as a given model, logged every line under a different
+ * provider's name, and died inside a third component's plugin. Nothing in the roster, the spawn
+ * confirmation, or the manager's exit line named the route, so establishing it meant reading the
+ * seat's private log by hand (#785).
  *
  * `RuntimeInfo` carries `provider` and `routes` in the same response the model check already reads,
  * so this is a reporting gap, not a discovery problem.
@@ -28,17 +27,30 @@ export interface RuntimeIdentity {
   routes?: RouteInfo[];
 }
 
+/** The route serving `model`. RuntimeInfo's active provider disambiguates duplicate model ids. */
+export function activeModelRoute(runtime: RuntimeIdentity | undefined, model: string): RouteInfo | undefined {
+  const matches = runtime?.routes?.filter((route) => route?.model === model) ?? [];
+  return matches.find((route) => route.provider === runtime?.provider) ?? (matches.length === 1 ? matches[0] : undefined);
+}
+
+/** The provider actually serving `model`, or undefined when the Harness API named none. An empty
+ *  string is treated as unnamed. Shared by `describeRoute` and the presence report so the log line
+ *  and the roster card can never name different providers. */
+export function effectiveProvider(runtime: RuntimeIdentity | undefined, model: string): string | undefined {
+  return activeModelRoute(runtime, model)?.provider || runtime?.provider || undefined;
+}
+
 /**
  * One line naming the effective route for `model`.
  *
- * The route matching the requested model wins, because `runtime.provider` is the session default and
- * can differ from the provider actually serving this model. When neither is known the line says so
- * explicitly rather than guessing or going quiet: an unknown route is itself worth reporting, since
- * silence is what made this expensive to diagnose.
+ * The requested pin selects the model whose route is described. RuntimeInfo.model can lag behind a
+ * successful setModel, while RuntimeInfo.provider identifies the active route among duplicate model
+ * ids. When no matching route is known, the provider remains useful diagnostic context. When neither
+ * is known the line says so explicitly rather than guessing or going quiet.
  */
 export function describeRoute(runtime: RuntimeIdentity | undefined, model: string): string {
-  const matched = runtime?.routes?.find((r) => r?.model === model);
-  const provider = matched?.provider ?? runtime?.provider;
+  const matched = activeModelRoute(runtime, model);
+  const provider = effectiveProvider(runtime, model);
   if (!provider) return `model ${model} is served by an unreported provider (the Harness API named none)`;
   const via = matched?.api_method ? ` via ${matched.api_method}` : "";
   const unavailable = matched && matched.available === false ? " (route reports itself UNAVAILABLE)" : "";

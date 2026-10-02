@@ -14,7 +14,8 @@
  *
  * Run: pnpm smoke:flag-inventory
  */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { registry, type Command } from "@cotal-ai/core";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
@@ -24,6 +25,9 @@ import "@cotal-ai/runtime"; // registers run
 
 /** flag spec inventory as "name:type" (+ ":short" when aliased), sorted. */
 const TARGET = ["creds:string", "server:string", "space:string"];
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: boolean }> = {
   // Stage 2b: setup is configure-only — --open's home is `cotal up` (where it already lived);
   // --auth simply died with the launch behavior. `go` (a pure alias of setup) is deleted outright.
@@ -34,7 +38,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
-      "idp:string", "open:boolean", "runtime:string", "server:string", "space:string",
+      "idp:string", "max-sessions:string", "open:boolean", "runtime:string", "server:string", "space:string",
       // The optional PUBLIC remote-exchange face, threaded to the auth-service daemon.
       // `--advertised-server` (2026-08): with --exchange-public-port, the broker address the public
       // discovery bundle advertises - what participants dial, which is not the address the callout
@@ -45,15 +49,23 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "agent-provisioning-url:string",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
       "restore:string", "restore-only:string", "accept-missing-source:boolean",
+      // `--accept-stale-checkpoint` (2026-09): gate 3's only override on the preserved-resume path.
+      "accept-stale-checkpoint:boolean",
       // `--rotate-sys` (2026-08): the class-3 renewal, which rotates the system account and re-mints the
       // two $SYS creds, which nothing re-signs in place (issue #338).
       "rotate-sys:boolean",
+      // `--max-file-store` (2026-09): the broker's JetStream file storage cap, fixed at start (#1888).
+      "max-file-store:string",
+      // `--no-manager` (2026-09): broker-only boot, the broker and in auth mode the delivery daemon (#1856).
+      "no-manager:boolean",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
   },
   // `--space` (2026-07): selects the mesh for target-addressed components (`cotal down web --space <name>`).
-  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "space:string", "store-dir:string"], positionals: true },
+    // `--session-store` (2026-09): repeatable operator input naming the harness transcript store a
+  // preserve-state cut captures with each continuation-capable seat. No default, never inferred.
+  down: { flags: ["dry-run:boolean", "file:string:f", "preserve-state:boolean", "run:string", "session-store:string", "space:string", "store-dir:string", "with-agents:boolean"], positionals: true },
   backup: { flags: ["only:string", "store-dir:string"], positionals: true },
   // `meshes` gained the registry-maintenance verbs (2026-08): `add <space> --server … [--root]
   // [--mode]` registers a mesh this machine did NOT start, `rm <space> …` drops records. `--force`
@@ -66,6 +78,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
   // `--components` (2026-08): explicit fail-loud health across manager, delivery, web, and broker; bare status remains the recovery-oriented inventory.
   status: { flags: ["components:boolean", "server:string", "space:string"], positionals: false },
+  // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
+  sync: { flags: ["idp:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   use: { flags: [], positionals: true },
   join: {
@@ -79,7 +93,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   endpoints: { flags: [...TARGET], positionals: false },
   // The generic v0.4 service surface (P2 item 1, 1c.2b): describe an endpoint's registered
   // command set off the wire; invoke one command by name with JSON args.
-  describe: { flags: [...TARGET], positionals: true },
+  describe: { flags: [...TARGET, "on:string"], positionals: true },
   invoke: {
     flags: [...TARGET, "admin:boolean", "args:string", "name:string", "self:boolean", "timeout:string"],
     positionals: true,
@@ -116,9 +130,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // `--role` / `--provision` / `--space` / `--server` (2026-08): an out-of-band mint can pre-create
     // the identity's bind-only durables so the credential can CONSUME, not only publish (issue #306's
     // second half); the target flags name the mesh that provisioning connects to.
+    // `--expires-in` / `--expires-at` / `--identity` (2026-09, #1992): bound the credential's lifetime
+    // (TTL seconds or absolute exp, mutually exclusive), and re-mint for the nkey an existing creds
+    // file already carries. All three are refused together with `--signer`.
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "force:boolean", "out:string", "profile:string",
-      "provision:boolean", "role:string", "server:string", "signer:boolean", "space:string",
+      "allow-publish:string", "allow-subscribe:string", "expires-at:string", "expires-in:string",
+      "force:boolean", "identity:string", "out:string", "profile:string", "provision:boolean",
+      "role:string", "server:string", "signer:boolean", "space:string",
     ],
     positionals: true,
   },
@@ -140,7 +158,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   supervise: {
-    flags: ["console-host:string", "console-port:string", "launch:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
+    flags: ["console-host:string", "console-port:string", "launch:string", "max-sessions:string", "resume-attempt:string", "resume-commit-token:string", "roster:string", "runtime:string", "server:string", "space:string", "spawn:string", "ws-port:string"],
     positionals: false,
   },
   // The guarded exit from an issuance gate left frozen by a crashed manager restart (#391). It is
@@ -163,12 +181,14 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
   runtimes: { flags: [], positionals: false },
+  // `service` (2026-09): the manager as a user service; the subcommand is the positional.
+  service: { flags: ["json:boolean", "linger:boolean", "mesh:string"], positionals: true },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
   // #651: `--wide` (human facts line) / `--json` (machine rows) enrich the SAME listing; bare
   // output is unchanged. Mutually exclusive by construction, refused rather than prioritized.
-  ps: { flags: [...TARGET, "on:string", "wide:boolean", "json:boolean"], positionals: false },
+  ps: { flags: [...TARGET, "on:string", "wide:boolean", "json:boolean", "slots:boolean"], positionals: false },
   // `--no-reconnect` (2026-08, lane A1): attach re-establishes its session when the LINK dies,
   // so the flag is the opt OUT, for scripts that want one session and one exit code. Named
   // `no-reconnect` rather than a negation of a `reconnect` flag for the reason `input` gives
@@ -183,8 +203,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // `--tls` here is the daemon REQUIRING TLS to the broker, not offering it. Note that `join`
     // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped
     // long ago and the SERVER half did not, which is this whole feature in one line.
-    flags: ["creds:string", "dev-mint:boolean", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean"],
-    positionals: false,
+    flags: [
+      "creds:string", "dev-mint:boolean", "durable:string", "json:boolean", "limit:string",
+      "server:string", "shard:string", "shards:string", "space:string", "tls:boolean",
+    ],
+    positionals: true,
   },
   "feedback-intake": {
     flags: [
@@ -217,18 +240,24 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: false,
   },
   // Gate 1 (user-mode agent launch): the machine-facing bearer refresh a spawned agent execs.
+  // `--manager-call` / `--manager-instance` (2026-09): mint a token bound to one manager instance.
   "agent-bearer": {
-    flags: ["actor:string", "dir:string", "exchange-url:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
+    flags: [
+      "actor:string", "dir:string", "exchange-url:string", "health-file:string", "manager-call:boolean",
+      "manager-instance:string", "owner:string", "space:string", "token-file:string",
+    ],
     positionals: false,
   },
   // `run` (2026-09): the workflow-run operator surface from @cotal-ai/runtime. The run id is
   // minted by the driver (the records table forbids a caller-supplied id), so `start` takes no id
   // flag; resume/journal/answer name an existing run positionally.
+  // `--adopt` / `--release` / `--discard-approvals` (2026-09, #1863): what a `migrate` commit does
+  // with an orphan or a recorded decision; the checking verb refuses them.
   run: {
     flags: [
-      "admit-publish:string", "admit-read:string", "artifact:string", "by:string", "creds:string",
-      "endpoint:string", "file:string:f", "local:boolean", "reason:string", "server:string", "space:string",
-      "timeout:string", "value:string",
+      "admit-publish:string", "admit-read:string", "adopt:string", "artifact:string", "by:string",
+      "creds:string", "discard-approvals:boolean", "endpoint:string", "file:string:f", "local:boolean",
+      "reason:string", "release:string", "server:string", "space:string", "timeout:string", "value:string",
     ],
     positionals: true,
   },
@@ -253,3 +282,4 @@ for (const cmd of commands) {
 }
 
 console.log(`✓ flag-inventory smoke passed (${commands.length} commands)`);
+emitSentinel({ passed: cells(), failed: 0 });

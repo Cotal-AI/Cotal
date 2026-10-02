@@ -1,0 +1,3 @@
+# Bare `cotal status` must distinguish a delivery daemon whose responder is bound from one whose
+# responder never bound; both printed the identical `running (pid N)` line for 22 hours (#1576).
+smoke:delivery-responder-visibility

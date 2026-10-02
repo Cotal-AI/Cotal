@@ -150,6 +150,14 @@ All re-execs resolve this CLI via `selfArgv()` / `selfCotal()`
 entry]` (tsx loader in dev, compiled JS in prod), so they never need `cotal` on PATH; the stack
 comes up identically via `npx`, `npm i -g`, and a dev clone.
 
+`selfArgv()` throws unless `process.argv[1]` resolves, through any symlink, to the bin the
+`cotal-ai` package declares (`dist/cotal.js`) or to the `cotal.ts` beside that package's manifest
+(a checkout's `bin/cotal.ts`). Started from any other file, such as a smoke suite under tsx, a
+re-exec would run that file again with a subcommand it ignores, and a file that reaches a starter
+on load would spawn its own successor (#1629). The auth, manager and delivery starters ask before
+they touch a pidfile or a log, and `seedOne` asks before it writes its cursor, stages a payload or
+writes its child marker, so a refusal on those paths leaves none of them behind.
+
 For ergonomics only, an npx run with no global `cotal` offers to `npm i -g cotal-ai`
 (`offerGlobalInstall`, pinned to the running version): gated on `isNpx()` plus a PATH scan
 (`cotalOnPath()`, not `onPath("cotal")`, since `cotal --version` is not a real command). The
@@ -179,7 +187,8 @@ also emits `dist/web/vendor/vendor-manifest.json` (name/version/license/sha512) 
 inventory of its vendored browser libs (marked/DOMPurify ship as opaque `dist` bytes, not runtime deps).
 `seed/paths.ts:shippedSourceDir` resolves the live `extensions/<pkg>` dir in a
 source checkout and `<cotal-ai>/seeded-connectors/<name>` in a published install. The reconcile copies
-that payload into the durable store `seed/store/<version>/<name>` and `ext add --install-links` reifies
+that payload into the durable store `seed/store/<version>/<name>`. The version is validated as one safe
+path segment, and the destination is checked to stay inside the store before anything is written. `ext add --install-links` reifies
 the `file:` dep from THAT stable path (a volatile source would fail to re-reify); `ext add` then
 junction-links each `@cotal-ai/*` peer to the binary's own copy. Before the first lazy import in each
 process, materialization rechecks those links by realpath and rebinds stale links under the extension

@@ -23,6 +23,27 @@ import { RuntimeFault } from "./errors.js";
 export type ScopeKind = "parallel" | "race" | "fanOut" | "conclave";
 
 /**
+ * What may name a level of the scope PATH: a concurrency combinator, or a `waitUntil`.
+ *
+ * `waitUntil` is not a concurrency combinator and does not open a scope in the §7 sense: it writes
+ * an ordinary effect entry and launches no branches. It appears here because it needs the one
+ * thing a scope frame provides, A FRESH KEY NAMESPACE PER OBSERVATION, and the reason is the
+ * defect this primitive exists to fix, one level down.
+ *
+ * A probe reaches the outside world the only way a program can: by performing an effect. Those
+ * effects allocate keys in the frame the probe runs in. Give every observation the SAME namespace
+ * and observation 2's probe allocates the key observation 1's probe already settled, so the
+ * journal answers `replay` and hands back the first look's result — the wait re-observes, and its
+ * probe does not. Measured before this existed: a resumed wait called its probe again and the
+ * probe's own `ask` replayed a recorded "pending", so the fix would have been exactly as broken as
+ * what it replaced, one layer deeper and much harder to see.
+ *
+ * So each observation runs in `/waitUntil:<name>#<n>/b:<observation>`, and a resumed wait's next
+ * observation is a namespace nothing has written to: a miss, which runs live.
+ */
+export type PathKind = ScopeKind | "waitUntil";
+
+/**
  * What a journal entry can be keyed as: an effect, or a concurrency SCOPE.
  *
  * The scope kinds are here because a combinator writes an entry for itself, and without them that
@@ -33,12 +54,12 @@ export type ScopeKind = "parallel" | "race" | "fanOut" | "conclave";
 export type JournalKind = EffectKind | ScopeKind;
 
 export interface ScopeFrame {
-  readonly kind: ScopeKind;
+  readonly kind: PathKind;
   /** The combinator's step name, or null when it was not named. */
   readonly name: string | null;
   /** Which entry into this combinator, within the enclosing namespace. */
   readonly occurrence: number;
-  /** Array index, record field name, or the fan-out item's key. */
+  /** Array index, record field name, the fan-out item's key, or a `waitUntil`'s observation index. */
   readonly branch: string;
 }
 
@@ -198,7 +219,7 @@ export class KeyScope {
   }
 
   /** The child namespace for one branch of a scope opened from here. */
-  branch(kind: ScopeKind, name: string | null, occurrence: number, branchKey: string): KeyScope {
+  branch(kind: PathKind, name: string | null, occurrence: number, branchKey: string): KeyScope {
     // The other half of the same hazard, and the one the review actually found. A `fanOut` keyed by
     // a function over its items produces branch keys from DATA, so this is reachable without anyone
     // writing a suspicious literal anywhere in the program.

@@ -1,7 +1,7 @@
 /**
  * THE MESH COLUMN OF `cotal ps` MUST NOT RENDER A LIVENESS VERDICT FROM A BLIND OBSERVER.
  *
- * netcup 2026-09-09: the manager's presence watch was dead under a live connection for hours.
+ * A live deployment, 2026-09-09: the manager's presence watch was dead under a live connection for hours.
  * Its roster froze, and `ps` printed `mesh offline` for every seat older than the freeze and
  * `not in roster` for every seat younger, all of them heartbeating. Operators and the lane
  * watchdog acted on those words. The row now carries the manager's own view state; this grades

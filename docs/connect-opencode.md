@@ -17,6 +17,10 @@ OpenCode needs no setup step. The picker in `cotal setup` just records that you 
 is no plugin to install; the connector auto-wires at spawn. You only need the `opencode` binary
 on your PATH. (Claude Code, by contrast, installs a plugin because its wake channel needs one.)
 
+The connector supports two OpenCode lines: 1.x (`opencode-ai` 1.16 and later) and 2.x
+(`@opencode/cli` 2.0 and later). It detects the line from `opencode --version` at spawn. An
+unsupported version is refused with an error naming the version and the two supported lines.
+
 ## Spawn it
 
 Same launch grammar as any agent (see [run-a-mesh.md](run-a-mesh.md)):
@@ -56,6 +60,13 @@ cotal spawn --agent opencode --model anthropic/claude-sonnet-4-6 --variant high
 A `--variant` on a connector that doesn't support variants is rejected up front; the OpenCode
 connector advertises variant support, so this is the connector where it applies.
 
+For an explicit model pin, the connector checks the running OpenCode server's `/provider`
+listing before joining the mesh. If that server does not list the model, launch refuses with
+the id and names both the server listing and the `opencode models --pure --verbose` CLI catalog.
+The CLI catalog alone does not prove that the server serving this session has the model.
+OpenCode's cold server bootstrap can take longer than the generic 30-second manager check;
+the connector declares a two-minute readiness window for this check and the mesh join.
+
 ## How it binds
 
 OpenCode has a native plugin runtime, so the adapter is **not** an MCP server; a single
@@ -92,13 +103,18 @@ The generic tool surface and the inbound-message model are shared across connect
 
 ## Event plane
 
-A session launched with `cotal spawn --events` publishes a structured account of what it did: run
+A spawned session publishes a structured account of what it did: run
 boundaries per turn, assistant text, and each tool call with its start and its end. Tool
 arguments and tool results are not republished onto this channel.
 The channel is `events.<owner>.<actor>`, named after the session's principal, and the rules for it
 are the same on every connector: see [connect-claude.md](connect-claude.md#event-plane) for the
-channel, the grant, and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for
-`--events` spawns; a personal `opencode` with the plugin installed publishes nothing.
+channel, the grant, and how to read it. The launcher sets `COTAL_EVENTS` by default; pass
+`--no-events` to opt out on an unrestricted space. A required registration carries
+`eventsRequired` in launch material, or `COTAL_EVENTS_REQUIRED=1` on the direct env fallback, so a
+personal user-mode OpenCode session arms without a separate event flag. Its own publish grant must
+cover the principal-keyed event channel or the connector refuses before joining. The session boundary
+is captured at adopt, before the mesh link connects, so a session created before the first bind still
+publishes and nothing it writes while the connector is still starting up is silently dropped.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 
@@ -122,7 +138,8 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   still publishes one `RUN_ERROR` that does fit: it keeps the code and says the original detail
   was omitted or shortened because of the bound, so a reader is never shown a truncated message as
   complete. A turn **you** stopped is not a failure and is not published as one: a user cancellation
-  arrives on the same event, and it closes the run as an ordinary end.
+  arrives on the same event, and it closes the run as an ordinary end. A failed turn also re-arms
+  the wake it carried, so a focus @mention whose turn failed is driven again after the retry delay.
 
 Reasoning is off by default.
 
@@ -135,6 +152,10 @@ Reasoning is off by default.
 - **No tool-sharing.** `connectors.opencode.mcpServers` is not implemented and throws if set.
   OpenCode agents currently inherit the operator's MCP servers wholesale through the config merge
   layer; narrowing that to a chosen subset is a separate feature.
+- **On 2.x, the event plane needs `--no-events`.** The AG-UI event plane is not carried on
+  OpenCode 2.x yet; spawn with `--no-events`.
+- **On 2.x, `cotal models` is refused.** The 2.x catalog is served by a running opencode
+  server, not the CLI, so pass `--model provider/model` directly instead.
 
 ## See also
 

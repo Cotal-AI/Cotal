@@ -1,0 +1,2 @@
+# The console list of manager-owned rows, including the first failure stopping the knock. Registered as a fragment (ci-suites.txt frozen since #1052).
+smoke:console-managed-rows

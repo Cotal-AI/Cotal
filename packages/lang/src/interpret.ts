@@ -27,7 +27,7 @@ import {
   InterpreterDefect,
 } from "./errors.js";
 export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "./errors.js";
-import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
+import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, Prng, assertCrossable, birthDepth, born, deepFreeze, setOwn } from "./values.js";
 import { parseDuration } from "./duration.js";
@@ -279,7 +279,7 @@ class Frame {
     readonly depth: number = 0,
   ) {}
 
-  branch(kind: ScopeKind, name: string | null, occurrence: number, branchKey: string): Frame {
+  branch(kind: PathKind, name: string | null, occurrence: number, branchKey: string): Frame {
     return new Frame(
       this.keys.branch(kind, name, occurrence, branchKey),
       this.clock.fork(),
@@ -753,14 +753,18 @@ class Interpreter {
         const arg = node.argument as AnyNode;
         if (arg.type === "Identifier") {
           const name = arg.name as string;
-          const old = Number(env.get(name));
+          const current = env.get(name);
+          refuseNonNumberUpdate(current);
+          const old = current as number;
           const next = old + delta;
           env.set(name, next, frame.depth);
           return prefix ? next : old;
         }
         const obj = await this.evaluate(arg.object as AnyNode, env, frame);
         const key = await this.memberKey(arg, env, frame);
-        const old = Number(this.memberOf(obj, key));
+        const current = this.memberOf(obj, key);
+        refuseNonNumberUpdate(current);
+        const old = current as number;
         const next = old + delta;
         this.writeMember(obj, key, next, frame);
         return prefix ? next : old;
@@ -1374,6 +1378,20 @@ function refuseCoercion(where: string, v: unknown): void {
       `\`${where}\` cannot take ${kind}: there is no implicit conversion here, because converting would read \`valueOf\`/\`toString\` off the value — host machinery this language does not have. Convert explicitly: \`json.stringify(value)\` for text, or read the field you mean.`,
     );
   }
+}
+
+/**
+ * Refuse an update's operand (`x++`, `--o.count`) that is not already a number: the same L4018
+ * sentence the compiled engine's `case "update"` throws (`engine/ctx.ts`), so `x++`, `x + 1` and
+ * `x += 1` refuse the same operand the same way rather than one of the three quietly coercing it.
+ */
+function refuseNonNumberUpdate(v: unknown): asserts v is number {
+  if (typeof v === "number") return;
+  const kind = v === null ? "null" : Array.isArray(v) ? "an array" : `a ${typeof v}`;
+  throw new RuntimeFault(
+    "L4018",
+    `\`++\` and \`--\` count, and ${kind} is not a number, so there is nothing to count. Nothing is converted for you here: parse it first (\`number(value)\`), or hold the counter in a number.`,
+  );
 }
 
 function applyBinary(op: string, l: unknown, r: unknown): unknown {

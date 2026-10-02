@@ -1,5 +1,454 @@
 # cotal-ai
 
+## 0.58.0
+
+### Patch Changes
+
+- f5b723f: Allocate accepted-goal test homes as unique children of the selected temporary root. The prior concatenation attempted sibling paths such as `/tmpa` and hid permission failures as exhausted names on CI. Cover ordinary and pooled native paths with a root-containment assertion and mutation proof. Product runtime behavior is unchanged.
+- 7e1bc61: Wait for the observed post-join kickoff turn boundary in the provider-disconnect smoke fixture. Presence alone can precede that boundary, routing the test marker through a soft interrupt instead of the intended ordinary-turn disconnect trigger. Add a delayed-turn mutation and restored native checks. Connector behavior is unchanged.
+- f758cd5: Expose the canonical manager activation document and closure manifest through `managerClusterArtifacts`. Public-only embeddings can complete prepare, registration and activation without importing private contract modules. Exercise the public Manager constructor and activation artifacts in the native continuity fixture; host validation, issuance policy and wire grants are unchanged.
+- 66ef843: Export the existing Linux socket peer-credentials reader and its type from the seat package root so embedders can apply their own UID policy without importing private native-helper paths. Verify the public API with real separate-process Unix sockets and explicit unsupported-platform refusal.
+- 5758877: Expose the stock remote manager request builders and response validators through the public `remoteManagerClient` namespace, along with native registration and its identity-state type. Embeddings can compose closed remote-authority callbacks without private imports or copied CLI policy. Add a package-root export gate and exercise the real native continuity path with public registration and client helpers; issuance policy and wire grants are unchanged.
+- a726a3d: Register the hosted service and renewal checks with stable CI suite fragments, mark the restart fixture's broker for owned teardown, and verify unsupported seat reaping on other platforms without claiming Linux process-group coverage. Let the continuity fixture observe an already-started transport reconnect before preparing its recovery command.
+- 59672dd: Register the remaining hosted-runtime smoke entrypoints in stable CI fragments and report native assertion counts through canonical completion markers. Refresh the explicit-TLS call-site census. Make the resume fixture retain its first successful held-slot observation or require durable completion with a new epoch, and exercise completion before the probe as a separate regression gate.
+- 1721738: Support signerless manager run hosting through typed host admission, initial-attempt and renewal operations. Renew the complete standing credential family while preserving held identities, serve epochs and last-good credentials on refusal. Keep pooled managers off local PTY launch paths and enforce the execution host boundary. Update the native lifecycle and mutation checks for these paths.
+- Updated dependencies [f5b723f]
+- Updated dependencies [274c783]
+- Updated dependencies [4aa8cf1]
+- Updated dependencies [0589316]
+- Updated dependencies [a058bf9]
+- Updated dependencies [2cb1d72]
+- Updated dependencies [59a7e64]
+- Updated dependencies [95ae645]
+- Updated dependencies [fba1537]
+- Updated dependencies [5831ef8]
+- Updated dependencies [576f622]
+- Updated dependencies [2457692]
+- Updated dependencies [ee6de5d]
+- Updated dependencies [e9ef5b3]
+- Updated dependencies [7c54825]
+- Updated dependencies [2c31f95]
+- Updated dependencies [f758cd5]
+- Updated dependencies [5758877]
+- Updated dependencies [7687fef]
+- Updated dependencies [d4bb1f3]
+- Updated dependencies [397bc60]
+- Updated dependencies [417b5f0]
+- Updated dependencies [7b3924c]
+- Updated dependencies [a726a3d]
+- Updated dependencies [59672dd]
+- Updated dependencies [fd0cf70]
+- Updated dependencies [1721738]
+  - @cotal-ai/manager@0.58.0
+  - @cotal-ai/auth@0.58.0
+  - @cotal-ai/delivery@0.58.0
+  - @cotal-ai/core@0.58.0
+  - @cotal-ai/connector-core@0.58.0
+  - @cotal-ai/workspace@0.58.0
+  - @cotal-ai/cli@0.58.0
+  - @cotal-ai/runtime@0.58.0
+
+## 0.57.0
+
+### Patch Changes
+
+- Updated dependencies [15b4664]
+- Updated dependencies [93b98e9]
+- Updated dependencies [e7c702a]
+- Updated dependencies [6f64bcc]
+- Updated dependencies [42448fa]
+- Updated dependencies [8b64d64]
+- Updated dependencies [33357d9]
+- Updated dependencies [ad809a2]
+  - @cotal-ai/delivery@0.57.0
+  - @cotal-ai/connector-core@0.57.0
+  - @cotal-ai/core@0.57.0
+  - @cotal-ai/manager@0.57.0
+  - @cotal-ai/cli@0.57.0
+  - @cotal-ai/workspace@0.57.0
+  - @cotal-ai/auth@0.57.0
+  - @cotal-ai/runtime@0.57.0
+
+## 0.56.1
+
+### Patch Changes
+
+- Updated dependencies [6b76946]
+- Updated dependencies [a4c5ffa]
+- Updated dependencies [8137d83]
+  - @cotal-ai/core@0.56.1
+  - @cotal-ai/manager@0.56.1
+  - @cotal-ai/connector-core@0.56.1
+  - @cotal-ai/cli@0.56.1
+  - @cotal-ai/auth@0.56.1
+  - @cotal-ai/delivery@0.56.1
+  - @cotal-ai/runtime@0.56.1
+  - @cotal-ai/workspace@0.56.1
+
+## 0.56.0
+
+### Patch Changes
+
+- Updated dependencies [ccf3d5f]
+- Updated dependencies [a42a5e8]
+- Updated dependencies [e506040]
+- Updated dependencies [0cf1cf3]
+- Updated dependencies [0d7649d]
+- Updated dependencies [ac53a09]
+- Updated dependencies [4e1c8f5]
+- Updated dependencies [8dc7c92]
+- Updated dependencies [101f4ce]
+- Updated dependencies [99cad7b]
+- Updated dependencies [b2453f4]
+- Updated dependencies [3c40736]
+- Updated dependencies [1218786]
+- Updated dependencies [ef8889d]
+- Updated dependencies [00257cf]
+- Updated dependencies [5cf0861]
+  - @cotal-ai/cli@0.56.0
+  - @cotal-ai/core@0.56.0
+  - @cotal-ai/manager@0.56.0
+  - @cotal-ai/auth@0.56.0
+  - @cotal-ai/workspace@0.56.0
+  - @cotal-ai/connector-core@0.56.0
+  - @cotal-ai/delivery@0.56.0
+  - @cotal-ai/runtime@0.56.0
+
+## 0.55.0
+
+### Patch Changes
+
+- a83dd80: Preflight reports a probe that ran out of its budget as a slow link instead of a trust failure: `probeConnect` now returns a distinct `timeout` reason, `preflightTarget` routes it to a new `slow-link` verdict without consulting the INFO greeting, and the rendered sentence names the connect budget and says the registry entry was kept, never a CA. A real certificate failure against a TLS-required mesh still renders the `tls-trust` guidance.
+- 565a92f: Refuse an unmintable spawn name client-side before the manager round trip: `cotal spawn` now applies the core name door (the same predicate the manager applies) to the effective identity on both the foreground and `--detach` paths, keyed on the target mesh's auth mode, so a hyphenated name on a user-auth mesh fails immediately with the actor-token explanation and the `_` remedy instead of after the provisioning call.
+- Updated dependencies [888e9bc]
+- Updated dependencies [a13c8bb]
+- Updated dependencies [065717c]
+- Updated dependencies [e1351c2]
+- Updated dependencies [810814b]
+- Updated dependencies [427a848]
+- Updated dependencies [7c7c853]
+- Updated dependencies [8472dc3]
+- Updated dependencies [f272f71]
+- Updated dependencies [391af1d]
+- Updated dependencies [d5ef965]
+- Updated dependencies [84e0175]
+- Updated dependencies [8120e34]
+- Updated dependencies [67bbcc5]
+- Updated dependencies [64ec80e]
+- Updated dependencies [3e95455]
+- Updated dependencies [e4f1d2d]
+- Updated dependencies [92ae52c]
+- Updated dependencies [4918b65]
+- Updated dependencies [17d066f]
+- Updated dependencies [a83dd80]
+- Updated dependencies [eddc5f0]
+- Updated dependencies [eddc5f0]
+- Updated dependencies [db9a969]
+- Updated dependencies [d284ee6]
+- Updated dependencies [4f48629]
+- Updated dependencies [f7f23d3]
+- Updated dependencies [2e13607]
+- Updated dependencies [5418d1f]
+- Updated dependencies [d3d6742]
+- Updated dependencies [4de65c9]
+- Updated dependencies [fd58782]
+- Updated dependencies [357af9f]
+- Updated dependencies [cbb7087]
+  - @cotal-ai/core@0.55.0
+  - @cotal-ai/connector-core@0.55.0
+  - @cotal-ai/delivery@0.55.0
+  - @cotal-ai/cli@0.55.0
+  - @cotal-ai/manager@0.55.0
+  - @cotal-ai/auth@0.55.0
+  - @cotal-ai/workspace@0.55.0
+  - @cotal-ai/runtime@0.55.0
+
+## 0.54.0
+
+### Patch Changes
+
+- Updated dependencies [e6badb8]
+- Updated dependencies [34beea1]
+- Updated dependencies [b4317fd]
+  - @cotal-ai/core@0.54.0
+  - @cotal-ai/manager@0.54.0
+  - @cotal-ai/connector-core@0.54.0
+  - @cotal-ai/workspace@0.54.0
+  - @cotal-ai/cli@0.54.0
+  - @cotal-ai/runtime@0.54.0
+  - @cotal-ai/auth@0.54.0
+  - @cotal-ai/delivery@0.54.0
+
+## 0.53.0
+
+### Patch Changes
+
+- Updated dependencies [d1f9703]
+- Updated dependencies [104921c]
+- Updated dependencies [83617ab]
+  - @cotal-ai/manager@0.53.0
+  - @cotal-ai/workspace@0.53.0
+  - @cotal-ai/core@0.53.0
+  - @cotal-ai/auth@0.53.0
+  - @cotal-ai/cli@0.53.0
+  - @cotal-ai/delivery@0.53.0
+  - @cotal-ai/runtime@0.53.0
+  - @cotal-ai/connector-core@0.53.0
+
+## 0.52.1
+
+### Patch Changes
+
+- Updated dependencies [5784ec9]
+- Updated dependencies [78d10d2]
+- Updated dependencies [3b97cd1]
+- Updated dependencies [f17791d]
+  - @cotal-ai/core@0.52.1
+  - @cotal-ai/auth@0.52.1
+  - @cotal-ai/cli@0.52.1
+  - @cotal-ai/workspace@0.52.1
+  - @cotal-ai/connector-core@0.52.1
+  - @cotal-ai/delivery@0.52.1
+  - @cotal-ai/manager@0.52.1
+  - @cotal-ai/runtime@0.52.1
+
+## 0.52.0
+
+### Patch Changes
+
+- Updated dependencies [5ee8eef]
+- Updated dependencies [a08528a]
+- Updated dependencies [6595c48]
+- Updated dependencies [794acb1]
+- Updated dependencies [1d2daa6]
+- Updated dependencies [2e7558d]
+- Updated dependencies [5b2c19f]
+- Updated dependencies [9269fc2]
+- Updated dependencies [d69aefd]
+- Updated dependencies [c902af4]
+- Updated dependencies [b3db3a2]
+- Updated dependencies [c44aaf8]
+- Updated dependencies [fe81419]
+- Updated dependencies [e064fa2]
+- Updated dependencies [93b42cd]
+- Updated dependencies [600216a]
+- Updated dependencies [a069948]
+- Updated dependencies [cf5a5cb]
+- Updated dependencies [8bd4279]
+- Updated dependencies [7940589]
+- Updated dependencies [ab0808c]
+- Updated dependencies [4a41fd5]
+- Updated dependencies [09fa8d8]
+- Updated dependencies [6b375c8]
+- Updated dependencies [50998a8]
+  - @cotal-ai/core@0.52.0
+  - @cotal-ai/manager@0.52.0
+  - @cotal-ai/runtime@0.52.0
+  - @cotal-ai/connector-core@0.52.0
+  - @cotal-ai/cli@0.52.0
+  - @cotal-ai/delivery@0.52.0
+  - @cotal-ai/workspace@0.52.0
+  - @cotal-ai/auth@0.52.0
+
+## 0.51.0
+
+### Patch Changes
+
+- Updated dependencies [db18070]
+- Updated dependencies [64d723e]
+- Updated dependencies [ade42d5]
+- Updated dependencies [4f153ab]
+- Updated dependencies [eb65c9b]
+- Updated dependencies [7bd1ce8]
+- Updated dependencies [314a12c]
+- Updated dependencies [b4de8ff]
+- Updated dependencies [491e923]
+- Updated dependencies [4dd4b90]
+- Updated dependencies [c36baf7]
+- Updated dependencies [92a8938]
+- Updated dependencies [ec8649b]
+- Updated dependencies [949d4d1]
+- Updated dependencies [949d4d1]
+- Updated dependencies [949d4d1]
+- Updated dependencies [f50e20d]
+- Updated dependencies [a1c7737]
+- Updated dependencies [a0c8a59]
+- Updated dependencies [c18c055]
+- Updated dependencies [f178611]
+- Updated dependencies [21407fd]
+- Updated dependencies [26d864b]
+  - @cotal-ai/core@0.51.0
+  - @cotal-ai/auth@0.51.0
+  - @cotal-ai/cli@0.51.0
+  - @cotal-ai/workspace@0.51.0
+  - @cotal-ai/manager@0.51.0
+  - @cotal-ai/connector-core@0.51.0
+  - @cotal-ai/delivery@0.51.0
+  - @cotal-ai/runtime@0.51.0
+
+## 0.50.1
+
+### Patch Changes
+
+- Updated dependencies [c499a85]
+  - @cotal-ai/core@0.50.1
+  - @cotal-ai/runtime@0.50.1
+  - @cotal-ai/connector-core@0.50.1
+  - @cotal-ai/auth@0.50.1
+  - @cotal-ai/cli@0.50.1
+  - @cotal-ai/delivery@0.50.1
+  - @cotal-ai/manager@0.50.1
+  - @cotal-ai/workspace@0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- 840e641: Stop the delivery daemon from removing itself when the host is busy. The daemon is coupled to the broker and exits when the broker is gone, but it decided that from elapsed wall-clock time alone, and a clock cannot tell "the broker is gone" from "this process did not get scheduled". Under local CPU starvation the two are indistinguishable: the poll's interval does not fire, so the window ages with no probe having failed; and when a probe does run, a process that cannot get scheduled cannot complete a handshake, so a live server reads as a dead one. Plane-3 therefore went away exactly when load was highest, which is when messages queue up and operators are coordinating.
+
+  The exit predicate now depends only on evidence the daemon actually gathered. It measures the gap between consecutive firings of its own timer and credits the excess back as local scheduler lag rather than counting it against the broker; it counts probes that ran to completion and refused within the time the server was actually given, instead of time that merely passed; it reads its own still-open connection to that broker as positive evidence WITHIN the hard backstop, since a fresh handshake that cannot complete to an address it is currently connected to says nothing about the server, but that socket is cached client state that can stay open for minutes after a broker dies silently, so it defers nothing once the bound is reached; and a probe that rejects is recorded as an unanswered question rather than swallowed. On a starvation diagnosis the daemon reports degraded, keeps serving, and clears the state when the broker answers again.
+
+  Judging a probe needed two rules, because starvation reaches a probe in two shapes. The loud one is an answer so far past its own deadline that the deadline plainly was not enforced against the server, which is what the incident captured directly: a refusal at 2554ms against a 1000ms budget, with the broker answering immediately either side of it. The quiet one is the shape a busy host actually produces most of the time, and it is invisible to a clock: the process issues a connect, is taken off the CPU, and its deadline timer fires the instant it is scheduled again, so the elapsed time looks like an ordinary prompt timeout while the server was given a fraction of its second. Each probe therefore watches a short timer's own lateness for its duration and subtracts the time this process spent off the runqueue before the refusal is judged, because a refusal is only evidence about the server if the server had the time the deadline promised it.
+
+  That subtraction is bounded so it cannot become a blanket excuse. A dead port answers in about a millisecond, so it never reaches its budget at all and stays a plain negative however starved the host is. The two readings differ only in whether the answer beat the budget, which is what keeps "this host is busy" from turning into "no refusal counts".
+
+  The guarantees that made the exit worth having are unchanged. A genuinely dead broker still ends the daemon on the same window and just as fast, because a dead port refuses immediately and the daemon's own connection to it closes. The starvation credit is bounded by a hard backstop that is consulted first and cannot be deferred by any other signal, so the repair can never become a daemon that outlives its broker.
+
+  A failed lease renewal is likewise a question rather than a verdict now. The daemon re-reads the key: another daemon's row means it exits, a missing row is repaired by an atomic create that arbitrates on its own terms, and its own row means it carries on. What it does NOT do is keep serving while it works that out. Whether the process should live and whether it may serve are separate questions with different answers, and conflating them would replace an availability bug with a worse one: a compare-and-swap keeps one lease row, not one server, so a daemon still consuming the fan-out durable and answering `ctl.delivery` across that arbitration can share both with the replacement that just won the shard. It therefore unbinds fan-out, the inbox reader and both control responders BEFORE asking, withdraws its readiness claim while it is quiet, and re-arms only on proof, its own row on a re-read, or a won create. A broker that cannot be asked leaves it alive and silent, because not being able to ask is not permission to keep acting. Those quiet periods are recoverable under the daemon's own power: the evidence that ends them is the same evidence that proves they were unnecessary.
+
+  Two smaller defects were found while grading that path rather than by reading it. A re-acquired lease was never flipped back to ready, so a daemon that had recovered served correctly while every readiness waiter in the space timed out against a permanently not-ready row. And the ownership re-read reported the daemon's cached revision rather than the broker's, under a comment asserting the record carries none; it does, and a renew whose write landed with only its reply lost left that token permanently one behind, refusing every later compare-and-swap over a sequence the daemon had moved itself.
+
+  A daemon could not prove its own lease row was its own. The ownership test compared the row against the bare connection key while the endpoint rewrites the card id to its principal dot-form and stamps THAT, so the "this row is mine" answer was unreachable: a daemon re-reading after a failed renew did not recognise its own record, exited naming itself as the thief, and since that path drops the revision the release freed nothing. Comparing principals instead is also wrong, and the suite caught it where reading did not: the daemon's cred is a file every restart re-reads, so a replacement presents the SAME principal as the process it replaced, and a displaced daemon would read its successor's row as its own, keep serving a shard it had lost, and release the live holder's row on the way out. A row is now proven ours by holder AND a per-run incarnation, so a successor's row is never adopted.
+
+  An ordinary stop could strand the shard, with no starvation and no broker fault involved. The daemon creates its lease row early in start-up and used to register its signal handlers only after binding Plane-3, flipping the row ready, and awaiting the membership feed and timer writer. A stop signal in between took the default action: immediate death, no release, the row claiming the shard with no process behind it until the bucket TTL expired, after which the next `cotal up` was refused outright and the shard was unservable by anyone. This was previously masked by a readiness wait that did not name whose readiness it was waiting for; correcting that wait made `cotal up` return the instant the row appears, and exposed it. Handlers are now armed the statement after the shard becomes the daemon's, a start-up fault in the same window releases the shard while still reporting the error and a non-zero exit, and shutdown releases against the broker's revision rather than the token the process happened to be holding, which a readiness write is enough to leave one step behind.
+
+  `smoke:delivery-broker-coupling` was carried as untriaged debt and was grading nothing. It spawned the daemon without a `$SYS` observer cred and from a working directory whose root walk climbed out of the repo, so the daemon refused during startup, and that refusal satisfied the suite's own "exits when the broker is gone" assertion. It is now provisioned, pinned to a scratch workspace, required to name the reason it exited rather than merely to exit, and gated in CI.
+
+### Patch Changes
+
+- 1112755: Give fresh setup defaults the run capability alongside spawn. Document workflow tool setup, credential refresh for existing personas, and supported authentication modes.
+- cd9c8dd: Grade the frozen-body egress guard against the predicate it actually replaced, instead of a pinned historical floor. The differential resolved its base as a fixed sha, so a guard could become stricter than that floor, be weakened back toward it, and still report zero weaker rows. The base is now resolved from history: the newest ancestor whose `agui.ts` differs from the source under test and still carries a classifier role, with the working tree as the head so an uncommitted weakening is graded, and an on-demand deepen so the pair exists in a depth-1 CI checkout. `COTAL_EGRESS_DIFF_BASE` adds a pair against an explicit PR base and never replaces one. Two holes the resolved run exposed are closed with it: the loader folded an unrecognised verdict into a throw, which would have read a new publishing verdict as withheld, and the closed-schema branch had no row naming it.
+- c59d96d: Stop a parked step from dying on one slow pause-plane reply. A workflow `ask` that waited long enough settled `failed` with `{code: "L4000", kind: "handler-fault", message: "timeout"}` while most of its deadline was still unspent, the seat was alive, and nothing in the program threw. Measured on the reporting run: the two asks under 4.5 minutes settled `ok` and the two over 7.5 minutes failed with that exact record, with 11 minutes of deadline left.
+
+  The cause is how long a parked step reads for. While a pause is parked the run host polls the plane for the life of the step, once for the settle fact and once for the broker's fire, each read riding a NATS API request with its own 5s client-side deadline. A reply that arrives after that deadline raises the client's bare `TimeoutError: timeout`, and the interpreter records any non-`EffectError` throw as `L4000 handler-fault` verbatim. So the step issued roughly one unretried request per second for its whole duration and one late reply ended it, which is why the exposure grew with how long the step waited rather than with anything about the program.
+
+  A late reply is a fact about that one request and not about the pause behind it. The pause is a durable record on the plane, its timer is armed, and it is still answerable, so the read is now re-issued rather than raised, and the step settles on the answer it was waiting for. Re-reading is safe for the same reason the starvation repair's re-entry is: the plane's operations are idempotent by construction, and reading a one-use settle fact again observes the same world.
+
+  It is the second half of a distinction the host already drew for #1508 and it reuses that machinery rather than adding its own. A client deadline has two causes that produce the identical error, and the host can tell them apart by measuring whether its own event loop ran: off the CPU is the host's own starvation (`L4025`), and on it is a plane that answered late. The case that moves is only the second, which the classifier previously answered "fault" and handed to the program as its own failure.
+
+  Neither retry is unbounded and neither is merged into the other. A run that cannot be served must fail rather than hang, so the two conditions carry separate counts that are never reset, which bounds the call however they interleave; a host that stays starved still fails under `L4025`, and a plane that never answers now fails under the new `L4026` naming the measurement rather than the effect. The two are kept apart because the remedies differ: one says give this host capacity, the other says the broker is behind. Every failure that is not a client deadline is still raised on the first attempt, unretried and unwrapped, and still recorded as `L4000`.
+
+  A recorded handler fault also carries the stack of the value that was thrown, in a new optional `error.stack` on the journal entry. A handler fault is the one failure class whose cause is in neither the program nor the language, so `message` alone ("timeout") is the symptom with no origin, and the durable entry is usually the only look anyone gets at it. The field is written only when the thrown value carried a non-empty string `stack`: a handler may throw a primitive, and a recorder that trusted the field would replace the handler's failure with its own.
+
+- Updated dependencies [58f0e2d]
+- Updated dependencies [0a52594]
+- Updated dependencies [ba91ad5]
+- Updated dependencies [06eccc3]
+- Updated dependencies [6f248ac]
+- Updated dependencies [5e23b1d]
+- Updated dependencies [1112755]
+- Updated dependencies [44cdcc2]
+- Updated dependencies [6cc504b]
+- Updated dependencies [840e641]
+- Updated dependencies [504e78f]
+- Updated dependencies [87dda9f]
+- Updated dependencies [cd9c8dd]
+- Updated dependencies [fc6f0b1]
+- Updated dependencies [b7e5942]
+- Updated dependencies [7875182]
+- Updated dependencies [aaedc42]
+- Updated dependencies [43a4281]
+- Updated dependencies [4ab8b4b]
+- Updated dependencies [fe813fe]
+- Updated dependencies [55dae63]
+- Updated dependencies [7df3498]
+- Updated dependencies [c59d96d]
+- Updated dependencies [83ab007]
+- Updated dependencies [f4ddd02]
+- Updated dependencies [438c629]
+- Updated dependencies [5a34b2b]
+- Updated dependencies [a211c52]
+- Updated dependencies [254f5da]
+- Updated dependencies [56afdaf]
+- Updated dependencies [baed5d1]
+- Updated dependencies [da119c6]
+- Updated dependencies [0fdca5b]
+  - @cotal-ai/manager@0.50.0
+  - @cotal-ai/connector-core@0.50.0
+  - @cotal-ai/cli@0.50.0
+  - @cotal-ai/workspace@0.50.0
+  - @cotal-ai/core@0.50.0
+  - @cotal-ai/runtime@0.50.0
+  - @cotal-ai/delivery@0.50.0
+  - @cotal-ai/auth@0.50.0
+
+## 0.49.0
+
+### Minor Changes
+
+- 6a03ccf: Stop republishing tool-call arguments and results onto `events.<owner>.<actor>`. The durable emitter drops `TOOL_CALL_ARGS` and `TOOL_CALL_RESULT` before the write-ahead log, and refuses to republish a frozen pre-fix frame that still carries them. A frozen frame whose event list cannot be read is withheld too, and the emitter halts by name rather than publishing bytes it could not inspect onto a channel with a different read ACL. An empty event list counts as unreadable rather than as nothing to object to, since no shipped writer can produce one, and so does a frame whose envelope does not parse: a wrong protocol version, or a missing or malformed `threadId`, `runId`, `epoch` or `seq`, is withheld rather than published. A body the policy cannot iterate at all is withheld on the same grounds, so the classifier answers for every input its signature accepts instead of throwing on some of them. Observers lose that tool output; that is the boundary. Tool start and end, text, and reasoning still go out.
+- cf6ced5: Make `cotal input` wait for the target runtime to acknowledge the PTY write before printing its byte receipt. Custodial and in-process PTY writes now return the accepted UTF-8 byte count or reject, and the manager refuses missing, partial, or failed acknowledgements with an error that names the seat. A dropped write therefore exits non-zero without a `sent` receipt instead of claiming delivery from the intended buffer.
+- 36d1779: Issued authority and run admission (SPEC 13.15, 14.8). A static credential is now an issuance: the issuer records its permission ceiling as evidence under a fresh generation before the material exists, its endpoint rows ride the versioned `ep.v1` rail with that generation pinned beside the caller triple, and a connected client reads its generation from an issuer-written accepted row. A hosted workflow run is admitted under the starting caller's resolved ceiling, recorded once per run in a dedicated admission store the driver cannot write, checked before every channel effect (wait open, fetch, recorded re-read, conclave writes), and revoked by an independent create-only marker that ends open waits at their next poll and refuses resume, takeover and reconcile. `run-start` on the legacy rail is refused with `permission-denied` and the `ai.cotal.ep.unbound-caller-authority` detail. `cotal run start --local` takes `--admit-read` and `--admit-publish` (required) and `cotal run revoke <runId> --local --by <who> --reason <text>` writes the marker. Three new per-space stores (`cotal_issued_`, `cotal_accepted_`, `cotal_admission_`), immutable at the broker: the admission and accepted stores are write-once per key, the evidence store is append-only and read first-on-key, and all three refuse rollup headers, message deletes and purges, so a holder of its own key row can neither widen nor erase what was recorded. Two new one-shot profiles (`issuer`, `run-admitter`), an admission read on the run mediator and operator profiles, and `COTAL_ACCEPTED_TOKEN` on every connector's spawn environment. Breaking pre-1.0 authority change.
+- 6fd855f: Add a target-pinned hosted manager retirement phase that preserves host release ordering, uses the existing crash-resumable auth barrier, bounds activation to the canonical contract artifacts, and keeps remote manager maintenance on fresh host-owned admin authorization without copying host ledger state to participants.
+
+### Patch Changes
+
+- c8fe5a8: Make aggregate mutation coverage examine the full selected corpus, report every skipped or ungraded config with the checkout identity, and recognize declared repository entrypoints executed through subprocesses.
+- 438d03a: Reject dmHistory / channelHistory / multiChannelHistory rows whose payload `from.id` disagrees with the forge-locked subject sender (SPEC §5). Fail closed on non-object payloads so one poisoned row cannot throw the whole page. Surviving DMs still take recipient from the subject. Trustworthiness here is `from.id` versus the subject sender; payload `from.name` / `from.role` remain advisory. History drain does not require a full CotalMessage shape.
+- 0e58bac: Grade a replacement frozen-body egress guard against the predicate it replaced, on one corpus, both directions. The export name and shape both change; the loader binds the classifier by role. A boolean arm is never coerced from a three-way verdict. Also correct the agui-tool-result mutation why-block: the rebuilds stay because command poisons dist, not because this suite reads dist.
+- 9a334ae: Honor connector-declared startup confirmation prompts in PTY seats by matching normalized terminal output, pressing Enter only when the prompt appears, and failing with a named bounded error when it does not.
+- 9ff5c22: Make the first manager identity on a fresh root an exclusive create. Of N concurrent starts, exactly one process mints the instance file and the others adopt that identity or refuse with a named error, so they cannot take two leases.
+- 159c5f0: Merge a complete agent file passed as a cotal_persona prompt into one frontmatter block. Authored channel grants, role, and agent survive load, explicit tool arguments win, and a malformed leading fence is refused rather than wrapped.
+- 5b2281c: Compile the seat JavaScript and type entrypoints during pack and publish after validating both native helpers. A new installed-distribution smoke packs the full CLI closure from an assembled seat tree and proves a fresh npm install imports seat, imports the manager, and prints the packaged CLI help banner.
+- 6836dd3: Allow `cotal send dm`, `msg`, and `ask` from an operator shell outside a managed seat. The transient
+  sender now uses a fixed advisory display name while its wire principal continues to come from the
+  resolved credential or user bearer.
+- 86f0bb8: Resume an interrupted built-in connector refresh automatically when the durable seed stamp proves
+  that the running CLI is advancing the store to a newer generation and no reconcile or seed child is
+  still live. The manager now reaches readiness after that safe upgrade repair, while same-generation
+  and unattributable interruption markers still fail closed and report the recorded package, phase,
+  store generation, running generation, and absence of a live writer.
+- 13f29e1: Pin Windows teardowns to process creation time. A launch writes a sibling identity file from the UTC FILETIME of `Get-Process StartTime`, and a stop refuses when that pin no longer matches. Records with no sibling pin stay on the upgrade-only legacy path.
+- Updated dependencies [6a03ccf]
+- Updated dependencies [0680a3f]
+- Updated dependencies [a9c9849]
+- Updated dependencies [b0aeca4]
+- Updated dependencies [1469d18]
+- Updated dependencies [0e58bac]
+- Updated dependencies [348b8b7]
+- Updated dependencies [9a334ae]
+- Updated dependencies [18f3df0]
+- Updated dependencies [9ff5c22]
+- Updated dependencies [cf6ced5]
+- Updated dependencies [36d1779]
+- Updated dependencies [cd74517]
+- Updated dependencies [61d08ab]
+- Updated dependencies [e3f2d21]
+- Updated dependencies [0a3e58a]
+- Updated dependencies [062881a]
+- Updated dependencies [159c5f0]
+- Updated dependencies [c9ea091]
+- Updated dependencies [5079c89]
+- Updated dependencies [5395c7c]
+- Updated dependencies [6fd855f]
+- Updated dependencies [186fc62]
+- Updated dependencies [1636927]
+- Updated dependencies [5b2281c]
+- Updated dependencies [dd6fea0]
+- Updated dependencies [6836dd3]
+- Updated dependencies [4b3881f]
+- Updated dependencies [6fb1d64]
+- Updated dependencies [b00f3c1]
+- Updated dependencies [13f29e1]
+  - @cotal-ai/connector-core@0.49.0
+  - @cotal-ai/cli@0.49.0
+  - @cotal-ai/core@0.49.0
+  - @cotal-ai/manager@0.49.0
+  - @cotal-ai/workspace@0.49.0
+  - @cotal-ai/runtime@0.49.0
+  - @cotal-ai/auth@0.49.0
+  - @cotal-ai/delivery@0.49.0
+
 ## 0.48.2
 
 ### Patch Changes

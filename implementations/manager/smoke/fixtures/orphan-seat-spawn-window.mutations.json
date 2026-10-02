@@ -1,0 +1,22 @@
+{
+  "suite": [
+    "implementations/manager/smoke/orphan-seat-spawn-window.smoke.ts"
+  ],
+  "guard": "a manager killed between the seat launch and the slot activation CAS still leaves a seat its successor can address and reap",
+  "command": "pnpm smoke:orphan-seat-spawn-window",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/orphan-seat-spawn-window.mutations.json",
+  "why": [
+    "The suite freezes a real manager inside runtime.spawn, after the seat's custodian and child exist and before startAgent reaches the slot activation CAS, SIGKILLs it there, waits out the liveness lease and boots the same logical successor.",
+    "The mutation writes the spawn intent without the reserved custody reference. The sibling orphan-seat-reap suite survives it, because a manager that completes its spawn records the reference on the activation CAS; only a slot that never reached activation exposes the hole, which is why this suite is separate rather than a seventh cell there."
+  ],
+  "mutations": [
+    {
+      "name": "write the spawn intent without the reserved custody reference",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "ownerInstanceId: this.managerInstanceId, runtime: custody }),",
+      "replace": "ownerInstanceId: this.managerInstanceId }),",
+      "expectRed": "a seat whose spawn never reached the slot activation is still reaped by its reserved reference",
+      "cell": "a seat whose spawn never reached the slot activation is still reaped by its reserved reference"
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "suite": [
+    "packages/core/smoke/endpoint-binding.smoke.ts"
+  ],
+  "guard": "`readRunRevocation` reads the revocation marker key, answers undefined only when there is no marker, and throws on a marker it cannot read; `revokeRunAdmission` refuses a marker with an empty by or reason before it creates anything",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
+  "completionMarker": "ENDPOINT BINDING SMOKE",
+  "progressPattern": "  ✓ ",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/run-revocation-marker.json",
+  "why": [
+    "THE CORE HALF OF implementations/runtime/smoke/mutations/ps-revocation.json. That fixture proves",
+    "the same three edits through `cotal run ps` and `cotal run revoke`, which is the entry point an",
+    "operator reaches. Its suite imports `@cotal-ai/core` by name, so `mutation-coverage` cannot see",
+    "that it reaches `packages/core/src` and refuses to grade those three. This suite imports",
+    "`../src`, so the contract is graded where it is written, and it no longer depends on the",
+    "runtime table staying where it is.",
+    "",
+    "Each mutation is the positive control for the other two: all three edit run-admission.ts."
+  ],
+  "mutations": [
+    {
+      "name": "the reader looks at the admission key instead of the revocation marker",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));\n  return marker === undefined ? undefined : revocationSnapshot(marker.value, runId);",
+      "replace": "  const marker = await readLeader(jsm, space, admissionKey(endpoint, runId));\n  return marker === undefined ? undefined : revocationSnapshot(marker.value, runId);",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "cell": "readRunRevocation returns the marker a revoke wrote",
+      "expectRed": "readRunRevocation returns the marker a revoke wrote",
+      "note": "The revoked run in this block has no admission record, so the admission key reads as absent and the marker a revoke wrote is never seen."
+    },
+    {
+      "name": "the marker reader answers no marker when it could not look",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));\n  return marker === undefined ? undefined : revocationSnapshot(marker.value, runId);\n}",
+      "replace": "  try {\n    const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));\n    return marker === undefined ? undefined : revocationSnapshot(marker.value, runId);\n  } catch { return undefined; }\n}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "cell": "readRunRevocation throws on a marker version it does not know, never answering no marker",
+      "expectRed": "readRunRevocation throws on a marker version it does not know, never answering no marker",
+      "note": "No marker and could not look are different answers. Swallowed, a caller renders a revoked run as live the moment its marker cannot be read."
+    },
+    {
+      "name": "the writer accepts a revocation with an empty by and reason",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  if (snap.by.length === 0 || snap.reason.length === 0)",
+      "replace": "  if (false)",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:ep-binding",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "cell": "revokeRunAdmission refuses a marker with an empty by and reason and creates nothing",
+      "expectRed": "revokeRunAdmission refuses a marker with an empty by and reason and creates nothing",
+      "note": "The marker is permanent, so a revocation that names nobody and no reason is refused before the create."
+    }
+  ]
+}

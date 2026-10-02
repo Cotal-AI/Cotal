@@ -29,6 +29,7 @@ const GOAL = "goal-lifecycle-probe";
 const OPID = "a".repeat(26);
 
 const silentConn = {
+  flush: async () => {},
   subscribe: (_subject: string, _opts: { callback: (err: Error | null, m: unknown) => void }) => ({ unsubscribe: () => {} }),
 };
 
@@ -49,6 +50,7 @@ console.log("A. a failed goal terminal carries the lifecycle-blocked facts the m
   // drive a delivering conn instead.
   let captured: ((err: Error | null, m: unknown) => void) | undefined;
   const delivering = {
+    flush: async () => {},
     subscribe: (_subject: string, opts: { callback: (err: Error | null, m: unknown) => void }) => {
       captured = opts.callback;
       return { unsubscribe: () => {} };

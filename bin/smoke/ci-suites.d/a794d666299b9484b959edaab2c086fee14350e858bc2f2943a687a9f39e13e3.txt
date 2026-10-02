@@ -1,0 +1,3 @@
+# `cotal up` must state plainly when the delivery responder did not bind, instead of reporting a
+# clean boot while spawn, retirement and join are all failing (#1576).
+smoke:delivery-boot-honesty

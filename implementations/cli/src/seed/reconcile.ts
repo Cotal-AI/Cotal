@@ -13,7 +13,7 @@ import {
 import { c } from "../ui.js";
 import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
-import { assertReleasedSeedWriter, entryScript, SEED_BUILTINS, seedGeneration, stampPath } from "./paths.js";
+import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedGeneration, stampPath, type Semver } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -25,6 +25,7 @@ import {
   recoveryPending,
   sanitizeCorruptCrashState,
   seedChildStatus,
+  type ReconcileCursor,
   writeCursor,
   writePendingChildMarker,
   writeRecovery,
@@ -119,7 +120,29 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
           throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
         if (child.kind === "ambiguous")
           throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
-        throw new Error("a previous connector seed or repair was interrupted - run `cotal ext seed --repair`");
+        const migration = cursor ? interruptedUpgrade(cursor, generation) : undefined;
+        if (migration && cursor) {
+          console.error(
+            c.dim(
+              `resuming an interrupted connector upgrade (seed store ${migration.from} -> ${generation}; ` +
+                `package "${cursor.package}", phase ${cursor.phase}) …`,
+            ),
+          );
+          await reconcile("repair");
+          return NOOP;
+        }
+        if (cursor) {
+          const storeGeneration = readStamp()?.generation ?? "absent";
+          throw new Error(
+            `a previous connector seed was interrupted (package "${cursor.package}", phase ${cursor.phase}; ` +
+              `seed store generation ${storeGeneration}, running generation ${generation}; ` +
+              "no live reconcile or seed child found) - run `cotal ext seed --repair`",
+          );
+        }
+        throw new Error(
+          "a previous connector repair was interrupted (recovery journal present; no live reconcile or seed child found) - " +
+            "run `cotal ext seed --repair`",
+        );
       }
     } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
@@ -145,6 +168,18 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
   } finally {
     lock.release();
   }
+}
+
+/** A cursor left while the durable stamp still names an older generation is evidence that this
+ * running generation began the ordinary upgrade refresh and did not reach its final commit. The
+ * cursor identifies the exact package to reinstall, the child marker proves no installer remains,
+ * and the reconcile/extension locks serialize the recovery, so the same verified repair used by the
+ * maintenance command is safe to resume unattended. A same-generation (or unstamped/corrupt-stamp)
+ * cursor is not attributed to an upgrade and remains fail-loud. */
+function interruptedUpgrade(cursor: ReconcileCursor, generation: string): { readonly from: string } | undefined {
+  const stamp = readStamp();
+  if (!stamp || !isValidSemver(stamp.generation) || !isStrictlyNewer(generation, stamp.generation)) return undefined;
+  return { from: stamp.generation };
 }
 
 /** Authority present, readable, and structurally valid (a corrupt one is NOT intact — it routes to
@@ -435,16 +470,6 @@ function prepareMaintenanceState(mode: Mode): { manifestRebuilt: boolean; repair
   return { manifestRebuilt, repairAllSeeded };
 }
 
-/** True iff `v` parses as a numeric-core semver (the only thing the refresh comparison can order). */
-function isValidSemver(v: string): boolean {
-  try {
-    parseSemver(v);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * The ever-seeded set to reconcile against, per the prefix state and the mode. Pristine/legacy
  * prefixes initialize it; a witnessed prefix with a lost authority is fail-loud in auto/force,
@@ -495,13 +520,18 @@ function resolveEverSeeded(mode: Mode, generation: string): Set<string> {
  *  The child is authenticated: it carries the live reconcile lock's nonce + this parent's PID so a
  *  forged `COTAL_EXT_SEEDING` can't skip the mutation lock for an arbitrary `ext add`. */
 function seedOne(name: string, generation: string, nonce: string, force: boolean): void {
+  // The re-exec entry is validated BEFORE anything is journaled (#1629). Asked after the cursor, the
+  // staged payload and the pending child marker, a refusal left all three with no child to clear the
+  // marker, and every later boot, `cotal ext seed --repair` included, refused as a seed that may be
+  // mid-flight until the marker was removed by hand.
+  //
+  // The pending marker records intent to spawn BEFORE the spawn, so the orphan window never opens
+  // ownerless: a repair after a parent SIGKILL sees it and fails loud rather than racing the installer.
+  const [bin, ...argv] = selfArgv();
   writeCursor({ nonce, package: name, phase: "copy" });
   const storePath = stageSeedPayload(generation, name, { force });
   writeCursor({ nonce, package: name, phase: "add" });
-  // Record intent to spawn BEFORE the spawn, so the orphan window never opens ownerless: a repair
-  // after a parent SIGKILL sees this pending marker and fails loud rather than racing the installer.
   writePendingChildMarker(nonce);
-  const [bin, ...argv] = selfArgv();
   const r = spawnSync(bin, [...argv, "ext", "add", storePath], {
     encoding: "utf8",
     env: { ...process.env, COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
@@ -566,25 +596,6 @@ function officialNameOfPkg(pkg: string): string | undefined {
  *  ordering included), so `1.0.0-rc.1` < `1.0.0` and `1.0.10` > `1.0.9`. */
 function isStrictlyNewer(a: string, b: string | undefined): boolean {
   return compareSemver(a, b ?? "0.0.0") > 0;
-}
-
-interface Semver {
-  readonly rel: [number, number, number];
-  readonly pre: string[];
-}
-
-function parseSemver(v: string): Semver {
-  const core = v.split("+")[0];
-  const dash = core.indexOf("-");
-  const pre = dash >= 0 ? core.slice(dash + 1).split(".") : [];
-  // Fail loud on a non-numeric release segment rather than coercing it to 0 (which would silently
-  // mis-order versions). The generation is a real package.json version and the stamp is one we wrote,
-  // so a non-semver core here means corrupt state → `cotal ext seed --repair`/`--reset`.
-  const release = (dash >= 0 ? core.slice(0, dash) : core).split(".").map((s) => {
-    if (!/^\d+$/.test(s)) throw new Error(`invalid version "${v}" (release segment "${s}" is not numeric) - repair with \`cotal ext seed --repair\` (or --reset)`);
-    return Number(s);
-  });
-  return { rel: [release[0] ?? 0, release[1] ?? 0, release[2] ?? 0], pre };
 }
 
 export function compareSemver(a: string, b: string): number {

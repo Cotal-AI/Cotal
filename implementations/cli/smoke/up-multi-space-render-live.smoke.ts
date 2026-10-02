@@ -55,6 +55,8 @@ process.env.COTAL_SKIP_CONNECTOR_SEED = "1";
 
 const { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintCreds, newIdentity } = await import("@cotal-ai/core");
 const { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceAccountPath } = await import("@cotal-ai/workspace");
+const { userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { ensureCalloutAuth, ensurePinnedIdp } = await import("@cotal-ai/auth");
 
 const WT = resolvePath(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -85,6 +87,25 @@ function startUp(port: number, space: string): ChildProcess {
 }
 const output = new WeakMap<ChildProcess, () => string>();
 const logOf = (cp: ChildProcess) => output.get(cp)?.() ?? "";
+
+/** SIGTERM of the `up` child is not enough: its nats-server may still be reachable while
+ *  delivery/manager teardown runs, and a kept `origin:up` record then makes the next `up`
+ *  refuse occupancy instead of naming the unreadable account (CI shard 2/4, PR #1445). */
+function killPidfiles(): void {
+  const dir = join(root, ".cotal");
+  if (!existsSync(dir)) return;
+  for (const name of readdirSync(dir).filter((n) => /^(nats|manager|delivery)\.([^.]+\.)?pid$/.test(n))) {
+    const pid = Number.parseInt(readFileSync(join(dir, name), "utf8").trim(), 10);
+    if (Number.isInteger(pid) && pid > 0) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+  }
+}
+async function stopBoot(cp: ChildProcess): Promise<void> {
+  if (cp.exitCode === null) cp.kill("SIGTERM");
+  await Promise.race([once(cp, "exit"), sleep(5_000)]);
+  if (cp.exitCode === null) cp.kill("SIGKILL");
+  killPidfiles();
+  await sleep(300);
+}
 
 /** Can this cred reach the broker? The only question that matters about the rendered resolver. */
 async function connects(port: number, creds: string): Promise<boolean> {
@@ -135,11 +156,13 @@ try {
   ok("a cred minted under beta connects to the broker alpha's `up` started", await connects(port, betaCreds));
   ok("…and alpha still connects (the sibling was not traded for the booted tenant)", await connects(port, alphaCreds));
 
-  child.kill("SIGTERM");
-  await Promise.race([once(child, "exit"), sleep(20_000)]);
+  await stopBoot(child);
+  for (let i = 0; i < 50 && await connects(port, alphaCreds); i++) await sleep(100);
+  ok("the first broker is gone before the unreadable-record boot", !(await connects(port, alphaCreds)));
 
   console.log("\n3) an unreadable account record REFUSES the boot (never a silently narrowed resolver)");
-  writeFileSync(spaceAccountPath(authDir(root), "gamma"), JSON.stringify({ space: "gamma" })); // no account material
+  const corrupt = spaceAccountPath(authDir(root), "delta");
+  writeFileSync(corrupt, JSON.stringify({ space: "delta" })); // no account material
   const before = readFileSync(confPath, "utf8");
   const port2 = await freePort();
   const refused = startUp(port2, "alpha");
@@ -148,9 +171,32 @@ try {
   refused.stdout?.on("data", (b: Buffer) => { err += b.toString(); });
   await Promise.race([once(refused, "exit"), sleep(60_000)]);
   ok("the boot exited non-zero", refused.exitCode !== 0, { code: refused.exitCode });
-  ok("…naming the unreadable record and why it refuses", /unreadable|not fully readable/.test(err), err.slice(-600));
   ok("…and left the previous config untouched (no partially-rendered tenant list)",
     readFileSync(confPath, "utf8") === before);
+  ok("…naming the unreadable record and why it refuses", /unreadable|not fully readable/.test(err), err.slice(-600));
+  rmSync(corrupt);
+
+  console.log("\n4) a second boot keeps every persisted sibling callout account");
+  const siblingCallouts = [];
+  for (const acct of [beta, await createSpaceAccountAuth(broker, "gamma")]) {
+    if (acct.space === "gamma") saveSpaceAccountAuth(authDir(root), acct);
+    ensurePinnedIdp(userAuthStateDir(root, acct.space), "http://127.0.0.1:12345/api/auth");
+    siblingCallouts.push(await ensureCalloutAuth(workspaceSecretStore(root), {
+      space: acct.space, operatorSeed: broker.operator.seed, accountPub: acct.account.pub,
+    }));
+  }
+  const second = startUp(port, "alpha");
+  for (let i = 0; i < 200 && !(await connects(port, alphaCreds)); i++) {
+    if (second.exitCode !== null) break;
+    await sleep(150);
+  }
+  ok("the second broker answers", await connects(port, alphaCreds), logOf(second).slice(-1500));
+  const secondConf = readFileSync(confPath, "utf8");
+  ok("the second render preloads EVERY sibling callout account",
+    siblingCallouts.every(({ account }) => secondConf.includes(`${account.pub}: ${account.jwt}`)));
+  await stopBoot(second);
+  for (let i = 0; i < 50 && await connects(port, alphaCreds); i++) await sleep(100);
+  ok("the second broker is gone before the unreadable-record boot", !(await connects(port, alphaCreds)));
 
   console.log(`\nUP MULTI-SPACE RENDER SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {
@@ -164,9 +210,6 @@ try {
   // which spaces got as far as writing one, so it matches the SHAPE rather than a fixed name list.
   // The pre-segmentation root-scoped spelling matches too, so a root an older build left behind is
   // still swept.
-  for (const name of readdirSync(join(root, ".cotal")).filter((n) => /^(nats|manager|delivery)\.([^.]+\.)?pid$/.test(n))) {
-    const pid = Number.parseInt(readFileSync(join(root, ".cotal", name), "utf8").trim(), 10);
-    if (Number.isInteger(pid) && pid > 0) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
-  }
+  killPidfiles();
   rmSync(scratch, { recursive: true, force: true });
 }

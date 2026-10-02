@@ -1,0 +1,3 @@
+# Post-publish installability probe (#1412): the tarball installs, the binary starts, broken
+# tarballs and version mismatches red the release.
+smoke:post-publish-install-probe

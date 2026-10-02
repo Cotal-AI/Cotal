@@ -27,10 +27,10 @@
     {
       "name": "A1 read the grant as an instruction, the confusion the suite is named for",
       "file": "extensions/connector-claude-code/src/extension.ts",
-      "find": "if (opts.events === true) {",
-      "replace": "if (opts.events === true || (opts.allowPublish ?? []).some((c) => c.startsWith(\"events.\"))) {",
-      "expectRed": "a hand-written event-channel grant does NOT arm the emitter",
-      "cell": "a hand-written event-channel grant does NOT arm the emitter",
+      "find": "if (opts.events !== false) {",
+      "replace": "if (opts.events !== false || (opts.allowPublish ?? []).some((c) => c.startsWith(\"events.\"))) {",
+      "expectRed": "a hand-written event-channel grant does NOT override an explicit opt-out",
+      "cell": "a hand-written event-channel grant does NOT override an explicit opt-out",
       "note": "Written the way it would plausibly be written: it looks like the connector helpfully noticing what it is allowed to do."
     },
     {
@@ -50,6 +50,15 @@
       "expectRed": "the connector's channel IS core's derivation, character for character",
       "cell": "the connector's channel IS core's derivation, character for character",
       "note": "A second derivation agrees with core's for most inputs and disagrees for exactly the ones a sanitizer touches, so the failure surfaces as an auth rejection at publish time rather than at launch."
+    },
+    {
+      "name": "A4 clone that delegates to core for the suite's sampled actor and diverges elsewhere",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "  eventChannel,",
+      "replace": "  eventChannel: (p: { owner: string; actor: string }) => p.actor === \"UAA7EXAMPLEACTORKEY\" ? eventChannel(p) : `events.${p.owner}.${p.actor.toLowerCase()}`,",
+      "expectRed": "and it is core's own derivation by identity, not a clone that agrees on one sample",
+      "cell": "and it is core's own derivation by identity, not a clone that agrees on one sample",
+      "note": "The clone the issue describes: it agrees with core on the sampled actor and diverges elsewhere, and only identity catches it."
     }
   ]
 }

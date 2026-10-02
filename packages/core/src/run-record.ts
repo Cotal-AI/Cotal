@@ -121,6 +121,31 @@ export async function readRunRecord(
 }
 
 /**
+ * The activated attempt of a run hosted by one registered manager, read from the authoritative run
+ * record for a renewal issuer. The hosting manager writes the attempt holder as
+ * `<supervisor id>.<takeoverId>`, so the instance is bound only when that prefix is the caller's
+ * REGISTERED supervisor id. A holder under any other prefix reports no instance, which a renewal
+ * gate refuses as a mismatch. `registered` must come from verified registration state, never from
+ * the renewal request. `null` = no record or no status.
+ */
+export async function observeHostedRunAttempt(
+  kv: KV,
+  endpoint: string,
+  runId: string,
+  registered: { readonly supervisorId: string; readonly instanceId: string },
+): Promise<{ state: string; holder: string; takeoverId: string; epoch: number; fencingToken: number; instanceId: string } | null> {
+  const status = (await readRunRecord(kv, endpoint, runId))?.status?.value;
+  if (!status) return null;
+  const dot = status.holder.lastIndexOf(".");
+  const prefix = dot > 0 ? status.holder.slice(0, dot) : "";
+  const takeoverId = dot > 0 ? status.holder.slice(dot + 1) : "";
+  return {
+    state: status.state, holder: status.holder, takeoverId, epoch: status.epoch, fencingToken: status.fencingToken,
+    instanceId: prefix !== "" && prefix === registered.supervisorId ? registered.instanceId : "",
+  };
+}
+
+/**
  * Create a run's spec. Create-only: a spec that already exists means this run was started before,
  * and starting it again under a fresh set of pins would be a different run wearing the same id.
  */

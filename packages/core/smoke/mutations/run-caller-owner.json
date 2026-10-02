@@ -1,0 +1,34 @@
+{
+  "suite": ["packages/core/smoke/owner-token.smoke.ts"],
+  "guard": "Run callers and trusted mediator grants preserve the authenticated owner without widening driver grants",
+  "command": "pnpm smoke:owner-token",
+  "completionMarker": "OWNER TOKEN SMOKE PASSED",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/run-caller-owner.json",
+  "why": [
+    "User-auth workflow effects cannot run as the static local owner.",
+    "These cells call the shipped caller and grant builders. They do not prove admission or hosted execution."
+  ],
+  "mutations": [
+    {
+      "name": "C1 discard the admitted caller owner",
+      "file": "packages/core/src/run-driver-grants.ts",
+      "find": "return { owner, actor: `wf_${h.slice(0, 12)}`, uid: h.slice(12, 38) };",
+      "replace": "return { owner: DEV_OWNER, actor: `wf_${h.slice(0, 12)}`, uid: h.slice(12, 38) };",
+      "expectRed": "run caller keeps the admitted owner"
+    },
+    {
+      "name": "C2 discard the mediator owner",
+      "file": "packages/core/src/run-driver-grants.ts",
+      "find": "const caller = runDriverCaller(run, args.owner);",
+      "replace": "const caller = runDriverCaller(run);",
+      "expectRed": "run mediator replies to the admitted owner"
+    },
+    {
+      "name": "C3 accept an arbitrary caller owner",
+      "file": "packages/core/src/run-driver-grants.ts",
+      "find": "  assertPrincipalOwnerToken(owner, { allowLocal: true });",
+      "replace": "  void owner;",
+      "expectRed": "run caller refuses arbitrary owner tokens"
+    }
+  ]
+}

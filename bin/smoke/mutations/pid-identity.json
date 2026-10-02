@@ -2,7 +2,7 @@
   "suite": [
     "packages/workspace/smoke/pid-identity.smoke.ts"
   ],
-  "guard": "pinned teardown refuses reused pids and torn pins, while a legacy live record warns and remains signalable for upgrade compatibility",
+  "guard": "pinned teardown refuses reused pids and torn pins; win32 launches write a creation-time pin; a legacy live record warns and remains signalable only when no sibling pin exists",
   "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/pid-identity.json",
   "why": [
@@ -22,7 +22,13 @@
     "delivery teardown actually routes through the seam rather than the cells merely depending on",
     "the shared module in some other way.",
     "",
-    "BOTH RUN THE CLI-LIB-BACKED SUITE, so they build first (implementations/cli resolves to dist/)",
+    "M3 RESTORES THE #1437 WIN32 DEFECT: identityStartToken returns undefined on win32, so a launch",
+    "never has a token to pin. F1 is the off-Windows executable of that branch.",
+    "",
+    "M4 RESTORES THE WRITE SKIP: writeIdentityPin returns without creating a sibling even when a",
+    "token exists. That is the Windows steady state the issue named. F2 must red.",
+    "",
+    "ALL FOUR RUN THE CLI-LIB-BACKED SUITE, so they build first (implementations/cli resolves to dist/)",
     "and rebuild in afterRestore - git cannot recover a gitignored dist compiled from the mutant."
   ],
   "mutations": [
@@ -45,6 +51,61 @@
       "expectRed": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "cell": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "note": "Removes the gate entirely at one real call site. A1 reddens when the mismatch record is signalled; M2's distinct value over M1 proves the call site routes through the seam, not only that the shared verdict compares tokens.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M3 win32 identity token is undefined again (the #1437 reader defect)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  if (platform === \"win32\") return win32(pid);",
+      "replace": "  if (platform === \"win32\") return undefined;",
+      "expectRed": "F1 win32 identity uses the creation-time reader, not undefined",
+      "cell": "F1 win32 identity uses the creation-time reader, not undefined",
+      "note": "The Windows reader branch must not fold to undefined. F1 injects a FILETIME reader and names win32; returning undefined is the pre-fix processStartToken behaviour.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M4 writeIdentityPin never writes a sibling (the #1437 pin-absent defect)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));",
+      "replace": "  return;",
+      "expectRed": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
+      "cell": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
+      "note": "Restores the write skip that made every Windows record unpinned. F2 reds when the sibling is absent after a win32-capable launch.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M5 writePidPair never unlinks the old pin (the #1238 unlink-old-pin step removed)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "    rmSync(pinPath, { force: true });\n    onStep(\"unlink-old-pin\");\n",
+      "replace": "    onStep(\"unlink-old-pin\");\n",
+      "expectRed": "G2 a crash after `unlink-old-pin` leaves the OLD pid with no pin (legacy, never torn)",
+      "cell": "G2 a crash after `unlink-old-pin` leaves the OLD pid with no pin (legacy, never torn)",
+      "note": "Hand-confirmed: the crash injected right where the deleted rmSync ran leaves the OLD target's own pin on disk, so G2's legacy check reads match instead - not G3, since G2's own onStep injection fires first and the old pin (never removed) still names the old target.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M6 the pin is published before the pid (#1238 publish order swapped)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "    renameSync(pidTemp, pidfilePath);\n    onStep(\"publish-pid\");\n    if (pinTemp !== undefined) {\n      renameSync(pinTemp, pinPath);\n      onStep(\"publish-pin\");\n    }",
+      "replace": "    if (pinTemp !== undefined) {\n      renameSync(pinTemp, pinPath);\n      onStep(\"publish-pin\");\n    }\n    renameSync(pidTemp, pidfilePath);\n    onStep(\"publish-pid\");",
+      "expectRed": "G3 a crash after `publish-pid` leaves the NEW pid with no pin (legacy, never torn-pairing)",
+      "cell": "G3 a crash after `publish-pid` leaves the NEW pid with no pin (legacy, never torn-pairing)",
+      "note": "Hand-confirmed: with the rename order swapped, G3's onStep(\"publish-pid\") injection now fires AFTER the new pin has already been renamed into place, so both halves of the NEW record are on disk by the time it throws - match instead of legacy.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M7 the pidfile is written in place during temporaries, never to a temporary (#1238)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "    writeFileSync(pidTemp, String(pid));\n",
+      "replace": "    writeFileSync(pidfilePath, String(pid));\n",
+      "expectRed": "G0 a first publish with no injection leaves a complete, matching record",
+      "cell": "G0 a first publish with no injection leaves a complete, matching record",
+      "note": "Hand-confirmed: G0 is the FIRST writePidPair call ever made against a fresh pidfile path, so it is the call that hits the mutant first (not G1): the pidfile is written directly, then renameSync(pidTemp, pidfilePath) throws ENOENT since pidTemp was never created. G0 is try/catch-wrapped so this is now a clean, named red rather than an uncaught crash.",
       "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
       "afterRestore": "pnpm build > /dev/null"
     }

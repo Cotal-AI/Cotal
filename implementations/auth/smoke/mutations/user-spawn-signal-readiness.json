@@ -10,7 +10,8 @@
     "Manager.startAgent can expose a PID before the node child has registered its SIGUSR handlers.",
     "Sending SIGUSR2 in that window takes the default terminate action; the next signal used to throw",
     "ESRCH and abort the entire suite. A child-written marker is the actual readiness event, and every",
-    "signal send is a named cell so an unexpected death remains legible."
+    "signal send is a named cell so an unexpected death remains legible. #798: the quiet seat's",
+    "ensure-gone cleanup signals a pid found in a listing, so it must tolerate an already-exited child."
   ],
   "mutations": [
     {
@@ -28,6 +29,14 @@
       "replace": "",
       "expectRed": "precondition: kappa remained alive to receive the waiting status signal",
       "cell": "precondition: kappa remained alive to receive the waiting status signal"
+    },
+    {
+      "name": "the quiet seat's ensure-gone cleanup signals the pid unguarded so a gone child aborts the scenario",
+      "file": "implementations/auth/smoke/user-spawn.smoke.ts",
+      "find": "const goneAgain = await killPid(quietPid).then(() => \"ok\", (e: Error) => e.message);",
+      "replace": "const goneAgain = await Promise.resolve().then(() => { if (quietPid) process.kill(quietPid, \"SIGKILL\"); return \"ok\"; }).catch((e: Error) => e.message);",
+      "expectRed": "ensure-gone on the quiet seat tolerates a child that already exited (#798)",
+      "cell": "ensure-gone on the quiet seat tolerates a child that already exited (#798)"
     }
   ]
 }

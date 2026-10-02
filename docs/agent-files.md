@@ -17,7 +17,7 @@ allowSubscribe: [general, team.>]      # read ACL (omit = same as subscribe)
 allowPublish: [general, team.backend]  # post ACL (omit = none, default-deny)
 model: opus             # optional model override
 variant: high           # optional connector-defined model variant
-capabilities: [spawn]   # control-plane capabilities (may start/despawn teammates)
+capabilities: [spawn, run] # may manage teammates and start workflow runs
 ---
 You are a builder on a shared mesh of peer agents…   ← the body is the persona
 ```
@@ -35,7 +35,7 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `name` | string, required | Display name → `card.name`. A launcher resolves a bare name to `.cotal/agents/<name>.md`. |
+| `name` | string, required | Display name → `card.name`. A launcher resolves a bare name to `.cotal/agents/<name>.md`. At most 128 characters; the validator refuses longer names rather than minting a credential that would overflow the broker's CONNECT line. |
 | `role` | string | The addressable **service**: presence label *and* the anycast address ([SPEC §3](../SPEC.md#3-subject-layout)). |
 | `kind` | `agent` \| `endpoint` | Participation class; default `agent`. |
 | `description` | string | One-line summary → `card.description`. |
@@ -93,16 +93,20 @@ should point at the source (the repo's docs, a URL), not assert them.
 
 ## Defining one at runtime
 
-`cotal_persona(name, prompt, model?, announce?)` sends a persona to the manager, which
+`cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, announce?)` sends a persona to the manager, which
 writes the same file; a later `cotal_spawn(name, role?, agent?, model?, variant?)` brings
 it online, so a peer can mint a teammate with no hand-written file
-([tool catalog](mcp-tools.md)). The write path takes **content only** (`model` /
-`persona`); `role`, `allowPublish`, `capabilities`, and `owner` are policy and have no
-slot, so a peer cannot grant itself a capability by redefining a file. A persona with no
-`capabilities:` line (every wire-defined one) therefore spawns **without** `spawn`, and a
-spawn whose effective role is `manager` is **refused at spawn time** rather than joining as
-a labelled manager that silently cannot seat workers: either put `capabilities: [spawn]` on
-the file (an operator edit) or spawn it under another role.
+([tool catalog](mcp-tools.md)). The write path takes **content** (`model` /
+`persona`, plus optional role, agent, and channel grants). A prompt that is already a
+complete agent file (its own `---` frontmatter) is **merged** into one block: grants,
+role, and agent from that block survive, and explicit tool arguments such as `model` win.
+A malformed leading frontmatter block is refused (`prompt-frontmatter`) rather than
+wrapped. `capabilities` and `owner` remain policy and have no slot, so a peer cannot
+grant itself spawn or claim ownership. A persona with no `capabilities:` line therefore
+spawns **without** `spawn`, and a spawn whose effective role is `manager` is **refused at
+spawn time** rather than joining as a labelled manager that silently cannot seat workers:
+either put `capabilities: [spawn]` on the file (an operator edit) or spawn it under
+another role.
 
 **Defining is silent.** Nothing goes out on the mesh unless you pass `announce: <channel>`,
 and then it goes to that channel only. A peer that did not ask for the persona has no way

@@ -1,0 +1,2 @@
+# #1335: post-heal re-registration uses a fresh executor and resumes same-op holder progress.
+smoke:registration-executor-resume

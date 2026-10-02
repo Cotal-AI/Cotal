@@ -1,5 +1,12 @@
 import { runJcodeHost } from "./host.js";
-import { JcodeEffortRefusal, JcodeReadinessProviderRefusal, writeJcodeDiagnostic } from "./startup-diagnostics.js";
+import {
+  JcodeEffortRefusal,
+  JcodeEffortUnsupported,
+  JcodeReadinessProviderRefusal,
+  JcodeSessionsEnumerationFailure,
+  JcodeSessionsUnwritableFailure,
+  writeJcodeDiagnostic,
+} from "./startup-diagnostics.js";
 
 const STARTUP_FAILURE_CODES = new Set([
   "project_mcp_config",
@@ -15,6 +22,8 @@ const STARTUP_FAILURE_CODES = new Set([
   "model_mismatch",
   "private_state",
   "readiness_timeout",
+  "sessions_enumeration_failed",
+  "sessions_unwritable",
 ]);
 
 function startupFailureCode(error: unknown): string {
@@ -28,10 +37,18 @@ function startupFailureCode(error: unknown): string {
 function renderEffortRefusal(error: unknown): string | undefined {
   if (!(error instanceof JcodeEffortRefusal)) return undefined;
   const ladder = error.acceptedLadder.length ? `; accepted tiers: ${error.acceptedLadder.join(", ")}` : "";
-  return `Jcode reasoning effort refused: requested tier ${JSON.stringify(error.requestedTier)}; effective model ${JSON.stringify(error.effectiveModel)}; provider code ${error.providerCode}${ladder}`;
+  const via = error.apiMethod ? ` via ${JSON.stringify(error.apiMethod)}` : "";
+  return `Jcode reasoning effort refused: requested tier ${JSON.stringify(error.requestedTier)}; effective model ${JSON.stringify(error.effectiveModel)}; provider ${JSON.stringify(error.provider)}${via}; provider code ${error.providerCode}${ladder}`;
 }
 
 runJcodeHost().catch((error) => {
+  if (error instanceof JcodeEffortUnsupported) {
+    const via = error.apiMethod ? ` via ${JSON.stringify(error.apiMethod)}` : "";
+    writeJcodeDiagnostic(
+      `[cotal-jcode] fatal: Jcode model ${JSON.stringify(error.effectiveModel)} on provider ${JSON.stringify(error.provider)}${via} does not support reasoning effort; requested tier ${JSON.stringify(error.requestedTier)} was not applied.\n`,
+    );
+    process.exit(1);
+  }
   const effortRefusal = renderEffortRefusal(error);
   if (effortRefusal) {
     writeJcodeDiagnostic(`[cotal-jcode] fatal: ${effortRefusal}\n`);
@@ -45,6 +62,14 @@ runJcodeHost().catch((error) => {
   if (error instanceof JcodeReadinessProviderRefusal) {
     writeJcodeDiagnostic(
       `[cotal-jcode] fatal: Jcode readiness turn refused ${error.parameter} ${JSON.stringify(error.value)} (${error.providerCode}); inspect the private Jcode logs for other details.\n`,
+    );
+  } else if (error instanceof JcodeSessionsEnumerationFailure) {
+    writeJcodeDiagnostic(
+      `[cotal-jcode] fatal: Jcode host startup failed (sessions_enumeration_failed): ${error.causeText} while reading ${error.sessionsPath}\n`,
+    );
+  } else if (error instanceof JcodeSessionsUnwritableFailure) {
+    writeJcodeDiagnostic(
+      `[cotal-jcode] fatal: Jcode host startup failed (sessions_unwritable): the harness cannot persist sessions at ${error.sessionsPath} (${error.errnoCode}); fix the directory's permissions on the seat's private state\n`,
     );
   } else {
     writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\n`);

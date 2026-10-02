@@ -15,7 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { MeshAgent } from "../src/agent.js";
-import type { InboxItem } from "../src/types.js";
+import type { InboxItem } from "../src/agent.js";
 
 let pass = 0;
 const failures: string[] = [];
@@ -70,7 +70,7 @@ function harness(): Harness {
 console.log("\n1. the attack: a forged-mention flood must not evict a waiting DM");
 {
   const h = harness();
-  h.push({ id: "dm-1", kind: "dm", channel: "", from: "colleague", text: "the answer is 4" });
+  h.push({ id: "dm-1", kind: "dm", channel: "", fromId: "colleague", text: "the answer is 4" });
   // Every flooded message claims to mention the victim, so none of it is pullOnly.
   for (let i = 0; i < 400; i++) h.push({ id: `flood-${i}`, mentionsMe: true, historical: true });
 
@@ -82,7 +82,7 @@ console.log("\n1. the attack: a forged-mention flood must not evict a waiting DM
 console.log("\n2. the no-forgery case: plain live ambient channel traffic at volume");
 {
   const h = harness();
-  h.push({ id: "dm-2", kind: "dm", channel: "", from: "colleague", text: "ping" });
+  h.push({ id: "dm-2", kind: "dm", channel: "", fromId: "colleague", text: "ping" });
   for (let i = 0; i < 400; i++) h.push({ id: `ambient-${i}` });
 
   check("the DM survives ordinary ambient volume", h.ids().includes("dm-2"));
@@ -92,7 +92,7 @@ console.log("\n2. the no-forgery case: plain live ambient channel traffic at vol
 console.log("\n3. anycast is directed too and gets the same protection");
 {
   const h = harness();
-  h.push({ id: "any-1", kind: "anycast", channel: "", from: "dispatcher", text: "claim me" });
+  h.push({ id: "any-1", kind: "anycast", channel: "", fromId: "dispatcher", text: "claim me" });
   for (let i = 0; i < 300; i++) h.push({ id: `f-${i}`, mentionsMe: true, historical: true });
 
   check("an anycast task survives a mention-forged flood", h.ids().includes("any-1"));
@@ -122,7 +122,7 @@ console.log("\n5. pull-only backlog is still sacrificed before anything else");
 console.log("\n6. an all-directed inbox still bounds memory (no attacker advantage)");
 {
   const h = harness();
-  for (let i = 0; i < 260; i++) h.push({ id: `dm-${i}`, kind: "dm", channel: "", from: "peer" });
+  for (let i = 0; i < 260; i++) h.push({ id: `dm-${i}`, kind: "dm", channel: "", fromId: "peer" });
 
   check("the inbox is still capped when everything is directed", h.ids().length === MAX_INBOX, h.ids().length);
   check(
@@ -142,7 +142,7 @@ console.log("\n7. the in-flight ceiling refuses all-or-nothing, and a refused DM
   const held: string[] = [];
   for (let i = 0; i < 420; i++) {
     const id = `hold-${i}`;
-    h.push({ id, kind: "dm", channel: "", from: "peer" });
+    h.push({ id, kind: "dm", channel: "", fromId: "peer" });
     held.push(id);
   }
   const agent = h.agent as unknown as { holdInFlight: (ids: readonly string[]) => boolean };

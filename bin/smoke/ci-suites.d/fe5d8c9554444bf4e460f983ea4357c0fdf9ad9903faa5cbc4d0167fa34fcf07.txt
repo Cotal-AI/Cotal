@@ -1,0 +1,1 @@
+smoke:goal-follow-cancellation

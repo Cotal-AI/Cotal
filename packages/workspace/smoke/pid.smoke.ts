@@ -25,7 +25,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
+  commandIsCotalDelivery, commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
   type CommandReader,
 } from "../src/pid.js";
 // #969: the manager stop cells below grade the EPERM and outlived-SIGTERM refusals, which sit
@@ -73,6 +73,16 @@ check("...at the end of the line too (no trailing flags)", commandIsCotalSupervi
 check("...and through a dev tsx invocation", commandIsCotalSupervisor("node --import tsx bin/cotal.ts supervise --runtime pty"));
 for (const other of ["vim SPEC.md", "node server.js", "/usr/bin/supervised-thing --x", "cotal up", ""])
   check(`an unrelated command line is NOT a manager (${JSON.stringify(other)})`, !commandIsCotalSupervisor(other), other);
+// THE DELIVERY DAEMON'S OWN TOKEN (#1528), the same rule one component over: `deliver` is the
+// daemon's subcommand and is present however it was started.
+check("a deliver argv is recognised", commandIsCotalDelivery("node /usr/local/bin/cotal deliver --space main"));
+check("...at the end of the line too (no trailing flags)", commandIsCotalDelivery("node bin/cotal.ts deliver"));
+check("...and through a dev tsx invocation", commandIsCotalDelivery("node --import tsx bin/cotal.ts deliver --space main --server nats://x"));
+for (const other of ["vim SPEC.md", "node server.js", "cotal up", "cotal supervise", "/usr/bin/delivery-thing --x", "cotal deliverance", ""])
+  check(`an unrelated command line is NOT a delivery daemon (${JSON.stringify(other)})`, !commandIsCotalDelivery(other), other);
+// A `--creds …/delivery.creds` path must not read as the daemon: that string appears in the argv of
+// anything handed the cred, and a substring test would attribute a stranger to us.
+check("a path mentioning delivery is NOT the token", !commandIsCotalDelivery("node x.js --creds /root/.cotal/delivery.creds"));
 // SUBSTRING IS NOT ENOUGH, and this is the cell that says so: the token test is what keeps
 // `supervised-thing` above from reading as a manager, so a rewrite to `includes("supervise")`
 // resolves a stranger to ours and the attribution stops attributing.
@@ -114,13 +124,19 @@ try {
   // (whose argv is a smoke script) is then a genuine FOREIGN fixture, needing no mock either.
   const supervisorish = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)", "supervise"], { stdio: "ignore" });
   strays.push(supervisorish);
-  await new Promise((r) => setTimeout(r, 300)); // let it exec, so `ps` sees the final argv
+  // The delivery record has the same shape one component over (#1528): its readers attribute on the
+  // daemon's own `deliver` argv token, so a live-pid fixture for that record has to be a real
+  // process carrying it. This runner stays the FOREIGN fixture for both.
+  const deliverish = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)", "deliver"], { stdio: "ignore" });
+  strays.push(deliverish);
+  await new Promise((r) => setTimeout(r, 300)); // let them exec, so `ps` sees the final argv
   const supervisorPid = supervisorish.pid as number;
+  const deliverPid = deliverish.pid as number;
 
   writeFileSync(mgrPid, `${supervisorPid}\n`);
-  writeFileSync(delPid, `${process.pid}\n`);
+  writeFileSync(delPid, `${deliverPid}\n`);
   check("managerUp is TRUE for a live pid running a manager", managerUp() === true, supervisorPid);
-  check("deliveryUp is TRUE for a live pid", deliveryUp() === true);
+  check("deliveryUp is TRUE for a live pid running a delivery daemon", deliveryUp() === true, deliverPid);
 
   // THE RECORD THAT OUTLIVED ITS PROCESS. `.cotal/manager.pid` held 1940925 on a box whose live
   // supervisor was 3883139: the recorded process had exited, and the number is eventually reused by
@@ -141,6 +157,22 @@ try {
     check("...and managerUp is TRUE for it, unchanged from before attribution existed", managerUp() === true);
   }
   writeFileSync(mgrPid, `${supervisorPid}\n`);
+
+  // THE SAME RECORD ONE COMPONENT OVER (#1528). The reported mesh's `delivery.pid` named a pid four
+  // days dead; once that number is reused the delivery reader believed a stranger exactly as the
+  // manager reader did. Driven through the shipped reader with this runner as the stranger.
+  const { deliveryLiveness: deliveryState } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
+  writeFileSync(delPid, `${process.pid}\n`);
+  if (ARGV_READABLE) {
+    check("a live pid that is NOT a delivery daemon reads as FOREIGN, not as a healthy daemon",
+      deliveryState() === "foreign", { pid: process.pid, got: deliveryState() });
+    check("and deliveryUp is FALSE for it, so a stranger never fronts the daemon", deliveryUp() === false);
+  } else {
+    check("on win32 a live stranger stays ALIVE for delivery too, because nothing was established",
+      deliveryState() === "alive", process.pid);
+    check("...and deliveryUp is TRUE for it, unchanged from before attribution existed", deliveryUp() === true);
+  }
+  writeFileSync(delPid, `${deliverPid}\n`);
 
   writeFileSync(mgrPid, `${deadPid}\n`);
   writeFileSync(delPid, `${deadPid}\n`);
@@ -263,8 +295,11 @@ try {
   // and its renewal source both gone, and the function returned success. Ordering is the defect as
   // much as the catch: nothing may be removed before the process is proven gone.
   const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
-  writeFileSync(delPid, `${process.pid}\n`);
-  writeFileSync(`${delPid}.identity`, formatRecord({ pid: process.pid, token: defaultStartToken(process.pid) ?? "0" })); // #969: a real launch pins
+  // The RECORDED pid is the `deliver`-argv fixture, not this runner: a live pid that is provably
+  // not a delivery daemon is now never signalled at all (#1528), so this runner would be answered
+  // by attribution and the EPERM refusal under test would never be reached.
+  writeFileSync(delPid, `${deliverPid}\n`);
+  writeFileSync(`${delPid}.identity`, formatRecord({ pid: deliverPid, token: defaultStartToken(deliverPid) ?? "0" })); // #969: a real launch pins
   const delBefore = readFileSync(delPid, "utf8");
   let delRefused: string | undefined;
   try {

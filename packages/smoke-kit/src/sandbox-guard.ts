@@ -32,6 +32,7 @@ const downOptions: ParseArgsOptionsConfig = {
   space: { type: "string" },
   "dry-run": { type: "boolean" },
   "preserve-state": { type: "boolean" },
+  "with-agents": { type: "boolean" },
   "store-dir": { type: "string" },
 };
 

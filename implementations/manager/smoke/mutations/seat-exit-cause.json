@@ -1,0 +1,29 @@
+{
+  "suite": [
+    "implementations/manager/smoke/seat-exit-cause.smoke.ts"
+  ],
+  "guard": "every manager-initiated stop names its path on the reap line, and a requested stop names the authenticated principal that asked, so an operator reading manager.<space>.log alone can tell one peer's despawn from another's, from a self-stop, from a recursive reap, and from a manager shutdown",
+  "command": "pnpm smoke:seat-exit-cause",
+  "completionMarker": "checks passed",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/seat-exit-cause.json",
+  "why": [
+    "#1423: all four stop paths used to render one sentence - `this manager stopped it (despawn or",
+    "shutdown)` - with no requester, and the shutdown teardown printed no line at all, so on a shared",
+    "host where several principals hold stop authority the log could not attribute a stop after the",
+    "fact. The requested-despawn cells drive the REAL doors (opStop through despawnCore and",
+    "despawnAuthorized) rather than a hand-built freeSlot string, because the point is that the",
+    "authenticated principal the door resolved reaches the line; a string-driven cell cannot prove",
+    "the door carried it."
+  ],
+  "mutations": [
+    {
+      "name": "the rendered line drops the requesting principal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    case \"stopped-requested\": return `this manager stopped it at ${cause.requester}'s request`;",
+      "replace": "    case \"stopped-requested\": return \"this manager stopped it\";",
+      "expectRed": "a requested despawn names the AUTHENTICATED principal that asked",
+      "cell": "a requested despawn names the AUTHENTICATED principal that asked",
+      "note": "The door still carries the cause and the line still prints, so only the requester-naming cell can catch it: exactly the attribution #1423 asks the log to carry."
+    }
+  ]
+}

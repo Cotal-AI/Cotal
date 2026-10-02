@@ -1,8 +1,136 @@
 # @cotal-ai/connector-jcode
 
+## 0.58.0
+
+### Patch Changes
+
+- 7e1bc61: Wait for the observed post-join kickoff turn boundary in the provider-disconnect smoke fixture. Presence alone can precede that boundary, routing the test marker through a soft interrupt instead of the intended ordinary-turn disconnect trigger. Add a delayed-turn mutation and restored native checks. Connector behavior is unchanged.
+
+## 0.57.0
+
+### Patch Changes
+
+- e7c702a: The jcode connector now reports the provider route serving a seat's model to presence, and `cotal ps --wide`/`--json` surface it as `provider`.
+- ad809a2: Keep Jcode seats alive when session checkpoints interrupt tool observations or temporarily remove the journal. Validate the session snapshot, preserve pending journal reads, restore tool brackets from the event WAL, and publish explicit discontinuities without weakening event validation.
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+
+## 0.56.0
+
+## 0.55.0
+
+### Patch Changes
+
+- 40e7428: Give a Jcode seat launched with no spawn `--prompt` a scheduled turn after join: the post-join notice is now delivered as the seat's first driven turn instead of a no-reply append, so a persona subscribed to nothing is never parked on an unread append.
+- 67bbcc5: Report a Jcode session-journal fold as a terminal event without stopping the seat.
+- d284ee6: A manifest or spawn prompt on a connector that cannot deliver one is refused at preflight (including `up -f --dry-run`), at spawn and in the manager, the way an unsupported model variant is: connectors now declare `supportsPrompt`, and claude, opencode, codex, jcode and pi declare it; hermes keeps its launch-time throw as the second line of defence.
+
+## 0.54.0
+
+## 0.53.0
+
+## 0.52.1
+
+## 0.52.0
+
+### Patch Changes
+
+- 9269fc2: Keep a jcode seat with events enabled alive through a mesh rebuild window. Previously an event
+  flush or run close that ran while the endpoint was reconnecting read `max_payload` off a connection
+  that was not there, and the seat exited 1 with `AG-UI emitter stopped: ... max_payload is only
+known while connected`. `AguiEmitterHolder` takes an optional `waitLive` hook that a queued step
+  awaits before it measures and publishes. The jcode host waits on both the Cotal bind and the raw
+  transport, so the queued records publish in order once the connection is live, with none dropped or
+  duplicated. A seat stopped during the outage still exits, and its unpublished records stay in
+  the journal behind the stored cursor. Every other emitter failure stays terminal. Connectors that do
+  not pass the hook behave as before. Fixes #1868.
+- 40edfa9: Refuse a jcode seat whose stored `sessions/` directory exists but cannot be written before the
+  harness is asked for a session. The harness accepts `create_session` on such a directory and dies
+  only while persisting the session during the first turn, which rendered as `startup failed
+(unknown)`. The refusal carries the fixed `sessions_unwritable` startup code with the directory
+  path and the errno, and never repairs or widens the permissions itself. A missing `sessions/`
+  directory stays a first launch. Refs #1538.
+
+## 0.51.0
+
+### Minor Changes
+
+- 64d723e: Enable the AG-UI event plane by default for connectors that publish one. Operators and peer spawns
+  can opt out explicitly, while connectors without an event plane refuse unless that opt-out is set.
+- ec28dce: Add a durable AG-UI event plane for Jcode seats, backed by the native session journal and enabled through `cotal spawn --events`.
+- ec8649b: Preserve the closed required-events registration policy and enforce it across discovery, launch,
+  grant coverage, direct connector sessions, and trusted upgrades of existing manual registrations.
+
+## 0.50.1
+
+## 0.50.0
+
+### Minor Changes
+
+- cca2020: Keep the Jcode tool relay socket out of the shared temp directory, and contain self-test cleanups
+
+  The Jcode connector placed its control socket at the top level of `/tmp`. Anything that empties
+  that directory, a distribution's periodic cleaner or a self-test whose recursive cleanup escaped
+  its own root, unlinked the control path of every live seat at once. The hosts kept listening on
+  the now-nameless inodes, so every `cotal_*` call from those sessions failed with `connect ENOENT`,
+  and the only recovery was a respawn, which discards the session's context.
+
+  The socket now lives in a per-launch owner-only directory the host creates and removes with the
+  launch, so a top-level sweep does not reach it. A host whose socket path disappears anyway
+  re-binds at the same path within a poll interval and records it in the seat's private log, so a
+  deletion costs a reconnect instead of a respawn.
+
+  The escape that triggered it is closed at its own end too. A self-test's recursive cleanup may now
+  only remove the exact path its `mkdtemp` returned, and only where that path resolves strictly
+  beneath the base it was created in. A cleanup handed anything else refuses and exits 2 rather than
+  deleting, so a mutant that makes a directory helper return a parent can no longer reach another
+  process's files. That rule lives in `scripts/mutation-command-safety.mjs`, next to the existing rule
+  bounding what a mutation config may execute: both bound what a config taken from disk can reach.
+
+### Patch Changes
+
+- 7875182: A Jcode seat whose soft interrupts time out now keeps consuming its queue, and stops reporting itself healthy while it is not.
+
+  Peer messages that arrive while a Jcode session is busy are handed to it mid-turn. When that handoff got no reply, nothing else ever looked at the queue: it was served only by a new message arriving or the session going idle, and on a busy seat neither has to happen. Messages piled up behind a seat that was working normally and answering direct questions, and the seat was indistinguishable from a wedged one. Measured on a live seat: 27 messages held for 13.8 hours.
+
+  A seat now serves its own queue on a schedule rather than waiting for an event. If the mid-turn handoff stops answering, the queued messages are delivered as an ordinary turn instead, which needs no reply from it, so they arrive late rather than never. Nothing is dropped and nothing is delivered twice.
+
+  `cotal_connection_status` also stops calling such a seat `ready`. A bound session with a live transport whose queued messages have made no progress for ten minutes now reports `stalled`, alongside how long the queue has gone without committing anything, and `cotal_reconnect` says plainly when rebuilding the connection did not deliver them, instead of answering with a bare success over an untouched queue.
+
+## 0.49.0
+
+### Minor Changes
+
+- 36d1779: Issued authority and run admission (SPEC 13.15, 14.8). A static credential is now an issuance: the issuer records its permission ceiling as evidence under a fresh generation before the material exists, its endpoint rows ride the versioned `ep.v1` rail with that generation pinned beside the caller triple, and a connected client reads its generation from an issuer-written accepted row. A hosted workflow run is admitted under the starting caller's resolved ceiling, recorded once per run in a dedicated admission store the driver cannot write, checked before every channel effect (wait open, fetch, recorded re-read, conclave writes), and revoked by an independent create-only marker that ends open waits at their next poll and refuses resume, takeover and reconcile. `run-start` on the legacy rail is refused with `permission-denied` and the `ai.cotal.ep.unbound-caller-authority` detail. `cotal run start --local` takes `--admit-read` and `--admit-publish` (required) and `cotal run revoke <runId> --local --by <who> --reason <text>` writes the marker. Three new per-space stores (`cotal_issued_`, `cotal_accepted_`, `cotal_admission_`), immutable at the broker: the admission and accepted stores are write-once per key, the evidence store is append-only and read first-on-key, and all three refuse rollup headers, message deletes and purges, so a holder of its own key row can neither widen nor erase what was recorded. Two new one-shot profiles (`issuer`, `run-admitter`), an admission read on the run mediator and operator profiles, and `COTAL_ACCEPTED_TOKEN` on every connector's spawn environment. Breaking pre-1.0 authority change.
+
+### Patch Changes
+
+- 4826da2: Start a Jcode seat whose private home has an empty `sessions/` directory instead of dying as
+  `startup failed (unknown)`. The connector skips the panicking list call when that directory is
+  empty, redials after any listing death, and names the panic text and sessions path when recovery
+  cannot create a session.
+- cd74517: Prove Jcode pre-join readiness on the orientation `tool_done` event as it arrives. A seat that
+  already called `cotal_orientation` now joins even when that proof turn stays open. The timeout
+  outcome names whether the call was observed, and teardown no longer kills a functional session
+  just because `turn_done` is still outstanding.
+- 61d08ab: Verify the active Jcode model and provider route before applying `--variant`. A route that accepts
+  reasoning effort still receives the requested tier before its first turn. A route without that
+  capability now fails with an explicit unsupported-capability diagnostic instead of a tier refusal.
+
 ## 0.48.2
 
 ### Patch Changes
+
+- Prove pre-join readiness on the orientation `tool_done` event as it arrives, without waiting for
+  `turn_done`. A seat that already called `cotal_orientation` and then kept working used to be
+  killed at the bound because the Harness `run()` promise only resolves when the turn ends. The
+  timeout line now names whether that call was observed. Teardown still destroys a seat that never
+  called the tool; it no longer destroys a functional session solely because the proof turn is
+  still open.
 
 - 102da9b: Keep a Jcode seat alive when the model is busy at post-join, and retain its startup prompt until the Harness request is invoked.
 

@@ -39,6 +39,7 @@ export function printEndpoints(roster: Presence[], space: string): void {
   const kindWidth = Math.max(...rows.map((row) => row.kind.length));
   for (const row of rows) {
     const activity = row.presence.activity ? `  ${c.dim(row.presence.activity)}` : "";
-    console.log(`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${activity}`);
+    const condition = row.presence.condition ? ` (${row.presence.condition.code})` : "";
+    console.log(`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${condition}${activity}`);
   }
 }

@@ -1,0 +1,3 @@
+# `doctor auth` must classify a superseded incarnation's cred file as superseded, not EXPIRED with a
+# remedy that destroys the live session of the same alias (#1576).
+smoke:doctor-superseded

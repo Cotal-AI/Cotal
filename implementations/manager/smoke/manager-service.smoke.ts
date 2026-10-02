@@ -235,7 +235,7 @@ try {
 
   console.log("5. stop() tears the serve loop down");
   await inspNc.drain().catch(() => inspNc.close());
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
   let downRefusal: string | undefined;
   try {
     await epCall(callerNc, space, { mode: "one" },
@@ -253,7 +253,7 @@ try {
   // family to be verify-evicted before the epoch advances. This smoke runs NO delivery daemon, so the
   // scoped endpoint-evictor cannot reach the liveness oracle. The registration MUST fail-closed
   // LOUDLY, naming the cure (start the delivery daemon) — never silently skip eviction (no-fallbacks).
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
   const mgr2 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
   const M2 = mgr2 as unknown as { managerInstanceId?: string; serviceServe?: unknown };
   let reupErr: string | undefined;
@@ -264,7 +264,7 @@ try {
   check("the refused takeover registered NO serve surface (fail-closed, gate frozen for reconciliation)",
     M2.serviceServe === undefined);
   check("the restart preserved the SAME persisted logical instanceId (not a fresh mint)", M2.managerInstanceId === iid);
-  await mgr2.stop().catch(() => {});
+  await mgr2.stop({ withAgents: true }).catch(() => {});
   await callerNc.drain().catch(() => callerNc.close());
 } finally {
   srv.kill("SIGKILL");

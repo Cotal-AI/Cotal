@@ -872,7 +872,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       .catch((e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }));
   }, 150);
   try {
-    membershipWatch = await ep.watchMembership(pushMembership);
+    membershipWatch = await ep.watchMembership(pushMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
   } catch (e) {
     console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
   }
@@ -912,9 +912,18 @@ export async function web(args: ParsedArgs): Promise<void> {
     // person to add a route above it inherits no protection and nothing says so.
     const verdict = gate.check(req, query);
     if (verdict !== undefined && "refuse" in verdict) {
+      // #2024: a refused request that announced a body is closed rather than drained; the fact is
+      // read here, after the gate, so the pre-gate prefix stays a parse and nothing else.
+      const announcedBody = Number(req.headers["content-length"]) > 0 || req.headers["transfer-encoding"] !== undefined;
       // A NAMED refusal, never a redirect and never an empty 200. The condition is the body, so a
       // caller that reads only the body still learns which of the three failed.
-      res.writeHead(verdict.refuse === CROSS_ORIGIN ? 403 : 401, { "content-type": "application/json" });
+      res.writeHead(verdict.refuse === CROSS_ORIGIN ? 403 : 401, {
+        "content-type": "application/json",
+        // A refusal that leaves a caller uploading on a kept-alive connection is drained by Node
+        // before the socket comes back, so the pre-auth corner #2024 names is an unbounded read.
+        // The close header is the whole remedy; see the catch below for what it does and costs.
+        ...(announcedBody ? { connection: "close" } : {}),
+      });
       return void res.end(JSON.stringify({ error: verdict.refuse }));
     }
     if (verdict !== undefined && "exchange" in verdict) {
@@ -926,6 +935,14 @@ export async function web(args: ParsedArgs): Promise<void> {
       });
       return void res.end();
     }
+
+    // The delete endpoint is the sole route that reads a request body. Refuse an announced body
+    // before dispatch everywhere else, so the next no-body route inherits the same bound instead
+    // of silently letting Node drain an upload the handler will never inspect.
+    const declared = Number(req.headers["content-length"]);
+    const announcedBody = declared > 0 || req.headers["transfer-encoding"] !== undefined;
+    const noBodyRoute = path !== "/api/channel/delete" || req.method !== "POST";
+    if (noBodyRoute && announcedBody) throw noBody(path, declared);
 
     if (path === "/feed") {
       res.writeHead(200, {
@@ -1499,6 +1516,13 @@ async function readBody(req: IncomingMessage): Promise<{ channel?: string }> {
 function tooLarge(bytes: number, how: "declared" | "read"): PayloadTooLarge {
   return new PayloadTooLarge(
     `request body ${how === "declared" ? "declares" : "exceeds"} ${bytes} bytes, over the ${MAX_BODY_BYTES} byte limit for this route`,
+  );
+}
+
+function noBody(path: string, declared: number): PayloadTooLarge {
+  const announced = declared > 0 ? `${declared} bytes` : "transfer-encoding";
+  return new PayloadTooLarge(
+    `request body announces ${announced}, over the 0 byte limit because ${path} takes no request body`,
   );
 }
 

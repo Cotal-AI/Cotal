@@ -26,6 +26,7 @@ import {
   primitiveDoc,
 } from "./primitives.js";
 import { KEY_RESERVED_RE } from "./keys.js";
+import { isDuration, parseDuration } from "./duration.js";
 import { ADMITTED_NODES, FORBIDDEN_NODES, STRUCTURAL_NODES } from "./syntax.js";
 import { MUTATING_METHODS } from "./library.js";
 
@@ -630,6 +631,83 @@ function checkEscalateTo(bag: AnyNode | undefined, v: Validator): void {
   );
 }
 
+/**
+ * `waitUntil`'s three static refusals, each judged where the source SHOWS it.
+ *
+ * All three are worth catching before the run starts rather than an hour into a wait, which is the
+ * whole argument for checking them here: a wait is the one effect whose mistakes are expensive to
+ * discover late. Each is re-checked at the call for the computed case the source cannot show, the
+ * same division `fanOut`'s key rule uses.
+ */
+function checkWaitUntil(args: AnyNode[], given: Map<string, AnyNode>, v: Validator): void {
+  const probe = args[0];
+  // A FUNCTION LITERAL is the case the source can judge. An identifier may hold one, and a call
+  // may return one, so those are left for the call-time check rather than guessed at here.
+  if (
+    probe !== undefined &&
+    probe.type !== "ArrowFunctionExpression" &&
+    probe.type !== "FunctionExpression" &&
+    probe.type !== "Identifier" &&
+    probe.type !== "MemberExpression" &&
+    probe.type !== "CallExpression"
+  ) {
+    v.fail(
+      "L3045",
+      probe,
+      "`waitUntil` takes a probe: a function the runtime calls on its own cadence to observe something outside the run. This is a value, so it would be observed once and never again.",
+      'Pass a function: waitUntil(() => checks(sha), { name: "checks", every: "1m", deadline: "1h" })',
+      "waitUntil",
+    );
+  }
+
+  const every = given.get("every");
+  const deadline = given.get("deadline");
+  const missing = [every === undefined ? "every" : null, deadline === undefined ? "deadline" : null].filter(
+    (x): x is string => x !== null,
+  );
+  if (missing.length > 0 && args.length > 0) {
+    v.fail(
+      "L3046",
+      args[1] ?? (args[0] as AnyNode),
+      `This \`waitUntil\` does not say ${missing.map((m) => `\`${m}\``).join(" or ")}. Neither has a default: a default cadence would guess how expensive someone else's resource is to poll, and a default deadline is a run that waits forever.`,
+      'Give both: { name: "checks", every: "1m", deadline: "1h" }',
+      "waitUntil",
+    );
+  }
+
+  // A cadence longer than the deadline observes once and then fails, which is never what anyone
+  // means. Judged only on two literals, because that is when the source actually shows it.
+  const literal = (p: AnyNode | undefined): string | undefined => {
+    const value = p?.value as AnyNode | undefined;
+    return value?.type === "Literal" && typeof value.value === "string" ? value.value : undefined;
+  };
+  const e = literal(every);
+  const d = literal(deadline);
+  // A ZERO CADENCE IS NOT A CADENCE. `parseDuration("0ms")` is a perfectly good 0, so a bare
+  // `every > deadline` test lets it through, and what it describes is a wait that observes with no
+  // pause between looks: a busy loop against somebody else's resource, appending an observation to
+  // a durable journal on every turn of it. The whole reason `every` has no default is that the
+  // runtime must not guess how expensive a resource is to poll, and accepting zero is that same
+  // guess made by omission.
+  if (e !== undefined && isDuration(e) && parseDuration(e) <= 0) {
+    v.fail(
+      "L3047",
+      every as AnyNode,
+      `This observes every ${e}, which is no pause at all: the wait would poll the resource as fast as the run can turn and journal an observation each time.`,
+      "Give `every` a real interval, the slowest one that still notices in time.",
+      "waitUntil",
+    );
+  } else if (e !== undefined && d !== undefined && isDuration(e) && isDuration(d) && parseDuration(e) > parseDuration(d)) {
+    v.fail(
+      "L3047",
+      every as AnyNode,
+      `This observes every ${e} but gives up after ${d}, so it would make one observation and then fail without ever looking again.`,
+      `Shorten \`every\` below \`deadline\`, or use \`sleep("${d}")\` and a single check if one look is what you meant.`,
+      "waitUntil",
+    );
+  }
+}
+
 function checkNotifyFact(fact: AnyNode | undefined, v: Validator): void {
   if (fact === undefined || fact.type !== "ObjectExpression") return; // computed: checked at run time
 
@@ -961,6 +1039,7 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
 
   if (name === "notify") checkNotifyFact(args[1], v);
   if (name === "checkpoint") checkEscalateTo(bag, v);
+  if (name === "waitUntil") checkWaitUntil(args, given, v);
 
   // fanOut needs a stable branch key, or items that carry one. Warn only when the source SHOWS
   // there are no ids: items carrying a string `id` supply the key by design, so warning on those

@@ -77,7 +77,10 @@ let seatNc: Awaited<ReturnType<typeof connect>> | undefined;
 
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  delivery = await bootDeliveryDaemon({ space, servers: broker.servers, auth });
+  delivery = await bootDeliveryDaemon({
+    space, servers: broker.servers, auth,
+    reloadStoreIdentity: { kind: "fs", root: resolve(workspaceRoot) },
+  });
   // The timer writer the delivery daemon hosts on a live mesh, under the delivery credential: the
   // deadline cell below waits on a pause armed through it, never through a suite pump.
   writerNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }), maxReconnectAttempts: 0 });
@@ -119,7 +122,7 @@ try {
 
   console.log("1. the run instrument spawns a seat on the auth mesh, and it joins presence under its minted credential");
   const spawnGoal = "spawn-seat".padEnd(43, "s");
-  const spawned = await call("spawn", { name: "seat", agent: "turn-stub", cwd: repoRoot }, { id: spawnGoal }).then((r) => r.reply, asValue);
+  const spawned = await call("spawn", { name: "seat", agent: "turn-stub", cwd: repoRoot, events: false }, { id: spawnGoal }).then((r) => r.reply, asValue);
   const readiness = await resultOf(spawnGoal, 60_000);
   check("the seat started (its spawn goal succeeded on a real presence join)",
     (spawned as { ok?: boolean }).ok === true && readiness?.state === "succeeded", { spawned, readiness });
@@ -187,7 +190,7 @@ try {
 } finally {
   await seatNc?.drain().catch(() => seatNc?.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
-  await manager?.stop().catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await writer?.stop().catch(() => {});
   await writerNc?.drain().catch(() => writerNc?.close());
   await delivery?.stop().catch(() => {});

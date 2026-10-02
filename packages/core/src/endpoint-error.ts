@@ -73,17 +73,31 @@ export function respondedButUnbound(e: unknown): boolean {
  */
 export const EP_UNANSWERED = "ai.cotal.ep.unanswered";
 
-/** The {@link EP_UNANSWERED} payload: the call that drew no reply. */
+/** The {@link EP_UNANSWERED} payload: the call that drew no reply, and the `ep` plane it rode. */
 export interface EpUnansweredDetail extends EpErrorDetail {
   kind: typeof EP_UNANSWERED;
   endpoint: string;
   command: string;
+  /** The plane the request was published on: the legacy plane or the versioned plane (issued, SPEC 13.15). */
+  rail?: string;
 }
 
 /** True iff `e` carries the {@link EP_UNANSWERED} marker: no valid reply reached the caller (no
  *  responder, or the deadline elapsed with nothing attributed to the request). */
 export function unansweredRequest(e: unknown): boolean {
   return e instanceof EpEnvelopeError && (e.details ?? []).some((d) => d.kind === EP_UNANSWERED);
+}
+
+/** The `ep` plane an unanswered request rode, off the {@link EP_UNANSWERED} marker: `ep` for a
+ *  legacy caller, the versioned plane for an issued one (SPEC 13.15). SPEC 13.15 makes the two rails disjoint
+ *  subject spaces at the broker, and an endpoint is required to serve both, so silence on one rail
+ *  says nothing about the other: a responder built before the versioned rail subscribes `ep` only
+ *  and is invisible to an issued caller. A surface that turns silence into a reachability verdict
+ *  scopes the verdict to this rail. `undefined` where the producer recorded no rail. */
+export function unansweredRail(e: unknown): string | undefined {
+  if (!(e instanceof EpEnvelopeError)) return undefined;
+  const d = (e.details ?? []).find((x) => x.kind === EP_UNANSWERED) as EpUnansweredDetail | undefined;
+  return typeof d?.rail === "string" ? d.rail : undefined;
 }
 
 /**

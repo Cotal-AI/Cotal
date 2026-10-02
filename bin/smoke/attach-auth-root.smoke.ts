@@ -255,7 +255,11 @@ try {
 
   // ---- 3. a REAL authed broker that trusts ONLY the live chain -----------------------------------
   const storeDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}authroot-js-`));
-  const conf = join(base, "server.conf");
+  // The conf lives in the TOKENED store dir, not under `base`. The reaper reads argv and nothing
+  // else, and argv here is `-c <conf>`: a tokened store dir named only INSIDE the conf file is
+  // invisible to it, so this broker was unclaimable despite minting a token correctly. `base` is a
+  // discovered cotal root rather than scratch, so it cannot carry the token itself.
+  const conf = join(storeDir, "server.conf");
   writeFileSync(conf, serverConfig(live, [live], { transport: { kind: "plaintext" }, port: PORT, storeDir, host: "127.0.0.1" }));
   const broker = spawnProc("nats-server", ["-c", conf], { stdio: "ignore" });
   kids.push(broker);
@@ -332,7 +336,7 @@ try {
   process.chdir(rootLive);
   try {
     await cmd("spawn").run(
-      parseCommandArgs(cmd("spawn"), ["seat", "--detach", "--agent", "e2e", "--space", SPACE, "--name", SEAT]),
+      parseCommandArgs(cmd("spawn"), ["seat", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", SEAT]),
     );
   } finally {
     process.chdir(prevCwd);
@@ -407,10 +411,33 @@ try {
     rawOpen.status !== 0 && /requires auth, but no credentials were supplied/.test(rawOpen.out),
     rawOpen,
   );
+  // The refusal itself, measured where it is decided rather than through the binary: issue #752's
+  // control input. `controlCaller` answers before any network or parse, so a string that is not a
+  // credential at all lands in the same branch a freshly minted file does. That is the proof the
+  // sentence cannot be evidence about the file's age, and these cells hold the sentence to saying
+  // what the invocation is missing and which routes supply it.
+  const { controlCaller } = await import("@cotal-ai/workspace");
+  const bareRefusal = controlCaller({ creds: "definitely-not-a-credential" });
+  ok(
+    "a bare --creds auth with no endpoint-caller triple is refused naming the missing triple and the routes that mint one",
+    "refusal" in bareRefusal && /endpoint-caller triple/.test(bareRefusal.refusal) &&
+      /raw --creds .*cannot mint one|--creds .* cannot mint one/.test(bareRefusal.refusal) &&
+      /project folder/.test(bareRefusal.refusal) && /--space/.test(bareRefusal.refusal) &&
+      !/predates|re-mint/.test(bareRefusal.refusal),
+    bareRefusal,
+  );
+  const withCaller = controlCaller({ creds: "x", epCaller: { owner: "o", actor: "a", uid: "u" } });
+  ok(
+    "…and a --creds auth that already carries an endpoint-caller triple passes it through unchanged",
+    "caller" in withCaller && withCaller.caller.owner === "o" && withCaller.caller.actor === "a" && withCaller.caller.uid === "u",
+    withCaller,
+  );
   const rawCreds = runCli(["attach", "--name", SEAT, "--creds", credFile, "--server", SERVER, "--space", SPACE]);
   ok(
     "a raw --creds attach is refused at the control surface",
-    rawCreds.status !== 0 && /control surface/.test(rawCreds.out),
+    rawCreds.status !== 0 && /endpoint-caller triple/.test(rawCreds.out) &&
+      /raw --creds .*cannot mint one|--creds .* cannot mint one/.test(rawCreds.out) &&
+      /project folder/.test(rawCreds.out) && !/predates|re-mint/.test(rawCreds.out),
     rawCreds,
   );
   ok(
@@ -437,7 +464,7 @@ try {
   // manager stop that hangs must not be able to keep that from happening. Measured once: a leaked
   // `nats-server` from this rig outlived its run by half an hour, and the reaper attributes a leak
   // like that to whichever suite was running.
-  await Promise.race([mgr?.stop().catch(() => {}) ?? Promise.resolve(), sleep(10_000)]);
+  await Promise.race([mgr?.stop({ withAgents: true }).catch(() => {}) ?? Promise.resolve(), sleep(10_000)]);
   console.log("attach-auth-root: manager-stop-returned");
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
   releaseBroker?.();

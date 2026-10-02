@@ -25,7 +25,7 @@ await import("../src/index.js"); // register the base local-process lifecycle de
 const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
 const { down, pidfileState } = await import("../src/commands/down.js");
 const { isReachable } = await import("@cotal-ai/core");
-const { findCotalRoot, getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent, spaceMaterialDir, spaceSegment, defaultStartToken } = await import("@cotal-ai/workspace");
+const { findCotalRoot, getCurrent, loadMeshes, recordMesh, removeMesh, setCurrent, spaceMaterialDir, spaceSegment, renewalRecordPath, defaultStartToken } = await import("@cotal-ai/workspace");
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -34,7 +34,10 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-/** Every identity-derived file `clean all` must sweep (mirrors removeLocalState's list). */
+/** Every identity-derived file `clean all` must sweep (mirrors removeLocalState's list). The
+ *  per-space renewal record is NOT here: it lives at `renewal.<spaceKey>.json` beside the pidfiles,
+ *  and the cells below stage and assert it through the workspace seam (#1850). The root-scoped
+ *  `renewal.json` stays: it is the pre-per-space spelling `clean all` still sweeps. */
 const DERIVED = [
   "delivery.creds",
   "manager.delivery-aware",
@@ -128,9 +131,12 @@ try {
   // --- `all` removes store + identity + derived creds + crash residue ------------------------
   const allRoot = meshRoot();
   writeFileSync(join(allRoot, ".cotal", "nats.pid"), "999999"); // stale pidfile from a crash
+  // `demo` is the space meshRoot's auth.json names; the record is per-space (#1850).
+  writeFileSync(renewalRecordPath(allRoot, "demo"), "x");
   const removedAll = await removeLocalState(allRoot, { includeAuth: true });
   check("all: removes store + auth", !existsSync(join(allRoot, ".cotal", "nats")) && !existsSync(join(allRoot, ".cotal", "auth")));
   for (const f of DERIVED) check(`all: removes derived ${f}`, !existsSync(join(allRoot, ".cotal", f)));
+  check("all: removes this space's per-space renewal record (#1850)", !existsSync(renewalRecordPath(allRoot, "demo")), renewalRecordPath(allRoot, "demo"));
   // The per-agent kinds go through the SEAM (reported as store keys), never the raw auth rm —
   // the same migrated-kind discipline as delivery.creds; the health file falls to the raw rm.
   for (const k of ["auth/creds/worker.creds", "auth/creds/worker.actor-token", "auth/creds/worker.sentinel.creds"])

@@ -1,0 +1,4 @@
+# In-process ambient-environment census. Sibling of suite-ambient-env: that grades the environment
+# a suite hands a CHILD, this grades a suite that reads its OWN process.env through configFromEnv
+# and friends without scrubbing the COTAL_ prefix first. Issue #833.
+smoke:suite-ambient-env-self

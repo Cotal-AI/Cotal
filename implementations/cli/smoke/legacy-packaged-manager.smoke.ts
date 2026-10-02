@@ -1,11 +1,15 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 
 const originalHome = process.env.HOME ?? homedir();
 const originalXdg = process.env.XDG_CONFIG_HOME ?? join(originalHome, ".config");
@@ -144,6 +148,28 @@ try {
       filter: (src) => !src.split(sep).includes("node_modules"),
     });
     cpSync(join(repo, "tsconfig.base.json"), join(cloneRoot, "tsconfig.base.json"));
+    // The clone is packed against a `node_modules` of hand-made symlinks rather than an install, so
+    // any `workspace:` entry left in its manifest is unresolvable and `pnpm pack` refuses the whole
+    // tree with ERR_PNPM_CANNOT_RESOLVE_WORKSPACE_PROTOCOL. Neither step the clone runs reads
+    // devDependencies: prepack is `tsc -p tsconfig.json`, whose `include` is `src` alone, and the
+    // published manifest drops them anyway. Removing them is what makes this survive whichever
+    // devDependency is added next, which the symlink list above does not: #1666 added
+    // `@cotal-ai/smoke-kit` for the seat smokes and took shard 3/4 down on a tree where nothing
+    // that ships had changed.
+    const cloneManifestPath = join(clone, "package.json");
+    const cloneManifest = JSON.parse(readFileSync(cloneManifestPath, "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    delete cloneManifest.devDependencies;
+    writeFileSync(cloneManifestPath, `${JSON.stringify(cloneManifest, null, 2)}\n`);
+    const unresolvable = Object.entries(cloneManifest.dependencies ?? {})
+      .filter(([, spec]) => spec.startsWith("workspace:"));
+    assert.equal(
+      unresolvable.length,
+      0,
+      `clone manifest keeps ${unresolvable.length} workspace: dependency the hand-built node_modules cannot resolve: ${unresolvable.map(([name]) => name).join(", ")}`,
+    );
     const cloneModules = join(clone, "node_modules");
     mkdirSync(join(cloneModules, "@lydell"), { recursive: true });
     mkdirSync(join(cloneModules, "@types"), { recursive: true });
@@ -213,7 +239,13 @@ try {
   // correct and stays silent. Membership is keyed on the workspace set rather than on an
   // `@cotal-ai/` name prefix, because the entry point `cotal-ai` carries no scope and a prefix test
   // would exempt the one package the closure is rooted at.
-  const packedTarballs = new Set(tarballs.map((path) => basename(path)));
+  // Provenance is keyed on the exact tarball: `resolved` is `file:` plus a path relative to the
+  // install prefix, so it is resolved against `current` and compared to the absolute paths this
+  // run packed. A same-named tarball elsewhere on disk must NOT satisfy the check, or the property
+  // proved degrades to "a file of this name resolved locally" (#1319).
+  const packedTarballs = new Set(tarballs);
+  const provenanceOf = (resolved: string | undefined): string | undefined =>
+    resolved?.startsWith("file:") ? resolve(current, resolved.slice("file:".length)) : undefined;
   const lock = JSON.parse(readFileSync(join(current, "node_modules", ".package-lock.json"), "utf8")) as { packages?: Record<string, { resolved?: string }> };
   let checked = 0;
   for (const [path, entry] of Object.entries(lock.packages ?? {})) {
@@ -221,12 +253,20 @@ try {
     if (!workspacePackages.has(name)) continue;
     checked += 1;
     // A missing `resolved` fails. An unrecorded source is an unanswered question, not a clean bill.
-    assert.ok(entry.resolved?.startsWith("file:") && packedTarballs.has(basename(entry.resolved)),
-      `${name} resolved from ${entry.resolved ?? "an unrecorded source"} rather than from a tarball packed by this run: it came from the registry, so the packed closure is incomplete`);
+    assert.ok(entry.resolved !== undefined && packedTarballs.has(provenanceOf(entry.resolved) ?? ""),
+      entry.resolved?.startsWith("file:")
+        ? `${name} resolved from the local file ${provenanceOf(entry.resolved)} rather than from a tarball this run packed under ${packs}: provenance is not the packed closure`
+        : `${name} resolved from ${entry.resolved ?? "an unrecorded source"} rather than from a tarball packed by this run: it came from the registry, so the packed closure is incomplete`);
   }
   // Without this the guard goes vacuous the day npm moves the hidden lockfile or reshapes its keys:
   // nothing would match, zero packages would be checked, and the loop above would pass in silence.
   assert.equal(checked, needed.size, `provenance checked ${checked} workspace package(s) but the closure has ${needed.size} -- the lockfile is not being read as expected`);
+  // `update` deliberately skips boot-time connector reconciliation. Give the isolated packaged
+  // install the same seeded connector manifest an existing installation has before asking it to
+  // classify running seats; otherwise every connector is unknown and defaults to drain-only.
+  const currentBin = join(current, "node_modules", "cotal-ai", "dist", "cotal.js");
+  const seed = run(process.execPath, [currentBin, "ext", "seed"], root);
+  assert.equal(seed.status, 0, `seeded packaged connectors: ${seed.stdout}\n${seed.stderr}`);
   writeFileSync(join(old, "package.json"), JSON.stringify({ name: "old-fixture", private: true }));
   assert.equal(run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", "cotal-ai@0.42.0"], old).status, 0, "installed published old package");
   const oldRuntime = readFileSync(join(old, "node_modules", "@cotal-ai", "core", "dist", "runtime.js"), "utf8");
@@ -243,14 +283,22 @@ const manager = new Manager({ space: "legacy783", servers: ${JSON.stringify(`nat
 await manager.start();
 const handle = manager.runtime.spawn("counter", { command: process.execPath, args: ["-e", "let n=0;setInterval(()=>process.stdout.write(String(++n)+'\\\\n'),50)"], env: { PATH: process.env.PATH } }, ${JSON.stringify(root)});
 for (const [name, agent] of [["pi_seat", "pi"], ["claude_seat", "claude"], ["open_seat", "opencode"], ["jcode_seat", "jcode"]]) manager.agents.set(name, { name, agent, id: name, lifecycleUid: "aaaaaaaaaaaaaaaaaaaaaaaaaa", spawner: "fixture", startedAt: Date.now(), handle, launch: { cwd: ${JSON.stringify(root)} } });
-await import("node:fs").then(({ writeFileSync }) => writeFileSync(process.env.READY, JSON.stringify({ managerPid: process.pid, childPid: handle.pid })));
+await import("node:fs").then(({ writeFileSync, renameSync }) => { const p = process.env.READY; writeFileSync(p + ".part", JSON.stringify({ managerPid: process.pid, childPid: handle.pid })); renameSync(p + ".part", p); });
 setInterval(() => {}, 1000);
 `);
   legacy = spawn(process.execPath, [host], { env: { ...cleanEnv, READY: ready }, stdio: ["ignore", "ignore", "pipe"] });
-  assert.ok(await until(() => existsSync(ready)), "published old manager started its counter seats");
-  const ids = JSON.parse(readFileSync(ready, "utf8")) as { managerPid: number; childPid: number };
+  // WAIT FOR CONTENT, NOT FOR A NAME. `existsSync` goes true the instant the file is CREATED, which
+  // is before its bytes are written: this read observed a zero-length file on CI and died on
+  // `JSON.parse("")` with a bare SyntaxError, no cell, no diagnosis. The writer above now stages to
+  // `.part` and renames, which is atomic within a directory, and the wait reads rather than stats,
+  // so the handshake cannot be satisfied by a file that has no answer in it yet.
+  let ids: { managerPid: number; childPid: number } | undefined;
+  const idsRead = await until(() => {
+    try { ids = JSON.parse(readFileSync(ready, "utf8")) as { managerPid: number; childPid: number }; return true; }
+    catch { return false; }
+  });
+  assert.ok(idsRead && ids !== undefined, "published old manager started its counter seats");
   assert.ok(alive(ids.managerPid) && alive(ids.childPid), "old manager and counter child are live before update");
-  const currentBin = join(current, "node_modules", "cotal-ai", "dist", "cotal.js");
   const update = spawnSync(process.execPath, [currentBin, "update", "--space", "legacy783", "--server", `nats://127.0.0.1:${port}`], { cwd: root, env: cleanEnv, encoding: "utf8", timeout: 180_000 });
   const output = `${update.stdout ?? ""}${update.stderr ?? ""}`;
   assert.notEqual(update.status, 0, output);
@@ -270,3 +318,4 @@ setInterval(() => {}, 1000);
   assert.deepEqual(existsSync(operatorStamp) ? readFileSync(operatorStamp) : undefined, stampBefore, "fixture did not change the operator seed stamp");
   rmSync(base, { recursive: true, force: true });
 }
+emitSentinel({ passed: cells(), failed: 0 });

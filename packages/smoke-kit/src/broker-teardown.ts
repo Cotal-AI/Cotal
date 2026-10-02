@@ -46,7 +46,8 @@
  * fixes; the token covers the case it cannot. Neither covers both.
  */
 import type { ChildProcess } from "node:child_process";
-import { rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, rmSync } from "node:fs";
 
 /** The stable half of the token: what marks a store dir as a smoke broker's at all. */
 export const SMOKE_BROKER_PREFIX = "cotal-smoke-broker-";
@@ -67,7 +68,29 @@ export const SMOKE_BROKER_PREFIX = "cotal-smoke-broker-";
  * append their own tag after it still match, since the owner is parsed from the pid segment rather
  * than from the whole name.
  */
-export const SMOKE_BROKER_TOKEN = `${SMOKE_BROKER_PREFIX}${process.pid}-`;
+export const SMOKE_BROKER_TOKEN = `${SMOKE_BROKER_PREFIX}${process.pid}-${scopeToken()}`;
+
+/** Recover the runner's scope through children that clear their inherited environment. */
+function scopeToken(): string {
+  let scope = process.env.SMOKE_BROKER_SCOPE?.trim();
+  let pid = process.ppid;
+  for (let hop = 0; !scope && pid > 1 && hop < 16; hop++) {
+    try {
+      scope = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0")
+        .find((entry) => entry.startsWith("SMOKE_BROKER_SCOPE="))
+        ?.slice("SMOKE_BROKER_SCOPE=".length).trim();
+    } catch { /* An ancestor may still carry the scope when this parent is unreadable. */ }
+    if (scope) break;
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const parent = Number(stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[1]);
+      if (!Number.isInteger(parent)) break;
+      pid = parent;
+    } catch { break; }
+  }
+  // Standalone suites retain the unscoped token. The digest keeps paths bounded and contains no name.
+  return scope ? `s${createHash("sha256").update(scope).digest().subarray(0, 16).toString("base64url")}-` : "";
+}
 
 /**
  * Kill a broker and DO NOT RETURN until it is actually gone, so the caller's `rmSync` cannot race a
@@ -142,8 +165,24 @@ function removeOwnedPaths(entries: readonly Owned[]): void {
 }
 
 const stillAlive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; }
+  try { process.kill(pid, 0); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+  // IT ANSWERED, WHICH IS NOT THE SAME AS RUNNING. A child this process spawned and then killed
+  // becomes a ZOMBIE until it is waited on, and a zombie still accepts signal 0, so `kill(pid, 0)`
+  // reports it alive forever. That is not a corner case here: the suite's own `finally` SIGKILLs the
+  // broker first and this helper runs afterwards on the exit hook, so the common green path hits it
+  // every time. Measured directly: after `child.kill("SIGKILL")`, `/proc/<pid>/stat` reads `Z` while
+  // `kill(pid, 0)` keeps succeeding, so the loop below burned its full 3s deadline and then printed
+  // `pid N did not exit before path cleanup` about a process that had already died. A false alarm on
+  // a teardown path is worse than silence, because it is the line someone reads while diagnosing a
+  // real leak. A zombie holds no port and no file, which is all this wait exists to protect against.
+  // ON A PLATFORM WITHOUT PROCFS this reads as gone rather than alive, and that direction is
+  // deliberate: the only cost is skipping a wait that exists to avoid an rmSync race, while the
+  // other direction would hang every teardown for the full deadline on macOS. The wait is a
+  // best-effort guard, not a correctness requirement, so losing it off Linux is acceptable and
+  // silently hanging there is not.
+  try { return !/^Z/.test(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").pop()?.split(" ")[0] ?? ""); }
+  catch { return false; } // no procfs entry: it is gone
 };
 
 /** Synchronously stop an exact child by OS pid. Exit/signal hooks cannot await promises reliably:
@@ -204,13 +243,19 @@ function arm(): void {
 
 /**
  * Take ownership of an already-spawned broker. Returns a `release` for the suite's own `finally`:
- * once the suite has torn the broker down itself, release stops this helper from touching it again.
+ * it kills the broker if the suite has not already torn it down itself, and forgets the entry. The
+ * store directory remains the suite's to remove, because a restart-shaped suite starts its next
+ * broker on the same directory and this helper must not remove a tree the next broker still needs.
+ * A second `SIGKILL` on an already-exited child is a no-op, so a site that kills and then releases
+ * is unchanged.
  */
 export function teardownOnSignal(child: ChildProcess, storeDir?: string): () => void {
   arm();
   const entry: Owned = { child, ...(storeDir === undefined ? {} : { storeDir }) };
   owned.add(entry);
-  return () => owned.delete(entry);
+  return () => {
+    if (owned.delete(entry)) killOwnedChild(child);
+  };
 }
 
 /** Own one exact temporary path before it receives credential or broker bytes. Unlike
@@ -222,4 +267,41 @@ export function teardownPathOnSignal(path: string): () => void {
   const entry: Owned = { storeDir: path };
   owned.add(entry);
   return () => owned.delete(entry);
+}
+
+/**
+ * Poll `probe` until it answers `true`, or throw once `attempts` calls have all answered `false`.
+ *
+ * This is the other half of the readiness loop every suite hand-rolls as
+ * `for (let i = 0; i < N; i++) { if (await isReachable(servers)) break; await sleep(ms); }` — a
+ * shape with no exhaustion arm, so a suite that spent the whole wait finding the broker down still
+ * falls through and dials it anyway, and the first thing to speak is a nats-core dial error with a
+ * stack into `node_modules` instead of a sentence naming the broker. See issue #1249.
+ *
+ * `probe` is the caller's own reachability check (typically `() => isReachable(servers)`), passed
+ * in rather than imported, so this package keeps declaring no dependencies (`core-boundary.smoke.ts`
+ * enforces that). `attempts` and `delayMs` are the site's own numbers — unchanged by adopting this.
+ *
+ * `output`, when given, is the site's own collected broker stdout/stderr (as the issue's second
+ * comment describes: a suite that already throws on exhaustion still throws away the one thing that
+ * would make the failure diagnosable — was the port merely stolen, or did the broker fail to start
+ * and say why). On exhaustion the thrown message includes that output trimmed to its last 2000
+ * bytes, or the words `no broker output collected` when `output()` returns an empty string.
+ */
+export async function awaitBrokerReady(
+  probe: () => Promise<boolean>,
+  opts: { servers: string; attempts: number; delayMs: number; output?: () => string },
+): Promise<void> {
+  const { servers, attempts, delayMs, output } = opts;
+  const started = Date.now();
+  for (let i = 0; i < attempts; i++) {
+    if (await probe()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+  }
+  const elapsedMs = Date.now() - started;
+  const collected = output?.() ?? "";
+  const tail = collected === "" ? "no broker output collected" : collected.slice(-2000);
+  throw new Error(
+    `nats-server at ${servers} never became reachable after ${attempts} attempts (${elapsedMs}ms elapsed) - ${tail}`,
+  );
 }

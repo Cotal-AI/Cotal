@@ -1,0 +1,48 @@
+{
+  "suite": [
+    "bin/smoke/install-probe-ci.smoke.ts"
+  ],
+  "guard": "pnpm smoke:install-probe-ci",
+  "command": "pnpm smoke:install-probe-ci",
+  "completionMarker": "SUITE COMPLETE",
+  "grades": "tool",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/install-probe-ci.json",
+  "why": [
+    "The install-probe job must exist in changesets.yml. Each mutation below removes",
+    "one structural invariant and must be caught by the named cell."
+  ],
+  "mutations": [
+    {
+      "name": "the install-probe job is removed from changesets.yml",
+      "file": ".github/workflows/changesets.yml",
+      "find": "  install-probe:\n    if: github.event_name == 'push' || inputs.snapshot == ''\n    needs: [version]",
+      "replace": "  install-probe-disabled:\n    if: github.event_name == 'push' || inputs.snapshot == ''\n    needs: [version]",
+      "expectRed": "changesets.yml declares job install-probe",
+      "cell": "changesets.yml declares job install-probe"
+    },
+    {
+      "name": "install-probe stops depending on version, so the probe can run before publish",
+      "file": ".github/workflows/changesets.yml",
+      "find": "  install-probe:\n    if: github.event_name == 'push' || inputs.snapshot == ''\n    needs: [version]",
+      "replace": "  install-probe:\n    if: github.event_name == 'push' || inputs.snapshot == ''\n    needs: [seat-native-linux-x64]",
+      "expectRed": "install-probe needs the version job",
+      "cell": "install-probe needs the version job"
+    },
+    {
+      "name": "the probe script reference is removed from the install-probe job",
+      "file": ".github/workflows/changesets.yml",
+      "find": "        run: node scripts/post-publish-install-probe.mjs",
+      "replace": "        run: echo 'probe disabled'",
+      "expectRed": "install-probe runs the post-publish-install-probe script",
+      "cell": "install-probe runs the post-publish-install-probe script"
+    },
+    {
+      "name": "the closure gate is removed from the version job",
+      "file": ".github/workflows/changesets.yml",
+      "find": "          node scripts/verify-publish-closure.mjs \"$version\"",
+      "replace": "          echo 'closure gate disabled'",
+      "expectRed": "the version job verifies publish closure before the Release",
+      "cell": "the version job verifies publish closure before the Release"
+    }
+  ]
+}

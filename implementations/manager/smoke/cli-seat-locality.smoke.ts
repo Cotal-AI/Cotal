@@ -174,7 +174,7 @@ try {
   const SEATS = ["seatA", "seatA2", "seatA3", "seatA4", "seatA5"];
   for (const n of SEATS) {
     writeFileSync(join(root1, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
-    const r = await m1.startAgent({ name: n, agent: "e2e-stub", cwd: repoRoot });
+    const r = await m1.startAgent({ name: n, agent: "e2e-stub", cwd: repoRoot, events: false });
     if (!r.ok) { check(`seat ${n} started on manager A`, false, r); }
   }
   check(`all ${SEATS.length} seats are running on manager A (and on no other)`, true);
@@ -227,8 +227,8 @@ try {
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 } finally {
-  await m1?.stop().catch(() => {});
-  await m2?.stop().catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

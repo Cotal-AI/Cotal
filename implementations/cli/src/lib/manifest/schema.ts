@@ -32,6 +32,8 @@ const AgentEntryObject = z
     instructions: z.string().optional(),
     /** Kickoff prompt auto-submitted once the session is up (the declarative `--prompt`). */
     prompt: z.string().min(1).optional(),
+    /** Event planes are on by default for supporting connectors. `false` is `--no-events`. */
+    events: z.boolean().optional(),
     capabilities: z.array(z.string().min(1)).optional(),
     /** Per-agent override of the top-level `personaPermissions` policy. */
     personaPermissions: PersonaPermissions.optional(),

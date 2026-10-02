@@ -11,7 +11,7 @@
  * bare id and came back `model_not_found`, naming neither the connector nor the prefix.
  */
 import assert from "node:assert/strict";
-import { bareModelId, describeRoute, type RuntimeIdentity } from "../src/route-identity.js";
+import { activeModelRoute, bareModelId, describeRoute, type RuntimeIdentity } from "../src/route-identity.js";
 
 let pass = 0;
 const failures: string[] = [];
@@ -90,7 +90,21 @@ console.log("\n5. edge shapes are not mistaken for a prefix");
   check("only the first segment is treated as the prefix", nested.ok === false && nested.bare === "b/c", nested);
 }
 
-console.log(`\nroute identity: ${pass} cells OK, ${failures.length} failed`);
+console.log("\n6. duplicate model ids are resolved only by active provider identity");
+{
+  const duplicate: RuntimeIdentity = {
+    provider: "selected",
+    routes: [
+      { model: "same", provider: "default", api_method: "chat" },
+      { model: "same", provider: "selected", api_method: "responses" },
+    ],
+  };
+  check("the active provider wins when duplicate routes share a model id", activeModelRoute(duplicate, "same")?.provider === "selected", activeModelRoute(duplicate, "same"));
+  check("a sole matching route is sufficient when RuntimeInfo omits provider", activeModelRoute({ routes: [{ model: "same", provider: "only" }] }, "same")?.provider === "only");
+  check("ambiguous duplicate routes stay unverified when active provider is absent", activeModelRoute({ routes: duplicate.routes }, "same") === undefined);
+}
+
+console.log(`\nroute identity: ${pass} passed, ${failures.length} failed`);
 if (failures.length) {
   assert.fail(`route identity: ${failures.length} cell(s) failed\n  - ${failures.join("\n  - ")}`);
 }

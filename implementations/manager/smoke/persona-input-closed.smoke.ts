@@ -8,10 +8,10 @@
  *
  * What stops a planted persona from carrying POLICY — `endpointCapabilities`, a pinned instance route,
  * anything else that shapes a grant — is not a trust boundary and not the caller's honesty. It is that
- * the `define-persona` input schema is CLOSED over exactly three content fields, and that
- * `opDefinePersona` CONSTRUCTS its record rather than merging caller input (fresh: `{name, model,
- * persona, owner: caller}` with the manager setting `owner`; redefine: ownership-checked, then content
- * overwritten and "all policy preserved").
+ * the `define-persona` input schema is CLOSED over content fields, and that `opDefinePersona`
+ * CONSTRUCTS its record rather than spreading caller input. `capabilities` and `owner` still have
+ * no slot. Channel grants, role, and agent are content (#1351 / #395): a peer may name them, or
+ * they may arrive in a leading frontmatter block inside `persona`. The manager still sets `owner`.
  *
  * WHY THIS IS A SUITE AND NOT A NOTE IN A REVIEW. The non-blocking status of the cell-4 residual rests
  * on that closure, and **nothing anywhere tells the next person editing this schema what it protects.**
@@ -24,7 +24,8 @@
  *
  *   1. exactly ONE published document is the persona input (identification is unambiguous)
  *   2. it is `additionalProperties: false`            <- the closure itself
- *   3. its property set is exactly {name, persona, model}
+ *   3. its property set is exactly the content fields (name, persona, model, role, agent,
+ *      subscribe, allowSubscribe, allowPublish) — never capabilities or owner
  *
  * (1) is a control, not decoration: if the finder matched zero documents every later assertion would
  * be vacuously true, and if it matched several this file would be grading an arbitrary one of them.
@@ -71,20 +72,24 @@ if (personaInputs.length !== 1) {
 
 const schema = personaInputs[0]!;
 const props = isDoc(schema.properties) ? Object.keys(schema.properties).sort() : [];
-const EXPECTED = ["model", "name", "persona"];
+const EXPECTED = ["agent", "allowPublish", "allowSubscribe", "model", "name", "persona", "role", "subscribe"];
 
 check("the define-persona input schema is `additionalProperties: false` (a planted persona cannot carry policy)",
   schema.additionalProperties === false, { additionalProperties: schema.additionalProperties });
 check(`its property set is exactly {${EXPECTED.join(", ")}}`,
   props.length === EXPECTED.length && props.every((p, i) => p === EXPECTED[i]), { found: props });
+check("capabilities is not a define-persona input (policy stays off the wire write)",
+  !props.includes("capabilities"));
+check("owner is not a define-persona input (the manager stamps the caller)",
+  !props.includes("owner"));
 
 if (failures > 0) {
   console.log("\n  WHAT A FAILURE HERE MEANS: `define-persona` accepts input this file did not expect.");
   console.log("  A persona is reachable by any spawn-capable mesh peer and is later minted from, so a");
   console.log("  new field on this schema is a new field on an UNTRUSTED-INPUT path. If the field is");
-  console.log("  content (like `persona` or `model`), widen EXPECTED here and say so. If it is policy");
-  console.log("  in any form — capabilities, endpoint capabilities, an instance pin, a role — do not");
-  console.log("  widen this file: that is the vector it exists to catch.");
+  console.log("  content (like `persona`, `model`, `role`, or channel grants), widen EXPECTED here and");
+  console.log("  say so. If it is policy in any form — capabilities, endpoint capabilities, owner, an");
+  console.log("  instance pin — do not widen this file: that is the vector it exists to catch.");
 }
 
 console.log(`\nPERSONA INPUT CLOSED ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

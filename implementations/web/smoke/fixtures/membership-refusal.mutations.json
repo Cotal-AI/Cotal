@@ -1,0 +1,21 @@
+{
+  "suite": [
+    "implementations/web/smoke/membership-refusal.smoke.ts"
+  ],
+  "command": "pnpm smoke:web-membership-refusal",
+  "guard": "a membership watch that closes after setup reaches the browser as the same membership-read-failed frame a rejected read produces, rather than leaving the graph silently stale",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/web/smoke/fixtures/membership-refusal.mutations.json",
+  "why": [
+    "This suite runs `tsx` directly over `src`, with no build step and no compiled second copy, so no `afterRestore` is needed on the mutation below."
+  ],
+  "mutations": [
+    {
+      "name": "the watch's closed callback stops broadcasting the refusal",
+      "file": "implementations/web/src/web.ts",
+      "find": "(e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message })",
+      "replace": "() => {}",
+      "expectRed": "a closed watch reaches the browser as the membership-read-failed frame, byte for byte",
+      "cell": "a closed watch reaches the browser as the membership-read-failed frame, byte for byte"
+    }
+  ]
+}

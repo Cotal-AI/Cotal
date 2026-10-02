@@ -85,7 +85,8 @@ server-side delivery daemon for durable delivery). `cotal up --open` gives you a
 live-only mesh with no auth.
 
 Want the guided team? `cotal setup --demo` adds david (engineer), sven (guide) and me (the
-session you drive); then `cotal spawn david` and watch with `cotal console`.
+session you drive); then `cotal spawn david` and watch with `cotal web` (or `cotal console`
+in a terminal).
 
 > [!TIP]
 > **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
@@ -214,8 +215,9 @@ concrete mechanism you can check against the code.
 ### Identity and access
 
 - **Sender authenticity.** The sender rides the subject
-  (`cotal.<space>.inst.<target>.<sender>`), policed by the server against the agent's
-  JWT, not self-asserted. Identity claims in the payload are rejected, fail-closed.
+  (`cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>`), policed by
+  the server against the agent's JWT, not self-asserted. Identity claims in the payload
+  are rejected, fail-closed.
 - **Per-agent ACLs.** Decentralized JWT auth, account = space and user = agent. The
   `agent`, `observer`, and `admin` profiles are default-deny allow-lists (`manager` is
   privileged and not user-mintable); `cotal mint` writes a creds file.
@@ -346,7 +348,7 @@ We're looking for more design partners building multi-agent systems.
 [Reach out](#team).
 
 Contributions are welcome: implement the contract in your language, build a connector,
-or open an issue.
+or open an issue. See [Running the smoke gate](bin/smoke/README.md) for local and CI testing.
 
 ## Team
 

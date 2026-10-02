@@ -29,7 +29,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
@@ -117,6 +117,10 @@ const startDaemon = async (): Promise<CotalEndpoint> => {
   });
   ep.on("error", () => {});
   await ep.start();
+  // The manager's #1694 binding requires the answer to name a real holder of the delivery
+  // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
+  // `holdsDeliveryLease` below is truthful.
+  await ep.acquireDeliveryLease(0).catch(() => {});
   ep.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
     const principal = String((req.args as { principal?: unknown })?.principal ?? "");
     if (req.op === "evictPrincipal") {
@@ -130,6 +134,14 @@ const startDaemon = async (): Promise<CotalEndpoint> => {
         servers: SERVERS, observerCreds, accountId: auth.account.pub, principal,
       });
       return { ok: true, data: result };
+    }
+    if (req.op === "reloadStoreIdentity") {
+      let holds = false;
+      try {
+        const own = await ep.readDeliveryLeaseEntry(0);
+        holds = own !== undefined && ep.ownsDeliveryLease(own.info);
+      } catch { holds = false; }
+      return { ok: true, data: { identity: { kind: "fs", root: resolve(workspaceRoot) }, responder: ep.card.id, holdsDeliveryLease: holds } };
     }
     return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
   }, { boundReply: true });
@@ -219,7 +231,7 @@ try {
   const M1 = mgr as unknown as { serviceServe?: { grant: { epoch: number } } };
   const epoch1 = M1.serviceServe!.grant.epoch;
   check("predecessor registered a persisted instanceId at epoch 0", typeof iid === "string" && iid.length > 0 && epoch1 === 0, { iid, epoch1 });
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
   mgr = undefined;
 
   // ── CELL 1: holder GONE + complete sweep → successor start must SUCCEED (the #783/#871 heal)
@@ -246,7 +258,7 @@ try {
       check("DEAD HOLDER: logical instanceId is preserved", M2.managerInstanceId === iid, { iid, got: M2.managerInstanceId });
       check("DEAD HOLDER: process epoch ADVANCED through the normal takeover after abort-reopen",
         (M2.serviceServe?.grant.epoch ?? -1) > epoch1, { epoch1, epoch2: M2.serviceServe?.grant.epoch });
-      await mgr.stop();
+      await mgr.stop({ withAgents: true });
       mgr = undefined;
     }
   }
@@ -271,7 +283,7 @@ try {
     // manager with timers and a broker connection, so leaving it running holds the event loop open
     // and the whole suite hangs after its last cell. A hang prints no verdict and grades as no
     // evidence, which is the opposite of what a cell that just went red is for.
-    if (r.ok) await r.mgr.stop().catch(() => {});
+    if (r.ok) await r.mgr.stop({ withAgents: true }).catch(() => {});
     check("LIVE HOLDER: successor start REFUSES", r.ok === false, r.ok ? "started" : undefined);
     check("LIVE HOLDER: the refusal is named `holder-alive`",
       r.ok === false && conditionOf(r.error) === "holder-alive",
@@ -290,6 +302,11 @@ try {
   // ── CELL 3: no delivery-admin oracle → named unestablishable, gate stays frozen ──
   {
     await freezeRegisteredGate(iid, serveActor);
+    // Release the shard before stopping: an unreleased row still names this fixture as the
+    // holder, and the manager's #1694 absence settlement then reads that as an undetermined
+    // "no responder while a holder is live" rather than a genuinely absent daemon.
+    const fixtureRev = (await daemon.readDeliveryLeaseEntry(0))?.revision;
+    await daemon.releaseDeliveryLease(0, fixtureRev);
     await daemon.stop();
     daemon = undefined;
     await wait(200);
@@ -297,7 +314,7 @@ try {
     const { kv, nc } = await execKv(iid);
     const before = await readGate(kv, iid);
     const r = await startSuccessor();
-    if (r.ok) await r.mgr.stop().catch(() => {}); // same reason as CELL 2: a started successor keeps the process alive
+    if (r.ok) await r.mgr.stop({ withAgents: true }).catch(() => {}); // same reason as CELL 2: a started successor keeps the process alive
     check("NO ORACLE: successor start REFUSES", r.ok === false, r.ok ? "started" : undefined);
     check("NO ORACLE: the refusal is named `liveness-unestablishable` (silence is not death)",
       r.ok === false && conditionOf(r.error) === "liveness-unestablishable",
@@ -316,7 +333,7 @@ try {
   console.log(`\nBOOT SELF-HEAL GATE FAILED ❌  (${pass} passed, ${fail} failed)`);
   process.exitCode = 1;
 } finally {
-  await mgr?.stop().catch(() => {});
+  await mgr?.stop({ withAgents: true }).catch(() => {});
   await daemon?.stop().catch(() => {});
   for (const c of holderConns) await c.close().catch(() => {});
   srv.kill("SIGTERM");

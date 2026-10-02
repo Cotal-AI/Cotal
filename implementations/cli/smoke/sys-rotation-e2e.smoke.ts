@@ -47,7 +47,7 @@ import {
   newIdentity,
   standaloneConnectOpts,
 } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_LOGFILE, getSpaceAuth, MANAGER_LOGFILE, MEMBERSHIP_RW_CREDS_KIND, putSpaceAuth, spaceMaterialDir, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_LOGFILE, getSpaceAuth, MANAGER_LOGFILE, MEMBERSHIP_RW_CREDS_KIND, putSpaceAuth, renewalRecordPath, spaceMaterialDir, SYSTEM_CREDS_FILES, workspaceSecretStore } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
@@ -160,7 +160,7 @@ async function daemonTail(from: number, ms = 25_000): Promise<string> {
  */
 async function settleThenDown(opts: { awaitManagerLease?: boolean } = {}): Promise<{ code: number | null; out: string }> {
   await wait(3000);
-  const r = cotal(["down"]);
+  const r = cotal(["down", "--with-agents"]);
   // The MANAGER has the same shape of problem on its own lease, and it bites the boot AFTER the one
   // that was stopped. Its instance id is persisted, so a restart re-acquires the SAME per-instance
   // key; a manager whose predecessor did not release it refuses to start ("already serves space … -
@@ -339,7 +339,7 @@ try {
     console.log("\n---- BOOT3 OUT ----\n", boot3.out);
     try { console.log("\n---- MANAGER LOG (boot 3 only) ----\n" + readFileSync(runtimeLog(MANAGER_LOGFILE), "utf8").slice(mgrMark)); } catch (e) { console.log("mgr tail unreadable:", (e as Error).message); }
     try { console.log("\n---- MANAGER LOG (full tail) ----\n" + readFileSync(runtimeLog(MANAGER_LOGFILE), "utf8").slice(-3000)); } catch (e) { console.log("manager.log unreadable:", (e as Error).message); }
-    try { console.log("\n---- RENEWAL RECORD ----\n" + readFileSync(cotalPath("renewal.json"), "utf8")); } catch (e) { console.log("renewal record unreadable:", (e as Error).message); }
+    try { console.log("\n---- RENEWAL RECORD ----\n" + readFileSync(renewalRecordPath(root, SPACE), "utf8")); } catch (e) { console.log("renewal record unreadable:", (e as Error).message); }
   }
 
   console.log(`\n${fail ? "✗" : "✓"} $SYS ROTATION E2E: ${pass} passed, ${fail} failed`);

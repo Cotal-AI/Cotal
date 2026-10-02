@@ -50,6 +50,9 @@ export interface AgentHandle {
    *  leaves the mesh on its own) before ensuring the process/tab is gone; otherwise
    *  it's a hard, immediate kill. */
   stop(opts?: { graceful?: boolean }): void;
+  /** Release this manager's local handle without stopping or deprovisioning the agent. Optional,
+   *  and absent means the runtime cannot survive manager exit, so callers must fail closed. */
+  release?(): void;
   /** Resolve only after the runtime has authoritatively proved the process/window/workspace is gone.
    * Optional during the preservation rollout; a manager maintenance cut must fail closed when absent. */
   waitForExit?(): Promise<void>;
@@ -63,8 +66,12 @@ export interface AgentHandle {
    *  OPTIONAL, and absent means REFUSE, never degrade: a backend that does not own the child's
    *  input stream (tmux/cmux/orca/herdr attach to an externally-owned process) leaves it off, and
    *  the manager answers `input is not supported by runtime <kind>`. A silent no-op here would be
-   *  a dropped keystroke, which is worse than an error. */
-  write?(data: string): void;
+   *  a dropped keystroke, which is worse than an error.
+   *
+   *  Resolves only after the runtime has accepted the write, with the number of UTF-8 bytes it
+   *  accepted. Rejects when the runtime cannot accept it. A caller must derive any delivery receipt
+   *  from this acknowledgement, never from the buffer it intended to send. */
+  write?(data: string): Promise<number>;
   /** What the runtime OBSERVED when the child ended: the OS exit code, and/or the signal number
    *  that killed it. Meaningful only once {@link status} reports `exited`; before that a backend
    *  returns undefined.
@@ -84,7 +91,28 @@ export interface AgentHandle {
  *  can delegate to an external terminal or process surface. */
 export interface Runtime {
   readonly kind: RuntimeKind;
-  spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle;
+  /** True only when every handle this runtime creates can release manager-local custody without
+   * stopping the underlying agent. Absent is false for PTY runtimes and irrelevant for runtimes
+   * that hold no process-owning PTY master. */
+  readonly supportsRelease?: boolean;
+  /**
+   * Mint the durable custody reference for a seat this runtime is ABOUT to spawn, before any
+   * process exists. The caller records it durably and then hands the SAME reference back to
+   * {@link spawn}, so the reference precedes the processes it addresses: a crash anywhere after
+   * the spawn leaves an orphan a successor can still address, never a live seat nobody can name.
+   * Minting the id inside `spawn` cannot give that ordering, because the processes are already
+   * running by the time it returns.
+   *
+   * OPTIONAL, and absent means this runtime has no durable custody to reserve (it also has no
+   * {@link reap}); the caller spawns without a reference, as before. A runtime that implements
+   * this MUST spawn the seat under exactly the reference it returned, and report it back on the
+   * handle: a spawn that quietly mints its own id would leave the recorded reference addressing
+   * nothing, which is worse than recording none.
+   */
+  reserve?(): RuntimeReference;
+  /** Spawn the agent. `reference` is a custody reference from {@link reserve}, and a runtime that
+   *  offers `reserve` must honour it exactly; it is absent for a runtime without durable custody. */
+  spawn(name: string, spec: LaunchSpec, cwd: string, reference?: RuntimeReference): AgentHandle;
   /**
    * Reattach this runtime to a handle it created previously. This is a local runtime operation,
    * not a mesh operation. OPTIONAL, and absent means REFUSE, never spawn a replacement: a runtime
@@ -93,6 +121,7 @@ export interface Runtime {
    */
   adopt?(reference: RuntimeReference): AgentHandle;
 }
+
 
 /**
  * A bridge that contributes one runtime backend — an {@link Extension} of kind

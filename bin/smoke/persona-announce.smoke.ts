@@ -512,7 +512,7 @@ try {
   await definer?.stop().catch(() => {});
   await witness?.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
-  await mgr.stop().catch(() => {});
+  await mgr.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

@@ -12,13 +12,17 @@
  * Run: pnpm smoke:manager-coexist   (needs nats-server + node on PATH; boots its own broker)
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type AddressInfo } from "node:net";
-import { probeConnect } from "@cotal-ai/core";
-import { recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const home = mkdtempSync(join(tmpdir(), "cotal-coexist-home-"));
+process.env.COTAL_HOME = home;
+const { probeConnect } = await import("@cotal-ai/core");
+const { recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const freePort = (): Promise<number> =>
@@ -45,7 +49,8 @@ const kids: ChildProcess[] = [];
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-coexist-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}coexist-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   for (let i = 0; i < 60; i++) { if ((await probeConnect(SERVER, { timeoutMs: 400 })).ok) break; await wait(120); }
   for (const r of [root1, root2]) recordMesh({ space: SPACE, server: SERVER, root: r, mode: "open", ts: new Date().toISOString() });
@@ -69,9 +74,10 @@ try {
     M1.serviceServe?.grant.instanceId === M1.managerInstanceId
     && M2.serviceServe?.grant.instanceId === M2.managerInstanceId);
 } finally {
-  await m2?.stop().catch(() => {});
-  await m1?.stop().catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
+  rmSync(home, { recursive: true, force: true });
 }
 
 console.log(`\n${fail === 0 ? "MANAGER COEXIST SMOKE OK ✅" : "MANAGER COEXIST SMOKE FAILED (RED-FIRST until the lease is demoted to per-instance liveness)"}  (${pass} passed, ${fail} failed)`);

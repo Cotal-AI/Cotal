@@ -1,0 +1,2 @@
+# Red when ci-suites-freeze drops the committed-list cell under unset BASE/HEAD.
+smoke:ci-suites-freeze-drop

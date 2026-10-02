@@ -25,11 +25,13 @@ import { ENGINE_LANGUAGE_VERSION, Journal, JournalAppendRejected, PIN_DEFAULTS, 
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { runOnHostedEngine } from "../src/engine-host.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "wfjdrive";
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-wfjdrive-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}wfjdrive-`));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+teardownOnSignal(broker, sd);
 const servers = `nats://127.0.0.1:${PORT}`;
 
 let ok = 0, fail = 0;
@@ -380,6 +382,7 @@ try {
       monitor: (r, x) => sim.monitor(r, x),
       openConclave: (r, x) => sim.openConclave(r, x),
       closeConclave: (r, x) => sim.closeConclave(r, x),
+      observe: (r, x) => sim.observe(r, x),
     };
     let trapResolve!: (v: string) => void;
     const trap = new Promise<string>((resolve) => { trapResolve = resolve; });
@@ -443,6 +446,7 @@ try {
       monitor: (r, x) => sim.monitor(r, x),
       openConclave: (r, x) => sim.openConclave(r, x),
       closeConclave: (r, x) => sim.closeConclave(r, x),
+      observe: (r, x) => sim.observe(r, x),
     };
     const outcome = await runOnHostedEngine({
       source: `const a = await spawn("x", { name: "s" })\nconst b = await spawn("y", { name: "t" })\nlog("done", 2)`,

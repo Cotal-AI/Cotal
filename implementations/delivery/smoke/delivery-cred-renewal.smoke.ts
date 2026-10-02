@@ -14,12 +14,15 @@
  *   4. CLEAN SWAP: a final explicit reload before the old JWT's exp — the run never logs
  *      "User Authentication Expired" and ends with a READY delivery lease.
  *
+ * Phase 5 grades verified-gone-by-complete-scan as the rail's success signal (never the raw kick
+ * count, which a victim's own pre-scan disconnect can legitimately zero) — see #1115.
+ *
  * NOTE: runs the BUILT dist — `pnpm build` first (the smoke:ci wiring builds).
  * Run: pnpm smoke:delivery-renewal   (needs `nats-server` on PATH; auth/JetStream, local-only; ~30s)
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -38,6 +41,7 @@ import {
   setupSpaceStreams,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
+import { spaceMaterialDir } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -92,10 +96,13 @@ const releaseBroker = teardownOnSignal(srv, dir);
 
 // The daemon's ISOLATED workspace root — findCotalRoot(cwd) lands here, so the membership feed's
 // creds/config come from THIS staging, never the developer's real .cotal.
-const root = mkdtempSync(join(tmpdir(), "cotal-dlv-renew-root-"));
-mkdirSync(join(root, ".cotal"), { recursive: true });
-const credsPath = join(root, ".cotal", "delivery.creds");
-const rwPath = join(root, ".cotal", "membership-rw.creds");
+// Resolve once before deriving cwd or credential paths. Sandboxed runners may expose tmpdir through
+// an alias, and reloadStoreIdentity intentionally compares canonical filesystem roots.
+const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-dlv-renew-root-")));
+const spaceDir = spaceMaterialDir(root, space);
+mkdirSync(spaceDir, { recursive: true });
+const credsPath = join(spaceDir, "delivery.creds");
+const rwPath = join(spaceDir, "membership-rw.creds");
 
 let daemon: ReturnType<typeof spawn> | undefined;
 let daemonExited = false;
@@ -113,9 +120,9 @@ try {
   const credA = await mintCreds(auth, dlvId, "delivery", { expiresInSeconds: TTL });
   writeFileSync(credsPath, credA, { mode: 0o600 });
   writeFileSync(rwPath, await mintCreds(auth, rwId, "membership-rw", { expiresInSeconds: 120 }), { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "membership-observer.creds"), obsCreds, { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "connection-evictor.creds"), evictorCreds, { mode: 0o600 });
-  writeFileSync(join(root, ".cotal", "membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
+  writeFileSync(join(spaceDir, "membership-observer.creds"), obsCreds, { mode: 0o600 });
+  writeFileSync(join(spaceDir, "connection-evictor.creds"), evictorCreds, { mode: 0o600 });
+  writeFileSync(join(spaceDir, "membership.json"), JSON.stringify({ accountId: auth.account.pub }), { mode: 0o600 });
   const bornAt = Date.now();
 
   daemon = spawn(process.execPath, [cotalJs, "deliver", "--space", space, "--server", SERVERS, "--creds", credsPath], {
@@ -146,6 +153,7 @@ try {
   // Phase 1 — explicit adoption: re-sign BOTH files for their existing nkeys, then reloadCreds.
   const credB = await mintCreds(auth, identityFromCreds(credA), "delivery", { expiresInSeconds: TTL });
   writeFileSync(credsPath, credB, { mode: 0o600 });
+  const credBSignedAt = Date.now();
   writeFileSync(rwPath, await mintCreds(auth, rwId, "membership-rw"), { mode: 0o600 }); // matrix default TTL
   const adopted = await adminReq(sup, "reloadCreds");
   check("explicit reloadCreds replies ok (auditable adoption)", adopted.ok === true, JSON.stringify(adopted));
@@ -167,8 +175,18 @@ try {
 
   // Phase 3 — the passive backstop stays loud: cred B's 75% re-read (at ~15s after phase 1's
   // re-sign) finds the file unchanged AND stale and the daemon logs the exact repair on its own.
-  const staleLoud = await until(() => output.includes("still holds the previous cred") && output.includes("delivery endpoint"), TTL * 1000);
+  // Either stale wording counts: the daemon's creds-source read and the core endpoint's own
+  // refresh describe the same condition in different words, and either can log first. The wait
+  // is bounded from cred B's re-sign, half way between its 75% re-read and its expiry, so a late
+  // re-read reads as timing here instead of as "no responders" from an expired connection two
+  // requests later.
+  const staleLine = (text: string): boolean => /^! delivery endpoint: .*still holds the previous (cred|generation)\b/m.test(text);
+  check("the phase-3 stale predicate accepts either wording on one captured line and refuses an unrelated one", staleLine("! delivery endpoint: the delivery creds source still holds the previous cred") && staleLine("! delivery endpoint: creds refresh failed (the creds source still holds the previous generation past its renewal point)") && !staleLine("! delivery endpoint: adopted the successor of the previous generation"));
+  const phase3BudgetMs = Math.round(TTL * 1000 * 0.875);
+  const staleLoud = await until(() => staleLine(output), Math.max(0, credBSignedAt + phase3BudgetMs - Date.now()));
+  console.log(`  DIAGNOSTIC phase3 firstStaleAtMs=${Date.now() - credBSignedAt} budgetMs=${phase3BudgetMs} (from the cred B re-sign)`);
   check("75% backstop re-read is LOUD on an unchanged stale file (no explicit reload sent)", staleLoud, output.slice(-500));
+  if (!staleLoud) throw new Error(`phase 3: no stale line within ${phase3BudgetMs} ms of the cred B re-sign; the phase-3 request would land after cred B's expiry`);
   // …and an EXPLICIT reload in that stale state is an honest structured refusal, never a fake ok.
   const refused = await adminReq(sup, "reloadCreds");
   check("explicit reload on an unchanged STALE file replies ok:false naming the condition", refused.ok === false && (refused.error ?? "").includes("still holds the previous cred"), JSON.stringify(refused));
@@ -200,10 +218,13 @@ try {
   });
   const victimPrincipal = principalKey(DEV_OWNER, victim.id).key;
   const evictionStartedAt = diagnosticMs();
+  await victimNc.flush();
+  check("victim is live at scan start (precondition: the evict below has a connection to find)", !victimNc.isClosed() && !victimClosed, { victimClosed });
   const evicted = await adminReq2(sup, "evictPrincipal", { principal: victimPrincipal });
   console.log(`  · DIAGNOSTIC eviction completedMs=${diagnosticMs()} elapsedMs=${diagnosticMs() - evictionStartedAt} victimClosed=${victimClosed} victimClosedAt=${String(victimClosedAt)} closeReason=${JSON.stringify(victimCloseReason)} reply=${JSON.stringify(evicted)}`);
-  const ev = (evicted.ok ? evicted.data : {}) as { kicked?: number; verifiedGone?: boolean; scanComplete?: boolean };
-  check("evictPrincipal force-drops the victim (kicked + verifiedGone + complete scan)", evicted.ok === true && (ev.kicked ?? 0) >= 1 && ev.verifiedGone === true && ev.scanComplete === true, JSON.stringify(evicted));
+  const ev = (evicted.ok ? evicted.data : {}) as { kicked?: number; verifiedGone?: boolean; scanComplete?: boolean; remaining?: number };
+  check("evictPrincipal verifies the victim gone by a complete scan (the rail's success signal, never the kick count) (#1115)", evicted.ok === true && ev.verifiedGone === true && ev.scanComplete === true && ev.remaining === 0, { evicted, victimClosed, victimClosedAt, evictionStartedAt });
+  check("the kick count is explained: at least one kick, or the victim's own disconnect was observed before the reply", (ev.kicked ?? 0) >= 1 || victimClosed, { kicked: ev.kicked, victimClosed, victimClosedAt });
   check("victim's connection actually closed", await until(() => victimClosed, 5000));
   const ghost = await adminReq2(sup, "evictPrincipal", { principal: principalKey(DEV_OWNER, newIdentity().id).key });
   const gv = (ghost.ok ? ghost.data : {}) as { kicked?: number; verifiedGone?: boolean };

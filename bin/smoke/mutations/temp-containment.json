@@ -1,0 +1,115 @@
+{
+  "suite": [
+    "bin/smoke/temp-containment.smoke.ts"
+  ],
+  "guard": "a recursive delete refuses any target that is not a strict child of the root it was minted under, and a control socket path over sun_path is refused by name rather than by a bare EINVAL",
+  "command": "pnpm smoke:temp-containment",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/temp-containment.json",
+  "why": [
+    "THE GUARD IS GRADED THROUGH THE ASSERTION, NOT THROUGH A DELETE, and that is deliberate rather",
+    "than timid. The incident this file exists for was a cleanup that deleted the PARENT of its own",
+    "mkdtemp — on a host where tmpdir() is /tmp, that took an orchestrator's relay socket and",
+    "fourteen seats' control sockets, and stopped only on a root-owned EPERM. A fixture that proved",
+    "the fix by performing the delete would reproduce the outage to demonstrate that the outage is",
+    "fixed. The containment DECISION lives in assertContainedIn, so every mutation below disarms a",
+    "real branch of the real guard and every cell reads a refusal that did not happen — with no",
+    "traversing path ever reaching rmSync.",
+    "",
+    "NO MUTATION HERE TOUCHES A PATH ANY SUITE LATER DELETES, MOVES OR WRITES INTO. The mutants",
+    "change comparison logic only; none changes what a path RESOLVES to, which is the class that",
+    "caused the incident and must not be re-triggered to test the fix for it.",
+    "",
+    "THE THIRD MUTATION IS THE ONE THAT LOOKS HARMLESS. Swapping physical() for resolve() leaves a",
+    "containment check that still refuses '..' and still refuses the root itself, so two of the three",
+    "Part A cells stay green. Only the symlink cell moves. A lexical prefix compare is satisfied by a",
+    "symlink pointing anywhere, so that single cell is the whole difference between 'contained' and",
+    "'contained unless someone made a link', and without it the canonicalization could be dropped in a",
+    "tidying commit with every other cell still green.",
+    "",
+    "PART B IS GRADED ON THE MESSAGE, NOT ON THE THROW. EINVAL already fails; what was missing was a",
+    "failure that names the path, its length and the limit. The cell asserts all three, so a refusal",
+    "that regressed to a bare throw would redden it."
+  ],
+  "mutations": [
+    {
+      "name": "the outside-the-root check is disarmed, so a target that resolves outside its root is deleted",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "  if (!t.startsWith(r.endsWith(sep) ? r : r + sep))",
+      "replace": "  if (!t.startsWith(r.endsWith(sep) ? r : r + sep) && false)",
+      "expectRed": "✗ FAIL: a target that resolves outside its root is refused",
+      "cell": "✗ FAIL: a target that resolves outside its root is refused"
+    },
+    {
+      "name": "containment stops being STRICT, so the root itself is accepted as contained",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "  if (t === r)",
+      "replace": "  if (false && t === r)",
+      "expectRed": "✗ FAIL: a target that resolves to the root itself is refused, not treated as contained",
+      "cell": "✗ FAIL: a target that resolves to the root itself is refused, not treated as contained"
+    },
+    {
+      "name": "the target's existing components stop being resolved physically, so a symlink out of the root passes a lexical compare",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "      prefix = realpathSync.native(candidate);",
+      "replace": "      prefix = candidate;",
+      "expectRed": "✗ FAIL: a symlink inside the root whose target is outside it is refused",
+      "cell": "✗ FAIL: a symlink inside the root whose target is outside it is refused"
+    },
+    {
+      "name": "the sun_path length check is disarmed, so an over-long socket path is returned for the bind to reject with EINVAL",
+      "file": "extensions/connector-core/src/runtime.ts",
+      "find": "  if (process.platform !== \"win32\" && bytes > SUN_PATH_MAX_BYTES) {",
+      "replace": "  if (process.platform !== \"win32\" && bytes > SUN_PATH_MAX_BYTES && false) {",
+      "expectRed": "✗ FAIL: a control socket path over the sun_path limit is refused with its path, length and limit",
+      "cell": "✗ FAIL: a control socket path over the sun_path limit is refused with its path, length and limit"
+    },
+    {
+      "name": "the delete guard goes back to physical(), whose ENOENT fallback is lexical, so a MISSING target under a symlinked parent is certified by its spelling",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "    t = physicalDeepest(target);",
+      "replace": "    t = physical(target);",
+      "expectRed": "✗ FAIL: a MISSING target under a symlinked parent is refused, not certified by its spelling",
+      "cell": "✗ FAIL: a MISSING target under a symlinked parent is refused, not certified by its spelling"
+    },
+    {
+      "name": "the deepest-ancestor walk stops failing closed on a non-ENOENT errno, downgrading an unprovable target to its lexical spelling",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "      prefix = realpathSync.native(candidate);\n    } catch (e) {\n      if ((e as NodeJS.ErrnoException).code !== \"ENOENT\") throw e;\n",
+      "replace": "      prefix = realpathSync.native(candidate);\n    } catch (e) {\n      if (false) throw e;\n",
+      "expectRed": "✗ FAIL: a target whose ancestry cannot be resolved at all is refused, not downgraded to its spelling",
+      "cell": "✗ FAIL: a target whose ancestry cannot be resolved at all is refused, not downgraded to its spelling"
+    },
+    {
+      "name": "an ENOENT from realpath is taken as proof of absence again, so an existing DANGLING symlink is walked past as if it were a missing basename",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "        lstatSync(candidate);",
+      "replace": "        if (true) throw Object.assign(new Error(\"ENOENT\"), { code: \"ENOENT\" });",
+      "expectRed": "✗ FAIL: a target under a DANGLING symlinked parent is refused, not read as a missing basename",
+      "cell": "✗ FAIL: a target under a DANGLING symlinked parent is refused, not read as a missing basename"
+    },
+    {
+      "name": "a `..` is applied to the SPELLING instead of to the physical prefix, so one that follows a symlink walks back into the root it had already left",
+      "file": "bin/smoke/_scratch.ts",
+      "find": "  const abs = isAbsolute(p) ? p : `${process.cwd()}${sep}${p}`;",
+      "replace": "  const abs = resolve(p);",
+      "expectRed": "✗ FAIL: a `..` after a symlink is refused when the sibling it lands on EXISTS (the shape this PR regressed)",
+      "cell": "✗ FAIL: a `..` after a symlink is refused when the sibling it lands on EXISTS (the shape this PR regressed)"
+    },
+    {
+      "name": "the positive control mints unguarded again, so a TMPDIR over the socket budget kills the suite with a raw stack instead of skipping by name",
+      "file": "bin/smoke/temp-containment.smoke.ts",
+      "find": "  if (tempRootBytes > rootBudget) {",
+      "replace": "  if (false && tempRootBytes > rootBudget) {",
+      "expectRed": "✗ FAIL: under a TMPDIR too long for the socket budget the suite still reports a result, skipping the control by name",
+      "cell": "✗ FAIL: under a TMPDIR too long for the socket budget the suite still reports a result, skipping the control by name"
+    },
+    {
+      "name": "the fixture teardown leaves the finally, so a suite that skips or throws leaks the fixture it minted",
+      "file": "bin/smoke/temp-containment.smoke.ts",
+      "find": "  removeContained(root, TEMP_ROOT, \"1625 fixture root\");",
+      "replace": "  if (!process.env.COTAL_1626_OVERLONG_CHILD) removeContained(root, TEMP_ROOT, \"1625 fixture root\");",
+      "expectRed": "✗ FAIL: a skipped control tears its fixture down, leaving nothing behind",
+      "cell": "✗ FAIL: a skipped control tears its fixture down, leaving nothing behind"
+    }
+  ]
+}

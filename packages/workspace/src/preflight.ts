@@ -15,7 +15,7 @@ import type { MeshTarget } from "./mesh-target.js";
  * and pruning is the caller's explicit act, not a side effect of probing.
  */
 
-/** The five distinct ways a preflight fails. Each also carries whether the target OWNS its registry
+/** The six distinct ways a preflight fails. Each also carries whether the target OWNS its registry
  *  entry (→ prune): `fromRegistry` means the server+mode came from a registry record (incl. a
  *  `local-recorded` project matched by root), so a definitive failure is a stale-entry signal. */
 export type PreflightFailure =
@@ -29,7 +29,13 @@ export type PreflightFailure =
    *  complete the handshake — typically a private CA without `NODE_EXTRA_CA_CERTS`. NEVER a prune
    *  signal: INFO is unauthenticated shape evidence, not peer identity; conservatively keep the
    *  record and repair client trust rather than re-register. */
-  | "tls-trust";
+  | "tls-trust"
+  /** The credentialed probe (and its confirm re-probe) ran out of their own budget before the dial
+   *  concluded — no refusal, no INFO evidence, nothing to diagnose about trust or the credential.
+   *  NEVER a prune signal: a slow or jittery link is not a dead broker (#851). Distinct from
+   *  `tls-trust`, whose evidence is an actual plaintext INFO greeting; a bare timeout has none, so
+   *  it must not borrow that verdict's CA guidance. */
+  | "slow-link";
 
 /** Pure decision tree — separated from I/O so the whole branch tree is unit-testable (it's the
  *  riskiest logic: a wrong branch prunes a LIVE registry entry). Only a registry-OWNED source
@@ -39,9 +45,12 @@ export type PreflightFailure =
  *  operator-supplied, so a failure there is the user's to diagnose, not a stale-registry signal. */
 export function classifyPreflightFailure(
   source: MeshTarget["source"],
-  reason: "auth-required" | "stale-auth" | "unreachable",
+  reason: "auth-required" | "stale-auth" | "unreachable" | "timeout",
   hasAuth: boolean,
 ): { prune: boolean; kind: PreflightFailure } {
+  // A timeout is never a stale-entry signal, whatever the source: the dial ran out of its own
+  // budget, which says nothing about whether the broker is actually gone (#851).
+  if (reason === "timeout") return { prune: false, kind: "slow-link" };
   // `flag-space-override` and `flag-server` are deliberately absent: the probe hit an operator-named
   // endpoint, not the registry-recorded broker, so its failure must not delete the recorded entry.
   const fromRegistry =
@@ -92,21 +101,24 @@ export async function preflightTarget(
   if (probe.ok) return { ok: true };
   // CONFIRM BEFORE CONDEMNING. `probeConnect`'s default budget is 1s, and this is a CREDENTIALED
   // connect: TCP, INFO, then the JWT exchange — several round trips. A perfectly healthy broker
-  // across a slow or jittery link (a relayed overlay VPN, a loaded host) misses that routinely, and
-  // the verdict here is destructive: a registry-sourced failure DELETES the entry, and re-writing
-  // one costs the operator either a `cotal up` or the exact `cotal meshes add` line again.
-  // The observed failure mode was exactly this — a live, reachable mesh reported as "no mesh
-  // running (stale registry entry - removed)" because the handshake needed more than a second.
-  // So a first failure only makes it a candidate; re-probe with a budget that fits a real network.
+  // across a slow or jittery link (a relayed overlay VPN, a loaded host) misses that routinely.
+  // A liveness miss no longer deletes the record, but a mismatch still does, and a false
+  // unreachable still reports the mesh as down. The observed failure mode was a live mesh
+  // reported as "no mesh running (stale registry entry - removed)" because the handshake needed
+  // more than a second. A first failure only makes it a candidate; re-probe with a budget that
+  // fits a real network.
   probe = await probeConnect(target.server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
   if (probe.ok) return { ok: true };
 
-  // TLS-REQUIRED + "unreachable" is often NOT a dead broker. `probeConnect` maps every non-auth
-  // failure (including certificate verification) to `unreachable`. Against a private-CA mesh
-  // without `NODE_EXTRA_CA_CERTS`, the TLS handshake fails while the broker is live and still
-  // greets with plaintext INFO advertising `tls_required`. Classifying that as unreachable + prune
-  // DELETES a healthy tlsRequired registry entry — durable state destroyed on a recoverable trust
-  // error. This branch introduced tlsRequired meshes, so the mis-prune is in scope.
+  // TLS-REQUIRED + "unreachable" is often NOT a dead broker. `probeConnect` maps every non-auth,
+  // non-timeout failure (including certificate verification) to `unreachable`. Against a
+  // private-CA mesh without `NODE_EXTRA_CA_CERTS`, the TLS handshake fails while the broker is
+  // live and still greets with plaintext INFO advertising `tls_required`. Classifying that as
+  // unreachable + prune DELETES a healthy tlsRequired registry entry — durable state destroyed on
+  // a recoverable trust error. This branch introduced tlsRequired meshes, so the mis-prune is in
+  // scope. A `timeout` reason (#851) is excluded from this branch entirely: it never reached a
+  // conclusive answer, so the INFO read below would only re-manufacture a trust verdict for a
+  // latency problem — `classifyPreflightFailure` routes it straight to `slow-link` instead.
   //
   // Discriminator must be stronger than bare liveness. A *different* broker on the recorded port
   // (the classic plaintext-substitute case this file's own comment documents) also answers INFO —
@@ -190,8 +202,9 @@ async function readNatsInfoGreeting(
  * registry mutation stays opt-in: callers that act on the registry (`spawn`/`use`/`meshes`, the
  * manager control commands) invoke it; `<TAB>` completion must not.
  *
- * Only `up`-written records are candidates at all: {@link pruneMesh} keeps an operator-registered
- * (`cotal meshes add`) one whatever the probe says, and this reports it as `offline` instead.
+ * A dead broker is never enough to delete a record: {@link pruneMesh} keeps both an
+ * operator-registered (`cotal meshes add`) mesh and an `up` / pre-origin one on a liveness miss,
+ * and this reports them as `offline` instead. Mismatch deletion is a different path.
  *
  * **Deletion needs CONFIRMATION, not one timeout.** Pruning is destructive: a wrongly pruned mesh
  * costs the operator a re-`up` (or, for a remote one, the exact registration line again) and every
@@ -205,16 +218,17 @@ async function readNatsInfoGreeting(
 const PRUNE_CONFIRM_TIMEOUT_MS = 5_000;
 
 /** The confirming budget for a single target's preflight. Larger than {@link PRUNE_CONFIRM_TIMEOUT_MS}
- *  because this probe completes an AUTH HANDSHAKE, not just a TCP+INFO liveness check. */
-const PREFLIGHT_CONFIRM_TIMEOUT_MS = 8_000;
+ *  because this probe completes an AUTH HANDSHAKE, not just a TCP+INFO liveness check. Exported so
+ *  {@link renderWorkspaceError}'s `slow-link` sentence can name the real budget instead of a copy. */
+export const PREFLIGHT_CONFIRM_TIMEOUT_MS = 8_000;
 
 /** What one sweep did. `offline` is the entries whose broker is gone but whose record STAYS —
- *  operator-registered (`cotal meshes add`) meshes, which {@link pruneMesh} never deletes. A surface
- *  that lists meshes renders that as a state instead of probing every broker a second time. */
+ *  every origin, because a liveness miss is not a deletion. A surface that lists meshes renders
+ *  that as a state instead of probing every broker a second time. */
 export interface MeshSweep {
-  /** Spaces whose dead record was dropped. */
+  /** Spaces whose dead record was dropped. Empty after a liveness-only sweep. */
   pruned: string[];
-  /** Spaces kept despite a dead broker (operator-registered). */
+  /** Spaces kept despite a dead broker. */
   offline: string[];
 }
 
@@ -222,9 +236,14 @@ export async function pruneStaleMeshes(): Promise<MeshSweep> {
   const sweep: MeshSweep = { pruned: [], offline: [] };
   await Promise.all(
     loadMeshes().map(async (m) => {
+      // A catalog snapshot is registry preparation, not broker discovery. Catalog-owned entries are
+      // never pruned from liveness and must not be probed here either: `meshes`, `use`, and a
+      // space-less control command may prepare hundreds of registrations, while only the command's
+      // selected target is allowed to connect.
+      if (m.origin === "catalog") return;
       if (await isReachable(m.server)) return;
       if (await isReachable(m.server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS })) return;
-      // pruneMesh, not removeMesh: an operator-registered record outlives its broker being down.
+      // pruneMesh, not removeMesh: a liveness miss keeps the record (manual and up alike).
       (pruneMesh(m.space) ? sweep.pruned : sweep.offline).push(m.space);
     }),
   );

@@ -123,7 +123,7 @@ try {
 
   manager = new Manager({ space, servers: BROKER, runtime: "pty", workspaceRoot: root });
   await manager.start();
-  const s = await manager.startAgent({ name: SEAT, agent: "stdin-seat", cwd: repoRoot });
+  const s = await manager.startAgent({ name: SEAT, agent: "stdin-seat", cwd: repoRoot, events: false });
   if (!s.ok) throw new Error(`seat did not start: ${JSON.stringify(s)}`);
   for (let i = 0; i < 60 && !seatAlive(); i++) await wait(200);
   if (!seatAlive()) throw new Error("the seat never came up");

@@ -50,6 +50,8 @@ const oneOwner = epRequestSubject("demo", { route: { mode: "one" }, ...base, tar
 c("class owner = 12 tokens", oneOwner === `cotal.demo.ep.one.manager.spawn.owner.u_abc.u_abc.worker.${UID}.${NONCE}`);
 const oneHandle = epRequestSubject("demo", { route: { mode: "one" }, ...base, target: { mode: "handle", tOwner: "u_t", tActor: "svc", tUid: UID2 } });
 c("class handle = 14 tokens", oneHandle === `cotal.demo.ep.one.manager.spawn.handle.u_t.svc.${UID2}.u_abc.worker.${UID}.${NONCE}`);
+const oneExact = epRequestSubject("demo", { route: { mode: "one" }, ...base, target: { mode: "exact", tOwner: "u_t", tActor: "svc", tUid: UID2 } });
+c("class exact = 14 tokens", oneExact === `cotal.demo.ep.one.manager.spawn.exact.u_t.svc.${UID2}.u_abc.worker.${UID}.${NONCE}`);
 const all = epRequestSubject("demo", { route: { mode: "all" }, ...base });
 c("scatter mode token", all === `cotal.demo.ep.all.manager.spawn.u_abc.worker.${UID}.${NONCE}`);
 const inst = epRequestSubject("demo", { route: { mode: "inst", instanceId: IID }, ...base, target: { mode: "ledger", tOwner: "u_t" } });
@@ -66,6 +68,10 @@ const pHandle = parseEpSubject(oneHandle);
 c("handle parses: full pinned target triple",
   pHandle?.plane === "request" && pHandle.target?.mode === "handle" && pHandle.target.tOwner === "u_t"
   && pHandle.target.tActor === "svc" && pHandle.target.tUid === UID2);
+const pExact = parseEpSubject(oneExact);
+c("exact parses: full pinned target triple, distinct mode from handle",
+  pExact?.plane === "request" && pExact.target?.mode === "exact" && pExact.target.tOwner === "u_t"
+  && pExact.target.tActor === "svc" && pExact.target.tUid === UID2);
 const pInst = parseEpSubject(inst);
 c("instance parses: instanceId + ledger target",
   pInst?.plane === "request" && pInst.route === "inst" && pInst.instanceId === IID
@@ -93,6 +99,7 @@ c("one token short → null", parseEpSubject(`cotal.demo.ep.one.manager.spawn.u_
 c("one token extra → null", parseEpSubject(`${one}.extra`) === null);
 c("self + spurious target token → null", parseEpSubject(`cotal.demo.ep.one.manager.spawn.self.u_t.u_abc.worker.${UID}.${NONCE}`) === null);
 c("handle with 2 target tokens → null", parseEpSubject(`cotal.demo.ep.one.manager.spawn.handle.u_t.svc.u_abc.worker.${UID}.${NONCE}`) === null);
+c("exact with 2 target tokens → null", parseEpSubject(`cotal.demo.ep.one.manager.spawn.exact.u_t.svc.u_abc.worker.${UID}.${NONCE}`) === null);
 c("reply with extra token → null", parseEpSubject(`${reply}.x`) === null);
 c("reply with non-numeric epoch → null", parseEpSubject(`cotal.demo.ep.reply.manager.${IID}.x3.u_abc.worker.${UID}.${NONCE}`) === null);
 c("reply with a beyond-2^53 epoch → null (parse mirrors the build-side safe-integer bound)",

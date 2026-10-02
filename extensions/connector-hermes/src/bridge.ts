@@ -9,7 +9,7 @@
  *
  *   Python → sidecar
  *     {t:"subscribe"}                          adapter: start receiving inbound pushes
- *     {t:"delivered", id}                      adapter: turn accepted msg <id> → ack it on the stream
+ *     {t:"delivered", recvKey}                 adapter: turn accepted delivery <recvKey> → ack it on the stream
  *     {t:"reply", target, text}                adapter: route a turn's reply back to its origin
  *     {t:"tool", id, name, args}               tools: invoke a cotal_* tool (full shared surface)
  *
@@ -27,10 +27,14 @@
  */
 import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   cotalToolSpecs,
   parseToolArgs,
   NO_TOOL_ARGS,
+  tokenMatches,
+  MAX_FRAME_BYTES,
+  AUTH_DEADLINE_MS,
   type MeshAgent,
   type AgentConfig,
   type InboxItem,
@@ -66,6 +70,9 @@ function wireItem(i: InboxItem): Record<string, unknown> {
     fromRole: i.fromRole,
     mentions: i.mentions,
     mentionsMe: i.mentionsMe,
+    // Backfilled on join: the sidecar frames it as history, as connector-core's fmtItem does.
+    // Without it a restart replays every retained mention as a live turn (#2205).
+    historical: i.historical,
     text: i.text,
     replyTo: i.replyTo,
     contextId: i.contextId,
@@ -76,9 +83,13 @@ export interface BridgeServer {
   close(): void;
 }
 
-/** Start the adapter bridge. Returns a handle whose `close()` stops the server. */
-export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string): BridgeServer {
-  if (existsSync(socketPath)) {
+/** Start the adapter bridge. Returns a handle whose `close()` stops the server. `token` is the
+ *  launch's control token: the same shared secret {@link startControlServer} authenticates the
+ *  control plane with, presented here as the first frame's `token` field. */
+export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, token: string): BridgeServer {
+  const digest = createHash("sha256").update(token).digest();
+
+  if (process.platform !== "win32" && existsSync(socketPath)) {
     try {
       unlinkSync(socketPath); // clear a stale socket from a dead predecessor
     } catch {
@@ -193,9 +204,25 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
 
   const server: Server = createServer((sock) => {
     let buf = "";
+    let authenticated = false;
     sock.setEncoding("utf8");
+    // ABSOLUTE deadline (not an idle timeout) on an unauthenticated connection — a slow-loris
+    // dribbling one byte at a time must not camp on the socket forever. Cleared the instant the
+    // first frame is in hand (successful or not: either way the connection is decided).
+    const deadline = setTimeout(() => sock.destroy(), AUTH_DEADLINE_MS);
+    deadline.unref?.();
+    const dropUnauthenticated = (): void => {
+      clearTimeout(deadline);
+      log("bridge: dropped an unauthenticated connection");
+      sock.destroy();
+    };
     sock.on("data", (d) => {
       buf += d;
+      if (!authenticated && buf.length > MAX_FRAME_BYTES) {
+        // oversized pre-auth frame — drop hard, never half-close (it keeps spewing)
+        dropUnauthenticated();
+        return;
+      }
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, nl);
@@ -205,13 +232,33 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         try {
           frame = JSON.parse(line) as Record<string, unknown>;
         } catch {
+          if (!authenticated) {
+            dropUnauthenticated();
+            return;
+          }
           log(`malformed frame dropped`);
+          continue;
+        }
+        if (!authenticated) {
+          // The first frame off an unauthenticated connection must be the subscribe carrying the
+          // launch's control token — anything else (a wrong/missing token, or any other frame
+          // type) is dropped before `adapter` can be assigned or `onTool` reached.
+          if (frame.t !== "subscribe" || !tokenMatches(frame.token, digest)) {
+            dropUnauthenticated();
+            return;
+          }
+          clearTimeout(deadline);
+          authenticated = true;
+          // This same subscribe frame is also the subscribe — handleFrame's "subscribe" case
+          // assigns `adapter` and pumps the queue.
+          void handleFrame(sock, frame);
           continue;
         }
         void handleFrame(sock, frame);
       }
     });
     sock.on("close", () => {
+      clearTimeout(deadline);
       if (sock === adapter) {
         adapter = undefined;
         awaitingId = undefined;
@@ -223,8 +270,17 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     });
   });
 
-  server.on("error", (e) => log(`server error: ${(e as Error).message}`));
-  server.listen(socketPath, () => log(`listening: ${socketPath}`));
+  let bound = false;
+  server.on("error", (e) => {
+    log(`server error: ${(e as Error).message}`);
+    // A bind we never held (e.g. EADDRINUSE from a squatter) is fatal: better to die than leave a
+    // dead bridge behind a live seat that thinks it has one.
+    if (!bound) process.exit(1);
+  });
+  server.listen(socketPath, () => {
+    bound = true;
+    log(`listening: ${socketPath}`);
+  });
 
   return {
     close() {

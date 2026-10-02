@@ -101,7 +101,10 @@ let userMgr: Manager | undefined;
 
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  delivery = await bootDeliveryDaemon({ space, servers: broker.servers, auth });
+  delivery = await bootDeliveryDaemon({
+    space, servers: broker.servers, auth,
+    reloadStoreIdentity: { kind: "fs", root: resolve(workspaceRoot) },
+  });
 
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
   await manager.start();
@@ -141,7 +144,7 @@ try {
 
   const spawnGoal = "spawn-seat".padEnd(43, "s");
   const spawned = await call("spawn", {
-    name: "seat", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1, windowMs: 60_000 },
+    name: "seat", agent: "supervise-stub", cwd: repoRoot, events: false, supervise: { restarts: 1, windowMs: 60_000 },
   }, { id: spawnGoal }).then((r) => r.reply, asValue);
   const readiness = await resultOf(spawnGoal, 60_000);
   c("the seat started under supervise",
@@ -216,7 +219,7 @@ try {
   writeFileSync(join(workspaceRoot, ".cotal", "agents", "fail.md"), "---\nname: fail\nrole: worker\n---\n");
   const failGoal = "spawn-fail".padEnd(43, "f");
   const failSpawned = await call("spawn", {
-    name: "fail", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 2, windowMs: 60_000 },
+    name: "fail", agent: "supervise-stub", cwd: repoRoot, events: false, supervise: { restarts: 2, windowMs: 60_000 },
   }, { id: failGoal }).then((r) => r.reply, asValue);
   const failReady = await resultOf(failGoal, 60_000);
   const failRow = M.agents.get("fail");
@@ -254,12 +257,19 @@ try {
   mkdirSync(userAuthStateDir(userRoot, space), { recursive: true });
   writeFileSync(join(userAuthStateDir(userRoot, space), "idp.json"), "{}\n");
   recordMesh({ space, server: broker.servers, root: userRoot, mode: "user", ts: new Date().toISOString() });
+  // A second workspace root is required (the lease refuses a second manager on the
+  // same root). The daemon already bound at `workspaceRoot` would then fail the
+  // store-identity challenge. Unbind it first so start sees an absent rail, which
+  // is not a named store, and the cell can still grade the user-mode accept
+  // refusal. Later cells do not need the daemon.
+  await delivery?.stop().catch(() => {});
+  delivery = undefined;
   userMgr = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot: userRoot });
   await userMgr.start();
   const user = await userMgr.startAgent({ name: "user", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1, windowMs: 1_000 } });
   c("user-mode refuses supervise at accept",
     user.ok === false && (user.error ?? "").includes("a user-mode seat has no static slot"), user);
-  await userMgr.stop().catch(() => {});
+  await userMgr.stop({ withAgents: true }).catch(() => {});
   userMgr = undefined;
   removeMesh(space);
 
@@ -275,8 +285,8 @@ try {
 } finally {
   await seatNc?.drain().catch(() => seatNc?.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
-  await userMgr?.stop().catch(() => {});
-  await manager?.stop().catch(() => {});
+  await userMgr?.stop({ withAgents: true }).catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
   await delivery?.stop().catch(() => {});
   await broker.stop().catch(() => {});
   if (prevHome === undefined) delete process.env.COTAL_HOME;

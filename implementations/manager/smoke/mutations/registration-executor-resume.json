@@ -1,0 +1,40 @@
+{
+  "suite": [
+    "implementations/manager/smoke/registration-executor-resume.smoke.ts"
+  ],
+  "guard": "manager boot gives post-heal re-registration fresh scoped authority and resumes durable verified-holder progress under the same registration operation",
+  "command": "pnpm smoke:registration-executor-resume",
+  "completionMarker": "ISSUE 1335 COMPRESSED LIFETIME",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/registration-executor-resume.json",
+  "why": [
+    "The suite imports Manager relatively, so manager.ts mutations are live. Core is rebuilt by the",
+    "command because registerServiceInstance and the repair cursor live in @cotal-ai/core.",
+    "",
+    "MUTATION 1 restores the defect: heal and the following registration share one executor window,",
+    "so a six-second credential expires during the delayed last holder of the new registration.",
+    "",
+    "MUTATION 2 ignores durable verified holders on the same-op retry, so the last-holder delay is",
+    "followed by a full re-walk instead of one remaining eviction."
+  ],
+  "mutations": [
+    {
+      "name": "remove the fresh-authority boundary after boot heal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      await retryExpiredExecutor(\"boot-heal\", () => this.withEndpointServeExecutor(async ({ recordsKv, authKv, nc: execNc }) => {\n        await publishAndProvision({ recordsKv, authKv, nc: execNc });\n        if (auth) {\n          await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);\n        }\n      }));\n      registration = await retryExpiredExecutor(\"registration\", () => this.withEndpointServeExecutor(completeRegistration));\n",
+      "replace": "      registration = await this.withEndpointServeExecutor(async (ctx) => {\n        await publishAndProvision(ctx);\n        if (auth) {\n          await this.healFrozenRegistrationGate(ctx.authKv, iid, auth, ctx.recordsKv);\n        }\n        return completeRegistration(ctx);\n      });\n",
+      "expectRed": "compressed-lifetime takeover converges under fresh authority",
+      "cell": "compressed-lifetime takeover converges under fresh authority",
+      "note": "Without a new executor after the eight-holder boot heal, the six-second registration window is already exhausted and the takeover cannot converge."
+    },
+    {
+      "name": "same-op retry re-verifies holders the durable cursor already recorded",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "    const verified = new Set(progress?.verified ?? []);",
+      "replace": "    const verified = new Set<string>();",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "registration resume skips already-verified holders",
+      "cell": "registration resume skips already-verified holders",
+      "note": "The gate can still reopen after a full re-walk. Only the durable skip is removed, which this cell counts."
+    }
+  ]
+}

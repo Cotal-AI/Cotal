@@ -28,7 +28,7 @@ import {
   serverConfig,
   setupSpaceStreams,
 } from "@cotal-ai/core";
-import { killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 async function freePort(): Promise<number> {
   const socket = createServer();
@@ -43,7 +43,7 @@ async function freePort(): Promise<number> {
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 const space = "webseed";
-const dir = mkdtempSync(join(tmpdir(), "cotal-webseed-"));
+const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}webseed-`));
 const storeDir = join(dir, "nats");
 const conf = join(dir, "s.conf");
 const log = join(dir, "s.log");
@@ -63,6 +63,7 @@ try {
   const fd = openSync(log, "w");
   try {
     broker = spawn("nats-server", ["-c", conf], { stdio: ["ignore", fd, fd] });
+    teardownOnSignal(broker);
   } finally {
     closeSync(fd);
   }

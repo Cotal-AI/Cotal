@@ -31,6 +31,7 @@ const LaunchAgentSchema = z.strictObject({
   description: z.string().optional(),
   body: z.string().optional(),
   prompt: z.string().min(1).optional(),
+  events: z.boolean().optional(),
   capabilities: z.array(z.string().regex(/^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?$/, "capability must be a safe token, optionally role-namespaced (role:<r>)")).optional(),
   subscribe: z.array(z.string()),
   allowSubscribe: z.array(z.string()),
@@ -184,6 +185,7 @@ export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, o
   role?: string;
   model?: string;
   variant?: string;
+  events?: boolean;
   config: string;
   resolved: MeshLaunchAgent;
   owner?: string;
@@ -196,6 +198,7 @@ export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, o
     role: a.role,
     model: a.model,
     variant: a.variant,
+    events: a.events,
     config: configPath,
     resolved: a,
     owner,

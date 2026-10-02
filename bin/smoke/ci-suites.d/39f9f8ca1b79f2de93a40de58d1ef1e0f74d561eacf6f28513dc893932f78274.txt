@@ -1,0 +1,2 @@
+# A daemon coupled to its broker must outlive a blip and exit, by name, on a real loss.
+smoke:delivery-broker-coupling

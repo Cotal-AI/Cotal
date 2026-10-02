@@ -3,7 +3,11 @@ import type { ManagerResumeInventory } from "./manager.js";
 
 export const MAX_RESUME_CONTROL_BYTES = 512 * 1024;
 export const MAX_RESUME_COMMIT_BYTES = 1024;
-const MAX_AGENTS = 50;
+/** Concurrency ceiling — the manager refuses to hold more than this many live + in-flight +
+ *  cooling slots at once (P4a). Bounds a fork-bomb: spawn is a full agent process per call.
+ *  Declared here (not in manager.ts) so the resume inventory schema and the spawn/resume
+ *  capacity checks share one value; manager.ts imports it. */
+export const MAX_AGENTS = 50;
 const TOKEN = /^[A-Za-z0-9_]+$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 
@@ -82,12 +86,20 @@ const agent = z.strictObject({
     shareTools: z.string().max(4096).optional(),
     forkSource: z.string().min(1).max(4096).optional(),
     sessionId: z.string().min(1).max(4096).optional(),
+    // The connector's session pointer file. Optional because a seat whose connector declares no
+    // continuation has none, and because an inventory written before this field existed must still
+    // resume rather than be refused by a stricter reader.
+    sessionStatePath: path.optional(),
     unresolvedLaunchOptionKeys: z.array(label).max(64).optional(),
   }),
   dependencies: z.array(path).max(16),
   spawner: z.string().min(1).max(256),
   authorityParent: z.string().min(1).max(256).optional(),
   startedAt: z.string().min(1).max(64),
+  // The CHAT stream frontier at the preservation cut (issue #545). Optional because an inventory
+  // written before this field existed must still resume rather than be refused, exactly as
+  // sessionStatePath's absence means no pointer rather than a stricter refusal.
+  backfillFloor: z.number().int().nonnegative().optional(),
 });
 
 const inventory = z.strictObject({

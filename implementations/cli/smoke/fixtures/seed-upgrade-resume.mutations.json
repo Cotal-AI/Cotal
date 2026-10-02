@@ -1,0 +1,26 @@
+{
+  "suite": [
+    "implementations/cli/smoke/seed-upgrade-resume.smoke.ts"
+  ],
+  "guard": "a manager resumes an interrupted connector generation upgrade automatically, while a same-generation interrupted seed still fails loud",
+  "command": "pnpm smoke:seed-upgrade-resume",
+  "completionMarker": "seed-upgrade-resume smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-upgrade-resume.mutations.json",
+  "why": [
+    "A completed 0.33.1-shaped store has no reconcile marker. The marker is a cursor written by the newer seeder before its copy/add mutation and cleared only after authority, witness, and the new generation stamp commit.",
+    "The smoke builds the 0.33.1 state through the released package, leaves the old stamp in place with a compatible cursor as an interrupted newer-generation refresh would, and boots the current public manager against an isolated broker. That manager must repair and reach readiness without a hand-run maintenance command.",
+    "The bidirectional control changes only the stamp to the current generation. That state cannot be attributed to an upgrade, so the manager must still refuse and retain the cursor.",
+    "The mutation deletes the unattended repair call. The manager then returns from the seed gate with the cursor still present, and the matching marker-retirement assertion turns red."
+  ],
+  "mutations": [
+    {
+      "name": "the manager recognizes an interrupted generation upgrade but skips the verified repair",
+      "file": "implementations/cli/src/seed/reconcile.ts",
+      "find": "          await reconcile(\"repair\");\n          return NOOP;",
+      "replace": "          return NOOP;",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build && pnpm --filter cotal-ai build",
+      "expectRed": "upgrade interruption: manager repairs the newer-generation cursor before reaching ready",
+      "cell": "upgrade interruption: manager repairs the newer-generation cursor before reaching ready"
+    }
+  ]
+}

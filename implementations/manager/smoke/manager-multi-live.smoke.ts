@@ -25,15 +25,18 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import {
+import type { Connector, LaunchOpts, LaunchSpec, EpCaller } from "@cotal-ai/core";
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+process.env.COTAL_HOME = join(dir, "home");
+const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER,
-  openRecordsBucket, freezeExpectedSet, resolveService, scatterCommand,
-  registry, type Connector, type LaunchOpts, type LaunchSpec, type EpCaller,
-} from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+  openRecordsBucket, freezeExpectedSet, resolveService, scatterCommand, registry,
+} = await import("@cotal-ai/core");
+const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../.."); // the stub runs here so `@cotal-ai/core` resolves
@@ -64,7 +67,6 @@ const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const SPACE = `mgrmulti-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(SPACE);
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const mkRoot = (tag: string, agentName: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });
@@ -74,7 +76,7 @@ const mkRoot = (tag: string, agentName: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection } };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -100,8 +102,8 @@ try {
   check("two managers in one space registered distinct logical instance ids", IID1 !== IID2, { IID1, IID2 });
 
   console.log("1. instance-targeted spawn on each manager (a real agent joins each)");
-  const s1 = await m1.startAgent({ name: "a1", agent: "e2e-stub", cwd: repoRoot });
-  const s2 = await m2.startAgent({ name: "a2", agent: "e2e-stub", cwd: repoRoot });
+  const s1 = await m1.startAgent({ name: "a1", agent: "e2e-stub", cwd: repoRoot, events: false });
+  const s2 = await m2.startAgent({ name: "a2", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("manager 1 spawned its agent a1 (joined presence, started)", s1.ok === true, s1);
   check("manager 2 spawned its agent a2 (joined presence, started)", s2.ok === true, s2);
 
@@ -131,6 +133,10 @@ try {
   // for pin 3. Pin 3 is about the instance that leaves its registration behind, so its serving
   // connection is dropped under it: connections go, nothing is written, the record stays READY.
   // The manager object is kept for the teardown below, which still stops its agent.
+  // The manager treats any serve-connection close that is not its own stop() as a fault and
+  // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
+  // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
+  (m2 as unknown as MgrPriv).leaseStopping = true;
   await ((m2 as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   const scatter2 = await scatterCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 3_000 });
@@ -139,8 +145,8 @@ try {
     scatter2.missing.includes(IID2) && scatter2.complete === false, { missing: scatter2.missing, complete: scatter2.complete });
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
-  await m2?.stop().catch(() => {});
-  await m1?.stop().catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
   // The scratch tree goes too. Its absence here is the defect: this suite passed, said so, and
   // left one directory behind on every green run — reproduced by count, not inferred. The pause

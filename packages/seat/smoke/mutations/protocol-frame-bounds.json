@@ -30,12 +30,12 @@
     {
       "name": "M3 put launch payload on argv",
       "file": "packages/seat/src/launcher.ts",
-      "find": "  const child = spawn(process.execPath, [custodianEntry()], {",
-      "replace": "  const child = spawn(process.execPath, [custodianEntry(), payload], {",
+      "find": "  const child = spawn(process.execPath, [custodianEntry(), RUN_MARKER_FLAG, run], {",
+      "replace": "  const child = spawn(process.execPath, [custodianEntry(), RUN_MARKER_FLAG, run, payload], {",
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
       "expectRed": "launch payload is not on the custodian cmdline",
       "cell": "launch payload is not on the custodian cmdline",
-      "note": "argv is world-readable via /proc/pid/cmdline. stdin still carries the JSON so the seat starts; the cell reads real procfs."
+      "note": "argv is world-readable via /proc/pid/cmdline. stdin still carries the JSON so the seat starts; the cell reads real procfs. Re-anchored after the run marker was added to the custodian argv: the mutation still appends the secret-bearing payload to argv, which is the same defect."
     }
   ]
 }

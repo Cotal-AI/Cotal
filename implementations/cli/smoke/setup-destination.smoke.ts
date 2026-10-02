@@ -33,6 +33,7 @@
  */
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
 
@@ -63,10 +64,11 @@ let agentFilePath!: typeof import("@cotal-ai/core").agentFilePath;
 let loadAgentFile!: typeof import("@cotal-ai/core").loadAgentFile;
 let seedDestinationFor!: typeof import("../src/commands/setup.js").seedDestinationFor;
 let seedDefaultForSetup!: typeof import("../src/commands/setup.js").seedDefaultForSetup;
+let readyCard!: typeof import("../src/commands/setup.js").readyCard;
 try {
   ({ recordMesh, setCurrent, resolveMeshTarget } = await import("@cotal-ai/workspace"));
   ({ agentFilePath, loadAgentFile } = await import("@cotal-ai/core"));
-  ({ seedDestinationFor, seedDefaultForSetup } = await import("../src/commands/setup.js"));
+  ({ seedDestinationFor, seedDefaultForSetup, readyCard } = await import("../src/commands/setup.js"));
 } catch (e) {
   cleanScratch(e);
 }
@@ -101,6 +103,21 @@ const listed = (dir: string): string[] => {
   }
 };
 
+async function captureWrites(work: () => Promise<void>): Promise<string> {
+  const chunks: string[] = [];
+  const stdout = process.stdout.write;
+  const stderr = process.stderr.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => { chunks.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    await work();
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+  }
+  return chunks.join("");
+}
+
 try {
   // ── 1. the seed lands where SPAWN reads, not where the cwd points ──────────────────────────
   const alpha = mesh("alpha", 4801);
@@ -133,6 +150,31 @@ try {
   const destB = seedDestinationFor(here).dir;
   check("the selected mesh decides the catalog: two meshes give two destinations from ONE cwd", destA !== destB, { destA, destB });
   check("neither destination is the cwd's own catalog", destA !== catalogOf(here) && destB !== catalogOf(here), { cwd: catalogOf(here) });
+
+  // The repeat-run card must describe the same selected remote mesh as setup's seed destination.
+  // Catalog entries are registry facts and must not be probed merely to render this card.
+  let catalogAttempts = 0;
+  const catalogSink = createServer((socket) => { catalogAttempts++; socket.destroy(); });
+  await new Promise<void>((resolve) => catalogSink.listen(0, "127.0.0.1", resolve));
+  const catalogPort = (catalogSink.address() as { port: number }).port;
+  const catalogRoot = mkdtempSync(join(scratch, "catalog-ready-"));
+  recordMesh({
+    space: "remote_ready", server: `nats://127.0.0.1:${catalogPort}`, root: catalogRoot, mode: "user", origin: "catalog", catalogOwner: "ready-owner",
+    userAuth: {
+      provider: "cotal",
+      idp: { url: "https://ready.example/api/auth", issuer: "https://ready.example", audience: "catalog" },
+      remote: true,
+      sentinelCredsPath: join(catalogRoot, "sentinel.creds"),
+    },
+    ts: new Date(0).toISOString(),
+  });
+  setCurrent("remote_ready");
+  const card = await captureWrites(() => readyCard(here));
+  check("the ready card names the selected remote mesh and does not recommend starting a local one",
+    card.includes(`nats://127.0.0.1:${catalogPort} · space remote_ready · selected`) && card.includes("probed)") && !card.includes("start the mesh:"),
+    card);
+  check("the ready card never probes a discovered catalog broker", catalogAttempts === 0, catalogAttempts);
+  catalogSink.close();
 
   // ── 2. what setup writes must LOAD under the loader spawn uses ─────────────────────────────
   // `existsSync` is not the question: `status` reports a green `default` for a file `loadAgentFile`

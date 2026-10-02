@@ -1,0 +1,6 @@
+# `pi-sdk.smoke.ts` owns a real JetStream broker. It used to run from the `@cotal-ai/pi` package
+# `test` script, which put a broker inside `Windows / required` - a job that is broker-free by
+# design and has no nats-server, so it went red on `spawn nats-server` ENOENT for every push.
+# It runs here instead, on the Linux shard that installs a broker. `smoke:pi` stays UNGATED
+# because `pi.smoke.ts` needs a pi install; this suite needs only the broker and a faux provider.
+smoke:pi-sdk

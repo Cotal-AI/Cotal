@@ -6,7 +6,11 @@ import { join } from "node:path";
 import { reapSmokeBrokers } from "../reap-smoke-brokers.mjs";
 
 const fixtureId = randomUUID().replaceAll("-", "");
-const rootPrefix = `cotal-control-dial-root-${fixtureId}-`;
+// The suite mints this root under the kit's broker token, whose value carries the SUITE's pid.
+// This fixture runs as a different process, so it cannot rebuild that token and matches the
+// tagged infix instead, exactly as the broker-store check below already does.
+const rootTag = `control-dial-root-${fixtureId}-`;
+const isRoot = (name: string) => name.startsWith("cotal-smoke-broker-") && name.includes(rootTag);
 const homePrefix = `cotal-control-dial-home-${fixtureId}-`;
 const storeTag = `-control-dial-js-${fixtureId}-`;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -59,7 +63,7 @@ let seedFiles = 0;
 try {
   for (let i = 0; i < 100; i++) {
     const entries = readdirSync(tmpdir());
-    roots = entries.filter((name) => name.startsWith(rootPrefix));
+    roots = entries.filter((name) => isRoot(name));
     homes = entries.filter((name) => name.startsWith(homePrefix));
     stores = entries.filter((name) => name.startsWith("cotal-smoke-broker-") && name.includes(storeTag));
     authJson = 0; seedFiles = 0;

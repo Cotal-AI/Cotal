@@ -4,6 +4,7 @@
   ],
   "guard": "nothing typed at a terminal with no session reaches the agent, and the detach key still works there",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-stdin",
+  "executes": ["bin/cotal.ts"],
   "completionMarker": "O: the manager is back on the session count it started with",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-stdin.json",
   "why": [
@@ -147,7 +148,8 @@
       "replace": "      releaseStdin(); const watch = undefined as ReturnType<typeof ownStdin>;",
       "expectRed": "...and the seat read nothing of what was typed at a terminal with no session",
       "completionMarker": "A: the manager is back on the session count it started with",
-      "note": "INVENTED rather than restored, and the only entry here of that kind, so it is labelled instead of blending in. Checked against history rather than against the comment above it: at `a7742a75^` the backoff wait ALREADY ran `const watch = watchDetachKey(key.byte)`. The wait was always owned, and what that commit added was ownership of the ESTABLISHMENT window and the gaps between attempts. So cell A guards a regression this codebase has never had and there is no shipped defect to put back. The only shape that reds it is an unowned wait, and removing the wait's reader also removes the detach key from every wait, so the run cascades and ends at 19 of 84 marks. Hence the per-entry completionMarker: this mutant is meant to survive as far as cell A and no further. Graded against the suite-END marker instead it reads INCONCLUSIVE, which is a fact about which marker was used and not about the cell. The anchor is CODE ONLY and deliberately stops before the trailing comment: a `find` that spans prose is disarmed by anyone tidying prose, and `smoke:mutation-fixtures` rejects one that does. Two earlier candidates proved nothing and are named so they are not retried: `const watch = undefined` alone does not compile (TS2339, `watch` narrows to `never`), and dropping the `ownStdin()` call without releasing removes no reader at all, because `ownStdin` is idempotent through `idle ??=` and the reader is installed before the loop."
+      "note": "INVENTED rather than restored, and the only entry here of that kind, so it is labelled instead of blending in. Checked against history rather than against the comment above it: at `a7742a75^` the backoff wait ALREADY ran `const watch = watchDetachKey(key.byte)`. The wait was always owned, and what that commit added was ownership of the ESTABLISHMENT window and the gaps between attempts. So cell A guards a regression this codebase has never had and there is no shipped defect to put back. The only shape that reds it is an unowned wait, and removing the wait's reader also removes the detach key from every wait, so the run cascades and ends at 19 of 84 marks. Hence the per-entry completionMarker: this mutant is meant to survive as far as cell A and no further. Graded against the suite-END marker instead it reads INCONCLUSIVE, which is a fact about which marker was used and not about the cell. The anchor is CODE ONLY and deliberately stops before the trailing comment: a `find` that spans prose is disarmed by anyone tidying prose, and `smoke:mutation-fixtures` rejects one that does. Two earlier candidates proved nothing and are named so they are not retried: `const watch = undefined` alone does not compile (TS2339, `watch` narrows to `never`), and dropping the `ownStdin()` call without releasing removes no reader at all, because `ownStdin` is idempotent through `idle ??=` and the reader is installed before the loop.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "the fix reverted for exactly the establishment window: the reader is stopped before each attempt",
@@ -168,7 +170,8 @@
       "replace": "    releaseStdin();\n    const attempting = establishAttachSession(vv, pin, reconnect, first);",
       "expectRed": "...the agent recorded no signal",
       "completionMarker": "D: the manager is back on the session count it started with",
-      "note": "The SAME one-line revert the C entry uses, registered a second time because the claim is different and cannot be inferred from C's. C asks whether DATA typed in the establishment window reaches the agent. D asks whether a 0x03 typed in that same window arrives as a real SIGNAL, and the answer runs through the pty's line discipline rather than through the byte itself. That distinction was predicted wrong once in this branch's own review, on the reasoning that a raw 0x03 handed to a stub is just data: the seat runs under a pty, the line discipline turns it into a SIGINT, and the seat dies. Measured here, the sink carries `<SIGINT>` and the pid is gone.\nIts red KILLS THE SEAT, which is what D exists to forbid, so the run cannot go on for long: cell E throws `could not resolve \"stdinseat\": no agent` because the seat E needs is the one this mutant killed. The cascade lands on E and NOT on D, which is why the per-entry completionMarker is D's own settle line. That marker prints at mark 24, three marks and two passing checks after the expectRed at mark 21, so it qualifies the red rather than restating it. Do not shorten it to the expectRed: a marker satisfied by the very red it is meant to qualify proves nothing."
+      "note": "The SAME one-line revert the C entry uses, registered a second time because the claim is different and cannot be inferred from C's. C asks whether DATA typed in the establishment window reaches the agent. D asks whether a 0x03 typed in that same window arrives as a real SIGNAL, and the answer runs through the pty's line discipline rather than through the byte itself. That distinction was predicted wrong once in this branch's own review, on the reasoning that a raw 0x03 handed to a stub is just data: the seat runs under a pty, the line discipline turns it into a SIGINT, and the seat dies. Measured here, the sink carries `<SIGINT>` and the pid is gone.\nIts red KILLS THE SEAT, which is what D exists to forbid, so the run cannot go on for long: cell E throws `could not resolve \"stdinseat\": no agent` because the seat E needs is the one this mutant killed. The cascade lands on E and NOT on D, which is why the per-entry completionMarker is D's own settle line. That marker prints at mark 24, three marks and two passing checks after the expectRed at mark 21, so it qualifies the red rather than restating it. Do not shorten it to the expectRed: a marker satisfied by the very red it is meant to qualify proves nothing.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "the wait's reader is stopped when the wait ends, so an attempt runs with nobody reading",
@@ -194,7 +197,7 @@
     {
       "name": "a session that lands behind the press is forgotten instead of handed back",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "          abandoned.push({ grant: late.grant, creds: late.creds, inbox: late.inbox, server: late.server });",
+      "find": "          abandoned.push({ grant: late.grant, link: late.link, inbox: late.inbox, server: late.server });",
       "replace": "",
       "expectRed": "...and the manager is back on the session count it started with, with no slot left behind",
       "cell": "E. the detach key struck in that same window ends the attach and hands the slot back",
@@ -204,7 +207,7 @@
     {
       "name": "the between-sessions reader SCANS for the detach byte instead of matching one alone",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "  const onData = (d: Buffer) => { if (d.length === 1 && d[0] === byte) hit(); };",
+      "find": "  const onData = (d: Buffer) => { if (isDetachPress(d, byte)) hit(); };",
       "replace": "  const onData = (d: Buffer) => { if (d.includes(byte)) hit(); };",
       "expectRed": "the attach is still up: the chunk is not a keypress",
       "cell": "F. a detach byte sharing a read with another byte is not a detach, and is not delivered",
@@ -214,12 +217,32 @@
     {
       "name": "the session's own reader SCANS for the detach byte instead of matching one alone",
       "file": "implementations/cli/src/lib/attach-client.ts",
-      "find": "      if (d.length === 1 && d[0] === detach.byte) {",
+      "find": "      if (isDetachPress(d, detach.byte)) {",
       "replace": "      if (d.includes(detach.byte)) {",
       "expectRed": "...and the attach is still up",
       "cell": "G. the same chunk in a LIVE session is data, forwarded to the agent, and still not a detach",
       "note": "The same decision on the other side of the handoff, and the cost of it: in a LIVE session a chunk containing 0x1d is DATA and goes to the agent with the byte in it. Widening the test here turns that paste into a detach. Both readers are mutated separately on purpose: one test passing is not evidence about the other, and they are in different packages.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "isDetachPress loses its kitty and xterm CSI arms, back to the legacy one-byte match only",
+      "file": "implementations/cli/src/lib/attach-client.ts",
+      "find": "export function isDetachPress(d: Buffer, byte: number): boolean {\n  if (d.length === 0) return false;\n  if (d.length === 1 && d[0] === byte) return true;\n  const s = d.toString(\"latin1\");\n  const codepoints = byte >= 0x01 && byte <= 0x1a ? [byte | 0x40, byte | 0x60] : [byte | 0x40];\n  const hasCtrl = (mods: number) => mods >= 1 && ((mods - 1) & 4) !== 0;\n  const kitty = /^\\x1b\\[(\\d+)(?::\\d+(?::\\d+)?)?;(\\d+)u$/.exec(s);\n  if (kitty) {\n    const cp = Number(kitty[1]);\n    const mods = Number(kitty[2]);\n    if (codepoints.includes(cp) && hasCtrl(mods)) return true;\n  }\n  const xterm = /^\\x1b\\[27;(\\d+);(\\d+)~$/.exec(s);\n  if (xterm) {\n    const mods = Number(xterm[1]);\n    const cp = Number(xterm[2]);\n    if (codepoints.includes(cp) && hasCtrl(mods)) return true;\n  }\n  return false;\n}",
+      "replace": "export function isDetachPress(d: Buffer, byte: number): boolean {\n  return d.length === 1 && d[0] === byte;\n}",
+      "expectRed": "the attach detaches and exits clean",
+      "cell": "G2. the kitty encoding of the detach key ends a LIVE session",
+      "note": "Losing the kitty/xterm CSI arms is exactly the regression #598 reports: a terminal with either protocol enabled sends a multi-byte sequence for Ctrl-], the one-byte-only test never matches it, and the key does nothing. G2 catches it directly on the kitty form.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+        "name": "the Ctrl test loses its modifier floor, so a modifier field of 0 reads as Ctrl again",
+        "file": "implementations/cli/src/lib/attach-client.ts",
+        "find": "  const hasCtrl = (mods: number) => mods >= 1 && ((mods - 1) & 4) !== 0;",
+        "replace": "  const hasCtrl = (mods: number) => ((mods - 1) & 4) !== 0;",
+        "expectRed": "the attach is still up after a kitty chunk with modifier 0 (not a press)",
+        "cell": "G5. an encoded detach key whose modifier field is 0 is data, forwarded, and not a detach",
+        "note": "Found by review of #598: `(0 - 1) & 4` is 4 in ToInt32 arithmetic, so without the `mods >= 1` floor a kitty or xterm chunk carrying modifier 0 (a value neither protocol emits) detaches instead of being forwarded as data. Cell G5 writes each encoding with modifier 0 as a whole chunk of its own and asserts the attach stays up (the first check to red under this mutant, because the chunk is taken as a press and the attach exits) and that the bytes reach the agent once a CR flushes the cooked pty.",
+        "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "the handoff swallows a press that landed while the session was opening",

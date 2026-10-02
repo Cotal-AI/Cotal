@@ -20,7 +20,7 @@ export interface ProfileFixture {
   permissions: Record<string, unknown>;
   producer: "permissionsFor" | "epServeGrantRows" | "calloutPermissions";
 }
-export function profileFixtures(space: string): ProfileFixture[] {
+export async function profileFixtures(space: string): Promise<ProfileFixture[]> {
   const uid = "u".repeat(26), instance = "i".repeat(26), session = "s".repeat(26);
   const principal: MintPrincipal = { owner: "local", actor: "census", connId: "census0123456789abcdef", lifecycleUid: uid };
   const rows: ProfileFixture[] = [];
@@ -35,6 +35,10 @@ export function profileFixtures(space: string): ProfileFixture[] {
       one("agent", { allowPublish: [], allowSubscribe: [] }, "empty-channel-scope");
     },
     observer: () => one("observer"), admin: () => one("admin"), supervisor: () => one("supervisor"),
+    "manager-caller"() {
+      one("manager-caller", { managerInstanceId: instance });
+      one("manager-caller", { managerInstanceId: instance, capabilities: ["spawn", "run", "admin"] }, "spawn-run-admin");
+    },
     provisioner: () => one("provisioner"),
     deprovisioner: () => one("deprovisioner", { deprovisionTarget: { principal: "local.worker", lifecycleUid: uid } }),
     "retirement-requester": () => one("retirement-requester", { retirementRequester: { owner: "local", actor: "census", uid, target: { owner: "local", actor: "worker", lifecycleUid: uid } } }),
@@ -82,14 +86,23 @@ export function profileFixtures(space: string): ProfileFixture[] {
   for (const produce of Object.values(producers)) produce();
   const owner = deriveOwnerToken("census-prototype-secret".repeat(2), "view-owner");
   for (const view of USER_TOKEN_VIEWS) {
-    const scope = [VIEW_REQUIRED_SCOPE[view]];
-    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view } };
-    const produce = calloutPermissions(() => ({ scope, lifecycleUid: uid, allowPublish: ["public"], allowSubscribe: ["public"] }));
+    const required = VIEW_REQUIRED_SCOPE[view];
+    const scope = required === undefined ? ["spawn", "run", "admin"] : [required];
+    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}) } };
+    // This fixture authorizes one coordinate to construct the shipped grant surface. Real gate
+    // ownership and registration validation are graded by the live exchange suites, not this census.
+    const produce = calloutPermissions(
+      () => ({ scope, lifecycleUid: uid, allowPublish: ["public"], allowSubscribe: ["public"] }),
+      async (selectedOwner, selectedInstance) => {
+        assert.equal(selectedOwner, owner);
+        assert.equal(selectedInstance, instance);
+      },
+    );
     if (view === "manager-service") {
       assert.throws(() => produce(token, principal.connId), /typed material exchange/);
       continue; // Explicit refused view, represented separately from Profile in the report.
     }
-    rows.push({ profile: view, variant: `callout-view:${view}`, permissions: produce(token, principal.connId), producer: "calloutPermissions" });
+    rows.push({ profile: view, variant: `callout-view:${view}`, permissions: await produce(token, principal.connId), producer: "calloutPermissions" });
   }
   assert.deepEqual(rows.filter((row) => row.producer === "calloutPermissions").map((row) => row.variant).sort(),
     USER_TOKEN_VIEWS.filter((view) => view !== "manager-service").map((view) => `callout-view:${view}`).sort(),
@@ -201,7 +214,7 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
  * pairing is expected in the trusted infrastructure profiles (they ARE the trusted plane), and is the
  * condition the issued rail's origin assumption cannot survive in a peer-held credential.
  */
-export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver"]);
+export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller"]);
 
 /**
  * The rest, classified as trusted infrastructure or operator credentials. Peer-heldness is a
@@ -414,6 +427,10 @@ export function peerOptionSweep(space: string, pr: MintPrincipal): { label: stri
   for (const allowSubscribe of subs) for (const allowPublish of pubs)
     out.push({ label: `observer sub=${JSON.stringify(allowSubscribe)} pub=${JSON.stringify(allowPublish)}`,
       permissions: permissionsFor("observer", space, pr, { allowSubscribe, allowPublish }) });
+  for (const capabilities of [[], ["spawn"], ["run"], ["admin"], ["spawn", "run", "admin"]])
+    for (const managerInstanceId of [instance, "j".repeat(26)])
+      out.push({ label: `manager-caller cap=${JSON.stringify(capabilities)} instance=${managerInstanceId}`,
+        permissions: permissionsFor("manager-caller", space, pr, { capabilities, managerInstanceId }) });
   out.push({ label: "session-caller", permissions: permissionsFor("session-caller", space, pr, { sessionCaller: { endpoint: "manager", sessionId: session, epoch: 1 } }) });
   out.push({ label: "run-driver", permissions: permissionsFor("run-driver", space, pr, { runDriver: { endpoint: "manager", runId: "sweep-run", takeoverId: "take0001", instanceId: instance, epoch: 1 } }) });
   return out;

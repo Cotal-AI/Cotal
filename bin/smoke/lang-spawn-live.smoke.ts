@@ -34,6 +34,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Seat-env hygiene BEFORE any cotal import: whatever runs this suite may itself be a managed
 // session whose COTAL_* names a live mesh; nothing may leak into the rig or its children.
@@ -44,7 +45,7 @@ process.env.COTAL_HOME = home;
 const { connect } = await import("@nats-io/transport-node");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 const {
-  probeConnect, registry, DEV_OWNER, openRecordsBucket,
+  probeConnect, registry, DEV_OWNER, openRecordsBucket, eventChannel,
   timerWriterContext, timerWriterConsumerConfig, timerWriterDurable, armCheckpointTimer,
   eptReqStreamName, replayRunJournal, newTakeoverId, resolveService, invokeCommand,
   setupSpaceStreams, openMembersRegistry, openChannelRegistry, listMembers, readChannelConfig,
@@ -102,13 +103,14 @@ const envJoin = (o: LaunchOptsT): Record<string, string> => ({
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? SERVER),
   COTAL_ID: o.id ?? "", COTAL_LIFECYCLE_UID: o.lifecycleUid ?? "", COTAL_NAME: o.name,
 });
-const joinCon: ConnectorT = { kind: "connector", name: "join", requires: ["node"], buildLaunch: (o): LaunchSpecT => ({ command: process.execPath, args: ["-e", JOIN_CHILD], env: envJoin(o) }) };
+const joinCon: ConnectorT = { kind: "connector", name: "join", requires: ["node"], eventChannel, buildLaunch: (o): LaunchSpecT => ({ command: process.execPath, args: ["-e", JOIN_CHILD], env: envJoin(o) }) };
 registry.register(joinCon);
 
 let mgr: InstanceType<typeof Manager> | undefined;
 let rc = 1;
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-langspawn-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}langspawn-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   let up = false;
   for (let i = 0; i < 60 && !up; i++) { up = (await probeConnect(SERVER, { timeoutMs: 400 })).ok; if (!up) await wait(120); }
@@ -540,7 +542,7 @@ log("got", v.estimate);`,
   }
   rc = fail === 0 ? 0 : 1;
 } finally {
-  try { await mgr?.stop(); } catch { /* teardown */ }
+  try { await mgr?.stop({ withAgents: true }); } catch { /* teardown */ }
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
   rmSync(workspaceRoot, { recursive: true, force: true });

@@ -176,6 +176,16 @@
       "expectRed": "MeshAgent.stop clears both readiness and transport locally",
       "cell": "MeshAgent.stop clears both readiness and transport locally",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "a reconnect-disabled teardown drains instead of closing",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    this.disableLibraryReconnect(nc);\n    try {\n      await nc.close();\n",
+      "replace": "    this.disableLibraryReconnect(nc);\n    try {\n      await nc.drain();\n",
+      "expectRed": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
+      "cell": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "The FakeNc #975 witness counts close() and drain() separately. Restoring drain() increments drains and reds the named cell."
     }
   ]
 }

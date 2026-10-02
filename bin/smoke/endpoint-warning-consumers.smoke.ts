@@ -25,7 +25,7 @@ const BUNDLED_MESH_AGENT_ARTIFACTS = [
   "extensions/connector-hermes/dist/launch.js",
   "extensions/connector-hermes/plugin/cotal/_sidecar/standalone.cjs",
   "extensions/connector-jcode/dist/host.js",
-  "extensions/connector-opencode/dist/plugin.bundle.js",
+  "extensions/connector-opencode/dist/plugin/index.js",
   "extensions/pi/dist/index.js",
   "extensions/pi/dist/standalone.js",
 ] as const;
@@ -136,6 +136,17 @@ const sites: Site[] = [
     distNeedle: 'ep.on("warning",ignoreSnapshotWarning);',
     proof: "structural",
     limit: "the explicit ignore is proven; awaited rows and their unavailable results own behavioral coverage",
+  },
+  {
+    cell: "status responder-axis probe deliberately ignores recoverable side-channel warnings",
+    consumer: "CLI status delivery-responder probe",
+    disposition: "ignore",
+    source: "implementations/cli/src/commands/status.ts",
+    dist: "implementations/cli/dist/commands/status.js",
+    sourceNeedle: 'ep.on("warning", ignoreResponderWarning);',
+    distNeedle: 'ep.on("warning",ignoreResponderWarning);',
+    proof: "structural",
+    limit: "the explicit ignore is proven; the lease read's own three-state result owns behavioral coverage, and an unreadable lease already renders as `unchecked` rather than as health",
   },
   {
     cell: "status component probe deliberately ignores recoverable side-channel warnings",

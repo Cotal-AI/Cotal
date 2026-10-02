@@ -15,6 +15,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-langsupervise-home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
@@ -23,7 +24,7 @@ process.env.COTAL_HOME = home;
 const { connect } = await import("@nats-io/transport-node");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 const {
-  probeConnect, registry, DEV_OWNER, openRecordsBucket,
+  probeConnect, registry, DEV_OWNER, openRecordsBucket, eventChannel,
   replayRunJournal, newTakeoverId, resolveService, invokeCommand, setupSpaceStreams,
 } = await import("@cotal-ai/core");
 type LaunchOptsT = import("@cotal-ai/core").LaunchOpts;
@@ -84,6 +85,7 @@ const joinCon: ConnectorT = {
   kind: "connector",
   name: "join",
   requires: ["node"],
+  eventChannel,
   buildLaunch: (o): LaunchSpecT => ({ command: process.execPath, args: [SEAT], env: envJoin(o) }),
 };
 registry.register(joinCon);
@@ -97,7 +99,8 @@ const rowsOf = (text: string): Array<{ pid: string; action: string; goalId: stri
 let mgr: InstanceType<typeof Manager> | undefined;
 let rc = 1;
 try {
-  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-langsupervise-js-"))], { stdio: "ignore" });
+  const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}langsupervise-js-`))], { stdio: "ignore" });
+  teardownOnSignal(broker);
   kids.push(broker);
   let up = false;
   for (let i = 0; i < 60 && !up; i++) { up = (await probeConnect(SERVER, { timeoutMs: 400 })).ok; if (!up) await wait(120); }
@@ -267,7 +270,7 @@ try {
   }
   rc = fail === 0 ? 0 : 1;
 } finally {
-  try { await mgr?.stop(); } catch { /* teardown */ }
+  try { await mgr?.stop({ withAgents: true }); } catch { /* teardown */ }
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
   rmSync(workspaceRoot, { recursive: true, force: true });

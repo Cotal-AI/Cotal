@@ -32,7 +32,9 @@ const withRenderer = <T>(r: PartRenderer, body: () => T): T => {
 c("a text part renders its text", partsToText([{ kind: "text", text: "hello" }]).includes("hello"));
 c("a data part renders its data", partsToText([{ kind: "data", data: { a: 1 } }]).includes('{"a":1}'));
 
-const EMPTY = partsToText([{ kind: "data", data: undefined }]);
+// `Part` no longer admits `data: undefined` at compile time (the producer refuses it); a keyless
+// row can still arrive at runtime (history validates only the envelope), so the marker stays.
+const EMPTY = partsToText([{ kind: "data", data: undefined } as unknown as Part]);
 c("a data part with nothing in it says so", EMPTY.includes("[empty data part]"), EMPTY);
 
 // ── No renderer ───────────────────────────────────────────────────────────────────────────────

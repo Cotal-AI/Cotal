@@ -135,18 +135,23 @@ const watchdogFiredDuring = async (yieldEvery: number): Promise<boolean> => {
     const logs: unknown[] = [];
     const raced = run(source, {
       runId,
-      handler: new SimHandler({ turns: { quick: { status: "done", at: 0 } } }),
+      handler: new SimHandler({ turns: { quick: { status: "done" } } }),
       yieldEvery: 64,
       stepBudget: 40_000,
       onLog: (l) => logs.push(l.values[0]),
     });
-    const verdict = await Promise.race([
-      raced.then(() => "returned").catch((e) => `threw ${(e as Error).message.slice(0, 40)}`),
-      new Promise<string>((r) => {
-        setTimeout(() => r("HUNG"), 8_000);
-      }),
-    ]);
-    return { verdict, logs };
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const verdict = await Promise.race([
+        raced.then(() => "returned").catch((e) => `threw ${(e as Error).message.slice(0, 40)}`),
+        new Promise<string>((r) => {
+          watchdog = setTimeout(() => r("HUNG"), 8_000);
+        }),
+      ]);
+      return { verdict, logs };
+    } finally {
+      clearTimeout(watchdog);
+    }
   };
 
   // (b) the spinner CANNOT win: equal clocks (neither arm awaits an effect), and it is declared second.
@@ -226,10 +231,10 @@ log(votes.a.status);
     runId: "f-5",
     handler: new SimHandler({
       turns: {
-        plan: { status: "done", at: 0 },
-        build: { status: "done", at: 0 },
-        review: { status: "done", at: 0 },
-        check: { status: "done", at: 0 },
+        plan: { status: "done" },
+        build: { status: "done" },
+        review: { status: "done" },
+        check: { status: "done" },
       },
     }),
     onLog: (l) => logs.push(l.values[0]),

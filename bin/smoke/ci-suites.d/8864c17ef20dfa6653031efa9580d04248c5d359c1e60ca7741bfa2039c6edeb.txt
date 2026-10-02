@@ -1,0 +1,3 @@
+# Install-probe CI shape (#1412): the install-probe and release jobs exist with the right
+# dependency edges in changesets.yml.
+smoke:install-probe-ci

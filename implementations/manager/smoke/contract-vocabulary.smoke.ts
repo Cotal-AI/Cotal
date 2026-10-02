@@ -27,8 +27,11 @@
  *
  * Run: pnpm smoke:contract-vocabulary
  */
+import { spawn } from "node:child_process";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { compileContract, VOID_SCHEMA } from "@cotal-ai/core";
-import { managerContractArtifactValues } from "../src/manager-service-contract.js";
+import { managerClusterDocument, managerContractArtifactValues } from "../src/manager-service-contract.js";
 
 let checked = 0;
 let refused = 0;
@@ -76,6 +79,66 @@ const enough = checked >= FLOOR;
 console.log(`\n${checked} documents checked, ${refused} refused by the admitted vocabulary`);
 if (!enough) console.log(`  FAIL  only ${checked} documents reached the check (floor ${FLOOR}) - the input set collapsed`);
 
-const pass = refused === 0 && enough;
+// THE IMPORT-COST CELL (#1323): importing the contract module must not compile the schemas. The
+// compile used to run at module scope, so EVERY CLI invocation paid ~1.8 CPU-seconds of Ajv work
+// before its verb was read (`cotal --version` included). Two fresh children measure what the
+// module adds on top of its own dependency floor (`@cotal-ai/core`: the NATS graph, Ajv itself,
+// the digest code — plus, under tsx, the loader's per-module tax, which lands on both sides):
+// one imports the floor, the other imports the contract module and reads one cluster-document
+// digest (the describe-only path a `describe` reader takes — digests, never validators). The
+// DELTA between the two children is the module's own cost; the compile alone accounts for
+// ~500 ms of it, so a lazy module sits far below the bound and a module-scope compile trips it
+// by an order of magnitude. CPU, not wall: wall counts the machine (SCHEMA_PROFILE's own record
+// of the 101-158 ms trivial-compile refusal), and the bound carries margin for a loaded runner.
+const TSX = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "node_modules", ".bin", "tsx");
+const PROBE = join(dirname(fileURLToPath(import.meta.url)), "_probe-1323-contract-import.ts");
+const probeCpu = (mode: "--control" | "--contract"): Promise<number> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(TSX, [PROBE, mode], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (b) => (out += b.toString()));
+    child.on("error", reject);
+    child.on("exit", (rc) => {
+      const m = /PROBE (?:control|contract) (\d+) \d+/.exec(out);
+      if (rc !== 0 || !m) return reject(new Error(`probe ${mode} exited ${rc}: ${out.trim().slice(0, 200)}`));
+      resolve(Number(m[1]));
+    });
+  });
+let lazyOk = false;
+let lazyDetail = "";
+try {
+  const [control, contract] = [await probeCpu("--control"), await probeCpu("--contract")];
+  const overhead = contract - control;
+  lazyOk = overhead <= 150;
+  lazyDetail = `module adds ${overhead} ms CPU over its dependency floor (bound 150; compile at import measured ~500+)`;
+} catch (e) {
+  lazyDetail = `probe failed: ${(e as Error).message}`;
+}
+console.log(`  ${lazyOk ? "ok  " : "FAIL"}  importing the contract module compiles nothing (describe-only readers pay no Ajv): ${lazyDetail}`);
+
+// THE DIGEST-IDENTITY CELL: the cluster document's source-derived digests must be the SAME VALUES
+// compileContract returns as closureDigest — that equality is what lets the document pin digests
+// without compiling while a compiled pair still registers under the document's pins. One command
+// proves it end to end (the document's first row), against the SAME compiled validator the serve
+// table would carry.
+let digestOk = false;
+{
+  const doc = managerClusterDocument();
+  const first = doc.commands[0]!;
+  // A real compiled pair, through the same lazy export a caller hand-imports: its closure digests
+  // must equal the document's source-derived pins for the SAME command.
+  const { MANAGER_CONTRACTS } = await import("../src/manager-service-contract.js");
+  const pair = MANAGER_CONTRACTS[first.name];
+  digestOk = pair.input.closureDigest === first.inputDigest && pair.output.closureDigest === first.outputDigest;
+  if (digestOk) {
+    checked++;
+    console.log(`  ok    cluster document digest == compiled closure digest (${first.name})`);
+  } else {
+    refused++;
+    console.log(`  FAIL  cluster document digest != compiled closure digest (${first.name}): ${first.inputDigest} vs ${pair.input.closureDigest}`);
+  }
+}
+
+const pass = refused === 0 && enough && lazyOk;
 console.log(`\nCONTRACT VOCABULARY ${pass ? "OK ✅" : "FAILED ❌"}`);
 process.exit(pass ? 0 : 1);

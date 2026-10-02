@@ -47,6 +47,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const enc = new TextEncoder(), dec = new TextDecoder();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -68,7 +69,7 @@ const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `sibfence-${mintLifecycleUid().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-sibfence-"));
+const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}sibfence-`));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
@@ -77,6 +78,7 @@ writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: 
 const kids: ChildProcess[] = [];
 const conns: NatsConnection[] = [];
 const srv = spawnProc("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(srv);
 kids.push(srv);
 let mgr: InstanceType<typeof Manager> | undefined;
 
@@ -303,7 +305,7 @@ try {
   console.log(`\nsibling-mint-fence smoke: ${pass} passed, ${fail} failed`);
 } finally {
   for (const c of conns) await c.drain().catch(() => c.close());
-  await mgr?.stop().catch(() => {});
+  await mgr?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { k.kill("SIGKILL"); }
   await wait(200);
 }

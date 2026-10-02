@@ -25,7 +25,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { CancelSignal } from "../effects.js";
 import type { RunClock } from "../journal.js";
-import type { KeyScope, ScopeKind } from "../keys.js";
+import type { KeyScope, PathKind } from "../keys.js";
 
 /**
  * A branch's cancellation, in the walker's two degrees.
@@ -75,7 +75,7 @@ export class EngineFrame {
     readonly depth: number = 0,
   ) {}
 
-  branch(kind: ScopeKind, name: string | null, occurrence: number, branchKey: string): EngineFrame {
+  branch(kind: PathKind, name: string | null, occurrence: number, branchKey: string): EngineFrame {
     return new EngineFrame(
       this.keys.branch(kind, name, occurrence, branchKey),
       this.clock.fork(),

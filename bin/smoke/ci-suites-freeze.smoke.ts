@@ -8,6 +8,10 @@
  * appends a suite line onto the real file and asserts the SET of names the scan returns.
  * The required unit job reaches the same scan through `pnpm check:shard-stability`.
  *
+ * The committed-list cell always runs. BASE and HEAD select the two revisions. When they are
+ * absent the cell is red by name; it is not omitted, and the inventory count does not shrink to
+ * match the omission.
+ *
  * Run: pnpm smoke:ci-suites-freeze
  */
 import { execFileSync } from "node:child_process";
@@ -95,9 +99,17 @@ check(
   fragmentFileName("smoke:other") !== expectedFragment,
 );
 
+const COMMITTED_LIST_CELL = "the committed frozen list added no suite names versus base";
+const zero = "0000000000000000000000000000000000000000";
 const base = process.env.BASE;
 const head = process.env.HEAD;
-if (base && head) {
+if (!base || !head || base === zero || head === zero) {
+  check(
+    COMMITTED_LIST_CELL,
+    false,
+    "BASE and HEAD were unset, so the committed frozen list was not compared",
+  );
+} else {
   const show = (sha: string): string =>
     execFileSync("git", ["--no-replace-objects", "show", `${sha}:bin/smoke/ci-suites.txt`], {
       encoding: "utf8",
@@ -111,7 +123,7 @@ if (base && head) {
   }
   const offenders = Array.isArray(live) ? live : [];
   check(
-    "the committed frozen list added no suite names versus base",
+    COMMITTED_LIST_CELL,
     Array.isArray(live) && offenders.length === 0,
     Array.isArray(live)
       ? offenders.map((suite) => `${suite} -> bin/smoke/ci-suites.d/${fragmentFileName(suite)}`).join(", ")
@@ -119,7 +131,7 @@ if (base && head) {
   );
 }
 
-const EXPECTED = base && head ? 9 : 8;
+const EXPECTED = 9;
 check(
   `every cell ran - ${EXPECTED} expected, so a cell that stops existing is not mistaken for one that passed`,
   pass + fail === EXPECTED,

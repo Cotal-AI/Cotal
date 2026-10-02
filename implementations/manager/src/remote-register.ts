@@ -16,6 +16,8 @@ import {
   registerServiceInstance,
   serveIssuanceGateKv,
   standaloneConnectOpts,
+  SERVICE_READY,
+  writeServiceStatus,
   type RemoteManagerAuthorityMaterial,
 } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
@@ -36,6 +38,9 @@ export async function registerRemoteManagerAuthority(args: {
    *  here. A participant reaches its host through whatever the record says, so this can be a
    *  `wss://` edge; hardcoding `false` would send the prepare credential to it in the clear. */
   tlsRequired: boolean;
+  evict: (principal: string) => Promise<boolean>;
+  /** Host-side guarded repair for a foreign manager slot holder, used once before a retry. */
+  reconcileForeignRegistration?: (instanceId: string) => Promise<void>;
 }): Promise<{ registrationRevision: number; processEpoch: number; serveGrant: Awaited<ReturnType<typeof authorizeServeGrant>> }> {
   // The transport follows the RECORDED URL: a remote broker is commonly published through an HTTPS
   // edge, and the raw node transport refuses `ws://`/`wss://` outright instead of dialing it.
@@ -66,8 +71,9 @@ export async function registerRemoteManagerAuthority(args: {
       endpoint: MANAGER_ENDPOINT,
       instanceId: args.instanceId,
       opId: args.instanceId,
+      evict: args.evict,
     });
-    await registerServiceInstance(recordsKv, {
+    const register = () => registerServiceInstance(recordsKv, {
       space: args.space,
       spec: { endpoint: MANAGER_ENDPOINT, owner: args.owner, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 } },
       instanceId: args.instanceId,
@@ -81,6 +87,14 @@ export async function registerRemoteManagerAuthority(args: {
       observeHolderGeneration: (holderInstanceId) =>
         readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
     });
+    try {
+      await register();
+    } catch (error) {
+      const match = (error as Error).message.match(/concurrent registration for endpoint "manager" \(instance "([a-z0-9]{26,32})"\) holds the governance slot/);
+      if (!match || !args.reconcileForeignRegistration) throw error;
+      await args.reconcileForeignRegistration(match[1]!);
+      await register();
+    }
     const observed = await fence.observe();
     if (observed === null) throw new Error("remote manager issuance gate vanished after registration");
     const serveGrant = await authorizeServeGrant(recordsKv, {
@@ -96,6 +110,21 @@ export async function registerRemoteManagerAuthority(args: {
         return current.processEpoch;
       },
       readClusterArtifact,
+    });
+    await writeServiceStatus(recordsKv, {
+      endpoint: MANAGER_ENDPOINT,
+      instanceId: args.instanceId,
+      epoch: observed.processEpoch,
+      status: {
+        state: SERVICE_READY,
+        epoch: observed.processEpoch,
+        observedSpecRevision: observed.registrationRevision,
+      },
+      readProcessEpoch: async () => {
+        const current = await fence.observe();
+        if (!current) throw new Error("remote manager issuance gate vanished");
+        return current.processEpoch;
+      },
     });
     return { registrationRevision: observed.registrationRevision, processEpoch: observed.processEpoch, serveGrant };
   } finally {

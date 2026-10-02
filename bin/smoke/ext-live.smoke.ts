@@ -22,6 +22,13 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+  canonicalLocalProcessPath,
+  defaultStartToken,
+  MANAGER_DELIVERY_AWARE_MARKER,
+  MANAGER_PIDFILE,
+  MANAGER_SPARE_CAPABILITY,
+} from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // macOS commonly exposes tmpdir() through /var -> /private/var (and this harness may add another
@@ -56,6 +63,39 @@ const cotal = (args: string[], timeout = 180_000) => {
   return spawnSync(realNode, [tsxCli, binCotal, ...args], options);
 };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** `cotal ext add` installs the fixture from the real registry, so every refusal assertion below is
+ *  also satisfiable by npm failing to RESOLVE a `@cotal-ai/*` package at the workspace version. The
+ *  exit status is 1 either way, and only stderr tells the two apart.
+ *
+ *  That is not hypothetical. On 2026-10-01 the `live` job ran between the `chore(release): version
+ *  packages` merge and the publish finishing, npm answered ETARGET for `@cotal-ai/core@0.58.0`, and
+ *  the cell reddened against a refusal path the command never reached. 0.58.0 was on the registry as
+ *  `latest` within the hour and a re-run was green, so the product was never in question; what cost
+ *  time was a failure message pointing at `ext add`.
+ *
+ *  So name it. This still FAILS rather than passing, because the assertion genuinely was not
+ *  measured and a green here would be a lie, but it fails saying which package could not be resolved
+ *  and that the fix is to re-run after the release publishes.
+ *
+ *  ETARGET only, and the wording is measured off npm rather than recalled: `npm error notarget No
+ *  matching version found for <pkg>@<version>.` A missing PACKAGE answers E404 instead, and that is
+ *  deliberately NOT matched here. The versions under test belong to published packages, so an E404
+ *  for one of them would mean it had been unpublished, which is a real finding and has to stay a
+ *  plain loud failure. */
+const UNPUBLISHED = /[Nn]o matching version found for (@cotal-ai\/[^@\s]+@[^\s"\\]+)/;
+const refusedBecause = (name: string, r: { status: number | null; stderr: string }, reason: RegExp) => {
+  const stderr = r.stderr ?? "";
+  const miss = UNPUBLISHED.exec(stderr);
+  if (miss !== null && !reason.test(stderr))
+    throw new Error(
+      `UNMEASURED: ${name}: npm could not resolve ${miss[1].replace(/\.$/, "")}, so the refusal `
+      + `under test was never reached. That is the publish window after a version commit rather `
+      + `than a product failure: re-run this job once the release has published. `
+      + `stderr tail: ${stderr.slice(-200)}`,
+    );
+  ok(name, r.status === 1 && reason.test(stderr), stderr.slice(-300));
+};
 
 const target = cotal(["meshes", "add", "main", "--server", "nats://127.0.0.1:1", "--root", sandbox, "--mode", "open", "--force"]);
 ok("fixture mesh target is registered", target.status === 0, target.stderr);
@@ -287,11 +327,11 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
 
   const dep = fixture("cotal-ext-dep", GOOD, { dependencies: { "@cotal-ai/core": "*" }, peerDependencies: undefined });
   const r2 = cotal(["ext", "add", dep]);
-  ok("core-as-dependency fails with the exact reason", r2.status === 1 && /regular dependency/.test(r2.stderr), r2.stderr.slice(-300));
+  refusedBecause("core-as-dependency fails with the exact reason", r2, /regular dependency/);
 
   const nopeer = fixture("cotal-ext-nopeer", GOOD, { peerDependencies: undefined });
   const r3 = cotal(["ext", "add", nopeer]);
-  ok("missing core peerDep fails with the exact reason", r3.status === 1 && /peerDependency/.test(r3.stderr), r3.stderr.slice(-300));
+  refusedBecause("missing core peerDep fails with the exact reason", r3, /peerDependency/);
 
   const empty = fixture("cotal-ext-empty", "export {};\n");
   const r4 = cotal(["ext", "add", empty]);
@@ -303,7 +343,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   // binary doesn't carry fails; a workspace peer is LINKED and importable.
   const wsdep = fixture("cotal-ext-wsdep", GOOD, { dependencies: { "@cotal-ai/workspace": "*" } });
   const r6 = cotal(["ext", "add", wsdep]);
-  ok("@cotal-ai/* as a regular dependency fails with the exact reason", r6.status === 1 && /must be peerDependencies/.test(r6.stderr), r6.stderr.slice(-300));
+  refusedBecause("@cotal-ai/* as a regular dependency fails with the exact reason", r6, /must be peerDependencies/);
 
   const alien = fixture("cotal-ext-alien", GOOD, { peerDependencies: { "@cotal-ai/core": "*", "@cotal-ai/nonexistent": "*" } });
   const r7 = cotal(["ext", "add", alien]);
@@ -403,9 +443,20 @@ registry.register(
   const alive = (pid: number): boolean => {
     try { process.kill(pid, 0); return true; } catch { return false; }
   };
-  writeFileSync(join(sandbox, ".cotal", "manager.pid"), "");
+  const managerContext = { root: sandbox, space: "main" };
+  const managerPidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, managerContext);
+  const managerDeliveryAwarePath = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, managerContext);
+  const managerSpareCapabilityPath = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, managerContext);
+  const recordManager = (pid: number): void => {
+    const token = defaultStartToken(pid);
+    if (!token) throw new Error(`fixture could not read the process start token for manager pid ${pid}`);
+    writeFileSync(managerPidPath, String(pid));
+    writeFileSync(`${managerPidPath}.identity`, `${pid} ${token}`);
+    writeFileSync(managerSpareCapabilityPath, JSON.stringify({ version: 1, process: { pid, token } }));
+  };
+  writeFileSync(managerPidPath, "");
   const invalidPid = cotal(["down", "manager"]);
-  ok("empty pidfiles are cleaned without signalling PID 0", invalidPid.status === 0 && /empty pidfile/.test(invalidPid.stdout) && !existsSync(join(sandbox, ".cotal", "manager.pid")), invalidPid.stdout + invalidPid.stderr);
+  ok("empty pidfiles are cleaned without signalling PID 0", invalidPid.status === 0 && /empty pidfile/.test(invalidPid.stdout) && !existsSync(managerPidPath), invalidPid.stdout + invalidPid.stderr);
 
   const reservationOwner = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), `removing:${reservationOwner}`);
@@ -419,34 +470,34 @@ registry.register(
   let managerPid = daemon();
   const natsPid = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
-  writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(managerPid));
-  writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(managerPid));
+  recordManager(managerPid);
+  writeFileSync(managerDeliveryAwarePath, String(managerPid));
   writeFileSync(join(sandbox, ".cotal", "nats.pid"), String(natsPid));
 
   const dry = cotal(["down", "manager", "--dry-run"]);
-  ok("selective down dry-run is non-destructive", dry.status === 0 && alive(managerPid) && existsSync(join(sandbox, ".cotal", "manager.pid")) && /nothing was changed/i.test(dry.stdout), dry.stdout + dry.stderr);
+  ok("selective down dry-run is non-destructive", dry.status === 0 && alive(managerPid) && existsSync(managerPidPath) && /nothing was changed/i.test(dry.stdout), dry.stdout + dry.stderr);
   const brokerOnly = cotal(["down", "nats"]);
   ok("down nats refuses to orphan live dependants", brokerOnly.status === 1 && /cannot stop nats/.test(brokerOnly.stderr) && alive(natsPid) && alive(managerPid), brokerOnly.stdout + brokerOnly.stderr);
   const typo = cotal(["down", "managre"]);
   ok("unknown down component names list known components", typo.status === 1 && /unknown component/.test(typo.stderr) && /manager/.test(typo.stderr), typo.stderr);
 
-  writeFileSync(join(sandbox, ".cotal", "manager.pid.stopping"), "0");
+  writeFileSync(`${managerPidPath}.stopping`, "0");
   const staleStopping = cotal(["down", "manager"]);
-  ok("stale shutdown ownership is reclaimed", staleStopping.status === 0 && !alive(managerPid) && !existsSync(join(sandbox, ".cotal", "manager.pid.stopping")), staleStopping.stdout + staleStopping.stderr);
+  ok("stale shutdown ownership is reclaimed", staleStopping.status === 0 && !alive(managerPid) && !existsSync(`${managerPidPath}.stopping`), staleStopping.stdout + staleStopping.stderr);
 
   managerPid = daemon();
-  writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(managerPid));
-  writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(managerPid));
+  recordManager(managerPid);
+  writeFileSync(managerDeliveryAwarePath, String(managerPid));
 
   const one = cotal(["down", "manager"]);
   ok("down manager stops only the manager", one.status === 0 && !alive(managerPid) && alive(natsPid) && alive(fixturePid), one.stdout + one.stderr);
-  ok("selective down removes only manager-owned files", !existsSync(join(sandbox, ".cotal", "manager.pid")) && !existsSync(join(sandbox, ".cotal", "manager.delivery-aware")) && existsSync(join(sandbox, ".cotal", "nats.pid")), one.stdout);
+  ok("selective down removes only manager-owned files", !existsSync(managerPidPath) && !existsSync(managerDeliveryAwarePath) && existsSync(join(sandbox, ".cotal", "nats.pid")), one.stdout);
 
   const slowReady = join(sandbox, "slow-manager-ready");
   const slowManagerPid = daemon(`const fs = require("node:fs"); process.on("SIGTERM", () => setTimeout(() => process.exit(0), 5000)); fs.writeFileSync(${JSON.stringify(slowReady)}, "ready"); setInterval(() => {}, 1000);`);
   for (let i = 0; i < 50 && !existsSync(slowReady); i++) await sleep(20);
-  writeFileSync(join(sandbox, ".cotal", "manager.pid"), String(slowManagerPid));
-  writeFileSync(join(sandbox, ".cotal", "manager.delivery-aware"), String(slowManagerPid));
+  recordManager(slowManagerPid);
+  writeFileSync(managerDeliveryAwarePath, String(slowManagerPid));
   const concurrentOptions = { env, cwd: sandbox };
   assertSmokeSandboxDown(sandboxAnchor, ["down", "manager"], concurrentOptions);
   const concurrentDown = spawn(realNode, [tsxCli, binCotal, "down", "manager"], concurrentOptions);
@@ -455,10 +506,10 @@ registry.register(
   concurrentDown.stdout?.on("data", (data: Buffer) => (concurrentOut += data.toString()));
   concurrentDown.stderr?.on("data", (data: Buffer) => (concurrentErr += data.toString()));
   const concurrentExit = new Promise<number | null>((resolve) => concurrentDown.once("exit", resolve));
-  const stopping = join(sandbox, ".cotal", "manager.pid.stopping");
+  const stopping = `${managerPidPath}.stopping`;
   for (let i = 0; i < 100 && !existsSync(stopping); i++) await sleep(20);
   const duplicateDown = cotal(["down", "manager"]);
-  ok("concurrent down preserves live-process artifacts", duplicateDown.status === 1 && /already being stopped/.test(duplicateDown.stderr) && existsSync(join(sandbox, ".cotal", "manager.delivery-aware")), duplicateDown.stdout + duplicateDown.stderr);
+  ok("concurrent down preserves live-process artifacts", duplicateDown.status === 1 && /already being stopped/.test(duplicateDown.stderr) && existsSync(managerDeliveryAwarePath), duplicateDown.stdout + duplicateDown.stderr);
   const race = cotal(["down", "nats"]);
   const concurrentStatus = await concurrentExit;
   ok("down nats stays blocked while a dependant is concurrently stopping", existsSync(stopping) === false && race.status === 1 && /cannot stop nats/.test(race.stderr) && concurrentStatus === 0 && alive(natsPid), race.stdout + race.stderr + concurrentOut + concurrentErr);

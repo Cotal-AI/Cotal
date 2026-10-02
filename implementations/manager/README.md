@@ -14,6 +14,19 @@ each other; they meet at runtime over NATS.
 See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
+## Remote authority clients
+
+The package root exports `remoteManagerClient`, the stock request builders and response validators
+used by the remote manager path, plus `registerRemoteManagerAuthority` and the
+`RemoteManagerIdentityState` type. `managerClusterArtifacts()` provides the canonical document
+and manifest used by registration and the activation request, with both digests. Embeddings can
+use these without private module imports or a copied contract.
+The namespace covers standing renewal, run admission and attempts, maintenance, enrollment and
+retirement. Registration requires host-issued prepare credentials and uses the native registration
+barrier. The host still authenticates requests and owns issuance policy; these helpers grant no
+authority. Keep each account's five private manager identities separate, and retain the stock
+account, identity, epoch and active-run checks when composing callbacks.
+
 ## Startup reconciliation
 
 On an authenticated static mesh, the manager starts reconciling durable orphaned static slots,
@@ -43,8 +56,7 @@ Library composition roots can call `Manager.preserveState({ attemptId, persistIn
 `Manager.resumePreserved()` on a fresh active manager. The complete inventory is preflighted before
 the first child launches. Static and open entries reuse and validate the exact retained principal.
 User-auth entries are validated internally through `resolveAuthProvider().validateRetainedAgent()`;
-the manager never calls `grantAgent` or provisions a replacement identity. Ordinary
-`Manager.stop()` remains destructive while the manager is active.
+the manager never calls `grantAgent` or provisions a replacement identity.
 
 After restore, start the manager with `supervise --resume-attempt <id>`, wait for normal manager
 readiness, then send the admin control request:
@@ -64,6 +76,9 @@ before echoing its token in the separate admin request:
 ```json
 {"op":"finalizeResume","args":{"attemptId":"<id>","durableCommitToken":"<64 lowercase hex chars>"}}
 ```
+
+Active-mode `Manager.stop()` releases detachable manager-local custody and leaves agents running by
+default; `stop({ withAgents: true })` is the explicit destructive teardown.
 
 Only token-bound finalization releases ordinary destructive lifecycle semantics. Both operations are
 same-attempt idempotent. A manager signal or lease loss after commit but before finalization remains

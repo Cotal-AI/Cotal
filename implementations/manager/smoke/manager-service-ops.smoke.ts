@@ -29,9 +29,9 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connect } from "@nats-io/transport-node";
@@ -51,7 +51,7 @@ import {
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager, type SpawnHooks } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS, managerShippedSurface } from "../src/manager-service-contract.js";
-import { activateStaticLifecycle, casStaticSlot, readStaticSlot, writeStaticSlotIntent } from "../src/static-lifecycle.js";
+import { activateStaticLifecycle, casStaticSlot, readStaticSlot, writeStaticSlotIntent, STATIC_SLOT_READ_FAILED_DETAIL } from "../src/static-lifecycle.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const shipped = managerShippedSurface();
 
@@ -102,7 +102,7 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["w1", "w2", "w3", "wp1", "wp2", "m6pin"])
+for (const n of ["w1", "w2", "w3", "wp1", "wp2", "wpmissing", "m6pin", "wroute"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -127,10 +127,19 @@ const cwdCon: Connector = {
   }),
 };
 registry.register(cwdCon);
+// A stub connector whose child reports a presence-card provider (#785): the row read from the
+// roster card, not the launch request, is the surface under test.
+const routeCon: Connector = {
+  ...stubCon,
+  name: "route-stub",
+  buildLaunch: (o: LaunchOpts): LaunchSpec => ({ command: "node", args: [STUB], env: { ...envFor(o), COTAL_E2E_META_PROVIDER: "gateway-b" } }),
+};
+registry.register(routeCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 const M = mgr as unknown as {
   managerInstanceId: string;
+  userMode: boolean;
   agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string }; issued?: { generation: string; acceptedToken: string } }>;
   goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } };
   withLifecycleExecutor: <T>(
@@ -145,14 +154,14 @@ const M = mgr as unknown as {
 /** Plant the authentic stranded-retirement pair after manager boot, so startup reconcile cannot
  * consume it before `inspect` observes it: slot `terminalizing`, then gate frozen and head
  * `retiring` under the deterministic retirement op. */
-async function plantStrandedSlot(alias: string): Promise<{ actor: string; lifecycleUid: string; opId: string }> {
+async function plantStrandedSlot(alias: string, ownerInstanceId = M.managerInstanceId): Promise<{ actor: string; lifecycleUid: string; opId: string }> {
   const actor = newIdentity().id;
   const lifecycleUid = mintLifecycleUid();
   const opId = retireOpId(lifecycleUid);
   await M.withLifecycleExecutor({ owner: DEV_OWNER, actor, lifecycleUid, alias }, async (transport) => {
     await activateStaticLifecycle(transport, {
       owner: DEV_OWNER, alias, actor, lifecycleUid,
-      managerInstance: "inspect-projection-fixture", ownerInstanceId: M.managerInstanceId,
+      managerInstance: "inspect-projection-fixture", ownerInstanceId,
     });
     const slot = await readStaticSlot(transport, DEV_OWNER, alias);
     if (!slot) throw new Error(`missing planted slot ${alias}`);
@@ -207,7 +216,7 @@ async function plantRetiredSlot(alias: string): Promise<{ actor: string; lifecyc
 
 /** A caller instrument: mint an agent cred with the given ep capabilities (+ ctl privileged via
  *  the spawn capability), connect, and return the epCall/ctl helpers bound to its triple. */
-async function instrument(caps: Array<{ command: string; owner?: true }>) {
+async function instrument(caps: Array<{ command: string; owner?: true; instanceId?: string }>) {
   const id = newIdentity();
   const uid = mintLifecycleUid();
   const caller: EpCaller = { owner: DEV_OWNER, actor: id.id, uid };
@@ -216,6 +225,7 @@ async function instrument(caps: Array<{ command: string; owner?: true }>) {
     capabilities: ["spawn"],
     endpointCapabilities: caps.map((c) => ({
       endpoint: MANAGER_ENDPOINT, command: c.command,
+      ...(c.instanceId ? { routes: [], instanceId: c.instanceId } : {}),
       ...(c.owner ? { target: { mode: "owner" as const, tOwner: DEV_OWNER } } : {}),
     })),
   });
@@ -238,13 +248,19 @@ try {
   await mgr.start();
 
   const A = await instrument([
-    { command: "status" }, { command: "ps" }, { command: "inspect" }, { command: "models" },
+    { command: "status" }, { command: "ps" }, { command: "inspect" }, { command: "slots" }, { command: "models" },
     { command: "spawn" }, { command: "despawn", owner: true }, { command: "attach", owner: true },
     { command: "define-persona" }, { command: "list-personas" }, { command: "show-persona" }, { command: "purge" }, { command: "launch" },
     { command: "resume-preserved" }, { command: "commit-resume" }, { command: "finalize-resume" },
     { command: "prepare-preservation" }, { command: "commit-preservation" }, { command: "abort-preservation" },
   ]);
   const B = await instrument([{ command: "despawn", owner: true }, { command: "define-persona" }]);
+  const P = await instrument([
+    { command: "describe", instanceId: M.managerInstanceId },
+    { command: "resolve-cwd", instanceId: M.managerInstanceId },
+    { command: "spawn", instanceId: M.managerInstanceId },
+    { command: "ps" },
+  ]);
 
   console.log("1. describe: the rev-2 document serves the full fan-out");
   let clusterDigest: string | undefined;
@@ -316,7 +332,42 @@ try {
   }
 
   console.log("3. real lifecycle over ep.one: spawn -> ps/inspect -> targeted despawn");
-  const { acc: acc1, row: w1 } = await spawnLive(A.call, { name: "w1", agent: "e2e-stub", cwd: repoRoot });
+  const { acc: acc1, row: w1 } = await spawnLive(A.call, { name: "w1", agent: "e2e-stub", cwd: repoRoot, events: false });
+
+  console.log("3a. placed spawn: manager canonicalizes cwd and the child starts there");
+  {
+    const prepared = join(dir, "prepared checkout");
+    const alias = join(dir, "prepared-alias");
+    const missing = join(dir, "missing-checkout");
+    mkdirSync(prepared);
+    symlinkSync(prepared, alias, "dir");
+    const service = await resolveService(P.nc, space, MANAGER_ENDPOINT, P.caller, { deadlineMs: 10_000, instanceId: M.managerInstanceId });
+    const resolved = await invokeCommand(P.nc, space, service, "resolve-cwd", { cwd: alias }, { deadlineMs: 10_000 });
+    const canonical = (resolved.reply.data as { cwd?: string; host?: string } | undefined)?.cwd;
+    check("resolve-cwd answers one canonical directory for a symlink and its target",
+      resolved.reply.ok === true && canonical === realpathSync(prepared) && typeof (resolved.reply.data as { host?: unknown }).host === "string", resolved.reply);
+    const refused = await invokeCommand(P.nc, space, service, "resolve-cwd", { cwd: missing }, { deadlineMs: 10_000 });
+    check("resolve-cwd refuses a missing directory by name with failed-precondition",
+      refused.reply.ok === false && refused.reply.error?.code === "failed-precondition" && refused.reply.error.message.includes(missing), refused.reply);
+    const refusedSpawn = await A.call("spawn", { name: "wpmissing", agent: "cwd-stub", cwd: missing, events: false });
+    check("a spawn naming a directory the serving host cannot resolve is refused at admission with the path, the reason and the host (#385)",
+      refusedSpawn.reply.ok === false
+        && String(refusedSpawn.reply.error?.message ?? "").includes(missing)
+        && String(refusedSpawn.reply.error?.message ?? "").includes("does not resolve on this host")
+        && String(refusedSpawn.reply.error?.message ?? "").includes(hostname()),
+      refusedSpawn.reply);
+    const psAfterRefusal = await A.call("ps");
+    const rowsAfterRefusal = psAfterRefusal.reply.data as Array<{ name: string }>;
+    check("a refused cwd spawn provisions nothing: no ps row, no child",
+      !rowsAfterRefusal.some((r) => r.name === "wpmissing") && !existsSync(join(dir, "child-cwd.txt")),
+      { rows: rowsAfterRefusal, childExists: existsSync(join(dir, "child-cwd.txt")) });
+    rmSync(join(dir, "child-cwd.txt"), { force: true });
+    const placed = await invokeCommand(P.nc, space, service, "spawn", { name: "wp2", agent: "cwd-stub", cwd: canonical, events: false }, { deadlineMs: 30_000, id: `placed-${Date.now()}` });
+    for (let i = 0; i < 80 && !existsSync(join(dir, "child-cwd.txt")); i++) await wait(250);
+    const observed = existsSync(join(dir, "child-cwd.txt")) ? readFileSync(join(dir, "child-cwd.txt"), "utf8") : undefined;
+    check("a placed spawn's seat starts in the directory resolve-cwd answered",
+      placed.reply.ok === true && observed === canonical, { reply: placed.reply, observed, canonical });
+  }
   check("ep spawn accepts (acceptance floor) + the agent joins the mesh",
     acc1.name === "w1" && typeof acc1.goalId === "string" && (acc1.executor as { lifecycleUid?: string })?.lifecycleUid === M.managerInstanceId && w1.lifecycleUid.length >= 26, { acc: acc1, w1 });
   {
@@ -333,6 +384,31 @@ try {
       enrich.cwd === repoRoot && typeof enrich.pid === "number" && enrich.pid > 0 && enrich.spawner === A.principal && enrich.instanceId === M.managerInstanceId && typeof enrich.host === "string" && enrich.host.length > 0, enrich);
     check("...and an unpinned model serializes ABSENT, not fabricated",
       !("model" in enrich), enrich);
+    // #785: the presence card's `meta.provider`, not the launch request, is the surface `ps` reads.
+    const { row: wroute } = await spawnLive(A.call, { name: "wroute", agent: "route-stub", cwd: repoRoot, events: false });
+    // The row appears in `ps` as soon as the seat is live; the roster card's `meta.provider` can
+    // land a beat later. Poll (bounded, like `spawnLive`) until the field shows up, then assert once.
+    let routeRow: { name: string; provider?: string } | undefined;
+    for (let i = 0; i < 80; i++) {
+      const psRoute = await A.call("ps");
+      const routeRows = psRoute.reply.data as Array<{ name: string; provider?: string }>;
+      routeRow = routeRows.find((x) => x.name === "wroute");
+      if (routeRow?.provider !== undefined) break;
+      await wait(250);
+    }
+    check("ps carries the provider the seat's presence card reports", routeRow?.provider === "gateway-b", routeRow);
+    const psRoute = await A.call("ps");
+    const routeRows = psRoute.reply.data as Array<{ name: string; provider?: string }>;
+    const w1RowAfterRoute = routeRows.find((x) => x.name === "w1");
+    check("...and a seat whose card reports no provider serializes provider ABSENT, never fabricated",
+      w1RowAfterRoute !== undefined && !("provider" in w1RowAfterRoute), w1RowAfterRoute);
+    const insRoute = await A.call("inspect", { name: "wroute" });
+    check("the row contract admits the reported provider and refuses a non-string one",
+      insRoute.reply.ok === true && MANAGER_CONTRACTS.inspect.output.validate(insRoute.reply.data) === true &&
+      MANAGER_CONTRACTS.inspect.output.validate({ ...(insRoute.reply.data as Record<string, unknown>), provider: 7 }) === false,
+      insRoute.reply.data);
+    const stoppedRoute = await A.call("despawn", { graceful: true }, { actor: wroute.id, lifecycleUid: wroute.lifecycleUid });
+    check("wroute is cleaned up", stoppedRoute.reply.ok === true, stoppedRoute.reply);
     const ins = await A.call("inspect", { name: "w1" });
     check("inspect returns the same row", ins.reply.ok === true && (ins.reply.data as { id: string }).id === w1.id);
     check("the durable miss projection does not widen inspect's closed live-agent success contract",
@@ -384,6 +460,77 @@ try {
       retiredReply.reply.ok === false && retiredReply.reply.error?.code === "not-found" &&
       retiredReply.reply.error?.details?.some((d) => d.kind === "ai.cotal.manager.static-slot-observation") !== true,
       retiredReply.reply);
+
+    const sibling = await plantStrandedSlot("sibling-inspect", "sibling-manager");
+    const siblingInspectReply = await A.call("inspect", { name: "sibling-inspect" });
+    check("inspect of a sibling manager's durable row (explicit foreign ownerInstanceId) is not-found, the same ownership filter `slots` uses",
+      siblingInspectReply.reply.ok === false && siblingInspectReply.reply.error?.code === "not-found",
+      siblingInspectReply.reply);
+
+    const slotsReply = await A.call("slots");
+    check("slots answers ok through the real service client", slotsReply.reply.ok === true, slotsReply.reply);
+    const slotRows = (slotsReply.reply.data ?? []) as Array<Record<string, unknown>>;
+    const byName = (n: string) => slotRows.find((r) => r.name === n);
+    const strandedRow = byName("stranded-inspect");
+    check("slots lists the stranded row projected with slotPhase/cleanupComplete/headState/headOp/uid/revisions/readOrder/consistency, live=false, this manager's id",
+      strandedRow !== undefined && strandedRow.slotPhase === "terminalizing" && strandedRow.cleanupComplete === true &&
+      strandedRow.headState === "retiring" && (strandedRow.headOp as { opId?: string } | undefined)?.opId === stranded.opId &&
+      strandedRow.slotLifecycleUid === stranded.lifecycleUid && typeof strandedRow.slotRevision === "number" &&
+      typeof strandedRow.headRevision === "number" && JSON.stringify(strandedRow.readOrder) === JSON.stringify(["slot", "head"]) &&
+      strandedRow.consistency === "ordered-not-atomic" && strandedRow.live === false && strandedRow.managerInstanceId === M.managerInstanceId,
+      strandedRow);
+    const provisioningRow = byName("provisioning-inspect");
+    check("slots lists the provisioning row with none of the four head fields",
+      provisioningRow !== undefined && provisioningRow.slotPhase === "provisioning" &&
+      !("headState" in provisioningRow) && !("headOp" in provisioningRow) &&
+      !("headLifecycleUid" in provisioningRow) && !("headRevision" in provisioningRow),
+      provisioningRow);
+    const activeRow = byName("active-inspect");
+    check("slots lists the active planted row as active with live=false (no manager row: contradictory stranded state)",
+      activeRow !== undefined && activeRow.slotPhase === "active" && activeRow.live === false,
+      activeRow);
+    check("slots never lists the retired row",
+      byName("retired-inspect") === undefined, slotRows.map((r) => r.name));
+    check("slots never lists a sibling manager's foreign-owned row (the same ownership filter inspect used above)",
+      byName("sibling-inspect") === undefined, slotRows.map((r) => r.name));
+    const w1Row = byName("w1");
+    check("slots lists the live spawned agent as active with live=true",
+      w1Row !== undefined && w1Row.slotPhase === "active" && w1Row.live === true, w1Row);
+    check("every slots row validates against the closed output schema",
+      slotRows.length > 0 && slotRows.every((r) => MANAGER_CONTRACTS.slots.output.validate([r]) === true),
+      slotRows);
+    check("a row copy with an extra property is rejected by the closed schema",
+      MANAGER_CONTRACTS.slots.output.validate([{ ...(strandedRow as Record<string, unknown>), credentialIds: [] }]) === false,
+      strandedRow);
+
+    {
+      const kvForSlots = M.goalWriter?.ctx.kv;
+      if (!kvForSlots) throw new Error("manager goal-writer KV is not standing");
+      const originalSlotsGet = kvForSlots.get;
+      kvForSlots.get = async (): Promise<unknown> => { throw new Error("simulated store outage"); };
+      try {
+        const outageReply = await A.call("slots");
+        const outageDetail = outageReply.reply.error?.details?.find((d) => d.kind === STATIC_SLOT_READ_FAILED_DETAIL) as Record<string, unknown> | undefined;
+        check("slots answers unavailable with a static-slot-read-failed detail when the durable store cannot be scanned, never ok:true",
+          outageReply.reply.ok === false && outageReply.reply.error?.code === "unavailable" && outageDetail !== undefined,
+          outageReply.reply);
+      } finally {
+        kvForSlots.get = originalSlotsGet;
+      }
+    }
+
+    {
+      const previousUserMode = M.userMode;
+      M.userMode = true;
+      try {
+        const userModeReply = await A.call("slots");
+        check("slots answers failed-precondition for a user-mode manager, which owns no durable static slot rows",
+          userModeReply.reply.ok === false && userModeReply.reply.error?.code === "failed-precondition",
+          userModeReply.reply);
+      } finally {
+        M.userMode = previousUserMode;
+      }
+    }
 
     const torn = await plantStrandedSlot("torn-inspect");
     const kv = M.goalWriter?.ctx.kv;
@@ -448,14 +595,14 @@ try {
     // launch record just as it folds def.variant. Before the fix, launch.model stayed undefined and
     // ps reported the model ABSENT while the connector ran the seat on the persona's model.
     writeFileSync(join(workspaceRoot, ".cotal", "agents", "pmodel.md"), `---\nname: pmodel\nrole: worker\nmodel: persona-m\n---\n`);
-    const { row: wp } = await spawnLive(A.call, { name: "pmodel", agent: "e2e-stub", cwd: repoRoot });
+    const { row: wp } = await spawnLive(A.call, { name: "pmodel", agent: "e2e-stub", cwd: repoRoot, events: false });
     const psP = await A.call("ps");
     const prow = ((psP.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === wp.name);
     check("a persona-file model surfaces in the ps row (no --model flag)", prow?.model === "persona-m", prow);
     // #651 fix: an empty/whitespace persona model is not a pin - it coerces to undefined and
     // serializes ABSENT, never present-but-empty (which a key-presence consumer misreads as a pin).
     writeFileSync(join(workspaceRoot, ".cotal", "agents", "emodel.md"), `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
-    const { row: we } = await spawnLive(A.call, { name: "emodel", agent: "e2e-stub", cwd: repoRoot });
+    const { row: we } = await spawnLive(A.call, { name: "emodel", agent: "e2e-stub", cwd: repoRoot, events: false });
     const psE = await A.call("ps");
     const erow = ((psE.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === we.name);
     check("an empty/whitespace persona model serializes ABSENT, not present-empty", erow !== undefined && !("model" in erow), erow);
@@ -474,7 +621,7 @@ try {
   }
 
   console.log("4. baseline self-stop: the agent's OWN cred halts itself over ep.one");
-  const { acc: acc2 } = await spawnLive(A.call, { name: "w2", agent: "e2e-stub", cwd: repoRoot });
+  const { acc: acc2 } = await spawnLive(A.call, { name: "w2", agent: "e2e-stub", cwd: repoRoot, events: false });
   check("w2 spawned + joined", acc2.name === "w2", acc2);
   {
     const w2 = M.agents.get("w2")!;
@@ -508,7 +655,7 @@ try {
     const runId = `run${name}`;
     const spec = {
       apiVersion: "cotal-launch/v1", space, runId,
-      agents: [{ name, agent: "cwd-stub", ...(cwd === undefined ? {} : { cwd }), subscribe: [], allowSubscribe: [], allowPublish: [], hash: name }],
+      agents: [{ name, agent: "cwd-stub", events: false, ...(cwd === undefined ? {} : { cwd }), subscribe: [], allowSubscribe: [], allowPublish: [], hash: name }],
     };
     const launched = await A.call("launch", { runId, name, spec });
     check(`manifest ${name} is accepted through the registered launch door`, launched.reply.ok === true, launched.reply);
@@ -540,6 +687,31 @@ try {
     const defined = loadAgentFile(join(workspaceRoot, ".cotal", "agents", "eppersona.md"));
     check("a wire-defined persona reads no channels", JSON.stringify(defined.subscribe) === "[]", defined.subscribe);
     check("and records that the caller could not choose", defined.meta?.scope_source === "wire-default", defined.meta);
+
+    const frontPrompt = [
+      "---",
+      "role: reviewer",
+      "agent: jcode",
+      "model: from-prompt",
+      "subscribe: [ops]",
+      "allowSubscribe: [ops]",
+      "allowPublish: [ops]",
+      "---",
+      "Reviewer body.",
+    ].join("\n");
+    const rFm = await A.call("define-persona", { name: "epfront", persona: frontPrompt });
+    const fmPath = join(workspaceRoot, ".cotal", "agents", "epfront.md");
+    const fmLoaded = existsSync(fmPath) ? loadAgentFile(fmPath) : undefined;
+    const fmRaw = existsSync(fmPath) ? readFileSync(fmPath, "utf8") : "";
+    check("definePersona merges a frontmattered prompt (one fence pair, authored grants)",
+      rFm.reply.ok === true && fmLoaded?.role === "reviewer" && fmLoaded?.agent === "jcode"
+      && JSON.stringify(fmLoaded?.subscribe) === JSON.stringify(["ops"])
+      && fmLoaded?.persona === "Reviewer body."
+      && [...fmRaw.matchAll(/^---$/gm)].length === 2, { reply: rFm.reply, loaded: fmLoaded, fences: [...fmRaw.matchAll(/^---$/gm)].length });
+    const rBad = await A.call("define-persona", { name: "epbadfm", persona: "---\nsubscribe: [ops]\nno closing fence\n" });
+    check("a malformed leading frontmatter block is refused by name",
+      rBad.reply.ok === false && String(rBad.reply.error?.message ?? rBad.reply.error ?? "").includes("prompt-frontmatter")
+      && !existsSync(join(workspaceRoot, ".cotal", "agents", "epbadfm.md")), rBad.reply);
 
     const rDefB = await B.call("define-persona", { name: "eppersona", persona: "takeover" });
     check("a FOREIGN redefine refuses (ownership preserved through the ep door)",
@@ -580,7 +752,7 @@ try {
       rModels.reply.ok === true && Array.isArray(catalogs) && catalogs.some((c) => c.agent === "e2e-stub" && c.supported === false), rModels.reply);
     const rPurge = await A.call("purge", {});
     check("purge clears the space history (typed {chat} result)", rPurge.reply.ok === true && typeof (rPurge.reply.data as { chat: number }).chat === "number", rPurge.reply);
-    const { acc: acc3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot });
+    const { acc: acc3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot, events: false });
     check("w3 spawned for attach", acc3.name === "w3", acc3);
     const rAttach = await A.call("attach", undefined, { actor: w3.id, lifecycleUid: w3.lifecycleUid });
     // P2 item 6: attach returns the holder-bound §13.6 session grant (no ws:// URL).
@@ -610,7 +782,7 @@ try {
       // here is what made a numbering change surface as a mystery failure. Two interfering tests
       // look like a smell and isolating them reads as tidying — but isolation would convert a
       // coupled proof into two independent constants that can both drift green.
-      const { acc: held } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      const { acc: held } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot, events: false });
       check("M6 setup: a live incarnation holds the name", held.name === "m6pin", held);
 
       // THE BREAKING ARM: a manifest-declared name colliding with that live incarnation.
@@ -630,7 +802,7 @@ try {
       // THE CONTROL, so the refusal above is not just "launch is broken": a PERSONA-DERIVED spawn of
       // the same base name still numbers. Same live occupant, same base name, opposite outcome —
       // that contrast is the whole content of M6.
-      const { acc: numbered } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot });
+      const { acc: numbered } = await spawnLive(A.call, { name: "m6pin", agent: "e2e-stub", cwd: repoRoot, events: false });
       // DERIVED from the shipped allocator, not spelled: this assertion previously hard-coded the
       // numbering separator, so changing the scheme failed here as a mystery rather than as a
       // deliberate update — and the literal was invisible to a search for the scheme itself.
@@ -669,7 +841,7 @@ try {
     const rTravRef = await A.call("spawn", { name: "../evil" });
     check("a traversal spawn ref refuses (bare ref = safe token, no path escape)",
       rTravRef.reply.ok === false && String(rTravRef.reply.error?.message ?? "").includes("unsafe name"), rTravRef.reply);
-    const rTravId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "../evil" });
+    const rTravId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "../evil", events: false });
     check("a traversal identity override refuses at the FINAL allocation-site grammar",
       rTravId.reply.ok === false && String(rTravId.reply.error?.message ?? "").includes("unsafe name"), rTravId.reply);
     const rTravDef = await A.call("define-persona", { name: "../evil", persona: "x" });
@@ -756,7 +928,7 @@ try {
     const opCaller: EpCaller = { owner: DEV_OWNER, actor: opId.id, uid: opUid };
     const opCreds = await mintCreds(auth, opId, "control-caller-admin", { lifecycleUid: opUid });
     const opNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: opCreds, tls: false }), maxReconnectAttempts: 0 });
-    const { acc: accW3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot });
+    const { acc: accW3, row: w3 } = await spawnLive(A.call, { name: "w3", agent: "e2e-stub", cwd: repoRoot, events: false });
     check("fixture: A spawns w3 (the operator instrument is NOT its spawner)", typeof accW3.name === "string" && (accW3.name as string).startsWith("w3"), accW3);
     const svc = await resolveService(opNc, space, MANAGER_ENDPOINT, opCaller, { deadlineMs: 10_000 });
     check("the instrument resolves the full surface generically (describe + store fetch + recompile)",
@@ -764,6 +936,12 @@ try {
     const rPs = await invokeCommand(opNc, space, svc, "ps", undefined, {});
     check("instrument `ps` rides the manager.read row + the describe-bound default currency (no epoch stub)",
       rPs.reply.ok === true && (rPs.reply.data as { name: string }[]).some((r) => r.name === accW3.name), rPs.reply);
+    // #1274: the same instrument mint must carry the `slots` read row. The list cells above call
+    // through the suite's own wide harness credential, which cannot see a missing operator grant;
+    // this is the credential `cotal ps --slots` and `cotal invoke manager slots` actually mint.
+    const rSlots = await invokeCommand(opNc, space, svc, "slots", undefined, {});
+    check("instrument `slots` rides the manager.read row too (the #1274 CLI path is broker-authorized, not just the harness)",
+      rSlots.reply.ok === true && (rSlots.reply.data as { name: string; live: boolean }[]).some((r) => r.name === accW3.name && r.live === true), rSlots.reply);
     // NO-ARGS despawn — the exact shape the real CLI produces (`cotal stop --name <n>` strips the
     // alias into the target and has nothing left): the generic layer must marshal "no args" into
     // the contract's canonical empty form ({} for an object input), not ship undefined→null at a
@@ -802,7 +980,8 @@ try {
 
   await A.nc.drain().catch(() => A.nc.close());
   await B.nc.drain().catch(() => B.nc.close());
-  await mgr.stop();
+  await P.nc.drain().catch(() => P.nc.close());
+  await mgr.stop({ withAgents: true });
 } finally {
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });

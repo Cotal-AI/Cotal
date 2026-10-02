@@ -345,7 +345,7 @@
     },
     {
       "name": "K30 a peer's newlines are rendered as the reply's own lines again",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/framing.ts",
       "find": "  return text.replace(LINE_BREAK, \"\\n  \");",
       "replace": "  return text;",
       "cell": "a peer's newlines cannot add a line the reply appears to have written itself",
@@ -354,16 +354,16 @@
     },
     {
       "name": "K31 a peer may close the bracket it is named inside",
-      "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "  return s.replace(/[\\r\\n\\v\\f\\u0085\\u2028\\u2029\\]]+/g, \" \");",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  return s.replace(/[\\r\\n\\v\\f\\u0085\\u2028\\u2029[\\]]+/g, \" \");",
       "replace": "  return s;",
       "cell": "...and a peer cannot close the bracket it is named inside",
       "expectRed": "...and a peer cannot close the bracket it is named inside",
-      "note": "Attribution is rendered inside brackets on every surface that carries it, this tool's reply and the connectors' wake hints alike, so a name holding a closing bracket or a newline ends the attribution early and starts writing the surface's own syntax. `fmtFrom` is the shared primitive, which is why the neutralization lives there rather than at one call site."
+      "note": "Attribution is rendered inside brackets on every surface that carries it, this tool's reply and the connectors' wake hints alike, so a name holding a closing bracket or a newline ends the attribution early and starts writing the surface's own syntax. `fmtFrom` is the shared primitive, which is why the neutralization lives there rather than at one call site. The neutralization now lives in `framing.ts`, shared with the auto-injected block, so one mutation here grades both surfaces."
     },
     {
       "name": "K32 a service name is rendered as the publisher wrote it",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/framing.ts",
       "find": "  if (i.kind === \"anycast\") return `[@${attributionSafe(i.service ?? \"\")} from ${fmtFrom(i)}] ${body}`;",
       "replace": "  if (i.kind === \"anycast\") return `[@${i.service ?? \"\"} from ${fmtFrom(i)}] ${body}`;",
       "cell": "a service name cannot close its own bracket or start a line",
@@ -372,7 +372,7 @@
     },
     {
       "name": "K33 a channel label is rendered as it arrived",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/framing.ts",
       "find": "  return `[#${attributionSafe(i.channel ?? \"\")}${i.mentionsMe ? \" @you\" : \"\"} ${fmtFrom(i)}] ${body}`;",
       "replace": "  return `[#${i.channel ?? \"\"}${i.mentionsMe ? \" @you\" : \"\"} ${fmtFrom(i)}] ${body}`;",
       "cell": "...and neither can a channel label, whatever validated it upstream",
@@ -399,7 +399,7 @@
     },
     {
       "name": "K36 only the line breaks JavaScript splits on are treated as line breaks",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/framing.ts",
       "find": "const LINE_BREAK = /\\r\\n?|[\\n\\v\\f\\u0085\\u2028\\u2029]/g;",
       "replace": "const LINE_BREAK = /\\r\\n?|\\n/g;",
       "cell": "a U+2028 separator cannot put an attribution at column zero either",

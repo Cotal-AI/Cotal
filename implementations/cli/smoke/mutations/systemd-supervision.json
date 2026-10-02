@@ -1,0 +1,35 @@
+{
+  "suite": [
+    "implementations/cli/smoke/systemd-supervision.smoke.ts"
+  ],
+  "guard": "The detached supervision warning is bound to the launching systemd invocation and exact false-green unit shape",
+  "command": "pnpm smoke:systemd-supervision",
+  "progressPattern": "✓",
+  "minTicks": 14,
+  "mutations": [
+    {
+      "name": "The detector ignores the systemd invocation identity",
+      "file": "implementations/cli/src/lib/systemd-supervision.ts",
+      "find": "    const unit = unitRecords(stdout).find((record) => record.InvocationID === invocationId);",
+      "replace": "    const unit = unitRecords(stdout)[0];",
+      "expectRed": "a different invocation does not inherit another unit's warning",
+      "cell": "a different invocation does not inherit another unit's warning"
+    },
+    {
+      "name": "The detector accepts any service type",
+      "file": "implementations/cli/src/lib/systemd-supervision.ts",
+      "find": "  if (unit?.Type !== \"oneshot\" || unit.RemainAfterExit !== \"yes\") return undefined;",
+      "replace": "  if (!unit || unit.RemainAfterExit !== \"yes\") return undefined;",
+      "expectRed": "RemainAfterExit does not warn for a long-running service type",
+      "cell": "RemainAfterExit does not warn for a long-running service type"
+    },
+    {
+      "name": "The detector accepts oneshot without RemainAfterExit",
+      "file": "implementations/cli/src/lib/systemd-supervision.ts",
+      "find": "  if (unit?.Type !== \"oneshot\" || unit.RemainAfterExit !== \"yes\") return undefined;",
+      "replace": "  if (unit?.Type !== \"oneshot\") return undefined;",
+      "expectRed": "oneshot without RemainAfterExit is silent",
+      "cell": "oneshot without RemainAfterExit is silent"
+    }
+  ]
+}

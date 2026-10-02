@@ -1,7 +1,8 @@
 /**
  * ARMING IS NOT AUTHORIZATION, for the Codex launch path.
  *
- * A seat publishes its AG-UI event plane only when the launch ARMED it: `opts.events` goes in and
+ * A seat publishes its AG-UI event plane unless the launch explicitly opts out: `opts.events` is
+ * false only for `--no-events`, and
  * `COTAL_EVENTS` comes out. The manager separately mints a publish GRANT on the channel that plane
  * lands on. Those are two different facts, and the dangerous confusion is to treat the second as the
  * first: an agent file or a manifest can hand-write anything into `allowPublish`, so if a grant could
@@ -43,7 +44,7 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
 
 const WS = "/tmp/cotal-codex-events-arm-workspace";
 const env = (extra: Record<string, unknown>): Record<string, string> =>
-  codexConnector.buildLaunch({ space: "s", name: "seat", ...extra } as never).env as Record<string, string>;
+  codexConnector.buildLaunch({ space: "s", name: "seat", workspaceRoot: WS, ...extra } as never).env as Record<string, string>;
 const refusalFor = (extra: Record<string, unknown>): string | null => {
   try {
     env(extra);
@@ -55,27 +56,27 @@ const refusalFor = (extra: Record<string, unknown>): string | null => {
 
 // ---- the arm ---------------------------------------------------------------------------------
 {
-  const armed = env({ events: true, workspaceRoot: WS });
+  const armed = env({});
   check("--events arms the emitter (COTAL_EVENTS=1)", armed.COTAL_EVENTS === "1", { got: armed.COTAL_EVENTS });
   check("and the log's home rides with it", armed.COTAL_WORKSPACE_ROOT === WS, { got: armed.COTAL_WORKSPACE_ROOT });
 
   // The negative is the whole point of the pair: a launch that did not ask for events must not get
   // them, and a check that only asserts the positive passes on a connector that arms unconditionally.
-  const unarmed = env({ workspaceRoot: WS });
-  check("an unarmed launch does NOT set COTAL_EVENTS", unarmed.COTAL_EVENTS === undefined, { got: unarmed.COTAL_EVENTS });
+  const unarmed = env({ events: false });
+  check("--no-events does NOT set COTAL_EVENTS", unarmed.COTAL_EVENTS === undefined, { got: unarmed.COTAL_EVENTS });
   check("and does not set the log's home either", unarmed.COTAL_WORKSPACE_ROOT === undefined, { got: unarmed.COTAL_WORKSPACE_ROOT });
   check("while the isolated codex home is set either way", typeof unarmed.COTAL_CODEX_HOME === "string" && unarmed.COTAL_CODEX_HOME.length > 0);
 }
 
 // ---- the refusal -----------------------------------------------------------------------------
 {
-  const why = refusalFor({ events: true });
+  const why = refusalFor({ events: true, workspaceRoot: undefined });
   check("an armed launch with no workspace root refuses", why !== null, { why });
   check("and the refusal says WHY rather than just failing", (why ?? "").includes("workspaceRoot") && (why ?? "").includes("write-ahead log"), { why });
 
   // The refusal must be specific to the ARM. A launch that never asked for events has no log to
   // place, so the same missing workspaceRoot must NOT refuse it.
-  check("an UNARMED launch with no workspace root is fine", refusalFor({}) === null, { why: refusalFor({}) });
+  check("an opted-out launch with no workspace root is fine", refusalFor({ events: false, workspaceRoot: undefined }) === null, { why: refusalFor({ events: false, workspaceRoot: undefined }) });
 }
 
 // ---- the declaration -------------------------------------------------------------------------

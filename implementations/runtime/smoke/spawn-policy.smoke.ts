@@ -73,10 +73,14 @@ c(
   travelled.supervise,
 );
 
+const placed = spawnArgs({ persona: "builder", cwd: "/prepared/writer" } as never);
+c("spawnArgs carries the explicit cwd", placed.cwd === "/prepared/writer", placed);
+
 const bare = spawnArgs({ persona: "builder" } as never);
 c("absent supervise does not travel", !("supervise" in bare), bare);
+c("absent cwd does not travel, preserving manager-root legacy behavior", !("cwd" in bare), bare);
 
-const EXPECTED = 12;
+const EXPECTED = 14;
 const ran = ok + fail;
 console.log(`spawn-policy.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED) {

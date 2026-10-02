@@ -157,19 +157,19 @@ registry.register(recNoResumeCon);
 // 2 — Model THREADING through the manager into LaunchOpts (PATH restored → `node` present again).
 {
   resetOpts();
-  const reply = await mgr.startAgent({ name: "rec1", agent: "smoke-rec", model: "sonnet" });
+  const reply = await mgr.startAgent({ name: "rec1", agent: "smoke-rec", model: "sonnet", events: false });
   check("present-binary connector passes preflight + spawns", reply.ok === true, reply);
   check("--model threads into LaunchOpts.model verbatim", lastOpts?.model === "sonnet", lastOpts?.model);
   check("built spec was captured (success path ran)", lastSpec?.command === "true");
 
   resetOpts();
-  await mgr.startAgent({ name: "rec2", agent: "smoke-rec" });
+  await mgr.startAgent({ name: "rec2", agent: "smoke-rec", events: false });
   check("no --model → LaunchOpts.model undefined", lastOpts?.model === undefined, lastOpts?.model);
 
   // ACL threading: the resolved read/post set must reach the connector via LaunchOpts (the bug —
   // it was minted into creds but never handed to buildLaunch, so the connector fell back to general).
   resetOpts();
-  await mgr.startAgent({ name: "rec3", agent: "smoke-rec" });
+  await mgr.startAgent({ name: "rec3", agent: "smoke-rec", events: false });
   check("persona subscribe threads into LaunchOpts.subscribe", JSON.stringify(lastOpts?.subscribe) === '["team"]', lastOpts?.subscribe);
   check("persona allowSubscribe threads into LaunchOpts", JSON.stringify(lastOpts?.allowSubscribe) === '["team","team.>"]', lastOpts?.allowSubscribe);
   check("persona allowPublish threads into LaunchOpts", JSON.stringify(lastOpts?.allowPublish) === '["team"]', lastOpts?.allowPublish);
@@ -180,7 +180,7 @@ registry.register(recNoResumeCon);
   const dir = mkdtempSync(join(tmpdir(), "cotal-start-af-"));
   const af = join(dir, "tester.md");
   writeFileSync(af, "---\nname: tester\nmodel: opus\n---\nbody persona\n");
-  const base = { space: "smoke", name: "tester" };
+  const base = { space: "smoke", name: "tester", events: false };
   const claudeModel = (s: LaunchSpec) => { const i = s.args.indexOf("--model"); return i >= 0 ? s.args[i + 1] : undefined; };
   const ocModel = (s: LaunchSpec) => JSON.parse(s.env!.OPENCODE_CONFIG_CONTENT).model as string | undefined;
   const hermesModel = (s: LaunchSpec) => s.env!.HERMES_MODEL;
@@ -236,7 +236,7 @@ registry.register(recNoResumeCon);
 // threads through the manager verbatim and stays a single argv token (no shell). The manifest path
 // carries no resume by construction (see the cotal.yaml reject in cli manifest.smoke.ts).
 {
-  const base = { space: "smoke", name: "tester" };
+  const base = { space: "smoke", name: "tester", events: false };
   const cArgs = (o: LaunchOpts) => claudeConnector.buildLaunch(o).args;
 
   // claude, resume SET → BOTH --resume <id> and --fork-session, id is the token right after --resume.
@@ -312,10 +312,10 @@ registry.register(recNoResumeCon);
   }
   // MANAGER THREADING: startAgent({resume}) → LaunchOpts.resume verbatim, and absent → undefined.
   resetOpts();
-  await mgr.startAgent({ name: "rrec1", agent: "smoke-rec", resume: "sess-thread" });
+  await mgr.startAgent({ name: "rrec1", agent: "smoke-rec", resume: "sess-thread", events: false });
   check("startAgent resume threads into LaunchOpts.resume", lastOpts?.resume === "sess-thread", lastOpts?.resume);
   resetOpts();
-  await mgr.startAgent({ name: "rrec2", agent: "smoke-rec" });
+  await mgr.startAgent({ name: "rrec2", agent: "smoke-rec", events: false });
   check("no resume → LaunchOpts.resume undefined", lastOpts?.resume === undefined, lastOpts?.resume);
 }
 
@@ -330,7 +330,7 @@ registry.register(recNoResumeCon);
   // REJECT: smoke-norsm passes the node PATH check but declares no resume support.
   resetNoResumeBuilt();
   const before = agentCount();
-  const reply = await mgr.startAgent({ name: "norsm1", agent: "smoke-norsm", resume: "sess-x" });
+  const reply = await mgr.startAgent({ name: "norsm1", agent: "smoke-norsm", resume: "sess-x", events: false });
   check("unsupported-connector resume rejected", reply.ok === false, reply);
   check("reject names 'does not support resuming'", /does not support resuming/.test(reply.error ?? ""), reply.error);
   check("reject BEFORE buildLaunch (no spec built)", noResumeBuilt !== true);
@@ -338,7 +338,7 @@ registry.register(recNoResumeCon);
 
   // …but no resume → the same connector spawns normally (the preflight doesn't over-fire).
   resetNoResumeBuilt();
-  const ok = await mgr.startAgent({ name: "norsm2", agent: "smoke-norsm" });
+  const ok = await mgr.startAgent({ name: "norsm2", agent: "smoke-norsm", events: false });
   check("no resume → unsupported-resume connector still spawns", ok.ok === true, ok);
   check("no resume → buildLaunch reached", noResumeBuilt === true);
 }
@@ -363,7 +363,7 @@ registry.register(recNoResumeCon);
     spawn: (name) => deadHandle(name),
   };
   const before = agentCount();
-  const reply = await mgr.startAgent({ name: "dead1", agent: "smoke-rec" });
+  const reply = await mgr.startAgent({ name: "dead1", agent: "smoke-rec", events: false });
   check("dead-on-arrival spawn reported as failure (not ✓ started)", reply.ok === false, reply);
   check("early-exit error names 'exited on launch'", /exited on launch/.test(reply.error ?? ""), reply.error);
   check("early-exit surfaces the child's last output as the cause", /No conversation found/.test(reply.error ?? ""), reply.error);
@@ -394,7 +394,7 @@ registry.register(recNoResumeCon);
   let closedReply: { ok: boolean; error?: string };
   try {
     closedReply = await Promise.race([
-      mgr.startAgent({ name: "dead2", agent: "smoke-rec" }),
+      mgr.startAgent({ name: "dead2", agent: "smoke-rec", events: false }),
       new Promise<{ ok: boolean; error?: string }>((resolve) =>
         setTimeout(() => resolve({ ok: false, error: "readiness did not settle" }), 800),
       ),
@@ -436,7 +436,7 @@ registry.register(recNoResumeCon);
     spawn: (name) => missedHandle(name),
   };
   const before = agentCount();
-  const reply = await mgr.startAgent({ name: "missed1", agent: "smoke-rec" });
+  const reply = await mgr.startAgent({ name: "missed1", agent: "smoke-rec", events: false });
   check("missed-exit: spawn joins presence (reports started)", reply.ok === true, reply);
   check("missed-exit: watchExit status-check reaps the leaked agent (not left in the map)", agentCount() === before, agentCount());
 }
@@ -460,12 +460,12 @@ registry.register(recNoResumeCon);
     kind: "fake",
     spawn: (name) => liveHandle(name),
   };
-  (mgr as unknown as { ep: unknown }).ep = fakeEp({ releaseManagerLease: async () => {}, stop: async () => {} });
+  (mgr as unknown as { ep: unknown }).ep = fakeEp({ releaseManagerLease: async () => {}, releaseDaemonRenewalLease: async () => {}, stop: async () => {} });
   (mgr as unknown as { attach: { stop: () => Promise<void> } }).attach = { stop: async () => {} };
-  await mgr.startAgent({ name: "shut1", agent: "smoke-rec" });
-  await mgr.startAgent({ name: "shut2", agent: "smoke-rec" });
+  await mgr.startAgent({ name: "shut1", agent: "smoke-rec", events: false });
+  await mgr.startAgent({ name: "shut2", agent: "smoke-rec", events: false });
   check("shutdown: two managed agents present before stop", agentCount() >= 2, agentCount());
-  await mgr.stop();
+  await mgr.stop({ withAgents: true });
   check("shutdown: stop() hard-stops every managed child", stopped.includes("shut1") && stopped.includes("shut2"), stopped);
   check("shutdown: stop() proves every managed child exited before releasing manager authority", exitProofs.has("shut1") && exitProofs.has("shut2"), [...exitProofs]);
   check("shutdown: stop() empties the managed-agents map (no orphaned footprint)", agentCount() === 0, agentCount());
@@ -490,8 +490,8 @@ registry.register(recNoResumeCon);
       interrupt: () => {}, attach: () => fakeSession,
     }),
   };
-  await mgr.startAgent({ name: "lease1", agent: "smoke-rec" });
-  await mgr.startAgent({ name: "lease2", agent: "smoke-rec" });
+  await mgr.startAgent({ name: "lease1", agent: "smoke-rec", events: false });
+  await mgr.startAgent({ name: "lease2", agent: "smoke-rec", events: false });
   let teardownError = "";
   try { await (mgr as unknown as { teardownManagedAgents: () => Promise<void> }).teardownManagedAgents(); }
   catch (e) { teardownError = (e as Error).message; }
@@ -531,7 +531,7 @@ registry.register(recNoResumeCon);
     kind: "fake",
     spawn: (name) => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession }),
   };
-  const reply = await mgr.startAgent({ name: "unc1", agent: "smoke-rec" });
+  const reply = await mgr.startAgent({ name: "unc1", agent: "smoke-rec", events: false });
   check("uncertain: neither presence nor exit → non-success reply", reply.ok === false, reply);
   check("uncertain: reply names it 'uncertain'", /uncertain/i.test(reply.error ?? ""), reply.error);
   check("uncertain: the agent is KEPT (not deprovisioned — may still be booting)", agentsMap().has("unc1"), [...agentsMap().keys()]);

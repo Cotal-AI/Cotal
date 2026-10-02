@@ -250,7 +250,7 @@
  * Run: pnpm smoke:required-arg-seam
  */
 import ts from "typescript";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -321,10 +321,86 @@ const SEAMS: Seam[] = [
   // inside the final public retirement cell. Both are fixture-side calls under smoke/ and state tls: false.
   // 144/104 -> 145/105: hosted-retirement-stock-supervise.acceptance.ts adds one fixture-side
   // provisioner connection for its authenticated broker readiness probe and states tls: false.
-  // 145/105 -> 147/107: remote-executor-renewal-stock.acceptance.ts adds two fixture-side
+  // 145/105 -> 146/106: registration-executor-resume.smoke.ts dials the auth broker under a
+  // scoped manager credential (one smoke-side call, tls: false) to prove heal and registration
+  // use separate executor windows.
+  // 146/106 -> 147/107: delivery-starvation.smoke.ts reads the delivery lease STRAIGHT FROM THE
+  // BROKER on a connection of its own (one smoke-side call, tls: false), rather than trusting the
+  // daemon's own report of whether it is still serving. A starved daemon's account of itself is
+  // exactly what that suite exists to doubt.
+  // 147/107 -> 150/110: delivery-starvation.smoke.ts grows three more smoke-side connections
+  // (tls: false), all for the same reason as the one above, the suite refuses to take the daemon's
+  // word for what it is doing. One deletes the lease row to stage a handover, one asks the broker
+  // how many pull requests each Plane-3 durable has parked, and one is a $SYS observer that counts
+  // ctl.delivery subscribers PER CONNECTION, which is what makes "two daemons were bound at once"
+  // a count of processes rather than a self-report.
+  // 150/110 -> 151/111: delivery-lease.smoke.ts grows one more smoke-side connection (tls: false),
+  // a `delivery`-role JetStream manager that REPLACES the fan-out durable with an incompatible
+  // config so a rearm fails at the real broker. The Q cells then read the durable back off that
+  // same connection, so "the endpoint recovered" is broker state rather than the endpoint's own flag.
+  // 151/111 -> 153/113: delivery-starvation.smoke.ts grows two more smoke-side connections for cells
+  // R1-R9, which stage a lease row the daemon must prove is its own: one writes the row's own bytes
+  // back (moving the revision while the holder stays byte-identical), one writes a successor's row
+  // (same holder, another incarnation). Both read and write the lease KV directly, which is the
+  // point - the evidence comes off the broker rather than from the daemon's own log.
+  // 153/113 -> 156/116: three more, attributed rather than merely counted. TWO are smoke-side
+  // connections in delivery-starvation.smoke.ts for cells X1-X6, which break the fan-out durable
+  // at the broker and then repair it, so a start-up failure the CLI CATCHES can be graded off the
+  // lease row rather than from the daemon's log. The THIRD is not a call at all: it is inside
+  // `find`/`replace` STRINGS in bin/smoke/mutations/attach-open-mode.json, which arrived on main,
+  // and it counts because this reader scans text and a mutation body is text that will become
+  // code. All three state `tls` explicitly, so the seam itself is unchanged.
+  // 156/116 -> 157/117: one more smoke-side connection, in
+  // implementations/runtime/smoke/run-command.smoke.ts (#1633). It exists to write a revocation
+  // marker RAW, under the one-shot `run-admitter` profile `revoke` mints, because the exported
+  // writer validates what it writes and a marker the reader CANNOT read has to be created past it.
+  // That is what lets `run ps` be graded on the `unchecked` path, where the marker is unreadable
+  // rather than absent. It states `tls` explicitly, so the seam itself is unchanged.
+  // 157/117 -> 161/119: instance-pinned user control adds two typechecked calls, the user's
+  // control connection in extensions/connector-core/src/manager-call.ts (#1940) and its generated
+  // Hermes sidecar copy, both carrying the resolved transport decision; instance binding for user
+  // seats adds two smoke-side calls (implementations/auth/smoke/remote-agent-bearer.smoke.ts,
+  // implementations/auth/smoke/remote-exchange.smoke.ts), the second already-enrolled actor and
+  // the instance-bound executor dial the pin must refuse. All state `tls` explicitly.
+  // 161/119 -> 162/120: the manager instance caller gap reproduction
+  // (packages/core/smoke/inst-route-enforce.smoke.ts) adds one smoke-side instance-scoped
+  // executor connection. It states `tls: false`.
+  // 162/120 -> 166/123: remote manager registration recovery (#1960) adds one typechecked call,
+  // the one-shot reconciliation executor dial in implementations/auth/src/service.ts, and three
+  // smoke-side calls in implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts
+  // (readiness, eviction and reconciliation executor connections). All state `tls` explicitly.
+  // 166/123 -> 169/125: the managed-seat answer path (#1901, #1877) adds one typechecked call,
+  // the managed seat's connection in implementations/runtime/src/run-command.ts, and two
+  // smoke-side calls in bin/smoke/run-host-live.smoke.ts, the addressed baseline seat's answer
+  // connection and the run-operator read connection grading it. All state `tls` explicitly.
+  // 169/125 -> 175/131: caller-scoped goal mediation and its proof add six smoke-side calls:
+  // the user-callout pre-revoke read (implementations/auth/smoke/deny-new.smoke.ts), the foreign
+  // caller the mediated result refuses (implementations/manager/smoke/manager-service-invoke.smoke.ts),
+  // and four in implementations/manager/smoke/remote-manager-goal-reader.smoke.ts (provisioner,
+  // executors, responder, bearer read). All state `tls: false`.
+  // 175/131 -> 193/149: the goal-follow and manager-caller transport landings add eighteen
+  // smoke-side calls across five suites: manager-caller-transport.smoke.ts five,
+  // goal-follow-cancellation.smoke.ts three, goal-submit-order.smoke.ts two,
+  // user-bearer-goal-lifetime.smoke.ts one (the bearer rebind after a rebuild), and
+  // user-manager-transport.smoke.ts seven. All state `tls: false`.
+  // 193/149 -> 196/152: the artifact-store no-reserve landing (#2123) adds three smoke-side calls
+  // in packages/core/smoke/artifact-store-no-reserve.smoke.ts. All state `tls: false`.
+  // 196/152 -> 197/152: `cotal deliver pending` (#417) adds one typechecked call, the inspection
+  // read's own connection in implementations/delivery/src/pending.ts. States `tls` explicitly.
+  // 197/152 -> 198/152: the broker-version check (#2233) adds one typechecked call in
+  // implementations/cli/src/commands/up.ts. States `tls: false` explicitly.
+  // 198/152 -> 201/155: the scoped-consumer and scan-abort cells add three smoke-side calls in
+  // packages/core/smoke/manager-lease-grant.smoke.ts (the scoped delivery reader, the admin setup
+  // connection, and the supervisor). All state `tls: false`.
+  // 201/155 -> 220/172: hosted service/renewal and cleanup proofs add seventeen smoke calls:
+  // manager-standing-renewal (1), remote-run-attempt-route (4), remote-ef-continuity (4),
+  // remote-isolated-renewal (1), remote-run-renewal (2), remote-start-expiry-recovery (1),
+  // stock-process-restart (2), deprovision-agent-auth (2). Auth service preflight and run-hosting
+  // renewal add two production calls. The full reader verifies every added call states tls.
+  // 220/172 -> 222/174: remote-executor-renewal-stock.acceptance.ts adds two fixture-side
   // provisioner connections for broker readiness and exact registration-removal observation.
   // Both are under smoke/ and state tls: false.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 147, untypecheckedSites: 107 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 222, untypecheckedSites: 174 },
 ];
 
 /**
@@ -415,11 +491,20 @@ function frontmatter(text: string): { code: string; restAt: number } | undefined
   return close < 0 ? undefined : { code: `\n${text.slice(open[0].length, close)}`, restAt: close };
 }
 
+/**
+ * Another checkout parked inside this one is not part of this tree, and its copy of a source file
+ * answers to its own commit. `.git` marks one whether it is a clone (a directory) or a worktree (a
+ * file holding `gitdir:`), so `existsSync` covers both without caring which. This is deliberately a
+ * structural test rather than another SKIP_DIRS name: a name list cannot know where someone parks a
+ * worktree, and the counts below are exact numbers that a second copy multiplies.
+ */
+const isNestedCheckout = (path: string): boolean => existsSync(join(path, ".git"));
+
 function sources(dir: string, acc: string[] = []): string[] {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
-      if (SKIP_DIRS.has(e.name)) continue;
+      if (SKIP_DIRS.has(e.name) || isNestedCheckout(p)) continue;
       sources(p, acc);
     } else if (EXTS.some((x) => e.name.endsWith(x)) || scanned(extOf(e.name))) acc.push(p);
   }
@@ -1260,8 +1345,9 @@ const nameFact = (id: ts.Identifier, consts: Map<string, string>): NameFact =>
 /** Can the OBJECT this name holds have changed since the declaration wrote it out?
  *
  *  Reading a member off the declaration's text is a statement about the value AT THE CALL, and four
- *  three ordinary things break that link: a property written afterwards, the object handed to a call
- *  that can keep it, and a second name for the same object. Through any of them, `const opts
+ *  ordinary things break that link: a property written afterwards, the object handed to a call
+ *  that can keep it, a second name for the same object, and the object kept in a literal (an array
+ *  element, the value of a property, a shorthand property). Through any of them, `const opts
  *  = { tls: undefined }; opts.tls = false;` would be reported as stating the key undefined while the
  *  program works, which is the untrue-assertion direction, and this reader flinches from that harder
  *  than from a miss: a miss fails to catch a broken program, an untrue assertion spends the
@@ -1272,9 +1358,15 @@ const nameFact = (id: ts.Identifier, consts: Map<string, string>): NameFact =>
  *  so no delete can turn one of its reds into a false one. A branch for it would have been dead
  *  weight with a cell that could not tell whether it ran.
  *
- *  Stated residual, since it is not a route this closes: the alias rule follows the name, not the
- *  object, so a second name taken in a shape not listed here (a property of something else, an
- *  element of an array) keeps its own mutations out of view. */
+ *  The same guard has a second cost, next to the one above: once a name is mutable, the reader
+ *  stops claiming from the declaration in BOTH directions, so a write that introduces `undefined`
+ *  into a good value is a miss rather than a red. Declining is the cheaper half of that trade, but
+ *  it is still a cost, and it is paid on every mutable name alike.
+ *
+ *  Stated residual, since these are not routes this closes: a holder returned from a function and a
+ *  holder stored into a class field are both out of view at the head, so their mutations are not
+ *  watched and their declarations are still declined from. A spread is NOT a keep: it hands over
+ *  a copy, so a write through it says nothing about the object here. */
 function mutableHere(id: ts.Identifier): boolean {
   const memberOf = (e: ts.Expression): boolean => {
     const x = unwrap(e);
@@ -1295,6 +1387,18 @@ function mutableHere(id: ts.Identifier): boolean {
     }
     if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && isName(n.initializer)) {
       found = true; return; // a second name for the same object, whose writes are not watched here
+    }
+    // KEPT somewhere is a second name too, and this rule followed the name rather than the object:
+    // `const arr = [opts]; arr[0].tls = false` reached the same object by a route with no name in
+    // it at all, and the declaration was then read as stating the key undefined about a program
+    // that does not throw. A SPREAD is not this: it hands over a copy, so a write through it says
+    // nothing about the object here, and shorthand `{ opts }` captures the value under a key, so it
+    // is a keep just like a named property.
+    if ((ts.isArrayLiteralExpression(n) && n.elements.some((e) => isName(e)))
+      || (ts.isObjectLiteralExpression(n) && n.properties.some((q) =>
+        (ts.isPropertyAssignment(q) && isName(q.initializer))
+        || ts.isShorthandPropertyAssignment(q) && q.name.text === id.text))) {
+      found = true; return;
     }
     ts.forEachChild(n, visit);
   };
@@ -1551,7 +1655,10 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
  *  repository rather than against memory. */
 function extensionsPresent(dir: string, acc: Set<string> = new Set()): Set<string> {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) extensionsPresent(join(dir, e.name), acc); }
+    if (e.isDirectory()) {
+      const p = join(dir, e.name);
+      if (!SKIP_DIRS.has(e.name) && !isNestedCheckout(p)) extensionsPresent(p, acc);
+    }
     else acc.add(extOf(e.name));
   }
   return acc;
@@ -2215,6 +2322,14 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const opts = { other: 1 } as any;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
   check("...and an ELEMENT access is the same read, spelled with brackets",
     one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts["tls"] });`) === "missing-key");
+  check("...and an OPTIONAL chain spells the same read, and is answered the same",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts?.tls });`) === "missing-key");
+  check("...while the same chain holding a real boolean is untouched",
+    one(`const opts = { tls: false };\nstandaloneConnectOpts({ creds: c, tls: opts?.tls });`) === "has-key");
+  check("...and a NON-NULL assertion is a spelling of the same read, not a different one",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts!.tls });`) === "missing-key");
+  check("...including the optional chain spelled with brackets",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts?.["tls"] });`) === "missing-key");
   check("...including through a folded const, the arithmetic every other key folds by",
     one(`const K = "tls";\nconst opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts[K] });`) === "missing-key");
   check("...while a member this file cannot NAME is refused, since any of them could be the key",
@@ -2248,6 +2363,16 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const opts = { tls: undefined as any };\nconst alias = opts;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
   check("...while an untouched holder still reds, so mutability did not become a blanket",
     one(`const opts = { tls: undefined as any };\nconst n = 1;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...nor one KEPT in an array, whose element has no name for the alias rule to see",
+    one(`const opts = { tls: undefined as any };\nconst arr = [opts];\narr[0].tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one KEPT as a property of another object, for the same reason",
+    one(`const opts = { tls: undefined as any };\nconst bag = { o: opts };\nbag.o.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one KEPT as a shorthand property, which captures the value under its own name",
+    one(`const opts = { tls: undefined as any };\nconst bag = { opts };\nbag.opts.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...while a SPREAD copy is not the object, so the holder is still answered from its declaration",
+    one(`const opts = { tls: undefined as any };\nconst copy = { ...opts };\ncopy.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...and an array spread of a holder that is never kept is the same copy",
+    one(`const opts = { tls: undefined as any };\nconst inner = [{ ...opts }];\nconst arr = [...inner];\narr[0].tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
   // The same text, reached through a NAME, is the same two facts spelled on two lines.
   check("a source NAMED and then taken apart is the text its declaration wrote",
     one(`const src = { tls: undefined as any };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
@@ -2432,7 +2557,7 @@ for (const seam of SEAMS) {
   const { sites, aliased, bad, untypechecked } = summarize(all);
   // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
   // instead of sending the next author into this file to find out what the floor should become.
-  console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} typechecked)`);
+  console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} outside smoke/)`);
   check(`\`${seam.fn}\`: every call site states \`${seam.key}\``, bad.length === 0,
     bad.map((s) => `${s.file}:${s.line} [${s.verdict}] ${s.detail}`));
 
@@ -2456,9 +2581,9 @@ for (const seam of SEAMS) {
   check(`\`${seam.fn}\`: the scan finds EXACTLY ${seam.sites} call sites (if you added or removed one, update this number deliberately)`,
     sites.length === seam.sites, { found: sites.length, expected: seam.sites });
 
-  // Split from the total on purpose. The half the compiler cannot see is the whole reason this file
-  // exists, and a bare "> 0" here would be satisfied by a single smoke site while the rest vanished.
-  check(`\`${seam.fn}\`: EXACTLY ${seam.untypecheckedSites} of them are under smoke/, which no tsconfig includes`,
+  // Keep the smoke subtree census separate: a bare "> 0" would miss disappearing sites.
+  // The legacy field name is not a typecheck coverage claim; packages now typecheck their smokes.
+  check(`\`${seam.fn}\`: EXACTLY ${seam.untypecheckedSites} of them are under smoke/`,
     untypechecked.length === seam.untypecheckedSites, { found: untypechecked.length, expected: seam.untypecheckedSites });
 }
 

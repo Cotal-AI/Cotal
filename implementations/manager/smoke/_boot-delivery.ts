@@ -16,6 +16,9 @@
  *
  * The caller must hold the space's `SpaceAuth` WITH its in-memory system-account signing seed —
  * i.e. the auth object `createSpaceAuth` just returned, since the $SYS seed is never persisted.
+ *
+ * `reloadStoreIdentity` is the same store the Manager remints through. Manager.start challenges
+ * this hook before the first remint; an unnamed or divergent identity is a construction refusal.
  */
 import {
   CotalEndpoint,
@@ -24,6 +27,7 @@ import {
   mintCreds,
   mintMembershipObserverCreds,
   newIdentity,
+  type SecretStoreIdentity,
   type SpaceAuth,
 } from "@cotal-ai/core";
 
@@ -41,8 +45,9 @@ export async function bootDeliveryDaemon(opts: {
   space: string;
   servers: string;
   auth: SpaceAuth;
+  reloadStoreIdentity: SecretStoreIdentity;
 }): Promise<DeliveryDaemon> {
-  const { space, servers, auth } = opts;
+  const { space, servers, auth, reloadStoreIdentity } = opts;
   // The $SYS pair the eviction executor connects with: an observer that can CONNZ-scan the account
   // and an evictor that can KICK it. Mintable only from a space auth still holding the in-memory
   // system-account seed.
@@ -63,19 +68,29 @@ export async function bootDeliveryDaemon(opts: {
   // A broker teardown at suite end is not a daemon fault; suites assert on their own subject.
   ep.on("error", () => {});
   await ep.start();
+  const dlvRevision = await ep.acquireDeliveryLease(0);
   await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
     evictPrincipal: (principal) =>
       evictDeniedPrincipalWithCreds({
         servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
         options: { maxVerifyRounds: 12 },
       }),
+    reloadStoreIdentity: () => reloadStoreIdentity,
   });
+  await ep.markDeliveryLeaseReady(0, dlvRevision);
   let stopped = false;
   return {
     ep,
     stop: async () => {
       if (stopped) return;
       stopped = true;
+      // The manager's no-responder challenge (`absentByLeaseRow`) reads the lease row off the
+      // bucket, not the rail; a row this fixture left behind still names a holder that no longer
+      // answers, so release it the way the daemon does before tearing the endpoint down.
+      try {
+        const own = await ep.readDeliveryLeaseEntry(0);
+        if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(0, own.revision);
+      } catch { /* the broker may already be gone; the bucket TTL is the crash-safe release */ }
       await ep.stop().catch(() => {});
     },
   };

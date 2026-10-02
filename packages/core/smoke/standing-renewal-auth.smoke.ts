@@ -16,6 +16,7 @@ import {
   CotalEndpoint,
   isReachable,
   createSpaceAuth,
+  credsFingerprint,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
@@ -119,17 +120,30 @@ try {
   const expiring = newIdentity();
   let expiringReads = 0;
   let failedRebuildLogStart = -1;
+  let originalExpiryObservedBeforeReconnectWindow = false;
   const expiringErrors: string[] = [];
   // Recoverable notices — the failed renewal and the pre-dial refusal below — ride `warning`,
   // not `error`: Node rethrows an unhandled `error` and would kill a host the endpoint is still
   // surviving (#891). The subject here is that the refusal is LOUD and names the renewal path.
   const expiringWarnings: string[] = [];
-  const expiringSource = () => {
+  const expiringSource = async () => {
     expiringReads++;
     if (expiringReads <= 3) {
       if (expiringReads === 1)
         return mintCreds(auth, expiring, "supervisor", { expiresInSeconds: 3 });
-      if (expiringReads === 3) failedRebuildLogStart = brokerLog.length;
+      if (expiringReads === 3) {
+        // The rebuild is triggered by the original connection's broker-auth-expiry close. Its log
+        // line and the socket close are separate asynchronous deliveries, so the source read can run
+        // before the log pipe appends that already-authenticated connection's expiry. That line is not
+        // a reconnect presenting cached credentials. Wait for that specific original-wire line before
+        // opening the reconnect-denial observation window; a real post-guard dial still logs after it.
+        originalExpiryObservedBeforeReconnectWindow = await until(
+          () => /cotal:expired-creds.*User Authentication Expired/.test(brokerLog),
+          2_000,
+          10,
+        );
+        failedRebuildLogStart = brokerLog.length;
+      }
       throw new Error("fixture renewal source offline");
     }
     return mintCreds(auth, expiring, "supervisor", { expiresInSeconds: 60 });
@@ -166,6 +180,10 @@ try {
     /User JWT no longer valid.*claim is expired|cotal:expired-creds.*User Authentication Expired/.test(l),
   );
   check(
+    "the original wire's expiry log lands before the reconnect-denial observation window opens",
+    originalExpiryObservedBeforeReconnectWindow,
+  );
+  check(
     "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
     failedRebuildLogStart >= 0 && expiredCredDenials.length === 0,
     { failedRebuildLogStart, denials: expiredCredDenials },
@@ -176,6 +194,109 @@ try {
     { warnings: expiringWarnings, errors: expiringErrors },
   );
   await expiringEp.stop();
+
+  // ── An UNCHANGED source past 75% must NOT 1s-churn (issue #1523) ──────────────────────────────
+  // The 75% timer fires; if the renewal owner has not re-signed yet, the source returns the SAME
+  // generation. It is still broker-valid, so a naive adopt recommits it, `credsRenewalDelayMs` is
+  // <= 0 (past the renewal point), `armCredsRefresh` floors the next tick to 1s, and the endpoint
+  // re-reads the store EVERY SECOND for the JWT's remaining 25% of life - with CREDS_RETRY_MS (60s)
+  // bypassed, because a successful fetch of unusable material is not a failed fetch. The fix refuses
+  // the generation, which routes it through the timer's failure posture: one warning, 60s retry, and
+  // the last renewable generation stays live to its expiry. Same rule the membership feed's rw-cred
+  // renewal already applies (`membership-rw-renewal.smoke.ts`, scenario 5).
+  //
+  // Discriminator: source reads inside the churn window. The bug reads ~3x, the fix at most once.
+  const churnTtl = 12;
+  const churnIdentity = newIdentity();
+  const churnCred = await mintCreds(auth, churnIdentity, "supervisor", { expiresInSeconds: churnTtl });
+  let churnReads = 0;
+  const churnWarnings: string[] = [];
+  const churnSource = async (): Promise<string> => { churnReads++; return churnCred; }; // NEVER changes
+  const churnEp = new CotalEndpoint({
+    space, servers: SERVERS,
+    creds: churnSource,
+    card: { id: churnIdentity.id, name: "unchanged-source", kind: "endpoint" },
+    consume: false, lifecycleUid: mintLifecycleUid(),
+    registerPresence: false, watchChannels: false, watchPresence: false,
+  });
+  churnEp.on("error", () => { /* the connection stays alive on the current cred; nothing to rethrow */ });
+  churnEp.on("warning", (e: Error) => { churnWarnings.push(e.message); });
+  await churnEp.start();
+  check("churn endpoint starts (source read once)", churnReads === 1, churnReads);
+  await wait(8_500);   // just past 75% of 12s (9s) minus setup slack - the timer has not fired yet
+  const churnBaseline = churnReads;
+  await wait(2_800);   // ~11.3s: the 1s loop would have ticked ~3x inside the 9-12s window
+  check(
+    "an unchanged source past 75% did NOT busy-loop (<=1 renewal read in the churn window)",
+    churnReads - churnBaseline <= 1,
+    { churnReads, churnBaseline },
+  );
+  check(
+    "the refusal is reported once and names the un-re-signed generation",
+    churnWarnings.filter((m) => /past its renewal point/.test(m)).length === 1,
+    churnWarnings,
+  );
+  await churnEp.stop();
+
+  // ── The refusal compares GENERATIONS, not envelope bytes (review of #1525) ────────────────────
+  // `EndpointOptions.creds` takes opaque file content and promises no canonical whitespace, and
+  // `jwtFromCreds` pads with `\s*` and trims - so a store, editor or filesystem round trip can
+  // re-serve the SAME credential in bytes `===` calls different. The cell above serves one exact
+  // string, where byte equality and generation equality agree, so it cannot reach this at all.
+  //
+  // The extra newline is deliberately a difference the BROKER still accepts: a CRLF envelope also
+  // differs in bytes, but the broker refuses it, and the preflight would then block the adoption for
+  // an unrelated reason and hide the defect.
+  const wsTtl = 20;
+  const wsIdentity = newIdentity();
+  const wsCred = await mintCreds(auth, wsIdentity, "supervisor", { expiresInSeconds: wsTtl });
+  // A FRESH envelope per read, byte-distinct but fingerprint-identical. One repeated
+  // string lets a byte-comparison mutant SELF-ARREST: it adopts the reformatted envelope
+  // once, caches it, and the next read matches its own cache, so the storm stops at two
+  // reads against a tolerance of one — a one-read margin that jitter erases whenever the
+  // second read lands before the baseline capture. Growing the whitespace removes the
+  // self-arrest, so the mutant churns the whole window and the cell reds by the full
+  // count instead of by one.
+  const wsReformatted = (read: number) => wsCred + "\n".repeat(read);
+  let wsReads = 0;
+  const wsWarnings: string[] = [];
+  const wsSource = async (): Promise<string> => { wsReads++; return wsReads === 1 ? wsCred : wsReformatted(wsReads); };
+  const wsEp = new CotalEndpoint({
+    space, servers: SERVERS,
+    creds: wsSource,
+    card: { id: wsIdentity.id, name: "reformatted-source", kind: "endpoint" },
+    consume: false, lifecycleUid: mintLifecycleUid(),
+    registerPresence: false, watchChannels: false, watchPresence: false,
+  });
+  wsEp.on("error", () => { /* the connection stays alive on the current cred */ });
+  wsEp.on("warning", (e: Error) => { wsWarnings.push(e.message); });
+  await wsEp.start();
+  check("reformatted-source endpoint starts (source read once)", wsReads === 1, wsReads);
+  // Two samples: the first reformatted read and a later one. Both must differ from the
+  // original AND from each other, or the source has not actually removed the self-arrest.
+  const wsSampleA = wsReformatted(2);
+  const wsSampleB = wsReformatted(3);
+  check(
+    "every reformatted envelope is the same generation in different bytes (accept control)",
+    wsSampleA !== wsCred && wsSampleB !== wsSampleA
+      && credsFingerprint(wsSampleA) === credsFingerprint(wsCred)
+      && credsFingerprint(wsSampleB) === credsFingerprint(wsCred),
+    { differsFromOriginal: wsSampleA !== wsCred, differsFromEachOther: wsSampleB !== wsSampleA },
+  );
+  await wait(14_500);  // just past 75% of 20s (15s) minus setup slack - the timer has not fired yet
+  const wsBaseline = wsReads;
+  await wait(3_000);   // the 1s loop would have ticked ~3x by now
+  check(
+    "a reformatted envelope of the SAME generation is refused, so no 1s re-read follows",
+    wsReads - wsBaseline <= 1,
+    { wsReads, wsBaseline },
+  );
+  check(
+    "the refusal names the un-re-signed generation for the reformatted read too",
+    wsWarnings.some((m) => /past its renewal point/.test(m)),
+    wsWarnings,
+  );
+  await wsEp.stop();
 
   // ── Fail-loud edges.
   const other = newIdentity();

@@ -1,0 +1,2 @@
+# The egress fence validates the whole frame envelope against a closed schema (#1432).
+smoke:agui-egress-closed-schema

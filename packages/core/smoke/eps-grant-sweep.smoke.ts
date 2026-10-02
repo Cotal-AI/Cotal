@@ -84,6 +84,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   observer: via("observer"),
   admin: via("admin"),
   supervisor: via("supervisor"),
+  "manager-caller": via("manager-caller", { managerInstanceId: IID, capabilities: ["spawn", "run", "admin"] }),
   "remote-manager": () => [`manager_${IID}`, `manager_exec_${IID}`].flatMap((actor) =>
     rowsOf(permissionsFor("remote-manager", SPACE,
       { ...pr, actor }, { remoteManager: { instanceId: IID, owner: DEV_OWNER, actor } }))),

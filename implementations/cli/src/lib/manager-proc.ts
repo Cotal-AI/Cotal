@@ -10,8 +10,36 @@ import {
   readProcessCommand, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE,
   type CommandReader, type LivenessProbe, type LocalProcessContext,
-  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writeIdentityPin,
+  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, parsePositiveIntegerFlag, removeIdentityPin, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
+/** The `--max-sessions` value a live `cotal supervise` argv is actually serving.
+ *
+ *  The manager reads that flag only at start. A refresh that records a different number while this
+ *  process stays up is a durable lie: MeshEntry claims a ceiling the live plane is not enforcing.
+ *  Absent from argv means the plane default of 64, not a recorded decision. */
+export function maxSessionsFromSuperviseArgv(command: string): number | undefined {
+  const tokens = command.trim().split(/\s+/);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    let raw: string | undefined;
+    if (token === "--max-sessions") raw = tokens[i + 1];
+    else if (token.startsWith("--max-sessions=")) raw = token.slice("--max-sessions=".length);
+    if (raw === undefined) continue;
+    try {
+      return parsePositiveIntegerFlag("--max-sessions", raw);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** True only when the live supervisor argv is proven to already be serving `requested`.
+ *  An unreadable command line cannot prove that, so it is a refusal — persist would guess. */
+export function liveManagerWouldApplyMaxSessions(command: string | undefined, requested: number): boolean {
+  if (command === undefined) return false;
+  return maxSessionsFromSuperviseArgv(command) === requested;
+}
 
 /** The space whose manager this folder's commands mean. Every helper below defaults to it, and the
  *  ones a caller reaches with an explicit `--space` take it as their last argument: the records are
@@ -147,13 +175,33 @@ export function managerHasDeliveryMarker(space: string = folderSpace()): boolean
  *  composed `cotal` binary registers it; `process.execArgv` carries the tsx loader in dev and is
  *  empty in prod. `supervise`'s auto runtime resolves to pty when detached, which answers the
  *  control plane (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
+export type ManagerStartOpts = {
+  space?: string;
+  server?: string;
+  spawn?: string[];
+  launch?: string;
+  runtime?: string;
+  attachHost?: string;
+  resumeAttempt?: string;
+  resumeCommitToken?: string;
+  wsPort?: number;
+  /** Live-session ceiling forwarded as `supervise --max-sessions`. */
+  maxSessions?: number;
+};
+
 export function startManagerDetached(
-  o: { space?: string; server?: string; spawn?: string[]; launch?: string; runtime?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
+  o: ManagerStartOpts = {},
 ): number {
   const space = o.space ?? folderSpace();
-  // Clear a provably dead PRE-UPGRADE record before claiming the canonical slot, so an upgraded root
-  // does not end up holding both names and failing every later read as ambiguous. It refuses (throws)
-  // on a live or unattributable one rather than orphaning the daemon behind it.
+  // BEFORE ANY RECORD OR LOG IS TOUCHED. `selfArgv` refuses when this process was not started from
+  // the `cotal` entry (#1629), and a refusal must leave the root exactly as it found it. Computed after
+  // the reclaim below, a refused start deleted dead pre-upgrade records; computed after `openSync`, it
+  // created a manager log and leaked its descriptor.
+  //
+  // Then clear a provably dead PRE-UPGRADE record before claiming the canonical slot, so an upgraded
+  // root does not end up holding both names and failing every later read as ambiguous. It refuses
+  // (throws) on a live or unattributable one rather than orphaning the daemon behind it.
+  const [node, ...self] = selfArgv();
   reclaimDeadPreUpgradeRecord(MANAGER_PIDFILE, ctx(space));
   reclaimDeadPreUpgradeRecord(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));
   const logPath = managerLogPath(space);
@@ -167,7 +215,6 @@ export function startManagerDetached(
   // represent the mode (or a Windows volume, where `.cotal`'s ACL is the real control) is not a
   // reason to refuse to start the manager.
   try { chmodSync(logPath, 0o600); } catch { /* mode is defence in depth, not the boundary */ }
-  const [node, ...self] = selfArgv();
   const args = [
     ...self,
     "supervise",
@@ -187,6 +234,7 @@ export function startManagerDetached(
     ...(o.resumeCommitToken ? ["--resume-commit-token", o.resumeCommitToken] : []),
     // P2 item 6: the broker ws listener port (loopback) for the console session client's wsUrl.
     ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
+    ...(o.maxSessions !== undefined ? ["--max-sessions", String(o.maxSessions)] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
@@ -196,11 +244,10 @@ export function startManagerDetached(
   // CANONICAL path, never a pre-upgrade one: a start that kept writing the root-scoped name would
   // keep minting the very records this change ends.
   const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx(space));
-  writeFileSync(pidPath, String(child.pid));
-  // #969: pin the pid to the start of the process behind it, so a later teardown can refuse a pid
-  // that was reused by an unrelated process. Sibling of the pidfile (marker pattern); absent on a
-  // platform that cannot produce a start token, which reads as a legacy record to every reader.
-  writeIdentityPin(pidPath, child.pid ?? 0);
+  if (!child.pid) throw new Error("manager spawned with no pid");
+  // #969/#1238: publish the pair by rename (pidfile + sibling start-token pin), so a crash never
+  // leaves a torn pairing; a platform that cannot produce a start token still gets the legacy shape.
+  writePidPair(pidPath, child.pid);
   // Mark this manager as delivery-aware (non-hosting) so the delivery preflight can tell it apart from
   // an old Plane-3-hosting manager. Written next to the pid, removed together in stopManager / down.
   writeFileSync(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space)), String(child.pid));
@@ -252,16 +299,16 @@ export function assertManagerRecordReplaceable(
 }
 
 export function ensureManager(
-  o: { space?: string; server?: string; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number } = {},
+  o: ManagerStartOpts = {},
   probe: LivenessProbe = probeLiveness,
   readCommand: CommandReader = readProcessCommand,
-): { running: boolean } {
+): { running: boolean; started: boolean; pid?: number } {
   const space = o.space ?? folderSpace();
   const state = managerLiveness(probe, readCommand, space);
-  if (state === "alive") return { running: true };
+  if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(probe, readCommand, space); // refuses on unknown / unattributable, reports foreign
-  startManagerDetached(o);
-  return { running: true };
+  const pid = startManagerDetached(o);
+  return { running: true, started: true, pid };
 }
 
 /** A signal, injectable for the same reason the probe is: `EPERM` from `kill` is producible only by

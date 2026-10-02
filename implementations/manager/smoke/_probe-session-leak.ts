@@ -151,7 +151,7 @@ try {
     if (arm.silent) { process.env.SEAT_SILENT = "1"; delete process.env.SEAT_TICK_MS; }
     else { delete process.env.SEAT_SILENT; process.env.SEAT_TICK_MS = "50"; }
     writeFileSync(join(root, ".cotal", "agents", `${arm.seat}.md`), `---\nname: ${arm.seat}\nrole: worker\n---\n`);
-    const started = await manager.startAgent({ name: arm.seat, agent: "leak-seat", cwd: repoRoot });
+    const started = await manager.startAgent({ name: arm.seat, agent: "leak-seat", cwd: repoRoot, events: false });
     if (!started.ok) throw new Error(`seat did not start: ${JSON.stringify(started)}`);
 
     const before = liveSessions();

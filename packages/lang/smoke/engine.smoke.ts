@@ -208,7 +208,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // lands with the step key the walker would have allocated.
 
 {
-  const h = harness({ script: { turns: { build: { status: "done", at: 0 } } } });
+  const h = harness({ script: { turns: { build: { status: "done" } } } });
   // What the transform emits, hand-written: `await turn(agent, { name: "build" })`.
   const module = `(ctx) => async () => {
     await ctx.fuel();
@@ -614,21 +614,13 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 }
 
 {
-  // A DECLARED DIVERGENCE, asserted rather than hidden.
-  //
-  // The walker reads the operand of `++` through `Number(...)`, so a string counts and a record
-  // settles as NaN, while `o + 1` on the very same values does something else entirely - the
-  // silent-coercion class, filed against the walker as Cotal-AI/Cotal#646. The engine refuses
-  // instead. Both halves are MEASURED here, so the day the walker's behaviour changes this cell
-  // reds and the divergence is re-decided rather than inherited.
-  const logs: unknown[][] = [];
-  const walker = await walkerRun(`let n = "5";\nn++;\nlog("n", n);\n`, {
-    runId: "upd-1",
-    handler: new SimHandler({}),
-    onLog: (l) => logs.push([...l.values]),
-  });
-  ok("the walker COUNTS a string operand, which is the divergence", JSON.stringify(logs) === '[["n",6]]', logs);
-  ok("and it completes rather than refusing", walker.journal.entries().length === 0);
+  // THE RETIRED DIVERGENCE (issue 646), asserted rather than left to drift back: the walker now
+  // refuses a non-number update operand the same way the engine's `unary("update")` always has,
+  // instead of reading it through a bare `Number(...)`.
+  const walker = await caught(() =>
+    walkerRun(`let n = "5";\nn++;\nlog("n", n);\n`, { runId: "upd-1", handler: new SimHandler({}) }),
+  );
+  ok("the walker refuses a string operand of `++` with L4018, the same as the engine", codeOf(walker) === "L4018");
   const h = harness();
   ok(
     "the engine refuses the same operand, by rule and not by accident",
@@ -929,7 +921,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // ---- 11) replay: a recorded effect returns its recorded result and dispatches nothing -----------
 
 {
-  const first = harness({ script: { turns: { build: { status: "done", at: 0 } } }, runId: "eng-replay" });
+  const first = harness({ script: { turns: { build: { status: "done" } } }, runId: "eng-replay" });
   const module = `(ctx) => async () => {
     const agent = await ctx.effect("spawn", ["builder", ctx.born({ name: "hire" })]);
     return await ctx.effect("turn", [agent, ctx.born({ name: "build" })]);
@@ -995,7 +987,7 @@ const MODULE = `(ctx) => async () => {
   const r = await ctx.effect("turn", [builder, ctx.born({ name: "build" })]);
   await ctx.free("log", ["status", ctx.get(r, "status")]);
 }`;
-const SCRIPT = { turns: { build: { status: "done" as const, at: 0 } } };
+const SCRIPT = { turns: { build: { status: "done" as const } } };
 
 {
   const logs: unknown[][] = [];
@@ -1680,6 +1672,7 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
     checkpoint: (req, ctx) => sim.checkpoint(req, ctx),
     sleep: (req, ctx) => sim.sleep(req, ctx),
     wait: (req, ctx) => sim.wait(req, ctx),
+    observe: (req, ctx) => sim.observe(req, ctx),
     notify: (req, ctx) => sim.notify(req, ctx),
     monitor: (req, ctx) => sim.monitor(req, ctx),
     openConclave: (req, ctx) => sim.openConclave(req, ctx),
@@ -1857,6 +1850,7 @@ log("winner", r.index)
       checkpoint: (req, ctx) => sim.checkpoint(req, ctx),
       sleep: (req, ctx) => sim.sleep(req, ctx),
       wait: (req, ctx) => sim.wait(req, ctx),
+      observe: (req, ctx) => sim.observe(req, ctx),
       notify: (req, ctx) => sim.notify(req, ctx),
       monitor: (req, ctx) => sim.monitor(req, ctx),
       openConclave: (req, ctx) => sim.openConclave(req, ctx),

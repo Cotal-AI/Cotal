@@ -15,7 +15,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const port = await new Promise((res, rej) => {
   const s = createServer();
@@ -25,6 +25,7 @@ const port = await new Promise((res, rej) => {
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), `port: ${port}\njetstream { store_dir: "${join(dir, "js")}" }\n`);
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+teardownOnSignal(broker);
 await new Promise((r) => setTimeout(r, 1200));
 console.log(JSON.stringify({ ownerPid: process.pid, brokerPid: broker.pid, dir }));
 setInterval(() => {}, 1 << 30);

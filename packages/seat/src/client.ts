@@ -118,9 +118,10 @@ export class SeatClient {
     };
   }
 
-  async write(data: string): Promise<void> {
+  async write(data: string): Promise<number> {
     const reply = await this.request({ op: "write", data });
-    if (!reply.ok) throw new Error(reply.error);
+    if (!reply.ok || reply.op !== "write") throw new Error(reply.ok ? "unexpected write reply" : reply.error);
+    return reply.bytes;
   }
 
   async resize(cols: number, rows: number): Promise<void> {

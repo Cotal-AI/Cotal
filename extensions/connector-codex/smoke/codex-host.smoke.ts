@@ -10,7 +10,9 @@
  *   2. wake: a DM drives a real turn carrying the rendered batch;
  *   3. ack-on-completion: a completed turn's batch never redelivers;
  *   4. steer: a directed message arriving mid-turn is steered INTO the live turn;
- *   5. interrupt: an interrupted turn's batch is NOT acked and redelivers immediately;
+ *   5. interrupt: an interrupted turn's batch is DISMISSED (acked), not redelivered, unless the
+ *      interrupt is one this host itself issued for its own retirement; a turn whose terminal
+ *      status is missing or unrecognized ("unknown") leaves the batch un-acked instead;
  *   6. failed: a failed turn's batch is NOT acked — it retries with backoff, and the loop
  *      is released afterwards;
  *   7. tools: a model-initiated MCP tools/call round-trips into the shared cotal_* surface,
@@ -30,8 +32,9 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey, type PresenceCondition } from "@cotal-ai/core";
+import { connect as rawConnect } from "@nats-io/transport-node";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
@@ -119,9 +122,20 @@ const operator = new CotalEndpoint({
 });
 operator.on("error", () => {});
 let online = false;
-operator.on("presence", (e: { type: string; presence: { card: { id: string; name: string } } }) => {
+// Every presence event the operator has seen for PEER, in arrival order. A condition can be
+// published and cleared again within one boundary's async tail (the next turn's `working`
+// transition wipes it, same as any real operator's dashboard would lose it if they blinked) —
+// polling `operator.getRoster()` for it is a snapshot race that can step over the window
+// entirely. Recording every push as it lands, the way `logEntries()` does for the fake's own
+// journal, means a condition that was genuinely published is never missed just because nothing
+// polled while it was live.
+const presenceLog: { at: number; status?: string; condition?: PresenceCondition }[] = [];
+operator.on("presence", (e: { type: string; presence: { card: { id: string; name: string }; status?: string; condition?: PresenceCondition } }) => {
   const c = e.presence.card;
-  if ((c.id === PEER || c.name === PEER) && e.type !== "offline") online = true;
+  if ((c.id === PEER || c.name === PEER) && e.type !== "offline") {
+    online = true;
+    presenceLog.push({ at: Date.now(), status: e.presence.status, condition: e.presence.condition });
+  }
 });
 
 /** DM the peer by its ROSTER id (principal dot-form) — names are not unicast recipients. */
@@ -131,13 +145,44 @@ async function dm(text: string): Promise<void> {
   await operator.unicast(id, text);
 }
 
+/**
+ * Publish a raw DM whose wire id is the EMPTY STRING, from a foreign client with no Cotal layer —
+ * the only shape an empty id can arrive in (first-party publish APIs mint one). The sender
+ * principal rides the subject (`local.rawpub`) and `from.id` matches it, so the receiver's
+ * authenticity guard passes and the message reaches ingest like any conformant one (#674: the
+ * adapter seam, not MeshAgent, is what is under test here). `drain()` closes the socket.
+ */
+const enc = new TextEncoder();
+let rawNc: Awaited<ReturnType<typeof rawConnect>> | undefined;
+async function rawEmptyIdDm(text: string, opts?: { flush?: boolean }): Promise<void> {
+  const recip = operator.getRoster().find((p) => p.card.name === PEER)?.card.id;
+  const parsed = recip ? parsePrincipalKey(recip) : undefined;
+  if (!recip || !parsed) throw new Error(`peer ${PEER} not in the operator's roster yet`);
+  rawNc ??= await rawConnect({ servers, maxReconnectAttempts: 0 });
+  rawNc.publish(
+    unicastSubject(space, parsed.owner, parsed.actor, "local", "rawpub"),
+    enc.encode(
+      JSON.stringify({
+        id: "",
+        ts: Date.now(),
+        space,
+        from: { id: "local.rawpub", name: "RawPub", kind: "agent" },
+        to: recip,
+        parts: [{ kind: "text", text }],
+      }),
+    ),
+  );
+  // `flush: false` lets a caller queue a second publish before either crosses the wire, so two
+  // raw sends land in one round trip — otherwise the host's idle drive() can start a turn on the
+  // first message before the second has even reached the broker (a test-timing race, not the
+  // adapter behavior the cell is grading).
+  if (opts?.flush !== false) await rawNc.flush();
+}
+
 let host: ReturnType<typeof spawn> | undefined;
 let tuiHostRef: ReturnType<typeof spawn> | undefined;
 try {
-  for (let i = 0; i < 50; i++) {
-    if (await isReachable(servers)) break;
-    await sleep(200);
-  }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   await operator.start();
 
@@ -264,30 +309,177 @@ try {
   const t4 = await waitFor("post-steer turn", () => turnStarts().find((t) => t.includes("post-steer")));
   check("steered batch acked with its turn", !t4.includes("steer-payload") && !t4.includes("SLOW block"), t4);
 
-  // (5) interrupt: the batch is NOT acked, so the boundary drive redelivers it immediately —
-  // a SECOND turn carrying "HANG now" (the fake's HANG is one-shot, so the redelivery completes).
+  // (4a) #674: a raw DM with an EMPTY wire id drives a turn of its own when the host is idle, and
+  // the turn's start ledger records its RECEIVE key (a minted one — the raw id is "") so the
+  // boundary ack addresses something real. Under the ledger-keyed-by-id mutation the ack drains
+  // "" instead, the message never commits, and the turn boundary immediately re-drives it — the
+  // marker text appears in a SECOND turn start (here: before the probe is even sent).
+  await sleep(300);
+  await rawEmptyIdDm("empty-drive");
+  const tD = await waitFor("empty-id drive turn", () => turnStarts().find((t) => t.includes("empty-drive")));
+  check("an empty-id DM drives a turn and never re-drives (#674)", true, tD);
+  await sleep(800); // let a mutant's un-acked re-drive run; a healthy boundary commits and stays idle
+  check(
+    "the driven empty-id DM committed at its boundary (no second turn carries it)",
+    turnStarts().filter((t) => t.includes("empty-drive")).length === 1,
+    turnStarts().filter((t) => t.includes("empty-drive")),
+  );
+
+  // (4b) #674: an empty-id DM steered mid-turn carries exactly once. `surfaced` holds RECEIVE
+  // keys; the steer filter must test `i.recvKey` against that set. Under the raw-id mutation an
+  // empty-id item's id ("") is never in the set, so it is steered a SECOND time into the same
+  // turn — the steer injection would name it twice.
+  await sleep(300);
+  await dm("SLOW empty-window");
+  await waitFor("SLOW empty-window turn", () => turnStarts().find((t) => t.includes("SLOW empty-window")));
+  await rawEmptyIdDm("empty-steer");
+  await waitFor("empty-id steer", () =>
+    logEntries().find(
+      (e) =>
+        e.ev === "recv" &&
+        e.method === "turn/steer" &&
+        ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("empty-steer")),
+    ),
+  );
+  await sleep(1500); // let the SLOW empty-window turn COMPLETE before counting: a :648 raw-id
+  // mutant re-steers the id-less item for as long as the turn stays open (a storm of turn/steer
+  // entries), so the count must span the whole journal after the window closes — counting inside
+  // the first matching entry would let every re-steer past the same guard.
+  const emptySteerCount = logEntries().filter(
+    (e) =>
+      e.ev === "recv" &&
+      e.method === "turn/steer" &&
+      ((e.params?.input as { text?: string }[] | undefined) ?? []).some((i) => (i.text ?? "").includes("empty-steer")),
+  ).length;
+  check(
+    "an empty-id DM steered mid-turn is not steered twice (#674)",
+    emptySteerCount === 1,
+    { emptySteerCount },
+  );
+  check(
+    "no turn start ever carries the steered empty-id text",
+    turnStarts().every((t) => !t.includes("empty-steer")),
+    turnStarts().filter((t) => t.includes("empty-steer")),
+  );
+  // (the probe DM's marker shares no substring with `empty-steer`, so the ack checks below can
+  // test the text's absence without matching the probe itself)
+  await dm("post-674-probe");
+  const tE3 = await waitFor("post-674-probe turn", () => turnStarts().find((t) => t.includes("post-674-probe")));
+  check(
+    "the steered empty-id DM was acked with its turn",
+    !tE3.includes("empty-steer") && !tE3.includes("SLOW empty-window"),
+    tE3,
+  );
+
+  // (4c) #674: two raw DMs with EMPTY wire ids, published back-to-back into ONE turn. The
+  // first-party APIs mint an id per message, so an empty id can only come off the wire from a
+  // raw client — exactly the foreign shape `empty-id-ingest` drives at the MeshAgent layer.
+  // `drive()` peeks the inbox synchronously in the first `incoming` dispatch, so two DMs into an
+  // IDLE host are deterministically two turns; the one open window is a live turn, and steers are
+  // how both join it. The ADAPTER seam is what this cell grades: the surfaced ids the turn owns
+  // are receive keys (a minted one for each id-less item, start and steers alike), and the
+  // boundary acks by exactly those keys — otherwise the ack addressed "" twice, nothing commits,
+  // and the boundary's pump re-carries both texts into the very next turn (the ledger-keyed-by-id
+  // mutation this cell must catch).
+  await sleep(300);
+  await dm("SLOW empty-frame");
+  await waitFor("SLOW empty-frame turn", () => turnStarts().find((t) => t.includes("SLOW empty-frame")));
+  await rawEmptyIdDm("empty-a", { flush: false });
+  await rawEmptyIdDm("empty-b");
+  const emptySteerTexts = () =>
+    logEntries()
+      .filter((e) => e.ev === "recv" && e.method === "turn/steer")
+      .map((e) => ((e.params?.input as { text?: string }[] | undefined) ?? []).map((i) => i.text ?? "").join("\n"));
+  await waitFor("both empty-id DMs steered into the open turn", () => {
+    const texts = emptySteerTexts();
+    return texts.some((t) => t.includes("empty-a")) && texts.some((t) => t.includes("empty-b")) ? texts : undefined;
+  });
+  await sleep(1500); // let the SLOW empty-frame turn complete (its boundary is the ack site)
+  const emptySteered = emptySteerTexts();
+  check(
+    "two empty-id DMs in one turn both commit (#674)",
+    emptySteered.filter((t) => t.includes("empty-a")).length === 1 &&
+      emptySteered.filter((t) => t.includes("empty-b")).length === 1,
+    emptySteered,
+  );
+  check(
+    "no turn start ever carries either empty-id text (steers joined, never drove)",
+    turnStarts().every((t) => !t.includes("empty-a") && !t.includes("empty-b")),
+    turnStarts().filter((t) => t.includes("empty-a") || t.includes("empty-b")),
+  );
+  await sleep(500);
+  await dm("after-empty");
+  const tE2 = await waitFor("post-empty turn", () => turnStarts().find((t) => t.includes("after-empty")));
+  check(
+    "the empty-id batch was committed at its boundary (neither text returns)",
+    !tE2.includes("empty-a") && !tE2.includes("empty-b"),
+    tE2,
+  );
+
+  // (5) interrupt: an OPERATOR interrupt dismisses the batch — acked, not redelivered. HANG holds
+  // the turn open until it is interrupted (the fake's self-interrupt fallback after ~1s stands in
+  // for an operator's Escape in the attached TUI, since this host never calls driver.interrupt()
+  // itself outside shutdown()). Dismissed means the marker appears in exactly ONE turn/start ever
+  // (the boundary never re-drives it); a mutant that leaves it un-acked instead redrives it into a
+  // SECOND turn immediately, before "after-hang" is even sent — so the count, not the last turn's
+  // content, is what actually distinguishes dismissed from redelivered.
   await sleep(300);
   await dm("HANG now");
   await waitFor("HANG turn", () => turnStarts().find((t) => t.includes("HANG now")));
-  const redelivered = await waitFor("redelivery turn", () =>
-    turnStarts().filter((t) => t.includes("HANG now")).length >= 2 ? true : undefined,
-  );
-  check("interrupted turn's batch redelivers", redelivered === true);
+  await sleep(1500); // let the self-interrupt fallback fire and the boundary settle (and, on a
+  // mutant, let the redelivery it triggers run to completion too)
+  const hangOccurrences = turnStarts().filter((t) => t.includes("HANG now")).length;
+  check("interrupted turn's batch is dismissed, not redelivered", hangOccurrences === 1, hangOccurrences);
   await dm("after-hang");
   await waitFor("after-hang turn", () => turnStarts().find((t) => t.includes("after-hang")));
+
+  // (5b) an unknown terminal status (missing/unrecognized `status`) is neither a real interrupt
+  // nor a completion — the batch stays un-acked, same as today, so the boundary immediately
+  // redrives it into a second turn (no backoff, unlike `failed`); the fake's marker is one-shot,
+  // so that redelivery completes normally. The wait is caught rather than left to throw, so a
+  // mutant that acks it instead reddens a named check rather than an uncaught timeout.
+  await sleep(300);
+  await dm("UNKNOWNSTATUS now");
+  await waitFor("unknown-status turn", () => turnStarts().find((t) => t.includes("UNKNOWNSTATUS now")));
+  const unknownRedelivered = await waitFor("unknown-status redelivery", () =>
+    turnStarts().filter((t) => t.includes("UNKNOWNSTATUS now")).length >= 2 ? true : undefined,
+  ).catch(() => false);
+  check("unknown terminal status leaves the batch un-acked", unknownRedelivered === true);
+  await dm("after-unknown");
+  await waitFor("after-unknown turn", () => turnStarts().find((t) => t.includes("after-unknown")));
 
   // (6) failed: the batch is NOT acked — the backoff timer retries it (the fake's FAIL is
   // one-shot, so the retry completes and acks), and the loop is not wedged afterwards.
   await sleep(300);
+  const failSentAt = Date.now();
   await dm("FAIL this");
   await waitFor("FAIL turn", () => turnStarts().find((t) => t.includes("FAIL this")));
+  const failSeenAt = Date.now();
   const retried = await waitFor("failed-turn retry", () =>
     turnStarts().filter((t) => t.includes("FAIL this")).length >= 2 ? true : undefined,
   );
   check("failed turn's batch retries with backoff (never acked-dropped)", retried === true);
+  // The fake fails this turn in the same frame it starts it, so the host handles the start and
+  // the failure in one tick. Its start clears the condition and its failure sets one; the record
+  // that STANDS after the boundary is whichever write went out last. Grade that standing record,
+  // not whether the condition was ever glimpsed: the presence bucket keeps one revision per key,
+  // so a condition written first and cleared a millisecond later may or may not reach a watcher,
+  // and a glimpse would pass by luck. The retry follows a one-second backoff, so every push in the
+  // window after the failed start and before it belongs to the failed turn's boundary.
+  const boundary = presenceLog.filter((e) => e.at >= failSentAt && e.at < failSeenAt + 600);
+  const standing = boundary.at(-1)?.condition;
+  check(
+    "failed turn relays Codex's native error as a rate-limit condition",
+    standing?.code === "rate_limit" && standing.source === "rateLimitExceeded" && standing.message === "fake rate limit",
+    boundary,
+  );
   await dm("after-fail");
   const t6 = await waitFor("post-fail turn", () => turnStarts().find((t) => t.includes("after-fail")));
   check("loop released after the failed batch settled", !t6.includes("FAIL this"), t6);
+  check(
+    "a later normal turn clears the prior condition",
+    await waitFor("condition clear", () => operator.getRoster().find((p) => p.card.name === PEER)?.condition === undefined ? true : undefined),
+  );
 
   // (7) the cotal_* MCP surface: the app-server calls it ITSELF over loopback HTTP, which is why
   // it works identically on a mesh-driven turn and one typed into the attached TUI.
@@ -301,17 +493,36 @@ try {
   const noAuth = await waitFor("unauthenticated tool call", () => logEntries().find((e) => e.ev === "toolReplyNoAuth"));
   check("MCP endpoint refuses a call with no bearer token", noAuth.httpStatus === 401, noAuth);
 
+  await dm("APPROVAL probe");
+  await waitFor("approval request", () => logEntries().find((e) => e.ev === "serverRequest" && e.method === "item/commandExecution/requestApproval"));
+  const approvalCondition = await waitFor("approval presence condition", () =>
+    // Same race as the failed-turn condition above: the approval `waiting` condition and a
+    // later turn's `working` (which clears it) can both land before anything polls the live
+    // roster. Read the recorded push log instead of `operator.getRoster()`.
+    presenceLog.find((e) => e.condition?.source === "item/commandExecution/requestApproval")?.condition,
+  );
+  check("Codex approval requests relay the approval condition", approvalCondition.code === "approval", approvalCondition);
+
   // (7b) MULTI-CLIENT OWNERSHIP. The app-server broadcasts turn lifecycle to every attached
   // client, so with the TUI attached the host sees terminals for turns a HUMAN started. A
   // foreign turn's `completed` must never finalize the host's own batch: the batch was never
-  // carried by it, so acking there loses the message outright.
+  // carried by it, so acking there loses the message outright. Our OWN turn then ends
+  // `interrupted` (the human's typing stole the terminal) — an interrupt this host did not
+  // issue, so it dismisses the batch exactly like an operator's Escape would (one occurrence
+  // ever, the same counting shape as (5): a mutant that leaves it un-acked redrives it into a
+  // second turn immediately, before any later DM is even sent).
   await sleep(300);
   await dm("FOREIGN turn steals the terminal");
   await waitFor("FOREIGN turn", () => turnStarts().find((t) => t.includes("FOREIGN turn steals")));
-  const redeliveredForeign = await waitFor("FOREIGN batch redelivery", () =>
-    turnStarts().filter((t) => t.includes("FOREIGN turn steals")).length >= 2 ? true : undefined,
+  await sleep(500); // let the foreign turn complete and our own turn end interrupted
+  const foreignOccurrences = turnStarts().filter((t) => t.includes("FOREIGN turn steals")).length;
+  check(
+    "a foreign (TUI-owned) turn's completion never acks the host's batch, but our own interrupted turn dismisses it",
+    foreignOccurrences === 1,
+    foreignOccurrences,
   );
-  check("a foreign (TUI-owned) turn never acks the host's batch", redeliveredForeign === true);
+  await dm("after-foreign");
+  await waitFor("after-foreign turn", () => turnStarts().find((t) => t.includes("after-foreign")));
 
   // (7c) STANDALONE TUI TURN. Someone types in the TUI while nothing of ours is open, and a DM
   // lands mid-turn. steerPending declines (we have no turn to steer into) so it buffers — and the
@@ -855,10 +1066,7 @@ try {
   await waitFor("shutlaunch thread started", () =>
     !existsSync(shutLaunchLog)
       ? undefined
-      : readFileSync(shutLaunchLog, "utf8")
-          .split("\n")
-          .filter(Boolean)
-          .map((l) => JSON.parse(l) as LogEntry)
+      : readJsonLines<LogEntry>(shutLaunchLog)
           .find((e) => e.ev === "recv" && e.method === "thread/start"),
     30_000,
   );
@@ -1091,13 +1299,7 @@ try {
     },
     stdio: ["ignore", "ignore", "inherit"],
   }));
-  const tuiEntries = (): LogEntry[] =>
-    !existsSync(tuiLog)
-      ? []
-      : readFileSync(tuiLog, "utf8")
-          .split("\n")
-          .filter(Boolean)
-          .map((l) => JSON.parse(l) as LogEntry);
+  const tuiEntries = (): LogEntry[] => readJsonLines<LogEntry>(tuiLog);
   const tuiLaunch = await waitFor("codex TUI launch", () => tuiEntries().find((e) => e.ev === "tui"), 30_000);
   const tuiArgv = (tuiLaunch.argv ?? []) as string[];
   const startedThread = tuiEntries().find((e) => e.ev === "recv" && e.method === "thread/start");

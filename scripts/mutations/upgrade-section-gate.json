@@ -1,0 +1,280 @@
+{
+  "grades": "tool",
+  "suite": [
+    "scripts/upgrade-section-gate.mjs"
+  ],
+  "guard": "a breaking change that lands with no matching section in docs/UPGRADING.md is refused, while a breaking change WITH its section and a non-breaking change with no section both pass",
+  "command": "node scripts/upgrade-section-gate.mjs --self-test",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/upgrade-section-gate.json",
+  "why": [
+    "Cotal #1578: 0.49.0 changed how a credential's authority is recorded, the repository carried no UPGRADING.md, and an operator with a live 30-agent deployment could not tell whether their credentials survived or which side of a split topology to upgrade first. Nothing in CI noticed. This gate is what notices.",
+    "A gate like this has two ways to be useless and each needs its own mutation. It can stop DETECTING, in which case the breaking change sails through and the operator is back where the issue started. Or it can start firing on EVERYTHING, in which case it is turned off within a week and the first failure mode returns by another route. M1 and M2 are those two directions.",
+    "M3 and M4 attack the two readers rather than the verdict. A marker reader that never fires and a section reader that always finds coverage both leave the verdict logic perfectly correct and grading nothing, which is the shape this repository has been catching all week: the gate is armed, and its accept control returns zero.",
+    "M5 is the cheapest way to satisfy a gate that only checked whether the file was touched. If an empty heading counted, the rule would decay into adding a heading at release time, and the document would stop being the thing the reporter actually needed.",
+    "The self-test drives the real exported functions in the mutated file, so the code under test is the gate itself and not a copy of its logic.",
+    "M1 and the too-wide case were separate mutations until the predicate tightened and collapsed them onto one line. They are merged rather than both kept: two names over one mutation is one claim counted twice. The too-wide behaviour is still graded, by the cell M1 reddens and by the dedicated TOO WIDE cell beside it."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the coverage predicate stops refusing: a breaking change with no new section passes",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (addedSections.length === 0)\n    return { ok: false, reason: `${breaking.length} breaking change(s) and no new ${UPGRADING_PATH} section in the same range` };",
+      "replace": "  if (addedSections.length === 0)\n    return { ok: true, reason: `${breaking.length} breaking change(s) and no new ${UPGRADING_PATH} section in the same range` };",
+      "expectRed": "ACCEPT CONTROL: a breaking change with no new UPGRADING.md section is REFUSED",
+      "cell": "ACCEPT CONTROL: a breaking change with no new UPGRADING.md section is REFUSED",
+      "note": "THE DEFECT THIS GATE SHIPPED WITH AT ITS FIRST HEAD, so this is a revert-check and not a contrived edit. Two separate mutations used to live here, one for 'no edit at all' and one for 'an edit that added no section'. Tightening the predicate from `upgradingChanged` to `addedSections` COLLAPSED THEM ONTO ONE LINE, and keeping both would have been one claim counted twice, which is the defect this repository has been naming all day. They are merged, and the too-wide case is graded by its own CELL rather than by a duplicate mutant. Measured through the real CLI before the fix: a `feat(core)!` commit beside a ONE-LINE TYPO FIX on the page passed as 'covered by 8 section(s)', every one of them written for an earlier release; and it decays, because each section the page accumulates becomes permanent pre-coverage for every future break."
+    },
+    {
+      "name": "M2 the gate fires on everything: a non-breaking change is refused too",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (breaking.length === 0) return { ok: true, reason: \"no breaking commits DETECTED in range (unmarked breaks are invisible to this check)\" };",
+      "replace": "  if (breaking.length === 0 && addedSections.length > 0) return { ok: true, reason: \"no breaking commits DETECTED in range (unmarked breaks are invisible to this check)\" };",
+      "expectRed": "REFUSE CONTROL: a NON-breaking change with no section passes (not vacuously red)",
+      "cell": "REFUSE CONTROL: a NON-breaking change with no section passes (not vacuously red)",
+      "note": "The other failure direction, and the one that kills the gate socially rather than technically. Both accept cells stay GREEN under this mutation, so only the third leg catches it: without that leg, 'detects breaking changes' and 'reds on every changeset' are the same measurement."
+    },
+    {
+      "name": "M3 the breaking-marker reader never fires on a conventional `!`",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (/^[a-z]+(?:\\([^)]*\\))?!:/.test(subject.trim())) return true;",
+      "replace": "  if (false && /^[a-z]+(?:\\([^)]*\\))?!:/.test(subject.trim())) return true;",
+      "expectRed": "a `!` in the conventional type is read as breaking",
+      "cell": "a `!` in the conventional type is read as breaking",
+      "note": "The verdict logic is untouched and perfectly correct under this mutation; it is simply never handed a positive. That is the exact shape of an armed gate grading nothing, and it is invisible to any cell that only exercises the verdict."
+    },
+    {
+      "name": "M4 the section reader counts the page's own structural headings as coverage",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  return out.filter((s) => !STRUCTURAL_HEADINGS.includes(s.title));",
+      "replace": "  return out;",
+      "expectRed": "…and excludes the page's own structural headings",
+      "cell": "…and excludes the page's own structural headings",
+      "note": "With this mutation the page's permanent furniture (the contract section and the how-to-add-a-section section) counts as a release section forever, so every future breaking change is pre-covered by headings nobody wrote for it."
+    },
+    {
+      "name": "M5 an empty heading counts as an upgrade section",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    .filter((s) => s.body.trim().length > 0 && namesARelease(s.title))\n    .map((s) => s.title);",
+      "replace": "    .filter((s) => namesARelease(s.title))\n    .map((s) => s.title);",
+      "expectRed": "REFUSE CONTROL: an empty section is not coverage",
+      "cell": "REFUSE CONTROL: an empty section is not coverage",
+      "note": "The cheapest possible way to satisfy the rule without doing the work. A heading with nothing under it tells an operator nothing, and a gate that accepts one teaches the release process to add headings rather than write upgrade notes."
+    },
+    {
+      "name": "M6 the section difference becomes a head-only read",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  const before = new Set(coveringSections(basePage));\n  return coveringSections(headPage).filter((s) => !before.has(s));",
+      "replace": "  return coveringSections(headPage);",
+      "expectRed": "REFUSE CONTROL: rewording an EXISTING section adds no new section",
+      "cell": "REFUSE CONTROL: rewording an EXISTING section adds no new section",
+      "note": "The same defect as M1 one layer down: a head-only read answers \"does the page have sections\", which every page does forever after its first release, instead of \"did THIS range write one\". It also silently breaks the historical replay, since reading only the head of an old range is how a gate reports a green that belongs to today. THIS MUTANT SURVIVED THE WHOLE SUITE on its first run, with the tool's positive control proving the suite reached the file and simply did not test that line, because the difference was computed INLINE IN THE CLI where no cell could call it. That is why it is now the exported addedSectionsBetween: a predicate the suite cannot call is a predicate nothing grades."
+    },
+    {
+      "name": "M7 a section that names no release counts as coverage",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    .filter((s) => s.body.trim().length > 0 && namesARelease(s.title))",
+      "replace": "    .filter((s) => s.body.trim().length > 0)",
+      "expectRed": "REFUSE CONTROL: an unnamed section on a real page is not counted",
+      "cell": "REFUSE CONTROL: an unnamed section on a real page is not counted",
+      "note": "The residue of M5 after empty headings were excluded. If a heading need not name its release, the cheapest way to satisfy the gate becomes a section called `Notes` with one sentence under it, or an unrelated heading that happened to arrive in the same range. Coverage is CLAIMED BY A HEADING, so a heading that names no release claims everything and distinguishes nothing. Requiring a version token also makes the section the one an operator upgrading that release will actually search for."
+    },
+    {
+      "name": "M8 a crash is reported as a refusal: misuse exits 1",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    console.error(\"This is a MISUSE exit (2), not a refusal: nothing was graded. Check the --base/--range refs exist.\");\n    process.exit(2);",
+      "replace": "    console.error(\"This is a MISUSE exit (2), not a refusal: nothing was graded. Check the --base/--range refs exist.\");\n    process.exit(1);",
+      "expectRed": "EXIT 2 on an unresolvable ref: misuse is never reported as a refusal",
+      "cell": "EXIT 2 on an unresolvable ref: misuse is never reported as a refusal",
+      "note": "ALSO A REVERT-CHECK RATHER THAN A CONTRIVED EDIT: the first head of this gate threw out of the top level on a mistyped ref and exited 1, the refusal code, so a CI job with a bad base ref would have reported 'a breaking change is missing its UPGRADING.md section' while having graded NOTHING. That is worse than a crash, because it is a false verdict in the accusing direction and the fix a reader would attempt is to write a section that was never missing. The exit codes are now graded by cells that run the real CLI in a subprocess, with both directions controlled: a genuine refusal must still be 1 and a clean range still 0, so a mutation cannot satisfy the misuse cells by making every exit 2."
+    },
+    {
+      "name": "M9 a section whose body is only subsection headings counts as coverage",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    if (/^ {0,3}#{1,6}\\s/.test(line)) continue;",
+      "replace": "    if (/^ {0,3}#{7,9}\\s/.test(line)) continue;",
+      "expectRed": "REFUSE CONTROL: a section whose body is only SUBSECTION HEADINGS is not coverage",
+      "cell": "REFUSE CONTROL: a section whose body is only SUBSECTION HEADINGS is not coverage",
+      "note": "THE DEFECT THIS GATE SHIPPED AT ITS SECOND HEAD, found by reviewers and not by me, so it is a revert-check. `##` opened a section and every OTHER heading fell through to the body accumulator, so `## From 0.49.0 to 0.50.0` followed by nothing but `### What changed` satisfied `body.trim().length > 0` and was ACCEPTED. It is M5 one nesting level down, and none of the 33 cells walked it because M5's fixture page has no subsections: the suite graded the rule I was thinking about when I wrote M5. The mutation keeps a syntactically valid guard that can never match a real heading, so it restores the defect without disabling the line, which a reader would spot. Note the replacement must not simply delete the guard: the accompanying ACCEPT CONTROL cell (real prose under a subsection is still coverage) is what proves the fix did not over-correct into refusing every section that uses subsections."
+    },
+    {
+      "name": "M10 a truncated history is graded as though it were complete",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (gitQuiet([\"rev-parse\", \"--is-shallow-repository\"]).trim() === \"true\") {",
+      "replace": "  if (false) {",
+      "expectRed": "EXIT 2 in a SHALLOW repository: a truncated history is misuse, never a silent pass",
+      "cell": "EXIT 2 in a SHALLOW repository: a truncated history is misuse, never a silent pass",
+      "note": "MEASURED ON A REAL SHALLOW CLONE RATHER THAN ARGUED. actions/checkout defaults to depth 1, and the smoke job that runs this suite took that default. In a depth-1 checkout the tags v0.48.2 and v0.49.0 both still RESOLVE, so `git log` succeeds and returns a truncated set: the range holding 173 commits and two marked breaking changes reports as 1 commit and zero breaking changes, and the gate printed OK and exited 0. That is the exact sin this gate exists to catch, committed by the gate itself: a green meaning 'I could not see' on the check whose green is supposed to mean 'somebody documented the break'. The guard makes it a MISUSE exit instead, and the paired ACCEPT CONTROL (same command, full history, still exits 0) is what proves the guard discriminates rather than refusing everything."
+    },
+    {
+      "name": "M11 the suite declares itself ungraded on a repository that is fine",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  const historyIsTruncated = spawnSync(\"git\", [\"rev-parse\", \"--is-shallow-repository\"], { encoding: \"utf8\" }).stdout.trim() === \"true\";",
+      "replace": "  const historyIsTruncated = true;",
+      "expectRed": "cells are only skipped when THIS repository is genuinely shallow",
+      "cell": "cells are only skipped when THIS repository is genuinely shallow",
+      "note": "A SKIP IS A CLAIM AND IT NEEDS GRADING LIKE ANY OTHER. The skip path exists so a shallow checkout reports UNGRADED instead of a false red, but the same mechanism could silently drop real cells on a healthy repository, and the sentinel cannot catch that because pass+fail+skipped is invariant under a skip. This mutant forces the probe true on a full clone; the discriminating cell reds because it asserts the probe answers false in a full source and true only in a depth-1 clone. That cell is what stops the skip from becoming a way to make the suite quiet."
+    },
+    {
+      "name": "M12 --merge-snapshot accepts a checkout that is not a merge",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    if (parents !== 2) {",
+      "replace": "    if (false) {",
+      "expectRed": "EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
+      "cell": "EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
+      "note": "THIS IS THE MUTANT FOR THE DEFECT THAT SHIPPED. On a single-parent checkout HEAD^1 is the branch's previous commit rather than the merge base, so the graded range shrinks to the last commit and a breaking change behind it reads as absent. The gate then prints OK and exits 0 on exactly the branch it exists to refuse: a clean green meaning I looked at the wrong thing. Reviewed against the caller's own parent check, which catches the same shape; the guard is duplicated deliberately, because a guard living only in its caller protects only the callers that remember it, and a local hook or a future workflow inherits none of that care."
+    },
+    {
+      "name": "M13 an explicit range silently overrides the merge snapshot's own range",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (range && mergeSnapshot) {",
+      "replace": "  if (false) {",
+      "expectRed": "EXIT 2 when --merge-snapshot is combined with an explicit range: one range, one source",
+      "cell": "EXIT 2 when --merge-snapshot is combined with an explicit range: one range, one source",
+      "note": "TWO SOURCES FOR ONE RANGE IS THE DEFECT THIS WHOLE FLAG REPLACES. If both are accepted, the later assignment wins silently and a caller that passes both gets whichever the implementation happens to prefer, which is how a base from one snapshot ended up paired with a head from another in the first place. Refusing the combination keeps the range's provenance single and visible."
+    },
+    {
+      "name": "M14 an option that is given no value falls through and grades anyway",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "      if (value === undefined || value.startsWith(\"--\")) {",
+      "replace": "      if (false) {",
+      "expectRed": "EXIT 2 when --range is given no value: a dropped argument is misuse, not a pass",
+      "cell": "EXIT 2 when --range is given no value: a dropped argument is misuse, not a pass",
+      "note": "MEASURED AS A LIVE DEFECT, NOT IMAGINED. The original parser read an option value by looking one slot to the right without checking that a slot held one. A value-less --range read undefined, which is falsy, so the combination refusal never fired and the tool graded the merge snapshot and exited 0. A gate that greens on a typo is the decoration this tool exists to remove."
+    },
+    {
+      "name": "M15 an unknown argument is ignored rather than refused",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    if (BARE_FLAGS.has(arg)) continue;",
+      "replace": "    if (true) continue;",
+      "expectRed": "EXIT 2 on an UNKNOWN flag: an argument this tool does not understand is never ignored",
+      "cell": "EXIT 2 on an UNKNOWN flag: an argument this tool does not understand is never ignored",
+      "note": "A misspelled flag must never be silently dropped. Measured before the fix: --merge-snapshot --bogus graded and exited 0, so a caller who mistyped an argument got a pass for a run that ignored what they asked for."
+    },
+    {
+      "name": "M16 the merge-snapshot cells read the ambient checkout instead of a repository they build",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    const linear = build(\"linear\", \"feat(core)!: rename a wire field\");",
+      "replace": "    const linear = process.cwd();",
+      "expectRed": "EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
+      "cell": "EXIT 2 on --merge-snapshot outside a two-parent merge: HEAD^1 is not a merge base",
+      "note": "THIS IS THE DEFECT THAT TOOK THE SUITE RED IN CI. The cell used to run against whatever checkout the suite was in, so its result was decided by that checkout parent count: 42 passed on a branch head, 41 passed 1 failed on the pull request merge ref, which is exactly what CI checks out at fetch-depth 0. The mutation proof then refused to grade against a red baseline and all 13 mutants went UNGRADED. A cell must build the condition it names."
+    },
+    {
+      "name": "the detector hard-codes the job name instead of honouring the one passed in",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  return candidates.filter((j) => j !== hostJob\n    && new RegExp",
+      "replace": "  return candidates.filter((j) => j !== \"attribution\"\n    && new RegExp",
+      "cell": "the host job is honoured rather than assumed: `unit` is not stale when `unit` runs it",
+      "expectRed": "the host job is honoured rather than assumed",
+      "note": "A detector that assumes the answer cannot notice the step moving, which is the only thing it exists to notice."
+    },
+    {
+      "name": "the stale-claim detector returns nothing, so every page reads as clean",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  return candidates.filter((j) => j !== hostJob\n    && new RegExp(`(runs?|grades?|grading path is|step (?:in|of)|in) the .${j}. job`).test(text));",
+      "replace": "  return [];",
+      "cell": "ACCEPT CONTROL: a page claiming a job that no longer runs the gate is NAMED",
+      "expectRed": "ACCEPT CONTROL: a page claiming a job that no longer runs the gate is NAMED",
+      "note": "This is the shape that actually shipped: one paragraph correct, another still naming `unit`. Pinned against BUILT documents rather than the live ones, because when the real docs are clean a disabled detector is unobservable: the live-file version of this mutation SURVIVED."
+    },
+    {
+      "name": "the bundle-shaped cell is stubbed true, so the generated copy is graded by nothing",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  cell(\"ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED\",",
+      "replace": "  cell(\"ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED\", true) || cell(\"dead\",",
+      "cell": "ACCEPT CONTROL: a stale claim inside a BUNDLE-shaped escaped string is NAMED",
+      "expectRed": "every cell ran or was reported ungraded",
+      "note": "The bundle is the copy connector-core serves to users, stored as one escaped JSON string. A reader written for the markdown can pass on the source and miss the generated copy, which is the half that reaches users. Stubbing the cell trips the cell-count sentinel, so the suite refuses rather than quietly grading one artefact less."
+    },
+    {
+      "name": "an absent candidate list silently falls back to a hard-coded pair",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (!Array.isArray(candidates) || candidates.length === 0)\n    throw new Error(\"staleJobClaims: candidates must be a non-empty array of job names read from the workflows\");",
+      "replace": "  if (!Array.isArray(candidates) || candidates.length === 0)\n    candidates = [\"unit\", \"ci-ok\"];",
+      "cell": "REFUSE CONTROL: grading with no candidate list is a refusal, not a clean page",
+      "expectRed": "REFUSE CONTROL: grading with no candidate list is a refusal, not a clean page",
+      "note": "Found by review end to end: with a hard-coded pair, a page naming the CORRECT host AND ALSO a false third job passes everything, because the positive check is satisfied while the refuse leg never looks at the third. A silent default is how that list stops tracking the workflows, so the absence must throw rather than guess."
+    },
+    {
+      "name": "the detector misses the docs' own `step of` grammar for a false third job",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "step (?:in|of)",
+      "replace": "step in",
+      "cell": "the docs' own `step of` grammar cannot hide a false third job",
+      "expectRed": "the docs' own `step of` grammar cannot hide a false third job",
+      "note": "Found by exact-head review using the grammar the committed design itself uses. The page can name the correct host as a step of attribution and also falsely name live as another step of the gate; recognizing only `step in` makes that simultaneous truth and falsehood pass."
+    },
+    {
+      "name": "workflow candidate extraction includes top-level triggers as though they were jobs",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "        if (!inJobs) continue;",
+      "replace": "        if (false) continue;",
+      "cell": "workflow candidates are job keys, not top-level trigger or configuration keys",
+      "expectRed": "workflow candidates are job keys, not top-level trigger or configuration keys",
+      "note": "Exact-head review measured 32 regex candidates against 27 actual job keys: pull_request, push, release, schedule, and workflow_dispatch leaked in from other top-level mappings. This mutant restores that over-wide extraction and must red the candidate-set cell."
+    },
+    {
+      "name": "unchanged major changesets at the base are counted as new breaking signals",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  const baseMajorPackages = majorPackagesAt(rangeBase);",
+      "replace": "  const baseMajorPackages = new Set();",
+      "cell": "REFUSE CONTROL: an unchanged base major changeset does not block unrelated work",
+      "expectRed": "REFUSE CONTROL: an unchanged base major changeset does not block unrelated work",
+      "note": "Supplementary exact-head review reproduced an unrelated README-only range being refused because a major changeset already existed at both endpoints. The gate's signals must be range-local, so the base-to-head transition is load-bearing."
+    },
+    {
+      "name": "a symlink invocation is mistaken for an import and silently skips the CLI",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);",
+      "replace": "    return import.meta.url === pathToFileURL(process.argv[1]).href;",
+      "cell": "invoking the gate through a symlink still executes and grades the range",
+      "expectRed": "invoking the gate through a symlink still executes and grades the range",
+      "note": "Supplementary exact-head review invoked the same breaking fixture through a file symlink and measured exit 0 with no output. Canonical executable identity is what separates a CLI invocation from an import; comparing one canonical path with one alias silently disables the gate."
+    },
+    {
+      "name": "a new major package is hidden when its changeset file already contains another major",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  const addedMajorPackages = [...headMajorPackages].filter((pkg) => !baseMajorPackages.has(pkg));",
+      "replace": "  const addedMajorPackages = headMajorPackages.size > 0 && baseMajorPackages.size === 0 ? [...headMajorPackages] : [];",
+      "cell": "adding a second major package beside an existing major is a new breaking signal",
+      "expectRed": "adding a second major package beside an existing major is a new breaking signal",
+      "note": "Exact-head review found the file-level boolean comparison stayed true at both ends when core was already major, hiding a newly major auth package. The package-name set difference is load-bearing even when the file was already breaking for another package."
+    },
+    {
+      "name": "quoted major values accepted by Changesets are silently ignored",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  return Object.entries(parsed).filter(([, bump]) => bump === \"major\").map(([pkg]) => pkg);",
+      "replace": "  return Object.entries(parsed).filter(([, bump]) => bump === \"zz-not-major\").map(([pkg]) => pkg);",
+      "cell": "a valid quoted-major changeset refuses through the production CLI",
+      "expectRed": "a valid quoted-major changeset refuses through the production CLI",
+      "note": "Exact-head review used the repository's authoritative Changesets parser to show quoted YAML values and inline maps are valid major declarations while the hand regex returned no signal. The production CLI cell makes parser agreement load-bearing."
+    },
+    {
+      "name": "the required job invokes the YAML-backed gate without installing its dependency",
+      "file": ".github/workflows/attribution.yml",
+      "find": "      - name: Install gate dependencies\n        run: pnpm install --frozen-lockfile --ignore-scripts\n",
+      "replace": "",
+      "cell": "the required attribution job installs the gate's declared YAML dependency before grading",
+      "expectRed": "the required attribution job installs the gate's declared YAML dependency before grading",
+      "note": "Once the gate adopted the release toolchain's YAML parser, the required job failed before printing a verdict because it still installed no dependencies. Removing this step must red by name before another import can silently turn the required gate into a could-not-run result."
+    },
+    {
+      "name": "M28 malformed front-matter boundaries stop refusing: a changeset with no closing delimiter is read as 'no major packages' instead of being rejected",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (!m) throw new Error(\"changeset is missing or has invalid front matter delimiters\");",
+      "replace": "  if (!m) return [];",
+      "expectRed": "CHANGESETS AGREEMENT E2E: missing closing delimiter",
+      "cell": "CHANGESETS AGREEMENT E2E: missing closing delimiter",
+      "note": "Added to close the reviewer's one blocker: the agreement cell read well and graded nothing. The shipped fixture's only parser mutant changes major-VALUE selection, which cannot move a cell whose subject is boundary REJECTION. This mutant turns the throw into a clean empty result, so malformed input becomes exit 0 'no breaking commits DETECTED' where the installed @changesets/parse rejects it and the cell expects misuse exit 2. That is the fail-OPEN direction and the one worth guarding: a changeset the real parser refuses would otherwise pass this gate silently."
+    },
+    {
+      "name": "M29 the empty-front-matter disposition inverts: a changeset with an empty YAML mapping is rejected as malformed instead of carrying no major bump",
+      "file": "scripts/upgrade-section-gate.mjs",
+      "find": "  if (parsed === null) return [];",
+      "replace": "  if (parsed === null) throw new Error(\"changeset front matter must be a YAML mapping of package names to bump levels\");",
+      "expectRed": "CHANGESETS AGREEMENT E2E: empty frontmatter block",
+      "cell": "CHANGESETS AGREEMENT E2E: empty frontmatter block",
+      "note": "Added to close the reviewer's one blocker. `---\\n---` parses to null, which the installed @changesets/parse ACCEPTS as a changeset with no releases, so the cell expects exit 0. Throwing instead makes the gate refuse valid input as misuse exit 2. This is the fail-CLOSED twin of M28 and it grades the opposite arm of the same branch, so the pair covers both dispositions of the boundary parse rather than only the permissive one."
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "suite": ["extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts"],
+  "guard": "The provider-disconnect fixture waits for the post-join kickoff to finish before sending its ordinary-turn trigger",
+  "command": "FAKE_JCODE_TURN_DELAY_MS=1000 pnpm smoke:jcode-provider-disconnect --steady-only",
+  "proveWith": "pnpm mutation-proof --config extensions/connector-jcode/smoke/mutations/provider-kickoff-boundary.json",
+  "mutations": [
+    {
+      "name": "send the disconnect marker before the post-join turn boundary",
+      "file": "extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
+      "find": "await waitFor(\"post-join kickoff turn boundary\", () => entries().find((entry) => entry.ev === \"turn_done_emitted\" && String(entry.content).includes(\"You are now connected to the Cotal mesh as\")));",
+      "replace": "void 0; // mutation: mesh presence alone is not a completed kickoff turn",
+      "expectRed": "timed out waiting for simulated provider disconnect",
+      "cell": "simulated provider disconnect",
+      "afterRestore": "FAKE_JCODE_TURN_DELAY_MS=1000 pnpm smoke:jcode-provider-disconnect --steady-only && pnpm smoke:jcode-provider-disconnect"
+    },
+    {
+      "name": "send the ownership-refusal marker before its post-join turn boundary",
+      "file": "extensions/connector-jcode/smoke/jcode-provider-disconnect.smoke.ts",
+      "find": "await waitFor(\"safety post-join kickoff turn boundary\", () => entriesOf(safetyLog).find((entry) => entry.ev === \"turn_done_emitted\" && String(entry.content).includes(\"You are now connected to the Cotal mesh as\")));",
+      "replace": "void 0; // mutation: safety presence alone is not a completed kickoff turn",
+      "expectRed": "timed out waiting for safety replacement attach failure",
+      "cell": "safety replacement attach failure",
+      "afterRestore": "FAKE_JCODE_TURN_DELAY_MS=1000 pnpm smoke:jcode-provider-disconnect --steady-only && pnpm smoke:jcode-provider-disconnect"
+    }
+  ]
+}

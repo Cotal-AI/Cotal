@@ -14,7 +14,7 @@
  * Hermetic (no broker, no network, no filesystem).
  * Run: pnpm smoke:join-target
  */
-import { classifyJoinTarget, JoinRefusal, JOIN_REFUSAL_CODES, type JoinRefusalCode } from "../src/lib/join-target.js";
+import { classifyJoinTarget, JoinRefusal, JOIN_REFUSAL_CODES, type JoinRefusalCode } from "@cotal-ai/workspace";
 
 let pass = 0;
 /**

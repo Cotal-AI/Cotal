@@ -2,7 +2,9 @@
 import assert from "node:assert/strict";
 import { createSpaceAuth, managedRetirementOpId, mintLifecycleUid, mintPublicUserJwt, newIdentity, permissionsFor, remoteManagerActors } from "@cotal-ai/core";
 import { remoteManagerIssuerGrants } from "@cotal-ai/auth";
-import { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
+import { authorizeRemoteManagerMaintenance, issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, USER_TOKEN_VIEWS } from "@cotal-ai/auth";
+import { authorizeRemoteManagerRenewal } from "../src/manager-authority.js";
+import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 import { authorizeRemoteManagerRetirement } from "../src/service.js";
 import { authorizeRetirementOperation } from "../src/auth-admin.js";
 
@@ -46,7 +48,99 @@ const credentials = {
   executor: { jwt: "a.b.c", exp: 150 },
 };
 const registrationProof = `sha256:${"a".repeat(64)}`;
-const renewRequest = { ...request, operation: "renew" as const, registrationProof };
+const renewal = {
+  ...request, operation: "renewStandingBundle" as const, registrationProof,
+  accountPublicKey: `A${"A".repeat(55)}`, processEpoch: 3,
+};
+await cell("standing bundle renewal carries an assigned account and process epoch", () => {
+  assert.deepEqual(parseRemoteManagerAuthorityRequest(renewal), renewal);
+});
+await rejects("standing bundle renewal rejects a missing process fence", () =>
+  parseRemoteManagerAuthorityRequest({ ...renewal, processEpoch: undefined }), /processEpoch/);
+const runRenewal = {
+  ...renewal, operation: "renewRunDriver" as const,
+  run: { runId: `run-${"a".repeat(32)}`, holder: `manager-holder.${"c".repeat(16)}`, takeoverId: "c".repeat(16),
+    epoch: 2, fencingToken: 3, driverId: newIdentity().id, mediatorId: newIdentity().id },
+};
+await cell("run driver renewal binds both nkeys and the takeover fence", () => {
+  assert.deepEqual(parseRemoteManagerAuthorityRequest(runRenewal), runRenewal);
+});
+await rejects("run driver renewal rejects a missing write fence", () =>
+  parseRemoteManagerAuthorityRequest({ ...runRenewal, run: { ...runRenewal.run, fencingToken: undefined } }), /fencingToken/);
+const renewalOwner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+const gate = { state: "open" as const, principal: `${renewalOwner}.${remoteManagerActors(instanceId).serve}`, processEpoch: 3, registrationRevision: 9 };
+const renewWithProof = { ...renewal, registrationProof: remoteManagerCurrentRegistrationProof("test-only-proof", renewalOwner, renewal, gate) };
+const runWithProof = { ...runRenewal, registrationProof: renewWithProof.registrationProof };
+const observedRun = { ...runRenewal.run, state: "running", instanceId };
+const verifyRenewal = (candidate: typeof renewWithProof | typeof runWithProof, overrides: {
+  owner?: string; accountPublicKey?: string; gate?: typeof gate | null; run?: typeof observedRun | null;
+} = {}) => authorizeRemoteManagerRenewal({
+  request: candidate, owner: overrides.owner ?? renewalOwner, space: "demo",
+  accountPublicKey: overrides.accountPublicKey ?? renewal.accountPublicKey, proofSecret: "test-only-proof",
+  observeManagerGate: async () => overrides.gate === undefined ? gate : overrides.gate,
+  observeRun: async () => overrides.run === undefined ? observedRun : overrides.run,
+});
+await cell("current registration allows the five-identity renewal request", () => verifyRenewal(renewWithProof));
+await rejects("foreign account refuses before signing", () => verifyRenewal(renewWithProof, { accountPublicKey: `A${"B".repeat(55)}` }), /account/);
+await rejects("stale process epoch refuses before signing", () => verifyRenewal(renewWithProof, { gate: { ...gate, processEpoch: 4 } }), /processEpoch/);
+await rejects("foreign owner refuses before signing", () => verifyRenewal(renewWithProof, { owner: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb" }), /owner/);
+await rejects("missing gate refuses before signing", () => verifyRenewal(renewWithProof, { gate: null }), /open registration gate/);
+await cell("activated run allows same takeover and write fence", () => verifyRenewal(runWithProof));
+await rejects("superseded run holder refuses before signing", () => verifyRenewal(runWithProof, { run: { ...observedRun, holder: "successor" } }), /activated run/);
+await rejects("superseded run fencing token refuses before signing", () => verifyRenewal(runWithProof, { run: { ...observedRun, fencingToken: 4 } }), /activated run/);
+await rejects("unproven run activation refuses before signing", () => verifyRenewal(runWithProof, { run: null }), /activated run/);
+await rejects("missing host authorization refuses renewal before issuer callback", () => issueRemoteManagerAuthority({
+  request: renewWithProof, owner: renewalOwner, scope: ["supervise"], issue: async () => { throw new Error("issuer was called"); },
+}), /host-owned/);
+await cell("issuer sees only authorized standing coordinates and returns all five named credentials", async () => {
+  let authorized = false;
+  const all = { ...credentials, serve: credentials.supervisor, goalWriter: credentials.supervisor, sessionLedger: credentials.supervisor };
+  const result = await issueRemoteManagerAuthority({
+    request: renewWithProof, owner: renewalOwner, scope: ["supervise"],
+    authorizeRenewal: async ({ owner, request: seen }) => {
+      await verifyRenewal(seen as typeof renewWithProof, { owner }); authorized = true;
+    },
+    issue: async ({ request: seen }) => {
+      assert.equal(authorized, true);
+      assert.equal(seen.accountPublicKey, renewal.accountPublicKey);
+      return { credentials: all };
+    },
+  });
+  assert.deepEqual(result.credentials, all);
+  assert.equal(result.processEpoch, 3);
+  assert.equal(result.accountPublicKey, renewal.accountPublicKey);
+});
+await rejects("partial standing bundle is never returned to a caller", () => issueRemoteManagerAuthority({
+  request: renewWithProof, owner: renewalOwner, scope: ["supervise"], authorizeRenewal: async () => {},
+  issue: async () => ({ credentials }),
+}), /required credential serve/);
+await rejects("extra credential is never returned with a standing bundle", () => issueRemoteManagerAuthority({
+  request: renewWithProof, owner: renewalOwner, scope: ["supervise"], authorizeRenewal: async () => {},
+  issue: async () => ({ credentials: { ...credentials, serve: credentials.supervisor,
+    goalWriter: credentials.supervisor, sessionLedger: credentials.supervisor, sessionServing: credentials.supervisor } }),
+}), /outside its closed profile set/);
+await cell("run renewal echoes its exact activated coordinates", async () => {
+  const result = await issueRemoteManagerAuthority({
+    request: runWithProof, owner: renewalOwner, scope: ["supervise"],
+    authorizeRenewal: async ({ request: seen }) => verifyRenewal(seen as typeof runWithProof),
+    issue: async () => ({ credentials: { runDriver: credentials.supervisor, runMediator: credentials.executor } }),
+  });
+  assert.deepEqual(result.run, runRenewal.run);
+  assert.deepEqual(Object.keys(result.credentials), ["runDriver", "runMediator"]);
+});
+await rejects("run renewal never accepts the same nkey as a standing connection", () => issueRemoteManagerAuthority({
+  request: { ...runWithProof, run: { ...runWithProof.run, driverId: identities.supervisor.id } },
+  owner: renewalOwner, scope: ["supervise"], authorizeRenewal: async () => {}, issue: async () => ({ credentials }),
+}), /identities must be distinct/);
+await rejects("run renewal cannot omit a separately activated mediator nkey", () => parseRemoteManagerAuthorityRequest({
+  ...runWithProof, run: { ...runWithProof.run, mediatorId: undefined },
+}), /mediatorId/);
+await rejects("standing renewal cannot carry run coordinates", () => parseRemoteManagerAuthorityRequest({
+  ...renewWithProof, run: runWithProof.run,
+}), /must not carry run/);
+await rejects("run renewal cannot carry profile or grant input", () => parseRemoteManagerAuthorityRequest({
+  ...runWithProof, profile: "run-operator",
+}), /unknown field/);
 const retirementTarget = { owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: "worker", lifecycleUid: mintLifecycleUid() };
 const retirement = {
   id: newIdentity().id,
@@ -57,10 +151,10 @@ const retirement = {
 const retireRequest = { ...request, operation: "retire" as const, registrationProof, retirement };
 
 await rejects("spawn-only cannot issue manager-service authority", () => issueRemoteManagerAuthority({
-  request, owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", scope: ["spawn"], issue: async () => credentials,
+  request, owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", scope: ["spawn"], issue: async () => ({ credentials }),
 }), /scope "supervise"/);
 await rejects("admin without supervise cannot issue manager-service authority", () => issueRemoteManagerAuthority({
-  request, owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", scope: ["admin"], issue: async () => credentials,
+  request, owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", scope: ["admin"], issue: async () => ({ credentials }),
 }), /scope "supervise"/);
 await cell("supervise alone passes the dedicated gate", async () => {
   const material = await issueRemoteManagerAuthority({
@@ -71,6 +165,17 @@ await cell("supervise alone passes the dedicated gate", async () => {
   assert.deepEqual(material.actors, remoteManagerActors(instanceId));
   assert.equal(material.expiresAt, 150_000);
 });
+await cell("renew accepts the refreshed supervisor and executor pair without unrelated standing credentials", async () => {
+  const material = await issueRemoteManagerAuthority({
+    request: { ...request, operation: "renew", registrationProof },
+    owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    scope: ["supervise"],
+    now: () => 10,
+    issue: async () => ({ credentials }),
+  });
+  assert.deepEqual(Object.keys(material.credentials), ["supervisor", "executor"]);
+  assert.equal(material.expiresAt, 150_000);
+});
 await rejects("raw profile/view strings are refused by the core permission builder", () =>
   permissionsFor("manager-service" as never, "demo", { owner: "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", actor: "cli", connId: newIdentity().id }, {}), /not a generic profile/);
 await cell("manager-service is a closed view name but cannot become a connect profile", () => {
@@ -78,6 +183,25 @@ await cell("manager-service is a closed view name but cannot become a connect pr
 });
 await rejects("unknown request fields are refused", () => parseRemoteManagerAuthorityRequest({ ...request, profile: "provisioner" }), /unknown field/);
 await rejects("unknown operations are refused", () => parseRemoteManagerAuthorityRequest({ ...request, operation: "mint" }), /operation must/);
+const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+const maintenance = {
+  v: 1 as const, kind: "manager-service-maintenance" as const, operation: "evict-family-principal" as const,
+  space: request.space, actor: request.actor, instanceId, managerLifecycleUid: lifecycleUid,
+  requestId: `maintain${mintLifecycleUid()}`, identities, targetInstanceId: instanceId,
+  principal: `${owner}.manager_goal_${instanceId}`,
+};
+await cell("host maintenance admits an enumerated holder in the caller instance family", async () => {
+  assert.equal((await authorizeRemoteManagerMaintenance({
+    request: maintenance, owner, scope: ["supervise"], space: request.space,
+    observeManagerGate: async () => ({ state: "open", principal: `${owner}.manager_serve_${instanceId}`, processEpoch: 0, registrationRevision: 1 }),
+    scanner: { scanEndpointCredentialFamily: async () => [{ key: `epcred.manager.${instanceId}.sha256-a`, data: new TextEncoder().encode(JSON.stringify({ credentialId: "sha256-a", holderPrincipal: maintenance.principal, lifecycleUid: instanceId, endpoint: "manager", sourceChain: ["root"], state: "active", exp: 200 })), seq: 1, op: "PUT" }] } as never,
+  })).principal, maintenance.principal);
+});
+await rejects("host maintenance refuses a principal outside the caller instance family", () => authorizeRemoteManagerMaintenance({
+  request: { ...maintenance, principal: `${owner}.foreign` }, owner, scope: ["supervise"], space: request.space,
+  observeManagerGate: async () => ({ state: "open", principal: `${owner}.manager_serve_${instanceId}`, processEpoch: 0, registrationRevision: 1 }),
+  scanner: { scanEndpointCredentialFamily: async () => [{ key: `epcred.manager.${instanceId}.sha256-a`, data: new TextEncoder().encode(JSON.stringify({ credentialId: "sha256-a", holderPrincipal: maintenance.principal, lifecycleUid: instanceId, endpoint: "manager", sourceChain: ["root"], state: "active", exp: 200 })), seq: 1, op: "PUT" }] } as never,
+}), /outside that family/);
 await rejects("retire requires its closed operation object", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: undefined }), /retire requires retirement exactly/);
 await rejects("retire refuses unknown operation fields", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, profile: "admin" } }), /exactly/);
 await rejects("retire requires a stable lifecycle opId", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, opId: "not-valid" } }), /opId/);
@@ -88,28 +212,6 @@ await rejects("retire requires a non-negative safe serve epoch", () => parseRemo
 await rejects("retire requires a derived target owner", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, target: { ...retirementTarget, owner: "local" } } }), /derived owner/);
 await rejects("retire requires a subject-safe target actor", () => parseRemoteManagerAuthorityRequest({ ...retireRequest, retirement: { ...retirement, target: { ...retirementTarget, actor: "bad.actor" } } }), /single NATS-safe token/);
 await rejects("missing identity family members are refused", () => parseRemoteManagerAuthorityRequest({ ...request, identities: { supervisor: identities.supervisor } }), /identities must contain exactly/);
-await rejects("renew requires the current host registration proof", () => parseRemoteManagerAuthorityRequest({ ...renewRequest, registrationProof: undefined }), /renew requires a sha256 registrationProof/);
-await rejects("renew accepts no caller-supplied contract artifacts", () => parseRemoteManagerAuthorityRequest({ ...renewRequest, contractArtifacts: [{}] }), /renew must not carry contractArtifacts/);
-await rejects("renew refuses a partial credential family", () => issueRemoteManagerAuthority({
-  request: renewRequest, owner: retirementTarget.owner, scope: ["supervise"],
-  issue: async () => ({ credentials }),
-}), /did not issue required credential serve/);
-await cell("renew returns every retained authority member and echoes the current proof", async () => {
-  const all = {
-    ...credentials,
-    serve: { jwt: "a.b.c", exp: 200 },
-    goalWriter: { jwt: "a.b.c", exp: 200 },
-    sessionLedger: { jwt: "a.b.c", exp: 200 },
-  };
-  const material = await issueRemoteManagerAuthority({
-    request: renewRequest, owner: retirementTarget.owner, scope: ["supervise"], now: () => 10,
-    issue: async () => ({ credentials: all, nextRegistrationProof: registrationProof }),
-  });
-  assert.deepEqual(Object.keys(material.credentials).sort(), ["executor", "goalWriter", "serve", "sessionLedger", "supervisor"]);
-  assert.equal(material.registrationProof, registrationProof);
-  assert.equal(material.nextRegistrationProof, registrationProof);
-  assert.equal(material.expiresAt, 150_000);
-});
 await rejects("the retirement requester nkey cannot collapse into a standing identity", () => issueRemoteManagerAuthority({
   request: { ...retireRequest, retirement: { ...retirement, id: identities.serve.id } }, owner: retirementTarget.owner, scope: ["supervise"],
   issue: async () => ({ credentials: { retirementRequester: { jwt: "a.b.c", exp: 200 } } }),
@@ -219,7 +321,6 @@ await cell("host issuer alone owns the manager endpoint gate and credential writ
   const grants = remoteManagerIssuerGrants("demo", newIdentity().id).publish;
   assert.equal(grants.includes("$KV.cotal_auth_demo.epgate.manager.>"), true);
   assert.equal(grants.includes("$KV.cotal_auth_demo.epcred.manager.>"), true);
-  assert.equal(grants.includes("$KV.cotal_auth_demo.renewclean.manager.>"), true);
   assert.equal(grants.some((row) => row.includes("epgate.") && !row.includes("epgate.manager.")), false);
   assert.equal(grants.some((row) => row.includes("epcred.") && !row.includes("epcred.manager.")), false);
   const participant = permissionsFor("remote-manager", "demo", {

@@ -29,15 +29,18 @@ import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import {
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import type { EpCaller } from "@cotal-ai/core";
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+process.env.COTAL_HOME = join(dir, "home");
+const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, describeEndpoint,
-  type EpCaller,
-} from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+} = await import("@cotal-ai/core");
+const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -91,7 +94,6 @@ const pRunAtLeast = (n: number, k: number): number => {
 
 const space = `qwin-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const mkRoot = (tag: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });
@@ -169,7 +171,7 @@ try {
   // one manager: the extreme of asymmetry, which at least establishes whether the queue re-balances
   // at all, and whether a single-responder space is silently indistinguishable from a fair race.
   console.log(`\n3. asymmetry probe: with manager B stopped, does the class queue still answer?`);
-  await m2.stop(); m2 = undefined;
+  await m2.stop({ withAgents: true }); m2 = undefined;
   await wait(1000);
   const seq3 = await sample();
   const r3 = report(seq3, "distribution with only A live:");
@@ -193,8 +195,8 @@ try {
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
   await nc.drain().catch(() => nc.close());
 } finally {
-  await m1?.stop().catch(() => {});
-  await m2?.stop().catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

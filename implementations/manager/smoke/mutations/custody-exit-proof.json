@@ -1,0 +1,26 @@
+{
+  "suite": [
+    "implementations/manager/smoke/custody-exit-proof.smoke.ts"
+  ],
+  "guard": "static retirement reap proves exit via pinned record when disk record is absent and fails closed when unadopted",
+  "command": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/manager build && pnpm tsx implementations/manager/smoke/custody-exit-proof.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=23",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/custody-exit-proof.json",
+  "why": [
+    "The clean-despawn cell verifies that when the custodian unlinks its on-disk record, the pinned record proves exit so deprovisioning completes.",
+    "The survivor cell verifies that when a custodian is killed while the child survives, static retirement signals and reaps the live child and its group before freeing the alias.",
+    "The unadopted cell verifies that an absent record with no pinned record fails closed with RuntimeReapUnproven."
+  ],
+  "mutations": [
+    {
+      "name": "M1 omit pinned record fallback in CustodialPtyRuntime.reap",
+      "file": "implementations/manager/src/runtime/custodial-pty.ts",
+      "find": "    const pinnedRecord = this.records.get(reference.id);\n    const evidence = await reapSeat(this.root, reference.id, { pinnedRecord });",
+      "replace": "    const evidence = await reapSeat(this.root, reference.id);",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "expectRed": "clean1 dm_local- durable gone after despawn",
+      "cell": "clean1 dm_local- durable gone after despawn",
+      "note": "Without the pinned record fallback, when the custodian unlinks its on-disk record upon clean exit, reapSeat returns absent and requireRuntimeReap throws RuntimeReapUnproven, failing deprovisioning."
+    }
+  ]
+}

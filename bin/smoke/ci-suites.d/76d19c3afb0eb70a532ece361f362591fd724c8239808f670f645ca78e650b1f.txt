@@ -1,0 +1,2 @@
+# Exclusive first-start identity mint: of N concurrent creators exactly one wins.
+smoke:manager-instance-exclusive

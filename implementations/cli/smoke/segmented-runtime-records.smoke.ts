@@ -49,6 +49,14 @@ function daemon(): ChildProcess {
   children.push(child);
   return child;
 }
+/** The same, for the DELIVERY record: its readers attribute on the daemon's own `deliver` token
+ *  (#1528), and a live pid that is provably not a delivery daemon is deliberately never believed or
+ *  signalled. A `supervise` stand-in would therefore read `foreign` here and grade nothing. */
+function deliveryDaemon(): ChildProcess {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", "deliver"], { stdio: "ignore" });
+  children.push(child);
+  return child;
+}
 const record = (template: string, space: string) => canonicalLocalProcessPath(template, { root, space });
 /** Place a record where the START PATH would write it, through the start path's own expansion. */
 function place(template: string, space: string, pid: number): string {
@@ -97,8 +105,9 @@ try {
   check("...and beta's record is still on disk", existsSync(record(MANAGER_PIDFILE, BETA)));
 
   console.log("\n4) the same holds for the delivery daemon");
-  const d1 = daemon(), d2 = daemon();
+  const d1 = deliveryDaemon(), d2 = deliveryDaemon();
   const d1Pid = d1.pid!, d2Pid = d2.pid!;
+  await sleep(300); // let them exec, so the attribution read sees their final argv
   place(DELIVERY_PIDFILE, ALPHA, d1Pid);
   place(DELIVERY_PIDFILE, BETA, d2Pid);
   check("both spaces' delivery records coexist", deliveryUp(ALPHA) && deliveryUp(BETA));

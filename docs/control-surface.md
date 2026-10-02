@@ -49,8 +49,15 @@ the fetched input schema before publish. A signed-in user invokes the same surfa
 bearer, and the broker enforces each command's existing capability grant. A manager alias supplied
 through `--name` resolves through its name-keyed `inspect` command, so an authorized targeted call
 does not need the manager-wide `ps` enumeration grant. Every built-in manager command uses this
-same trust chain, so there is nothing the built-ins can reach that a described contract cannot.
+same trust chain, so there is nothing the built-ins can reach that a described contract cannot. The registered
+`auth` endpoint is describable the same way `manager` is: `cotal describe auth` lists
+`retire-lifecycle` and its exact-mode target shape.
 See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
+
+The manager's `resolve-cwd` command is in the `manager.spawn` capability class. It accepts an
+absolute path on that manager's host and returns its canonical directory plus the host name. It
+refuses a relative, missing or non-directory path with `failed-precondition`; it creates nothing.
+`spawn` applies the same check at admission, before any credentials or durables are minted.
 
 ### Inspecting a managed name
 
@@ -80,6 +87,24 @@ If either durable read fails or exceeds its bound, the miss returns `unavailable
 names the inspected `name`, the failed `record` (`slot`, `head`, or `slot-or-head` when the layer
 cannot distinguish them), and `operation: "read"`. User-auth managers do not own `mgrslot` rows,
 so their inspect misses remain live-map reads.
+
+For Linux custodied seats, retirement requires the runtime's process-exit evidence before
+freeing the alias or deleting its credentials and delivery state. Socket loss alone is not
+proof of exit. The runtime retains the record captured at launch or adoption so a clean
+custodian exit can unlink its file without losing the recorded boot and process identities.
+If the file is missing, reaping uses that retained record and the existing kernel identity
+checks. An unknown reference without either record refuses cleanup. Reused process ids
+are never signalled on the strength of the old record.
+
+### Listing the durable slots
+
+Manager `slots` (`manager.read`, untargeted) lists the durable static slot rows this manager
+owns. Only static managers hold these rows: a user-mode or open manager answers
+`failed-precondition`, and a manager whose durable store is not standing answers `unavailable`.
+Each row carries the same `readOrder` and `consistency` fields `inspect` uses, because the list
+is read the same way: torn across rows as well as within each row's slot/head pair. A `retired`
+row is never listed. `live` reflects the manager's live roster at render time, not the durable
+row.
 
 ## Spawn is a goal
 
@@ -134,12 +159,63 @@ state, not reporting a missing one.
 
 A space can run more than one manager. Each manager persists a stable logical instance id
 across restarts and advances its process epoch when it comes back, so callers address a
-specific manager without caring which process currently serves it. An untargeted spawn
-rides class anycast (any manager may accept, and the acceptance records which one did);
-`cotal spawn <persona> --detach --on <instance>` pins one instance by its exact id (a
-foreground spawn has no manager to pin and refuses the flag). There are no ordinal
+specific manager without caring which process currently serves it. On a static or open mesh,
+an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
+`cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
+pin one instance by its exact id. A foreground CLI spawn has no manager to pin and refuses the
+flag. An MCP pin that does not resolve is refused without falling back to class anycast. There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
-the whole id, because `--on` takes nothing else.
+the whole id, because both surfaces take nothing else.
+
+On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
+exchange. It authorizes one concrete manager instance using the caller's current actor grant and
+the host's registered service records. Discovery and invocation both use that instance's `inst`
+route. This view grants no registry scan, class queue, or additional command capability. An absent,
+ambiguous or unauthorized selection refuses before the command is sent.
+
+Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
+them. Existing unbound sessions can use the exchange's unique authorized selection without
+replacing their actor or conversation. The connector uses a separate control connection; the
+standing message connection and its credential source are unchanged. Accepted spawn goals are
+followed on that renewing connection, using its existing caller-scoped progress grant, so a long
+readiness budget does not depend on the short-lived control credential. The follower confirms its
+progress subscription with the broker before submitting on the separate connection. A caller still
+checks the resolved instance and epoch, and never retries an ambiguous mutation outcome.
+
+The manager's `goal-result` command accepts `{goalId}` and returns `{goalId, result?}`. It reads
+only the authenticated caller's owner, actor and lifecycle through the manager's separate trusted
+goal-writer connection. The caller receives an attributed reply, never a raw JetStream reader
+grant. Each read is admitted by the connection's broker-enforced command grant. A live user-auth
+connection remains bounded by its bearer expiry after revocation; a renewed connection is checked
+against fresh authority. There is no separate per-read ledger check. An absent `result` means no
+terminal is recorded; it does not prove the goal is running or permit another submission. The
+existing trusted goal-writer's leader-served EPF read is space-wide at the broker; the handler
+confines it to this endpoint and caller triple.
+
+A followed mutation requires a manager whose attributed describe includes `goal-result`. Update
+the manager, issuer and client together before using that recovery path. Reloading an issuer alone
+cannot change an already-running participant manager. Recovery re-resolves the accepting instance's
+epoch, preserves the caller lifecycle and validates the result against the accepted goal and any
+acceptance fingerprint. Stopping the caller ends its observation, not the already accepted goal.
+
+Cancellation before submission reports `not-executed`. Once submission starts, cancellation or a
+lost reply reports an unknown outcome unless an attributed refusal proves otherwise. A received
+refusal remains a refusal even when stop races it. Local failures do not invent responder identities.
+The follower owns its subscription, timers and read cancellation signal. Reconciliation begins
+before the wait deadline, and late read completions cannot settle an expired observation. Its read
+callback receives the accepting caller triple, remaining budget and abort signal; borrowed bearer
+commands and control connections use that signal. An in-flight dial that finishes after cancellation
+closes without publishing. A local reply-subscription failure prevents publication and is observed
+by the same request promise, including when the transport is closing or draining. Request
+cancellation does not revoke or resubmit the accepted operation.
+
+"Only one manager per space" is not the current invariant. A split topology that keeps the
+broker host manager-free is still a topology choice: `cotal up` on that host starts a
+manager you then stop with `cotal down manager` after `✓ manager up` in
+`.cotal/manager.<spaceKey>.log` (detach stdout listing `manager` is pidfile liveness, not a
+teardown boundary), and `cotal supervise
+--server` runs the manager elsewhere ([Run a mesh](run-a-mesh.md)). Extra live managers
+are addressable, not an error.
 
 The reserved `describe` bootstrap is the one request the resolver may repeat while waiting: it is
 read-only, it is re-published under the same request binding, and every attempt stays inside the
@@ -160,7 +236,22 @@ between a split and a duplicated spawn. Against a manager older than this fence 
 still after the fact, and its message says so. The re-issue is automatic only when the refusal
 states `not-executed` in its `outcome` field; a refusal that omits the field, or states
 `unknown`, is surfaced to the caller instead of repaired, because neither proves the command did
-not run. `ps` and
+not run.
+
+A manager whose boot inventory marked every declared connector unavailable does not subscribe
+`spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this
+instance's `inst` rail, so a sibling that can launch them can take an unpinned spawn, and a
+caller that pins this instance with `--on` still gets a named harness refusal. `describe`
+still lists the commands: the instance rail serves them, and `describe` itself stays on the
+class rail (SPEC 13.7). An unpinned `spawn` can therefore bind-fence: `describe` may land on
+the skip member while `spawn` lands on a sibling, the command was not run, and the caller
+re-issues or pins `--on`. `status` reports `classSpawn: false` when that skip is in effect.
+A manager that can launch some connectors keeps the class rail. If the queue hands it a
+harness its inventory marked unavailable, the refusal names `--on` because the standing serve
+credential cannot read sibling inventories. Pin the capable instance (the whole id, as `ps`
+prints it).
+
+`ps` and
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
 results with per-instance attribution. A non-answering instance is labelled as registered
@@ -179,12 +270,14 @@ unreachable, still surfaced, and the scatter is still not complete.
 
 The probe is supplied by the **caller**, not invented by the scatter. Asking about an instance is
 a publish on that instance's rail, and a credential that holds no row for it is refused by the
-broker asynchronously, while the publish itself returns normally. A refused probe is therefore
-silent, and silence is what a live but slow instance looks like. Only the layer that
+broker asynchronously, while the publish itself returns normally. The probe verb watches for that
+refusal and raises it as `permission-denied` naming the rail, so it is never mistaken for a quiet
+instance, and it never burns the probe budget waiting out a refusal. Only the layer that
 minted the credential knows which ids it may ask about, so that layer asks about those and no
-others, and prints any refusal the broker raises anyway rather than letting it expire into a
-timeout. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned only
-to the frozen ids, and scatters on a second.
+others. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned only
+to the frozen ids, and scatters on a second; a refusal the broker raises anyway is printed and
+the instance's row says the probe was refused, which is a fact about the credential, not about
+the instance.
 
 This does not help against an instance that is **connected but not answering**. A hung manager
 holds its subscriptions, so it is indistinguishable from a slow one, and it still costs the full
@@ -248,8 +341,10 @@ next start, which is what makes the operator's decision a recoverable one.
 session offer: the manager mints a token bound to the caller, the target lifecycle, its own
 instance id and epoch, and an expiry, and replies with a session id and expiry only, no URL
 and no secret in the reply. The CLI redeems the offer over the mesh (a second redeem is
-refused), and terminal bytes then stream on core-NATS session subjects scoped to the two
-parties. Backpressure is a bounded in-flight window with an explicit drop notice, never
+refused). On a registered open mesh that redeem is a bare connection, the same path other
+control commands already use; on a static-auth mesh it is still a session-caller credential
+minted from the resolved root's seed. Terminal bytes then stream on core-NATS session subjects
+scoped to the two parties. Backpressure is a bounded in-flight window with an explicit drop notice, never
 silent loss; a late attach still repaints the full screen from a replayed terminal
 snapshot. Close, expiry, target despawn, and a manager restart are distinct, surfaced end
 states: a restarted manager's successor refuses the old epoch's sessions and the client

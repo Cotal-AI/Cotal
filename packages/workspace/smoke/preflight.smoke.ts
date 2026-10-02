@@ -5,10 +5,10 @@
  *  • classifyPreflightFailure — the (source × reason × has-auth) decision tree. The load-bearing
  *    invariant: a NON-registry source (flag-server / local-space, or a raw `--creds`) is NEVER
  *    pruned — only the registry owns its entries, so a bad `--creds` can't delete a good record.
- *  • renderWorkspaceError — one canonical sentence per failure kind (+ the "stale entry — removed" suffix).
+ *  • renderWorkspaceError — one canonical sentence per failure kind (unreachable names the recorded root).
  *  • preflightTarget — probe a DEAD port and assert it classifies unreachable + prunes by source,
  *    WITHOUT mutating the registry (it returns the decision; the caller mutates).
- *  • pruneStaleMeshes — a registered entry whose broker is gone is dropped; an explicit call only.
+ *  • pruneStaleMeshes — a registered entry whose broker is gone is kept as offline; an explicit call only.
  *
  * Run: pnpm smoke:preflight
  */
@@ -32,8 +32,11 @@ const {
   pruneStaleMeshes,
   resolveMeshTarget,
   recordMesh,
+  removeMesh,
   loadMeshes,
   renderWorkspaceError,
+  reachableOrThrow,
+  ConnectRefusal,
 } = await import("@cotal-ai/workspace");
 
 // The canonical preflight copy now comes from the renderer (workspace's optional, command-agnostic
@@ -97,6 +100,13 @@ check("stale-auth preflight copy names `cotal doctor auth` (the repair surface)"
   const msg = renderWorkspaceError({ kind: "preflight", failure: "stale-auth", target: t, pruned: false });
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
 })());
+// TIMEOUT (#851 cell c): a probe that ran out of its own budget is never a stale-entry signal,
+// whatever the source — a slow or jittery link is not a dead broker.
+for (const s of [...REGISTRY, ...NON_REGISTRY])
+  check(`timeout + ${s} → NO prune + 'slow-link'`, (() => {
+    const r = classifyPreflightFailure(s, "timeout", true);
+    return r.prune === false && r.kind === "slow-link";
+  })());
 check("stale-auth raw-probe copy names `cotal doctor auth`", (() => {
   const msg = renderWorkspaceError({ kind: "reachable", reason: "stale-auth", server: "nats://x:1", hasAuth: true });
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
@@ -147,13 +157,13 @@ const T: MeshTarget = {
   mode: "open",
   tlsRequired: false,
 };
-check("message: unreachable names the server + `cotal up`", (() => {
+check("message: unreachable keeps `no mesh running at` and names the recorded root", (() => {
   const m = preflightMessage("unreachable", T, false);
-  return m.includes(DEAD) && m.includes("cotal up") && !m.includes("removed");
+  return m.includes(`no mesh running at ${DEAD}`) && m.includes(`mesh "${T.space}" is recorded at ${T.root}`) && m.includes("cotal up") && m.includes("there to restart") && !m.includes("removed");
 })(), preflightMessage("unreachable", T, false));
-check("message: unreachable + pruned appends the 'stale registry entry - removed' note",
-  preflightMessage("unreachable", T, true).includes("stale registry entry - removed"));
-check("message: pruned-suffix is gated on the prune flag", preflightMessage("unreachable", T, true) !== preflightMessage("unreachable", T, false));
+check("message: unreachable + pruned still names the recorded root (liveness no longer deletes)",
+  preflightMessage("unreachable", T, true).includes(`recorded at ${T.root}`) && preflightMessage("unreachable", T, true).includes(`no mesh running at ${DEAD}`) && !preflightMessage("unreachable", T, true).includes("stale registry entry - removed"));
+check("message: prune flag does not change the unreachable sentence (record is kept)", preflightMessage("unreachable", T, true) === preflightMessage("unreachable", T, false));
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected", "open-wants-auth"] as const)
   check(`message: ${kind} names the server + leads with ✗`, (() => {
     const m = preflightMessage(kind, T, true);
@@ -193,24 +203,31 @@ const ovDead = await preflightTarget({ ...T, space: "team-ov", source: "flag-spa
 check("preflightTarget(dead override) → not-ok, NO prune (recorded entry is safe)", !ovDead.ok && ovDead.prune === false, ovDead);
 check("team-ov registry entry survives the override preflight", loadMeshes().some((m) => m.space === "team-ov"), loadMeshes());
 
-// ── pruneStaleMeshes: an explicit sweep drops dead entries (and leaves the registry empty here) ───
+// ── pruneStaleMeshes: an explicit sweep keeps dead entries as offline ────────────────────────────
+// Isolate this cell: earlier probes left other dead records, and they stay too.
+for (const m of loadMeshes()) removeMesh(m.space);
 recordMesh({ space: "ghost-2", server: "nats://127.0.0.1:14992", root: "/tmp/p2", mode: "open", ts: new Date(0).toISOString() });
 await pruneStaleMeshes();
-check("pruneStaleMeshes drops every dead entry", loadMeshes().length === 0, loadMeshes());
+check("pruneStaleMeshes keeps every dead entry as offline", loadMeshes().length === 1 && loadMeshes()[0]!.space === "ghost-2", loadMeshes());
 
-// ── ORIGIN: an automatic prune never deletes what an operator registered by hand ──────────────────
-// `cotal up` can always rewrite its own record; a `cotal meshes add` one usually describes a mesh on
-// another machine, so deleting it on a probe failure is unrecoverable here. Every auto-prune path
-// goes through pruneMesh for exactly this reason.
+// ── ORIGIN: a liveness prune never deletes; a mismatch prune still drops `up` ────────────────────
+// REVERSAL of the previous design (test-locked at preflight.smoke.ts:206-212): an `up` record whose
+// broker is dead used to be deleted, a `manual` one kept. Redness of those old assertions is
+// expected and intended. Mismatch (creds / mode / stale-auth-root) still deletes `up`.
 const DEAD_2 = "nats://127.0.0.1:14989";
 recordMesh({ space: "ours", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "up", ts: new Date(0).toISOString() });
 recordMesh({ space: "theirs", server: DEAD_2, root: "/tmp/p3", mode: "open", origin: "manual", ts: new Date(0).toISOString() });
 const sweep = await pruneStaleMeshes();
-check("sweep prunes the `up` record", findMesh("ours") === undefined, loadMeshes());
+check("sweep KEEPS the `up` record", findMesh("ours") !== undefined, loadMeshes());
 check("sweep KEEPS the operator-registered record", findMesh("theirs") !== undefined, loadMeshes());
-check("sweep reports the split (pruned vs offline)", sweep.pruned.includes("ours") && sweep.offline.includes("theirs"), sweep);
-check("pruneMesh reports refusing to delete it", pruneMesh("theirs") === false && findMesh("theirs") !== undefined);
+check("sweep reports both as offline (none pruned)", sweep.pruned.length === 0 && sweep.offline.includes("ours") && sweep.offline.includes("theirs"), sweep);
+assert.throws(() => resolveMeshTarget("/nonexistent/cwd", { offline: sweep.offline }), /no mesh running/);
+check("all-offline is still no-meshes; both records remain", findMesh("ours") !== undefined && findMesh("theirs") !== undefined);
+check("pruneMesh reports refusing to delete a manual record", pruneMesh("theirs") === false && findMesh("theirs") !== undefined);
+check("pruneMesh reports refusing to delete an `up` record on liveness", pruneMesh("ours") === false && findMesh("ours") !== undefined);
 check("pruneMesh reports nothing removed for an absent record", pruneMesh("never-recorded") === false);
+check("pruneMesh mismatch still drops an `up` record", pruneMesh("ours", "mismatch") === true && findMesh("ours") === undefined);
+check("pruneMesh mismatch still refuses a manual record", pruneMesh("theirs", "mismatch") === false && findMesh("theirs") !== undefined);
 // …and the copy stops telling the operator to `cotal up` a mesh that runs somewhere else.
 const manualT = { ...T, space: "theirs", origin: "manual" as const };
 check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cotal up`", (() => {
@@ -224,17 +241,24 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
 })());
 
 // ── S10 delayed-INFO confirm: first 1s INFO read misses; second longer read must still save. ─────
-// A TCP peer that greets with INFO {tls_required:true} only after 1.5s. probeConnect fails
-// (not a real NATS TLS handshake) → unreachable; without the confirm budget this would prune.
+// A TCP peer that greets with INFO {tls_required:true} only after 1.5s and then answers the TLS
+// client hello with a non-TLS byte string, so the handshake fails CONCLUSIVELY (a protocol error,
+// not a timeout). probeConnect → unreachable; without the confirm budget on the INFO read this
+// would prune. A peer that never answers the hello is a pure timeout, which #851 routes to
+// slow-link before INFO is consulted at all (S11 below); this peer must not be that shape.
 {
   const { createServer } = await import("node:net");
   const delayed = await new Promise<{ port: number; close: () => void }>((resolve) => {
     const srv = createServer((sock) => {
+      sock.on("error", () => { /* client tears down on its own error; not a test failure */ });
       setTimeout(() => {
         try {
           sock.write('INFO {"server_id":"s10","tls_required":true,"version":"2"}\r\n');
         } catch { /* client gone */ }
       }, 1_500);
+      sock.once("data", () => {
+        try { sock.write("-ERR not a tls record\r\n"); } catch { /* client gone */ }
+      });
     });
     srv.listen(0, "127.0.0.1", () => {
       const port = (srv.address() as { port: number }).port;
@@ -280,6 +304,154 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     loadMeshes(),
   );
   delayed.close();
+}
+
+// ── S11 held-open TLS peer (#851 cell a): accepts TCP, greets INFO {tls_required:true}, then never
+// answers the TLS client hello. This is the issue's exact shape — the earlier collapse to
+// `unreachable` made the classifier re-read the same INFO and misreport `tls-trust` (a CA hint) for
+// a pure timeout. The fix must discriminate the timeout and never consult INFO for it. ──────────
+{
+  const { createServer } = await import("node:net");
+  const held = await new Promise<{ port: number; close: () => void }>((resolve) => {
+    const srv = createServer((sock) => {
+      sock.on("error", () => { /* client resets when its own probe budget expires; not a test failure */ });
+      sock.write('INFO {"server_id":"s11","tls_required":true,"version":"2"}\r\n');
+      // Hold the socket open; never answer the TLS client hello, never close.
+    });
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as { port: number }).port;
+      resolve({ port, close: () => srv.close() });
+    });
+  });
+  const heldServer = `nats://127.0.0.1:${held.port}`;
+  recordMesh({
+    space: "s11-held",
+    server: heldServer,
+    root: "/tmp/s11-held",
+    mode: "open",
+    tlsRequired: true,
+    origin: "up",
+    ts: new Date(0).toISOString(),
+  });
+  const heldT: MeshTarget = {
+    ...T,
+    space: "s11-held",
+    server: heldServer,
+    root: "/tmp/s11-held",
+    mode: "open",
+    tlsRequired: true,
+    source: "registry",
+    origin: "up",
+  };
+  const heldR = await preflightTarget(heldT);
+  check(
+    "S11 held-open TLS peer: preflightTarget → slow-link, prune:false (#851 cell a)",
+    !heldR.ok && heldR.kind === "slow-link" && heldR.prune === false,
+    heldR,
+  );
+  check(
+    "S11 held-open TLS peer: registry entry still present (#851 cell a)",
+    loadMeshes().some((m) => m.space === "s11-held"),
+    loadMeshes(),
+  );
+  check(
+    "S11 held-open TLS peer: rendered sentence names no CA (#851 cell d)",
+    (() => {
+      const msg = preflightMessage("slow-link", heldT, false);
+      return !/CA|certificate|trust/i.test(msg) && msg.includes("registry entry was kept");
+    })(),
+    preflightMessage("slow-link", heldT, false),
+  );
+  held.close();
+}
+
+// ── S12 raw off-registry preflight (#709): reachableOrThrow re-probes at the confirm budget ────────
+// before condemning a slow-but-live broker, and the timeout sentence names a budget actually spent.
+{
+  const { createServer } = await import("node:net");
+  const slowRawSrv = createServer((sock) => {
+    sock.on("error", () => { /* client tears down on its own error; not a test failure */ });
+    setTimeout(() => {
+      try {
+        sock.write('INFO {"server_id":"s12","version":"2.12.0","proto":1,"headers":true,"max_payload":1048576}\r\n');
+      } catch { /* client gone */ }
+    }, 1_500);
+    sock.on("data", (chunk: Buffer) => {
+      if (chunk.includes("PING")) {
+        try { sock.write("PONG\r\n"); } catch { /* client gone */ }
+      }
+    });
+  });
+  const slowRawPort = await new Promise<number>((resolve) => {
+    slowRawSrv.listen(0, "127.0.0.1", () => resolve((slowRawSrv.address() as { port: number }).port));
+  });
+  const slowRaw = `nats://127.0.0.1:${slowRawPort}`;
+
+  const t12a0 = Date.now();
+  let s12aOk = false;
+  try {
+    await reachableOrThrow(slowRaw, {});
+    s12aOk = true;
+  } catch { /* checked below */ }
+  const s12aElapsed = Date.now() - t12a0;
+  check(
+    "S12 delayed-INFO plain peer: reachableOrThrow resolves through the confirm probe (#709)",
+    s12aOk,
+  );
+  check(
+    "S12 delayed-INFO plain peer: took >1s (the confirm probe engaged, #709)",
+    s12aElapsed >= 1_400,
+    { s12aElapsed },
+  );
+  slowRawSrv.close();
+
+  const heldRawSrv = createServer((sock) => {
+    sock.on("error", () => { /* client resets when its own probe budget expires; not a test failure */ });
+    // Accept TCP; never write, never close.
+  });
+  const heldRawPort = await new Promise<number>((resolve) => {
+    heldRawSrv.listen(0, "127.0.0.1", () => resolve((heldRawSrv.address() as { port: number }).port));
+  });
+  const heldRaw = `nats://127.0.0.1:${heldRawPort}`;
+
+  const t12b0 = Date.now();
+  let s12bMsg: string | undefined;
+  try {
+    await reachableOrThrow(heldRaw, {});
+  } catch (e) {
+    s12bMsg = e instanceof ConnectRefusal ? e.message : undefined;
+  }
+  const s12bElapsed = Date.now() - t12b0;
+  check(
+    "S12 held-open plain peer: a peer that never greets is the unreachable sentence, not the timeout one (#2156: the gate now requires the greeting on a socket it owns)",
+    s12bMsg !== undefined && s12bMsg.includes("is it running") && !s12bMsg.includes("did not complete within"),
+    s12bMsg,
+  );
+  check(
+    "S12 held-open plain peer: elapsed at least 8s (the confirm budget was spent inside the gate, #709)",
+    s12bElapsed >= 8_000,
+    { s12bElapsed },
+  );
+  heldRawSrv.close();
+
+  const t12c0 = Date.now();
+  let s12cMsg: string | undefined;
+  try {
+    await reachableOrThrow(DEAD, {});
+  } catch (e) {
+    s12cMsg = e instanceof ConnectRefusal ? e.message : undefined;
+  }
+  const s12cElapsed = Date.now() - t12c0;
+  check(
+    "S12 dead port: the raw refusal still says is-it-running and spends no confirm budget (#709)",
+    s12cMsg !== undefined && s12cMsg.includes("is it running"),
+    s12cMsg,
+  );
+  check(
+    "S12 dead port: elapsed under 2s (#709)",
+    s12cElapsed < 2_000,
+    { s12cElapsed },
+  );
 }
 
 rmSync(home, { recursive: true, force: true });

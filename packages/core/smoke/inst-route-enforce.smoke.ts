@@ -41,7 +41,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, mintLifecycleUid, permissionsFor,
-  standaloneConnectOpts, setupSpaceStreams, isReachable, DEV_OWNER, BASELINE_LIFECYCLE_ENDPOINT,
+  resolveService, standaloneConnectOpts, setupSpaceStreams, isReachable, DEV_OWNER, BASELINE_LIFECYCLE_ENDPOINT,
   type EpCapability,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -101,6 +101,28 @@ try {
   const TARGET_IID = mintLifecycleUid();
   const pin: EpCapability[] = [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "ps", instanceId: TARGET_IID }];
 
+  // Reproduction control: an ordinary agent has only the class describe row, so a real pinned
+  // resolve is refused by the broker before contract-store resolution. This remains after the fix
+  // as the proof that only the manager-caller view gains the instance rail.
+  {
+    const id = newIdentity();
+    const uid = mintLifecycleUid();
+    const creds = await mintCreds(auth, id, "agent", { lifecycleUid: uid });
+    const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+    const caller = { owner: DEV_OWNER, actor: id.id, uid };
+    const describeSubject = `${space}.ep.inst.${BASELINE_LIFECYCLE_ENDPOINT}.${TARGET_IID}.describe`;
+    let refusal = "";
+    try {
+      await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { instanceId: TARGET_IID, deadlineMs: 2_000 });
+    } catch (e) {
+      refusal = `${(e as { code?: string }).code ?? ""}: ${(e as Error).message}`;
+    } finally {
+      await nc.drain().catch(() => { /* already gone */ });
+    }
+    check("an ordinary agent's pinned resolve is permission-denied on the exact inst describe subject",
+      refusal.includes("permission-denied") && refusal.includes(describeSubject), refusal);
+  }
+
   for (const arm of [{ name: "PINNED (what `--on` mints under C)", caps: pin, wantInst: "allowed" },
                      { name: "UNPINNED (the same profile, same run, one mint input removed)", caps: undefined, wantInst: "denied" }] as const) {
     console.log(`\nCELL - ${arm.name}`);
@@ -126,6 +148,32 @@ try {
     const verdict = await publishAs(creds, concrete(instRow), false);
     check(`${arm.name}: the broker ${arm.wantInst === "allowed" ? "ACCEPTS" : "REFUSES"} the instance route`,
       verdict === arm.wantInst, { verdict, want: arm.wantInst, subject: instRow.slice(0, 90) });
+  }
+
+  // ── goal-result: live pre-revoke read within TTL remains permitted; foreign UID request broker-denied ──
+  {
+    console.log("\nCELL - goal-result caller UID enforcement");
+    const id = newIdentity();
+    const uid = mintLifecycleUid();
+    const foreignUid = mintLifecycleUid();
+    const creds = await mintCreds(auth, id, "agent", {
+      lifecycleUid: uid,
+      capabilities: ["spawn"],
+    });
+    const rows = rowsOf(permissionsFor("agent", space,
+      { owner: DEV_OWNER, actor: id.id, connId: id.id, lifecycleUid: uid } as never,
+      { lifecycleUid: uid, capabilities: ["spawn"] } as never));
+    const goalResultRow = rows.find((r) => r.includes(".goal-result."));
+    check("agent with spawn holds goal-result row", goalResultRow !== undefined, rows);
+
+    // Own UID goal-result publish permitted on static credential:
+    const ownVerdict = await publishAs(creds, concrete(goalResultRow!), false);
+    check("own UID goal-result publish permitted", ownVerdict === "allowed", ownVerdict);
+
+    // Foreign UID request subject broker-denied:
+    const foreignGoalResultRow = concrete(goalResultRow!).replace(`.${uid}.`, `.${foreignUid}.`);
+    const foreignVerdict = await publishAs(creds, foreignGoalResultRow, false);
+    check("foreign UID request subject broker-denied", foreignVerdict === "denied", foreignVerdict);
   }
 
   console.log("\nThe two arms differ in exactly one mint input, so the pin is what the broker honoured.");

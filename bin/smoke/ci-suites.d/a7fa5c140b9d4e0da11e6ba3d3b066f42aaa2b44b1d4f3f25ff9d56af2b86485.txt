@@ -1,0 +1,4 @@
+# #1972: the two host-owned managed-agent lifecycle operations. Every guard on the enrollment and
+# prepare-retirement helpers runs against a real broker and the real authority plane, plus the
+# closed parsers and the stock unimplemented dispatch refusal.
+smoke:managed-agent-enrollment:auth

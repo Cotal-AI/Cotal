@@ -12,11 +12,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
   DEV_OWNER,
+  CONTROL_DELIVERY_ADMIN,
+  CotalEndpoint,
   createSpaceAuth,
   epAuthBucket,
   epCall,
@@ -33,6 +35,7 @@ import {
   setupSpaceStreams,
   standaloneConnectOpts,
   type Connector,
+  type ControlReply,
   type EpCaller,
   type EvictionResult,
   type LaunchOpts,
@@ -50,6 +53,7 @@ import {
   recordSlotCredential,
   staticLifecycleTransport,
 } from "../src/static-lifecycle.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (condition: () => Promise<boolean> | boolean, ms: number): Promise<boolean> => {
@@ -86,7 +90,7 @@ const space = `reconcile-redrive-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
-const root = mkdtempSync(join(tmpdir(), "cotal-reconcile-redrive-ws-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}reconcile-redrive-ws-`));
 const brokerStore = mkdtempSync(join(tmpdir(), "cotal-reconcile-redrive-js-"));
 const conf = join(root, "server.conf");
 const managerInstanceId = mintLifecycleUid();
@@ -95,9 +99,11 @@ saveSpaceAuth(authDir(root), auth);
 saveManagerInstanceIdentity(root, space, { instanceId: managerInstanceId, serveIdentity: newIdentity() });
 writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: brokerStore, host: "127.0.0.1" }));
 const broker = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+teardownOnSignal(broker, conf);
 
 let manager: Manager | undefined;
 let shutdownManager: Manager | undefined;
+let delivery: CotalEndpoint | undefined;
 let observer: Awaited<ReturnType<typeof connect>> | undefined;
 let callerNc: Awaited<ReturnType<typeof connect>> | undefined;
 const logs: string[] = [];
@@ -181,6 +187,33 @@ try {
   }
   check("the real authenticated broker is serving", serving);
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  const dlvIdentity = newIdentity();
+  delivery = new CotalEndpoint({
+    space, servers, creds: await mintCreds(auth, dlvIdentity, "delivery"),
+    card: { id: dlvIdentity.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
+  });
+  await delivery.start();
+  await delivery.acquireDeliveryLease(0).catch(() => {});
+  delivery.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+    if (req.op === "reloadStoreIdentity") {
+      let holds = false;
+      try {
+        const own = await delivery!.readDeliveryLeaseEntry(0);
+        holds = own !== undefined && delivery!.ownsDeliveryLease(own.info);
+      } catch { holds = false; }
+      return {
+        ok: true,
+        data: {
+          identity: { kind: "fs", root: resolve(root) },
+          responder: principalKey("local", dlvIdentity.id).key,
+          holdsDeliveryLease: holds,
+        },
+      };
+    }
+    if (req.op === "lifecycleMemberships") return { ok: true, data: { complete: true, channels: [] } };
+    return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
+  }, { boundReply: true });
   for (const alias of ["orphan-first", "orphan-middle", "orphan-last"]) await writeOrphan(alias);
 
   observer = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }), maxReconnectAttempts: 0 });
@@ -229,7 +262,7 @@ try {
   const middleFailure = failedStatus?.staticReconciliation.failures.find((row) => row.alias === "orphan-middle");
   check("served status prints retry-scheduled and the failed alias with a next retry time", failedStatus?.staticReconciliation.state === "retry-wait" && middleFailure?.disposition === "retry-scheduled" && typeof middleFailure.nextRetryAt === "string", failedStatus?.staticReconciliation);
 
-  const blockedSpawn = await manager.startAgent({ name: "orphan-middle", agent: connector.name });
+  const blockedSpawn = await manager.startAgent({ name: "orphan-middle", agent: connector.name, events: false });
   check("the durable terminalizing row refuses same-alias spawn during the failure window", blockedSpawn.ok === false && /terminalizing/i.test(blockedSpawn.error ?? ""), blockedSpawn);
 
   const recovered = await until(async () => (await slot("orphan-middle"))?.phase === "retired", 5_000);
@@ -247,7 +280,7 @@ try {
   const expectedOp = createHash("sha256").update(`retire:${old.uid}`).digest("hex").slice(0, 26);
   check("the re-drive reused one deterministic terminal operation", oldGate?.row.state === "retired" && oldGate.row.op?.opId === expectedOp, oldGate?.row);
 
-  const respawn = await manager.startAgent({ name: "orphan-middle", agent: connector.name });
+  const respawn = await manager.startAgent({ name: "orphan-middle", agent: connector.name, events: false });
   const respawnUid = respawn.ok ? (respawn.data as { lifecycleUid: string }).lifecycleUid : undefined;
   check("same-alias spawn succeeds only after retirement and mints one successor lifecycle", respawn.ok === true && respawnUid !== old.uid, respawn);
   check("the predecessor lifecycle was not duplicated or replaced during re-drive", attempts.get("orphan-first") === 1 && attempts.get("orphan-middle") === 2 && attempts.get("orphan-last") === 1, Object.fromEntries(attempts));
@@ -336,7 +369,7 @@ try {
   check("shutdown control reached its first accepted exact terminal", await until(() => shutdownFirstEntered, 20_000));
   check("shutdown control reached service registration after the startup fence", await until(() => shutdownRegistrationEntered, 20_000));
   let shutdownSettled = false;
-  const shutdownStopping = shutdownManager.stop().then(() => { shutdownSettled = true; });
+  const shutdownStopping = shutdownManager.stop({ withAgents: true }).then(() => { shutdownSettled = true; });
   await wait(150);
   check("stop waits for an accepted startup reconciliation terminal", shutdownSettled === false);
   releaseShutdownFirst();
@@ -350,8 +383,9 @@ try {
   shutdownManager = undefined;
 } finally {
   console.error = realError;
-  await shutdownManager?.stop().catch(() => {});
-  await manager?.stop().catch(() => {});
+  await shutdownManager?.stop({ withAgents: true }).catch(() => {});
+  await manager?.stop({ withAgents: true }).catch(() => {});
+  await delivery?.stop().catch(() => {});
   await callerNc?.drain().catch(() => callerNc?.close());
   await observer?.drain().catch(() => observer?.close());
   broker.kill("SIGTERM");

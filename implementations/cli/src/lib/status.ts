@@ -3,7 +3,7 @@ import { accessSync, constants } from "node:fs";
 import { connect } from "node:net";
 import { delimiter, join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSoleSpaceAuth, loadSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, findCotalRoot, loadSoleSpaceAuth, loadSpaceAuth, resolveMeshTarget, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveNatsServer } from "./nats-bin.js";
 import { cliVersion } from "./version.js";
 
@@ -11,10 +11,11 @@ import { cliVersion } from "./version.js";
 export { resolveRuntimeSpace, resolveSpace } from "@cotal-ai/workspace";
 
 export interface MeshStatus {
-  reachable: boolean;
+  reachable?: boolean;
   server: string;
-  space: string; // from .cotal/auth if present, else the default
-  auth: boolean; // auth mode (trust material on disk) vs open
+  space: string;
+  auth: boolean;
+  origin?: MeshEntry["origin"];
 }
 
 /** The dashboard's default port + branded URL. The `web` command moved out to the `@cotal-ai/web`
@@ -38,9 +39,21 @@ export function webUp(port: number = WEB_PORT): Promise<boolean> {
   });
 }
 
-/** Cheap, connectionless-ish snapshot of the mesh for this folder: is a server up,
- *  and what space/auth does the local `.cotal/` describe (found by walking up from `cwd`). */
+/** Cheap snapshot of the mesh setup and spawn resolve for this folder. Discovered catalog brokers
+ * are never probed: their registry record is the selected state this card reports. */
 export async function meshStatus(cwd: string): Promise<MeshStatus> {
+  try {
+    const target = resolveMeshTarget(cwd, {});
+    return {
+      reachable: target.origin === "catalog" ? undefined : await isReachable(target.server, target.tlsRequired ? { tls: true } : {}),
+      server: target.server,
+      space: target.space,
+      auth: target.mode !== "open",
+      ...(target.origin ? { origin: target.origin } : {}),
+    };
+  } catch {
+    // With no resolvable mesh, retain the configure-only card's local default state.
+  }
   const server = DEFAULT_SERVER;
   const auth = loadSoleSpaceAuth(authDir(findCotalRoot(cwd)));
   return {

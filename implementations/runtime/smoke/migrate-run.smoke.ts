@@ -47,6 +47,7 @@ import {
 } from "@cotal-ai/lang";
 import { migrateRun, commitMigration, MigrationNotAdmissible } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "migrun";
 const EP = "manager";
@@ -62,8 +63,9 @@ const c = (n: string, v: boolean, extra?: unknown) => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-migrun-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}migrun-`));
 const broker = spawnProc("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+teardownOnSignal(broker, sd);
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
   rmSync(sd, { recursive: true, force: true });

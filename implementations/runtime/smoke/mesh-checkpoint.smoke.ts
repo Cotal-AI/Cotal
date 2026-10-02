@@ -56,6 +56,7 @@ import {
   startRun,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshcp";
 const EP = "manager";
@@ -69,8 +70,9 @@ const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-meshcp-"));
+const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}meshcp-`));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+teardownOnSignal(broker, sd);
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
   rmSync(sd, { recursive: true, force: true });

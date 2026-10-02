@@ -12,12 +12,16 @@
  *    client, they work on a turn someone typed into the attached TUI just as well as on a
  *    mesh-driven one;
  *  • ack-on-completion with EXACT ids: a turn's surfaced messages are drainInboxDeliveries-acked
- *    ONLY when the turn reaches `completed`. A `failed` turn (transient model/upstream error)
- *    leaves them un-acked and retries with bounded backoff; an `interrupted` turn leaves them
- *    for redelivery — matching the OpenCode connector's semantics — and an app-server CRASH
- *    restarts the child in place (same mesh lifecycle) and re-drives them. Attention modes
- *    hold: ambient drives only in `open`; dnd/focus hold it; a focus @mention wakes a pull
- *    turn (latched until a turn accepts it); quiet stays pull-only.
+ *    when the turn reaches `completed`, and also when an OPERATOR interrupts it (Escape in the
+ *    attached TUI) — that dismisses the batch rather than redelivering it, matching the OpenCode
+ *    connector's explicit-Stop semantics. A `failed` turn (transient model/upstream error) leaves
+ *    them un-acked and retries with bounded backoff; an `unknown` terminal (a missing or
+ *    unrecognized status) leaves them un-acked too, without backoff. The ONE `interrupted` this
+ *    host itself issues — `shutdown()`'s own `driver.interrupt()` — keeps today's un-acked
+ *    outcome: that is a retirement, not a restart, and redelivery to a later same-name spawn is
+ *    not promised. An app-server CRASH restarts the child in place (same mesh lifecycle) and
+ *    re-drives them. Attention modes hold: ambient drives only in `open`; dnd/focus hold it; a
+ *    focus @mention wakes a pull turn (latched until a turn accepts it); quiet stays pull-only.
  *  • presence falls out of the app-server event stream (turn → working, approval → waiting,
  *    item detail → activity), never self-guessed;
  *  • the per-agent CODEX_HOME (under `<workspaceRoot>/.cotal/codex/<name>`) isolates the
@@ -52,6 +56,7 @@ import {
   feedbackLine,
   formatInjection,
   fmtFrom,
+  fmtChannel,
   startControlServer,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
@@ -71,6 +76,7 @@ import {
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
+import type { PresenceCondition } from "@cotal-ai/core";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
 import { createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
 import { waitForRollout } from "./agui-rollout.js";
@@ -326,11 +332,17 @@ function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
 class BoundStartSource<T> implements DurableSource<T> {
   readonly kind: string;
 
+  /** The boundary this wrapper captured, exposed so its OWNER can persist the boundary the SOURCE
+   *  itself substitutes rather than a copy captured beside it (#705). Two sources of truth would
+   *  drift exactly when one of them is removed. */
+  readonly start: string;
+
   constructor(
     private readonly inner: DurableSource<T>,
-    private readonly start: string,
+    start: string,
   ) {
     this.kind = inner.kind;
+    this.start = start;
   }
 
   read(cursor: string | undefined): Promise<SourceRead<T>> {
@@ -395,6 +407,12 @@ export async function runCodexHost(): Promise<void> {
     const ms = Number(process.env.COTAL_EVENTS_TEST_START_DELAY_MS ?? "");
     return Number.isFinite(ms) && ms > 0 ? ms : 0;
   })();
+  // Test-only: holds the window between the persist and the first pump open so a fixture can
+  // read the log there. Unset is no wait and no call.
+  let postStartHoldMs = ((): number => {
+    const ms = Number(process.env.COTAL_EVENTS_TEST_POST_START_HOLD_MS ?? "");
+    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+  })();
   let events: AguiEmitterHolder<CodexRecord> | undefined;
   let mapper: CodexMapper | undefined;
   /** The adopted rollout path. A holder binds to ONE path and dies on a second, so every flush
@@ -407,6 +425,8 @@ export async function runCodexHost(): Promise<void> {
     // into another artificial setup-window proof.
     const holderStartDelayMs = startDelayMs;
     startDelayMs = 0;
+    const holderPostStartHoldMs = postStartHoldMs;
+    postStartHoldMs = 0;
     return new AguiEmitterHolder<CodexRecord>(
       async (rolloutPath: string) => {
         // The test-only widening of this setup, at the top of it so a fixture's write lands in the
@@ -430,16 +450,36 @@ export async function runCodexHost(): Promise<void> {
         // a pending terminal closes the WAL's run without passing through this new mapper.
         const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
         mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
-        return AguiEmitter.start<CodexRecord>({
-          endpoint: agent.ep,
-          wal,
-          subjectFrontier,
-          // `startCursor` is the boundary this bind captured before it announced itself. Nothing
+        // `startCursor` is the boundary this bind captured before it announced itself. Nothing
           // above writes it into the log: see `BoundStartSource` for what that buys and what it
-          // costs.
-          source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),
-          map: mapper.map,
-        });
+          // costs. The wrapper is held in a variable rather than inlined because the persist below
+          // keys on IT (#705), so removing the boundary substitution removes the persist with it
+          // instead of leaving an outer copy that keeps writing the same value.
+          const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor);
+          const em = await AguiEmitter.start<CodexRecord>({
+            endpoint: agent.ep,
+            wal,
+            subjectFrontier,
+            source,
+            map: mapper.map,
+          });
+          // #705: persist the boundary THE SOURCE SUBSTITUTES into the log right after a successful
+          // start, and only when the log still has no cursor. Keyed on the wrapper itself, never on
+          // the outer `startCursor`, because the invariant that matters is "what the emitter will
+          // read is what the log now says", and only the source object knows the first half.
+          // Before start would leave a resume behind if start then failed (the fixture at L9 fences
+          // exactly that); after start is safe because `AguiEmitter.start` awaits `recover()`, which
+          // settles any pending frame before returning, so `advanceCursorOnly` never races a pending
+          // write. Without this, a host killed between this line and the emitter's first pump leaves
+          // a virgin log, and the next bind takes its boundary at the file's later end, dropping
+          // whatever the thread appended in between.
+          if (source instanceof BoundStartSource && wal.frontier.sourceCursor === undefined)
+            await wal.advanceCursorOnly(source.start);
+          // Test-only: holds the window between the persist above and the first pump open so a
+          // fixture can read the log there. Unset is no wait and no call.
+          if (holderPostStartHoldMs > 0)
+            await new Promise<void>((r) => setTimeout(r, holderPostStartHoldMs));
+          return em;
       },
       // Required, and not defaulted to a swallow. The holder is terminal on error and does not
       // retry, so this line is the whole record of why events stopped.
@@ -457,25 +497,46 @@ export async function runCodexHost(): Promise<void> {
   // and replayed once the endpoint is up (last write wins — a stale one is never resurrected).
   type Presence = { status: "idle" | "working" | "waiting" | "offline"; activity?: string };
   let desired: Presence | undefined;
+  let desiredCondition: PresenceCondition | null | undefined;
   let flushTimer: ReturnType<typeof setInterval> | undefined;
+  // Presence writes go out IN CALL ORDER. `agent.setStatus("working")` clears the condition before
+  // it publishes, and it awaits the connection first, so two fire-and-forget writes from one tick
+  // can land in either order. Measured: a turn that failed in the tick it started published its
+  // failure condition and then its own start's clear one millisecond later, and the presence
+  // bucket (history 1) dropped the condition revision before any watcher read it. The chain keeps
+  // the start's clear ahead of the failure's condition, so the condition is what the roster shows
+  // until the NEXT turn starts.
+  let presenceChain: Promise<void> = Promise.resolve();
+  const inOrder = (write: () => Promise<void>): Promise<void> => {
+    const next = presenceChain.then(write, write);
+    presenceChain = next.catch(() => {});
+    return next;
+  };
   function armStatusFlush(): void {
     if (flushTimer) return;
     flushTimer = setInterval(() => {
-      if (!desired || !agent.connected) {
-        if (!desired) {
+      if ((!desired && desiredCondition === undefined) || !agent.connected) {
+        if (!desired && desiredCondition === undefined) {
           clearInterval(flushTimer);
           flushTimer = undefined;
         }
         return;
       }
       const want = desired;
+      const wantCondition = desiredCondition;
       desired = undefined;
+      desiredCondition = undefined;
       clearInterval(flushTimer);
       flushTimer = undefined;
-      agent.setStatus(want.status, want.activity).catch(() => {
-        if (!desired) desired = want; // nothing newer intervened — keep trying
-        armStatusFlush();
-      });
+      inOrder(async () => {
+        if (wantCondition !== undefined) await agent.setCondition(wantCondition);
+        if (want) await agent.setStatus(want.status, want.activity);
+      })
+        .catch(() => {
+          if (!desired) desired = want;
+          if (desiredCondition === undefined) desiredCondition = wantCondition;
+          armStatusFlush();
+        });
     }, STATUS_FLUSH_MS);
     flushTimer.unref?.();
   }
@@ -484,15 +545,31 @@ export async function runCodexHost(): Promise<void> {
     if (!agent.connected) return armStatusFlush();
     const want = desired;
     desired = undefined;
-    try {
-      await agent.setStatus(status, activity);
-    } catch {
-      if (!desired) desired = want;
-      armStatusFlush();
-    }
+    await inOrder(async () => {
+      try {
+        await agent.setStatus(status, activity);
+      } catch {
+        if (!desired) desired = want;
+        armStatusFlush();
+      }
+    });
   };
 
-  // ---- the turn loop -------------------------------------------------------
+  const safeCondition = async (condition: PresenceCondition | null): Promise<void> => {
+    desiredCondition = condition;
+    if (!agent.connected) return armStatusFlush();
+    const want = desiredCondition;
+    desiredCondition = undefined;
+    await inOrder(async () => {
+      try {
+        await agent.setCondition(condition);
+      } catch {
+        if (desiredCondition === undefined) desiredCondition = want;
+        armStatusFlush();
+      }
+    });
+  };
+
   let ready = false; // thread up — never drive before then
   /** Shared across app-server incarnations: a crash during launch must make the replacement await
    * the SAME mesh-readiness gate, not see a boolean and race ahead to a false `ready`. */
@@ -600,9 +677,10 @@ export async function runCodexHost(): Promise<void> {
     try {
       for (;;) {
         const surfacedSet = new Set(surfaced);
+        // `surfaced` holds receive keys, so an empty-id item already in the turn is not steered twice.
         const items = agent
           .peekInbox("automatic")
-          .filter((i) => !surfacedSet.has(i.id) && (i.kind !== "channel" || i.mentionsMe));
+          .filter((i) => !surfacedSet.has(i.recvKey) && (i.kind !== "channel" || i.mentionsMe));
         if (items.length === 0 || !driver.busy) return;
         const inj = formatInjection(items);
         if (!inj) return;
@@ -622,11 +700,19 @@ export async function runCodexHost(): Promise<void> {
     }
   }
 
-  /** The single turn-boundary site. Ack ONLY a `completed` turn's surfaced ids (exact-id drain:
-   *  an overflow-evicted id is reported missing, never mis-acked positionally). `failed` (a
-   *  transient model/upstream error) and `interrupted` (an operator/shutdown cancel) both leave
-   *  the ids un-acked so the batch redelivers — failed with backoff, so a permanently failing
-   *  batch can't hot-loop. Waits for any in-flight steer RPC first, so the ack set is settled. */
+  /** The single turn-boundary site. Ack a `completed` turn's surfaced ids, and an `interrupted`
+   *  one too UNLESS this host is the one that issued the interrupt (exact-id drain: an
+   *  overflow-evicted id is reported missing, never mis-acked positionally). An operator's Escape
+   *  in the attached TUI ends the turn `interrupted` with `shuttingDown` still false — that batch
+   *  is DISMISSED, not redelivered, the same way OpenCode acks an explicit user Stop. The only
+   *  `interrupted` this host itself asks for is `shutdown()`'s own `driver.interrupt()`, which
+   *  sets `shuttingDown` first; that one keeps the un-acked outcome, because it is a retirement,
+   *  not a restart (see the shutdown note below on what that does and does not promise). `failed`
+   *  (a transient model/upstream error) leaves the ids un-acked so the batch redelivers with
+   *  backoff, so a permanently failing batch can't hot-loop; `unknown` (a missing or unrecognized
+   *  terminal status) also leaves them un-acked, without backoff — the protocol surprise gets no
+   *  benefit of the doubt, but it isn't punished as a failure either. Waits for any in-flight
+   *  steer RPC first, so the ack set is settled. */
   let boundaryGen = 0; // bumped per turn boundary: a boundary's ASYNC tail (flush/status/pump)
   // must no-op once a newer boundary exists, or T1's stale tail would overwrite T2's presence
   // and pump T2's failed batch past its backoff.
@@ -657,7 +743,11 @@ export async function runCodexHost(): Promise<void> {
       awaitingTurnEnd = false;
       const ids = surfaced;
       surfaced = [];
-      if (wasOpen && ids.length > 0 && status === "completed") agent.drainInboxDeliveries(ids); // the sole ack site
+      // An interrupt THIS host issued (shutdown()'s driver.interrupt()) sets `shuttingDown` before
+      // the RPC even goes out, so by the time this terminal arrives that latch already reads true
+      // — the sole discriminator between an operator's dismiss and a retirement's redeliver.
+      const dismissed = status === "completed" || (status === "interrupted" && !shuttingDown);
+      if (wasOpen && ids.length > 0 && dismissed) agent.drainInboxDeliveries(ids); // the sole ack site
       if (status === "failed") scheduleErrorRetry();
       else clearErrorRetry(true);
       void (async () => {
@@ -764,7 +854,7 @@ export async function runCodexHost(): Promise<void> {
       // (the file is created by the primer inject and bound immediately after). On a late bind it
       // is the turns that ran while the file did not exist, and a reader comparing the panel to the
       // terminal deserves to know why they differ rather than to guess.
-      log(`AG-UI: publishing thread ${threadId} from ${path} (the stream starts here, anything already written is not republished)`);
+      log(`AG-UI: publishing thread ${threadId} from ${JSON.stringify(path)} (the stream starts here, anything already written is not republished)`);
     } finally {
       binding = false;
       const retry = missedBind;
@@ -815,10 +905,14 @@ export async function runCodexHost(): Promise<void> {
     void safeStatus("working");
     void steerPending(); // anything directed that landed while the turn spun up
   });
-  driver.on("waiting", (detail: string) => void safeStatus("waiting", detail));
-  driver.on("turnCompleted", ({ status, owned }: { status: string; owned: boolean }) => {
+  driver.on("waiting", (detail: string, condition?: PresenceCondition) => {
+    if (condition) void safeCondition(condition);
+    void safeStatus("waiting", detail);
+  });
+  driver.on("turnCompleted", ({ status, condition, owned }: { status: string; condition?: PresenceCondition; owned: boolean }) => {
     flushEvents();
     feed(`— turn ${status}`);
+    if (status === "failed" && condition) void safeCondition(condition);
     completeTurn(status, owned);
   });
   driver.on("itemStarted", (item: ThreadItem) => {
@@ -1009,7 +1103,7 @@ export async function runCodexHost(): Promise<void> {
     // event is one-shot and contributes nothing to pendingWake(), so mid-turn it must be
     // LATCHED: steer it into the live turn if possible, and keep the latch until some turn
     // actually carried it (completeTurn consumes the latch at the boundary).
-    const hint = `📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — read it with cotal_inbox.`;
+    const hint = `📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`;
     pendingPullHint = hint; // latched until a turn ACCEPTS it (steer accept / startTurn success)
     if (driver.busy || awaitingTurnEnd) {
       // Ride the SAME settlement rail as batch steers, so a turn boundary racing this steer

@@ -36,6 +36,7 @@ import {
   readCheckpointSpec,
   resumeCheckpoint,
   type CheckpointSettleFact,
+  type CheckpointSpecValue,
 } from "@cotal-ai/core";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
@@ -139,14 +140,50 @@ export async function locateOpenCheckpoint(
 ): Promise<OpenCheckpoint> {
   const entries = await replayRunEntries(deps, req.runId, req.takeoverId);
   const token = openCheckpointToken(entries, req.runId, req.stepKey);
-  const spec = await readCheckpointSpec(deps.kv, { endpoint: deps.endpoint, token });
+  const spec = await readSpecPastTheMintWindow(deps, token);
   if (spec === undefined) {
     throw new Error(
-      `checkpoint "${token}" has a journal entry but no record on endpoint ${deps.endpoint}; `
+      `checkpoint "${token}" has a journal entry but no record on endpoint ${deps.endpoint} `
+      + `after ${MINT_WINDOW_ATTEMPTS} reads over ${(MINT_WINDOW_ATTEMPTS - 1) * MINT_WINDOW_STEP_MS}ms; `
       + `refusing to guess a presenter — reconcile the store before answering`,
     );
   }
   return { token, holder: spec.holder };
+}
+
+/** Reads long enough to tell a mint in flight from a torn store, and no longer.
+ *
+ *  `checkpoint` in the mesh handler appends the step's PENDING journal entry before it mints the
+ *  pause's record, deliberately: its own comment calls that the harmless direction, because a crash
+ *  between the two leaves an entry saying what it was going to ask rather than a pause nothing
+ *  records. The cost is a window in which the two halves this resolver needs are not both readable
+ *  yet, and one read cannot tell that window from the store being torn — the SAME observation means
+ *  either. What separates them is time: the window closes in a couple of round trips, and a torn
+ *  store never closes.
+ *
+ *  Bounded on purpose, both ways. Refusing on the first read turns a checkpoint that is about to be
+ *  answerable into "reconcile the store", which is the wrong instruction and, at the operator
+ *  surface, an answer a human has to give twice. Waiting without a bound would hang that human on a
+ *  pause that will never be answerable. The window is a KV create plus its status write on a loaded
+ *  host, so a low single-digit number of seconds covers it with room to spare.
+ *
+ *  Only the record is re-read. The token is a fact about the journal at the moment it was replayed,
+ *  and a replay binds its own consumer, so re-reading the journal per attempt would contend with
+ *  the driver for a staleness this call already carries either way. */
+const MINT_WINDOW_ATTEMPTS = 10;
+const MINT_WINDOW_STEP_MS = 200;
+
+async function readSpecPastTheMintWindow(
+  deps: ResolveCheckpointDeps,
+  token: string,
+): Promise<CheckpointSpecValue | undefined> {
+  const ref = { endpoint: deps.endpoint, token };
+  for (let i = 0; i < MINT_WINDOW_ATTEMPTS; i += 1) {
+    const spec = await readCheckpointSpec(deps.kv, ref);
+    if (spec !== undefined) return spec;
+    if (i + 1 < MINT_WINDOW_ATTEMPTS) await new Promise((r) => setTimeout(r, MINT_WINDOW_STEP_MS));
+  }
+  return undefined;
 }
 
 /**

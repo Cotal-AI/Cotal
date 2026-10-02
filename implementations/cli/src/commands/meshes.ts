@@ -44,8 +44,8 @@ import { addWizard, canPrompt } from "./meshes-wizard.js";
  *
  * `up` and `down` still write and clear their own records; `add`/`rm` exist for the meshes they
  * cannot speak for — one running on another machine, a shared broker, a hosted space. Those records
- * are marked `manual` and are never auto-pruned (see `pruneMesh`), because this machine has no way
- * to write them back: a dead broker under one is reported `offline`, not deleted.
+ * are marked `manual`. A liveness miss never auto-prunes any origin (see `pruneMesh`): a dead
+ * broker is reported `offline`, not deleted. `cotal down` still drops an `up` record for this root.
  */
 
 const SUBCOMMANDS = ["list", "add", "rm", "remove"] as const;
@@ -78,9 +78,9 @@ export async function meshes(args: ParsedArgs): Promise<void> {
 // ---- list -----------------------------------------------------------------------------------
 
 /** The registered meshes, one per line, with a `*` on the `current` default. This is how you see
- *  what a bare `cotal spawn` would join and which `--space` names exist. The sweep runs first, so
- *  a mesh this machine started and lost is gone from the list; an operator-registered one whose
- *  broker is down stays, tagged `offline` — it is still the mesh you meant, just not up. */
+ *  what a bare `cotal spawn` would join and which `--space` names exist. The sweep runs first so a
+ *  dead broker is tagged `offline` rather than deleted: an `up` record is the restart authority for
+ *  that root, and a hand-registered one is still the mesh you meant, just not up. */
 async function listMeshes(): Promise<void> {
   const sweep = await pruneStaleMeshes();
   const all = loadMeshes();
@@ -99,8 +99,11 @@ async function listMeshes(): Promise<void> {
   for (const m of all) {
     const marker = m.space === current ? c.green("*") : " ";
     const tags = [
+      ...(m.policy?.events === "required" ? [c.yellow("events: required")] : []),
       ...(m.origin === "manual" ? [c.dim("registered")] : []),
-      ...(offline.has(m.space) ? [c.yellow("offline")] : []),
+      ...(m.origin === "catalog" ? [c.dim("discovered")] : []),
+      ...(m.origin === "catalog" && m.catalogName && m.catalogName !== m.space ? [c.dim(m.catalogName)] : []),
+      ...(m.origin !== "catalog" && offline.has(m.space) ? [c.yellow("offline")] : []),
     ];
     console.log(
       `${marker} ${m.space.padEnd(wSpace)}  ${c.dim(`${m.server.padEnd(wServer)}  ${m.mode.padEnd(wMode)}  ${m.root}`)}` +
@@ -397,7 +400,7 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
     // Skipped entirely under `--force`: the probe itself throws on a multi-tenant or unreadable
     // root, which must not defeat the documented override. Keyed on the entry's OWN space rather
     // than one re-resolved from the root, which on a multi-tenant root can name another tenant.
-    const running = m.origin === "manual" || v.force ? undefined : liveMeshOwner(m.root, m.space);
+    const running = m.origin === "manual" || m.origin === "catalog" || v.force ? undefined : liveMeshOwner(m.root, m.space);
     if (running) {
       console.error(c.red(`✗ "${space}" is running from ${m.root} (${running}) - \`cotal down\` there stops it and drops the record; --force drops the record only, leaving the mesh running`));
       failed = true;

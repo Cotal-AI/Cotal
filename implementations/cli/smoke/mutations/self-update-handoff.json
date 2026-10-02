@@ -13,7 +13,7 @@
     {
       "name": "report the running manager only after the global install",
       "file": "implementations/cli/src/commands/update.ts",
-      "find": "  try {\n    if (await rt.reportRunningManager(target) === \"legacy\") return 1;\n  } catch (e) {\n    rt.err(c.red(`✗ running manager continuity check: ${message(e)}`));\n    return 1;\n  }\n\n  const rootResult = rt.npm([\"root\", \"-g\"]);",
+      "find": "  try {\n    if (await rt.reportRunningManager(target) === \"legacy\") return 1;\n  } catch (e) {\n    rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));\n    return 1;\n  }\n\n  const rootResult = rt.npm([\"root\", \"-g\"]);",
       "replace": "  const rootResult = rt.npm([\"root\", \"-g\"]);",
       "expectRed": "self-update reports the running manager before the global install",
       "cell": "self-update reports the running manager before the global install",

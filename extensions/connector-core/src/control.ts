@@ -12,6 +12,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { MeshAgent, InboxItem } from "./agent.js";
+import { fmtItem } from "./framing.js";
 
 /** One lifecycle event, as the agent runtime delivers it on stdin. */
 export interface HookEvent {
@@ -82,33 +83,32 @@ export interface ControlServerOpts {
 /** Hard cap on the first (only) frame: a control request is a token + one small lifecycle event —
  *  kilobytes at most. Generous headroom for a legit event, tiny next to the ~512MB string limit an
  *  unauthenticated spewer would otherwise drive `buf` toward to crash the process. */
-const MAX_FRAME_BYTES = 1 << 20; // 1 MiB
+export const MAX_FRAME_BYTES = 1 << 20; // 1 MiB
 /** ABSOLUTE deadline (not an idle timeout — a slow-loris dribbling one byte at a time would keep
  *  resetting an idle timer) for a connection to deliver its complete auth frame. Past it, an
  *  unauthenticated connection is dropped so a local process can't camp on a finite pipe instance.
  *  Cleared the instant a full frame is in hand (the token-bearing client then owns the connection). */
-const AUTH_DEADLINE_MS = 5_000;
+export const AUTH_DEADLINE_MS = 5_000;
 
 /** Constant-time match of a presented token against the endpoint's. Both sides are SHA-256'd first
  *  so the compare is fixed-length (and length-independent) regardless of the presented value — a
  *  non-string or wrong-length token can never throw `timingSafeEqual` or leak length via timing. */
-function tokenMatches(presented: unknown, digest: Buffer): boolean {
+export function tokenMatches(presented: unknown, digest: Buffer): boolean {
   if (typeof presented !== "string") return false;
   return timingSafeEqual(createHash("sha256").update(presented).digest(), digest);
 }
 
-function who(i: InboxItem): string {
-  return i.fromRole ? `${i.fromName}/${i.fromRole}` : i.fromName;
-}
-
-function fmtItem(i: InboxItem): string {
-  const h = i.historical ? " (history)" : ""; // backfilled on join — pre-dates you, not live
-  if (i.kind === "dm") return `• DM from ${who(i)}${h}: ${i.text}`;
-  if (i.kind === "anycast") return `• @${i.service} (from ${who(i)})${h}: ${i.text}`;
-  return `• #${i.channel} ${who(i)}${h}: ${i.text}`;
-}
-
 /** The context block injected into a turn when peer messages are waiting (else undefined).
+ *
+ *  A LINE THAT BEGINS AT COLUMN ZERO IS WRITTEN BY THIS CONNECTOR, NEVER BY A PEER, and that is
+ *  what separates one injected item from the next. This block is auto-injected rather than asked
+ *  for, so the agent never had the chance to distrust it, and every peer-controlled field in it
+ *  (the body, the sender name and role, the service and channel labels) is rendered through
+ *  {@link fmtItem} in `framing.ts` — the same neutralization the `cotal_inbox` reply uses, not a
+ *  second convention. Measured against the raw interpolation this replaced: a body carrying a
+ *  newline produced a second item line, reading as a delivered message from a peer that never sent
+ *  one, and a sender naming itself `Ada] hi [DM from Boss` closed the real attribution and opened a
+ *  forged one.
  *
  *  The tail names the ORDER OF OPERATIONS, not just the reply verbs. A peer message is frequently a
  *  work order, and it arrives at the moment the model is choosing its next action: a tail that lists

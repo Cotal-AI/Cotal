@@ -8,12 +8,42 @@ export type JcodeConnectorFailureCode =
   | "model_refused"
   | "model_mismatch"
   | "private_state"
-  | "readiness_timeout";
+  | "readiness_timeout"
+  | "sessions_enumeration_failed"
+  | "sessions_unwritable";
 
 /** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
 export class JcodeConnectorError extends Error {
   constructor(readonly code: JcodeConnectorFailureCode, message: string, options?: ErrorOptions) {
     super(message, options);
+  }
+}
+
+/** Listing stored sessions killed the harness. Cause and path are connector-owned, not child stderr. */
+export class JcodeSessionsEnumerationFailure extends Error {
+  readonly code = "sessions_enumeration_failed" as const;
+
+  constructor(
+    readonly sessionsPath: string,
+    readonly causeText: string,
+  ) {
+    super(`could not enumerate stored sessions at ${sessionsPath}: ${causeText}`);
+  }
+}
+
+/** The seat's stored-sessions directory exists but will not take the harness's writes. Raised
+ * BEFORE any `create_session`: the harness accepts that request and only dies while persisting
+ * the session during the first turn, which lands outside every guard this connector owns and
+ * renders as `startup failed (unknown)` (#1538). Like the enumeration failure above, the path and
+ * the errno are connector-owned facts, never harness or provider bytes. */
+export class JcodeSessionsUnwritableFailure extends Error {
+  readonly code = "sessions_unwritable" as const;
+
+  constructor(
+    readonly sessionsPath: string,
+    readonly errnoCode: string,
+  ) {
+    super(`stored sessions directory is not writable at ${sessionsPath} (${errnoCode})`);
   }
 }
 
@@ -70,9 +100,23 @@ export class JcodeEffortRefusal extends Error {
   constructor(
     readonly requestedTier: string,
     readonly effectiveModel: string,
+    readonly provider: string,
+    readonly apiMethod: string | undefined,
     readonly acceptedLadder: readonly string[],
   ) {
     super("Jcode reasoning effort was refused");
+  }
+}
+
+/** A verified model route whose provider/profile has no reasoning-effort surface. */
+export class JcodeEffortUnsupported extends Error {
+  constructor(
+    readonly requestedTier: string,
+    readonly effectiveModel: string,
+    readonly provider: string,
+    readonly apiMethod: string | undefined,
+  ) {
+    super("Jcode route does not support reasoning effort");
   }
 }
 
@@ -130,19 +174,33 @@ function acceptedEffortLadder(error: unknown): string[] {
 
 /** Compose a bounded effort-refusal diagnostic. `invalid_request` is intentionally fixed: Jcode
  * rejected this API operation, while provider-supplied codes and text are untrusted. */
-export function jcodeEffortRefusal(error: unknown, requestedTier: string, effectiveModel: string): JcodeEffortRefusal {
-  return new JcodeEffortRefusal(requestedTier, effectiveModel, acceptedEffortLadder(error));
+export interface JcodeEffortIdentity {
+  model: string;
+  provider: string;
+  apiMethod?: string;
 }
 
-/**
- * The model an effort-refusal diagnostic may name.
- *
- * Prefer the operator pin. RuntimeInfo can still report the session default after `setModel`
- * (measured: a CLI spawn that died on a variant-tier refusal recorded deepseek-v4-pro despite
- * `--model grok-4.6`). Fall back to RuntimeInfo only when no pin was requested.
- */
-export function effortRefusalModel(requested: string | undefined, runtime: string | undefined): string {
-  return requested ?? runtime ?? "(the provider default)";
+/** Classify the two stable invalid-request outcomes without rendering downstream text. HarnessError
+ * prefixes its message with the stable code, so the anchored `invalid_request:` predicate below is
+ * also the code gate; a second `error.code` check would be redundant. */
+export function jcodeEffortRefusal(
+  error: unknown,
+  requestedTier: string,
+  identity: JcodeEffortIdentity,
+): JcodeEffortRefusal | JcodeEffortUnsupported {
+  if (
+    error instanceof HarnessError &&
+    /^invalid_request: Reasoning effort is not supported by the current model\/profile\./.test(error.message)
+  ) {
+    return new JcodeEffortUnsupported(requestedTier, identity.model, identity.provider, identity.apiMethod);
+  }
+  return new JcodeEffortRefusal(
+    requestedTier,
+    identity.model,
+    identity.provider,
+    identity.apiMethod,
+    acceptedEffortLadder(error),
+  );
 }
 
 /**

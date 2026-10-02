@@ -39,10 +39,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey } from "@cotal-ai/core";
+import { connect as rawConnect } from "@nats-io/transport-node";
 import { MeshAgent, startControlServer, type InboxItem } from "@cotal-ai/connector-core";
 import { createClaudeHandle, createWakePolicy } from "../src/hooks.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 /** The real per-event hook entry Claude Code runs, and the loader that can execute its TS. */
@@ -226,7 +227,7 @@ const dmOtto = async (text: string): Promise<void> => {
 const stillPending = (text: string): boolean => agent.peekInbox("all").some((i: InboxItem) => i.text.includes(text));
 
 try {
-  for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   await pub.start();
   agent.start();
@@ -432,6 +433,61 @@ try {
     injected(afterAckFailure),
   );
   await fireHook({ hook_event_name: "Stop" });
+
+  // ---- 5b. #674: two raw DMs with EMPTY wire ids surface on ONE frame and commit with it ------
+  // The first-party APIs mint an id per message, so an empty id can only come off the wire from a
+  // raw client — the foreign shape `empty-id-ingest` drives at the MeshAgent layer; here it meets
+  // the ADAPTER seam. `surfaceAutomatic` peeks the whole automatic inbox, holds BOTH id-less
+  // deliveries in flight by their RECEIVE keys (a minted one each — the raw ids are ""), and the
+  // frame's `true` verdict drains by those same keys. Under the ledger-keyed-by-id mutation the
+  // hold and the drain address "" instead, the verdict commits nothing, and both texts re-surface
+  // on the very next frame — caught by the no-resurface check below.
+  const enc = new TextEncoder();
+  const rawNc = await rawConnect({ servers, maxReconnectAttempts: 0 });
+  try {
+    const parsedClaude = parsePrincipalKey(ottoId) as { owner: string; actor: string };
+    const emptyIdDm = (text: string): void =>
+      rawNc.publish(
+        unicastSubject(space, parsedClaude.owner, parsedClaude.actor, "local", "rawpub"),
+        enc.encode(
+          JSON.stringify({
+            id: "",
+            ts: Date.now(),
+            space,
+            from: { id: "local.rawpub", name: "RawPub", kind: "agent" },
+            to: ottoId,
+            parts: [{ kind: "text", text }],
+          }),
+        ),
+      );
+    emptyIdDm("cc-empty-a");
+    emptyIdDm("cc-empty-b");
+    await rawNc.flush();
+    await waitFor("both empty-id DMs buffered", () => stillPending("cc-empty-a") && stillPending("cc-empty-b"));
+    const emptyEvent = { hook_event_name: "UserPromptSubmit" };
+    const emptyFrame = await fireHook(emptyEvent);
+    check(
+      "two empty-id DMs in one frame both commit (#674)",
+      injected(emptyFrame).includes("cc-empty-a") && injected(emptyFrame).includes("cc-empty-b"),
+      injected(emptyFrame),
+    );
+    claude.onReply(emptyEvent, true); // the runtime applied the context — the verdict commits
+    await sleep(300); // the commit lands just after the verdict
+    check(
+      "the empty-id pair was committed by the frame's verdict (neither text resurfaces)",
+      !stillPending("cc-empty-a") && !stillPending("cc-empty-b"),
+      { inbox: agent.peekInbox("all").map((i: InboxItem) => i.text) },
+    );
+    const nextFrame = await fireHook({ hook_event_name: "UserPromptSubmit" });
+    check(
+      "the next frame carries neither empty-id text",
+      !injected(nextFrame).includes("cc-empty-a") && !injected(nextFrame).includes("cc-empty-b"),
+      injected(nextFrame),
+    );
+    await fireHook({ hook_event_name: "Stop" });
+  } finally {
+    await rawNc.close();
+  }
 
   // ---- 6. the reply is too big to flush, and the relay's backstop kills it -----------------------
   // Found by an independent tester, not by this suite. Writing the reply to the CONNECTOR'S socket

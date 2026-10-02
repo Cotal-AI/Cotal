@@ -266,6 +266,11 @@ function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: Session
   const again = await redeemSession(g, PRESENTER, hooks);
   c("the authenticated holder's retry re-releases the SAME credential (lost response recovers; nothing re-staged)",
     again.id === "cc1" && st.staged === 1 && st.rows.get(g.sessionId)!.credCaller === "cc1", { again, staged: st.staged });
+  const g2 = await verify(mint({ sessionId: g.sessionId, ttlMs: 30_000 }));
+  c("the two grants for one session carry different signatures", g.sig !== g2.sig);
+  await rejects("a DIFFERENTLY signed grant for the same session refuses (only an exact replay of the winner re-releases)",
+    () => redeemSession(g2, PRESENTER, hooks), "permission-denied");
+  c("…nothing re-released and nothing re-staged for the different grant", st.released.length === 2 && st.staged === 1, st);
 }
 {
   // PRESENTER AUTHENTICATION: possession of the signed grant is NOT authority.
@@ -462,7 +467,7 @@ console.log("D. no standing EPS grant in any grant builder");
 console.log("C. rails: duplex windowed frames over a live broker");
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const broker = spawn("nats-server", ["-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-p", String(PORT), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, sd);
 try {
   let up = false;

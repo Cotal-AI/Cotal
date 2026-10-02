@@ -51,8 +51,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { eventWalLocation, type WalDoc } from "@cotal-ai/connector-core";
-import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { eventWalLocation, JsonlFileSource, type WalDoc } from "@cotal-ai/connector-core";
+import { killAndAwaitExit, SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the operator's
@@ -121,6 +121,14 @@ const threadsSeen = (): string[] => [...new Set(frames.map((f) => f.threadId))];
  *  the path parser and leaves this one reading exactly what it read before. */
 const publishedThreads = (log: string): string[] => [...log.matchAll(/publishing thread (\S+) from/g)].map((m) => m[1]);
 
+/** The rollout path is read from the quoted JSON value the host writes for that purpose, not from
+ *  the prose sentence around it, so a wording or punctuation change in that sentence cannot disarm
+ *  a control that depends on this path. */
+const rolloutPathOf = (log: string, thread = "\\S+"): string | undefined => {
+  const m = new RegExp(`publishing thread ${thread} from ("(?:[^"\\\\]|\\\\.)*")`).exec(log);
+  return m ? (JSON.parse(m[1]) as string) : undefined;
+};
+
 /** How many times this seat has said it looked for a rollout file and found none. COUNTED, not
  *  tested for presence: a boundary that looked again is the seat's own report that it processed
  *  the boundary, and a cell judging "published nothing" needs that rather than a clock. */
@@ -170,6 +178,31 @@ const margin = (label: string): Record<string, unknown> => {
   const w = [...waits].reverse().find((x) => x.label === label);
   return w === undefined ? { wait: label, measured: "never ran" } : { wait: label, ms: w.ms, budgetMs: w.budgetMs, expired: !w.ok };
 };
+
+/** Gate the rest of a phase on its load-bearing prerequisite (#1448).
+ *
+ *  `settle` returns false when its wait runs out and `check` reports one red cell and continues,
+ *  which is the right shape for a single cell — but this scenario is LINEAR, and a mutation that
+ *  destroys a prerequisite (the launch never binds, the restart never publishes, the outage never
+ *  rebinds) leaves every later wait in the phase waiting on something guaranteed never to arrive.
+ *  Each one spends its own budget, the sum climbs past the mutation harness's per-run ceiling, and
+ *  the verdict becomes INCONCLUSIVE on a run whose discriminating cell already went red. Measured
+ *  at the base: entry L5 reddened `an armed seat PUBLISHES its thread's activity { frames: 0 }`
+ *  and then burned 300 s reaching only 26 of 96 marks.
+ *
+ *  So a phase whose prerequisite failed names its dependent cells red HERE, one line each, instead
+ *  of waiting for any of them. The cells count in `fail` — a mutation reached this phase, so a cell
+ *  that reported nothing would be a silent success — the line says WHY it was skipped, and the
+ *  scenario jumps to the next phase that does not depend on what broke. Teardown is outside every
+ *  gate and always runs in full.
+ *
+ *  A prerequisite that HELD prints nothing and falls through, so a passing run's output is
+ *  byte-identical: this helper is observable only when a prerequisite has already failed. */
+function prerequisiteHeld(prereq: boolean, prereqLabel: string, dependents: string[]): boolean {
+  if (prereq) return true;
+  for (const name of dependents) check(`${name} (skipped: ${prereqLabel} did not happen)`, false);
+  return false;
+}
 
 const nats = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(nats, dir);
@@ -223,6 +256,9 @@ let hostE: ReturnType<typeof spawn> | undefined;
 /** The late seat's own log. Printed on failure: when this suite goes red the seat's stderr is the
  *  only place the reason is written, and a suite that hides it makes its own failures unreadable. */
 let errB = "";
+/** The first seat's own log. Read for the same reason as the others: what the bind wrote to the
+ *  WAL is only visible from inside the seat, and the #705 cell below needs its thread id. */
+let errA = "";
 /** Seat C's log (the restarted seat whose successor file was late) and seat D's (the seat whose
  *  event plane crosses two broker outages). Both cases are read from the seat's own stderr, because
  *  the state each one is about is only visible from inside the seat until it recovers. */
@@ -257,6 +293,10 @@ function startHost(
    *  omitted here means the variable is never set and the seat runs the unwidened path. */
   startDelayMs?: number,
   fake?: { threadId?: string; resumeRollout?: boolean; turnSeqStart?: number },
+  /** Widens the emitter's setup on the OTHER side: holds the window between the persist and the
+   *  first pump open, in ms, so a caller can read the log there. Test-only, omitted here means
+   *  the variable is never set and the seat runs with no hold. */
+  postStartHoldMs?: number,
 ): ReturnType<typeof spawn> {
   const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -285,6 +325,7 @@ function startHost(
       ...(boot?.outageGate === undefined ? {} : { FAKE_CODEX_OUTAGE_GATE: boot.outageGate }),
       ...(boot?.openWalGate === undefined ? {} : { FAKE_CODEX_OPEN_WAL_GATE: boot.openWalGate }),
       ...(startDelayMs === undefined ? {} : { COTAL_EVENTS_TEST_START_DELAY_MS: String(startDelayMs) }),
+      ...(postStartHoldMs === undefined ? {} : { COTAL_EVENTS_TEST_POST_START_HOLD_MS: String(postStartHoldMs) }),
       ...(fake?.threadId === undefined ? {} : { FAKE_CODEX_THREAD_ID: fake.threadId }),
       ...(fake?.resumeRollout === true ? { FAKE_CODEX_RESUME_ROLLOUT: "1" } : {}),
       ...(fake?.turnSeqStart === undefined ? {} : { FAKE_CODEX_TURN_SEQ_START: String(fake.turnSeqStart) }),
@@ -356,7 +397,7 @@ async function dm(peer: string, text: string, ep: CotalEndpoint = operator): Pro
 /** The events channel of a peer, derived from its principal exactly as the connector declares it. */
 async function joinEventsOf(peer: string, ep: CotalEndpoint = operator): Promise<string> {
   const seen = await settle(`roster:${peer}`, () => ep.getRoster().some((p) => p.card.name === peer));
-  check(`setup:${peer} joined the mesh`, seen);
+  check(`setup:${peer} joined the mesh`, seen, margin(`roster:${peer}`));
   const id = ep.getRoster().find((p) => p.card.name === peer)?.card.id ?? "";
   if (id === "") return "";
   const dot = id.indexOf(".");
@@ -371,27 +412,41 @@ function rolloutLines(home: string): string[] {
 }
 
 try {
-  for (let i = 0; i < 50; i++) {
-    if (await isReachable(servers)) break;
-    await sleep(200);
-  }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   await operator.start();
 
   // ---- (1) first bind ------------------------------------------------------------------------
   const A = "eventspeer";
   const homeA = join(dir, "a");
-  hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"));
+  hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"), (chunk) => (errA += chunk));
   check("setup:seat A came online", await settle("online:A", () => online.has(A)), margin("online:A"));
   await joinEventsOf(A);
 
   await dm(A, "first turn");
   const published = await settle("A:first RUN_FINISHED", () => evTypes().includes("RUN_FINISHED"));
-  check("an armed seat PUBLISHES its thread's activity", published && frames.length > 0, { frames: frames.length });
-  check("and the run it published opened and closed", evTypes().includes("RUN_STARTED") && evTypes().includes("RUN_FINISHED"), evTypes());
-  check("and the assistant's text reached the wire", evTypes().includes("TEXT_MESSAGE_CONTENT"), evTypes());
-  const threadA = threadsSeen()[0];
-  check("every frame so far carries ONE thread", threadsSeen().length === 1, threadsSeen());
+  check("an armed seat PUBLISHES its thread's activity", published && frames.length > 0, { frames: frames.length, ...margin("A:first RUN_FINISHED") });
+  if (
+    prerequisiteHeld(published, "the first bind", [
+      "and the run it published opened and closed",
+      "and the assistant's text reached the wire",
+      "every frame so far carries ONE thread",
+      "the restarted app-server really is a NEW thread",
+      "the plane KEEPS PUBLISHING after the restart",
+      "and no run the dead thread opened was left open",
+      "the emitter never refused a second adopt",
+      "a mid-turn exit CLOSES the run it left open",
+      "and there was a run to close, so the cell is not vacuous",
+    ])
+  ) {
+    // Phases 2 and 3 both publish through the SAME first binding this cell just judged: a seat that
+    // never bound cannot rebind after a restart and has no run to close at exit, so their waits
+    // would spend ~60 s each on facts a dead plane already settled. The gates inside still guard
+    // their own later waits when the FIRST bind held but a later one did not.
+    check("and the run it published opened and closed", evTypes().includes("RUN_STARTED") && evTypes().includes("RUN_FINISHED"), evTypes());
+    check("and the assistant's text reached the wire", evTypes().includes("TEXT_MESSAGE_CONTENT"), evTypes());
+    const threadA = threadsSeen()[0];
+    check("every frame so far carries ONE thread", threadsSeen().length === 1, threadsSeen());
 
   // ---- (2) restart: the defect that killed the plane ------------------------------------------
   // `DIE now` kills the app-server mid-turn. The host's crash rail brings up a replacement, which
@@ -404,7 +459,7 @@ try {
   const survived = await settle("A:frames from the restarted thread", () => frames.length > framesBefore && threadsSeen().length > 1);
   const threadB = threadsSeen().find((t) => t !== threadA);
   check("the restarted app-server really is a NEW thread", threadB !== undefined && threadB !== threadA, threadsSeen());
-  check("the plane KEEPS PUBLISHING after the restart", survived && frames.some((f) => f.threadId === threadB), { threadB, survived });
+  check("the plane KEEPS PUBLISHING after the restart", survived && frames.some((f) => f.threadId === threadB), { threadB, survived, ...margin("A:frames from the restarted thread") });
   // The drain is not decoration: an observer left holding a run that never ends cannot tell a busy
   // agent from a dead one, and nothing later in this process will ever close it.
   check("and no run the dead thread opened was left open", openRuns().every((r) => !frames.some((f) => f.runId === r && f.threadId === threadA)), {
@@ -430,8 +485,11 @@ try {
   check("a mid-turn exit CLOSES the run it left open", opened && drained && openRuns().length === 0, {
     wasOpen: openAtExit,
     stillOpen: openRuns(),
+    opened: margin("A:a run is open mid-turn"),
+    closed: margin("A:the open run closes at exit"),
   });
   check("and there was a run to close, so the cell is not vacuous", openAtExit.length > 0, { openAtExit });
+  }
 
   // ---- (4) the file that was not there yet ----------------------------------------------------
   // `thread/start` writes nothing to disk; the primer inject is what materializes the rollout. In
@@ -469,7 +527,16 @@ try {
   const bound = await settle("B:binds once the file appears", () => errB.includes("the stream starts here"));
   check("a rollout that appeared AFTER the launch gave up still binds", bound, {
     tail: errB.slice(-200),
+    ...margin("B:binds once the file appears"),
   });
+  if (
+    prerequisiteHeld(bound, "the late-file bind", [
+      "and the seat SAID it was starting from there rather than losing them quietly",
+      "late-file:the wait for the post-bind frames did not expire",
+      "and from the bind onward the seat publishes normally",
+      "late-file:the stream carries the turn that ran AFTER the bind and neither of the two that ran before it",
+    ])
+  ) {
   check("and the seat SAID it was starting from there rather than losing them quietly", errB.includes("not republished"), {
     tail: errB.slice(-200),
   });
@@ -500,6 +567,7 @@ try {
     startsB === 1 && finishesB === 1 && !deltasB.includes("ok:1") && !deltasB.includes("ok:2") && deltasB.includes("ok:3"),
     { starts: startsB, finishes: finishesB, deltas: deltasB },
   );
+  }
 
   // ---- (5) the restart INTO a file that was not there yet -------------------------------------
   // The state neither case 2 nor case 4 reaches, and the one a lens found by building it: a plane
@@ -515,7 +583,8 @@ try {
   check("setup:seat C came online", await settle("online:C", () => online.has(C)), margin("online:C"));
   await joinEventsOf(C);
   await dm(C, "first turn on the thread that is about to die");
-  check("restart-late:the first thread publishes before the crash", await settle("C:publishes before the crash", () => frames.length > cFrom), {
+  const cPublished = await settle("C:publishes before the crash", () => frames.length > cFrom);
+  check("restart-late:the first thread publishes before the crash", cPublished, {
     ...margin("C:publishes before the crash"),
     added: frames.length - cFrom,
   });
@@ -523,8 +592,24 @@ try {
   await dm(C, "DIE now");
   // The successor's file is withheld until its SECOND turn, so the launch bind for the new thread
   // spends its whole budget and gives up. Synchronized on the host saying so, not on a clock.
+  if (
+    prerequisiteHeld(cPublished, "the restart-late seat's first thread publishing", [
+      "restart-late:the successor's rollout was still missing when the bind looked",
+      "restart-late:the dead thread's run was CLOSED when the plane gave up on its successor",
+      "restart-late:and the dead thread's own file leaves a turn unfinished, so that close came from the seat",
+      "restart-late:the seat ANNOUNCED the successor, so the window judged below is closed",
+      "restart-late:and nothing was published onto the DEAD thread while the successor had no file",
+      "restart-late:the successor thread PUBLISHES once its file appears",
+      "restart-late:the successor's second frame arrived, so the cells below read a full list",
+      "restart-late:and the plane is no longer pumping the dead thread",
+      "restart-late:every run the dead thread opened was CLOSED",
+      "restart-late:and the dead thread had opened one, so that cell is not vacuous",
+    ])
+  ) {
+    // Without the first thread's frames there is no dead thread to drain, announce, or move off
+    // of, and every wait below would spend its budget on a successor nothing established.
   const cGaveUp = await settle("C:gives up on the successor file", () => errC.includes("no rollout file yet"), 60_000);
-  check("restart-late:the successor's rollout was still missing when the bind looked", cGaveUp, { tail: errC.slice(-300) });
+  check("restart-late:the successor's rollout was still missing when the bind looked", cGaveUp, { tail: errC.slice(-300), ...margin("C:gives up on the successor file") });
   // GIVING UP ON THE SUCCESSOR SAYS NOTHING ABOUT THE PREDECESSOR, whose process is dead: no record
   // will ever be appended to its file again, and a run left open on the wire is a reader waiting
   // forever for an end that cannot come. So the close belongs HERE, at the give-up, and not only on
@@ -533,11 +618,12 @@ try {
   const deadClosed = await settle("C:the predecessor run closes", () => openRunsIn(frames.slice(cFrom)).length === 0, 20_000);
   check("restart-late:the dead thread's run was CLOSED when the plane gave up on its successor", deadClosed, {
     open: openRunsIn(frames.slice(cFrom)),
+    ...margin("C:the predecessor run closes"),
   });
   // THE CONTROL, from the dead thread's own file: the crash lands mid-turn, so the file itself
   // carries a `task_started` with no `task_complete`. The close on the wire therefore cannot have
   // come from the record stream, which is what makes the cell above about the seat's drain.
-  const deadPath = new RegExp(`publishing thread ${deadThread} from (\\S+)`).exec(errC)?.[1];
+  const deadPath = rolloutPathOf(errC, deadThread);
   const deadDoc =
     deadPath !== undefined && existsSync(deadPath)
       ? readFileSync(deadPath, "utf8")
@@ -566,6 +652,18 @@ try {
     announced: publishedThreads(errC),
     dead: deadThread,
   });
+  if (
+    prerequisiteHeld(boundSuccessor, "the successor's announcement", [
+      "restart-late:and nothing was published onto the DEAD thread while the successor had no file",
+      "restart-late:the successor thread PUBLISHES once its file appears",
+      "restart-late:the successor's second frame arrived, so the cells below read a full list",
+      "restart-late:and the plane is no longer pumping the dead thread",
+      "restart-late:every run the dead thread opened was CLOSED",
+      "restart-late:and the dead thread had opened one, so that cell is not vacuous",
+    ])
+  ) {
+    // A successor that was never announced never publishes, so the two waits below would spend
+    // their budgets on frames from a thread the plane never adopted.
   // COUNTED AGAINST A MEASURED BASELINE rather than asserted as emptiness. "No frame carries the
   // dead thread" is trivially true of a list that never arrived, and this case can only fail
   // usefully if it can tell those two apart.
@@ -579,6 +677,7 @@ try {
   check("restart-late:the successor thread PUBLISHES once its file appears", moved, {
     threads: [...new Set(frames.slice(cFrom).map((f) => f.threadId))],
     tail: errC.slice(-300),
+    ...margin("C:the successor publishes"),
   });
   await dm(C, "successor turn three");
   // NAMED, because the three cells below all read `cFrames`, and a silent expiry leaves them
@@ -599,6 +698,8 @@ try {
   check("restart-late:and the dead thread had opened one, so that cell is not vacuous", cDead.some((f) => f.events.some((e) => e.type === "RUN_STARTED")), {
     frames: cDead.length,
   });
+  }
+  }
 
   // ---- (6) the broker drops after an honest launch ---------------------------------------------
   // Initial mesh absence is intentionally terminal: Codex does not advertise a ready/offline-looking
@@ -662,6 +763,77 @@ try {
     ...margin("D:the launch bind announced its boundary"),
     tail: errD.slice(-400),
   });
+  // The cells of this phase, grouped by the prerequisite each group rests on, so a gate names the
+  // whole set it skips and a name appears once. Every group also depends on every earlier one.
+  const OUTAGE_SETUP_CELLS = [
+    "broker-outage:setup:the owned broker exits before its replacement starts",
+    "broker-outage:setup:the seat's broker drops after launch",
+    "broker-outage:setup:the actual drop lands inside the widened initial emitter-start window",
+    "broker-outage:setup:the outage turn RAN and completed while the mesh was unreachable",
+    "broker-outage:the armed seat LOSES its emitter when the broker drops",
+    "broker-outage:setup:the owned broker restarts",
+    "broker-outage:the seat writes FRESH presence after reconnecting",
+    "broker-outage:the next turn boundary REBINDS the dead plane",
+  ];
+  const REBIND_CELLS = [
+    "broker-outage:and it said so rather than recovering silently",
+    "broker-outage:the seat PUBLISHES again once a turn starts after the rebind",
+    "broker-outage:the recovered stream carries ONE post-rebind turn and none of the failed initial binding",
+  ];
+  const LIVE_OUTAGE_SETUP_CELLS = [
+    "broker-outage-live:setup:the existing WAL has a FOLDED cursor before the outage turn",
+    "broker-outage-live:setup:the turn reaches the boundary after its tool records are durable",
+    "broker-outage-live:setup:the emitter PUBLISHED immediately before the outage",
+    "broker-outage-live:setup:the published start is DURABLY folded before the broker dies",
+    "broker-outage-live:setup:the owned broker exits before its second replacement starts",
+    "broker-outage-live:setup:the broker is unreachable while the turn remains held",
+    "broker-outage-live:setup:the rest of the turn lands while the broker is down",
+    "broker-outage-live:the running emitter becomes terminal on the failed publish",
+    "broker-outage-live:setup:the owned broker restarts again",
+    "broker-outage-live:setup:the seat is stably reconnected before the rebind turn",
+    "broker-outage-live:the next boundary REBINDS the failed running emitter",
+  ];
+  const LIVE_OUTAGE_CELLS = [
+    "broker-outage-live:the existing-cursor recovery is announced",
+    "broker-outage-live:setup:the outage run CLOSES on wire before another turn starts",
+    "broker-outage-live:setup:the native rebind turn is IDLE before the next DM",
+    "broker-outage-live:setup:the replacement holder stays alive through recovery",
+    "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, WITHOUT the tool bytes",
+    "broker-outage-live:setup:the post-rebind turn is IDLE before another outage",
+  ];
+  const OPEN_RUN_SETUP_CELLS = [
+    "broker-outage-open-run:setup:the prior turns leave a FOLDED closed WAL",
+    "broker-outage-open-run:setup:the marked turn is held before its terminal records",
+    "broker-outage-open-run:setup:the run is OPEN on wire before the broker dies",
+    "broker-outage-open-run:setup:the open run is DURABLY folded before the broker dies",
+    "broker-outage-open-run:setup:the owned broker is PAUSED before the failed open-frame publish",
+    "broker-outage-open-run:setup:an OPEN-run record lands only after the broker is paused",
+    "broker-outage-open-run:setup:the failed frame is PENDING with its WAL run still open",
+    "broker-outage-open-run:setup:the paused broker exits before it can accept the pending frame",
+    "broker-outage-open-run:setup:the broker is unreachable while the native terminal remains held",
+    "broker-outage-open-run:setup:the native terminal lands only after the holder is dead",
+    "broker-outage-open-run:setup:the old PROCESS is gone before mapper recovery",
+    "broker-outage-open-run:setup:the owned broker restarts from the unchanged store",
+    "broker-outage-open-run:setup:the replacement PROCESS joins on the same principal",
+    "broker-outage-open-run:setup:the replacement PROCESS adopts the persisted WAL thread",
+  ];
+  const OPEN_RUN_CELLS = [
+    "broker-outage-open-run:the replacement mapper CLOSES the WAL run before the next native start",
+    "broker-outage-open-run:setup:the first replacement turn is IDLE before the next DM",
+    "broker-outage-open-run:the recovered stream carries every turn exactly once",
+  ];
+  if (
+    prerequisiteHeld(launchBound, "the launch bind before the outage", [
+      ...OUTAGE_SETUP_CELLS,
+      ...REBIND_CELLS,
+      ...LIVE_OUTAGE_SETUP_CELLS,
+      ...LIVE_OUTAGE_CELLS,
+      ...OPEN_RUN_SETUP_CELLS,
+      ...OPEN_RUN_CELLS,
+    ])
+  ) {
+    // A launch that never bound has no emitter to lose to the outage, no boundary to rebind it, and
+    // no holder for either later outage of the same principal: nothing below can be measured.
   // The first observer is deliberately stopped before the outage; after restart a FRESH observer
   // must see D publish presence again, rather than this endpoint's retained roster satisfying it.
   await operator2.stop();
@@ -685,7 +857,7 @@ try {
   );
 
   writeFileSync(goD, "go");
-  const rolloutD = /publishing thread \S+ from (\S+)/.exec(errD)?.[1] ?? "";
+  const rolloutD = rolloutPathOf(errD) ?? "";
   const outageDone = await settle(
     "D:the outage turn is complete on disk",
     () => rolloutD !== "" && existsSync(rolloutD) && readFileSync(rolloutD, "utf8").includes("task_complete"),
@@ -696,7 +868,7 @@ try {
     path: rolloutD,
   });
   const emitterDied = await settle("D:the emitter dies during the outage", () => errD.includes("AG-UI emitter stopped"), 60_000);
-  check("broker-outage:the armed seat LOSES its emitter when the broker drops", emitterDied, { tail: errD.slice(-400) });
+  check("broker-outage:the armed seat LOSES its emitter when the broker drops", emitterDied, { tail: errD.slice(-400), ...margin("D:the emitter dies during the outage") });
 
   const firstRestartAt = Date.now();
   const broker2Restarted = await startBroker2();
@@ -723,6 +895,18 @@ try {
     now: publishedThreads(errD).length,
     tail: errD.slice(-400),
   });
+  if (
+    prerequisiteHeld(rebound, "the post-outage rebind", [
+      ...REBIND_CELLS,
+      ...LIVE_OUTAGE_SETUP_CELLS,
+      ...LIVE_OUTAGE_CELLS,
+      ...OPEN_RUN_SETUP_CELLS,
+      ...OPEN_RUN_CELLS,
+    ])
+  ) {
+    // A plane that never rebound has nothing after the rebind to publish, and every later wait in
+    // this phase reads a stream that stays empty: the two later outages start from a holder that
+    // has already published, which this rebind is what produces.
   check("broker-outage:and it said so rather than recovering silently", rebindsAnnounced(errD) > rebindsBefore, {
     before: rebindsBefore,
     now: rebindsAnnounced(errD),
@@ -915,6 +1099,11 @@ try {
     now: publishedThreads(errD).length,
     tail: errD.slice(-400),
   });
+  if (
+    prerequisiteHeld(liveRebound, "the existing-cursor rebind", [...LIVE_OUTAGE_CELLS, ...OPEN_RUN_SETUP_CELLS, ...OPEN_RUN_CELLS])
+  ) {
+    // A holder that never rebinds its existing cursor never flushes the outage backlog, and every
+    // wait below (recovery closure, idle, the complete backlog) reads a wire that stays empty.
   check("broker-outage-live:the existing-cursor recovery is announced", rebindsAnnounced(errD) > liveRebindsBefore, {
     before: liveRebindsBefore,
     now: rebindsAnnounced(errD),
@@ -1218,6 +1407,11 @@ try {
     now: publishedThreads(errD).length,
     tail: errD.slice(-500),
   });
+  if (
+    prerequisiteHeld(replacementBound, "the replacement process adopting the persisted thread", OPEN_RUN_CELLS)
+  ) {
+    // A replacement that never adopted the persisted thread has no mapper to recover the WAL's open
+    // run and no plane to publish the backlog, so every wait below would read a dead wire.
 
   const openFrames = (): AguiFramePart[] => frames2.slice(openFramesFrom);
   const openRebindSentAt = Date.now();
@@ -1297,6 +1491,14 @@ try {
       deltas: openDeltas,
     },
   );
+  }
+  }
+  }
+  } else {
+    // The held prompt is released so the seat is not left blocked on a mark nobody will write;
+    // teardown kills it either way, and a skipped phase must not become an unrelated hang.
+    writeFileSync(goD, "go");
+  }
 
   // ---- (5) the bind window: the thing the boundary rule is actually for -----------------------
   // THE ONLY ARM THAT GRADES THE PRIMARY FIX, and the reason it needs a widened window rather than
@@ -1318,6 +1520,9 @@ try {
   // than trusted: if the turn does not complete within the window, the SETUP cell reds and says so
   // instead of the graded cell passing for the wrong reason.
   const WINDOW_MS = 10_000;
+  // Holds the window between the persist and the first pump open on the OTHER side of the seam
+  // (#705), so this arm's WAL read below cannot be beaten by the pump's own first read.
+  const HOLD_MS = 10_000;
   // THE SLOP IS NOT PADDING, it is the part of the window this suite cannot see. The delay starts
   // when the holder adopts, which is before the announcement, and the fixture cannot act until it
   // has OBSERVED that announcement, one 100ms poll and one pipe hop later. So elapsed measured from
@@ -1338,6 +1543,8 @@ try {
     servers,
     { prompt: "TOOLREC the turn that runs inside the emitter's own setup window", goMark: goE },
     WINDOW_MS,
+    undefined,
+    HOLD_MS,
   );
   check("window:setup:seat E came online", await settle("online:E", () => online.has(E), 60_000), margin("online:E"));
   await joinEventsOf(E);
@@ -1349,9 +1556,34 @@ try {
     ...margin("E:the bind announced its boundary"),
     tail: errE.slice(-400),
   });
-  const rolloutE = /publishing thread \S+ from (\S+)/.exec(errE)?.[1] ?? "";
+  if (
+    prerequisiteHeld(boundE, "the window seat's bind", [
+      "window:setup:the turn and the hold BOTH fit inside the widened window, so the cells here judge records the emitter had not read",
+      "window:setup:the seat published NOTHING for this thread across a held interval after the turn landed, so the window was OPEN rather than sampled at a lucky instant",
+      "a turn written INSIDE the emitter's setup window is PUBLISHED rather than left behind the cursor",
+    ])
+  ) {
+    // Without the bind's announcement there is no thread to observe and no window that opened, so
+    // the hold and the arrival wait below would measure a seat that never started.
+  const rolloutE = rolloutPathOf(errE) ?? "";
   const threadE = publishedThreads(errE)[0] ?? "";
   const framesOfThread = (t: string): AguiFramePart[] => (t === "" ? [] : frames.filter((f) => f.threadId === t));
+  // #705: the same snapshot-before-anything-runs the removed seat-A cell took, moved here where
+  // the hold (HOLD_MS) keeps the window between the persist and the first pump open long enough
+  // for this arm's own settle to observe it. `rolloutE` already holds the rollout path by now.
+  const expectedBindCursorE = rolloutE === "" ? undefined : (await new JsonlFileSource(rolloutE).read(undefined)).cursor;
+  const threadIdE = rolloutE.match(/rollout-.*?-([0-9a-f-]{36})\.jsonl$/)?.[1] ?? "";
+  const principalE = operator.getRoster().find((p) => p.card.name === E)?.card.id ?? "";
+  const walPath = threadIdE === "" || principalE === ""
+    ? ""
+    : eventWalLocation({ workspaceRoot: homeE, space, principal: principalE, threadId: threadIdE }).walPath;
+  const readWalE = (): WalDoc | undefined => {
+    try {
+      return walPath === "" || !existsSync(walPath) ? undefined : (JSON.parse(readFileSync(walPath, "utf8")) as WalDoc);
+    } catch {
+      return undefined;
+    }
+  };
   // RELEASED WHETHER THAT WAIT SUCCEEDED OR EXPIRED, for the reason seat D releases its own: the
   // fake blocks on this file unbounded by design, so a failed cell above stays a failed cell
   // instead of becoming a suite that hangs somewhere else.
@@ -1399,6 +1631,17 @@ try {
     windowMs: WINDOW_MS,
     spentMs: spentInWindow,
   });
+  // The go file was released about two seconds ago, so the turn is on disk in front of the first
+  // pump. The persist (fixed code) lands when the start widening ends at WINDOW_MS, which is
+  // inside HOLD_MS, so what this settle captures is the persist's write. On a mutant that never
+  // persists it captures the first pump's write of the file's end instead, which the bind cell
+  // below then rejects.
+  let walE: WalDoc | undefined;
+  const walEReady = await settle(
+    "E:the start boundary lands on disk after the launch bind",
+    () => (walE = readWalE())?.frontier.sourceCursor !== undefined,
+    60_000,
+  );
   const framesE = (): AguiFramePart[] => framesOfThread(threadE);
   const arrivedE = await settle(
     "E:the window turn reaches the wire",
@@ -1432,6 +1675,8 @@ try {
       tail: errE.slice(-400),
     },
   );
+  check("bind:the start boundary is on disk before the first pump (#705)", boundE && walEReady && walE?.frontier.sourceCursor !== undefined && walE?.frontier.sourceCursor === expectedBindCursorE, { ...margin("E:the start boundary lands on disk after the launch bind"), sourceCursor: walE?.frontier.sourceCursor, expectedBindCursorE, walPath });
+  }
 
   completed = true;
 } finally {
@@ -1491,7 +1736,7 @@ check(
   seatPids.length >= 5 && aliveBeforeTeardown.length === seatPids.length - stoppedOnPurpose.size,
   { started: seatPids.length, stoppedOnPurpose: stoppedOnPurpose.size, alive: aliveBeforeTeardown.length },
 );
-check("teardown:and not one of their process groups survived it", groupsGoneDuringTeardown, { still: seatPids.filter(alive) });
+check("teardown:and not one of their process groups survived it", groupsGoneDuringTeardown, { still: seatPids.filter(alive), ...margin("teardown:process groups gone") });
 check("teardown:the owned brokers exited before the store was touched", brokersExitedBeforeRemoval, {
   primary: { exitCode: nats.exitCode, signalCode: nats.signalCode },
   secondary: nats2 === undefined ? undefined : { exitCode: nats2.exitCode, signalCode: nats2.signalCode },

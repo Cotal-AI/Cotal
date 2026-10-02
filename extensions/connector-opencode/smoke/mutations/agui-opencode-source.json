@@ -65,6 +65,35 @@
       "find": "    if (this.onVanished && this.reportedVanished !== cursor",
       "replace": "    if (this.onVanished",
       "expectRed": "removal:and reported ONCE, not once per read, so it cannot bury the next one"
+    },
+    {
+      "name": "S6 BoundStartSource drops the substitution and never seeds a virgin read with the captured boundary",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "find": "    return this.inner.read(cursor ?? this.start);",
+      "replace": "    return this.inner.read(cursor);",
+      "expectRed": "bound:a-part-appended-in-the-adopt-to-first-read-window-is-published",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:agui-opencode-source",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "note": "Also reds bound:a-session-with-no-prior-history-still-adopts-at-the-empty-boundary-and-reads-what-follows, which takes the same undefined-cursor path."
+    },
+    {
+      "name": "S7 BoundStartSource substitutes the captured boundary even when the caller already carries a real cursor",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "find": "    return this.inner.read(cursor ?? this.start);",
+      "replace": "    return this.inner.read(this.start);",
+      "expectRed": "bound:a-cursor-already-on-the-log-resumes-from-it-and-ignores-the-boundary",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:agui-opencode-source",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "S8 BoundStartSource recomputes the boundary from the session's current end at the first real read instead of using the one captured before the mesh wait",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "find": "  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    return this.inner.read(cursor ?? this.start);\n  }",
+      "replace": "  async read(cursor: string | undefined): Promise<SourceRead<T>> {\n    if (cursor !== undefined) return this.inner.read(cursor);\n    const now = await this.inner.read(undefined);\n    return this.inner.read(now.cursor);\n  }",
+      "expectRed": "bound:a-part-appended-in-the-adopt-to-first-read-window-is-published",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:agui-opencode-source",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "note": "Captures late instead of early: the boundary is re-read against the session's state AFTER the simulated mesh-wait window, so the appended part reads as already-consumed, the same silent drop the issue describes, reached from a different line than S6. Also reds bound:a-session-with-no-prior-history-still-adopts-at-the-empty-boundary-and-reads-what-follows for the same reason as S6."
     }
   ]
 }

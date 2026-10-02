@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/orca",
   "description": "Cotal Orca integration: an Orca Runtime provider for spawning agents into the right Orca worktree.",
-  "version": "0.48.2",
+  "version": "0.58.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -19,7 +19,7 @@
   },
   "scripts": {
     "test": "tsx package.smoke.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build"
   },

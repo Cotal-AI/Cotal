@@ -2,7 +2,7 @@
   "suite": [
     "implementations/runtime/smoke/mesh-spawn.smoke.ts"
   ],
-  "guard": "the mesh handler's durable spawn recovers by derivation: the envelope id is pinned to the step's request id (the goalId), the acceptance is bound before the terminal wait, a resume re-attaches without re-invoking, refusals and terminals surface as the catchable spawn failure, the terminal await observes cancellation, and a cancelled loser's seat is released by the discharge",
+  "guard": "the mesh handler's durable spawn recovers by derivation: the envelope id is pinned to the step's request id (the goalId), the acceptance is bound before the terminal wait, a resume re-attaches without re-invoking, refusals and terminals surface as the catchable spawn failure, the terminal await observes cancellation, a cancelled loser's seat is released by the discharge, and a manager call refused before any effect is re-issued rather than raised as the effect's failure",
   "command": "pnpm smoke:runtime-mesh-spawn",
   "completionMarker": "mesh-spawn.smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/mesh-spawn.json",
@@ -19,6 +19,15 @@
   ],
   "mutations": [
     {
+      "name": "workflow spawn drops explicit cwd forwarding",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),",
+      "replace": "    ...(false ? { cwd: req.cwd } : {}),",
+      "expectRed": "the child process cwd is the prepared clone, distinct from the manager root",
+      "cell": "the child process cwd is the prepared clone, distinct from the manager root",
+      "note": "The request still parses and the fake serving manager really launches a child. Without forwarding it applies its legacy manager-root fallback, so the physical cwd and repository-head assertions fail."
+    },
+    {
       "name": "core mints a nonce instead of honoring the pinned envelope id",
       "file": "packages/core/src/endpoint-verbs.ts",
       "find": "  const requestId = op.id !== undefined ? assertIdToken(op.id, \"pinned envelope id\") : nonce();",
@@ -32,8 +41,8 @@
     {
       "name": "a resume re-invokes instead of re-attaching to the recorded acceptance",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (ext === undefined) {\n        let reply: EpAttributedReply | undefined;\n        try {\n          const service = await this.manager();",
-      "replace": "      if (true) {\n        let reply: EpAttributedReply | undefined;\n        try {\n          const service = await this.manager();",
+      "find": "      if (ext === undefined) {",
+      "replace": "      if (true) {",
       "expectRed": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
       "cell": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
       "note": "Measured 2026-09-03: KILLED. mesh-spawn.smoke: 32 passed, 1 failed Named cell red: the resume sent NOTHING to the endpoint: the recorded acceptance is the submission"
@@ -45,7 +54,7 @@
       "replace": "          ...(req.permits !== undefined ? { permits: req.permits } : {}),\n          spawnedAt: this.now(),\n        };",
       "expectRed": "the acceptance floor is bound as the entry's external state before the terminal wait",
       "cell": "the acceptance floor is bound as the entry's external state before the terminal wait",
-      "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor — the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 (the bind now rides the captured ext the roster registration reads); re-measured: exactly one named red, 31 passed, 1 failed."
+      "note": "The bind dropped: the live path still completes (the goalId re-derives), but the journal carries no landed-submission marker and no identity floor \u2014 the resume and the uncertain-discharge paths lose their durable input. Measured 2026-09-02: exactly one red, 31 passed. Re-anchored 2026-09-02 (the bind now rides the captured ext the roster registration reads); re-measured: exactly one named red, 31 passed, 1 failed."
     },
     {
       "name": "the discharge skips spawn entries",
@@ -54,7 +63,7 @@
       "replace": "      if (e.kind === \"spawn\") {\n        continue;\n      }",
       "expectRed": "the discharge despawned exactly the allocated incarnation",
       "cell": "the discharge despawned exactly the allocated incarnation",
-      "note": "Design 8.6.4 removed: a cancelled loser's seat lives on with nobody addressing it. Measured 2026-09-02: five reds — both handler-level discharge blocks, the floor-less and uncertain variants, and the driver-integration cell 'and the driver's completion sweep despawned its seat'; 27 passed, 5 failed."
+      "note": "Design 8.6.4 removed: a cancelled loser's seat lives on with nobody addressing it. Measured 2026-09-02: five reds \u2014 both handler-level discharge blocks, the floor-less and uncertain variants, and the driver-integration cell 'and the driver's completion sweep despawned its seat'; 27 passed, 5 failed."
     },
     {
       "name": "a refuse-at-accept loses its catchable class",
@@ -81,7 +90,7 @@
       "replace": "function spawnHandleOf(req: SpawnRequest, ext: Readonly<Record<string, unknown>>, fact: GoalResultFact, endpoint: string): AgentHandleValue {\n  if (false) {",
       "expectRed": "the failure is the catchable L4002",
       "cell": "the failure is the catchable L4002",
-      "note": "The state gate inverted: a failed or uncertain terminal is mined for a handle it does not carry, and the garbled-terminal guard turns it into an L4000 fault instead of the effect's own L4002. Measured 2026-09-02: two reds — block 5's failed terminal and block 8b's uncertain one; 30 passed."
+      "note": "The state gate inverted: a failed or uncertain terminal is mined for a handle it does not carry, and the garbled-terminal guard turns it into an L4000 fault instead of the effect's own L4002. Measured 2026-09-02: two reds \u2014 block 5's failed terminal and block 8b's uncertain one; 30 passed."
     },
     {
       "name": "the terminal await stops observing cancellation",
@@ -90,7 +99,7 @@
       "replace": "    const actx = await this.actionCtx();\n    for (;;) {\n      void signal;\n      const fact = await readGoalResult(actx, ref);",
       "expectRed": "the await ends Cancelled within one poll",
       "cell": "the await ends Cancelled within one poll",
-      "note": "The per-poll observation removed: a race-lost branch keeps parking on its terminal and then RESOLVES with a handle the run must never see (section 7.6 — a cancelled branch performs no new work). Measured 2026-09-02: exactly one red, the cancelled await resolving instead of throwing; 31 passed."
+      "note": "The per-poll observation removed: a race-lost branch keeps parking on its terminal and then RESOLVES with a handle the run must never see (section 7.6 \u2014 a cancelled branch performs no new work). Measured 2026-09-02: exactly one red, the cancelled await resolving instead of throwing; 31 passed."
     },
     {
       "name": "an adopted seat is never handed to the migrated program's spawn",
@@ -145,6 +154,84 @@
       "expectRed": "a cancelled adopted spawn's discharge despawns the seat it holds, by the bound goal",
       "cell": "a cancelled adopted spawn's discharge despawns the seat it holds, by the bound goal",
       "note": "An adopted spawn's request id names no goal (nothing was submitted under it), so a discharge reading only the request id finds no goal and returns without despawning; the seat leaks with no entry left to release it."
+    },
+    {
+      "name": "placement grant set loses the resolve-cwd operation",
+      "file": "packages/core/src/run-driver-grants.ts",
+      "find": "export const PLACEMENT_COMMANDS: readonly string[] = Object.freeze([\"describe\", \"resolve-cwd\", \"spawn\"]);",
+      "replace": "export const PLACEMENT_COMMANDS: readonly string[] = Object.freeze([\"describe\", \"spawn\"]);",
+      "expectRed": "an explicit placement target mints the instance rail for exactly describe, resolve-cwd and spawn",
+      "cell": "an explicit placement target mints the instance rail for exactly describe, resolve-cwd and spawn",
+      "note": "REMOVES A REQUIRED GRANT (design: 'mutants that remove a required grant'). The credential still mints and every other row is identical, so only the cell that counts the pinned operations notices.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "placement reach broadened back to the class anycast rail",
+      "file": "packages/core/src/run-driver-grants.ts",
+      "find": "          endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, routes: [], instanceId: args.placement!.instanceId,",
+      "replace": "          endpoint: BASELINE_LIFECYCLE_ENDPOINT, command, routes: [\"one\"], instanceId: args.placement!.instanceId,",
+      "expectRed": "placement reach adds no anycast fallback, no wildcard and no second instance",
+      "cell": "placement reach adds no anycast fallback, no wildcard and no second instance",
+      "note": "BROADENS REACH (design: 'or broaden reach'). The instance rows are still minted and the positive cell still passes; the widening is a extra class `one` row that would restore the anycast fallback the design forbids.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "cwd alias normalization returns the caller's raw path",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  return realpathSync(cwd);",
+      "replace": "  return cwd;",
+      "expectRed": "a symlinked clone and its realpath normalize to one identity, canonical form is the realpath",
+      "cell": "a symlinked clone and its realpath normalize to one identity, canonical form is the realpath",
+      "note": "Proof item 5: without resolution the symlink and its realpath are two identities, so two concurrent reservations on one clone would both be granted."
+    },
+    {
+      "name": "the affinity gate is disarmed: a cwd with no target rides class anycast",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (req.cwd !== undefined && req.placement === undefined)\n      throw new EffectError(\"L4000\", \"spawn\",",
+      "replace": "    if (false && req.cwd !== undefined && req.placement === undefined)\n      throw new EffectError(\"L4000\", \"spawn\",",
+      "expectRed": "a cwd with no placement target refuses before any describe, allocation or child, with no anycast fallback",
+      "cell": "a cwd with no placement target refuses before any describe, allocation or child, with no anycast fallback",
+      "note": "#1616 item 2. The gate removed: the untargeted request falls through to the class `one` queue, the suite manager accepts it, allocates and launches a child. The cell's refusal half and its no-allocation half both fail."
+    },
+    {
+      "name": "pinned dispatch falls back to the class handle",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (instanceId !== undefined)\n      return resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller, { instanceId });",
+      "replace": "    if (false && instanceId !== undefined)\n      return resolveService(this.nc, this.binding.space, this.binding.endpoint, this.binding.caller, { instanceId });",
+      "expectRed": "a placed spawn pinned to a wrong instance refuses and never falls back to the class queue",
+      "cell": "a placed spawn pinned to a wrong instance refuses and never falls back to the class queue",
+      "note": "#1616 item 3, dispatch half. With the inst-rail resolve skipped, every placed spawn resolves through the class `one` queue the real manager still answers, so a target naming an instance that does not exist SUCCEEDS and launches a child instead of refusing."
+    },
+    {
+      "name": "the placement target is dropped from the step-identity PROJECTION",
+      "file": "packages/lang/src/perform.ts",
+      "find": "          ...(req.placement !== undefined\n            ? { placement: { endpoint: req.placement.endpoint, instanceId: req.placement.instanceId } }\n            : {}),\n",
+      "replace": "",
+      "expectRed": "a replay whose ONLY edit is the placement instance id diverges at the recorded spawn step, with two different input hashes and nothing dispatched to the new target",
+      "cell": "a replay whose ONLY edit is the placement instance id diverges at the recorded spawn step, with two different input hashes and nothing dispatched to the new target",
+      "note": "#1616 item 3, identity half, ENACTED RATHER THAN DESCRIBED. This replaces an entry that removed the string \"placement\" from `hashedOptions` in primitives.ts: that is METADATA, and the cell it named (`PRIMITIVES.spawn.hashedOptions.includes(\"placement\")`) reads the same metadata back, so the pair graded one array against itself. Measured at this head: deleting THIS projection leaves that metadata cell evaluating to `true` while a real retargeted replay stops diverging, so the mutant could pass while the behaviour it claimed to grade was broken. The anchor is now the projection the runtime actually hashes, and the cell is the LIVE replay in 3e row 5, which drives a run onto one manager instance and re-drives the same run id from a source whose only edit is the instance id. With the projection gone the two input hashes match, the recorded entry replays, and no divergence is raised. `mesh-spawn.smoke.ts` imports `@cotal-ai/lang` as a PACKAGE (dist), so the lang build in `command` is what puts the mutant in front of the suite and the `afterRestore` rebuild is what keeps a mutant-built dist out of the tree.",
+      "command": "pnpm --filter @cotal-ai/lang build && pnpm smoke:runtime-mesh-spawn",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
+    },
+    {
+      "name": "the not-executed bind refusal is returned to the effect instead of re-issued",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (reply.reply.ok !== false || !replyRefusedBeforeEffect(reply.reply.error)) return reply;",
+      "replace": "      return reply;",
+      "expectRed": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
+      "cell": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
+      "note": "#1638. The repair removed: every manager call hands the responder's pre-effect refusal back to the effect, so a spawn the class queue gave to another member raises L4000 and ends the run. The forced arm binds an incarnation nothing serves, so the refusal is guaranteed and the red is deterministic rather than a queue draw."
+    },
+    {
+      "name": "the re-issue keeps the stale class handle instead of re-describing",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return reply;\n      this.managerService = undefined;",
+      "replace": "      if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return reply;",
+      "expectRed": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
+      "cell": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
+      "note": "#1638, the other half. The call is re-issued but the handle carrying the refused bind is kept, so every attempt declares the same incarnation and meets the same refusal. It reds because the forced arm binds an incarnation nothing serves; a repair that re-issues without re-describing is indistinguishable from a working one whenever the queue happens to cooperate."
     }
   ]
 }

@@ -60,17 +60,18 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
+  isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, registry, type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+const repoRoot = join(import.meta.dirname, "..", "..", "..");
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -205,6 +206,34 @@ try {
     bogus.status !== 0 && /not a valid lifecycle token/i.test(strip(bogus.out)),
     { status: bogus.status, tail: strip(bogus.out).slice(-300) });
 
+  const bogusDescribe = await cotal(["describe", "manager", "--on", "4ik6rb0e", "--space", space], root1);
+  mustHaveRun(bogusDescribe, "`describe manager --on <malformed>`");
+  check("a malformed instance id on describe is REFUSED, not silently widened (#554)",
+    bogusDescribe.status !== 0 && /not a valid lifecycle token/i.test(strip(bogusDescribe.out)),
+    { status: bogusDescribe.status, tail: strip(bogusDescribe.out).slice(-300) });
+
+  // A roster PRINCIPAL id (`local.U…`) is the mismatch #423 reports: an operator pins by the id
+  // they can see on `endpoints`/multi-manager `ps`, gets the mint's bare grammar error, and neither
+  // it nor the flag's help names the identifier `--on` wants or where `cotal ps` prints it.
+  const principalId = "local.UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const onInstanceRefusalSites: ReadonlyArray<{ what: string; argv: string[] }> = [
+    { what: "ps --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)", argv: ["ps", "--on", principalId, "--space", space] },
+    { what: "spawn --detach --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#423)", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", principalId, "--space", space] },
+    { what: "describe manager --on <roster principal id> is refused with the identifier --on wants and where ps prints it (#554)", argv: ["describe", "manager", "--on", principalId, "--space", space] },
+  ];
+  for (const site of onInstanceRefusalSites) {
+    const r = await cotal(site.argv, root1);
+    mustHaveRun(r, `\`${site.what}\``);
+    const out = strip(r.out);
+    check(site.what,
+      r.status !== 0
+        && /--on wants the manager INSTANCE id as `cotal ps` prints it/.test(out)
+        && /not the roster's principal id/.test(out)
+        && /is a principal id/.test(out)
+        && !/no describe reply|did not answer/i.test(out),
+      { status: r.status, tail: out.slice(-400) });
+  }
+
   // ---- 3. THE CLAIM: `--on` REACHES THE MINT --------------------------------------------------
   // THE cell. Nothing here constructs a capability or mints anything; the binary does it all. In
   // the shipped-broken build this is precisely what returned "no describe reply within 10000ms",
@@ -223,11 +252,23 @@ try {
     const out = strip(r.out);
     // Say WHICH failure it was: a describe timeout here is the exact shipped defect and deserves
     // its name, not a bare "exit 1".
-    const timedOutOnDescribe = /no describe reply from manager within/i.test(out);
+    const timedOutOnDescribe = /no describe reply from manager( instance \S+)? within/i.test(out);
     check(`ps --on ${label} SUCCEEDS`, r.status === 0,
       timedOutOnDescribe
         ? { defect: "describe timed out on the pinned rail; the mint did not receive the instance (this is the 0.17.0 regression)", tail: out.slice(-300) }
         : { status: r.status, tail: out.slice(-300) });
+  }
+
+  // describe --on <iid> SUCCEEDS and its attribution line names <iid>: the pinned instance
+  // answered, not the queue winner (#554). Exit 0 alone is satisfied by the class queue; the
+  // attribution-line equality is the claim.
+  for (const [label, iid] of [["IID1", IID1], ["IID2", IID2]] as const) {
+    const r = await cotal(["describe", "manager", "--on", iid, "--space", space], root1);
+    mustHaveRun(r, `\`describe manager --on ${label}\``);
+    const out = strip(r.out);
+    check(`describe --on ${label} SUCCEEDS and its attribution line names ${label}: the pinned instance answered, not the queue winner (#554)`,
+      r.status === 0 && out.includes(`instance ${iid} ·`),
+      { status: r.status, tail: out.slice(-300) });
   }
 
   // ---- 4. THE PIN ROUTES: IT DOES NOT FALL THROUGH TO THE CLASS QUEUE -------------------------
@@ -265,7 +306,7 @@ try {
   check("it FAILS rather than being answered by whichever manager won the class queue",
     ghost.status !== 0, { status: ghost.status, tail: ghostOut.slice(-300) });
   check("...and fails as an unanswered pinned describe (the no-fallbacks shape, not some other error)",
-    /no describe reply from manager within/i.test(ghostOut), ghostOut.slice(-300));
+    /no describe reply from manager( instance \S+)? within/i.test(ghostOut), ghostOut.slice(-300));
   // WHAT THE HEADLINE SAYS. Two live managers answered `ps` seconds earlier; the operator typed an
   // instance that is not there. The CLI wrapper used to prefix EVERY ep-rail failure with "no
   // manager reachable", so a typo in `--on` read as an empty mesh and sent the operator to the
@@ -296,7 +337,7 @@ try {
   // four sites. That it then reaches the MINT is cell 3, once, on the shared tail. Together those
   // cover the whole chain; neither covers it alone.
   console.log("\n5. every OTHER `--on` site forwards it too (spawn/stop/attach have their own)");
-  const pinnedDescribeDeadline = /no describe reply from manager within/i;
+  const pinnedDescribeDeadline = /no describe reply from manager( instance \S+)? within/i;
   const sites: ReadonlyArray<{ what: string; argv: string[] }> = [
     // --on is a `--detach` flag on spawn (foreground runs in this process, not on a manager). The
     // persona ref is deliberately nonexistent so that a dropped pin cannot start anything: the
@@ -304,6 +345,7 @@ try {
     { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space] },
     { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
     { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
+    { what: "describe", argv: ["describe", "manager", "--on", absent, "--space", space] },
   ];
   for (const site of sites) {
     const r = await cotal(site.argv, root1);
@@ -330,6 +372,7 @@ try {
     { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", "", "--space", space] },
     { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", "", "--space", space] },
     { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", "", "--space", space] },
+    { what: "describe", argv: ["describe", "manager", "--on", "", "--space", space] },
   ];
   for (const site of emptySites) {
     const r = await cotal(site.argv, root1);
@@ -340,10 +383,59 @@ try {
       { status: r.status, tail: out.slice(-300) });
   }
 
+  // One compiled manager build serves a different ps output contract. Copying the compiled build
+  // into the disposable root keeps this variant isolated from the normal manager and CLI imports.
+  console.log("\n7. a mixed-contract class census is incomplete, not a successful seat list");
+  const variant = join(dir, "variant");
+  writeFileSync(join(dir, "package.json"), '{"type":"module"}');
+  cpSync(join(repoRoot, "implementations/manager/dist"), variant, { recursive: true });
+  symlinkSync(join(repoRoot, "implementations/manager/node_modules"), join(dir, "node_modules"), "dir");
+  const contractFile = join(variant, "manager-service-contract.js");
+  const source = readFileSync(contractFile, "utf8");
+  const oldSchema = 'const PS_OUTPUT_SCHEMA = { type: "array", items: AGENT_ROW_SCHEMA };';
+  if (source.split(oldSchema).length !== 2) throw new Error("fixture requires the compiled ps schema in manager/dist; build before running");
+  writeFileSync(contractFile, source.replace(oldSchema,
+    'const PS_OUTPUT_SCHEMA = { type: "array", items: { ...AGENT_ROW_SCHEMA, properties: { ...AGENT_ROW_SCHEMA.properties, fixtureVariant: { type: "string" } } } };'));
+  const { Manager: VariantManager } = await import(join(variant, "manager.js"));
+  const stub = join(import.meta.dirname, "e2e-stub.mjs");
+  const envFor = (o: LaunchOpts): Record<string, string> => ({
+    COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? ""), COTAL_CREDS: String(o.creds),
+    COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
+    ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
+  });
+  const connector: Connector = { kind: "connector", name: "ps-census-stub", requires: ["node"],
+    buildLaunch: (o): LaunchSpec => ({ command: "node", args: [stub], env: envFor(o) }) };
+  registry.register(connector);
+  await m2.stop({ withAgents: true });
+  const root3 = mkRoot("ws3");
+  recordMesh({ space, server: SERVERS, root: root3, mode: "auth", ts: new Date().toISOString() });
+  for (const [root, name] of [[root1, "census-a"], [root3, "census-b"]] as const)
+    writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\n---\n`);
+  const mixedManager = new VariantManager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root3 });
+  m2 = mixedManager;
+  await mixedManager.start();
+  const seatA = await m1.startAgent({ name: "census-a", agent: "ps-census-stub", cwd: repoRoot, events: false });
+  const seatB = await mixedManager.startAgent({ name: "census-b", agent: "ps-census-stub", cwd: repoRoot, events: false });
+  check("both real managers started a seat", seatA.ok === true && seatB.ok === true, { seatA, seatB });
+  const observed = new Set<string>();
+  for (let attempt = 0; attempt < 20 && observed.size < 2; attempt++) {
+    const result = await cotal(["ps", "--space", space], root1);
+    mustHaveRun(result, "mixed-contract ps");
+    const out = strip(result.out);
+    const listed = out.includes("census-a") ? "census-a" : out.includes("census-b") ? "census-b" : "none";
+    observed.add(listed);
+    check(`partial census attempt ${attempt + 1} refuses success, keeps one row, and reports the two digest pairs once`,
+      result.status !== 0 && listed !== "none" && !out.includes(listed === "census-a" ? "census-b" : "census-a") &&
+      /Incomplete manager census/.test(out) && /Managers in this space serve different ps contracts/.test(out) &&
+      !/SPEC 13\.7/.test(out) && (out.match(/requested input\/output sha256:[a-f0-9]{64} \/ sha256:[a-f0-9]{64}; served input\/output sha256:[a-f0-9]{64} \/ sha256:[a-f0-9]{64}/g) ?? []).length === 1,
+      { status: result.status, out });
+  }
+  check("both describe orderings were observed", observed.has("census-a") && observed.has("census-b"), [...observed]);
+
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {
-  await m1?.stop().catch(() => {});
-  await m2?.stop().catch(() => {});
+  await m1?.stop({ withAgents: true }).catch(() => {});
+  await m2?.stop({ withAgents: true }).catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

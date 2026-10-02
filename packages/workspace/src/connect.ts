@@ -3,6 +3,7 @@ import {
   DEFAULT_SERVER,
   DEFAULT_SPACE,
   DEV_OWNER,
+  assertLifecycleToken,
   instancePinnedInstrumentCapabilities,
   isReachable,
   mintCreds,
@@ -25,7 +26,7 @@ import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { findMesh, getCurrent, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
-import { preflightTarget, pruneStaleMeshes } from "./preflight.js";
+import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError } from "./render.js";
 
 /**
@@ -99,6 +100,12 @@ export interface Connection {
   root?: string;
   /** How the target was resolved (registry / current / flag-space / …) — undefined for raw. */
   source?: MeshTarget["source"];
+  /** The registered mesh contract (`auth` / `open` / `user`). Present on a registry-resolved
+   *  connection and absent on a raw off-registry connect (`--creds`, or `--server` plus an
+   *  unregistered `--space`). Callers that branch on open vs static MUST read this, not the
+   *  absence of `auth`: an authenticated registry entry with a missing seed is still `auth`. */
+  mode?: MeshTarget["mode"];
+  policy?: MeshTarget["policy"];
   /** The connection's v0.4 caller triple (SPEC §13.2), present when this connection can ride the
    *  ep rails: a minted operator INSTRUMENT (`control-caller-*` / `deployer`, static trust
    *  material - the mint pins a fresh lifecycle uid) or a USER-mode bearer (the callout mints the
@@ -144,6 +151,7 @@ export interface UserViewAuth {
   /** The bearer's ledger lifecycle claim - with (owner, actor) the v0.4 caller triple the
    *  callout-minted instrument-view rows pin (1c.2c). */
   lifecycleUid: string;
+  managerInstanceId?: string;
   source: () => Promise<string>;
 }
 
@@ -153,7 +161,7 @@ export interface UserViewAuth {
  *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
  *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
  *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
-export async function userViewAuth(conn: Connection, view: string): Promise<UserViewAuth> {
+export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string } = {}): Promise<UserViewAuth> {
   if (!conn.bearer || !conn.userAuth || !conn.root)
     throw new Error(`userViewAuth: not a user-mode registry connection (view "${view}")`);
   const ua = conn.userAuth;
@@ -167,10 +175,33 @@ export async function userViewAuth(conn: Connection, view: string): Promise<User
   }
   const dir = userAuthStateDir(conn.root, conn.space);
   const store = workspaceSecretStore(conn.root);
-  const mint = () => provider.userCredentials({ store, dir, space: conn.space, actor: CLI_USER_ACTOR, view });
+  if (opts.managerInstanceId !== undefined) {
+    if (view !== "manager-caller") throw new Error("a manager instance selector requires the manager-caller view");
+    assertLifecycleToken(opts.managerInstanceId, "managerInstanceId");
+  }
+  const request = { store, dir, space: conn.space, actor: CLI_USER_ACTOR, view, ...opts };
+  const original = view === "manager-caller" ? principalFromBearer(conn.bearer) : undefined;
+  const mint = async () => {
+    const result = await provider.userCredentials(request);
+    if (original) {
+      const { owner, actor, lifecycleUid } = principalFromBearer(result.bearer);
+      const payload = JSON.parse(Buffer.from(result.bearer.split(".")[1]!, "base64url").toString("utf8"));
+      if (owner !== original.owner || actor !== original.actor || lifecycleUid !== original.lifecycleUid ||
+          payload.act?.owner !== owner || payload.act?.view !== view ||
+          !(payload.aud === conn.space || (Array.isArray(payload.aud) && payload.aud.length === 1 && payload.aud[0] === conn.space)) ||
+          typeof payload.act?.managerInstanceId !== "string")
+        throw new Error("manager control exchange returned different space, principal, lifecycle or view coordinates");
+      const instanceId = assertLifecycleToken(payload.act.managerInstanceId, "managerInstanceId");
+      if (request.managerInstanceId !== undefined && instanceId !== request.managerInstanceId)
+        throw new Error("manager control exchange selected a different manager instance");
+      request.managerInstanceId = instanceId;
+    }
+    return result;
+  };
   const { bearer, sentinelCreds } = await mint();
   const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
-  return { bearer, sentinelCreds, owner, actor, lifecycleUid, source: () => mint().then((r) => r.bearer) };
+  const managerInstanceId = request.managerInstanceId;
+  return { bearer, sentinelCreds, owner, actor, lifecycleUid, ...(managerInstanceId ? { managerInstanceId } : {}), source: () => mint().then((r) => r.bearer) };
 }
 
 /** {@link userViewAuth}, workstation-flavoured: colour the thrown sentence and exit. */
@@ -244,8 +275,8 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  * because there is only one place the sentence is written.
  */
 export class ConnectRefusal extends Error {
-  constructor(readonly rendered: string, readonly hint?: string) {
-    super(rendered);
+  constructor(readonly rendered: string, readonly hint?: string, options?: { cause?: unknown }) {
+    super(rendered, options);
     this.name = "ConnectRefusal";
   }
 }
@@ -398,12 +429,22 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       creds = await mintCreds(target.auth, identity, role, opts.mint ?? {});
     }
   }
+  // A registered AUTH mesh with no seed is still authenticated. A credless probe would
+  // classify it as "open now wants auth" and prune or attach as open. Refuse here,
+  // naming the recorded mode.
+  if (target.mode === "auth" && !target.auth) {
+    throw new ConnectRefusal(
+      `✗ mesh "${target.space}" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,
+    );
+  }
   await preflightOrThrow(target, creds);
   // THE REGISTRY-RESOLVED PATH, and the one that must inherit the recorded decision: if the mesh
   // record says this broker is TLS-required, the connection REQUIRES it. This is the site whose
   // omission had no symptom - it connects either way against an honest broker.
   return {
     server: target.server, space: target.space, tls: target.tlsRequired, creds, auth: target.auth, root: target.root, source: target.source,
+    mode: target.mode,
+    ...(target.policy ? { policy: target.policy } : {}),
     ...(epCaller ? { epCaller } : {}),
   };
 }
@@ -482,6 +523,8 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
       userAuth: ua,
       root: target.root,
       source: target.source,
+      mode: target.mode,
+      ...(target.policy ? { policy: target.policy } : {}),
       epCaller: { owner: p.owner, actor: p.actor, uid: p.lifecycleUid },
     };
   } catch (e) {
@@ -494,7 +537,14 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
  *  stale-entry message and never a prune. Used by the `--creds` escape hatch and `join`'s explicit
  *  (link/token/creds) path, both of which connect to a broker the user named, not the registry. */
 export async function reachableOrThrow(server: string, auth: RawAuth = {}): Promise<void> {
-  const probe = await probeConnect(server, auth);
+  let probe = await probeConnect(server, auth);
+  // CONFIRM BEFORE CONDEMNING, same reason as the registry path's re-probe (preflight.ts:100-110):
+  // the default budget is 1s, a real link can need more, and the raw door never got the second try —
+  // #709. `timeout`/`unreachable` are both inconclusive misses; `auth-required`/`stale-auth` are
+  // answers (the broker responded, or a credential read locally) and get no second try. The
+  // renderer's `timeout` sentence names this confirm budget, so it must actually be spent first.
+  if (!probe.ok && (probe.reason === "timeout" || probe.reason === "unreachable"))
+    probe = await probeConnect(server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
   if (probe.ok) return;
   // Whether the caller actually presented anything to be rejected. `tls` is deliberately not part
   // of this: it is transport, not identity, and a TLS-only connection presents no credential.
@@ -512,28 +562,29 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
 }
 
 /** Resolve the mesh a command targets, exiting with one human sentence on an unresolved/ambiguous
- *  registry rather than a stack trace. Prunes dead registry entries first so a crashed mesh doesn't
- *  block a bare command or appear in the "pick one" list — but ONLY when resolving without an
- *  explicit `--space`. A named `--space` is resolved + preflighted directly, so pre-pruning can't
- *  erase a dead-recorded mesh the operator is recovering with a live `--server` override; preflight
- *  still prunes it (with the friendly message) when no override revives it. */
+ *  registry rather than a stack trace. Sweeps first when resolving without an explicit `--space`,
+ *  and hands the sweep's `offline` set to the resolver so a crashed mesh's kept record does not
+ *  count as running. A named `--space` is resolved + preflighted directly, so the sweep cannot
+ *  hide a dead-recorded mesh the operator is recovering with a live `--server` override. */
 export async function resolveTargetOrThrow(flags: {
   server?: string;
   space?: string;
 }): Promise<MeshTarget> {
-  if (!flags.space) await pruneStaleMeshes();
+  const sweep = flags.space ? { pruned: [] as string[], offline: [] as string[] } : await pruneStaleMeshes();
   let target: MeshTarget;
   try {
-    target = resolveMeshTarget(process.cwd(), flags);
+    target = resolveMeshTarget(process.cwd(), { ...flags, offline: sweep.offline });
   } catch (e) {
-    if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }));
+    // The target error rides as `cause`, so a caller that must tell "no mesh recorded at all" from
+    // every other refusal can read its `code` instead of matching the rendered sentence.
+    if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e });
     throw e;
   }
-  // If a dangling `current` was silently bypassed — it named a mesh that's since gone and we fell
-  // back to the only live one — say so. The N>1 case errors loudly; this is the one spot that would
-  // otherwise quietly redirect a stale default.
+  // If a dangling `current` was silently bypassed — it named a mesh that's since gone (deleted,
+  // or kept as offline) and we fell back to the only live one — say so. The N>1 case errors
+  // loudly; this is the one spot that would otherwise quietly redirect a stale default.
   const cur = getCurrent();
-  if (cur && !findMesh(cur) && target.source === "registry")
+  if (cur && (!findMesh(cur) || sweep.offline.includes(cur)) && target.source === "registry")
     console.error(c.dim(`note: default mesh "${cur}" is down - using "${target.space}"`));
   return target;
 }
@@ -546,20 +597,21 @@ export async function resolveTargetOrThrow(flags: {
  *  own trust material. */
 export async function preflightOrThrow(target: MeshTarget, probeCreds?: string): Promise<void> {
   // USER-mode targets are never credless-probed here: the callout denies a bare connect, the
-  // classifier reads that as a stale registry entry, and the PRUNE deletes a healthy mesh's
-  // record (found live: foreground `spawn` did exactly this and every later command fell into
-  // raw-path copy). Liveness is the only mode-blind read; the real auth preflight for a user
-  // target is the user connect / bearer chain itself.
+  // classifier reads that as a stale-entry mismatch, and a mismatch prune would drop a healthy
+  // `up` record (found live: foreground `spawn` did exactly this and every later command fell
+  // into raw-path copy). Liveness is the only mode-blind read; the real auth preflight for a
+  // user target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    throw new ConnectRefusal(`✗ mesh "${target.space}" at ${target.server} is not reachable - start it with \`cotal up\` from its project folder`);
+    throw new ConnectRefusal(`✗ no mesh running at ${target.server} - mesh "${target.space}" is recorded at ${target.root} but not running; run \`cotal up\` there to restart`);
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
   // The classifier says whether this failure is a stale-entry signal; `pruneMesh` says whether the
-  // record is one an automatic sweep may delete (an operator-registered mesh is not). The message
-  // reports what ACTUALLY happened, so it never claims a removal that the registry refused.
-  const pruned = r.prune ? pruneMesh(target.space) : false;
+  // record is one an automatic sweep may delete. Liveness (`unreachable`) keeps an `up` record as
+  // `offline`; mismatch (creds rejected / mode flipped) still drops it. Manual never deletes.
+  // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
+  const pruned = r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
   throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }));
 }
 

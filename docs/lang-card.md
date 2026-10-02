@@ -116,7 +116,7 @@ dropping it.
 | L2011 | `Promise` | the four scopes |
 | L1025 | `==`, `!=` | `===`, `!==` |
 | L1001 | `class` | records and functions |
-| L4018 | a record, array or function where a primitive is needed | convert explicitly |
+| L4018 | a record, array or function where a primitive is needed; a non-number under `++`/`--` | convert explicitly |
 | L3013 | a computed step name where a literal is required | a string literal |
 | L3011 | an unknown option key | the signature in the refusal |
 

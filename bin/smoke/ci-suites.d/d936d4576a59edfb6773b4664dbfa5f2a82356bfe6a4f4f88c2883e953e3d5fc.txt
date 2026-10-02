@@ -1,0 +1,4 @@
+# The serving policy for a stalled automatic queue (#1233), graded directly: every accepting branch
+# paired with a refusing case that differs only in the field deciding it, and no branch that drops a
+# delivery. Companion to smoke:jcode-queue-fallback, which grades the drain end to end.
+smoke:jcode-queue-fallback-policy

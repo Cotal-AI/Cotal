@@ -42,9 +42,11 @@ import {
   type LaunchSpec,
   type AgentHandle,
   type Presence,
+  type EvictionResult,
 } from "@cotal-ai/core";
 import { agentCredsDir, agentCredsKey, agentSecretFilePaths, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
+import { requestDeliveryAdminZeroMemberships } from "./_fake-delivery-admin.js";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -66,6 +68,8 @@ writeFileSync(
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 (mgr as unknown as { auth: unknown }).auth = auth;
+(mgr as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
+  async (principal) => ({ principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true });
 
 // A settable synthetic roster: the manager reports its own managed agents as joined (so a spawn
 // resolves "started"), PLUS whatever extra presence rows the test injects to model live/offline
@@ -82,6 +86,7 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
   on: () => {},
   off: () => {},
   waitForPresenceSnapshot: () => snapshotGate,
+  requestDeliveryAdmin: requestDeliveryAdminZeroMemberships,
   getRoster: (): Presence[] => [
     ...[...(mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map(
       (a): Presence => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name, role: "worker", kind: "agent", description: "", tags: [] }, status: "idle", lifecycleUid: a.lifecycleUid, ts: 0 }),
@@ -105,7 +110,7 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
   // ── #2: lifecycle-keyed credential file ────────────────────────────────────
-  const spawnA = await mgr.startAgent({ name: "worker", agent: "smoke-lf" });
+  const spawnA = await mgr.startAgent({ name: "worker", agent: "smoke-lf", events: false });
   check("spawn A succeeds", spawnA.ok === true, spawnA);
   const uidA = spawnA.ok ? (spawnA.data as { lifecycleUid?: string }).lifecycleUid : undefined;
   check("spawn A reply carries a lifecycleUid", typeof uidA === "string" && /^[a-z0-9]{26,32}$/.test(uidA ?? ""), uidA);
@@ -163,7 +168,7 @@ try {
   writeFileSync(join(agentsDir, "solo.md"), "---\nname: solo\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\nbody\n");
   let releaseSnapshot!: () => void;
   snapshotGate = new Promise<void>((r) => { releaseSnapshot = r; });
-  const spawnLivePromise = mgr.startAgent({ name: "solo", agent: "smoke-lf" });
+  const spawnLivePromise = mgr.startAgent({ name: "solo", agent: "smoke-lf", events: false });
   await new Promise((r) => setImmediate(r)); // let the spawn run up to (and block on) the gate
   await new Promise((r) => setImmediate(r));
   check("while the snapshot is HELD, no `solo` process was launched (allocation is gated)", !spawnedNames.some((n) => n.startsWith("solo")), spawnedNames);
@@ -180,7 +185,7 @@ try {
   // An OFFLINE row never occupies — a retired name stays reusable.
   writeFileSync(join(agentsDir, "reuse.md"), "---\nname: reuse\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\nbody\n");
   extraRoster = [{ card: { id: principalKey(DEV_OWNER, newIdentity().id).key, name: "reuse", role: "worker", kind: "agent", description: "", tags: [] }, status: "offline", lifecycleUid: undefined, ts: 0 }];
-  const spawnReuse = await mgr.startAgent({ name: "reuse", agent: "smoke-lf" });
+  const spawnReuse = await mgr.startAgent({ name: "reuse", agent: "smoke-lf", events: false });
   check("an OFFLINE same-name row does NOT block reuse (reuse stays reuse)", spawnReuse.ok && (spawnReuse.data as { name: string }).name === "reuse", spawnReuse.ok && (spawnReuse.data as { name: string }).name);
 
   // Sanity: the legacy name-keyed builders still resolve for standing operator secrets.

@@ -194,7 +194,13 @@ const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true, requ
   );
   if (requireToolPrelude) {
     const expectedPrelude = [
-      ["      - uses: actions/checkout@v6"],
+      [
+        "      - uses: actions/checkout@v6",
+        "        with:",
+        // The shards need real history: egress-guard-differential resolves the egress
+        // classifier's predecessor commit, which a depth-1 clone does not reach.
+        "          fetch-depth: 0",
+      ],
       [
         "      - uses: pnpm/action-setup@v6.0.8",
         "        with:",
@@ -297,7 +303,7 @@ const verifierMatches = (sha: string): boolean => {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const actual = createHash("sha256").update(source).digest("hex");
-    return actual === "e6f6302f1a432b2eebe170fecc7dbf712c2c7545d1893ba01524318df9213bc6";
+    return actual === "7f511302887d61bcfef6f7db4acf383dd90835840d723f75ab8359357f36b056";
   } catch {
     return false;
   }
@@ -446,6 +452,7 @@ const replaceRefRuntimeControl = (): boolean => {
       ["bin/smoke/ci-suites.d/control.txt", "smoke:fragment\n"],
       ["bin/smoke/ci-suites.mjs", "export {};\n"],
       ["bin/smoke/shard.mjs", "export {};\n"],
+      ["bin/smoke/shard-pool.mjs", "export {};\n"],
       ["bin/smoke/reap-smoke-brokers.mjs", "export {};\n"],
       ["package.json", "{}\n"],
       ["pnpm-workspace.yaml", "packages: []\n"],
