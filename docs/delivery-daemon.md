@@ -81,6 +81,11 @@ authentication-expiry errors and clears the corresponding failure on a proved cr
 Until this component is wired into the daemon, the current two-second authenticated broker probe
 remains its active broker watch.
 
+The daemon refuses a `reloadCreds` adoption until it has finished starting, which is after its lease
+watch is bound. Its lease turns ready earlier than that, so a renewal owner can ask before start-up
+is done. The refusal says the daemon has not finished starting and adopts nothing. The next renewal
+pass or the daemon's own 75% re-read adopts the re-signed credentials.
+
 `cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
 without taking the single-flight lease because another daemon holds it, or because a crashed
 holder's lease has not expired yet. A lease write the credential is not allowed to make is reported

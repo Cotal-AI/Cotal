@@ -787,6 +787,11 @@ async function runStartedDelivery(
   // fault instead of its symptom. Without it, an expired $SYS observer cred surfaces to the operator
   // only as "membership feed is not running" (#338).
   let membershipDown: string | undefined;
+  // START-UP IS NOT DONE UNTIL THE LEASE WATCH IS BOUND (#2304). The ready flip below releases
+  // `ensureDelivery`, and so the manager, whose boot renewal pass sends `reloadCreds` at once. The
+  // endpoint refuses that adoption while this is false, rather than reconnecting this connection
+  // underneath the membership start and the lease watch that are still pending on it.
+  let startedUp = false;
 
   // Host Plane-3 (fan-out writer + trusted reader) AND serve the ctl.delivery runtime durable ops. The
   // reader re-authorizes each entry against the durable ACL registry, read FRESH per entry. The
@@ -819,6 +824,7 @@ async function runStartedDelivery(
     principalLiveness: (principal) => executePrincipalLiveness(server, scanTarget, principal),
     reloadStoreIdentity: () => reloadStoreIdentity,
     onDeliveryCredsAdopted: () => health.adopted(),
+    startupComplete: () => startedUp,
   });
   // Flip the lease to READY only now — after the loops + ctl.delivery responder are bound — so readiness
   // waiters (ensureDelivery) and the cotal_channels health surface see "ready" iff the responder is up,
@@ -1173,6 +1179,7 @@ async function runStartedDelivery(
     await close();
     throw hostedStartupFailure ?? new Error(unavailable ?? "delivery context stopped during startup");
   }
+  startedUp = true;
   // Renew the lease at ~half the TTL so a healthy holder never self-evicts.
 
   //
