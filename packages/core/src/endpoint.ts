@@ -2468,6 +2468,19 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** The resolved, digest-verified command surface of `endpoint` as this connection's caller sees
+   *  it: the same resolve and the same per-name cache {@link invokeService} uses, so a describe
+   *  followed by an invoke binds both to one incarnation. `refresh` drops the cached entry first. */
+  async describeService(endpoint: string, opts: { deadlineMs?: number; signal?: AbortSignal; refresh?: boolean } = {}): Promise<ResolvedService> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    if (opts.refresh) this.resolvedServices.delete(endpoint);
+    const cached = this.resolvedServices.get(endpoint);
+    if (cached) return cached;
+    const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal });
+    this.resolvedServices.set(endpoint, svc);
+    return svc;
+  }
+
   /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
    *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
    *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The
