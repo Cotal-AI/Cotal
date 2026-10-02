@@ -154,6 +154,10 @@ delivers, the other only wakes:
   at-least-once rather than treating a confirmed write as a confirmed read. Acking when
   the reply was merely *formatted* meant a lost reply was a lost message: it was already marked
   handled, so its own redelivery was silently acked on arrival.
+  A hook whose handler throws still returns an empty reply so the session is never blocked, and
+  that reply carries nothing, so it commits nothing: the batch it had started to surface stays
+  un-acked and goes out on a later frame. The seat also drops any `turn-pending` row that breaks
+  the manager contract, such as one with no integer deadline, and says so once in its log.
   This errs toward **at-least-once**: if a reply lands but its confirmation does not, the batch is
   surfaced again and flagged as a possible repeat. A duplicate injection is noise; a buried DM stops
   the peer answering at all.
