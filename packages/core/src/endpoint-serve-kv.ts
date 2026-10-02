@@ -80,7 +80,9 @@ export async function readEndpointGateGeneration(
 ): Promise<number> {
   const endpoint = endpointToken(args.endpoint);
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
-  const key = epgateKey(endpoint, instanceId);
+  // The gate key builder converts the NAME itself; handing it the token would convert twice and
+  // refuse every dotted (reverse-DNS) name as a non-DNS label.
+  const key = epgateKey(args.endpoint, instanceId);
   const entry = await kv.get(key);
   if (!entry)
     throw new EpEnvelopeError("failed-precondition", `no endpoint gate at ${key}; an instance's generation is read from its gate, and an absent gate is not a generation (SPEC 13.1)`);
@@ -100,7 +102,9 @@ export async function readEndpointGateGeneration(
 export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: string; instanceId: string }): EpIssuanceGate {
   const endpoint = endpointToken(args.endpoint);
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
-  const key = epgateKey(endpoint, instanceId);
+  // The gate key builder converts the NAME itself; handing it the token would convert twice and
+  // refuse every dotted (reverse-DNS) name as a non-DNS label.
+  const key = epgateKey(args.endpoint, instanceId);
   return {
     observe: async () => {
       const entry = await kv.get(key);
@@ -334,7 +338,9 @@ export async function provisionEndpointGateOpen(
 ): Promise<void> {
   const endpoint = endpointToken(args.endpoint);
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
-  const key = epgateKey(endpoint, instanceId);
+  // The gate key builder converts the NAME itself; handing it the token would convert twice and
+  // refuse every dotted (reverse-DNS) name as a non-DNS label.
+  const key = epgateKey(args.endpoint, instanceId);
   const row = { state: "open" as const, generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, principal: args.principal };
   // Round-trip through the boundary parser BEFORE the create (a gate this path would refuse to read
   // never lands durably — e.g. a non-owner-grammar principal).
@@ -366,7 +372,7 @@ export function endpointRegistrationBarrier(
   const endpoint = endpointToken(args.endpoint);
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const opId = assertLifecycleToken(args.opId, "opId");
-  const key = epgateKey(endpoint, instanceId);
+  const key = epgateKey(args.endpoint, instanceId);
   const evict = args.evict ?? (() => false); // FAIL-CLOSED: no evictor ⇒ eviction not verified (a takeover fails closed)
   const observed = async (): Promise<{ row: import("./lifecycle-state.js").EndpointGateRow; revision: number } | null> => {
     const entry = await kv.get(key);
