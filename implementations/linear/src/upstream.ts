@@ -21,22 +21,30 @@
  * deadline expiring while queued, discovering or connecting). An HTTP 401/403/429 answer to a
  * dispatched request is `unknown` too: the MCP transport gives no proof that the server did not act.
  *
- * One deadline bounds the whole operation: the slot wait, discovery, connect and the call itself.
+ * One deadline bounds the whole operation: the slot wait, discovery, connect and the call itself,
+ * including the HTTP request underneath: the SDK hands `fetch` only its transport-wide signal, so
+ * each request's own signal is joined in through {@link CapturingTransport}. The same wrapper keeps
+ * every response's `result` exactly as the server sent it, because the SDK's result schemas drop
+ * fields they do not model (extension capabilities, vendor fields on tools and content blocks).
  * Errors carry a status or a class, never response text, and the bearer is scrubbed from anything
  * the server sent back before it leaves this module.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   CallToolResultSchema,
   CompleteResultSchema,
   ErrorCode,
   GetPromptResultSchema,
+  type JSONRPCMessage,
   ListPromptsResultSchema,
   ListResourcesResultSchema,
   ListResourceTemplatesResultSchema,
   ListToolsResultSchema,
   McpError,
+  type MessageExtraInfo,
   PromptListChangedNotificationSchema,
   ReadResourceResultSchema,
   ResourceListChangedNotificationSchema,
@@ -187,9 +195,78 @@ class DeadlineError extends Error {
   }
 }
 
+/** What one SDK request carries that the SDK itself does not: the signal its HTTP request must
+ *  obey, and the server's `result` before any schema touched it. */
+interface Dispatch {
+  signal: AbortSignal;
+  id?: string | number;
+  raw?: Json;
+}
+
+const dispatching = new AsyncLocalStorage<Dispatch>();
+
+/** The SDK transport, with each request's {@link Dispatch} attached at send and resolved at the
+ *  matching response. The SDK parses incoming messages with a passthrough result schema, so the
+ *  `result` seen here is the server's object verbatim. */
+class CapturingTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage, extra?: MessageExtraInfo) => void;
+  private readonly pending = new Map<string | number, Dispatch>();
+
+  constructor(readonly inner: StreamableHTTPClientTransport) {
+    inner.onclose = () => {
+      this.pending.clear();
+      this.onclose?.();
+    };
+    inner.onerror = (e) => this.onerror?.(e);
+    inner.onmessage = (message: JSONRPCMessage) => {
+      const id = "id" in message && !("method" in message) ? message.id : undefined;
+      if (typeof id === "string" || typeof id === "number") {
+        const d = this.pending.get(id);
+        this.pending.delete(id);
+        if (d && "result" in message) d.raw = message.result as Json;
+      }
+      this.onmessage?.(message);
+    };
+  }
+
+  start(): Promise<void> {
+    return this.inner.start();
+  }
+
+  async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
+    const d = dispatching.getStore();
+    if (d && "method" in message && "id" in message) {
+      d.id = message.id;
+      this.pending.set(message.id, d);
+    }
+    await this.inner.send(message, options);
+  }
+
+  /** A request that ended without its response (deadline, cancellation) leaves no entry behind. */
+  forget(d: Dispatch): void {
+    if (d.id !== undefined && this.pending.get(d.id) === d) this.pending.delete(d.id);
+  }
+
+  close(): Promise<void> {
+    return this.inner.close();
+  }
+
+  get sessionId(): string | undefined {
+    return this.inner.sessionId;
+  }
+
+  setProtocolVersion(version: string): void {
+    this.inner.setProtocolVersion(version);
+  }
+}
+
 export class LinearUpstream {
   private client?: Client;
-  private transport?: StreamableHTTPClientTransport;
+  private transport?: CapturingTransport;
+  /** The server's `initialize` result, verbatim. */
+  private initialized?: Json;
   private connecting?: Promise<Client>;
   private current?: LinearInventory;
   private stale = true;
@@ -214,11 +291,18 @@ export class LinearUpstream {
   }
 
   private async connect(): Promise<Client> {
-    const transport = new StreamableHTTPClientTransport(this.url, {
-      fetch: pinnedFetch(this.url, () => this.credential.bearer(), this.limits.maxResponseBytes),
+    const pinned = pinnedFetch(this.url, () => this.credential.bearer(), this.limits.maxResponseBytes);
+    const transport = new CapturingTransport(new StreamableHTTPClientTransport(this.url, {
+      // The request being dispatched ends its own HTTP request when its deadline expires; the SDK
+      // only passes its transport-wide signal here.
+      fetch: (url, init) => {
+        const d = dispatching.getStore();
+        if (!d) return pinned(url, init);
+        return pinned(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, d.signal]) : d.signal });
+      },
       // Resuming a dropped stream is not a re-dispatch, but this client still never reconnects on its own.
       reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 },
-    });
+    }));
     const client = new Client({ name: "cotal-linear", version: "1" }, { capabilities: {} });
     const markStale = async (): Promise<void> => {
       this.stale = true;
@@ -227,14 +311,18 @@ export class LinearUpstream {
     client.setNotificationHandler(ResourceListChangedNotificationSchema, markStale);
     client.setNotificationHandler(PromptListChangedNotificationSchema, markStale);
     client.onclose = () => this.drop(client);
+    const init: Dispatch = { signal: AbortSignal.timeout(this.limits.defaultTimeoutMs) };
     try {
-      await client.connect(transport, { timeout: this.limits.defaultTimeoutMs });
+      await dispatching.run(init, () => client.connect(transport, { timeout: this.limits.defaultTimeoutMs }));
+      if (!init.raw) throw new Error("the initialize response was not captured");
     } catch (e) {
+      transport.forget(init);
       await client.close().catch(() => {});
       throw e;
     }
     this.client = client;
     this.transport = transport;
+    this.initialized = init.raw;
     // A new session may negotiate differently, so the inventory is re-read before the next call.
     this.stale = true;
     return client;
@@ -245,8 +333,22 @@ export class LinearUpstream {
     if (this.client !== client) return;
     this.client = undefined;
     this.transport = undefined;
+    this.initialized = undefined;
     this.stale = true;
     void client.close().catch(() => {});
+  }
+
+  /** One SDK request in its own dispatch context: the schema still validates the shape, and the
+   *  server's `result` is returned verbatim. */
+  private async raw(signal: AbortSignal, run: () => Promise<unknown>): Promise<Json> {
+    const d: Dispatch = { signal };
+    try {
+      await dispatching.run(d, run);
+    } finally {
+      this.transport?.forget(d);
+    }
+    if (!d.raw) throw new Error("the MCP response was not captured");
+    return d.raw;
   }
 
   /** Complete discovery. Refuses on any cap rather than returning a partial inventory. `signal`
@@ -260,8 +362,10 @@ export class LinearUpstream {
     try {
       await bounded(this.credential.prepare(), signal);
       const client = await this.session(signal);
-      const caps = (client.getServerCapabilities() ?? {}) as unknown as Json;
-      const version = client.getServerVersion();
+      const initialized = this.initialized ?? {};
+      const caps = (initialized.capabilities ?? {}) as Json;
+      const version = initialized.serverInfo as { name?: string; version?: string } | undefined;
+      const instructions = initialized.instructions;
       let pages = 0;
       let bytes = 0;
       const timeout = this.limits.defaultTimeoutMs;
@@ -275,7 +379,7 @@ export class LinearUpstream {
         let cursor: string | undefined;
         do {
           if (++pages > this.limits.maxInventoryPages) throw new Error(`Linear discovery exceeded ${this.limits.maxInventoryPages} pages; refusing a partial inventory`);
-          const page = (await client.request({ method, params: cursor === undefined ? {} : { cursor } } as never, schema, { timeout, signal })) as unknown as Json;
+          const page = await this.raw(signal, () => client.request({ method, params: cursor === undefined ? {} : { cursor } } as never, schema, { timeout, signal }));
           bytes += Buffer.byteLength(JSON.stringify(page));
           if (bytes > this.limits.maxInventoryBytes) throw new Error(`Linear discovery exceeded ${this.limits.maxInventoryBytes} bytes; refusing a partial inventory`);
           const list = page[key];
@@ -305,7 +409,7 @@ export class LinearUpstream {
         endpoint: this.url.href,
         mode: this.account.mode,
         server: { ...(version?.name !== undefined ? { name: version.name } : {}), ...(version?.version !== undefined ? { version: version.version } : {}) },
-        ...(client.getInstructions() !== undefined ? { instructions: client.getInstructions() } : {}),
+        ...(typeof instructions === "string" ? { instructions } : {}),
         capabilities: caps,
         tools,
         ...(resources ? { resources } : {}),
@@ -400,8 +504,9 @@ export class LinearUpstream {
       if (!client) return { kind: "refused", reason: "discovery-failed", detail: "the MCP session ended after discovery; read the inventory again", outcome: "not-executed" };
       if (ctl.signal.aborted) return notDispatched();
       // From here the request is handed to the transport. The SDK sends notifications/cancelled
-      // when the signal aborts; its own timeout sits past ours.
-      const result = (await client.request(request as never, schema, { signal: ctl.signal, timeout: timeoutMs + 5_000 })) as unknown as Json;
+      // when the signal aborts and the HTTP request underneath ends with it; the SDK's own timeout
+      // sits past ours.
+      const result = await this.raw(ctl.signal, () => client.request(request as never, schema, { signal: ctl.signal, timeout: timeoutMs + 5_000 }));
       return { kind: "result", result, inventoryDigest: inv.digest };
     } catch (e) {
       return this.classify(e, why);
@@ -477,7 +582,7 @@ export class LinearUpstream {
     this.client = undefined;
     this.transport = undefined;
     const grace = AbortSignal.timeout(graceMs);
-    if (transport?.sessionId) await bounded(transport.terminateSession(), grace).catch(() => {});
+    if (transport?.sessionId) await bounded(transport.inner.terminateSession(), grace).catch(() => {});
     await bounded(client?.close() ?? Promise.resolve(), grace).catch(() => {});
   }
 }
