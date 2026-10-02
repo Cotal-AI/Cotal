@@ -479,6 +479,15 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
   return userConnectOrExit(target);
 }
 
+/** {@link connectUserControlOrExit} for a caller that must record a refusal before it fails, such
+ *  as `up`'s same-principal resume, which degrades its maintenance journal with the reason. */
+export async function connectUserControlOrThrow(flags: { server?: string; space?: string }): Promise<Connection> {
+  const target = await resolveTargetOrThrow(flags);
+  if (target.mode !== "user")
+    throw new ConnectRefusal(`✗ connectUserControlOrThrow requires a user-auth mesh (resolved mode is "${target.mode}")`);
+  return userConnectOrThrow(target);
+}
+
 /** The user-mode connect: resolve the space's auth provider from the registry (composition-root
  *  supplied — never imported here), exchange this machine's login session for a bearer, and hand
  *  back bearer + sentinel. The provider owns the failure copy for its own steps (not logged in,
@@ -490,47 +499,48 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
  *  (which refuses control-caller-* instruments). If a Profile is ever threaded into this function,
  *  the call sites that invented dummy roles are the defect. */
 async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
+  try {
+    return await userConnectOrThrow(target);
+  } catch (e) {
+    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
+  }
+}
+
+async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
   const ua = target.userAuth!; // mode "user" guarantees it (targetFromEntry throws otherwise)
   let provider: AuthProvider;
   try {
     provider = registry.resolve<AuthProvider>("auth-provider", ua.provider);
   } catch {
-    console.error(
-      c.red(
-        `✗ space "${target.space}" uses the "${ua.provider}" auth provider, which this build does not register - user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
-      ),
+    throw new Error(
+      `space "${target.space}" uses the "${ua.provider}" auth provider, which this build does not register - user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
     );
-    process.exit(1);
   }
-  try {
-    const { bearer, sentinelCreds } = await provider.userCredentials({
-      store: workspaceSecretStore(target.root),
-      dir: userAuthStateDir(target.root, target.space),
-      space: target.space,
-      actor: CLI_USER_ACTOR,
-    });
-    // The v0.4 caller triple (1c.2c): the callout mints the cli actor's ep-rail rows keyed on the
-    // LEDGER lifecycle claim the bearer carries - the same three tokens, read client-side, let
-    // askManager's ep path build its request subjects. A re-granted alias invalidates the triple
-    // at the next exchange, exactly when the rows change.
-    const p = principalFromBearer(bearer);
-    return {
-      server: target.server,
-      space: target.space,
-      tls: target.tlsRequired,
-      bearer,
-      sentinelCreds,
-      userAuth: ua,
-      root: target.root,
-      source: target.source,
-      mode: target.mode,
-      ...(target.policy ? { policy: target.policy } : {}),
-      epCaller: { owner: p.owner, actor: p.actor, uid: p.lifecycleUid },
-    };
-  } catch (e) {
-    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
-    process.exit(1);
-  }
+  const { bearer, sentinelCreds } = await provider.userCredentials({
+    store: workspaceSecretStore(target.root),
+    dir: userAuthStateDir(target.root, target.space),
+    space: target.space,
+    actor: CLI_USER_ACTOR,
+  });
+  // The v0.4 caller triple (1c.2c): the callout mints the cli actor's ep-rail rows keyed on the
+  // LEDGER lifecycle claim the bearer carries - the same three tokens, read client-side, let
+  // askManager's ep path build its request subjects. A re-granted alias invalidates the triple
+  // at the next exchange, exactly when the rows change.
+  const p = principalFromBearer(bearer);
+  return {
+    server: target.server,
+    space: target.space,
+    tls: target.tlsRequired,
+    bearer,
+    sentinelCreds,
+    userAuth: ua,
+    root: target.root,
+    source: target.source,
+    mode: target.mode,
+    ...(target.policy ? { policy: target.policy } : {}),
+    epCaller: { owner: p.owner, actor: p.actor, uid: p.lifecycleUid },
+  };
 }
 
 /** Reachability check for a RAW (off-registry) connection — one plain sentence, never a registry/
