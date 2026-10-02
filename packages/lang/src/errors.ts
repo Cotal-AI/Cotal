@@ -343,6 +343,22 @@ export class LangErrors extends Error {
 }
 
 /**
+ * The host ran out of stack.
+ *
+ * How deep a run can go before this fires is a property of the host (its `--stack-size`, a worker
+ * thread's default, the Node version), not of the program. A program that could catch it would pick
+ * its next effect by the machine it ran on, and a journal recorded on one host would diverge on
+ * resume on another (L5001). So it is never a language refusal: `guarded` passes it through instead
+ * of mapping it to L4016, and both engines' catch paths rethrow it uncaught.
+ *
+ * V8 raises it as a plain `RangeError` and names it only by its message, so the message is what is
+ * matched. A `RangeError` with any other message (`"a".repeat(-1)`) stays an ordinary host refusal.
+ */
+export function isStackExhaustion(e: unknown): boolean {
+  return e instanceof RangeError && e.message === "Maximum call stack size exceeded";
+}
+
+/**
  * A refusal raised while a program RUNS, carrying its `L` code as a field so a caller can branch on
  * it rather than parse prose.
  *

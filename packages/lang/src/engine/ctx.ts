@@ -18,7 +18,7 @@
  * identical journals (entry sequences and step keys, not merely output).
  */
 
-import { InterpreterDefect, RuntimeFault } from "../errors.js";
+import { InterpreterDefect, RuntimeFault, isStackExhaustion } from "../errors.js";
 import { Cancelled, EffectError, type EffectHandler } from "../effects.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "../library.js";
 import type { Journal } from "../journal.js";
@@ -1064,7 +1064,7 @@ const UNCATCHABLE_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 function isUncatchable(e: unknown): boolean {
-  return e instanceof Error && UNCATCHABLE_NAMES.has(e.name);
+  return (e instanceof Error && UNCATCHABLE_NAMES.has(e.name)) || isStackExhaustion(e);
 }
 
 /** What the catch parameter binds to: a frozen record with a code, never the host's own object. */

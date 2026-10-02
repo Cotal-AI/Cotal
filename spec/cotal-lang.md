@@ -350,6 +350,8 @@ result of `sort` is a function of its input alone.
 
 A builtin or method given inputs the host refuses (`"a".repeat(-1)`, `json.parse("{")`, `[].reduce(f)`)
 raises L4016 naming the builtin; the host's own error class and stack never reach the program.
+A host that runs out of stack inside a builtin is not a refusal and is not L4016: it is uncatchable
+(§9.2).
 `len` counts the elements of an array or the units of a string; every other kind is refused
 (L4016) in the language, before the host is reached, because the only `length` anything else has
 is a host property: a function's is its parameter count, a property of the implementation's
@@ -805,6 +807,13 @@ leaves the program a next step to take — a cancelled branch performs no new wo
 has diverged, lost its journal, been released or been held cannot be allowed one more effect on the
 way down.
 
+A **host stack exhaustion** unwinds the run the same way, in a builtin or in the program's own
+recursion. The depth at which a host runs out of stack belongs to the host (its stack size, a worker
+thread's default, the runtime version) and not to the program, so a program that could catch it
+would choose its next effect by the machine it ran on (§1), and a journal recorded on one host would
+diverge (L5001) on resume on another. It carries no catalog code: the run fails as a host fault, and
+a resume on a host with more stack proceeds from the journal.
+
 ### 9.3 Error rendering
 
 Every static refusal is reported in user-program coordinates as `{ code, title, where: { file, line,
@@ -1194,4 +1203,5 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-09-23 | A refusal the language itself raised inside a scope keeps its catalog code in the scope's failure record (§10.1, §10.6, Appendix A): a `RuntimeFault` settles under its own code with kind `runtime`, because `L4000` is the generic code an unclassified failure carries and this one is classified. Measured before it: a `fanOut` with no stable key raised L3021 inside the scope, the program caught `L3021` live, and the settled entry said `L4000` `scope-fault` with the L3021 sentence still inside the message, so every resume replayed `L4000` where the live run had thrown `L3021`. A plain non-`EffectError` throw inside a scope still records `L4000` `scope-fault`, and a handler's `EffectError` still keeps its code and kind. |
 | 2026-09-25 | A divergence inside a scope settles nothing (§7.6, §9.2): it is the journal saying this program is not the one that wrote it, so the scope entry stays pending and the next resume re-enters it and diverges again at the step that broke, instead of replaying a recorded `L4000` `scope-fault` a program's `catch` can swallow. Measured before it: a resume whose edited `sleep` diverged inside a pending `parallel` settled the scope `failed` under `L4000`, a second resume threw the replayed scope-fault rather than the divergence, and inside `try`/`catch` the program caught it and performed a new effect against the journal it had diverged from. A divergence among a race's settled arms unwinds the run ahead of the winner scan for the same reason a refused append and a held arm do (§7.3): a race may not hand back a winner's value over a run-level fault, whichever arm raised it. |
 | 2026-09-27 | An update operator's operand (`x++`, `x--`) must already be a number, on the walker as it already did on the compiled engine (§4.5): a record, a numeric string or null is refused L4018 rather than settled as NaN or silently counted, so `x++`, `x + 1` and `x += 1` agree. A version-1 record whose program incremented or decremented a value other than a number is the second known case of §8.4's replay posture: it completed under the earlier walker and is now refused L4018 at that line, before any recorded entry is consumed. |
+| 2026-10-02 | A host stack exhaustion is uncatchable (§9.2) and is not L4016 (§5.4): the depth at which a host runs out of stack belongs to the host, so a program that caught it chose its next effect by the machine it ran on, and a journal recorded on one host diverged (L5001) on resume on another. |
 | 2026-10-03 | The record and array arguments of the free builtins are checked like `len`'s (§5.4): `keys`, `values`, `entries`, `has` and `merge` take a record, and `map`, `filter`, `find`, `some`, `every`, `sort`, `slice`, `join`, `reverse`, `unique`, `sum`, `pick` and `concat`'s first argument take an array; every other kind is refused L4016 before the host is reached. Measured before it: `map(5, f)` and `keys(5)` answered `[]`, `every(5, f)` answered true, `has(f, "length")` answered true off the implementation's function wrapper, `keys("ab")` answered index strings, `concat("a", [1])` answered `"a1"` past L4018, and `keys(null)` refused with the host's error text. A version-1 record that relied on the host's answer is the third known case of §8.4's replay posture. |

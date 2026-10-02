@@ -25,6 +25,7 @@ import {
   UnwalkableScope,
   messageOf,
   InterpreterDefect,
+  isStackExhaustion,
 } from "./errors.js";
 export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "./errors.js";
 import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
@@ -1243,7 +1244,8 @@ class Interpreter {
           e instanceof RunHeld ||
           e instanceof RunDivergence ||
           e instanceof ScopeBranchMissing ||
-          e instanceof UnwalkableScope;
+          e instanceof UnwalkableScope ||
+          isStackExhaustion(e);
         // JavaScript's completion semantics, which the one-`try` shape this replaced could not
         // express (measured: `try { return 1; } finally { return 2; }` returned 1): the finalizer
         // always runs for ordinary completions, and an ABRUPT finalizer completion — a return, a
