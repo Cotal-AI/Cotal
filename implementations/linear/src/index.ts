@@ -30,3 +30,4 @@ registry.register(linearCommand);
 export { LinearUpstream, DEFAULT_LIMITS, type LinearInventory, type LinearLimits, type UpstreamReply } from "./upstream.js";
 export { LINEAR_MCP_ORIGIN, LINEAR_MCP_PATHS, linearMcpUrl, type LinearMode } from "./origin.js";
 export { loadAccount, type LinearAccount } from "./account.js";
+export { linearClusterArtifacts, linearCommandDefs, linearContractArtifactValues, LINEAR_CAPABILITY, LINEAR_CLUSTER_URN } from "./contract.js";
