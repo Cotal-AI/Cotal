@@ -328,6 +328,19 @@ try {
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
     check("a buffer holding only undeliverable mail does not report an empty inbox",
       !text.includes("Inbox empty") && text.includes("stays buffered and uncleared"), text.slice(0, 200));
+
+    // Focus recall has no delivery to clear, so it is never read in parts. An oversized recall item
+    // with nothing else to show still has to be named in the reply.
+    const focused = new MeshAgent(cfg);
+    focused.on("error", () => {});
+    Object.defineProperty(focused, "attention", { get: () => "focus" });
+    (focused as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items: [{ id: "R-big", recvKey: "R-big", ts: 20_000, fromId: "peer", fromName: "Peer", kind: "channel", channel: "general", mentionsMe: false, historical: false, text: "r".repeat(60_000) }],
+      droppedChannels: [],
+    });
+    const recallText = textOf(await inboxSpec().run(focused, cfg, {}));
+    check("an oversized recall item with nothing else to show is named in the reply",
+      recallText.startsWith("Nothing could be delivered") && recallText.includes("larger than one response"), recallText.slice(0, 200));
   }
 
   // ── 12) THE NOTE ABOUT UNDELIVERABLE MAIL IS ITSELF BOUNDED ───────────────────────────────────

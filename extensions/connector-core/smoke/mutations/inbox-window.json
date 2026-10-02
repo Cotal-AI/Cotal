@@ -186,9 +186,9 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "    else if (held.length) parts.push(`Nothing could be delivered in this response.${note}`);",
       "replace": "    else if (false) parts.push(`Nothing could be delivered in this response.${note}`);",
-      "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
-      "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
-      "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. The cell that notices first is the oversized-item cell, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side. The cell that notices first is the oversized-item one, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side."
+      "cell": "an oversized recall item with nothing else to show is named in the reply",
+      "expectRed": "an oversized recall item with nothing else to show is named in the reply",
+      "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. A buffered oversized message is read in parts, so the case left where nothing can be shown is an oversized focus recall item, and that cell is the one that notices."
     },
     {
       "name": "K11 the note names every oversized message instead of a few",
