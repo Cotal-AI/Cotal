@@ -333,7 +333,10 @@ is not reachable from any surface yet. On the mesh handler, `sleep`, `checkpoint
 the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
 failed or refused spawn is catchable as L4002 with the manager's recorded reason, and a spawn on a
-race branch that loses is despawned by the run's own cancellation sweep. `permits` are the budgets
+race branch that loses is despawned by the run's own cancellation sweep. A seat belongs to the run
+that spawned it: when the run completes, it despawns every seat it spawned, including a race
+winner's. A run that fails or is released keeps its seats until a resume completes it or you stop
+them with `cotal stop`. Start a seat with `cotal spawn` when it should outlive any run. `permits` are the budgets
 this host meters: `turns`, how many turns the run may dispatch to the agent, and `wallClock`, a
 duration from the spawn after which no turn is admitted. The turn that would exceed one is the
 catchable L4001 (kind `permit-turns` or `permit-wall-clock`; a deadline the remaining wall clock

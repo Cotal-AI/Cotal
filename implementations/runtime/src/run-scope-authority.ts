@@ -107,6 +107,13 @@ export class RunScopeAuthority {
     return entries.filter((entry) => this.owns(entry) && owed.has(journalEntryKeyString(entry)));
   }
 
+  /** Release authority covers this attempt's own spawns that settled with a seat. Fork prefixes
+   *  copied from a parent are not owned, so a child run never releases its parent's seats. */
+  async releaseEntries(): Promise<readonly JournalEntry[]> {
+    const entries = await this.entries();
+    return entries.filter((entry) => this.owns(entry) && entry.kind === "spawn" && entry.state === "settled" && entry.status === "ok");
+  }
+
   async pause(token: string, operation: PauseOperation): Promise<JournalEntry> {
     const entries = await this.entries();
     const entry = entries.find((candidate) => this.owns(candidate) && pauseTokens(candidate).includes(token));

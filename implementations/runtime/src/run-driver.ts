@@ -363,6 +363,27 @@ const dischargeOf = (handler: unknown): DischargingHandler | undefined =>
     : undefined;
 
 /**
+ * A handler that can release the seats a completed run spawned. Declared beside
+ * {@link DischargingHandler} for the same reason: the journal records the spawns, and ending them
+ * when the run completes is the driver's concern.
+ */
+export interface ReleasingHandler {
+  release(entries: readonly JournalEntry[]): Promise<unknown>;
+}
+
+/**
+ * Release every seat a completed run spawned. A seat belongs to the run that spawned it, so a run
+ * that completes despawns its seats, winners and plain spawns alike, through the same despawn its
+ * cancellation sweep uses for losers. Idempotent: a seat already gone is tolerated, so a crash
+ * between this and the completed note is repaired by the next completion.
+ */
+export async function releaseSeats(entries: readonly JournalEntry[], handler: unknown): Promise<void> {
+  if (typeof (handler as ReleasingHandler | undefined)?.release !== "function") return;
+  const seats = entries.filter((e) => e.kind === "spawn" && e.state === "settled" && e.status === "ok");
+  if (seats.length > 0) await (handler as ReleasingHandler).release(seats);
+}
+
+/**
  * Discharge every recorded cancellation whose flip is still owed: the second half of the design
  * `cancel.issued` stages (#532). A scope that cancels its losers writes the INTENT with its
  * outcome — `cancel: { losers, issued: false }` — because a journal write cancels nothing by
@@ -678,6 +699,7 @@ async function drive(
     // engines, and a crash between the two leaves `issued: false` for the next completion's sweep
     // rather than a completed run whose discharge silently never happened.
     await dischargeCancellations(result.journal.entries(), store, req.handler);
+    await releaseSeats(result.journal.entries(), req.handler);
     await noteFinal(req, "completed", appender.journalHigh, specRevision, statusRevision);
     return { status: "completed", result };
   } catch (e) {

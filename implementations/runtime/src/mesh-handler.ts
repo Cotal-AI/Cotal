@@ -608,6 +608,17 @@ export class MeshHandler {
   }
 
   /**
+   * Despawn the seats of a run that completed (the driver's `releaseSeats` is the caller). On the
+   * mediated path the run's own journal decides which seats those are, never the entries handed in.
+   */
+  async release(entries: readonly JournalEntry[]): Promise<void> {
+    const owed = this.services ? await this.services.authority.releaseEntries() : entries;
+    for (const e of owed)
+      if (e.kind === "spawn" && e.state === "settled" && e.status === "ok" && e.requestId !== undefined)
+        await this.dischargeSpawn(e);
+  }
+
+  /**
    * End the external state of a cancelled scope's LOSERS: the world half of the discharge the
    * scope entry's `cancel.issued` records (§7.6, and the driver's `dischargeCancellations` is the
    * caller). The entries handed in are the losers' subtrees; what has external state to end is the
@@ -746,7 +757,7 @@ export class MeshHandler {
         fact = await readGoalResult(actx, ref);
         if (fact !== undefined) break;
         if (this.now() >= deadline)
-          throw new Error(`the cancelled spawn goal "${goalId}" is accepted but reached no terminal within its ${window}ms readiness window; its agent cannot be released yet, and the discharge stays open to retry`);
+          throw new Error(`the spawn goal "${goalId}" is accepted but reached no terminal within its ${window}ms readiness window; its agent cannot be released yet, and the discharge stays open to retry`);
         await new Promise((r) => setTimeout(r, GOAL_POLL_MS).unref());
       }
     }
@@ -757,7 +768,7 @@ export class MeshHandler {
       // between the acceptance and the bind). The seat — if one came up — is not addressable from
       // here, and no retry will ever learn more, so throwing would wedge every future sweep of
       // this run behind an answer that cannot arrive. Name the leak for the operator instead.
-      console.error(`! discharge: the cancelled spawn goal "${goalId}" settled ${fact.state} with no readable agent identity; if its seat is up it must be despawned by hand (cotal ps)`);
+      console.error(`! discharge: the spawn goal "${goalId}" settled ${fact.state} with no readable agent identity; if its seat is up it must be despawned by hand (cotal ps)`);
       return;
     }
     const reply = await this.invokeManager(await this.manager(), "despawn", { graceful: true }, {
@@ -769,7 +780,7 @@ export class MeshHandler {
     // incarnation, and an incarnation the mapping no longer names is not running).
     const code = reply.reply.ok === false ? reply.reply.error?.code : undefined;
     if (code !== undefined && code !== "not-found" && code !== "expired")
-      throw new Error(`the cancelled spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
+      throw new Error(`the spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
   }
 
   /**
