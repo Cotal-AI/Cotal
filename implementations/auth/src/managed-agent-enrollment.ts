@@ -16,11 +16,16 @@ import {
   managedRetirementOpId,
   parseRemoteManagedAgentEnrollmentRequest,
   parseRemoteManagedAgentPrepareRetirementRequest,
+  parseRemoteManagedAgentRuntimeCreateRequest,
+  parseRemoteManagedAgentRuntimeStatusRequest,
   remoteManagerActors,
   type RemoteManagedAgentEnrollmentRequest,
   type RemoteManagedAgentPrepareRetirementRequest,
+  type RemoteManagedAgentRuntimeCreateRequest,
+  type RemoteManagedAgentRuntimeStatusRequest,
 } from "@cotal-ai/core";
 import { timingSafeEqual } from "node:crypto";
+import { ledgerAuthorizeGrant } from "./ledger.js";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 
 /** The live manager gate the host observes for itself. A null answer is an absent registration. */
@@ -103,4 +108,76 @@ export async function authorizeRemoteManagedAgentPrepareRetirement(
   if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))
     throw new EpEnvelopeError("permission-denied", "manager prepare-retirement proof does not match current host registration");
   return r;
+}
+
+export interface AuthorizeRemoteManagedAgentRuntimeArgs<R> {
+  request: R;
+  space: string;
+  /** The owner the host derived from the verified login proof. Never read from the request. */
+  owner: string;
+  /** This machine's ledger directory. The door reads the manager actor's row itself. */
+  dir: string;
+  proofSecret: string | Uint8Array;
+  observeManagerGate: ObserveManagerGate;
+}
+
+/** The only facts a runtime door decision carries, all verified for the current request. */
+export interface RemoteManagedAgentRuntimeDecision {
+  owner: string;
+  instanceId: string;
+  actor: string;
+  target: { owner: string; actor: string; lifecycleUid: string };
+}
+
+/**
+ * The shared runtime door: the enrollment door's gate, epoch, and proof checks, plus the ledger
+ * grant read here rather than passed in, so no host composition can decide without it.
+ */
+async function authorizeRemoteManagedAgentRuntime(
+  r: RemoteManagedAgentRuntimeCreateRequest | RemoteManagedAgentRuntimeStatusRequest,
+  args: Omit<AuthorizeRemoteManagedAgentRuntimeArgs<unknown>, "request">,
+  what: string,
+): Promise<RemoteManagedAgentRuntimeDecision> {
+  if (r.space !== args.space)
+    throw new EpEnvelopeError("permission-denied", `${what} request names space ${r.space}, not host space ${args.space}`);
+  if (r.target.owner !== args.owner)
+    throw new EpEnvelopeError("permission-denied", `${what} target owner "${r.target.owner}" does not match authenticated owner "${args.owner}"`);
+  let scope: string[];
+  try {
+    scope = ledgerAuthorizeGrant(args.dir)(args.owner, r.actor).scope ?? [];
+  } catch (e) {
+    throw new EpEnvelopeError("permission-denied", `${what} found no ledger grant for the manager actor: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!scope.includes("supervise"))
+    throw new EpEnvelopeError("permission-denied", `${what} needs scope "supervise"; spawn/admin do not imply it`);
+  const actors = remoteManagerActors(r.instanceId);
+  const gate = await args.observeManagerGate(r.instanceId);
+  if (!gate || gate.state !== "open")
+    throw new EpEnvelopeError("failed-precondition", `${what} found no current open manager gate for instance ${r.instanceId}`);
+  const servePrincipal = `${args.owner}.${actors.serve}`;
+  if (gate.principal !== servePrincipal)
+    throw new EpEnvelopeError("permission-denied", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);
+  if (gate.processEpoch !== r.serveEpoch)
+    throw new EpEnvelopeError("conflict", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);
+  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
+  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))
+    throw new EpEnvelopeError("permission-denied", `manager ${what} proof does not match current host registration`);
+  return { owner: args.owner, instanceId: r.instanceId, actor: r.actor, target: { ...r.target } };
+}
+
+/**
+ * Host policy deciding one hosted runtime create (class A). It touches no provider and persists
+ * nothing. The host applies its own intent match and performs the create after this returns.
+ */
+export async function authorizeRemoteManagedAgentRuntimeCreate(
+  args: AuthorizeRemoteManagedAgentRuntimeArgs<RemoteManagedAgentRuntimeCreateRequest>,
+): Promise<RemoteManagedAgentRuntimeDecision> {
+  return authorizeRemoteManagedAgentRuntime(parseRemoteManagedAgentRuntimeCreateRequest(args.request), args, "managed agent runtime-create");
+}
+
+/** Host policy authenticating one runtime status read. It authorizes no effect. */
+export async function authorizeRemoteManagedAgentRuntimeStatus(
+  args: AuthorizeRemoteManagedAgentRuntimeArgs<RemoteManagedAgentRuntimeStatusRequest>,
+): Promise<RemoteManagedAgentRuntimeDecision> {
+  return authorizeRemoteManagedAgentRuntime(parseRemoteManagedAgentRuntimeStatusRequest(args.request), args, "managed agent runtime-status");
 }

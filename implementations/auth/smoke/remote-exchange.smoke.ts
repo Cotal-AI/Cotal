@@ -584,6 +584,38 @@ try {
   const dispatched = await post(`${LOOPBACK}/manager-service-authority`, { idpToken: idpJwt, request: vedRequest() }, capHdr);
   check("the typed manager-authority route refuses an enrollment kind (host interception owns it)",
     dispatched.status === 403 && /must be handled by host platform interception/.test(String(dispatched.body.error)), dispatched);
+  // The hosted runtime kinds share this door. Each must reach the plane's own ledger read, gate, and
+  // proof check (the 403 on the forged proof proves it passed the parser and the ledger read), and a
+  // provider reference must never reach the plane at all.
+  const vedRuntime = (kind: string, overrides: Record<string, unknown> = {}) => ({
+    v: 1, kind, space: SPACE, actor: "cli", instanceId: vedInstance, managerLifecycleUid: mintLifecycleUid(),
+    requestId: `runtime${mintLifecycleUid()}`, registrationProof: `sha256:${"f".repeat(64)}`, serveEpoch: 3,
+    target: { owner: OWNER, actor: "enrolled", lifecycleUid: agentLifecycleUid }, identities: vedIdentities, ...overrides,
+  });
+  const vedCreate = await post(VED, { owner: OWNER, request: vedRuntime("manager-managed-agent-runtime-create") }, capHdr);
+  check("enrollment door: runtime-create reaches the plane's proof check (403 on the forged proof)",
+    vedCreate.status === 403 && /runtime-create proof does not match current host registration/.test(String(vedCreate.body.error)), vedCreate);
+  const vedStatus = await post(VED, { owner: OWNER, request: vedRuntime("manager-managed-agent-runtime-status") }, capHdr);
+  check("enrollment door: runtime-status reaches the plane's proof check (403 on the forged proof)",
+    vedStatus.status === 403 && /runtime-status proof does not match current host registration/.test(String(vedStatus.body.error)), vedStatus);
+  const vedProviderRef = await post(VED, { owner: OWNER, request: vedRuntime("manager-managed-agent-runtime-create", { providerRef: "prov-123" }) }, capHdr);
+  check("enrollment door: a runtime-create carrying a providerRef is refused 400 bad-request",
+    vedProviderRef.status === 400 && /unknown field "providerRef"/.test(String(vedProviderRef.body.error)), vedProviderRef);
+  const vedRuntimeStale = await post(VED, { owner: OWNER, request: vedRuntime("manager-managed-agent-runtime-status", { serveEpoch: 2 }) }, capHdr);
+  check("enrollment door: a runtime-status at a stale serve epoch maps to 409",
+    vedRuntimeStale.status === 409 && /is stale/.test(String(vedRuntimeStale.body.error)), vedRuntimeStale);
+  const runtimeDispatched = await post(`${LOOPBACK}/manager-service-authority`, { idpToken: idpJwt, request: vedRuntime("manager-managed-agent-runtime-create") }, capHdr);
+  check("the typed manager-authority route refuses a runtime kind (host interception owns it)",
+    runtimeDispatched.status === 403 && /runtime create and status must be handled by host platform interception/.test(String(runtimeDispatched.body.error)), runtimeDispatched);
+  // The SHIPPED client: the registered provider resolves this space's endpoint, mints a fresh IdP JWT
+  // from the cached login, and posts over the real transport. A stock host answers unimplemented, and
+  // the client surfaces that refusal rather than returning a body.
+  let clientRefusal = "";
+  try {
+    await cotalAuthProvider.requestRemoteManagedAgentRuntime!({ store, dir, request: vedRuntime("manager-managed-agent-runtime-status") as never });
+  } catch (e) { clientRefusal = e instanceof Error ? e.message : String(e); }
+  check("the shipped provider client reaches the stock route and surfaces its unimplemented refusal",
+    /signed in, but managed agent runtime status was refused: .*runtime create and status must be handled by host platform interception/.test(clientRefusal), clientRefusal);
 
   // ---------- G. per-peer isolation + budget separation ----------
   console.log("G) per-peer failure isolation; public throttling never touches loopback");
@@ -672,7 +704,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 89;
+const EXPECTED = 95;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

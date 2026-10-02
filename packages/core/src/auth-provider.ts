@@ -13,6 +13,8 @@ import type {
   RemoteManagedAgentEnrollmentResult,
   RemoteManagedAgentPrepareRetirementRequest,
   RemoteManagedAgentPrepareRetirementResult,
+  RemoteManagedAgentRuntimeRequest,
+  RemoteManagedAgentRuntimeResult,
   RemoteRetainedAgentValidationRequest,
   RemoteRetainedAgentValidationResult,
   RemoteRunAdmissionRequest,
@@ -181,6 +183,17 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagedAgentPrepareRetirementRequest;
   }): Promise<RemoteManagedAgentPrepareRetirementResult>;
+  /**
+   * Ask the host to create, or report, the hosted runtime of one already-enrolled managed agent.
+   * The request names only the enrollment's host-selected target; the host decides, owns the
+   * provider effect, and returns its intent state. Optional: a host with no hosted runtime leaves
+   * it absent, and the caller fails loud.
+   */
+  requestRemoteManagedAgentRuntime?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagedAgentRuntimeRequest;
+  }): Promise<RemoteManagedAgentRuntimeResult>;
   /**
    * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
    * offline from the login session + the space's local user-auth material (no IdP round trip).

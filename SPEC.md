@@ -1251,6 +1251,20 @@ managed-retire door (POST only, no `Origin`, JSON, the per-start capability, a c
 and MUST NOT accept a scope from the caller. It decides only: it mints nothing, writes nothing, and
 returns no secret.
 
+Two further host-owned kinds address the hosted runtime of an already-enrolled managed agent:
+`manager-managed-agent-runtime-create` and `manager-managed-agent-runtime-status`. Each carries the
+managed-agent envelope plus exactly `target: { owner, actor, lifecycleUid }`. Both schemas are closed:
+an unknown top-level or target field, including `providerRef`, `handle`, or `name`, MUST be refused as
+`bad-request` with no effect. There are no participant stop, adopt, or probe kinds. Both MUST be
+authorized with the same gate, epoch, and proof checks as enrollment, with a target owner equal to the
+authenticated owner, and with `supervise` read from the host's own ledger row for the manager actor.
+The decision yields only the verified owner, instance id, manager actor, and target. A status decision
+authorizes no effect. An implementation without host intent storage MUST refuse both with
+`unimplemented`. The answer carries `state` (`reserved`, `creating`, `bound`, `create-unknown`,
+`closing`, or `closed`), `readiness` (`ready`, `bound-not-ready`, or `none`), and an optional
+`retirementPhase`. An enrollment result MAY carry `runtimeIntent: { state: "reserved" }`, which is
+display-only and MUST NOT be treated as authority.
+
 The host, not the participant, issues every data-account credential requiring the account signing
 key. The only remote path is the lifecycle- and instance-bound typed protocol of §13.6; a broader
 bearer or a generic credential-mint endpoint is non-conformant. Its gate is frozen before staged
