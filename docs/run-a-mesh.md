@@ -39,7 +39,7 @@ in-memory store latch and preserves the JetStream root. Current credentials spli
 authority: the `cotal up` provisioner can create the presence stream but cannot delete it, while the
 teardown credential can delete it but cannot recreate it. Cotal therefore reports the condition but
 does not attempt an unsafe partial delete-and-recreate. Stop and restart the broker to recover.
-A broker below nats-server 2.14.5 carries the latch (nats-server fixed it in 2.14.5); `cotal up` says so when it starts or finds one. A broker below the SPEC §13.12 floor of 2.12 is refused at connect with the floor sentence.
+A broker below nats-server 2.14.5 carries the latch (nats-server fixed it in 2.14.5). When `cotal up` starts or finds such a broker and the space's presence bucket is file-backed, it says so. A memory-backed bucket gets no warning. A broker below the SPEC §13.12 floor of 2.12 is refused at connect with the floor sentence.
 
 Three modes:
 

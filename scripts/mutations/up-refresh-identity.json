@@ -62,10 +62,10 @@
     {
       "name": "F2 the already-running arm's broker-version read and #1356 warning are dropped, so a repeat cotal up against a stale broker says nothing",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "        const v = await brokerVersion(server, reconcileCreds);\n        if (belowPresenceSafeBroker(v))\n          console.error(\n            c.yellow(\n              `! nats-server ${v} is below 2.14.5: its file-backed presence bucket can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,\n            ),\n          );\n",
+      "find": "        const v = await brokerVersion(server, held.space, reconcileCreds);\n        if (belowPresenceSafeBroker(v.version) && v.presenceFileBacked)\n          console.error(\n            c.yellow(\n              `! nats-server ${v.version} is below 2.14.5 and the presence bucket of \"${held.space}\" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,\n            ),\n          );\n",
       "replace": "",
-      "expectRed": "the refresh also printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
-      "cell": "the refresh also printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
+      "expectRed": "the refresh over the file-backed presence bucket printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
+      "cell": "the refresh over the file-backed presence bucket printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
       "command": "pnpm build >/dev/null && pnpm smoke:presence-ttl-refresh-cli",
       "afterRestore": "pnpm build"
     },
@@ -74,8 +74,8 @@
       "file": "implementations/cli/src/commands/up.ts",
       "find": "  return p.patch < 5;\n",
       "replace": "  return p.patch >= 5;\n",
-      "expectRed": "the CLI printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
-      "cell": "the CLI printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
+      "expectRed": "the refresh over the file-backed presence bucket printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
+      "cell": "the refresh over the file-backed presence bucket printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
       "command": "pnpm build >/dev/null && pnpm smoke:presence-ttl-refresh-cli",
       "afterRestore": "pnpm build"
     }
