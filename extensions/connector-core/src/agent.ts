@@ -193,7 +193,7 @@ export interface ExactDrainResult {
   missingKeys: string[];
 }
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -1377,21 +1377,19 @@ export class MeshAgent extends EventEmitter {
         droppedChannels.push(channel);
         continue;
       }
-      const { messages, dropped } = await this.ep.recallChannel(channel, this.focusSince);
+      const { messages, seqs, dropped } = await this.ep.recallChannel(channel, this.focusSince);
       // Recall reads the same stored messages again on every call, so an id-less one needs the SAME
       // key each time: the recall mark, the ahead record and a part's read position are all keyed by
-      // it, and a key minted afresh per call re-serves the item forever (#613). The key is the
-      // envelope's digest and its place among byte-identical twins, still under the secret, so it
-      // stays disjoint from wire ids and distinct twins stay distinct.
-      const twins = new Map<string, number>();
-      for (const m of messages) {
+      // it, and a key minted afresh per call re-serves the item forever (#613). The key is its
+      // chat-stream sequence, which stays put when older retained messages age out. It is zero-padded
+      // so it orders like the sequence, and sits under the secret so it stays disjoint from wire ids.
+      for (const [i, m] of messages.entries()) {
         if (this.focusExcludedIds.has(m.id)) continue;
         let key: string | undefined;
         if (m.id === "") {
-          const digest = createHash("sha256").update(JSON.stringify(m)).digest("hex");
-          const n = twins.get(digest) ?? 0;
-          twins.set(digest, n + 1);
-          key = `${this.recvKeySecret}.r.${digest}.${n}`;
+          const seq = seqs[i];
+          if (seq === undefined) throw new Error(`recallChannel returned no stream sequence for an id-less message on ${channel}`);
+          key = `${this.recvKeySecret}.r.${String(seq).padStart(16, "0")}`;
         }
         items.push(this.toInboxItem(m, "channel", true, key));
       }

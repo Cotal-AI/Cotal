@@ -410,8 +410,8 @@
     {
       "name": "K38 an oversized message is cleared with its first part",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    if (part.done) {\n      agent.drainInboxDeliveries([item.recvKey]);",
-      "replace": "    if (true) {\n      agent.drainInboxDeliveries([item.recvKey]);",
+      "find": "    if (part.done) {\n      opts.last(item);",
+      "replace": "    if (true) {\n      opts.last(item);",
       "cell": "...and is NOT consumed by its first part: still buffered, never acked",
       "expectRed": "...and is NOT consumed by its first part: still buffered, never acked",
       "note": "#613 delivers a message larger than one response in parts, and the #603 rule still holds across them: clearing it with the first part would mark read a message whose remainder was never handed over."
