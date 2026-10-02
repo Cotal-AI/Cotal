@@ -15,11 +15,11 @@
  * successor activates on it, and it resumes from a prefix that is missing work the run really did.
  * No anchor inside the journal can detect that. `journalHigh` is the anchor OUTSIDE it.
  *
- * What that anchor does and does not cover, stated plainly because a guard believed to be wider
- * than it is is worse than none: it is written at each ACTIVATION, so it detects truncation back
- * past the last takeover. Steps appended since that activation are not covered — writing the record
- * per append would double every step's cost, and the journal's own ordinal chain already covers
- * every interior loss.
+ * What that anchor covers, stated plainly because a guard believed to be wider than it is is worse
+ * than none: the driver writes it at each ACTIVATION and again after every append it makes while
+ * the run is `running`, before the append resolves to the language. So a record the program has
+ * acted on is covered, including one appended since the last takeover. The cost is one record
+ * write per append. Interior loss is the journal's own ordinal chain's.
  */
 import type { KV } from "@nats-io/kv";
 import {

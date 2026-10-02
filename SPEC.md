@@ -3898,10 +3898,11 @@ split, mediated, written by the driver's commit path only.
   it, a released run has none, because its driver stopped holding it (`spec/cotal-lang.md` §9.2,
   L5012). `holder`, `epoch` and `fencingToken` name the driver that holds the run and the lease
   (§13.6 work pool) it holds it under. `journalHigh` is the highest journal ordinal (§14.4) the run
-  is KNOWN to have reached, written at each activation: it is the one anchor OUTSIDE the journal, so
-  a replay whose last ordinal is below it has lost records from the journal's tail, which nothing
-  inside the journal can see, and the driver MUST refuse to resume it. It covers truncation back
-  past the last activation and no further; interior loss is the journal's own ordinal chain's.
+  is KNOWN to have reached, written at each activation and after each append the driver makes
+  while the run is `running`, before that append resolves to the interpreter: it is the one anchor
+  OUTSIDE the journal, so a replay whose last ordinal is below it has lost records from the
+  journal's tail, which nothing inside the journal can see, and the driver MUST refuse to resume it.
+  Interior loss is the journal's own ordinal chain's.
 
 ### 14.4 The step journal on the wire
 
