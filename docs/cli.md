@@ -59,6 +59,7 @@ runtimes ship this way.
 | Messaging & watching | [`history`](#history) | Clear retained message history |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
 | Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `@cotal-ai/web` extension) |
+| Extensions & misc | [`linear`](#linear) | Call the official Linear MCP server (installed as the `@cotal-ai/linear` extension) |
 | Auth & meshes | [`mint`](#mint) | Mint a creds file for a space (static auth mode) |
 | Auth & meshes | [`login`](#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
 | Auth & meshes | [`logout`](#login) | Revoke the IdP session and clear the cached login |
@@ -1666,6 +1667,43 @@ surface. Detached mode re-execs the current Cotal installation, writes diagnosti
 the mesh root's `.cotal/web.log`, and reports success only after the HTTP server answers. It requires
 a recorded mesh root, but can be launched from any directory once `cotal up` has recorded the mesh.
 See [Watch a mesh](watch-a-mesh.md).
+
+## linear
+
+```bash
+cotal ext add @cotal-ai/linear
+cotal linear account add <name> --mode <write|readonly> (--token-stdin | --token-file <path>)
+cotal linear account show <name>
+cotal linear inventory <account> [--json]
+cotal linear call <account> <tool> [--args '<json>'] [--inventory <digest>] [--timeout <ms>]
+cotal linear resource <account> <uri> [--inventory <digest>] [--timeout <ms>]
+cotal linear prompt <account> <name> [--args '<json>'] [--inventory <digest>] [--timeout <ms>]
+```
+
+An operator client for the official Linear MCP server. It only talks to `https://mcp.linear.app/mcp`
+(mode `write`) or `https://mcp.linear.app/mcp/readonly` (mode `readonly`); there is no URL or header
+option. Use a separate account per Linear workspace, and prefer a `readonly` account with a
+restricted read key wherever writes are not needed.
+
+An account's token is a Linear API key or OAuth access token, sent as `Authorization: Bearer`. It is
+never taken from argv: `--token-stdin` stores it under the cotal home as a 0600 file, and
+`--token-file` points at an existing file that must not be readable by other users. The file is read
+at each use, so rotating it needs no restart. Redirects are refused so the token is never forwarded.
+
+`inventory` reads the server's capabilities and every page of its tools, plus resources, resource
+templates and prompts when the server advertises them. Names and schemas are printed as the server
+sent them. The digest covers the whole inventory; pass it to `--inventory` so a call is refused
+before dispatch if the inventory changed. Capabilities this command does not represent, such as
+resource subscriptions or logging, are listed under `unsupported`.
+
+`call`, `resource` and `prompt` print the server's reply as JSON. A tool result with `isError: true`
+is a normal result (exit 0). A refusal before dispatch exits 2 with outcome `not-executed`. A
+protocol error, a timeout, Ctrl-C, a response over the size cap, an expired session or a transport
+failure exits 3 and is never retried; its outcome is `unknown`, for read-only tools too, so check
+Linear before repeating a write. HTTP 401, 403 and 429 answers are reported as `not-executed`.
+
+Not yet available: serving Linear as a registered Cotal endpoint that agents call, and OAuth login.
+Today an agent reaches Linear only through an operator running these commands.
 
 ## deliver
 
