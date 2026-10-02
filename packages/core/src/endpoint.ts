@@ -4382,7 +4382,7 @@ export class CotalEndpoint extends EventEmitter {
           let msg: CotalMessage;
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
-          if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === owner) continue;
+          if (!isRecord(msg) || !parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === owner) continue;
           await this.publishDinbox(owner, lifecycleUid, { msg, channel, seq: m.seq, reason: "durable-channel", generation });
           copied++;
         }
@@ -4904,7 +4904,7 @@ export class CotalEndpoint extends EventEmitter {
     const channel = parsed.rest;
     let msg: CotalMessage;
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
-    if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) { m.ack(); return; } // authenticity (owner must be a real principal, not an old-shape alias)
+    if (!isRecord(msg) || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) { m.ack(); return; } // authenticity (owner must be a real principal, not an old-shape alias)
     const seq = m.seq;
     const normalizedMsg = authenticatedChannelMessage(msg, channel);
     // SECOND FENCE, AT THE COMMIT POINT. The entry check above cannot cover this unit's own awaits:
@@ -4978,6 +4978,7 @@ export class CotalEndpoint extends EventEmitter {
     const owner = `${pr.owner}.${pr.actor}`; // the member principal dot-form (acl/member keys, msgID)
     let entry: Plane3Entry;
     try { entry = m.json<Plane3Entry>(); } catch { m.ack(); return; } // undecodable — drop
+    if (!isRecord(entry)) { m.ack(); return; } // non-object envelope — permanently invalid
     const redeliveries = m.info?.deliveryCount ?? 1; // JsMsg delivery attempts (1 on first delivery)
     // Lifecycle-exact ACL re-auth (SPEC 13.1): the entry was addressed to pr.lifecycleUid's inbox, so
     // the row read is that lifecycle's exact key — a retired lifecycle's purged row reads as unknown
@@ -5326,7 +5327,7 @@ export class CotalEndpoint extends EventEmitter {
         // server policed who could publish. The payload `from` is advisory — it must match,
         // and a missing `from` or an unparseable subject on a delivery is itself an anomaly.
         // Reject (term — a spoof is permanently invalid, never redeliver) BEFORE any handler.
-        if (!isUsableMessageId(msg.id)) {
+        if (!isRecord(msg) || !isUsableMessageId(msg.id)) {
           m.term(); // malformed envelope (SPEC sec 5): absent/non-string id — permanently invalid
           this.emit("error", new Error(`dropped message on ${m.subject}: absent or non-string id`));
           continue;
@@ -5425,7 +5426,7 @@ export class CotalEndpoint extends EventEmitter {
           this.emit("error", e as Error);
           return;
         }
-        if (!isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
+        if (!isRecord(msg) || !isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
         if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.card.id) return; // our own echo
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
@@ -5659,7 +5660,7 @@ export class CotalEndpoint extends EventEmitter {
         continue; // skip undecodable
       }
       // Same authenticity guard as the tail; skip our own echoes in history.
-      if (!isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — history skips
+      if (!isRecord(msg) || !isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — history skips
       const parsed = parseSubject(sm.subject);
       if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
@@ -5711,7 +5712,7 @@ export class CotalEndpoint extends EventEmitter {
         continue; // skip undecodable
       }
       // Same authenticity guard as the tail/backfill; skip our own echoes.
-      if (!isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — recall skips
+      if (!isRecord(msg) || !isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — recall skips
       const parsed = parseSubject(sm.subject);
       if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       collected.push(authenticatedMessage(msg, parsed));

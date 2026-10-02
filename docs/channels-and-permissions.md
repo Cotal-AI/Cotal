@@ -42,6 +42,9 @@ who isn't currently joined**; on a `live` channel a mention writes a durable cop
 mentioned target whose read ACL covers the channel, so "authorized to read" and "currently
 joined" are distinct.
 
+Receivers discard non-object JSON payloads, including `null`, before reading message fields.
+A malformed payload does not stop later live delivery or retained-message reads.
+
 ## Membership changes
 
 An agent **self-joins** a channel's live subscription on its own, with no manager, as long as the
