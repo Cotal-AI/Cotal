@@ -91,8 +91,8 @@
       "file": "extensions/connector-core/src/agui.ts",
       "find": "    const event = o.error",
       "replace": "    const event = false",
-      "expectRed": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-code-and-the-fixed-message",
-      "cell": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-code-and-the-fixed-message",
+      "expectRed": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-the-fixed-message-and-no-code",
+      "cell": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-the-fixed-message-and-no-code",
       "note": "The pre-fix behaviour exactly: every close is a RUN_FINISHED, so a failed turn is published as one that ended and a reader cannot tell it from one that succeeded."
     },
     {
@@ -100,8 +100,8 @@
       "file": "extensions/connector-core/src/agui-holder.ts",
       "find": "      const runId = await emitter.closeRun({ timestamp, ...(error ? { error } : {}) });",
       "replace": "      const runId = await emitter.closeRun({ timestamp });",
-      "expectRed": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-its-code-and-the-fixed-message",
-      "cell": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-its-code-and-the-fixed-message",
+      "expectRed": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code",
+      "cell": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code",
       "note": "A silent drop one layer above the emitter. The connector still believes it reported a failure, the emitter never hears about it, and the wire says the turn finished."
     },
     {

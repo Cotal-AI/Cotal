@@ -23,9 +23,9 @@
  *   K5  drop the `onRunClosed` report
  *       -> `holder:the-closed-run-is-reported-so-a-mapper-can-forget-it`
  *   K6  publish a finish even when a failure was reported, which is what this plane shipped
- *       -> `close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-code-and-the-fixed-message`
+ *       -> `close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-the-fixed-message-and-no-code`
  *   K7  drop the reason in the holder, one layer above the emitter that would have carried it
- *       -> `holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-its-code-and-the-fixed-message`
+ *       -> `holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code`
  *   K8  skip the close-path bound, so an oversized failure detail still throws in packUnits
  *       -> `close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR`
  *   K9  delete `this.run = undefined` from the shared terminal arm of AguiBrackets.accept
@@ -436,11 +436,11 @@ try {
     const errFrame = frameOf(ep.publishes[ep.publishes.length - 1]!);
     const ev = errFrame.events[0] as { type?: string; message?: string; code?: string; runId?: string };
     c(
-      "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-code-and-the-fixed-message",
+      "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-the-fixed-message-and-no-code",
       errFrame.events.length === 1 &&
         ev.type === "RUN_ERROR" &&
         ev.message === RUN_ERROR_EGRESS_MESSAGE &&
-        ev.code === "APIError" &&
+        !("code" in ev) &&
         // RUN_ERROR has no runId of its own; the FRAME is what attributes it to a run.
         ev.runId === undefined &&
         errFrame.runId === "run-e",
@@ -496,8 +496,8 @@ try {
     const frame = frameOf(ep.publishes[ep.publishes.length - 1]!);
     const ev = frame.events[0] as { type?: string; message?: string; code?: string };
     c(
-      "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-its-code-and-the-fixed-message",
-      ev.type === "RUN_ERROR" && ev.message === RUN_ERROR_EGRESS_MESSAGE && ev.code === "ProviderAuthError",
+      "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code",
+      ev.type === "RUN_ERROR" && ev.message === RUN_ERROR_EGRESS_MESSAGE && !("code" in ev),
       { events: frame.events, errors: errors.map((e) => e.message) },
     );
     // An error close is still a close, so the mapper must be told to forget the run exactly as it is
@@ -583,7 +583,7 @@ try {
         errEv?.message === RUN_ERROR_EGRESS_MESSAGE,
         errEv?.message?.slice(0, 200),
       );
-      c("close:the-bounded-RUN_ERROR-preserves-the-failure-code", errEv?.code === "APIError", errEv?.code);
+      c("close:the-bounded-RUN_ERROR-publishes-no-failure-code", errEv !== undefined && !("code" in errEv), errEv?.code);
       c(
         "close:the-bounded-RUN_ERROR-fits-the-live-payload-ceiling",
         errEv?.type === "RUN_ERROR" &&
@@ -653,7 +653,7 @@ try {
         errEv?.message === RUN_ERROR_EGRESS_MESSAGE,
         errEv?.message?.slice(0, 200),
       );
-      c("holder:the-bounded-RUN_ERROR-preserves-the-failure-code", errEv?.code === "APIError", errEv?.code);
+      c("holder:the-bounded-RUN_ERROR-publishes-no-failure-code", errEv !== undefined && !("code" in errEv), errEv?.code);
       c(
         "holder:the-bounded-RUN_ERROR-fits-the-live-payload-ceiling",
         errEv?.type === "RUN_ERROR" &&
@@ -715,7 +715,7 @@ try {
         closed.err === undefined &&
           ev?.type === "RUN_ERROR" &&
           ev.message === RUN_ERROR_EGRESS_MESSAGE &&
-          ev.code === "APIError" &&
+          !("code" in ev) &&
           (last?.encodedSize ?? Infinity) <= CEILING,
         { err: closed.err?.message, ev, encodedSize: last?.encodedSize },
       );

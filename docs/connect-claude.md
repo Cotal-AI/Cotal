@@ -372,10 +372,10 @@ grant any channel you name: that is the out-of-band grant, not a way around the 
 **Failed turns publish run errors.** Claude Code decides for itself
 whether a turn finished or died and fires one of two hooks accordingly, so the connector relays that
 decision rather than making one of its own: a turn that ended on an API error ends its run with
-`RUN_ERROR` carrying the harness's own error kind (`rate_limit`, `billing_error`, `server_error`,
-`max_output_tokens` and the rest) as the code and the fixed message `run failed`. The detail Claude
-Code reported is not published: it is upstream text that can echo your prompt or tool output, and the
-events channel has a different read ACL. A turn that ended normally still
+`RUN_ERROR` carrying the fixed message `run failed` and no code. Neither the detail Claude Code
+reported nor its error kind is published there: both are upstream values that can echo your prompt or
+tool output, and the events channel has a different read ACL. The error kind still reaches presence
+as the agent's condition (`rate_limit`, `auth`, `billing` and the rest). A turn that ended normally still
 ends with a run-finished event carrying no outcome, which says the turn ended and does not claim it
 succeeded.
 

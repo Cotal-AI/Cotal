@@ -1134,7 +1134,7 @@ export class AguiBracketStateLost extends AguiVocabularyError {
 
 export class AguiEmitterHalted extends Error {
   constructor(
-    readonly reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable" | "egress-extra-property",
+    readonly reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable" | "egress-extra-property" | "egress-run-error",
     message: string,
   ) {
     super(message);
@@ -1357,41 +1357,42 @@ export function isForbiddenEgressEventType(type: unknown): boolean {
  * The only `message` a published `RUN_ERROR` carries.
  *
  * `RUN_ERROR` is the terminal a renderer waits on, so the kind cannot be withheld the way tool
- * arguments and results are. Its `message` is upstream free text that no connector controls: a
- * harness can echo the prompt, a peer message or tool output into it, and the events channel has a
- * different read ACL from wherever that text was read (#1431). So the content is bounded instead:
- * every `RUN_ERROR` leaving through the emitter carries this fixed text, and the upstream detail
- * stays in the seat's own log.
+ * arguments and results are. Its `message`, `code` and `rawEvent` are upstream values that no
+ * connector controls: a harness can echo the prompt, a peer message or tool output into any of them,
+ * and the events channel has a different read ACL from wherever that text was read (#1431). So the
+ * content is fixed instead: every `RUN_ERROR` leaving through the emitter carries this text and no
+ * `code` or `rawEvent`, and the upstream detail stays in the seat's own log. The failure kind a
+ * connector classified is published on presence, as the agent's condition.
  */
 export const RUN_ERROR_EGRESS_MESSAGE = "run failed";
 
-/** A `code` is kept only when it is a short identifier, the shape every connector's error kind has. */
-const RUN_ERROR_CODE_SHAPE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
-
-/** The `message` and `code` a `RUN_ERROR` may publish: the fixed message, and the code if it is an identifier. */
-export function egressRunErrorFields(o: { message: string; code?: string }): { message: string; code?: string } {
+/** The one `RUN_ERROR` shape that may publish: the fixed message, the timestamp, and Cotal metadata. */
+function egressRunError(o: { timestamp?: number; cotal?: CotalMeta }): WithCotal<RunErrorEvent> {
   return {
+    type: AGUI_EVENT_TYPE.RUN_ERROR,
     message: RUN_ERROR_EGRESS_MESSAGE,
-    ...(o.code !== undefined && RUN_ERROR_CODE_SHAPE.test(o.code) ? { code: o.code } : {}),
-  };
+    ...(o.timestamp !== undefined ? { timestamp: o.timestamp } : {}),
+    ...(o.cotal ? { cotal: o.cotal } : {}),
+  } as WithCotal<RunErrorEvent>;
+}
+
+/** Whether a `RUN_ERROR` read back from a frozen body is the shape {@link egressRunError} writes. */
+function isEgressRunError(e: object): boolean {
+  return (e as { message?: unknown }).message === RUN_ERROR_EGRESS_MESSAGE && !("code" in e) && !("rawEvent" in e);
 }
 
 /**
- * Drop forbidden kinds from a mapped unit, and bound every `RUN_ERROR` to
- * {@link egressRunErrorFields}. Sibling lifecycle and text events stay.
+ * Drop forbidden kinds from a mapped unit, and rebuild every `RUN_ERROR` as
+ * {@link egressRunError}. Sibling lifecycle and text events stay.
  */
 export function applyAguiEgressPolicy(events: readonly AguiEvent[]): AguiEvent[] {
   return events
     .filter((e) => !isForbiddenEgressEventType((e as { type?: unknown }).type))
-    .map((e) => {
-      if (e.type !== AGUI_EVENT_TYPE.RUN_ERROR) return e;
-      const { message, code, ...rest } = e as WithCotal<RunErrorEvent>;
-      return { ...rest, ...egressRunErrorFields({ message, ...(typeof code === "string" ? { code } : {}) }) } as AguiEvent;
-    });
+    .map((e) => (e.type === AGUI_EVENT_TYPE.RUN_ERROR ? egressRunError(e as WithCotal<RunErrorEvent>) : e));
 }
 
 /** What a frozen body is, as far as the egress policy can tell. */
-export type FrozenBodyEgressVerdict = "clean" | "forbidden-kind" | "unreadable" | "extra-property";
+export type FrozenBodyEgressVerdict = "clean" | "forbidden-kind" | "unreadable" | "extra-property" | "run-error-content";
 
 /**
  * Classify a frozen body for egress. Used on retry, where the body is already on disk and must not
@@ -1432,6 +1433,10 @@ export type FrozenBodyEgressVerdict = "clean" | "forbidden-kind" | "unreadable" 
  * `forbidden-kind` still wins over `unreadable` ACROSS parts: an earlier unparseable part does not
  * stop a later part's forbidden event from being named as the more specific diagnosis.
  *
+ * `run-error-content` (#1431) is read off the same parse result as the forbidden-kind scan: a
+ * `RUN_ERROR` other than the fixed shape {@link applyAguiEgressPolicy} writes was frozen before that
+ * fix and may carry upstream text, so it halts like a pre-fix tool event does.
+ *
  * A part whose `kind` is not `AGUI_FRAME_KIND` is skipped, as it was before. That is the
  * pre-existing non-frame gap and this function neither widens nor closes it.
  *
@@ -1465,6 +1470,11 @@ export function frozenBodyEgressVerdict(body: readonly unknown[]): FrozenBodyEgr
         for (const e of frame.events) {
           if (isForbiddenEgressEventType((e as { type?: unknown }).type)) return "forbidden-kind";
         }
+        // A RUN_ERROR frozen before #1431 can carry upstream text in `message`, `code` or `rawEvent`.
+        // Every frame this version writes holds only the fixed shape, so anything else halts.
+        for (const e of frame.events) {
+          if (e.type === AGUI_EVENT_TYPE.RUN_ERROR && !isEgressRunError(e)) return "run-error-content";
+        }
         // Closed-schema check: refuse any property not in the known set.
         // This is the fix for #1432: the fence previously checked only
         // .events[].type and let sibling/extra properties ride through.
@@ -1495,8 +1505,10 @@ const RUN_ERROR_DETAIL_BOUND_NOTICE =
  * that does not fit has no honest cursor. A close unit is not a source observation: we author it,
  * it consumes no record, and refusing it leaves the run with no terminal, no pending WAL recovery,
  * and a dead holder. So the close rebuilds the one event until the SAME `measure` `packUnits` will
- * use says it fits, keeps the failure `code`, and says in the message that the original detail was
- * omitted or shortened. A short message that already fits is returned unchanged.
+ * use says it fits, and says in the message that the original detail was omitted or shortened. A
+ * short message that already fits is returned unchanged. Since #1431 the close passes only
+ * {@link RUN_ERROR_EGRESS_MESSAGE}, which is shorter than the notice, so this either returns it
+ * unchanged or throws.
  *
  * It does not live in `packUnits` and it does not call {@link splitFrames}. Those are a different
  * contract (source-record packing, and the preview plane). Putting the bound on this close is the
@@ -1832,10 +1844,10 @@ export class AguiEmitter<T> {
    * mean a turn FAILED is a connector's decision and is stated at each connector's own mapping site;
    * this file only carries the answer to the wire.
    *
-   * **`error.message` NEVER REACHES THE WIRE.** It is upstream free text, so the close publishes
-   * {@link RUN_ERROR_EGRESS_MESSAGE} and keeps `code` only when it is an identifier, through the same
-   * {@link egressRunErrorFields} the write path uses (#1431). The frame bound still runs after that,
-   * so a close whose envelope cannot fit fails loud rather than leaving the run without a terminal.
+   * **`error.message` AND `error.code` NEVER REACH THE WIRE.** Both are upstream values, so the close
+   * publishes {@link RUN_ERROR_EGRESS_MESSAGE} with no code, the same shape the write path's
+   * {@link egressRunError} produces (#1431). The frame bound still runs after that, so a close whose
+   * envelope cannot fit fails loud rather than leaving the run without a terminal.
    *
    * @returns the run that was closed, or `null` when the stream was already at a stopping point.
    */
@@ -1867,12 +1879,10 @@ export class AguiEmitter<T> {
     // optional `code` — so the run it closes is named by the frame's unit below, not by the event.
     // The bound is measured with the same function and ceiling `packUnits` will use, at the `seq`
     // the closing frame will actually carry.
-    const bounded = o.error ? egressRunErrorFields(o.error) : undefined;
-    const event = bounded
+    const event = o.error
       ? boundRunErrorForFrame({
-          message: bounded.message,
+          message: RUN_ERROR_EGRESS_MESSAGE,
           timestamp: o.timestamp,
-          ...(bounded.code ? { code: bounded.code } : {}),
           ...(o.cotal ? { cotal: o.cotal } : {}),
           threadId: this.threadId,
           runId,
@@ -1986,6 +1996,18 @@ export class AguiEmitter<T> {
           `with a different read ACL. \`aguiFrame\` enforces a non-empty events ARRAY at ` +
           `construction, so no frame this version writes can land here; one that does was frozen by ` +
           `something else. Clear the pending frame only as an explicit abandonment of this epoch.`,
+      );
+    }
+    if (egress === "run-error-content") {
+      throw this.halt(
+        "egress-run-error",
+        `event emitter for ${this.channel}: refusing to ${o.retry ? "republish a frozen" : "publish a"} ` +
+          `frame whose RUN_ERROR carries upstream text onto ${this.channel}. Since #1431 a published ` +
+          `RUN_ERROR has the fixed message "${RUN_ERROR_EGRESS_MESSAGE}" and no code or rawEvent, because ` +
+          `the upstream error text can echo a prompt, a peer message or tool output and that channel ` +
+          `has a different read ACL. The body is not rewritten: the WAL froze it at beginSend, so an ` +
+          `upgrade across a pending pre-fix frame HALTS rather than leaks. Clear the pending frame ` +
+          `only as an explicit abandonment of this epoch.`,
       );
     }
     if (egress === "extra-property") {
@@ -2102,7 +2124,7 @@ export class AguiEmitter<T> {
     );
   }
 
-  private halt(reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable" | "egress-extra-property", message: string): AguiEmitterHalted {
+  private halt(reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable" | "egress-extra-property" | "egress-run-error", message: string): AguiEmitterHalted {
     this.halted = new AguiEmitterHalted(reason, message);
     return this.halted;
   }
