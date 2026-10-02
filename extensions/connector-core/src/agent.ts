@@ -193,7 +193,7 @@ export interface ExactDrainResult {
   missingKeys: string[];
 }
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -364,7 +364,8 @@ export class MeshAgent extends EventEmitter {
   private focusSince?: number;
   private enteringFocus = false;
   /** The receive-key namespace secret (#624): a per-session random value minted at construction,
-   *  never written to any wire or log. Minted receive keys are `${secret}.${seq}`, so they are
+   *  never written to any wire or log. Minted receive keys are `${secret}.${seq}` (`${secret}.r.…`
+   *  for an id-less focus recall item, see {@link recallAmbient}), so they are
    *  DISJOINT from wire ids by construction: an attacker-chosen wire id cannot equal one, so one
    *  verdict can never select two entries through a forged collision. Recognition is FUNCTIONAL
    * (the key starts with the secret), so it cannot saturate the way a bounded set would: every
@@ -954,14 +955,14 @@ export class MeshAgent extends EventEmitter {
    *  core has already normalized `channel` from the authenticated chat subject, while `service`
    *  remains a payload display label. Shared by live ingest and
    *  focus recall ({@link recallAmbient}). */
-  private toInboxItem(m: CotalMessage, kind: InboxItem["kind"], historical: boolean): InboxItem {
+  private toInboxItem(m: CotalMessage, kind: InboxItem["kind"], historical: boolean, mintedKey?: string): InboxItem {
     const text = partsToText(m.parts);
     return {
       id: m.id,
       // The wire id when there is one; a minted opaque key when the id is the empty string (#624:
       // an empty id is never a dedup key, so it is never an address either; but the delivery still
       // needs to be individually drainable/ackable, or it can never clear and never commit).
-      recvKey: m.id !== "" ? m.id : `${this.recvKeySecret}.${++this.recvKeySeq}`,
+      recvKey: m.id !== "" ? m.id : (mintedKey ?? `${this.recvKeySecret}.${++this.recvKeySeq}`),
       ts: m.ts,
       fromId: m.from.id,
       fromName: m.from.name,
@@ -1377,8 +1378,22 @@ export class MeshAgent extends EventEmitter {
         continue;
       }
       const { messages, dropped } = await this.ep.recallChannel(channel, this.focusSince);
+      // Recall reads the same stored messages again on every call, so an id-less one needs the SAME
+      // key each time: the recall mark, the ahead record and a part's read position are all keyed by
+      // it, and a key minted afresh per call re-serves the item forever (#613). The key is the
+      // envelope's digest and its place among byte-identical twins, still under the secret, so it
+      // stays disjoint from wire ids and distinct twins stay distinct.
+      const twins = new Map<string, number>();
       for (const m of messages) {
-        if (!this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, "channel", true));
+        if (this.focusExcludedIds.has(m.id)) continue;
+        let key: string | undefined;
+        if (m.id === "") {
+          const digest = createHash("sha256").update(JSON.stringify(m)).digest("hex");
+          const n = twins.get(digest) ?? 0;
+          twins.set(digest, n + 1);
+          key = `${this.recvKeySecret}.r.${digest}.${n}`;
+        }
+        items.push(this.toInboxItem(m, "channel", true, key));
       }
       if (dropped) droppedChannels.push(channel);
     }
