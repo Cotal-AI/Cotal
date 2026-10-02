@@ -93,7 +93,9 @@ export type ClientRequest =
 
 export type ServerEvent =
   | { event: "output"; sub: number; data: string }
-  | { event: "exit"; sub?: number };
+  // `exit` is the status the custodian reaped, so a reader learns how the child ended from the
+  // event itself rather than only from a later hello or wait-exit round trip.
+  | { event: "exit"; sub?: number; exit?: { code?: number; signal?: number } };
 
 export type ServerReply =
   | {

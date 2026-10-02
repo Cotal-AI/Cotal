@@ -76,7 +76,7 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
     pid: record.childPid,
     record,
     status: () => status,
-    exitInfo: () => exit,
+    exitInfo: () => exit ?? client.exitInfo(),
     stop: (opts) => {
       later((c) => c.stop(opts?.graceful === false ? "hard" : "graceful"));
     },

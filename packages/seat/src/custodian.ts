@@ -284,7 +284,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       clearTimeout(confirmTimer);
       confirmTimer = undefined;
     }
-    for (const sock of controllers) send(sock, { event: "exit" });
+    for (const sock of controllers) send(sock, { event: "exit", exit });
     resolveWaiters();
     settleTerminal();
     armUnobservedHandoff();
@@ -447,7 +447,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           status: alive ? "running" : "exited",
           ...(exit ? { exit } : {}),
         });
-        if (!alive) send(sock, { event: "exit" });
+        if (!alive) send(sock, { event: "exit", ...(exit ? { exit } : {}) });
         return;
       }
       case "snapshot": {
@@ -463,7 +463,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         session.owned.add(sub);
         send(sock, { id: req.id, ok: true, op: "subscribe-output", sub });
         if (early) send(sock, { event: "output", sub, data: Buffer.from(early, "utf8").toString("base64") });
-        if (!alive) send(sock, { event: "exit", sub });
+        if (!alive) send(sock, { event: "exit", sub, ...(exit ? { exit } : {}) });
         return;
       }
       case "unsubscribe-output": {

@@ -35,6 +35,7 @@ export class SeatClient {
   private exits = new Set<() => void>();
   private helloInfo: HelloInfo | undefined;
   private pendingExit = false;
+  private pendingExitInfo: { code?: number; signal?: number } | undefined;
   private closed = false;
 
   constructor(private readonly record: SeatRecord) {}
@@ -75,7 +76,7 @@ export class SeatClient {
       cols: reply.cols,
       rows: reply.rows,
       status: this.pendingExit ? "exited" : reply.status,
-      ...(reply.exit ? { exit: reply.exit } : {}),
+      ...((reply.exit ?? this.pendingExitInfo) ? { exit: reply.exit ?? this.pendingExitInfo } : {}),
     };
     return this.helloInfo;
   }
@@ -105,6 +106,11 @@ export class SeatClient {
     } finally {
       if (this.pendingSubscribe === fn) this.pendingSubscribe = undefined;
     }
+  }
+
+  /** How the child ended, once the custodian has said so (hello, exit event, or wait-exit). */
+  exitInfo(): { code?: number; signal?: number } | undefined {
+    return this.helloInfo?.exit ?? this.pendingExitInfo;
   }
 
   onExit(fn: () => void): () => void {
@@ -184,8 +190,13 @@ export class SeatClient {
         return;
       }
       if (msg.event === "exit") {
-        if (this.helloInfo) this.helloInfo.status = "exited";
-        else this.pendingExit = true;
+        if (this.helloInfo) {
+          this.helloInfo.status = "exited";
+          if (msg.exit) this.helloInfo.exit = msg.exit;
+        } else {
+          this.pendingExit = true;
+          if (msg.exit) this.pendingExitInfo = msg.exit;
+        }
         for (const fn of this.exits) fn();
         this.exits.clear();
       }
