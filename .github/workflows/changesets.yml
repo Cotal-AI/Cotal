@@ -69,7 +69,7 @@ jobs:
   version:
     if: github.event_name == 'push' || inputs.snapshot == ''
     needs: [seat-native-linux-x64, seat-native-linux-arm64]
-    timeout-minutes: 20
+    timeout-minutes: 35
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
@@ -162,13 +162,25 @@ jobs:
             exit 1
           fi
 
-      # Cut the GitHub Release ONLY when this push actually published a new version to npm AND the
-      # full closure gate passed. The gate exits non-zero on a partial publish, an unsettled registry,
-      # or a version nothing serves, so the Release step runs only after every package in the fixed
-      # group is verified present at the requested version on the registry.
+      # Presence is not installability: npm install reads the packument, which can lag the
+      # per-version endpoint the closure gate reads, so a closed closure can still fail
+      # `npm i -g cotal-ai@<version>` with ETARGET on a pinned sibling (#1412). Install the version
+      # from the registry into a scratch prefix and run the binary, polling until a deadline, before
+      # anything is announced. A version that never installs reds the job and cuts no Release.
+      - name: Verify the release installs
+        id: install-gate
+        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true'
+        run: |
+          node scripts/verify-release-installable.mjs "${{ steps.closure-gate.outputs.version }}"
+          echo "install_ok=true" >> "$GITHUB_OUTPUT"
+
+      # Cut the GitHub Release ONLY when this push actually published a new version to npm, the full
+      # closure gate passed, and that version installed from the registry and ran. The closure gate
+      # exits non-zero on a partial publish, an unsettled registry, or a version nothing serves; the
+      # install gate fails when `cotal-ai@<version>` does not install and run before its deadline.
       - name: Tag and cut the GitHub Release on publish
         id: release-step
-        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true'
+        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true' && steps.install-gate.outputs.install_ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
@@ -202,7 +214,7 @@ jobs:
   # tarball or a version mismatch reds this job. The probe is a LEAF job: it runs after `version`
   # completes, so `gh release create` has already run, and nothing depends on this job. It reds the
   # overall workflow but does NOT gate the GitHub Release (which is gated by the closure gate from
-  # #1502). It validates the SHAPE of cotal-ai's OWN packed artifact (structure, binary presence,
+  # #1502 and the registry install gate). It validates the SHAPE of cotal-ai's OWN packed artifact (structure, binary presence,
   # startup). It does not pack the sibling workspace packages, so their packaging is not exercised,
   # and it does not cover registry-side propagation or native-asset loading.
   install-probe:
