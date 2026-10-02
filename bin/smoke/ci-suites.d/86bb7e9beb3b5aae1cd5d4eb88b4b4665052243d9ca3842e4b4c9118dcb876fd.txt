@@ -1,0 +1,4 @@
+# Hosted runtime create/status refusals at the real authority plane: closed parsers, every door
+# guard beside its positive control, and stock dispatch answering unimplemented. Added with the
+# suite in #2316, which defined the script but not this fragment, so nothing ran it.
+smoke:managed-agent-runtime:auth

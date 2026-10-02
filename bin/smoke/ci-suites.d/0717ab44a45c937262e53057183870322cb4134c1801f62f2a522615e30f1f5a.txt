@@ -1,0 +1,4 @@
+# A delivery daemon must survive a renewal owner's adoption landing during its own start-up (#2304):
+# an early adoption is refused as not started, the next pass on that daemon adopts, a late one adopts.
+# Added with the suite in #2315, which defined the script but not this fragment, so nothing ran it.
+smoke:delivery-startup-adoption
