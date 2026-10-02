@@ -1353,9 +1353,41 @@ export function isForbiddenEgressEventType(type: unknown): boolean {
   return typeof type === "string" && EGRESS_FORBIDDEN_TYPES.has(type);
 }
 
-/** Drop forbidden kinds from a mapped unit. Sibling lifecycle and text events stay. */
+/**
+ * The only `message` a published `RUN_ERROR` carries.
+ *
+ * `RUN_ERROR` is the terminal a renderer waits on, so the kind cannot be withheld the way tool
+ * arguments and results are. Its `message` is upstream free text that no connector controls: a
+ * harness can echo the prompt, a peer message or tool output into it, and the events channel has a
+ * different read ACL from wherever that text was read (#1431). So the content is bounded instead:
+ * every `RUN_ERROR` leaving through the emitter carries this fixed text, and the upstream detail
+ * stays in the seat's own log.
+ */
+export const RUN_ERROR_EGRESS_MESSAGE = "run failed";
+
+/** A `code` is kept only when it is a short identifier, the shape every connector's error kind has. */
+const RUN_ERROR_CODE_SHAPE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+
+/** The `message` and `code` a `RUN_ERROR` may publish: the fixed message, and the code if it is an identifier. */
+export function egressRunErrorFields(o: { message: string; code?: string }): { message: string; code?: string } {
+  return {
+    message: RUN_ERROR_EGRESS_MESSAGE,
+    ...(o.code !== undefined && RUN_ERROR_CODE_SHAPE.test(o.code) ? { code: o.code } : {}),
+  };
+}
+
+/**
+ * Drop forbidden kinds from a mapped unit, and bound every `RUN_ERROR` to
+ * {@link egressRunErrorFields}. Sibling lifecycle and text events stay.
+ */
 export function applyAguiEgressPolicy(events: readonly AguiEvent[]): AguiEvent[] {
-  return events.filter((e) => !isForbiddenEgressEventType((e as { type?: unknown }).type));
+  return events
+    .filter((e) => !isForbiddenEgressEventType((e as { type?: unknown }).type))
+    .map((e) => {
+      if (e.type !== AGUI_EVENT_TYPE.RUN_ERROR) return e;
+      const { message, code, ...rest } = e as WithCotal<RunErrorEvent>;
+      return { ...rest, ...egressRunErrorFields({ message, ...(typeof code === "string" ? { code } : {}) }) } as AguiEvent;
+    });
 }
 
 /** What a frozen body is, as far as the egress policy can tell. */
@@ -1800,11 +1832,10 @@ export class AguiEmitter<T> {
    * mean a turn FAILED is a connector's decision and is stated at each connector's own mapping site;
    * this file only carries the answer to the wire.
    *
-   * **AN OVERSIZED `error.message` IS BOUNDED HERE, ONCE, FOR EVERY CONNECTOR.** The message is
-   * upstream free text. If it cannot fit in the one closing frame, the close rebuilds the event so
-   * it does, keeps the `code`, and the emitted message says the original detail was omitted or
-   * shortened because of the bound. A short message is unchanged. The alternative is `packUnits`
-   * refusing before `beginSend`, which leaves the run with no terminal and kills the holder.
+   * **`error.message` NEVER REACHES THE WIRE.** It is upstream free text, so the close publishes
+   * {@link RUN_ERROR_EGRESS_MESSAGE} and keeps `code` only when it is an identifier, through the same
+   * {@link egressRunErrorFields} the write path uses (#1431). The frame bound still runs after that,
+   * so a close whose envelope cannot fit fails loud rather than leaving the run without a terminal.
    *
    * @returns the run that was closed, or `null` when the stream was already at a stopping point.
    */
@@ -1836,11 +1867,12 @@ export class AguiEmitter<T> {
     // optional `code` — so the run it closes is named by the frame's unit below, not by the event.
     // The bound is measured with the same function and ceiling `packUnits` will use, at the `seq`
     // the closing frame will actually carry.
-    const event = o.error
+    const bounded = o.error ? egressRunErrorFields(o.error) : undefined;
+    const event = bounded
       ? boundRunErrorForFrame({
-          message: o.error.message,
+          message: bounded.message,
           timestamp: o.timestamp,
-          ...(o.error.code ? { code: o.error.code } : {}),
+          ...(bounded.code ? { code: bounded.code } : {}),
           ...(o.cotal ? { cotal: o.cotal } : {}),
           threadId: this.threadId,
           runId,

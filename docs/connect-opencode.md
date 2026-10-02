@@ -133,11 +133,9 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   are leaving is flushed and its open run is closed, so a reader never holds a run that never ends.
 - **Failed turns publish run errors.** OpenCode reports a turn that
   died (an upstream API error, a provider auth failure, or an output-length stop) on its own
-  `session.error` event, and that turn ends its run with `RUN_ERROR` carrying OpenCode's reason and
-  its own error name as the code. If that reason cannot fit in the one closing frame, the shared close
-  still publishes one `RUN_ERROR` that does fit: it keeps the code and says the original detail
-  was omitted or shortened because of the bound, so a reader is never shown a truncated message as
-  complete. A turn **you** stopped is not a failure and is not published as one: a user cancellation
+  `session.error` event, and that turn ends its run with `RUN_ERROR` carrying its own error name as
+  the code and the fixed message `run failed`. OpenCode's reason is not published: it is upstream
+  text that can echo your prompt or tool output, and the events channel has a different read ACL. A turn **you** stopped is not a failure and is not published as one: a user cancellation
   arrives on the same event, and it closes the run as an ordinary end. A failed turn also re-arms
   the wake it carried, so a focus @mention whose turn failed is driven again after the retry delay.
 

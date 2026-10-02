@@ -91,8 +91,8 @@
       "file": "extensions/connector-core/src/agui.ts",
       "find": "    const event = o.error",
       "replace": "    const event = false",
-      "expectRed": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-message-and-code",
-      "cell": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-message-and-code",
+      "expectRed": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-code-and-the-fixed-message",
+      "cell": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-code-and-the-fixed-message",
       "note": "The pre-fix behaviour exactly: every close is a RUN_FINISHED, so a failed turn is published as one that ended and a reader cannot tell it from one that succeeded."
     },
     {
@@ -100,14 +100,14 @@
       "file": "extensions/connector-core/src/agui-holder.ts",
       "find": "      const runId = await emitter.closeRun({ timestamp, ...(error ? { error } : {}) });",
       "replace": "      const runId = await emitter.closeRun({ timestamp });",
-      "expectRed": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given",
-      "cell": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given",
+      "expectRed": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-its-code-and-the-fixed-message",
+      "cell": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-its-code-and-the-fixed-message",
       "note": "A silent drop one layer above the emitter. The connector still believes it reported a failure, the emitter never hears about it, and the wire says the turn finished."
     },
     {
       "name": "K8 skip the close-path bound so an oversized failure detail still throws in packUnits",
       "file": "extensions/connector-core/src/agui.ts",
-      "find": "      ? boundRunErrorForFrame({\n          message: o.error.message,",
+      "find": "      ? boundRunErrorForFrame({\n          message: bounded.message,",
       "replace": "      ? runError({\n          message: o.error.message,",
       "expectRed": "close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
       "cell": "close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",

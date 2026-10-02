@@ -50,8 +50,8 @@
       "file": "extensions/connector-claude-code/src/hooks.ts",
       "find": "  const code = typeof ev.error === \"string\" && ev.error ? ev.error : undefined;",
       "replace": "  const code = undefined;",
-      "expectRed": "fail:the RUN_ERROR carries the harness's detail as the message and its error kind as the code",
-      "cell": "fail:the RUN_ERROR carries the harness's detail as the message and its error kind as the code",
+      "expectRed": "fail:the RUN_ERROR carries the fixed message and the harness's error kind as the code",
+      "cell": "fail:the RUN_ERROR carries the fixed message and the harness's error kind as the code",
       "note": "`rate_limit` and `authentication_failed` are different problems with different remedies. Without the code a consumer sees one undifferentiated failure."
     }
   ]
