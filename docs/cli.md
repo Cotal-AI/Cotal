@@ -1723,16 +1723,19 @@ registers a fresh instance, writes its ready status, and mints a scoped serve cr
 the gate. Every step runs on short-lived executor credentials scoped to this one endpoint instance.
 The space signer stays in the `serve` process for renewal at 75% of the credential's life and is
 never written out, printed, or handed to the serving connection. Ctrl-C stops serving, closes the
-Linear session and removes the instance's service record, each within 10 seconds.
+Linear session and removes the instance's service record, each within 10 seconds. A start that
+fails after registration removes the record before it exits and says whether that removal
+completed; a registration that fails part-way rolls its own record back and reports when it could not.
 
 The endpoint serves five fixed commands: `inventory`, `call-tool`, `read-resource`, `get-prompt` and
 `complete`. Each needs the one `linear.mcp` capability. That capability is permission to call the
 endpoint; which tools a call can reach is decided by the Linear account and its mode. `inventory`
 replies in pages that fit a broker message: the first page carries the server, its capabilities,
 its instructions and per-section counts, and every page carries entries verbatim with an opaque
-cursor bound to the inventory digest. An entry is never cut: discovery refuses an inventory that
-carries an entry over 48 KiB, naming it, so every entry it accepts fits one reply and the tool an
-agent reads it with. A cursor or `inventoryDigest` from an older inventory is refused before anything is sent to
+cursor bound to the inventory digest. An entry is never cut: discovery refuses an inventory whose
+first-page head (server, instructions, capabilities) or any entry prints over 48 KiB the way an
+agent tool prints it (indented JSON, which grows with nesting), naming the entry, so the first page
+and every entry it accepts fit one reply and the tool an agent reads it with. A cursor or `inventoryDigest` from an older inventory is refused before anything is sent to
 Linear. `call-tool`, `read-resource`, `get-prompt` and `complete` require the digest the caller read.
 
 ### Callers

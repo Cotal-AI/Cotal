@@ -180,20 +180,33 @@ export async function registerLinearEndpoint(opts: {
       space, spec, instanceId, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
       observeHolderGeneration: (holder) => readEndpointGateGeneration(authKv, { endpoint, instanceId: holder }),
     });
-    const fence = fenceOf(authKv);
-    const observed = await fence.observe();
-    if (observed === null) throw new Error(`the issuance gate for ${endpoint}/${instanceId} vanished after registration`);
-    const grant = await authorizeServeGrant(recordsKv, {
-      space, endpoint, instanceId, epoch: observed.processEpoch, holder: { owner: DEV_OWNER }, authority, readClusterArtifact,
-      readProcessEpoch: epochOf(authKv),
-    });
-    await writeServiceStatus(recordsKv, {
-      endpoint, instanceId, epoch: observed.processEpoch,
-      status: { state: SERVICE_READY, epoch: observed.processEpoch, observedSpecRevision: registrationRevision },
-      readProcessEpoch: epochOf(authKv),
-    });
-    const creds = await mintCreds(auth, identity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant });
-    return { grant, creds };
+    // The record exists from here on. A failure in any later step takes it back down before the
+    // error is reported, so a start that never reaches serving leaves no advertised instance; when
+    // the rollback itself fails, the error says so instead of claiming a clean refusal.
+    try {
+      const fence = fenceOf(authKv);
+      const observed = await fence.observe();
+      if (observed === null) throw new Error(`the issuance gate for ${endpoint}/${instanceId} vanished after registration`);
+      const grant = await authorizeServeGrant(recordsKv, {
+        space, endpoint, instanceId, epoch: observed.processEpoch, holder: { owner: DEV_OWNER }, authority, readClusterArtifact,
+        readProcessEpoch: epochOf(authKv),
+      });
+      await writeServiceStatus(recordsKv, {
+        endpoint, instanceId, epoch: observed.processEpoch,
+        status: { state: SERVICE_READY, epoch: observed.processEpoch, observedSpecRevision: registrationRevision },
+        readProcessEpoch: epochOf(authKv),
+      });
+      const creds = await mintCreds(auth, identity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant });
+      return { grant, creds };
+    } catch (e) {
+      const why = (e as Error).message;
+      try {
+        await deregisterServiceInstance(recordsKv, { endpoint, instanceId, observeGeneration: () => readEndpointGateGeneration(authKv, { endpoint, instanceId }) });
+      } catch (d) {
+        throw new Error(`${why}; the service record for ${endpoint}/${instanceId} could not be removed afterwards (${(d as Error).message}) and still advertises an instance nobody serves`);
+      }
+      throw new Error(`${why}; the service record for ${endpoint}/${instanceId} was removed again`);
+    }
   });
 
   let current = first;

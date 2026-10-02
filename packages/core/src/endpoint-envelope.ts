@@ -41,8 +41,8 @@ export function isEpErrorCode(code: string): boolean {
   return EP_ERROR_SET.has(code) || EXTENSION_CODE.test(code);
 }
 
-function fail(code: EpErrorCode, message: string): never {
-  throw new EpEnvelopeError(code, message);
+function fail(code: EpErrorCode, message: string, outcome?: "not-executed"): never {
+  throw new EpEnvelopeError(code, message, undefined, outcome);
 }
 
 // ---- envelope types (§13.3 field tables) ----------------------------------------------------
@@ -571,7 +571,8 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
   reportValidateBudget("args", startedCpu, started);
   if (!okValid) {
     const first = validate.errors?.[0];
-    fail("bad-request", `args do not validate against the input schema${firstErrorDetail(first)}`);
+    // Refused before anything is published, so the outcome is known: the command did not run.
+    fail("bad-request", `args do not validate against the input schema${firstErrorDetail(first)}`, "not-executed");
   }
   return value;
 }

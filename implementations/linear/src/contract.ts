@@ -22,6 +22,7 @@ import {
   type EpErrorCode,
   type EpServeContext,
 } from "@cotal-ai/core";
+import { renderedBytes } from "./upstream.js";
 import type { LinearInventory, LinearUpstream, UpstreamReply } from "./upstream.js";
 
 export const LINEAR_CLUSTER_URN = "ai.cotal.linear";
@@ -101,7 +102,8 @@ function decodeCursor(raw: string): PageCursor {
   throw new EpEnvelopeError("bad-request", "the inventory cursor is not one this endpoint issued", undefined, "not-executed");
 }
 
-const sizeOf = (v: unknown): number => Buffer.byteLength(JSON.stringify(v));
+// Pages are composed in the size the agent tool prints, which is never smaller than the wire form.
+const sizeOf = renderedBytes;
 
 /** One bounded page of `inv`. Pure: the caller has already read the inventory. */
 export function inventoryPage(inv: LinearInventory, args: { inventoryDigest?: string; section?: Section; cursor?: string; limit?: number }): Record<string, unknown> {

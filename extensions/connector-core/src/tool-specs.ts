@@ -26,18 +26,22 @@ export interface ToolResult {
 const ok = (text: string): ToolResult => ({ text });
 const err = (text: string): ToolResult => ({ text, isError: true });
 
+/** Cap on the JSON text a generic endpoint tool returns into the session. */
+const ENDPOINT_RESULT_MAX_CHARS = 200_000;
+
 /** A generic endpoint call's failure: the wire error code, its outcome, and the message. A
- *  permission denial names the missing caller grant rather than blaming the endpoint. */
+ *  permission denial names the missing caller grant rather than blaming the endpoint. The message
+ *  is held to the same limit as a returned error's: one over it is withheld with its size, so a
+ *  refusal that echoes a caller's own oversized input never reaches the session whole. */
 function endpointFailure(action: string, e: unknown): ToolResult {
   if (isPermissionDenied(e))
     return err(`${action}: this session's credential has no caller grant for that endpoint command. Ask the operator for a caller credential that carries it.`);
-  if (e instanceof EpEnvelopeError)
-    return err(`${action}: ${e.code}${e.outcome ? ` (outcome ${e.outcome})` : ""}: ${e.message}`);
-  return err(`${action}: ${(e as Error).message}`);
+  const head = e instanceof EpEnvelopeError ? `${action}: ${e.code}${e.outcome ? ` (outcome ${e.outcome})` : ""}: ` : `${action}: `;
+  const message = e instanceof Error ? e.message : String(e);
+  if (head.length + message.length > ENDPOINT_RESULT_MAX_CHARS)
+    return err(`${head}the error message is ${message.length} characters, over this tool's ${ENDPOINT_RESULT_MAX_CHARS}-character limit, and was withheld.`);
+  return err(head + message);
 }
-
-/** Cap on the JSON text a generic endpoint tool returns into the session. */
-const ENDPOINT_RESULT_MAX_CHARS = 200_000;
 
 function endpointData(header: string, data: unknown): ToolResult {
   const text = JSON.stringify(data, null, 2) ?? "null";
