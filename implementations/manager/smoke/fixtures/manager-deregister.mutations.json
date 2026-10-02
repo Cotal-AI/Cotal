@@ -46,8 +46,9 @@
     {
       "name": "PREDICTED KILLED (>=1 red) - a manager's clean stop no longer removes its own registration, which is the route that keeps this from ever happening to anyone again",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (registered) await this.deregisterServiceOnStop();",
+      "find": "    if (registered && !seatFailure) await step(\"deregister service\", () => this.deregisterServiceOnStop());\n",
       "replace": "",
+      "note": "Stop now wraps deregistration in a teardown step and skips it after a seat failure; removing this guarded call still leaves a clean stop registered.",
       "expectRed": "after a clean stop its registration is GONE, so no later scatter can freeze it in"
     },
     {

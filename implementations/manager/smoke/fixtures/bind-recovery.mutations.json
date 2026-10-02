@@ -25,8 +25,9 @@
     {
       "name": "issue #367: stop releases the lease at its cached revision again, so a renew in flight moves the row out from under the CAS delete and the key survives the clean stop",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    await this.releaseOwnManagerLease();\n",
-      "replace": "    await this.ep.releaseManagerLease(this.managerInstanceId, this.leaseRevision);\n",
+      "find": "      await step(\"release manager lease\", () => this.releaseOwnManagerLease());\n",
+      "replace": "      await step(\"release manager lease\", () => this.ep.releaseManagerLease(this.managerInstanceId, this.leaseRevision));\n",
+      "note": "Stop now invokes releaseOwnManagerLease inside the teardown step wrapper; replacing only that callback with the old cached-revision release preserves the CAS race.",
       "expectRed": "(a) a clean stop with a renew in flight still removes the lease key"
     },
     {
