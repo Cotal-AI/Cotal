@@ -174,10 +174,15 @@ jobs:
           node scripts/verify-release-installable.mjs "${{ steps.closure-gate.outputs.version }}"
           echo "install_ok=true" >> "$GITHUB_OUTPUT"
 
-      # Cut the GitHub Release ONLY when this push actually published a new version to npm, the full
-      # closure gate passed, and that version installed from the registry and ran. The closure gate
-      # exits non-zero on a partial publish, an unsettled registry, or a version nothing serves; the
-      # install gate fails when `cotal-ai@<version>` does not install and run before its deadline.
+      # Cut the GitHub Release only after the full closure gate passed and that version installed
+      # from the registry and ran. The closure gate exits non-zero on a partial publish, an unsettled
+      # registry, or a version nothing serves; the install gate fails when `cotal-ai@<version>` does
+      # not install and run before its deadline.
+      # Neither gate can tell which push published that version: a publishing run that ends UNSETTLED,
+      # or whose install gate fails, leaves the Release to a later push that published nothing. So the
+      # Release never targets $GITHUB_SHA. It targets the commit that first carried the version on
+      # main's first-parent line, which is the tree the packages were built from, and refuses when that
+      # commit cannot be found (#1820).
       - name: Tag and cut the GitHub Release on publish
         id: release-step
         if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true' && steps.install-gate.outputs.install_ok == 'true'
@@ -190,8 +195,18 @@ jobs:
             echo "Release $tag already exists — nothing to do."
             exit 0
           fi
+          target=""
+          for c in $(git log --first-parent --format=%H "$GITHUB_SHA" -- bin/package.json); do
+            [ "$(git show "$c:bin/package.json" | jq -r .version)" = "$version" ] || break
+            target=$c
+          done
+          if [ -z "$target" ]; then
+            echo "Cannot resolve the commit that first carried $version: refusing to cut the Release."
+            exit 1
+          fi
+          echo "Release $tag targets $target, the commit that first carried $version."
           notes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-            -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" --jq .body)
+            -f tag_name="$tag" -f target_commitish="$target" --jq .body)
           # The generated notes are merged-PR *titles* only. Prepend the changeset summaries (the actual
           # per-change descriptions changesets wrote into the package CHANGELOGs) so a release reads as
           # more than a list of one-liners. Best-effort: the package is already published, so a hiccup in
@@ -203,7 +218,7 @@ jobs:
             printf '%s\n' "$notes"
           } > "$RUNNER_TEMP/release-notes.md"
           gh release create "$tag" \
-            --target "$GITHUB_SHA" \
+            --target "$target" \
             --title "$tag" \
             --latest \
             --notes-file "$RUNNER_TEMP/release-notes.md"
