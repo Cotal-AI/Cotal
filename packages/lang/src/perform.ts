@@ -1684,6 +1684,10 @@ export async function runScope(
     // defect the scope entry exists to prevent. A rejection is a settle.
     await Promise.race(running.map((p) => p.then(() => undefined, () => undefined)));
     const settled = await Promise.allSettled(running);
+    // A HOST STACK EXHAUSTION cancels no sibling (§9.2), so it leaves before the cancel below: that
+    // cancel reaches every arm's handlers, and a live handler would pass it on to external work.
+    const exhausted = settled.find((r): r is PromiseRejectedResult => r.status === "rejected" && isStackExhaustion(r.reason));
+    if (exhausted !== undefined) throw exhausted.reason as Error;
     // Every arm has settled, so whatever cut it did not get earlier no longer matters; the
     // signal still says cancelled, which is what a nested branch that outlives this line reads.
     for (const f of frames) f.signal.cancel("a sibling branch won the race");
