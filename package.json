@@ -374,6 +374,7 @@
     "smoke:adoption-proof": "tsx implementations/delivery/smoke/adoption-false-green.smoke.ts",
     "smoke:adoption-swap-strand": "tsx implementations/delivery/smoke/adoption-swap-strand.smoke.ts",
     "smoke:adoption-passive-preflight": "tsx implementations/delivery/smoke/adoption-passive-preflight.smoke.ts",
+    "smoke:delivery-startup-adoption": "pnpm --filter cotal-ai... build && tsx implementations/delivery/smoke/delivery-startup-adoption.smoke.ts",
     "smoke:renewal-record-honesty": "tsx implementations/cli/smoke/renewal-record-honesty.smoke.ts",
     "smoke:reload-deadline-queue": "tsx packages/core/smoke/reload-deadline-queue.smoke.ts",
     "smoke:adoption-doctor-e2e": "tsx implementations/delivery/smoke/adoption-doctor-e2e.smoke.ts",
