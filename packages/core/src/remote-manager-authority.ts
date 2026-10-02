@@ -315,6 +315,9 @@ export interface RemoteManagedAgentEnrollmentResult {
     /** Pinned public auth-service base URL for agent bearer exchange. */
     agentBearerExchangeUrl: string;
   };
+  /** Display-only note that the host reserved a hosted runtime intent for this agent. Older hosts
+   *  omit it. It authorizes nothing: a runtime create or status is decided by its own door. */
+  runtimeIntent?: { state: "reserved" };
 }
 
 /**
@@ -351,6 +354,60 @@ export interface RemoteManagedAgentPrepareRetirementResult {
   target: RemoteManagedAgentPrepareRetirementRequest["target"];
   opId: string;
   prepared: true;
+}
+
+/** The host's record of one hosted runtime intent. Forward-only and host-internal: the participant
+ *  reads it and never selects a transition. */
+export const MANAGED_AGENT_RUNTIME_STATES = ["reserved", "creating", "bound", "create-unknown", "closing", "closed"] as const;
+export type ManagedAgentRuntimeState = (typeof MANAGED_AGENT_RUNTIME_STATES)[number];
+/** Readiness is an observation, not a state. `bound` means a known handle, not a ready agent. */
+export const MANAGED_AGENT_RUNTIME_READINESS = ["ready", "bound-not-ready", "none"] as const;
+export type ManagedAgentRuntimeReadiness = (typeof MANAGED_AGENT_RUNTIME_READINESS)[number];
+/** The host's terminal retirement phase for the target, when one has started. */
+export const MANAGED_AGENT_RETIREMENT_PHASES = ["intent", "released", "retired", "deprovisioned", "terminal"] as const;
+export type ManagedAgentRetirementPhase = (typeof MANAGED_AGENT_RETIREMENT_PHASES)[number];
+
+/**
+ * Closed wire request asking the host to create the hosted runtime for one already-enrolled managed
+ * agent. The target is the host-selected coordinate the enrollment returned. The request carries no
+ * provider reference, handle, or name: the host alone issues and holds those, so a request that
+ * names one is refused rather than ignored.
+ */
+export interface RemoteManagedAgentRuntimeCreateRequest {
+  v: 1;
+  kind: "manager-managed-agent-runtime-create";
+  space: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  target: { owner: string; actor: string; lifecycleUid: string };
+  identities: RemoteManagerAuthorityRequest["identities"];
+}
+
+/** Closed wire request reading the host's runtime intent for one managed agent. Authorizes no effect. */
+export interface RemoteManagedAgentRuntimeStatusRequest extends Omit<RemoteManagedAgentRuntimeCreateRequest, "kind"> {
+  kind: "manager-managed-agent-runtime-status";
+}
+
+export type RemoteManagedAgentRuntimeRequest = RemoteManagedAgentRuntimeCreateRequest | RemoteManagedAgentRuntimeStatusRequest;
+
+/** The host's answer to a runtime create or status request: the request echo plus the host state. */
+export interface RemoteManagedAgentRuntimeResult {
+  v: 1;
+  kind: RemoteManagedAgentRuntimeRequest["kind"];
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  target: RemoteManagedAgentRuntimeCreateRequest["target"];
+  state: ManagedAgentRuntimeState;
+  readiness: ManagedAgentRuntimeReadiness;
+  retirementPhase?: ManagedAgentRetirementPhase;
 }
 
 export function remoteManagerActors(instanceId: string): RemoteManagerActors {
@@ -558,6 +615,109 @@ export function parseRemoteManagedAgentPrepareRetirementRequest(raw: unknown): R
     target: parsedTarget,
     opId: o.opId,
   };
+}
+
+/** One closed runtime request parser for both kinds. The target is exactly the host-selected
+ *  coordinate an enrollment returned, so a provider reference, handle, or name has nowhere to go. */
+function parseRemoteManagedAgentRuntimeRequest<K extends RemoteManagedAgentRuntimeRequest["kind"]>(
+  raw: unknown,
+  kind: K,
+  what: string,
+): Extract<RemoteManagedAgentRuntimeRequest, { kind: K }> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) enrollmentError(what, "must be an object");
+  const o = raw as Record<string, unknown>;
+  const allowed = new Set([
+    "v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId",
+    "registrationProof", "serveEpoch", "target", "identities",
+  ]);
+  for (const key of Object.keys(o))
+    if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  const envelope = parseManagedAgentEnvelope(o, what, kind);
+  const target = o.target;
+  if (target === null || typeof target !== "object" || Array.isArray(target)) enrollmentError(what, "requires a target");
+  const targetAllowed = new Set(["owner", "actor", "lifecycleUid"]);
+  for (const key of Object.keys(target as object))
+    if (!targetAllowed.has(key)) enrollmentError(what, `target carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  const t = target as Record<string, unknown>;
+  if (typeof t.owner !== "string" || typeof t.actor !== "string" || typeof t.lifecycleUid !== "string")
+    enrollmentError(what, "target must be exactly { owner, actor, lifecycleUid } as strings");
+  return {
+    v: 1,
+    kind,
+    ...envelope,
+    target: {
+      owner: assertDerivedOwnerToken(t.owner),
+      actor: assertValidOwnerToken(t.actor),
+      lifecycleUid: assertLifecycleToken(t.lifecycleUid, `${what} target lifecycleUid`),
+    },
+  } as Extract<RemoteManagedAgentRuntimeRequest, { kind: K }>;
+}
+
+/** Parse a runtime-create request without retaining unknown input fields. */
+export function parseRemoteManagedAgentRuntimeCreateRequest(raw: unknown): RemoteManagedAgentRuntimeCreateRequest {
+  return parseRemoteManagedAgentRuntimeRequest(raw, "manager-managed-agent-runtime-create", "managed agent runtime-create");
+}
+
+/** Parse a runtime-status request without retaining unknown input fields. */
+export function parseRemoteManagedAgentRuntimeStatusRequest(raw: unknown): RemoteManagedAgentRuntimeStatusRequest {
+  return parseRemoteManagedAgentRuntimeRequest(raw, "manager-managed-agent-runtime-status", "managed agent runtime-status");
+}
+
+/** The host's answer for one runtime request: three closed enums, nothing else. */
+function assertRuntimeAnswer(
+  answer: { state: unknown; readiness: unknown; retirementPhase?: unknown },
+  what: string,
+): void {
+  if (!(MANAGED_AGENT_RUNTIME_STATES as readonly unknown[]).includes(answer.state))
+    throw new Error(`${what} state must be one of ${MANAGED_AGENT_RUNTIME_STATES.join("|")}`);
+  if (!(MANAGED_AGENT_RUNTIME_READINESS as readonly unknown[]).includes(answer.readiness))
+    throw new Error(`${what} readiness must be one of ${MANAGED_AGENT_RUNTIME_READINESS.join("|")}`);
+  if (answer.retirementPhase !== undefined && !(MANAGED_AGENT_RETIREMENT_PHASES as readonly unknown[]).includes(answer.retirementPhase))
+    throw new Error(`${what} retirementPhase must be one of ${MANAGED_AGENT_RETIREMENT_PHASES.join("|")} when present`);
+}
+
+/** Build the host's closed answer to one parsed runtime request under the door-verified owner. */
+export function remoteManagedAgentRuntimeResult(
+  request: RemoteManagedAgentRuntimeRequest,
+  owner: string,
+  answer: { state: ManagedAgentRuntimeState; readiness: ManagedAgentRuntimeReadiness; retirementPhase?: ManagedAgentRetirementPhase },
+): RemoteManagedAgentRuntimeResult {
+  assertRuntimeAnswer(answer, "managed agent runtime result");
+  return {
+    v: 1,
+    kind: request.kind,
+    space: request.space,
+    owner,
+    actor: request.actor,
+    instanceId: request.instanceId,
+    managerLifecycleUid: request.managerLifecycleUid,
+    requestId: request.requestId,
+    target: { ...request.target },
+    state: answer.state,
+    readiness: answer.readiness,
+    ...(answer.retirementPhase !== undefined ? { retirementPhase: answer.retirementPhase } : {}),
+  };
+}
+
+/** Bind an untrusted runtime result to the request that produced it. The result is closed, echoes
+ *  every request coordinate, and names the target's own owner. */
+export function parseRemoteManagedAgentRuntimeResult(raw: unknown, request: RemoteManagedAgentRuntimeRequest): RemoteManagedAgentRuntimeResult {
+  const what = `managed agent ${request.kind === "manager-managed-agent-runtime-create" ? "runtime-create" : "runtime-status"} result`;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${what} must be an object`);
+  const r = raw as Record<string, unknown>;
+  const allowed = new Set([
+    "v", "kind", "space", "owner", "actor", "instanceId", "managerLifecycleUid", "requestId",
+    "target", "state", "readiness", "retirementPhase",
+  ]);
+  for (const key of Object.keys(r))
+    if (!allowed.has(key)) throw new Error(`${what} carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  if (r.v !== 1 || r.kind !== request.kind || r.space !== request.space || r.actor !== request.actor ||
+      r.instanceId !== request.instanceId || r.managerLifecycleUid !== request.managerLifecycleUid ||
+      r.requestId !== request.requestId || r.owner !== request.target.owner ||
+      JSON.stringify(r.target) !== JSON.stringify(request.target))
+    throw new Error(`${what} returned different lifecycle, request, owner, or target coordinates`);
+  assertRuntimeAnswer(r as { state: unknown; readiness: unknown; retirementPhase?: unknown }, what);
+  return remoteManagedAgentRuntimeResult(request, r.owner as string, r as unknown as RemoteManagedAgentRuntimeResult);
 }
 
 /**
