@@ -111,7 +111,7 @@ const {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
   setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid, eventChannel,
   resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError, epAuthBucket,
-  mintMembershipObserverCreds, observePlaneLivenessWithCreds,
+  mintMembershipObserverCreds, observePlaneLivenessWithCreds, sessionsBucket, sessionLedgerKey, mintSessionId,
 } = await import("@cotal-ai/core");
 const { connect: rawConnect } = await import("@nats-io/transport-node");
 const { Kvm } = await import("@nats-io/kv");
@@ -120,7 +120,7 @@ const { decodeJwt } = await import("jose");
 const { agentCredsDir, authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, fetchIdpJwt, grantActor, loadCalloutAuth, loadAuthServiceInfo,
-  actorLedgerDir, managedActorLedgerDir, ledgerRowFilename, deriveOwnerForIdpSubject, loadOwnerSecret, loadPinnedIdp,
+  actorLedgerDir, managedActorLedgerDir, ledgerRowFilename, deriveOwnerForIdpSubject, loadOwnerSecret, loadPinnedIdp, loadIssuer,
 } = await import("@cotal-ai/auth");
 // @cotal-ai/manager + @cotal-ai/connector-core are not deps of @cotal-ai/auth. Drive the REAL Manager
 // from its built dist by relative path (shares the one @cotal-ai/core registry instance — dist — so the
@@ -188,6 +188,34 @@ function cotal(args: string[], timeoutMs = 20_000): Promise<{ status: number | n
     child.stderr.on("data", (data: Buffer) => { out += data.toString(); });
     child.on("error", (error) => { clearTimeout(timer); resolve({ status: null, out, timedOut, launchError: error.message }); });
     child.on("close", (status) => { clearTimeout(timer); resolve({ status, out, timedOut }); });
+  });
+}
+/** Run the real binary until `ready` appears in its output (or it exits, or the deadline), then
+ *  SIGKILL it. For long-lived commands such as `attach`, whose success is a banner, not an exit. */
+function cotalUntil(args: string[], ready: RegExp, timeoutMs: number): Promise<{ status: number | null; plain: string; sawReady: boolean }> {
+  return new Promise((resolve) => {
+    // Its own process group: tsx runs the CLI in a grandchild that holds the pipes, so killing only
+    // the wrapper would leave the session (and this promise) open.
+    const child = spawn(TSX, [CLI_BIN, ...args], { cwd: root, env: { ...cliEnv, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const killAll = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ } };
+    let out = "";
+    let done = false;
+    const finish = (status: number | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
+      resolve({ status, plain, sawReady: ready.test(plain) });
+    };
+    const onData = (data: Buffer) => {
+      out += data.toString();
+      if (ready.test(out)) setTimeout(killAll, 300);
+    };
+    const timer = setTimeout(killAll, timeoutMs);
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    child.on("error", () => finish(null));
+    child.on("close", (status) => finish(status));
   });
 }
 const { pickFreePort } = await import("./_free-port.js");
@@ -810,6 +838,93 @@ try {
   const ownerAttach = await cliResult(["invoke", "manager", "attach", "--name", "alpha", "--space", SPACE]);
   check("a generic --name call without --admin keeps the user bearer on its owner routing tier",
     !ownerAttach.timedOut && ownerAttach.status === 0, ownerAttach);
+  // #2312: the operator's own `cotal attach` on this USER mesh. The real binary runs against the live
+  // seat `alpha` with no local static seed in play for the redeem; it must open the session (the
+  // banner is printed once the caller rail is up) rather than refuse with the no-seed sentence.
+  const userAttach = await cotalUntil(["attach", "--name", "alpha", "--no-reconnect", "--space", SPACE], /attached to alpha/, 25_000);
+  check("#2312: `cotal attach` on a user-auth mesh opens the seat's session (banner printed, no no-seed refusal)",
+    /attached to alpha/.test(userAttach.plain) && !/needs this space's local seed/.test(userAttach.plain),
+    userAttach.plain.slice(0, 600));
+  // #2312 refusals. A real grant comes from the manager's own `attach` over the operator's bearer,
+  // and every decision below is the shipped exchange or the shipped callout's: nothing here restates
+  // the rule, it only presents a grant or a bearer and reads the answer.
+  {
+    const exchangeSession = async (idpToken: string, sessionGrant: unknown) => {
+      const info = loadAuthServiceInfo(dir)!;
+      const res = await fetch(`${info.url}/exchange`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
+        body: JSON.stringify({ idpToken, actor: "cli", view: "session-caller", sessionGrant }),
+      });
+      return { status: res.status, body: (await res.json().catch(() => ({}))) as { token?: string; error?: string } };
+    };
+    const dialBearer = async (bearer: string): Promise<string> => {
+      try {
+        const nc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer, sentinelCreds: opCreds.sentinelCreds, tls: false }), maxReconnectAttempts: 0, timeout: 5_000 });
+        await nc.close();
+        return "connected";
+      } catch (e) { return `refused: ${(e as Error).message}`; }
+    };
+    const grantNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
+    const ledgerNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "session-ledger"), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const claims0 = JSON.parse(Buffer.from(opCreds.bearer.split(".")[1], "base64url").toString("utf8")) as { sub: string; act: { actor: string; lifecycleUid: string } };
+      const svc = await resolveService(grantNc, SPACE, "manager", { owner: claims0.sub, actor: claims0.act.actor, uid: claims0.act.lifecycleUid }, { deadlineMs: 10_000 });
+      const row = (await invokeCommand(grantNc, SPACE, svc, "inspect", { name: "alpha" }, {})).reply.data as { lifecycleUid: string };
+      const attached = await invokeCommand(grantNc, SPACE, svc, "attach", undefined, { target: { mode: "owner", owner: OWNER, actor: "alpha", lifecycleUid: row.lifecycleUid } });
+      check("#2312 precondition: the manager's attach issues a real session grant to the operator", attached.reply.ok === true, attached.reply.error);
+      const grant = (attached.reply.data as { grant: { sessionId: string; endpoint: string; sig: string; serving: { instanceId: string; epoch: number } } }).grant;
+      const idpToken = await fetchIdpJwt(base, (await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p) => void approve(p.userCode) })).session.token);
+
+      const good = await exchangeSession(idpToken, grant);
+      check("#2312 control: the holder's own redeemed grant exchanges for a session-caller bearer (200)",
+        good.status === 200 && typeof good.body.token === "string", { status: good.status, error: good.body.error });
+
+      // Another OWNER: a second human signs in to the same IdP and holds its own `cli` grant.
+      const other = await ba.api.signUpEmail({ body: { email: "other@example.test", password: "correct-horse-battery-2", name: "Other 7" } });
+      const otherOwner = deriveOwnerForIdpSubject((await loadOwnerSecret(store, SPACE))!, idpPin.issuer, other.user.id);
+      grantActor(dir, { owner: otherOwner, actor: "cli", scope: [], allowSubscribe: ["general"], allowPublish: ["general"], label: "second owner" });
+      const otherEx = await exchangeSession(await fetchIdpJwt(base, other.token!), grant);
+      check("#2312: a grant held by another owner is refused at the exchange (401)",
+        otherEx.status === 401 && otherEx.body.token === undefined && /was issued to/.test(otherEx.body.error ?? ""), { status: otherEx.status, error: otherEx.body.error });
+
+      const flipped = grant.sig.slice(0, -2) + (grant.sig.endsWith("AA") ? "BB" : "AA");
+      const tampered = await exchangeSession(idpToken, { ...grant, sig: flipped });
+      check("#2312: a grant with a tampered signature is refused at the exchange (401)",
+        tampered.status === 401 && tampered.body.token === undefined && /not the one this session was redeemed with/.test(tampered.body.error ?? ""), { status: tampered.status, error: tampered.body.error });
+
+      // An expired session: the real row, re-filed under a fresh id with an expiry in the past.
+      const kv = await new Kvm(ledgerNc).open(sessionsBucket(SPACE));
+      const live = JSON.parse(new TextDecoder().decode((await kv.get(sessionLedgerKey(grant.sessionId)))!.value)) as { exp: number; grantSig: string };
+      const expiredId = mintSessionId();
+      const expiredExp = Date.now() - 60_000;
+      await kv.create(sessionLedgerKey(expiredId), JSON.stringify({ ...live, sessionId: expiredId, exp: expiredExp }));
+      const expiredEx = await exchangeSession(idpToken, { ...grant, sessionId: expiredId, sig: live.grantSig });
+      check("#2312: an expired session is refused at the exchange (401, the reason names the expiry)",
+        expiredEx.status === 401 && expiredEx.body.token === undefined && /expired at/.test(expiredEx.body.error ?? ""), { status: expiredEx.status, error: expiredEx.body.error });
+
+      // The callout. The exchange-minted bearer is the control; the variants keep every claim it
+      // carries (lifecycle, credential id) and change only the session claim, signed by the space's
+      // own issuer, so the callout's own re-verification is the only thing that can refuse them.
+      check("#2312 control: the callout admits the exchange-minted session-caller bearer",
+        good.status === 200 && await dialBearer(good.body.token!) === "connected");
+      const act = (decodeJwt(good.body.token ?? "") as { act: { lifecycleUid: string; credentialId: string; session: { endpoint: string; sessionId: string; epoch: number; exp: number } } }).act;
+      const issuer = (await loadIssuer(store, SPACE))!;
+      const forge = (session: { endpoint: string; sessionId: string; epoch: number; exp: number }) => issuer.issue({
+        owner: OWNER, space: SPACE, actor: "cli", lifecycleUid: act.lifecycleUid, credentialId: act.credentialId,
+        view: "session-caller", session, ttlSec: 300,
+      });
+      const wrongEpoch = await dialBearer(await forge({ ...act.session, epoch: act.session.epoch + 1 }));
+      check("#2312: a wrong-epoch session claim is refused at the callout",
+        /refused: .*authorization violation/i.test(wrongEpoch), wrongEpoch);
+      const expiredDial = await dialBearer(await forge({ ...act.session, sessionId: expiredId, exp: Math.floor(expiredExp / 1000) }));
+      check("#2312: an expired session claim is refused at the callout",
+        /refused: .*authorization violation/i.test(expiredDial), expiredDial);
+    } finally {
+      await grantNc.drain().catch(() => grantNc.close());
+      await ledgerNc.drain().catch(() => ledgerNc.close());
+    }
+  }
   const missing = await cliResult(["invoke", "manager", "attach", "--name", "missing", "--space", SPACE]);
   check("a nonexistent generic --name target is refused by its inspect resolution, not the denied manager ps scan",
     !missing.timedOut && missing.status !== 0 && /could not resolve "missing"|no agent/i.test(missing.plain), missing);
@@ -1633,7 +1748,11 @@ try {
   // 121 -> 122: section E's bare spawn is served rather than refused since #2078, so the re-pin
   // (#2105) reads the child's managed row to prove the plane really is disarmed, not just announced.
   // 122 -> 124: section O absent-daemon control proves retirement held before delivery returns.
-  const EXPECTED = endpointCliFocus ? 40 : 124;
+  // 40/124 -> 42/125: B1g's user-mesh `cotal attach` cell (#2312). Measured with that one cell
+  // added: 43 cells reported before this count check in focus mode, so the focus pin moves by two
+  // (the old 40 was already one short in focus mode; inferred from that run, not run at the base).
+  // 42/125 -> 50/133: B1g's eight #2312 cells (precondition, two controls, five refusals).
+  const EXPECTED = endpointCliFocus ? 50 : 133;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

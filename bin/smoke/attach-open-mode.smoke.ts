@@ -277,9 +277,9 @@ try {
   ok("ACCEPT: an open mesh redeems bare even when a seed is present on disk", openWithSeed.kind === "bare", openWithSeed);
   const userWithSeed = decideOn({ space: SPACE, server: SEALED_SERVER, root: rootOpenWithSeed, mode: "user", spaceAuth: seed, auth: { bearer: "x" } });
   ok(
-    "REFUSE (same present seed, mode `user`): a user mesh refuses rather than minting on the wrong identity plane",
-    userWithSeed.kind === "fatal" && /USER-AUTH mesh/.test(userWithSeed.message),
-    userWithSeed.kind === "fatal" ? userWithSeed.message : userWithSeed,
+    "REFUSE the mint (same present seed, mode `user`): a user mesh redeems through the identity plane and never mints from the seed (#2312)",
+    (userWithSeed as { kind: string }).kind === "redeem",
+    userWithSeed,
   );
 
   const sealedWithSeed = decideOn({ space: SPACE, server: SEALED_SERVER, root: rootOpenWithSeed, mode: "auth", spaceAuth: seed, auth: {} });

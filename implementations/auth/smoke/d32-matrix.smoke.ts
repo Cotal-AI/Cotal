@@ -51,7 +51,7 @@ import {
   runDriverGrants, runMediatorGrants, runDriverCaller, runOperatorGrants,
   type EpCapability,
 } from "@cotal-ai/core";
-import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants } from "../src/authority-client.js";
+import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants, remoteManagerIssuerGrants } from "../src/authority-client.js";
 import { retirementExecutorClientGrants } from "../src/retirement-cleaner.js";
 import { drainApplierGrants, drainCancellerGrants, drainReconcilerGrants } from "../src/drain-repair.js";
 import { authAdminListenerGrants } from "../src/auth-admin.js";
@@ -283,6 +283,39 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_records_d32m.lifecycle.>",
     "$KV.cotal_records_d32m.uid.>",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  // The auth service's HOST ISSUER connection (`cotal:remote-manager-issuer:<space>`): the
+  // authority writer's rows plus the manager-instance issuance families, the contract-store and
+  // admission reads, and (#2312) the leader-served sessions-store read the user-mode attach
+  // redemption verifies against. Pinned so any widening of this server-side grant is reviewed here.
+  "remote-manager-issuer": { publish: [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.CREATE.KV_cotal_auth_d32m",
+    "$JS.API.STREAM.CREATE.KV_cotal_records_d32m",
+    "$JS.API.STREAM.UPDATE.KV_cotal_records_d32m",
+    "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
+    "$JS.API.STREAM.INFO.KV_cotal_records_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_auth_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
+    "$JS.API.DIRECT.GET.KV_cotal_records_d32m",
+    "$JS.API.DIRECT.GET.KV_cotal_records_d32m.>",
+    "$KV.cotal_auth_d32m.gate.>",
+    "$KV.cotal_auth_d32m.cred.>",
+    "$KV.cotal_auth_d32m.bysrc.>",
+    "$KV.cotal_records_d32m.lifecycle.>",
+    "$KV.cotal_records_d32m.uid.>",
+    "$KV.cotal_auth_d32m.epgate.manager.>",
+    "$KV.cotal_auth_d32m.epcred.manager.>",
+    "$JS.API.DIRECT.GET.EPC_d32m.cotal.d32m.epc.>",
+    "$JS.API.DIRECT.GET.EPC_d32m",
+    "$JS.API.STREAM.INFO.KV_cotal_admission_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_admission_d32m",
+    "$JS.API.DIRECT.GET.KV_cotal_admission_d32m",
+    "$JS.API.DIRECT.GET.KV_cotal_admission_d32m.>",
+    // #2312: read-only. The bind INFO and the body-selected leader read of ONE `session.<id>`
+    // row; no DIRECT.GET and no `$KV.cotal_sessions_*` write.
+    "$JS.API.STREAM.INFO.KV_cotal_sessions_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_sessions_d32m",
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "auth-barrier": { publish: [
     "$JS.API.INFO",
     "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
@@ -449,6 +482,7 @@ put("activator", activatorGrants(S, EPJ, "pa", CONN));
 put("caller", epCallerGrantRows(S, [cap], { owner: "u_abc", actor: "cli", uid: UID }));
 put("serve-rows", epServeGrantRows(S, { endpoint: EP, instanceId: "i".repeat(26), epoch: 3, ephemeralCommands: ["status"] }));
 put("auth-writer", authorityWriterGrants(S, CONN));
+put("remote-manager-issuer", remoteManagerIssuerGrants(S, CONN));
 put("auth-barrier", authorityBarrierGrants(S, CONN));
 put("auth-scanner", authorityScannerGrants(S, CONN));
 put("records-scanner", recordsScannerGrants(S, CONN));
@@ -573,6 +607,10 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     "auth-writer:KV_cotal_auth_d32m", "auth-writer:KV_cotal_records_d32m",
     "auth-barrier:KV_cotal_auth_d32m", "auth-barrier:KV_cotal_records_d32m",
     "auth-connect-reader:KV_cotal_auth_d32m", "auth-connect-reader:KV_cotal_records_d32m",
+    // The host issuer: the authority writer's two reads, the run-admission read, and (#2312) the
+    // sessions-store read for user-mode attach redemption. Server-side only; no participant holds it.
+    "remote-manager-issuer:KV_cotal_auth_d32m", "remote-manager-issuer:KV_cotal_records_d32m",
+    "remote-manager-issuer:KV_cotal_admission_d32m", "remote-manager-issuer:KV_cotal_sessions_d32m",
     "barrier-executor:EPF_d32m",
     // The full production executor client (#29 piece 2): the settlement EPF read plus the
     // leader-served records-lease read its own code path performs. NO EPW (dead grant removed, b8803b2).
@@ -607,6 +645,17 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
 }
 
 // (2c) Direct-Get tails are fully qualified; the body-selected records pair is auth-path-only.
+// RECORDED EXCEPTION, not a pass: the host issuer (`remote-manager-issuer`) predates this audit and
+// carries five body-selected Direct-Gets, the writer's records pair it inherits plus its contract-store
+// and run-admission reads. They are listed by exact row so the set cannot grow unreviewed; whether the
+// EPC and admission reads should be subject-confined is an open question for that grant's owner.
+const ISSUER_BODY_DIRECT_GET = new Set([
+  "$JS.API.DIRECT.GET.KV_cotal_records_d32m",
+  "$JS.API.DIRECT.GET.KV_cotal_records_d32m.>",
+  "$JS.API.DIRECT.GET.EPC_d32m",
+  "$JS.API.DIRECT.GET.KV_cotal_admission_d32m",
+  "$JS.API.DIRECT.GET.KV_cotal_admission_d32m.>",
+]);
 {
   const bad: string[] = [];
   for (const { principal, row } of allRows) {
@@ -615,6 +664,7 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     const stream = m[1], tail = m[2];
     const bodySelected = tail === undefined || tail === ">";
     if (!bodySelected) continue; // subject-appended, broker-confined
+    if (principal === "remote-manager-issuer" && ISSUER_BODY_DIRECT_GET.has(row)) continue;
     if (stream !== "KV_cotal_records_d32m" || (principal !== "auth-writer" && principal !== "auth-barrier"))
       bad.push(`${principal}: ${row}`);
   }

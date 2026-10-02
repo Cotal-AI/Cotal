@@ -1179,7 +1179,9 @@ same space is now reported on the way past, and not obeyed:
 When a **static-auth** mesh holds no seed at the resolved root, `attach` refuses and names what it
 resolved, the broker and the root, instead of describing a directory it did not use and instead of
 taking the open-mode path. An authenticated registry entry with a missing seed is still
-authenticated. A USER-AUTH mesh still refuses loud: two-step user-mode redemption is not wired.
+authenticated. On a USER-AUTH mesh `attach` reads no seed. It sends your login and the session grant to
+the auth service, which issues a `session-caller` bearer only if your owner and actor hold that
+session. The connection it opens expires with the session grant.
 
 Terminal bytes stream over the mesh; the manager's own HTTP/WS face serves the console. That endpoint binds
 **loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind

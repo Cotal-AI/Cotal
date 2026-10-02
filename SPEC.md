@@ -780,9 +780,24 @@ every manager request to one exact live registered instance and is valid with no
 exchange selects from read-only observations of manager issuance gates and service registrations.
 It refuses zero or ambiguous candidates and refuses an unavailable owner-specific remote manager
 rather than falling through to a co-located manager. An explicit selector must name a live candidate.
-On a public exchange face, `channel-writer`, `channel-purger`, and `manager-caller` MAY be issued.
-`admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A managed-agent
-secret exchange MUST refuse every view other than `manager-caller`.
+The `session-caller` view carries a required `act.session` claim `{endpoint, sessionId, epoch, exp}`
+(exp in unix seconds) and is valid with no other view; `act.session` is valid only with it. It needs no
+ledger scope: the redeemed §13.6 session grant is the authority. The human exchange accepts it only
+together with a `sessionGrant` body (each without the other is a 400), and the trusted auth path MUST
+leader-read the `session.<sessionId>` row from the dedicated sessions store before it signs. It MUST
+refuse unless the row is `active`, `row.grantSig` equals the presented grant's signature, the row's
+holder principal and lifecycle are the bearer's owner, actor and `lifecycleUid`, the endpoint and
+serving epoch equal the presented ones, `row.exp` is in the future, and the serving manager's issuance
+gate is a candidate for this owner with a process epoch equal to the row's. The stamped `exp` is the
+row's, and the bearer TTL is bounded by it. The callout MUST re-run the same check, without the
+signature comparison, against a fresh read at connect. It mints the `session-caller` profile for that
+one session and binds the minted connection's expiry to the grant's, which is the static arm's
+expiry, rather than the bearer's. The auth service's host-issuer connection performs both reads and
+holds only `STREAM.INFO` and the leader-served `STREAM.MSG.GET` on `KV_cotal_sessions_<space>`: no
+Direct Get and no write on that store.
+On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, and `session-caller`
+MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
+managed-agent secret exchange MUST refuse every view other than `manager-caller`.
 
 ---
 

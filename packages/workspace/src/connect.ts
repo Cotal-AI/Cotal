@@ -204,6 +204,29 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
   return { bearer, sentinelCreds, owner, actor, lifecycleUid, ...(managerInstanceId ? { managerInstanceId } : {}), source: () => mint().then((r) => r.bearer) };
 }
 
+/** #2312: exchange this machine's login for a `session-caller` bearer bound to ONE redeemed
+ *  session. The grant rides to the identity plane, which decides whether this principal holds that
+ *  session; nothing here decides it, and no seed is read or written. THROWS the provider's sentence. */
+export async function userSessionAuth(
+  target: { space: string; root?: string },
+  sessionGrant: unknown,
+): Promise<{ bearer: string; sentinelCreds: string }> {
+  if (target.root === undefined) throw new Error("userSessionAuth: a user-mode session needs the registered checkout root");
+  const entry = findMesh(target.space);
+  const ua = entry?.root === target.root ? entry.userAuth : undefined;
+  if (!ua) throw new Error(`userSessionAuth: space "${target.space}" has no registered user-auth entry at ${target.root}`);
+  const provider = registry.resolve<AuthProvider>("auth-provider", ua.provider);
+  const { bearer, sentinelCreds } = await provider.userCredentials({
+    store: workspaceSecretStore(target.root),
+    dir: userAuthStateDir(target.root, target.space),
+    space: target.space,
+    actor: CLI_USER_ACTOR,
+    view: "session-caller",
+    sessionGrant,
+  });
+  return { bearer, sentinelCreds };
+}
+
 /** {@link userViewAuth}, workstation-flavoured: colour the thrown sentence and exit. */
 export async function userViewAuthOrExit(conn: Connection, view: string): Promise<UserViewAuth> {
   try {
