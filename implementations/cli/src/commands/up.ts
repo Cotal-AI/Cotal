@@ -1469,16 +1469,23 @@ async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): 
 /** The caller for the resume's admin-gated manager asks on a user mesh. The gate reads the CURRENT
  *  ledger, so they ride the logged-in operator's manager view, the principal the preserve cut used:
  *  a static instrument carries a caller the ledger has no row for. The view selects a registered
- *  manager instance, so it is taken after the readiness wait. */
-async function userManagerAuth(space: string): Promise<ControlAuth> {
+ *  manager instance, so it is taken after the readiness wait. Each ask is its own connection and a
+ *  bearer lives no longer than the IdP proof behind it, so every call after the first takes a fresh
+ *  bearer from the view's source, pinned to the same principal and manager instance. */
+async function userManagerAuth(space: string): Promise<() => Promise<ControlAuth>> {
   const conn = await connectUserControlOrThrow({ space });
   const view = await userViewAuth(conn, "manager-caller");
-  return {
-    bearer: view.bearer,
-    sentinelCreds: view.sentinelCreds,
-    tls: conn.tls,
-    epCaller: { owner: view.owner, actor: view.actor, uid: view.lifecycleUid },
-    managerInstanceId: view.managerInstanceId,
+  let first: string | undefined = view.bearer;
+  return async () => {
+    const bearer = first ?? await view.source();
+    first = undefined;
+    return {
+      bearer,
+      sentinelCreds: view.sentinelCreds,
+      tls: conn.tls,
+      epCaller: { owner: view.owner, actor: view.actor, uid: view.lifecycleUid },
+      managerInstanceId: view.managerInstanceId,
+    };
   };
 }
 
@@ -1867,7 +1874,7 @@ async function completeResumeActivation(
     ordinary.journalState = "resume-committed";
   }
 
-  let auth = await resumeControlAuth(pending.root, pending.mode);
+  const auth = await resumeControlAuth(pending.root, pending.mode);
   const readinessDeadline = Date.now() + 20_000;
   for (;;) {
     const ready = await askManager(pending.space, server, "ps", undefined, auth, "any", 2_000);
@@ -1882,14 +1889,19 @@ async function completeResumeActivation(
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
-  if (pending.mode === "user") {
+  let userAuth: (() => Promise<ControlAuth>) | undefined;
+  // The auth for one admin-gated ask. A failed user-mode renewal degrades the journal only where a
+  // refusal of that ask would.
+  const askAuth = async (degrade: boolean): Promise<ControlAuth> => {
+    if (pending.mode !== "user") return auth;
     try {
-      auth = await userManagerAuth(pending.space);
+      userAuth ??= await userManagerAuth(pending.space);
+      return await userAuth();
     } catch (e) {
-      markPendingResumeDegraded(attemptId, e instanceof Error ? e.message : String(e), heldLock);
+      if (degrade) markPendingResumeDegraded(attemptId, e instanceof Error ? e.message : String(e), heldLock);
       throw e;
     }
-  }
+  };
   const resumed = await askManager(
     pending.space,
     server,
@@ -1900,7 +1912,7 @@ async function completeResumeActivation(
         ? { ...(pending.inventory as Record<string, unknown>), agents: [] }
         : pending.inventory as Record<string, unknown>,
     },
-    auth,
+    await askAuth(true),
     "any",
     10 * 60 * 1000,
   );
@@ -1934,7 +1946,7 @@ async function completeResumeActivation(
       server,
       "commitResume",
       { attemptId },
-      auth,
+      await askAuth(true),
       "any",
       40_000,
     );
@@ -1968,7 +1980,7 @@ async function completeResumeActivation(
       server,
       "commitResume",
       { attemptId },
-      auth,
+      await askAuth(false),
       "any",
       40_000,
     );
@@ -1989,7 +2001,7 @@ async function completeResumeActivation(
     server,
     "finalizeResume",
     { attemptId, durableCommitToken: managerCommit.durableCommitToken },
-    auth,
+    await askAuth(false),
     "any",
     40_000,
   );
