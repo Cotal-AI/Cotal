@@ -190,6 +190,31 @@ function cotal(args: string[], timeoutMs = 20_000): Promise<{ status: number | n
     child.on("close", (status) => { clearTimeout(timer); resolve({ status, out, timedOut }); });
   });
 }
+/** Run the real binary until `ready` appears in its output (or it exits, or the deadline), then
+ *  SIGKILL it. For long-lived commands such as `attach`, whose success is a banner, not an exit. */
+function cotalUntil(args: string[], ready: RegExp, timeoutMs: number): Promise<{ status: number | null; plain: string; sawReady: boolean }> {
+  return new Promise((resolve) => {
+    const child = spawn(TSX, [CLI_BIN, ...args], { cwd: root, env: { ...cliEnv, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let done = false;
+    const finish = (status: number | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
+      resolve({ status, plain, sawReady: ready.test(plain) });
+    };
+    const onData = (data: Buffer) => {
+      out += data.toString();
+      if (ready.test(out)) setTimeout(() => { child.kill("SIGKILL"); }, 300);
+    };
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    child.on("error", () => finish(null));
+    child.on("close", (status) => finish(status));
+  });
+}
 const { pickFreePort } = await import("./_free-port.js");
 const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -810,6 +835,13 @@ try {
   const ownerAttach = await cliResult(["invoke", "manager", "attach", "--name", "alpha", "--space", SPACE]);
   check("a generic --name call without --admin keeps the user bearer on its owner routing tier",
     !ownerAttach.timedOut && ownerAttach.status === 0, ownerAttach);
+  // #2312: the operator's own `cotal attach` on this USER mesh. The real binary runs against the live
+  // seat `alpha` with no local static seed in play for the redeem; it must open the session (the
+  // banner is printed once the caller rail is up) rather than refuse with the no-seed sentence.
+  const userAttach = await cotalUntil(["attach", "--name", "alpha", "--no-reconnect", "--space", SPACE], /attached to alpha/, 25_000);
+  check("#2312: `cotal attach` on a user-auth mesh opens the seat's session (banner printed, no no-seed refusal)",
+    /attached to alpha/.test(userAttach.plain) && !/needs this space's local seed/.test(userAttach.plain),
+    userAttach.plain.slice(0, 600));
   const missing = await cliResult(["invoke", "manager", "attach", "--name", "missing", "--space", SPACE]);
   check("a nonexistent generic --name target is refused by its inspect resolution, not the denied manager ps scan",
     !missing.timedOut && missing.status !== 0 && /could not resolve "missing"|no agent/i.test(missing.plain), missing);
@@ -1633,7 +1665,8 @@ try {
   // 121 -> 122: section E's bare spawn is served rather than refused since #2078, so the re-pin
   // (#2105) reads the child's managed row to prove the plane really is disarmed, not just announced.
   // 122 -> 124: section O absent-daemon control proves retirement held before delivery returns.
-  const EXPECTED = endpointCliFocus ? 40 : 124;
+  // 40/124 -> 41/125: B1g's user-mesh `cotal attach` cell (#2312).
+  const EXPECTED = endpointCliFocus ? 41 : 125;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
