@@ -8,7 +8,7 @@
  * calls it directly. ONE function over ONE table: a second copy of a projection would be a
  * divergence the differential suite could only find program-by-program.
  */
-import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf, stackOf } from "./errors.js";
+import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, isStackExhaustion, messageOf, stackOf } from "./errors.js";
 import { digest, requestId, stepKeyString, type KeyScope, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
@@ -1401,6 +1401,10 @@ export async function performScope(
     // Settling nothing is the same shape `RunReleased` above takes: the scope stays pending, a
     // resume re-enters it, and the step that broke diverges again.
     if (reason instanceof RunDivergence) throw reason;
+    // A HOST STACK EXHAUSTION IS NOT AN OUTCOME EITHER (§9.2). How deep a branch got before the host
+    // ran out of stack is a fact about the host, so recording it would replay as a catchable
+    // `L4000` on a host with more stack, where the same branch succeeds.
+    if (isStackExhaustion(reason)) throw reason;
     // A CAPABILITY REFUSAL OF THE SCOPE'S OWN DISPATCH (a conclave's open): nothing was entered
     // and nothing was attempted, so the scope settles `refused` exactly as an effect does, and
     // the run is held for a host that can open it.
@@ -1580,7 +1584,7 @@ export async function runScope(
         // divergence is the same non-fact about the branches: it says the program is not the one
         // that wrote this journal, so cancelling a sibling would record a consequence of the
         // disagreement on a run the program has no standing to speak for.
-        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {
+        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence || isStackExhaustion(e)) {
           await Promise.allSettled(running);
           throw e;
         }
@@ -1649,7 +1653,12 @@ export async function runScope(
         (e: unknown) =>
           onSettle(
             i,
-            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence,
+            e instanceof Cancelled ||
+              e instanceof RunReleased ||
+              e instanceof RunHeld ||
+              e instanceof JournalAppendRejected ||
+              e instanceof RunDivergence ||
+              isStackExhaustion(e),
           ),
       );
     });
@@ -1698,7 +1707,7 @@ export async function runScope(
     const refusedAppend = settled.find(
       (r): r is PromiseRejectedResult =>
         r.status === "rejected" &&
-        (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected || r.reason instanceof RunDivergence),
+        (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected || r.reason instanceof RunDivergence || isStackExhaustion(r.reason)),
     );
     if (refusedAppend !== undefined) throw refusedAppend.reason as Error;
 
@@ -1807,7 +1816,7 @@ export async function runScope(
     } catch (e) {
       // The same host-side rule as `parallel`: a release, a held run, a refused append, or a
       // divergence cancels nothing.
-      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {
+      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence || isStackExhaustion(e)) {
         await Promise.allSettled(launched);
         throw e;
       }
