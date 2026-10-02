@@ -104,6 +104,13 @@ try {
   await sup.start();
 
   const trials: { offset: number; died: boolean; startupFailed: boolean; reply: string; retry?: string }[] = [];
+  // Whatever runs this suite may be a managed agent session: drop its COTAL_ variables so the daemon
+  // child cannot inherit a live credential or broker URL, and give it scratch operator surfaces.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
+  env.XDG_CONFIG_HOME = join(dir, "xdg");
+  env.COTAL_HOME = join(dir, "cotal-home");
+  env.COTAL_SKIP_CONNECTOR_SEED = "1";
   for (let round = 0; round < ROUNDS; round++) {
     for (const offset of OFFSETS_MS) {
       let output = "";
@@ -111,7 +118,7 @@ try {
       daemon = spawn(process.execPath, [cotalJs, "deliver", "--space", space, "--server", SERVERS, "--creds", credsPath], {
         cwd: root,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, XDG_CONFIG_HOME: join(dir, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" },
+        env,
       });
       daemon.stdout!.on("data", (d: Buffer) => { output += d.toString(); });
       daemon.stderr!.on("data", (d: Buffer) => { output += d.toString(); });
