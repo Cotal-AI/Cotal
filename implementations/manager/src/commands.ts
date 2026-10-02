@@ -588,11 +588,12 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       process.exit(0);
     })
     .catch((e) => {
-      process.exitCode = 1;
-      // The record is NOT released here: the stop did not complete, so this process may still be
-      // running and still holding the control plane. A record removed under a failed stop is the
-      // orphan-the-process defect the pidfile contract exists to prevent.
+      // The record is NOT released here: the stop did not complete, so a seat may still be running
+      // under this instance's lease. A record removed under a failed stop is the orphan defect the
+      // pidfile contract exists to prevent. The process still exits: stop() has closed what it could,
+      // and the shuttingDown latch would otherwise leave it deaf to every later signal (#2290).
       console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
     });
   };
   process.on("SIGINT", shutdown);

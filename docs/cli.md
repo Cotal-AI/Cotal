@@ -322,7 +322,11 @@ spares the agents, and prints the same report. When the capability cannot be ver
 refuses the teardown and leaves the stack running; end it with `cotal down --with-agents`.
 `--with-agents` is a one-shot destructive policy bound to the exact verified manager process
 and the exact live `down` stop reservation; a stale, malformed, crashed, or different stop attempt
-cannot turn a later bare shutdown destructive. Positional component names stop
+cannot turn a later bare shutdown destructive. If a managed agent cannot be proven stopped within
+the manager's stop timeout, the manager logs which one, still closes its broker connections and
+console listener, and exits with code 1. It does not release its pidfile, liveness lease or
+service registration in that case, so no successor is handed authority while that agent may still
+run; the lease lapses on its TTL. Positional component names stop
 only those self-registered local processes; for example, `cotal down manager` leaves delivery and
 the broker running, and `cotal down web` is available when the web extension is installed. A
 component that starts target-resolved (the web dashboard) is stopped the same way: `cotal down web`
