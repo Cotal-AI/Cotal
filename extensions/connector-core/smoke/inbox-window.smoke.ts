@@ -280,9 +280,16 @@ try {
 
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
     check("an oversized message does not blow the window it advertises", text.length <= INBOX_WINDOW_CHARS, text.length);
-    check("...and is NOT consumed: still buffered, never acked", agent.inboxCount() === 1 && acked === 0, { held: agent.inboxCount(), acked });
-    check("...and the reply names it rather than leaving it silently stuck",
-      text.includes("cannot be delivered by this tool at all") && text.includes("Ada"), text.slice(0, 400));
+    check("...and is NOT consumed by its first part: still buffered, never acked", agent.inboxCount() === 1 && acked === 0, { held: agent.inboxCount(), acked });
+    check("...and the reply is the first part of it, naming the sender",
+      text.startsWith("Part of a message larger than one response") && text.includes("Ada") && text.includes("characters 1-"), text.slice(0, 400));
+
+    // #613: the rest arrives on the next call, inside the window, and only then is it cleared.
+    const rest = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("...and the next call delivers the rest, inside the window, and only then clears it",
+      rest.length <= INBOX_WINDOW_CHARS && (text + rest).split("z").length - 1 === 60_000 && rest.includes("last part") &&
+        agent.inboxCount() === 0 && acked === 1,
+      { chars: rest.length, held: agent.inboxCount(), acked });
   }
 
   // ── 9) ...and holding it wedges nothing: the rest of the buffer still flows past it ────────────
@@ -336,11 +343,11 @@ try {
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
     const named = (text.match(/chars\)/g) ?? []).length;
     check("twelve undeliverable messages do not produce twelve lines of metadata",
-      named <= 3 && text.includes("and 9 more"), { named, tail: text.slice(-200) });
+      named <= 3 && text.includes("and 8 more"), { named, tail: text.slice(-200) });
     check("...and the reply stays inside the window while nothing is cleared",
       text.length <= INBOX_WINDOW_CHARS && agent.inboxCount() === 12, { chars: text.length, held: agent.inboxCount() });
-    check("...and it does not promise that calling again will deliver them",
-      text.includes("calling again will not produce them") && !text.includes("next batch"), text.slice(-240));
+    check("...and it says they come in parts rather than promising them in the next batch",
+      text.includes("next part") && !text.includes("next batch"), text.slice(-240));
   }
 
   // ── 13) THE RECALL WARNING IS PART OF THE RESPONSE, SO IT IS PART OF THE BUDGET ───────────────
@@ -524,7 +531,7 @@ try {
     agent.ep.emit("message", dmMsg("band", "q".repeat(47_500)), noop(), dmMeta);
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
     check("a message that fits when rendered is delivered, not called impossible",
-      text.includes("qqqq") && !text.includes("cannot be delivered by this tool at all"), text.slice(0, 160));
+      text.includes("qqqq") && !text.includes("larger than one response"), text.slice(0, 160));
     check("...and it went out inside the window, and was cleared because it went out",
       text.length <= INBOX_WINDOW_CHARS && agent.inboxCount() === 0, { chars: text.length, left: agent.inboxCount() });
   }
@@ -934,7 +941,7 @@ try {
       text.includes("BAND_MARK") && text.length <= INBOX_WINDOW_CHARS, { chars: text.length });
     check("...and the mail it displaced is held, uncleared, and named by the next reply",
       acked.has("band") && !acked.has("stuck2") &&
-        textOf(await inboxSpec().run(agent, cfg, {})).includes("cannot be delivered by this tool at all"),
+        textOf(await inboxSpec().run(agent, cfg, {})).startsWith("Part of a message larger than one response"),
       { acked: [...acked] });
   }
 

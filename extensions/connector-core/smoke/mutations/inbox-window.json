@@ -177,8 +177,8 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "      .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget)",
       "replace": "      .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget * 10)",
-      "cell": "...and the reply names it rather than leaving it silently stuck",
-      "expectRed": "...and the reply names it rather than leaving it silently stuck",
+      "cell": "...and the reply is the first part of it, naming the sender",
+      "expectRed": "...and the reply is the first part of it, naming the sender",
       "note": "Stuck means no response could carry this message. Measure it against a budget nothing can exceed and the class becomes empty: the message is still held, correctly, but the reply calls it ordinary backlog and tells the caller to call again for it forever."
     },
     {
@@ -186,8 +186,8 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "    else if (held.length) parts.push(`Nothing could be delivered in this response.${note}`);",
       "replace": "    else if (false) parts.push(`Nothing could be delivered in this response.${note}`);",
-      "cell": "...and the reply names it rather than leaving it silently stuck",
-      "expectRed": "...and the reply names it rather than leaving it silently stuck",
+      "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. The cell that notices first is the oversized-item cell, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side. The cell that notices first is the oversized-item one, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side."
     },
     {
@@ -202,10 +202,10 @@
     {
       "name": "K12 the stuck note borrows the waiting note's promise",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "buffered and uncleared, and calling again will not produce ${stuck.length === 1 ? \"it\" : \"them\"}.`,",
+      "find": "buffered and uncleared, and once no smaller mail is waiting, each call delivers the next part of one of them; a message is cleared only after its last part goes out.`,",
       "replace": "buffered and uncleared. Call cotal_inbox again for the next batch.`,",
-      "cell": "...and it does not promise that calling again will deliver them",
-      "expectRed": "...and it does not promise that calling again will deliver them",
+      "cell": "...and it says they come in parts rather than promising them in the next batch",
+      "expectRed": "...and it says they come in parts rather than promising them in the next batch",
       "note": "A queue that looks like it is moving when it is not. The caller keeps calling, the same messages keep not arriving, and nothing in the reply says why."
     },
     {
@@ -414,6 +414,24 @@
       "cell": "...and leaving focus forgets where that walk had read",
       "expectRed": "...and leaving focus forgets where that walk had read",
       "note": "The mark describes a position in ONE walk over ONE frontier, and focus drops the frontier on the way out and captures a new one on the way in. Measured by the third lens on a single incarnation: a mark left from an earlier episode filtered a new episode's messages out of recall whenever they were stamped behind it, which a lagging or a chosen clock produces. The focus watermark was already cleared here; the mark that walks it was not."
+    },
+    {
+      "name": "K38 an oversized message is cleared with its first part",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (part.done) {\n      agent.drainInboxDeliveries([item.recvKey]);",
+      "replace": "    if (true) {\n      agent.drainInboxDeliveries([item.recvKey]);",
+      "cell": "...and is NOT consumed by its first part: still buffered, never acked",
+      "expectRed": "...and is NOT consumed by its first part: still buffered, never acked",
+      "note": "#613 delivers a message larger than one response in parts, and the #603 rule still holds across them: clearing it with the first part would mark read a message whose remainder was never handed over."
+    },
+    {
+      "name": "K39 the read position of an oversized message never moves",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    } else cursor.set(item.recvKey, part.end);",
+      "replace": "    } else void part.end;",
+      "cell": "...and the next call delivers the rest, inside the window, and only then clears it",
+      "expectRed": "...and the next call delivers the rest, inside the window, and only then clears it",
+      "note": "Without the position the same first part comes back on every call, which is the #613 dead end again with a different reply."
     }
   ]
 }
