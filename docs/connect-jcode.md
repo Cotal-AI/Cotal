@@ -242,7 +242,10 @@ soft-interrupt queue. Ambient channel traffic stays buffered for the next turn. 
 presence working while the session is busy, publishes `activity` naming automatic queue depth and age
 while anything remains uncommitted, and acknowledges every initial or soft-interrupted inbox id only
 after that containing turn succeeds. A failed Cotal-owned turn or private Harness replacement leaves
-those ids unacknowledged for mesh redelivery. `cotal_inbox` pulls only buffered quiet
+those ids unacknowledged for mesh redelivery. When the Harness reports the failure itself, such as a
+provider `rate_limit`, the host relays its error code as the presence `condition`, so the roster
+reads `waiting (rate_limit)` beside the queue age. A code outside the closed vocabulary reads
+`failed` with the native code in `condition.source`. The next successful turn clears it. `cotal_inbox` pulls only buffered quiet
 ambient from that host-owned queue; its shared optional `peek` argument is supported, so `peek: true`
 shows those messages without clearing them.
 
