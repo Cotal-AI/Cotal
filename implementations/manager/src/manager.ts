@@ -2683,34 +2683,56 @@ export class Manager {
     // revision it has since moved is a CAS the broker correctly refuses, silently, forever.
     await this.leaseRenewTask?.catch(() => {});
     let releaseFailures: string[] = [];
-    if (this.maintenanceState === "active" && !this.resumeRequired) {
-      if (options.withAgents) await this.teardownManagedAgents();
-      else releaseFailures = this.releaseManagedAgents();
-    } else {
-      // A signal after a partial preservation must never fall back into destructive teardown.
-      await this.stopRetainedAgentsOnExit();
+    let seatFailure: Error | undefined;
+    try {
+      if (this.maintenanceState === "active" && !this.resumeRequired) {
+        if (options.withAgents) await this.teardownManagedAgents();
+        else releaseFailures = this.releaseManagedAgents();
+      } else {
+        // A signal after a partial preservation must never fall back into destructive teardown.
+        await this.stopRetainedAgentsOnExit();
+      }
+    } catch (e) {
+      seatFailure = e as Error;
     }
-    await this.releaseOwnManagerLease();
-    // #1634: hand the renewal lease back on a clean stop so a sibling picks it up on its next pass
-    // rather than waiting out the bucket TTL. A non-owner holds no revision and this is a no-op.
-    await this.ep.releaseDaemonRenewalLease();
+    // Every step below runs even when an earlier one fails, so a failed stop still closes this
+    // process's connections and listener (#2290). Failures are collected and thrown at the end.
+    const failures: string[] = [];
+    const step = async (name: string, run: () => Promise<unknown> | undefined): Promise<void> => {
+      try {
+        await run();
+      } catch (e) {
+        failures.push(`${name}: ${(e as Error).message}`);
+      }
+    };
+    // A seat that may still be alive keeps this instance's leases and registration (see
+    // teardownManagedAgents): they lapse on their TTL instead of being handed to a successor.
+    if (!seatFailure) {
+      await step("release manager lease", () => this.releaseOwnManagerLease());
+      // #1634: hand the renewal lease back on a clean stop so a sibling picks it up on its next pass
+      // rather than waiting out the bucket TTL. A non-owner holds no revision and this is a no-op.
+      await step("release renewal lease", () => this.ep.releaseDaemonRenewalLease());
+    }
     // Capture BEFORE the serve loop is torn down: `stopServiceServe` clears the state, and what is
     // being asked here is "did this process register a service instance", which only the state
     // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
     // in-flight command can write a status back onto the record it just removed.
     const registered = this.serviceServe !== undefined;
-    await this.stopServiceServe();
+    await step("stop service serve", () => this.stopServiceServe());
     // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
     // released run's status write is the last thing this incarnation says about it.
-    await this.runHosting?.stop();
+    await step("stop run hosting", () => this.runHosting?.stop());
     this.runHosting = undefined;
-    if (registered) await this.deregisterServiceOnStop();
-    await this.stopGoalWriter();
-    await this.stopSessionPlane();
-    await this.ep.stop();
-    await this.attach.stop();
+    if (registered && !seatFailure) await step("deregister service", () => this.deregisterServiceOnStop());
+    await step("stop goal writer", () => this.stopGoalWriter());
+    await step("stop session plane", () => this.stopSessionPlane());
+    await step("stop endpoint", () => this.ep.stop());
+    await step("stop attach endpoint", () => this.attach.stop());
+    const also = failures.length ? `; teardown also failed: ${failures.join("; ")}` : "";
+    if (seatFailure) throw new Error(`${seatFailure.message}${also}`);
     if (releaseFailures.length)
-      throw new Error(`manager shutdown could not release every detachable seat: ${releaseFailures.join("; ")}`);
+      throw new Error(`manager shutdown could not release every detachable seat: ${releaseFailures.join("; ")}${also}`);
+    if (failures.length) throw new Error(`manager shutdown incomplete: ${failures.join("; ")}`);
   }
 
   /** Release this instance's liveness lease key on a clean stop, at the broker's own revision
