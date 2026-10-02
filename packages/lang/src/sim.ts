@@ -137,6 +137,7 @@ export class SimHandler implements EffectHandler {
   private readonly parked: ParkedEvent[] = [];
   private parkSeq = 0;
   private pumpScheduled = false;
+  private settled: (() => Promise<void>) | undefined;
 
   constructor(readonly script: SimScript = {}) {
     this.virtualNow = script.clock?.start ?? 0;
@@ -184,6 +185,15 @@ export class SimHandler implements EffectHandler {
   }
 
   /**
+   * Across a thread boundary the delivered branch's continuation runs in the other realm, so
+   * draining this realm's microtasks no longer means it has reached its next park. The host that
+   * owns the boundary says when it has, and the pump waits for that before each delivery (#2240).
+   */
+  useQuiescence(settled: () => Promise<void>): void {
+    this.settled = settled;
+  }
+
+  /**
    * One delivery per macrotask, with the microtask queue drained between: the delivered branch
    * runs to its next park (or its settle) before the next pop, which is what keeps the clock a
    * parking branch reads equal to that branch's own time.
@@ -192,18 +202,23 @@ export class SimHandler implements EffectHandler {
     if (this.pumpScheduled) return;
     this.pumpScheduled = true;
     setImmediate(() => {
-      this.pumpScheduled = false;
-      let next: ParkedEvent | undefined;
-      for (const e of this.parked) {
-        if (e.done) continue;
-        if (next === undefined || e.wake < next.wake || (e.wake === next.wake && e.seq < next.seq)) next = e;
-      }
-      next?.deliver();
-      for (let i = this.parked.length - 1; i >= 0; i--) {
-        if (this.parked[i]!.done) this.parked.splice(i, 1);
-      }
-      if (this.parked.length > 0) this.schedulePump();
+      if (this.settled === undefined) this.pump();
+      else void this.settled().then(() => this.pump());
     });
+  }
+
+  private pump(): void {
+    this.pumpScheduled = false;
+    let next: ParkedEvent | undefined;
+    for (const e of this.parked) {
+      if (e.done) continue;
+      if (next === undefined || e.wake < next.wake || (e.wake === next.wake && e.seq < next.seq)) next = e;
+    }
+    next?.deliver();
+    for (let i = this.parked.length - 1; i >= 0; i--) {
+      if (this.parked[i]!.done) this.parked.splice(i, 1);
+    }
+    if (this.parked.length > 0) this.schedulePump();
   }
 
   private timedBy(spec: string | undefined, fallback: string, ctx: EffectContext): Promise<void> {
