@@ -85,7 +85,7 @@ const runCommand: Command = {
   group: "Manager",
   summary: "operate workflow runs — start, resume, list, inspect, answer, amend (hosted by the manager), revoke",
   usage:
-    "run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text>> [--local [--admit-read <channels> --admit-publish <channels>]]",
+    "run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text>> [--local [--admit-read <channels> --admit-publish <channels>]]",
   flags: [
     ...targetFlags,
     { name: "file", type: "string", short: "f", value: "<program>", description: "cotal-lang program source (start; resume --local when no program is recorded)" },
@@ -101,6 +101,7 @@ const runCommand: Command = {
     { name: "adopt", type: "string", value: "<handle>", description: "REFUSED by `migrate`: it decides what a commit does with an orphan, and that verb only checks" },
     { name: "release", type: "string", value: "<handle>", description: "REFUSED by `migrate`: it decides what a commit does with an orphan, and that verb only checks" },
     { name: "discard-approvals", type: "boolean", description: "REFUSED by `migrate`: it decides what a commit does with a recorded decision, and that verb only checks" },
+    { name: "json", type: "boolean", description: "ps, journal: machine-readable, one JSON object per row per line (headers and errors go to stderr)" },
   ],
   positionals: "<start|resume|ps|journal|answer|amend|revoke|migrate> …",
   run: (args) => runWorkflowCommand(args),

@@ -2044,8 +2044,8 @@ Operate durable workflow runs (cotal-lang programs) from the terminal.
 ```bash
 cotal run start --file <program> [--timeout <dur>] [--local]
 cotal run resume <runId> [--local --file <program>]
-cotal run ps [--endpoint <ep>]
-cotal run journal <runId> [--endpoint <ep>]
+cotal run ps [--endpoint <ep>] [--json]
+cotal run journal <runId> [--endpoint <ep>] [--json]
 cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
 cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
 cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
@@ -2062,6 +2062,13 @@ A pause settled with an accepted answer prints its value as JSON plus the record
 artifact when present, time, and answer id, then one `amended` line per later amendment, in the
 order the store committed them, so the last is the current position.
 Expired pauses and ordinary steps print no answer line.
+`--json` on `ps` or `journal` prints each row the manager answers with (or `--local` reads) as one
+JSON object per line. A `ps` row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
+`journalHigh`, `forkedFrom`, and `revoked` or `revocationUnreadable` when the marker says so. A
+`journal` row is an `activation` or a `step` with its `step` key, `state`, `outcome`, an open
+pause's `asks`, and a settled pause's `answer` and `amendments`. The run header and errors go to
+stderr, so stdout carries only rows; an unreadable revocation marker still exits 1. The text view is
+presentation and is not a stable parsing target. `--json` on any other verb is refused.
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
