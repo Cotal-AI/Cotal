@@ -477,6 +477,15 @@ try {
   // and nothing saying the run had never parked. 4b already names its dependency on 4a; this gives
   // 4a the same courtesy about cell 2.
   let parkedAtCheckpoint = false;
+  // Do NOT raise the 40s deadline below when this cell times out. Measured on the passing shard-0
+  // run of 3a446822b: cell 1b completed at 21:20:45 and this cell at 21:20:56, so its own wait is
+  // 11 seconds, and the deadline already carries 3.6x headroom. That 11s is not slack either, it is
+  // the credential TTL: the second assertion in this cell requires the park to land AFTER the
+  // original driver's expiry, so the wait cannot be shorter than that expiry by construction.
+  // A timeout here therefore means the run took more than three and a half times its normal time to
+  // park, which is the renewal-and-resume path stalling rather than a tight bound, and a longer
+  // deadline would only hide it. Both invocations measured the same: 21:20:35 to 21:20:56 for the
+  // first and 21:21:26 to 21:21:45 for the second, suite start to this cell inclusive.
   await cell("2. Workflow executes timer, parking at checkpoint", async () => {
     const ok = await until(async () => {
       const res = await runCli(["journal", activeRunId]);
