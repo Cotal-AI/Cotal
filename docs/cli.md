@@ -1136,6 +1136,8 @@ to be frozen, Ctrl-C included, are not delivered to the agent by a reconnect you
 happened. That starts before the first session, not at the first reconnect: at a terminal, `attach`
 reads and drops what you type while it is still resolving the mesh, so a key struck at a prompt that
 has not come up yet does not reach the agent when it does.
+The terminal is in raw mode for the whole reconnect, including when the link died before the first
+session finished opening, so the detach key works there too instead of echoing as `^]`.
 
 A **pipe** carries script input. For example, `printf 'ls\n' | cotal attach --name web` is
 buffered until the session opens. Buffering continues across reconnects, so
