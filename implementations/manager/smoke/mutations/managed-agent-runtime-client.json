@@ -1,0 +1,51 @@
+{
+  "suite": [
+    "implementations/manager/smoke/remote-managed-agent-runtime-client.smoke.ts"
+  ],
+  "guard": "A manager binds a host runtime result only when it is closed, echoes its own target, and carries no provider reference; the enrollment result's runtimeIntent is accepted only as { state: \"reserved\" } and an older host that omits it still binds",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/manager/smoke/remote-managed-agent-runtime-client.smoke.ts",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/managed-agent-runtime-client.json",
+  "completionMarker": "MANAGED-AGENT-RUNTIME-CLIENT SMOKE",
+  "why": [
+    "The provider-handle mutation opens the result binder to a providerHandle field. A host body could then hand the participant a provider reference as if it were part of the answer, which the contract forbids.",
+    "The target mutation stops comparing the echoed target, so a host answer for another agent would be read as this agent's state.",
+    "The runtimeIntent-shape mutation accepts any runtimeIntent, so a host could present a non-reserved state or a handle through the display-only field.",
+    "The older-host mutation requires runtimeIntent, which would break every manager talking to a host that predates the field."
+  ],
+  "mutations": [
+    {
+      "name": "runtime result binder accepts a provider handle",
+      "file": "packages/core/src/remote-manager-authority.ts",
+      "find": "    \"target\", \"state\", \"readiness\", \"retirementPhase\",",
+      "replace": "    \"target\", \"state\", \"readiness\", \"retirementPhase\", \"providerHandle\",",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "FAIL: a host body carrying a provider handle is refused by the manager",
+      "cell": "a host body carrying a provider handle is refused by the manager"
+    },
+    {
+      "name": "runtime result binder ignores the echoed target",
+      "file": "packages/core/src/remote-manager-authority.ts",
+      "find": "      r.requestId !== request.requestId || r.owner !== request.target.owner ||\n      JSON.stringify(r.target) !== JSON.stringify(request.target))",
+      "replace": "      r.requestId !== request.requestId || r.owner !== request.target.owner)",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "FAIL: a host body naming another target is refused by the manager",
+      "cell": "a host body naming another target is refused by the manager"
+    },
+    {
+      "name": "enrollment binder accepts any runtimeIntent",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "      Object.keys(runtimeIntent).join(\",\") !== \"state\" || runtimeIntent.state !== \"reserved\"))",
+      "replace": "      false))",
+      "expectRed": "FAIL: a runtimeIntent in another state is refused",
+      "cell": "a runtimeIntent in another state is refused"
+    },
+    {
+      "name": "enrollment binder requires runtimeIntent, refusing an older host",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "  const { runtimeIntent, ...envelope } = (result ?? {}) as RemoteManagedAgentEnrollmentResult;",
+      "replace": "  const { runtimeIntent, ...envelope } = (result ?? {}) as RemoteManagedAgentEnrollmentResult;\n  if (runtimeIntent === undefined) throw new Error(\"managed agent enrollment returned a non-closed result\");",
+      "expectRed": "FAIL: an older host that omits runtimeIntent still enrolls",
+      "cell": "an older host that omits runtimeIntent still enrolls"
+    }
+  ]
+}
