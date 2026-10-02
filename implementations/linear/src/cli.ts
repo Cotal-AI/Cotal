@@ -6,11 +6,13 @@
  * error or a failure after dispatch.
  */
 import { resolve } from "node:path";
-import type { ParsedArgs } from "@cotal-ai/core";
+import { writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
+import { getSpaceAuth, hasUserAuthState, resolveMeshTarget, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import { assertAccountName, loadAccount, saveAccount, storedTokenPath } from "./account.js";
 import { loginAccount } from "./oauth.js";
 import { isLinearMode } from "./origin.js";
 import { LinearUpstream, type UpstreamReply } from "./upstream.js";
+import { provisionLinearCaller, registerLinearEndpoint, renewalDelayMs, runLinearEndpoint } from "./serve.js";
 
 export const USAGE = `cotal linear account add <name> --mode <write|readonly> (--token-stdin | --token-file <path>)
 cotal linear account login <name> --mode <write|readonly>
@@ -18,7 +20,9 @@ cotal linear account show <name>
 cotal linear inventory <account> [--json]
 cotal linear call <account> <tool> [--args <json>] [--inventory <digest>] [--timeout <ms>]
 cotal linear resource <account> <uri> [--inventory <digest>] [--timeout <ms>]
-cotal linear prompt <account> <name> [--args <json>] [--inventory <digest>] [--timeout <ms>]`;
+cotal linear prompt <account> <name> [--args <json>] [--inventory <digest>] [--timeout <ms>]
+cotal linear serve <account> --endpoint <reverse-dns-name> [--space <s>] [--server <url>]
+cotal linear caller <name> --endpoint <reverse-dns-name> --out <path> [--channels <a,b>] [--expires-in <s>] [--space <s>] [--server <url>]`;
 
 function fail(msg: string): never {
   console.error(msg);
@@ -70,6 +74,81 @@ async function withUpstream<T>(account: string, fn: (u: LinearUpstream, signal: 
     process.off("SIGTERM", onSignal);
     await upstream.close();
   }
+}
+
+/** The static-auth mesh and the operator's own space authority, or a loud refusal. A per-user-auth
+ *  mesh issues endpoint credentials through its remote auth service, which this package has no
+ *  client for, so it is refused rather than signed locally. */
+async function staticAuthority(v: Record<string, unknown>): Promise<{ target: MeshTarget; auth: SpaceAuth }> {
+  const target = resolveMeshTarget(process.cwd(), { space: v.space as string | undefined, server: v.server as string | undefined });
+  if (target.mode === "user" || hasUserAuthState(target.root, target.space))
+    fail(`"${target.space}" is a per-user-auth mesh: its endpoint credentials come from the remote auth service, which \`cotal linear\` does not support yet. Nothing was registered or minted.`);
+  if (target.mode !== "auth") fail(`"${target.space}" is an open mesh: there is no credential system to scope a Linear endpoint or its callers. Use a static-auth mesh.`);
+  const auth = await getSpaceAuth(workspaceSecretStore(target.root), target.space);
+  if (!auth) fail(`no space authority for "${target.space}" under ${target.root}; run this where the mesh was set up`);
+  return { target, auth };
+}
+
+/** Register and serve until SIGINT/SIGTERM, renewing the serve credential at 75% of its life. */
+async function serve(account: string, endpoint: string, v: Record<string, unknown>): Promise<void> {
+  const { target, auth } = await staticAuthority(v);
+  const upstream = new LinearUpstream(loadAccount(account));
+  // Read the inventory first, so a broken account never becomes a registered endpoint.
+  const inv = await upstream.inventory().catch(async (e: unknown) => {
+    await upstream.close();
+    fail(`the Linear account "${account}" did not answer discovery: ${(e as Error).message}`);
+  });
+  const reg = await registerLinearEndpoint({ auth, servers: target.server, space: target.space, tls: target.tlsRequired, endpoint });
+  const handle = await runLinearEndpoint(reg.bundle, upstream);
+  console.log(`serving ${handle.endpoint} (instance ${handle.instanceId}, epoch ${handle.epoch}) for Linear account ${account} (${inv.mode}, ${inv.tools.length} tools, inventory ${inv.digest})`);
+  let timer: NodeJS.Timeout | undefined;
+  const schedule = (ms: number | undefined): void => {
+    if (ms === undefined) return;
+    timer = setTimeout(() => {
+      reg.renew().then(
+        (creds) => schedule(renewalDelayMs(creds)),
+        (e: unknown) => {
+          console.error(`serve credential renewal failed (${(e as Error).message}); retrying in 30s`);
+          schedule(30_000);
+        },
+      );
+    }, ms);
+  };
+  schedule(renewalDelayMs(reg.bundle.creds()));
+  let stopping = false;
+  const stop = async (code: number): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    if (timer) clearTimeout(timer);
+    await handle.stop(10_000);
+    await Promise.race([reg.deregister(), new Promise((r) => setTimeout(r, 10_000).unref())]).catch((e: unknown) =>
+      console.error(`deregistration failed (${(e as Error).message}); the record stays until the instance is registered again`));
+    process.exit(code);
+  };
+  process.once("SIGINT", () => void stop(0));
+  process.once("SIGTERM", () => void stop(0));
+  const err = await handle.closed;
+  if (!stopping) {
+    console.error(`the serve connection closed${err ? `: ${err.message}` : ""}`);
+    await stop(1);
+  }
+}
+
+async function caller(name: string, endpoint: string, v: Record<string, unknown>): Promise<void> {
+  if (v.out === undefined) fail("--out <path> is required: the credential is written there 0600 and never printed");
+  const { target, auth } = await staticAuthority(v);
+  const channels = v.channels === undefined ? [] : String(v.channels).split(",").map((c) => c.trim()).filter(Boolean);
+  const expires = v["expires-in"] === undefined ? undefined : Number(v["expires-in"]);
+  if (expires !== undefined && (!Number.isSafeInteger(expires) || expires <= 0)) fail("--expires-in must be a positive integer of seconds");
+  const out = resolve(String(v.out));
+  const minted = await provisionLinearCaller(auth, { servers: target.server, space: target.space, tls: target.tlsRequired }, endpoint, {
+    channels, ...(expires !== undefined ? { expiresInSeconds: expires } : {}),
+  });
+  writeSecretFileCreateOnly(out, minted.creds);
+  console.log(`minted Linear caller "${name}" for ${endpoint} on ${target.space}: identity ${minted.identity}`);
+  console.log(`  credential   ${out} (0600)`);
+  console.log(`  lifecycle    ${minted.lifecycleUid}`);
+  console.log(`  launch a hand-driven seat with COTAL_SERVERS=${target.server} COTAL_SPACE=${target.space} COTAL_NAME=${name} COTAL_CREDS=${out} COTAL_LIFECYCLE_UID=${minted.lifecycleUid}`);
 }
 
 export async function linear(args: ParsedArgs): Promise<void> {
@@ -139,6 +218,18 @@ export async function linear(args: ParsedArgs): Promise<void> {
       if (a && Object.values(a).some((x) => typeof x !== "string")) fail("prompt --args values must be strings");
       emit(await withUpstream(account, (u, signal) =>
         u.getPrompt({ name, arguments: a as Record<string, string> | undefined, inventoryDigest: v.inventory as string | undefined, timeoutMs: timeout(v.timeout), signal })));
+      return;
+    }
+    case "serve": {
+      const [account] = rest;
+      if (!account || typeof v.endpoint !== "string") fail(USAGE);
+      await serve(account, v.endpoint, v as Record<string, unknown>);
+      return;
+    }
+    case "caller": {
+      const [name] = rest;
+      if (!name || typeof v.endpoint !== "string") fail(USAGE);
+      await caller(name, v.endpoint, v as Record<string, unknown>);
       return;
     }
     default:

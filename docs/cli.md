@@ -59,7 +59,7 @@ runtimes ship this way.
 | Messaging & watching | [`history`](#history) | Clear retained message history |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
 | Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `@cotal-ai/web` extension) |
-| Extensions & misc | [`linear`](#linear) | Call the official Linear MCP server (installed as the `@cotal-ai/linear` extension) |
+| Extensions & misc | [`linear`](#linear) | Serve the official Linear MCP server as an endpoint agents can call (installed as the `@cotal-ai/linear` extension) |
 | Auth & meshes | [`mint`](#mint) | Mint a creds file for a space (static auth mode) |
 | Auth & meshes | [`login`](#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
 | Auth & meshes | [`logout`](#login) | Revoke the IdP session and clear the cached login |
@@ -1679,9 +1679,12 @@ cotal linear inventory <account> [--json]
 cotal linear call <account> <tool> [--args '<json>'] [--inventory <digest>] [--timeout <ms>]
 cotal linear resource <account> <uri> [--inventory <digest>] [--timeout <ms>]
 cotal linear prompt <account> <name> [--args '<json>'] [--inventory <digest>] [--timeout <ms>]
+cotal linear serve <account> --endpoint <reverse-dns-name> [--space <s>] [--server <url>]
+cotal linear caller <name> --endpoint <reverse-dns-name> --out <path> [--channels <a,b>] [--expires-in <s>]
 ```
 
-An operator client for the official Linear MCP server. It only talks to `https://mcp.linear.app/mcp`
+Serves one Linear account as a registered Cotal endpoint that agents call with `cotal_describe` and
+`cotal_invoke`, and gives the operator a direct client for the same server. It only talks to `https://mcp.linear.app/mcp`
 (mode `write`) or `https://mcp.linear.app/mcp/readonly` (mode `readonly`); there is no URL or header
 option. Use a separate account per Linear workspace, and prefer a `readonly` account with a
 restricted read key wherever writes are not needed.
@@ -1702,17 +1705,53 @@ before dispatch if the inventory changed. Capabilities this command does not rep
 resource subscriptions or logging, are listed under `unsupported`.
 
 `call`, `resource` and `prompt` print the server's reply as JSON. A tool result with `isError: true`
-is a normal result (exit 0). A refusal before dispatch exits 2 with outcome `not-executed`. A
-protocol error, a timeout, Ctrl-C, a response over the size cap, an expired session or a transport
-failure exits 3 and is never retried; its outcome is `unknown`, for read-only tools too, so check
-Linear before repeating a write. HTTP 401, 403 and 429 answers are reported as `not-executed`.
+is a normal result (exit 0). A refusal before dispatch exits 2 with outcome `not-executed`; that
+includes a deadline that expires while queued, discovering or connecting. A protocol error, a
+timeout, Ctrl-C, a response over the size cap, an expired session, an HTTP 401, 403 or 429 answer,
+or a transport failure after the request was sent exits 3 and is never retried. Its outcome is
+`unknown`, for read-only tools too: read-only means a repeat is safe, not that the first call did
+not run. Errors carry an HTTP status or an error class, never the response body.
 
-The package also defines the endpoint contract a registered Linear service would serve: the fixed
-commands `inventory`, `call-tool`, `read-resource`, `get-prompt` and `complete`, each needing the one
-`linear.mcp` capability. That capability is permission to call the endpoint; which tools a call can
-reach is decided by the Linear account. Serving it is not available yet, because the mesh does not
-yet issue registration credentials for a third-party endpoint name or caller grants for agents. Today
-an agent reaches Linear only through an operator running these commands.
+### Serving the endpoint
+
+`serve` registers the account as an endpoint named by `--endpoint` and serves it until Ctrl-C. The
+name must be a reverse-DNS name in a namespace you own, such as `com.example.linear`; it is
+authorized for this mesh's local owner only because you configured it. `serve` reads the inventory
+first, so an account that cannot be reached is never registered. It then walks the same path every
+registered endpoint does: it publishes the contract to the contract store, opens the issuance gate,
+registers a fresh instance, writes its ready status, and mints a scoped serve credential through
+the gate. Every step runs on short-lived executor credentials scoped to this one endpoint instance.
+The space signer stays in the `serve` process for renewal at 75% of the credential's life and is
+never written out, printed, or handed to the serving connection. Ctrl-C stops serving, closes the
+Linear session and removes the instance's service record, each within 10 seconds.
+
+The endpoint serves five fixed commands: `inventory`, `call-tool`, `read-resource`, `get-prompt` and
+`complete`. Each needs the one `linear.mcp` capability. That capability is permission to call the
+endpoint; which tools a call can reach is decided by the Linear account and its mode. `inventory`
+replies in pages that fit a broker message: the first page carries the server, its capabilities,
+its instructions and per-section counts, and every page carries entries verbatim with an opaque
+cursor bound to the inventory digest. An entry is never cut; one too large for a reply refuses the
+page. A cursor or `inventoryDigest` from an older inventory is refused before anything is sent to
+Linear. `call-tool`, `read-resource`, `get-prompt` and `complete` require the digest the caller read.
+
+### Callers
+
+`caller` provisions an isolated caller on a static-auth mesh: an `agent` credential with its own
+mailboxes and request rows for only the five Linear commands on that endpoint, plus the channels
+in `--channels`. It carries no spawn, run, admin or provisioner capability. The credential is
+written 0600 to `--out` and never printed. Start a hand-driven connector session with it, using the
+printed `COTAL_CREDS` and `COTAL_LIFECYCLE_UID`; that session then sees the endpoint through
+`cotal_describe` and calls it through `cotal_invoke`, and the broker refuses any command its
+credential does not name. Managed `cotal spawn` agents on a static-auth mesh still cannot carry
+endpoint capabilities, so a Linear caller is a hand-launched seat.
+
+A per-user-auth mesh is refused by both `serve` and `caller`: there, endpoint and caller credentials
+come from the remote auth service, which this package does not support yet. Nothing falls back to a
+local signer. An open mesh is refused too, because it has no credentials to scope.
+
+Not represented yet, and listed under `unsupported` when the server advertises them: resource
+subscriptions, logging, progress notifications and experimental capabilities. The server cannot
+call back for sampling, elicitation or roots. Every call acts as the account's one Linear identity.
 
 ## deliver
 
