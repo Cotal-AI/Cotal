@@ -673,7 +673,9 @@ stopped rather than being reprovisioned into a partial restore.
 
 After listener readiness, the manager starts attempt-bound, validates retained credentials/tokens
 without granting or reprovisioning, and resumes the exact persisted principals under cleanup
-suppression. Registry-only restore uses the same flow with an empty agent set. `commitResume` is an
+suppression. Registry-only restore uses the same flow with an empty agent set. On a user-auth mesh
+these manager calls run as the logged-in operator's `cli` actor, the caller the preserve cut used, so
+that actor needs a current `admin` grant. `commitResume` is an
 idempotent validation barrier only: success must be `awaitingFinalize` with an attempt-bound 64-hex
 commit token and does not release suppression. Under the workspace lock, the CLI first fsyncs that
 exact evidence as `manager-committed` (restore) or `resume-committed` (ordinary resume), then calls

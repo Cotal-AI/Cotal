@@ -114,6 +114,8 @@ import {
   assertManagerCanSpare,
   verifyIdentityPin,
   isLoopbackHost,
+  connectUserControlOrThrow,
+  userViewAuth,
 } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
@@ -1464,6 +1466,22 @@ async function resumeControlAuth(root: string, mode: "open" | "auth" | "user"): 
   };
 }
 
+/** The caller for the resume's admin-gated manager asks on a user mesh. The gate reads the CURRENT
+ *  ledger, so they ride the logged-in operator's manager view, the principal the preserve cut used:
+ *  a static instrument carries a caller the ledger has no row for. The view selects a registered
+ *  manager instance, so it is taken after the readiness wait. */
+async function userManagerAuth(space: string): Promise<ControlAuth> {
+  const conn = await connectUserControlOrThrow({ space });
+  const view = await userViewAuth(conn, "manager-caller");
+  return {
+    bearer: view.bearer,
+    sentinelCreds: view.sentinelCreds,
+    tls: conn.tls,
+    epCaller: { owner: view.owner, actor: view.actor, uid: view.lifecycleUid },
+    managerInstanceId: view.managerInstanceId,
+  };
+}
+
 function restoreListenerOwner(pid: number, nonce: string, startedAt: string): ProcessOwner {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error("restore listener spawn returned no pid");
   return { pid, host: hostname(), startedAt, id: `restore-listener-${nonce}` };
@@ -1849,7 +1867,7 @@ async function completeResumeActivation(
     ordinary.journalState = "resume-committed";
   }
 
-  const auth = await resumeControlAuth(pending.root, pending.mode);
+  let auth = await resumeControlAuth(pending.root, pending.mode);
   const readinessDeadline = Date.now() + 20_000;
   for (;;) {
     const ready = await askManager(pending.space, server, "ps", undefined, auth, "any", 2_000);
@@ -1863,6 +1881,14 @@ async function completeResumeActivation(
       throw new Error(why);
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+  }
+  if (pending.mode === "user") {
+    try {
+      auth = await userManagerAuth(pending.space);
+    } catch (e) {
+      markPendingResumeDegraded(attemptId, e instanceof Error ? e.message : String(e), heldLock);
+      throw e;
+    }
   }
   const resumed = await askManager(
     pending.space,
