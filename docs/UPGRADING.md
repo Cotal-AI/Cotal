@@ -34,6 +34,39 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## From 0.58.0 to 0.59.0
+
+Every connector now publishes a failed run's `RUN_ERROR` on `events.<owner>.<actor>` with the fixed
+message `run failed` and no `code` or `rawEvent`. The error text and error kind a harness reports
+can echo a prompt, a peer message or tool output, and that channel has a different read ACL. A
+reader that showed the message or branched on `code` gets neither after the upgrade. Where a
+connector reports the error kind as the agent's presence condition, that is unchanged.
+
+### Settle pending event frames before the upgrade
+
+Each session's events are frozen in its event write-ahead log before they are published. A session
+restarted on 0.59.0 whose log still holds an unacknowledged frame with an older `RUN_ERROR` does not
+republish it: its event emitter halts with `egress-run-error` and publishes nothing further for that
+session. The broker may or may not already hold that frame, so the halt cannot settle it.
+
+1. Stop the seats cleanly on 0.58.0, with the broker still up.
+2. List the logs that still hold a pending frame. The logs live under the events state root
+   (`COTAL_WORKSPACE_ROOT`). Empty output means there is nothing to settle.
+
+   ```sh
+   find "$COTAL_WORKSPACE_ROOT/.cotal/events" -name wal.json \
+     -exec jq -r 'select(.pending != null) | input_filename' {} +
+   ```
+
+3. For each session listed, start it again on 0.58.0 while the broker is reachable, let it recover,
+   stop it, and run step 2 again. Recovery publishes the frame as 0.58.0 would have, error text
+   included, so it only finishes what 0.58.0 had already started.
+4. Upgrade once step 2 prints nothing.
+
+If a session halts with `egress-run-error` after the upgrade, go back to step 3 for that session on
+0.58.0. Do not edit or delete `wal.json` to get past the halt: clearing the pending frame abandons
+that epoch, and an event the broker never received is lost.
+
 ## From 0.53.0 to 0.54.0
 
 Manager calls now borrow an instance-bound `manager-caller` credential. Followed mutations require

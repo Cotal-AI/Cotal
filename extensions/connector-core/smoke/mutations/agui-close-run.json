@@ -32,9 +32,10 @@
     "turn to a holder that drops it on the floor publishes a finish, and that is indistinguishable on",
     "the wire from never having reported it.",
     "",
-    "K8 is the size bound on that same close. An oversized upstream detail used to make packUnits",
-    "refuse before beginSend, so the run got no terminal and the holder died. The bound is one call",
-    "on the shared close; skipping it restores the defect.",
+    "K8 is the confidentiality bound on that same close (#1431). The upstream failure detail is",
+    "untrusted free text, so the close publishes the fixed message in its place. Handing the upstream",
+    "message to the close instead restores the leak. The size bound it used to grade can no longer",
+    "fail: the fixed message always fits, and the oversized cells still check that the close succeeds.",
     "",
     "K9 is the never-both-terminal property. Deleting this.run = undefined from the shared terminal",
     "arm of AguiBrackets.accept leaves the machine open, so a second close publishes a finish. The",
@@ -105,13 +106,13 @@
       "note": "A silent drop one layer above the emitter. The connector still believes it reported a failure, the emitter never hears about it, and the wire says the turn finished."
     },
     {
-      "name": "K8 skip the close-path bound so an oversized failure detail still throws in packUnits",
+      "name": "K8 the close publishes the upstream failure detail instead of the fixed message",
       "file": "extensions/connector-core/src/agui.ts",
-      "find": "      ? boundRunErrorForFrame({\n          message: bounded.message,",
-      "replace": "      ? runError({\n          message: o.error.message,",
-      "expectRed": "close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
-      "cell": "close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
-      "note": "Restores the defect: unbounded upstream text is packed as-is, packUnits refuses before beginSend, no terminal, holder dies."
+      "find": "      ? boundRunErrorForFrame({\n          message: RUN_ERROR_EGRESS_MESSAGE,",
+      "replace": "      ? boundRunErrorForFrame({\n          message: o.error.message,",
+      "expectRed": "close:a-short-failure-detail-is-replaced-by-the-fixed-message",
+      "cell": "close:a-short-failure-detail-is-replaced-by-the-fixed-message",
+      "note": "Restores #1431 on the out-of-band close: a short upstream detail fits the frame, so it would reach events.<owner>.<actor> verbatim."
     },
     {
       "name": "K9 delete this.run = undefined from the shared terminal arm of AguiBrackets.accept",

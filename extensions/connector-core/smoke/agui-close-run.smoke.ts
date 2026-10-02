@@ -26,8 +26,8 @@
  *       -> `close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-the-fixed-message-and-no-code`
  *   K7  drop the reason in the holder, one layer above the emitter that would have carried it
  *       -> `holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code`
- *   K8  skip the close-path bound, so an oversized failure detail still throws in packUnits
- *       -> `close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR`
+ *   K8  publish the upstream failure detail on the close instead of the fixed message
+ *       -> `close:a-short-failure-detail-is-replaced-by-the-fixed-message`
  *   K9  delete `this.run = undefined` from the shared terminal arm of AguiBrackets.accept
  *       -> `close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED`
  *       The property is real; the claim that no deletion can violate it was false. The machine
