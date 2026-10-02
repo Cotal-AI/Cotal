@@ -471,12 +471,19 @@ try {
     }
   });
 
+  // Cell 2's park is a precondition for 4a and 4b, so when it times out they fail on their own
+  // terms and one root cause reads as four defects. Shard 0 reddened that way on 2026-10-01
+  // (01c8af371): cells 2, 3, 4a and 4b all red, with 4a saying "run must be held by the manager"
+  // and nothing saying the run had never parked. 4b already names its dependency on 4a; this gives
+  // 4a the same courtesy about cell 2.
+  let parkedAtCheckpoint = false;
   await cell("2. Workflow executes timer, parking at checkpoint", async () => {
     const ok = await until(async () => {
       const res = await runCli(["journal", activeRunId]);
       return res.stdout.includes("/checkpoint:review#0") && res.stdout.includes("Proceed with deployment?");
     }, 40_000);
     assert.ok(ok, "run did not park at waiting checkpoint");
+    parkedAtCheckpoint = true;
     const orig = jwtPayload(lastAttemptResult.credentials.driver.jwt);
     const parkedAt = Math.floor(Date.now() / 1000);
     console.log(`    evidence: original driver exp=${orig.exp} parkedAt=${parkedAt} crossed=${parkedAt > orig.exp} runRenewals=${successfulRunRenewals}`);
@@ -534,6 +541,7 @@ try {
   });
 
   let answeredWhileExpired = false;
+  let answerWhileExpiredWhy = "";
   let lastGoodWitness: { sub: string; exp: number; account: string } | undefined;
   await cell("4a. Refused renewRunDriver keeps the held last-good driver/mediator (same nkey and exp) and records debt", async () => {
     // A successful request admitted before refusal may still be adopting its pair. Drain those
@@ -544,7 +552,9 @@ try {
       assert.equal(boundary.paused, true, "renewal sampling boundary must pause new calls");
       assert.equal(boundary.inFlight, 0, "renewal sampling boundary must drain admitted calls");
       pre = await probeHeld(activeRunId);
-      assert.equal(pre.held, true, "run must be held by the manager");
+      assert.equal(pre.held, true, parkedAtCheckpoint
+        ? "run must be held by the manager"
+        : "run must be held by the manager, but cell 2 never saw it park at the checkpoint, so this is that failure and not a holding defect");
       assert.equal(pre.debt, null, "no renewal debt before refusal");
       refuseHttpRenewals = true;
       refusedRunRenewals = 0;
@@ -596,7 +606,13 @@ try {
       // Attempt real progress through the original parked run while its driver is expired.
       const ans = await runCli(["answer", activeRunId, "/checkpoint:review#0", "--value", '"approved"']);
       answeredWhileExpired = ans.code === 0;
-      console.log(`    evidence: answerWhileExpired exit=${ans.code}`);
+      // Keep the reason. Cell 6 tolerates this answer failing and answers again, but under
+      // EF_COMPLETE_BEFORE_PROBE cell 5 REQUIRES this one to have landed and asserts on nothing but
+      // the flag, 57 lines below. Shard 0 reddened there on 2026-10-01 (299e302bc) and read as a
+      // completion-control defect when the fact in evidence was this command's exit code. Cell 6
+      // already records its stderr this way.
+      if (!answeredWhileExpired) answerWhileExpiredWhy = `exit=${ans.code} err=${ans.stderr.trim().split("\n")[0]?.slice(0, 200)}`;
+      console.log(`    evidence: answerWhileExpired exit=${ans.code}${answeredWhileExpired ? "" : ` ${answerWhileExpiredWhy}`}`);
       await wait(6_000);
       const rec = await readRunRecord(recordsKv, "manager", activeRunId);
       assert.notEqual(rec?.status?.value.state, "completed", "parked run progressed to completion with an expired driver");
@@ -652,7 +668,9 @@ try {
     assert.equal(r.code, 0, "stock run resume failed after the issuer resumed");
     resumed = true;
     if (process.env.EF_COMPLETE_BEFORE_PROBE === "1") {
-      assert.equal(answeredWhileExpired, true, "completion control requires the real answer recorded while the driver was expired");
+      assert.equal(answeredWhileExpired, true,
+        "completion control requires the real answer recorded while the driver was expired, and cell 4b's "
+        + `\`run answer\` did not land: ${answerWhileExpiredWhy || "no exit code was recorded"}`);
       const finished = await until(async () => (await readRunRecord(recordsKv, "manager", activeRunId))?.status?.value.state === "completed", 15_000);
       assert.ok(finished, "completion control requires the resumed workflow to finish before probing its slot");
       console.log("    evidence: actual resumed workflow completed before the held-slot probe");
