@@ -10,7 +10,9 @@
  * and runs the installed `cotal --version`.
  *
  * A failed attempt before the deadline is UNKNOWN, not a failure: the registry may still be
- * converging. The gate polls until an attempt succeeds or the deadline passes.
+ * converging. The gate polls until an attempt succeeds or the deadline passes. The deadline also
+ * bounds each attempt: npm and the binary are killed when it passes, so a registry that accepts a
+ * request and never answers cannot hold the gate open past it.
  *
  * Usage:  node scripts/verify-release-installable.mjs <version>
  *           [--registry=<url>] [--poll-interval-ms=<n>] [--deadline-ms=<n>]
@@ -51,7 +53,7 @@ function parseArgs(argv) {
 }
 
 /** One scratch-prefix install plus a run of the installed binary. Returns null on success. */
-function attempt({ version, registry }) {
+function attempt({ version, registry }, deadline) {
   const root = mkdtempSync(join(tmpdir(), "cotal-installable-"));
   try {
     // An empty user and global config keeps an operator's .npmrc (auth, a mirror, a pinned
@@ -67,17 +69,20 @@ function attempt({ version, registry }) {
       npm_config_audit: "false",
       npm_config_fund: "false",
     };
+    const bounded = () => ({ cwd: root, env, encoding: "utf8", killSignal: "SIGKILL", timeout: Math.max(1, deadline - Date.now()) });
     const prefix = join(root, "prefix");
     const install = spawnSync(
       "npm",
       ["install", "-g", "--prefix", prefix, `--registry=${registry}/`, `cotal-ai@${version}`],
-      { cwd: root, env, encoding: "utf8" },
+      bounded(),
     );
+    if (install.error?.code === "ETIMEDOUT") return "npm install was killed at the deadline";
     if (install.status !== 0) {
       const why = `${install.stderr}${install.stdout}`.split("\n").filter((l) => l.startsWith("npm error")).slice(0, 4);
       return `npm install exited ${install.status}${why.length ? `: ${why.join(" | ")}` : ""}`;
     }
-    const run = spawnSync(join(prefix, "bin", "cotal"), ["--version"], { cwd: root, env, encoding: "utf8" });
+    const run = spawnSync(join(prefix, "bin", "cotal"), ["--version"], bounded());
+    if (run.error?.code === "ETIMEDOUT") return "cotal --version was killed at the deadline";
     const first = (run.stdout ?? "").split("\n")[0].trim();
     if (run.status !== 0 || first !== `cotal-ai ${version}`) {
       return `cotal --version exited ${run.status} and printed ${JSON.stringify(first)}`;
@@ -91,7 +96,7 @@ function attempt({ version, registry }) {
 export async function verifyInstallable(opts, log = (line) => process.stdout.write(`${line}\n`)) {
   const deadline = Date.now() + opts.deadlineMs;
   for (let n = 1; ; n++) {
-    const failure = attempt(opts);
+    const failure = attempt(opts, deadline);
     if (failure === null) {
       log(`VERDICT: INSTALLABLE: cotal-ai@${opts.version} installed and ran (attempt ${n}).`);
       return 0;
