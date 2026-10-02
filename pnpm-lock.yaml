@@ -583,6 +583,25 @@ importers:
         specifier: ^3.4.0
         version: 3.4.0
 
+  implementations/linear:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
+      '@nats-io/kv':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
+    devDependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
+
   implementations/manager:
     dependencies:
       '@cotal-ai/core':

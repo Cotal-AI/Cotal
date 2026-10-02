@@ -40,6 +40,14 @@ export class OriginRefusedError extends Error {
   }
 }
 
+/** The request reached the upstream, but its redirect is not followed. Its effect is unknown. */
+export class RedirectRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RedirectRefusedError";
+  }
+}
+
 export function pinnedFetch(pinned: URL, readToken: () => string, maxBytes: number): FetchLike {
   return async (url, init) => {
     const target = new URL(typeof url === "string" ? url : url.href);
@@ -50,7 +58,7 @@ export function pinnedFetch(pinned: URL, readToken: () => string, maxBytes: numb
     const res = await fetch(target, { ...init, headers, redirect: "manual" });
     if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
       await res.body?.cancel().catch(() => {});
-      throw new OriginRefusedError(`refusing a ${res.status} redirect from ${pinned.href}: the credential is never forwarded`);
+      throw new RedirectRefusedError(`refusing a ${res.status} redirect from ${pinned.href}: the credential is never forwarded`);
     }
     return boundResponse(res, maxBytes);
   };

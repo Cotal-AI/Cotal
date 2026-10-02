@@ -82,7 +82,7 @@ export interface LinearEndpointHandle {
 }
 
 function within<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
-  return Promise.race([p, new Promise<undefined>((r) => setTimeout(r, ms).unref())]);
+  return Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
 }
 
 /** Serve the fixed Linear contract on an authorized bundle. Command names, schemas and the
