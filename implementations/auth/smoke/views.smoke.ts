@@ -25,7 +25,7 @@ import { SignJWT, decodeJwt, generateKeyPair, exportJWK } from "jose";
 import type { CryptoKey } from "jose";
 import {
   chatStream,
-  spacePrefix, mintLifecycleUid } from "@cotal-ai/core";
+  spacePrefix, mintLifecycleUid, mintSessionId } from "@cotal-ai/core";
 // One lifecycle for the smoke's minted agent grants (SPEC 13.1: grants are lifecycle-keyed).
 const smokeUid = mintLifecycleUid();
 import {
@@ -69,11 +69,19 @@ const OWNER = "u_" + "a".repeat(26);
 console.log("A. issuer ↔ validator view inverse");
 const signing = await generateSigningKey();
 const issuer = createUserTokenIssuer({ issuer: "https://views.test", key: signing });
+// The one session a session-caller bearer is bound to (#2312). In production the exchange stamps
+// what the identity plane read from the session row; here the issuer's own claim check is the gate.
+const SESSION = { endpoint: "manager", sessionId: mintSessionId(), epoch: 1, exp: Math.floor(Date.now() / 1000) + 300 };
 for (const view of USER_TOKEN_VIEWS) {
   const required = VIEW_REQUIRED_SCOPE[view];
-  const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: required ? [required] : [], view, lifecycleUid: smokeUid, ...(view === "manager-caller" ? { managerInstanceId: "m".repeat(26) } : {}) });
+  const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: required ? [required] : [], view, lifecycleUid: smokeUid, ...(view === "manager-caller" ? { managerInstanceId: "m".repeat(26) } : {}), ...(view === "session-caller" ? { session: SESSION } : {}) });
   const v = await validateUserToken(token, { key: issuer.localKeySet(), issuer: "https://views.test", audience: SPACE });
-  check(`view "${view}" round-trips mint → validate (lifecycle claim intact)`, v.act.view === view && v.act.lifecycleUid === smokeUid, v.act);
+  const s = v.act.session;
+  const sessionIntact = view === "session-caller"
+    ? s !== undefined && s.endpoint === SESSION.endpoint && s.sessionId === SESSION.sessionId && s.epoch === SESSION.epoch && s.exp === SESSION.exp
+    : s === undefined;
+  check(`view "${view}" round-trips mint → validate (lifecycle${view === "session-caller" ? " and session" : ""} claim intact)`,
+    v.act.view === view && v.act.lifecycleUid === smokeUid && sessionIntact, v.act);
 }
 {
   const plain = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: ["spawn"] });
@@ -84,6 +92,10 @@ await rejects("manager-caller refuses to mint without managerInstanceId",
   () => issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", view: "manager-caller", lifecycleUid: smokeUid }), "requires managerInstanceId");
 await rejects("managerInstanceId refuses to mint without manager-caller",
   () => issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", view: "admin", scope: ["admin"], lifecycleUid: smokeUid, managerInstanceId: "m".repeat(26) }), "valid only with view");
+await rejects("session-caller refuses to mint without a session claim",
+  () => issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", view: "session-caller", lifecycleUid: smokeUid }), "come together or not at all");
+await rejects("a session claim refuses to mint with another view",
+  () => issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", view: "admin", scope: ["admin"], lifecycleUid: smokeUid, session: SESSION }), "come together or not at all");
 await rejects(
   "an unknown view is rejected at MINT",
   () => issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: ["admin"], view: "root" as UserTokenView }),
@@ -117,9 +129,10 @@ await rejects(
 console.log("B. view → required-scope policy table");
 check('deployer is spawn-gated (own-team deploys are spawn-grade)', VIEW_REQUIRED_SCOPE.deployer === "spawn");
 check('manager-service is supervise-gated (remote manager authority is distinct)', VIEW_REQUIRED_SCOPE["manager-service"] === "supervise");
-for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer" && v !== "manager-service" && v !== "manager-caller"))
+for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer" && v !== "manager-service" && v !== "manager-caller" && v !== "session-caller"))
   check(`${view} is admin-gated (operator authority)`, VIEW_REQUIRED_SCOPE[view] === "admin");
 check("manager-caller adds no capability requirement", VIEW_REQUIRED_SCOPE["manager-caller"] === undefined);
+check("session-caller adds no capability requirement (the redeemed session grant is the authority)", VIEW_REQUIRED_SCOPE["session-caller"] === undefined);
 check(
   "backup/restore are not name-only views (exact stream/session confinement needs operation-bound credentials)",
   !USER_TOKEN_VIEWS.some((view) => view === ("backup" as UserTokenView) || view === ("restore" as UserTokenView)),
