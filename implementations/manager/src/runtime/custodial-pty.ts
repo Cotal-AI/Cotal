@@ -5,8 +5,9 @@ import type { AgentHandle, AttachSession, LaunchSpec, RuntimeReference } from "@
 import type { CustodialRuntime, RuntimeReapEvidence } from "./index.js";
 import { adoptSeatSync, launchSeat, loadSeat, reapSeat, seatId, unsupportedTransport, type SeatRecord } from "@cotal-ai/seat";
 
-function defaultCustodyRoot(): string {
-  return join(homedir(), ".cotal", "seats");
+/** Where custodial pty seats keep their records: `COTAL_SEAT_ROOT`, else `~/.cotal/seats`. */
+export function custodyRoot(): string {
+  return process.env.COTAL_SEAT_ROOT ?? join(homedir(), ".cotal", "seats");
 }
 
 /**
@@ -28,7 +29,7 @@ export class CustodialPtyRuntime implements CustodialRuntime {
    */
   private readonly records = new Map<string, SeatRecord>();
 
-  constructor(private readonly root: string = process.env.COTAL_SEAT_ROOT ?? defaultCustodyRoot()) {
+  constructor(private readonly root: string = custodyRoot()) {
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
   }
 

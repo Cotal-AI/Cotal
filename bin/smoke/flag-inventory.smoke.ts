@@ -181,6 +181,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
   runtimes: { flags: [], positionals: false },
+  // #1391: the custody records an earlier Linux pty manager left. Read-only unless `--drain`,
+  // which retires only seats whose agent has exited. No `--force`: a live child is never signalled.
+  seats: { flags: ["drain:boolean"], positionals: false },
   // `service` (2026-09): the manager as a user service; the subcommand is the positional.
   service: { flags: ["json:boolean", "linger:boolean", "mesh:string"], positionals: true },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.

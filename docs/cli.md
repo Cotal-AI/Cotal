@@ -51,6 +51,7 @@ runtimes ship this way.
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
 | Agents & personas | [`service`](#service) | Run the manager as a user service (survives logout and reboot) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
+| Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
 | Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`describe` / `invoke`](#endpoint-control) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
@@ -1563,6 +1564,32 @@ herdr  available · cotal ext add @cotal-ai/herdr
 it is a known runtime you can add with the shown command. Selecting an unknown or uninstalled runtime
 via `up`/`spawn --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
 package. There is no silent fallback to `pty`.
+
+## seats
+
+```bash
+cotal seats [--drain]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--drain` | off | Retire every seat whose agent has exited. A seat whose agent still runs is kept |
+
+The pty runtime used to start a detached custodian process for every Linux seat. It now spawns
+in-process, but custodians that an earlier manager started keep running, and one whose agent has
+exited stays resident while a manager still holds its connection. This command lists the custody
+records under `COTAL_SEAT_ROOT` (default `~/.cotal/seats`), one line per seat:
+
+| State | Meaning |
+|---|---|
+| `live-child` | The agent process still runs. The seat is never signalled, and a manager can still adopt it |
+| `childless` | The agent has exited. `--drain` retires the seat, or refuses it when the record cannot prove which processes it names |
+| `drained` | `--drain` proved the custodian and the agent gone and removed the record |
+| `refused` | The record cannot be read, or the reap could not prove the processes gone. Nothing is removed |
+
+A drain signals only a custodian whose recorded start identity still matches the live process, so
+a reused pid is never touched. A record from an earlier boot is refused. The command exits non-zero
+when any record is refused. It is Linux-only and throws on other platforms.
 
 ## send
 

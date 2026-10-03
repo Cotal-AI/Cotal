@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { bootToken, processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
+import { bootToken, isSeatId, processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
 import { RUN_MARKER_FLAG } from "./launcher.js";
 import { unsupportedTransport } from "./protocol.js";
 
@@ -200,4 +200,71 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     group,
     detail: `custodian ${rec.custodianPid} ${custodian}, child ${rec.childPid} ${child}${groupKilled || group > 0 ? `, group ${rec.childPid} empty` : ""}; custody record ${hadPath ? "removed" : "verified gone"}`,
   };
+}
+
+/** One custody record as {@link drainSeats} found it. `live-child`: the child still holds its
+ *  recorded start identity, so the seat is a running agent and is never signalled. `childless`: the
+ *  child is gone, so a drain would retire the seat. `drained`: a drain proved the seat gone and
+ *  removed its record. `refused`: the record could not be read, or the reap did not prove exit; the
+ *  record stays on disk. */
+export interface SeatInventoryEntry {
+  id: string;
+  state: "live-child" | "childless" | "drained" | "refused";
+  name?: string;
+  custodianPid?: number;
+  childPid?: number;
+  detail: string;
+}
+
+/**
+ * List the custody records under `root`, and with `drain` retire every seat whose child is gone
+ * (#1391).
+ *
+ * A seat whose child still holds its recorded start identity is reported and left alone: it is a
+ * running agent, and a manager may still adopt it. Only a seat whose child is proved gone reaches
+ * {@link reapSeat}. A record is written once, and a start identity that is gone never comes back, so
+ * the reap that follows finds the child gone too and signals at most a custodian whose identity
+ * matches the record. A record that cannot be read, or a reap that does not prove exit, is refused
+ * and left on disk for the operator.
+ */
+export async function drainSeats(root: string, opts: { drain?: boolean; graceMs?: number } = {}): Promise<SeatInventoryEntry[]> {
+  if (process.platform !== "linux") throw unsupportedTransport();
+  let ids: string[];
+  try {
+    ids = readdirSync(root).filter(isSeatId).sort();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
+  }
+  const out: SeatInventoryEntry[] = [];
+  for (const id of ids) {
+    let rec: SeatRecord;
+    try {
+      rec = readRecord(recordPath(root, id));
+    } catch (e) {
+      out.push({ id, state: "refused", detail: `record unreadable: ${(e as Error).message}` });
+      continue;
+    }
+    const seen = { id, name: rec.name, custodianPid: rec.custodianPid, childPid: rec.childPid };
+    if (rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live") {
+      out.push({ ...seen, state: "live-child", detail: `child ${rec.childPid} is running; kept` });
+      continue;
+    }
+    if (!opts.drain) {
+      const custodian = rec.custodianStart !== undefined && identityVerdict(rec.custodianPid, rec.custodianStart) === "live" ? "running" : "gone";
+      out.push({ ...seen, state: "childless", detail: `child ${rec.childPid} is gone; custodian ${rec.custodianPid} ${custodian}` });
+      continue;
+    }
+    try {
+      const evidence = await reapSeat(root, id, opts.graceMs === undefined ? {} : { graceMs: opts.graceMs });
+      out.push(
+        evidence.outcome === "reaped"
+          ? { ...seen, state: "drained", detail: evidence.detail }
+          : { ...seen, state: "refused", detail: "record vanished before the reap; nothing was signalled" },
+      );
+    } catch (e) {
+      out.push({ ...seen, state: "refused", detail: (e as Error).message });
+    }
+  }
+  return out;
 }

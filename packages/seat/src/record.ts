@@ -39,8 +39,13 @@ const SEAT_ID = /^[0-9a-f]{32}$/;
  *  record outside the root. Refuse rather than resolve: an unaddressable reference must not be
  *  reported as a seat that is already forgotten. */
 export function assertSeatId(id: string): string {
-  if (!SEAT_ID.test(id)) throw new Error(`seat id ${JSON.stringify(id)} is not 32 lowercase hex characters; it names a directory under the custody root`);
+  if (!isSeatId(id)) throw new Error(`seat id ${JSON.stringify(id)} is not 32 lowercase hex characters; it names a directory under the custody root`);
   return id;
+}
+
+/** Whether `id` has the shape {@link seatId} mints, so a directory entry can be told from a seat. */
+export function isSeatId(id: string): boolean {
+  return SEAT_ID.test(id);
 }
 
 export function capabilityToken(): string {
