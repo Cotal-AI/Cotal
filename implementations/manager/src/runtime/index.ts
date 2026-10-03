@@ -176,9 +176,10 @@ function createBackend(mode: RuntimeMode, session: string): Runtime {
  *   discards on the exit its attach session streams (the in-process pty). One that cannot attach
  *   (tmux, cmux, orca, herdr) is polled through `status()`, and its `waitForExit`, the proof every
  *   stop already awaits, confirms the exit before the files go.
- * - A spawn that throws {@link SpawnRefused} refused before starting anything, so its files go at
- *   once. Any other throw is not proof that nothing started (a backend can fail after its child is
- *   up), so its files stay for the child's watcher, or for the OS temp reaper when no child started.
+ * - A spawn that throws {@link SpawnRefused} failed before it handed the spec's command to anything
+ *   that could start it, so its files go at once. Any other throw is not proof that nothing
+ *   started (a backend can fail after its child is up), so its files stay for the child's watcher,
+ *   or for the OS temp reaper when no child started.
  * - A removal that fails is tried again every few seconds until it succeeds.
  */
 function ownLaunchArtifacts(runtime: Runtime): Runtime {

@@ -116,12 +116,18 @@ export class HerdrRuntime implements Runtime {
     // would otherwise die later, invisibly, at the launcher's chdir).
     if (!isDirectory(cwd)) throw new SpawnRefused(`herdr runtime: cwd ${JSON.stringify(cwd)} is not a directory`);
     const layout = layoutFromEnv(); // before any side effects, so a bad value spawns nothing
-    herdr.ensureServer(this.session);
-
-    // `split` shares a tab, so the tab set has to be sampled BEFORE this agent adds its own.
-    const tabsBefore = layout === "split" ? herdr.tabIds(this.session) : [];
-
-    const launcher = privateLauncher(spec, cwd);
+    // Nothing has the spec's command until agentStart, so a failure before it (a server that will
+    // not start, a launcher script that cannot be written) is a refusal.
+    let tabsBefore: string[];
+    let launcher: PrivateLauncher;
+    try {
+      herdr.ensureServer(this.session);
+      // `split` shares a tab, so the tab set has to be sampled BEFORE this agent adds its own.
+      tabsBefore = layout === "split" ? herdr.tabIds(this.session) : [];
+      launcher = privateLauncher(spec, cwd);
+    } catch (err) {
+      throw new SpawnRefused((err as Error).message);
+    }
     let agent: herdr.HerdrAgent | undefined;
     let startedTerminalId: string | undefined;
     try {

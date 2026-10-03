@@ -47,11 +47,18 @@ export class TmuxRuntime implements Runtime {
     if (!tmux.available())
       throw new SpawnRefused("tmux runtime: tmux is not available — is tmux installed and on PATH?");
 
-    tmux.ensureSession(this.session, cwd);
-    // P3: env -i strips the tmux server's inherited environment; only the connector-declared
-    // env reaches the spawned agent (identity, model key, OS allow-list). privateLaunch keeps those
-    // values out of tmux's command line (ps-visible) — they ride a 0o600 launcher script instead.
-    const command = tmux.privateLaunch(tmux.isolatedCommand(spec.env ?? {}, spec.command, spec.args));
+    // Nothing has the spec's command until openWindow, so a failure before it (a session that will
+    // not start, a launcher script that cannot be written) is a refusal.
+    let command: string;
+    try {
+      tmux.ensureSession(this.session, cwd);
+      // P3: env -i strips the tmux server's inherited environment; only the connector-declared
+      // env reaches the spawned agent (identity, model key, OS allow-list). privateLaunch keeps those
+      // values out of tmux's command line (ps-visible) — they ride a 0o600 launcher script instead.
+      command = tmux.privateLaunch(tmux.isolatedCommand(spec.env ?? {}, spec.command, spec.args));
+    } catch (err) {
+      throw new SpawnRefused((err as Error).message);
+    }
     // Key the whole lifecycle off the STABLE window ID (@N), not `session:name`. tmux can rename
     // a window (automatic-rename / a title escape), which would desync a name-based status/stop.
     const { windowId, paneId } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
