@@ -1411,7 +1411,9 @@ The same file pins `PATH` to the `PATH` of the shell that ran `install`, and on 
 report a harness unavailable that your shell resolves. Install from a shell that resolves every
 harness the service should launch, and reinstall after moving one. A relative entry, including
 an empty one, is resolved against the directory you ran `install` from, because the unit starts in
-the mesh root where the same spelling names another directory. An unset `PATH` refuses.
+the mesh root where the same spelling names another directory. An entry with a `..` segment is
+pinned as the directory your shell reaches through it, with symlinks followed, and refuses when it
+reaches none. An unset `PATH` refuses.
 
 Every value the unit derives from a path (`WorkingDirectory`, the `EnvironmentFile` path, the
 `ExecStart` tokens) is escaped for systemd specifiers (`%` becomes `%%`), so a mesh root that

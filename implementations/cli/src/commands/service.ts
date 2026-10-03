@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { accessSync, constants, existsSync } from "node:fs";
 import { arch, cpus, homedir, totalmem } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import type { CompletionResult, ParsedArgs } from "@cotal-ai/core";
 import {
   commandIsCotalSupervisor,
@@ -240,14 +240,25 @@ const envFileName = (mesh: string): string => `cotal-manager@${spaceKey(mesh)}.e
  *  lacks `~/.local/bin` and Homebrew, so an inherited PATH boots a manager that reports a harness
  *  unavailable even though the operator's shell resolves it. An entry that is not absolute (an
  *  empty one means the current directory) is resolved against this shell's cwd, because the unit
- *  starts in the mesh root, where the same spelling names another directory. Refused rather than
- *  guessed when absent, when a resolved entry contains the separator, and when it holds a line
- *  break the env file and plist cannot carry. */
+ *  starts in the mesh root, where the same spelling names another directory. An entry with a `..`
+ *  segment is pinned as the directory it reaches now, symlinks followed: the shell's lookup steps
+ *  up from a symlink's target, a lexical resolve from its name. Refused rather than guessed when
+ *  absent, when a `..` entry reaches no directory, when a resolved entry contains the separator,
+ *  and when it holds a line break the env file and plist cannot carry. */
 function installerPath(): string {
   const raw = process.env.PATH;
   if (!raw) throw new Error("PATH is not set - `cotal service install` pins this shell's PATH into the unit so the manager resolves the same harness binaries");
-  const dirs = raw.split(delimiter).map((dir) => (isAbsolute(dir) ? dir : resolve(dir)));
-  if (dirs.some((dir) => dir.includes(delimiter))) throw new Error(`PATH has a relative entry and the current directory contains "${delimiter}" - run install from another directory or make the entry absolute`);
+  const dirs = raw.split(delimiter).map((dir) => {
+    if (isAbsolute(dir)) return dir;
+    if (!dir.split(sep).includes("..")) return resolve(dir);
+    try {
+      // `.native` is libc realpath(3), which walks like the kernel; the JS one collapses `..` first.
+      return realpathSync.native(dir);
+    } catch {
+      throw new Error(`PATH entry "${dir}" has a ".." segment and reaches no directory from here - make it absolute or remove it`);
+    }
+  });
+  if (dirs.some((dir) => dir.includes(delimiter))) throw new Error(`PATH has a relative entry that resolves to a directory containing "${delimiter}" - run install from another directory or make the entry absolute`);
   const pinned = dirs.join(delimiter);
   if (/[\r\n]/.test(pinned)) throw new Error("PATH contains a line break - it cannot be pinned into the unit's environment");
   return pinned;
