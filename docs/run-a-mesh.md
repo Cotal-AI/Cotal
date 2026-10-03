@@ -208,7 +208,8 @@ projection remains tracked by #1274.
 
 `cotal service install` is the supported way to run the manager as a user service
 ([CLI reference](cli.md#service)): a systemd user unit on Linux, a launchd agent on macOS, one
-per mesh, surviving logout and reboot when lingering is enabled with `--linger`. It installs only
+per mesh, surviving logout and reboot. On Linux that needs user lingering: install refuses while
+it is off and prints the root command that enables it. It installs only
 the manager; the units below remain the process models for every other component, and they are
 still **examples of process models** for those: copy them only after you decide which processes
 the unit should own.

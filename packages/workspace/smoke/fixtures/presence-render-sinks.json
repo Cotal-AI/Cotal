@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 515,
+    "total": 514,
     "honest-text": 36,
     "presence-only-glyph/count": 57,
     "command-ack": 12,
-    "non-render/control": 410
+    "non-render/control": 409
   },
   "renderers": [
     {
@@ -3431,13 +3431,6 @@
       "path": "implementations/cli/src/commands/service.ts",
       "kind": "derived-output",
       "anchor": "join(userUnitDir(), unit)",
-      "class": "non-render/control",
-      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
-    },
-    {
-      "path": "implementations/cli/src/commands/service.ts",
-      "kind": "derived-output",
-      "anchor": "linger(values, mesh)",
       "class": "non-render/control",
       "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
     },
