@@ -71,7 +71,9 @@ try {
     let releaseRenew!: () => void;
     const held = new Promise<void>((r) => { releaseRenew = r; });
     d.ep.renewDeliveryLease = async (shard: number, revision: number) => { entered(); await held; return realRenew(shard, revision); };
-    await renewEntered;
+    // Bounded: a fixture that never renews must fail here, not hang the suite.
+    const reached = await Promise.race([renewEntered.then(() => true), wait(RENEW_MS * 10).then(() => false)]);
+    if (!reached) throw new Error("the fixture's renew was never called within ten renew intervals");
     let stopped = false;
     const stopping = d.stop().then(() => { stopped = true; });
     await wait(RENEW_MS);
