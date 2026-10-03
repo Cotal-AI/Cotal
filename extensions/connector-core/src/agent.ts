@@ -186,6 +186,17 @@ interface ActiveTurn {
   surfaced: boolean;
 }
 
+/** Largest epoch-ms a `Date` can hold; past it `toISOString()` throws. */
+const MAX_DATE_MS = 8.64e15;
+
+/** A `turn-pending` row as the manager contract declares it, with a deadline a `Date` can format. */
+function isPendingTurn(t: unknown): t is Omit<ActiveTurn, "surfaced"> {
+  const r = t as Partial<ActiveTurn> | null;
+  return typeof r === "object" && r !== null && typeof r.goalId === "string" && typeof r.payload === "string" &&
+    Number.isSafeInteger(r.acceptedAt) && r.acceptedAt! >= 0 &&
+    Number.isSafeInteger(r.deadlineAt) && r.deadlineAt! >= 1 && r.deadlineAt! <= MAX_DATE_MS;
+}
+
 export type InboxScope = "all" | "automatic" | "pull-only";
 
 export interface ExactDrainResult {
@@ -1743,8 +1754,15 @@ export class MeshAgent extends EventEmitter {
     try {
       const r = await this.managerInvoke("turn-pending", undefined, { target: { mode: "self" } });
       if (!r.ok) { this.notePullTrouble(r.error ?? "refused with no message"); return; }
-      this.pullTrouble = undefined;
-      const turns = (r.data as { turns?: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } | undefined)?.turns ?? [];
+      const rows = (r.data as { turns?: unknown } | undefined)?.turns;
+      // A reply with no turns array is no snapshot: reconciling on it would drop every accepted
+      // turn, including one already shown. Keep what the seat holds until a well-formed pull.
+      if (!Array.isArray(rows)) { this.notePullTrouble("turn-pending returned no turns array"); return; }
+      // A responder off the contract must not reach the formatter: one row with no numeric
+      // deadline made peekPendingTurns throw on every frame.
+      const turns = rows.filter(isPendingTurn);
+      if (turns.length < rows.length) this.notePullTrouble(`turn-pending returned ${rows.length - turns.length} malformed turn(s), dropped`);
+      else this.pullTrouble = undefined;
       const live = new Set(turns.map((t) => t.goalId));
       for (const id of [...this.activeTurns.keys()]) if (!live.has(id)) this.activeTurns.delete(id);
       let fresh = 0;
