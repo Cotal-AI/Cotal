@@ -6,11 +6,11 @@
 creates one private Jcode Harness API instance per seat, one Jcode session inside it, and exposes
 the normal `cotal_*` tool surface through Jcode's documented stdio MCP configuration.
 
-**Beta** means the supported path is deliberately narrow: a fresh private session, prompt
-injection, presence, managed start/stop, requested reasoning effort, and an attached TUI work.
-Features that do not preserve that private session's mesh surface fail loud: `--resume`,
-exact-session continuation, `--share-tools`, and connector `--opt` values are not
-supported.
+**Beta** means the supported path is deliberately narrow: a fresh private session, a fork of one
+of your own sessions (`--resume`), prompt injection, presence, managed start/stop, requested
+reasoning effort, and an attached TUI work. Features that do not preserve that private session's
+mesh surface fail loud: exact-session continuation, `--share-tools`, and connector `--opt` values
+are not supported.
 
 ## Install
 
@@ -90,9 +90,31 @@ largest transcript, since that is the session carrying the memory a restart woul
 away. A seat spawned under a fresh name keys a different home and starts with an
 empty transcript, so keep the same name when you want a replacement seat to continue where the
 previous one stopped. This automatic continuation is a relaunch of the seat's own private session;
-it is separate from `--resume`, which names an outside session and stays unsupported. The short
+it is separate from `--resume`, which forks an outside session into the seat (below). The short
 socket alias the connector derives from that home is reclaimed at every launch, so a name a stopped
 seat used stays launchable.
+
+`cotal spawn --resume <id>` forks session `<id>` from your own Jcode home (`JCODE_HOME`, or the
+default Jcode home) into the seat's private home before the seat's instance starts. The Harness API
+has no fork call, so the connector does what Jcode's own split does: it writes a new session whose
+parent is the source and which carries the source's messages, compaction state, system prompt, and
+model. The seat gets a new session id and its briefing as the first turn after that history. The
+source files are only read, so the source transcript is never appended to. A session id with no
+readable transcript, or one whose snapshot or journal holds fields Jcode cannot load, is refused
+before the seat launches; every carried message, content block, and compaction state is checked
+against Jcode's own schema, and the refusal names the field. Jcode stores its counts as u64 and
+reads one only as a plain decimal integer, so a count above what a JavaScript number holds is copied
+byte for byte, and one above the u64 range or spelled with a fraction or an exponent (`1e3`, `1.0`)
+is refused. The source may be live: the connector
+reads it until two reads agree and every journal line is newer than the snapshot, so a Jcode
+checkpoint caught mid-way is neither lost nor applied twice, and a session that keeps changing is
+refused with a request to retry. A seat relaunched under the same name continues its
+fork rather than forking again, without reading the source, which may since have been deleted. The
+seat's briefing is recorded separately from the fork, so a first launch that fails after forking
+still briefs the seat on its next launch. The seat records the source session id, its title, and a
+SHA-256 of the snapshot and journal it read, prints them when it forks, and the manager reads that
+record into the seat's resume document, so `cotal ps --wide` shows them. The manager keeps a title
+of at most 1024 characters, so a source with a longer title is refused before the seat launches.
 
 Connector diagnostics are written both to the spawning terminal and to an owner-only
 `<private-home>/logs/connector-<timestamp>-<pid>.log`, so a failed launch remains inspectable after
@@ -321,8 +343,9 @@ connector-visible input without exposing private harness output.
 The following fail loud before a new session is provisioned where the manager can preflight them,
 or at connector launch as a backstop:
 
-- **Resume /continuation:** a Cotal seat owns a new private Jcode instance. Reusing a session from
-  an operator or another seat would violate that ownership boundary.
+- **Exact-session continuation:** a Cotal seat owns a new private Jcode instance. Attaching it to
+  a session an operator or another seat still owns would violate that ownership boundary. Use
+  `--resume`, which gives the seat its own fork.
 - **Tool sharing:** Jcode resolves its MCP configuration from several global and project sources.
   The connector owns a private configuration containing only `cotal`, rather than claim a chosen
   subset can be safely merged.

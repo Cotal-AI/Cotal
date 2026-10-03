@@ -9,8 +9,8 @@ connector ships in the `cotal-ai` package, so no extra install of the connector 
 **Alpha** means it runs today (spawn it, it joins the mesh and takes turns) but with real
 constraints, all verified below: it is **Unix-only**, needs an external Python toolchain you
 provide (`uv` + `hermes-agent` on a supported version range), is **not** offered in the
-`cotal setup` picker, is **not** bundled in the container image (so no containerized Hermes, see
-[Deploy](deploy.md)), and does not support session resume.
+`cotal setup` picker, and is **not** bundled in the container image (so no containerized Hermes, see
+[Deploy](deploy.md)).
 
 ## Prerequisites
 
@@ -112,6 +112,28 @@ follow from not writing your config. Your approval settings stay as you left the
 that prompts for approvals will still prompt, with no human at the TUI to answer. An agent file
 persona is refused rather than applied, because applying it means overwriting your `SOUL.md`.
 
+## Resume a session
+
+`cotal spawn --agent hermes --resume <id>` forks Hermes session `<id>` from your own profile
+(`HERMES_HOME`, or `~/.hermes`) into the seat's managed profile. The launcher does this before the
+seat joins the mesh, through Hermes' own session store: it opens your `state.db` read-only and
+copies the session into a new session in the seat's `state.db`, the way Hermes' `/branch` does. The
+fork keeps the session's title. When the seat's `state.db` already holds that title from an earlier
+fork, the new one takes the next `#N` as `/branch` numbers a branch, shortened to fit Hermes'
+100-character title limit. This works across the supported `hermes-agent` range. The gateway keeps
+one session per mesh chat, so each chat starts as its own branch of that fork the first time the
+resumed seat uses it, and its first turn carries the source context. A chat that still holds history
+from an earlier seat of the same name moves to its branch too, and that history stays in the seat's
+`state.db` under its own session.
+Your session is never appended to; SQLite still creates its usual `state.db-wal` and `state.db-shm` files next to a database it
+reads. A session that is missing or has no messages is refused before the seat joins. A seat
+relaunched under the same name keeps its fork and does not read your profile again, and resuming a
+different session under that name is refused. The launcher records the source session id, its
+title, and a SHA-256 of the transcript it copied next to the fork, prints them when it forks, and the
+manager reads that record into the seat's resume document, so `cotal ps --wide` shows them. Resume does not combine with
+`COTAL_HERMES_ADOPT_HOME`, because that profile already holds the session: continue it there with
+Hermes' own `/resume`.
+
 ## How presence follows the turn
 
 The hooks map Hermes's lifecycle onto presence: `pre_llm_call` and `pre_tool_call` write `working`,
@@ -155,7 +177,6 @@ sooner once the seat has asked 1024 newer questions.
 ## Limits
 
 - **Unix-only** (no Windows).
-- **No session resume**: `cotal spawn --resume` throws.
 - **Not containerized**: the [deploy](deploy.md) image bundles only Claude Code and OpenCode (no
   `uv`/`hermes-agent`), so there is no containerized Hermes today.
 - **Brings its own toolchain**: you supply `uv` and a `hermes-agent` inside the supported range.

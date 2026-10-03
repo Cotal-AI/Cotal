@@ -145,6 +145,13 @@ export interface LaunchSpec {
    *  path after process exit, then verifies the successor reports the same session over `control`.
    *  Contains no transcript or credential; currently used by Pi for its current session id. */
   sessionStatePath?: string;
+  /** Where a `resume` launch records its fork's provenance, for a connector whose seat makes the fork
+   *  after launch: a JSON file the seat writes holding `source` (the session id it forked),
+   *  `transcriptSha256` (SHA-256 over the source transcript as it read it) and `title` when the
+   *  source has one. The manager records it on the seat's resume document, and `cotal ps` shows it.
+   *  The manager keeps a title of at most 1024 characters, so the connector refuses before launch a
+   *  source whose title is longer. */
+  resumeRecordPath?: string;
 }
 
 /** One provider-specific model variant. `options` is opaque connector metadata for UIs; core never

@@ -204,7 +204,7 @@ try {
   check("Jcode MCP schema still refuses non-harness extras", !hostSchema.safeParse({ to: "operator", text: "PONG", owner: "forged" }).success);
 
   throws("refuses empty prompt", () => launch({ space: "s", name: "n", prompt: "  " }), /empty/);
-  throws("refuses resume", () => launch({ space: "s", name: "n", resume: "old" }), /resum/i);
+  throws("refuses resume of a session with no readable transcript", () => launch({ space: "s", name: "n", resume: "old" }), /cannot resume session old: no readable transcript/);
   throws("refuses exact-session continuation", () => launch({ space: "s", name: "n", continueSession: "old" }), /continuation/);
   throws("refuses an empty variant", () => launch({ space: "s", name: "n", variant: "  " }), /empty/);
   throws("refuses tool sharing", () => launch({ space: "s", name: "n", mcpServers: { extra: { command: "x" } } }), /tool-sharing/);

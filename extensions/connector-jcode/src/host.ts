@@ -9,6 +9,7 @@ import { hardenPrivate, loadAgentFile, type PresenceCondition, type PresenceCond
 import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
+import { forkJcodeSession, jcodeSeatHome, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
 import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
 import {
   classifyReadinessProviderRefusal,
@@ -153,10 +154,8 @@ export function jcodeTurnCondition(error: unknown, since = Date.now()): Presence
 function privateAgentHome(space: string, name: string): string {
   const root = process.env.COTAL_JCODE_HOME?.trim();
   if (!root) throw new Error("COTAL_JCODE_HOME is not set — the connector must pin the agent's Jcode home");
-  const slug = `${space}-${name}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
-  const key = createHash("sha256").update(`${space}\0${name}`).digest("hex").slice(0, 12);
   const managedRoot = join(root, ".cotal", "jcode");
-  const home = join(managedRoot, `${slug || "agent"}-${key}`);
+  const home = jcodeSeatHome(root, space, name);
   if (!resolve(home).startsWith(resolve(managedRoot) + sep)) throw new Error(`jcode home ${home} escapes ${managedRoot} — refusing`);
   for (const path of [join(root, ".cotal"), managedRoot, home]) {
     try {
@@ -423,8 +422,16 @@ export async function runJcodeHost(): Promise<void> {
   // The managed home stays in the workspace, but this private short alias keeps that fixed API
   // path below AF_UNIX's platform limit. Failure is fatal; a long-path fallback is the reported bug.
   let socketHome: ShortSocketHome;
+  const resumeSource = process.env.COTAL_JCODE_RESUME?.trim();
+  let fork: JcodeFork | undefined;
   try {
     mirrorJcodeCredentials(home);
+    // `cotal spawn --resume`: the fork is on disk before the seat's instance first reads its sessions.
+    if (resumeSource) {
+      const sourceHome = process.env.COTAL_JCODE_RESUME_HOME?.trim();
+      if (!sourceHome) throw new Error("COTAL_JCODE_RESUME_HOME is not set — the launch must name the home it validated the source in");
+      fork = forkJcodeSession({ sourceHome, sessionId: resumeSource, seatHome: home, cwd });
+    }
     socketHome = shortSocketHome(home);
   } catch (error) {
     // These refusals name local paths, which the public startup diagnostic never renders, so
@@ -1785,7 +1792,11 @@ export async function runJcodeHost(): Promise<void> {
     const sessionsPath = storedSessionsPath(socketHome.jcodeHome);
     const stored = inspectStoredSessions(socketHome.jcodeHome);
     let listingFailed = false;
-    if (isEmptyStoredSessionsDirectory(stored)) {
+    if (fork) {
+      // An operator fork names its session. It is never chosen by size among the home's others,
+      // which may be left from an earlier seat of the same name.
+      prior = { session_id: fork.forkId };
+    } else if (isEmptyStoredSessionsDirectory(stored)) {
       writeJcodeDiagnostic(
         `[cotal-jcode] stored sessions directory is empty (${stored.path}); starting fresh without listing\n`,
       );
@@ -1827,7 +1838,9 @@ export async function runJcodeHost(): Promise<void> {
       if (prior) {
         session = await client.attachSession(prior.session_id);
         writeJcodeDiagnostic(
-          `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
+          fork
+            ? `[cotal-jcode] ${fork.created ? "forked" : "continued its fork of"} session ${resumeSource}${fork.title ? ` ${JSON.stringify(fork.title)}` : ""} (transcript sha256:${fork.transcriptSha256}) as ${prior.session_id}\n`
+            : `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
         );
       } else {
         session = await client.createSession(cwd);
@@ -1846,7 +1859,9 @@ export async function runJcodeHost(): Promise<void> {
         boundStoredSessionCause(panic ?? `${(error as Error).message ?? ""}\n${bridgeStderr}`),
       );
     }
-    const resumed = prior !== undefined;
+    // A fork carries the source's history but not this seat's briefing until a launch has sent it.
+    // That is tracked on its own, because a first launch can fork and then fail before briefing.
+    const resumed = prior !== undefined && (fork ? fork.briefed : true);
     sessionId = session.session_id;
     agent.setContextId(sessionId);
     if (events) {
@@ -1906,6 +1921,7 @@ export async function runJcodeHost(): Promise<void> {
     // them would replay the whole briefing on every restart and grow the context without adding to it.
     if (!resumed) {
       await client.sendMessage(sessionId, instructions(config, def?.persona || undefined), { noReply: true });
+      if (fork) markJcodeForkBriefed(home, resumeSource!);
     }
     const useTui = tuiOverride ? /^(1|true|yes|on)$/i.test(tuiOverride) : Boolean(process.stdout.isTTY);
     // The viewer needs only the fresh session's socket. Start it before the readiness LLM turn so
