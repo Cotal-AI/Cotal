@@ -2322,20 +2322,19 @@ log("out", out);
     // THE OBLIGATION ITSELF.
     ok("no answer anywhere in the matrix carried an own CALLABLE `then`", carriedCallableThen.length === 0, carriedCallableThen);
 
-    // AND THE STATED REASON, CORRECTED BY MEASUREMENT. The rule said merge's "output keys derive
-    // from record arguments that already passed born()". They do not, quite: a non-record argument
-    // contributes index keys. The property that actually holds is the one asserted above - a minted
-    // key cannot carry a callable - and it is worth having the difference written down, because a
-    // reason nobody re-measured is how a struck door gets rebuilt.
+    // AND THE STATED REASON, RE-MEASURED. The rule said merge's "output keys derive from record
+    // arguments that already passed born()". They once did not, quite: a non-record argument
+    // contributed index keys. merge now refuses any argument that is not a record (L4016), so no
+    // index key is minted; the property asserted above - a minted key cannot carry a callable -
+    // still holds on its own, and it is worth having the difference written down, because a reason
+    // nobody re-measured is how a struck door gets rebuilt.
     ok(
-      "merge mints index keys from a NON-record argument, so the keys are not all born-derived",
-      JSON.stringify(await h.ctx.free("merge", [h.ctx.born({ a: 1 }), "zz"])) === '{"0":"z","1":"z","a":1}',
-      await h.ctx.free("merge", [h.ctx.born({ a: 1 }), "zz"]),
+      "merge refuses a NON-record argument, so it mints no index keys",
+      codeOf(await caught(() => h.ctx.free("merge", [h.ctx.born({ a: 1 }), "zz"]))) === "L4016",
     );
     ok(
-      "and from an array argument too",
-      JSON.stringify(await h.ctx.free("merge", [h.ctx.born({ a: 1 }), [9, 8]])) === '{"0":9,"1":8,"a":1}',
-      await h.ctx.free("merge", [h.ctx.born({ a: 1 }), [9, 8]]),
+      "and an array argument too",
+      codeOf(await caught(() => h.ctx.free("merge", [h.ctx.born({ a: 1 }), [9, 8]]))) === "L4016",
     );
 
     // WHAT KEEPS THE DOOR SHUT, both halves measured. The program cannot build the input:

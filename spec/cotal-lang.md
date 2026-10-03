@@ -359,6 +359,15 @@ A run RECORDED under language version `1` before this narrowing may have called 
 kind and COMPLETED, because the walker of the day handed back the host's `undefined`. Such a record
 does not replay: the refusal is raised at that `len`, before any recorded entry is consumed, so the
 resume stops rather than half-running. See §8.4.
+The record and array arguments of the other builtins are checked the same way. `keys`, `values`,
+`entries`, `has` and both arguments of `merge` take a record; `map`, `filter`, `find`, `some`,
+`every`, `sort`, `slice`, `join`, `reverse`, `unique`, `sum`, `pick` and the first argument of
+`concat` take an array. Any other kind, a string, `null` and `undefined` included, is refused
+(L4016) in the language, before the host is reached, because the host answers each of these for
+any kind it is handed: the keys of a number and a walk over its missing `length` are empty, `every`
+over nothing is true, an array or a function has an own `length` field, and a string spreads into
+its units. The second argument of `concat` keeps the method's meaning: an array's elements, or the
+one value. A version-1 record that relied on the host's answer does not replay either (§8.4).
 `assert` raises L4012 with the message.
 
 Where a parameter takes a **primitive**, an array, record or function in that position is refused
@@ -730,7 +739,10 @@ than an array or a string (§5.4): such a run completed under the earlier walker
 `undefined`, and is now refused L4016 at that line, before any recorded entry is consumed. The
 second known case is an update operator (§4.5): a version-1 record whose program incremented or
 decremented a value other than a number completed under the earlier walker, and is now refused
-L4018 at that line, before any recorded entry is consumed. The two statements are consistent
+L4018 at that line, before any recorded entry is consumed. The third known case is a record or
+array builtin over another kind (§5.4): a version-1 record whose program called `keys(5)`,
+`map(5, f)` or another such call completed under the earlier walker on the host's answer, and is
+now refused L4016 at that line, before any recorded entry is consumed. The statements are consistent
 because they answer different questions: which engine serves a recorded version, and what that
 engine's current semantics are.
 
@@ -1181,3 +1193,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-09-23 | A refusal the language itself raised inside a scope keeps its catalog code in the scope's failure record (§10.1, §10.6, Appendix A): a `RuntimeFault` settles under its own code with kind `runtime`, because `L4000` is the generic code an unclassified failure carries and this one is classified. Measured before it: a `fanOut` with no stable key raised L3021 inside the scope, the program caught `L3021` live, and the settled entry said `L4000` `scope-fault` with the L3021 sentence still inside the message, so every resume replayed `L4000` where the live run had thrown `L3021`. A plain non-`EffectError` throw inside a scope still records `L4000` `scope-fault`, and a handler's `EffectError` still keeps its code and kind. |
 | 2026-09-25 | A divergence inside a scope settles nothing (§7.6, §9.2): it is the journal saying this program is not the one that wrote it, so the scope entry stays pending and the next resume re-enters it and diverges again at the step that broke, instead of replaying a recorded `L4000` `scope-fault` a program's `catch` can swallow. Measured before it: a resume whose edited `sleep` diverged inside a pending `parallel` settled the scope `failed` under `L4000`, a second resume threw the replayed scope-fault rather than the divergence, and inside `try`/`catch` the program caught it and performed a new effect against the journal it had diverged from. A divergence among a race's settled arms unwinds the run ahead of the winner scan for the same reason a refused append and a held arm do (§7.3): a race may not hand back a winner's value over a run-level fault, whichever arm raised it. |
 | 2026-09-27 | An update operator's operand (`x++`, `x--`) must already be a number, on the walker as it already did on the compiled engine (§4.5): a record, a numeric string or null is refused L4018 rather than settled as NaN or silently counted, so `x++`, `x + 1` and `x += 1` agree. A version-1 record whose program incremented or decremented a value other than a number is the second known case of §8.4's replay posture: it completed under the earlier walker and is now refused L4018 at that line, before any recorded entry is consumed. |
+| 2026-10-03 | The record and array arguments of the free builtins are checked like `len`'s (§5.4): `keys`, `values`, `entries`, `has` and `merge` take a record, and `map`, `filter`, `find`, `some`, `every`, `sort`, `slice`, `join`, `reverse`, `unique`, `sum`, `pick` and `concat`'s first argument take an array; every other kind is refused L4016 before the host is reached. Measured before it: `map(5, f)` and `keys(5)` answered `[]`, `every(5, f)` answered true, `has(f, "length")` answered true off the implementation's function wrapper, `keys("ab")` answered index strings, `concat("a", [1])` answered `"a1"` past L4018, and `keys(null)` refused with the host's error text. A version-1 record that relied on the host's answer is the third known case of §8.4's replay posture. |

@@ -120,6 +120,34 @@ function strArg(name: string, v: unknown): string {
   return v;
 }
 
+/** What a value is in this language (reference §4.1), for a refusal that names it. */
+const kindOf = (v: unknown): string =>
+  v === null ? "null"
+  : v === undefined ? "undefined"
+  : typeof v === "function" ? "a function"
+  : Array.isArray(v) ? "an array"
+  : typeof v === "object" ? "a record"
+  : `a ${typeof v}`;
+
+/**
+ * A record or array argument to a free builtin IS that kind, checked before the host is reached,
+ * as `len`'s is. Each builtin read its container through a host operation that answers for any
+ * kind (measured before the check: `map(5, f)` and `keys(5)` answered `[]`, `every(5, f)` true,
+ * `has(f, "length")` true off the interpreter's own function wrapper, `keys("ab")` the index
+ * strings, `concat("a", [1])` the string "a1" past L4018), so a program could branch on an answer
+ * no value of the right kind gives.
+ */
+function recordArg(name: string, v: unknown): object {
+  if (v === null || typeof v !== "object" || Array.isArray(v))
+    throw new RuntimeFault("L4016", `${name} takes a record, and ${kindOf(v)} is not one`);
+  return v;
+}
+
+function listArg(name: string, v: unknown): unknown[] {
+  if (!Array.isArray(v)) throw new RuntimeFault("L4016", `${name} takes an array, and ${kindOf(v)} is not one`);
+  return v;
+}
+
 /** Wrap a method-shaped impl with the argument gate. */
 const gate = <R,>(
   k: string,
@@ -398,7 +426,7 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     });
   const higher =
     (name: string, impl: (frame: LibFrame, list: unknown[], f: Callable) => Promise<unknown>): Callable =>
-    guarded(name, async (frame: LibFrame, args: unknown[]) => await impl(frame, args[0] as unknown[], asCallable(args[1], name)));
+    guarded(name, async (frame: LibFrame, args: unknown[]) => await impl(frame, listArg(name, args[0]), asCallable(args[1], name)));
 
   const json = deepFreeze({
     parse: fn("json.parse", (frame, a) => {
@@ -438,11 +466,11 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
 
   return [
     // records
-    ["keys", fn("keys", (frame, a) => born(Object.keys(a[0] as object), frame.depth), { any: [0] })],
-    ["values", fn("values", (frame, a) => born(Object.values(a[0] as object), frame.depth), { any: [0] })],
-    ["entries", fn("entries", (frame, a) => born(Object.entries(a[0] as object).map((e) => born(e, frame.depth)), frame.depth), { any: [0] })],
-    ["has", fn("has", (_f, a) => Object.prototype.hasOwnProperty.call(a[0] as object, a[1] as string), { any: [0] })],
-    ["merge", fn("merge", (frame, a) => born({ ...(a[0] as object), ...(a[1] as object) }, frame.depth), { any: [0, 1] })],
+    ["keys", fn("keys", (frame, a) => born(Object.keys(recordArg("keys", a[0])), frame.depth), { any: [0] })],
+    ["values", fn("values", (frame, a) => born(Object.values(recordArg("values", a[0])), frame.depth), { any: [0] })],
+    ["entries", fn("entries", (frame, a) => born(Object.entries(recordArg("entries", a[0])).map((e) => born(e, frame.depth)), frame.depth), { any: [0] })],
+    ["has", fn("has", (_f, a) => Object.prototype.hasOwnProperty.call(recordArg("has", a[0]), a[1] as string), { any: [0] })],
+    ["merge", fn("merge", (frame, a) => born({ ...recordArg("merge", a[0]), ...recordArg("merge", a[1]) }, frame.depth), { any: [0, 1] })],
     // arrays
     // len counts exactly the kinds that have a length OF THEIR OWN: an array's elements, a
     // string's units. Nothing else may answer, because the only `length` anything else has is a
@@ -456,7 +484,7 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
       if (Array.isArray(v) || typeof v === "string") return v.length;
       throw new RuntimeFault(
         "L4016",
-        `len counts the elements of an array or the units of a string, and ${v === null ? "null" : v === undefined ? "undefined" : typeof v === "function" ? "a function" : typeof v === "object" ? "a record" : `a ${typeof v}`} has no length in this language: the only length a function has on the host is its parameter count, a property of the implementation's wrapper and not a program value. For a record's size, use \`len(keys(r))\`.`,
+        `len counts the elements of an array or the units of a string, and ${kindOf(v)} has no length in this language: the only length a function has on the host is its parameter count, a property of the implementation's wrapper and not a program value. For a record's size, use \`len(keys(r))\`.`,
       );
     }, { any: [0] })],
     [
@@ -499,7 +527,7 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     [
       "sort",
       fn("sort", async (frame, a) => {
-        const list = a[0] as unknown[];
+        const list = listArg("sort", a[0]);
         const keyFn = a[1] === undefined ? undefined : asCallable(a[1], "sort");
         const keyed: { key: unknown; value: unknown; at: number }[] = [];
         for (let i = 0; i < list.length; i += 1) {
@@ -512,18 +540,20 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
         );
       }, { any: [0, 1] }),
     ],
-    ["slice", fn("slice", (frame, a) => born((a[0] as unknown[]).slice(a[1] as number, a[2] as number | undefined), frame.depth), { any: [0] })],
-    ["concat", fn("concat", (frame, a) => born((a[0] as unknown[]).concat(a[1] as unknown[]), frame.depth), { any: [0, 1] })],
+    ["slice", fn("slice", (frame, a) => born(listArg("slice", a[0]).slice(a[1] as number, a[2] as number | undefined), frame.depth), { any: [0] })],
+    ["concat", fn("concat", (frame, a) => born(listArg("concat", a[0]).concat(a[1] as unknown[]), frame.depth), { any: [0, 1] })],
     ["join", fn("join", (_f, a) => {
-      for (const el of a[0] as unknown[]) noCoerce("join", el);
-      return (a[0] as unknown[]).join(a[1] as string);
+      const xs = listArg("join", a[0]);
+      for (const el of xs) noCoerce("join", el);
+      return xs.join(a[1] as string);
     }, { any: [0] })],
-    ["reverse", fn("reverse", (frame, a) => born([...(a[0] as unknown[])].reverse(), frame.depth), { any: [0] })],
-    ["unique", fn("unique", (frame, a) => born([...new Set(a[0] as unknown[])], frame.depth), { any: [0] })],
+    ["reverse", fn("reverse", (frame, a) => born([...listArg("reverse", a[0])].reverse(), frame.depth), { any: [0] })],
+    ["unique", fn("unique", (frame, a) => born([...new Set(listArg("unique", a[0]))], frame.depth), { any: [0] })],
     ["range", fn("range", (frame, a) => born(Array.from({ length: a[0] as number }, (_, i) => i), frame.depth))],
     ["sum", fn("sum", (_f, a) => {
-      for (const el of a[0] as unknown[]) noCoerce("sum", el);
-      return (a[0] as number[]).reduce((x, y) => x + y, 0);
+      const xs = listArg("sum", a[0]);
+      for (const el of xs) noCoerce("sum", el);
+      return (xs as number[]).reduce((x, y) => x + y, 0);
     }, { any: [0] })],
     // strings
     ["split", fn("split", (frame, a) => born(strArg("split", a[0]).split(strArg("split", a[1])), frame.depth))],
@@ -572,7 +602,7 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     [
       "pick",
       fn("pick", (frame, a) => {
-        const list = a[0] as unknown[];
+        const list = listArg("pick", a[0]);
         return list[Math.floor(ctx.prng.next(frame.keys.path) * list.length)];
       }, { any: [0] }),
     ],
