@@ -33,6 +33,7 @@ import {
   newIdentity,
   setupSpaceStreams,
   reconcileSpaceTtls,
+  ttlBuckets,
   standaloneConnectOpts,
   requireBrokerFloor,
   parseServerVersion,
@@ -50,6 +51,7 @@ import {
 } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager, StorageType } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import {
   assertSingleSpaceBroker,
   assertUserAuthInfo,
@@ -1341,6 +1343,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   commitTransportPolicy(meshRoot, transport);
   {
     if (!resumeAttempt) await postStart(server, space, setup, seedFile);
+    else await recreateMemoryBuckets(server, space, setup);
     // USER MODE: the auth service comes up FIRST among the daemons — until its callout answers,
     // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
     // (nor let agents race it) on a half-started auth plane. (Foreground `up` doesn't exit here, so
@@ -2537,6 +2540,8 @@ export async function startMeshDetached(
       try { removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true }); } catch { /* best effort */ }
       throw e;
     }
+  } else {
+    await recreateMemoryBuckets(server, space, setup);
   }
   // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).
   const svc = await startUserAuthService(space, server, setup, opts.publicExchange);
@@ -2969,6 +2974,22 @@ async function postStart(
     creds: setup?.creds,
     deliveryClass: setup ? "durable" : "live",
   });
+}
+
+/** A resume or restore skips `postStart` because the preserved store already holds every canonical
+ *  stream. A memory-backed bucket is the exception: the broker stop that preserved the store emptied
+ *  it, stream and all (#1356 made presence memory-backed). Recreate those, and only those, from the
+ *  same `ttlBuckets` list `setupSpaceStreams` creates them from, before any daemon opens them. */
+async function recreateMemoryBuckets(server: string, space: string, setup?: { creds: string }): Promise<void> {
+  const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
+  try {
+    requireBrokerFloor(nc);
+    const kvm = new Kvm(nc);
+    for (const [bucket, ttl, storage] of ttlBuckets(space))
+      if (storage === StorageType.Memory) await kvm.create(bucket, { ttl, storage });
+  } finally {
+    await nc.drain();
+  }
 }
 
 /** Load the declarative channels-config file to seed the registry. An explicit `--channels`
