@@ -1051,6 +1051,11 @@ export class Manager {
    *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
    *  in user mode (the named 1a follow-up), and before registration completes. */
   private serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
+  /** #1577: serve connections whose transport is down while the client reconnects them. Such a
+   *  connection is open (`isClosed()` is false under unbounded reconnects) yet the broker holds
+   *  none of its rails, so the liveness responder must not grade it `bound`. Keyed by the
+   *  connection, so a re-dial that swaps in a fresh one starts from its own state. */
+  private readonly serveTransportDown = new WeakSet<NatsConnection>();
   /** P2 item 2 (spawn-as-action): the SELF-MEDIATED goal-writer connection + ActionContext — a
    *  standing connection DISJOINT from the serve credential (Q2), scoped to exactly this endpoint's
    *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
@@ -1590,6 +1595,31 @@ export class Manager {
     }
     this.leaseTimer = setInterval(() => { void this.renewLease(); }, MANAGER_LEASE_RENEW_MS);
     this.leaseTimer.unref?.();
+    // THE PEER-READABLE LIVENESS RESPONDER for the manager plane (#1577). Bound HERE — after the
+    // lease, before registration — precisely so it is up during the window in which the manager is
+    // NOT yet serving. A responder that only appeared once everything worked could never report the
+    // broken state it exists to report, which is the reported defect in a new place.
+    //
+    // WHAT IT GRADES is `serviceServe`, the v0.4 service endpoint's serve handle, which is assigned
+    // only after `serveEndpoint` has bound this instance's rails, AND that handle's connection. A
+    // closed serve connection holds no subscriptions, while `onServeConnectionClosed` keeps the
+    // handle through its re-dial waits, so the handle alone would answer `bound` with every rail
+    // gone. The re-dial swaps in the fresh connection and handle together, so `bound` returns only
+    // once the rails are served again. A DISCONNECTED serve connection is the same fault without the
+    // close: it reconnects without limit, so it stays open while the broker holds none of its rails,
+    // and this probe arrives on the separate supervisor connection that is still up. So the grade
+    // also requires the serve transport to be connected. That is a RESPONDER fact. It is
+    // deliberately NOT "this process is alive": this process is trivially alive whenever it answers
+    // at all, so grading on that would make the surface a `pgrep` that also lies in both directions
+    // — the exact instrument the reporter's evidence table indicts. Between lease acquisition and a
+    // successful registration the honest answer is `unbound`, and that is what a peer is told.
+    //
+    // The lease row is never consulted and never sent: presence is the whole ask, and the row
+    // carries the operator's workspace root and pid.
+    this.ep.serveLiveness("manager", () => {
+      const s = this.serviceServe;
+      return s?.handle && !s.nc.isClosed() && !this.serveTransportDown.has(s.nc) ? "bound" : "unbound";
+    });
     // Unit B (static §13.1): after this instance holds its lease, collect the durable static rows
     // now, but do not let their exact-op terminals make the whole space unreachable. The service
     // comes up below, then the sweep overlaps the remaining registration work. Two-window
@@ -6616,6 +6646,15 @@ export class Manager {
       inboxPrefix: `_INBOX_${state.identity.id}`,
       maxReconnectAttempts: -1,
     });
+    // Track the transport from the first moment: nats.js reports `disconnect` when the socket
+    // drops and `reconnect` only after it has re-sent this connection's subscriptions. If the
+    // status stream itself fails, the transport can no longer be observed, so it counts as down.
+    void (async () => {
+      for await (const st of nc.status()) {
+        if (st.type === "disconnect") this.serveTransportDown.add(nc);
+        else if (st.type === "reconnect") this.serveTransportDown.delete(nc);
+      }
+    })().catch(() => this.serveTransportDown.add(nc));
     let handle: EpServeHandle;
     try {
       // The 1b typed surface + the derived `describe`. The descriptor stays PUBLIC in static

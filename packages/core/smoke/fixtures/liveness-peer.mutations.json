@@ -1,0 +1,178 @@
+{
+  "command": "pnpm smoke:liveness-peer",
+  "progressPattern": "\u2713",
+  "minTicks": 52,
+  "mutations": [
+    {
+      "name": "a probe TIMEOUT is reported as an unbound responder instead of an unchecked axis",
+      "file": "packages/core/src/liveness.ts",
+      "find": "  if (outcome === \"replied\") return answered ?? \"unknown\";\n  if (outcome === \"noResponders\") return \"unbound\";\n  return \"unknown\";",
+      "replace": "  if (outcome === \"replied\") return answered ?? \"unknown\";\n  return \"unbound\";",
+      "expectRed": "CELL C4",
+      "cell": "CELL C4: a probe TIMEOUT grades `unknown`, never `unbound` (a timeout is not the broker saying nothing is bound)"
+    },
+    {
+      "name": "a reply that carries no readable verdict is promoted to bound merely for having arrived (the pgrep error)",
+      "file": "packages/core/src/liveness.ts",
+      "find": "  if (outcome === \"replied\") return answered ?? \"unknown\";",
+      "replace": "  if (outcome === \"replied\") return answered ?? \"bound\";",
+      "expectRed": "CELL C9",
+      "cell": "CELL C9: a reply with NO readable verdict falls to `unknown`, not to `bound`"
+    },
+    {
+      "name": "a lease that has not reached ready is graded as a bound responder",
+      "file": "packages/core/src/liveness.ts",
+      "find": "  if (lease.ready !== true) return \"unbound\";",
+      "replace": "  if (lease.ready !== true) return \"bound\";",
+      "expectRed": "CELL B2b",
+      "cell": "CELL B2b: a lease that is CLAIMED but not READY grades `unbound` (the 22-hour state: the slot is taken, the responder is not up)"
+    },
+    {
+      "name": "a responder whose readState throws answers bound instead of unknown",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        let responder: ResponderState;\n        try {\n          responder = await readState();\n        } catch {\n          responder = \"unknown\";\n        }",
+      "replace": "        let responder: ResponderState;\n        try {\n          responder = await readState();\n        } catch {\n          responder = \"bound\";\n        }",
+      "expectRed": "CELL C1",
+      "cell": "CELL C1: a DELIVERY responder that cannot read its lease answers `unknown`, never `bound`"
+    },
+    {
+      "name": "a reply naming a different plane than the one asked about is adopted as that plane's answer",
+      "file": "packages/core/src/liveness.ts",
+      "find": "  if (typeof plane !== \"string\" || !isLivenessPlane(plane) || plane !== expectPlane) return undefined;",
+      "replace": "  if (typeof plane !== \"string\" || !isLivenessPlane(plane)) return undefined;",
+      "expectRed": "CELL D11",
+      "cell": "CELL D11: a reply naming a DIFFERENT plane than the one asked about is rejected, not adopted"
+    },
+    {
+      "name": "an unrecognised responder value in a reply is accepted rather than refused",
+      "file": "packages/core/src/liveness.ts",
+      "find": "  if (responder !== \"bound\" && responder !== \"unbound\" && responder !== \"stale\" && responder !== \"unknown\") return undefined;\n  if (instance !== undefined && (typeof instance !== \"string\" || instance === \"\")) return undefined;",
+      "replace": "  if (typeof responder !== \"string\") return undefined;\n  if (instance !== undefined && (typeof instance !== \"string\" || instance === \"\")) return undefined;",
+      "expectRed": "CELL D12",
+      "cell": "CELL D12: a reply with an unrecognised responder value is rejected (it grades `unknown`, never `bound`)"
+    },
+    {
+      "name": "the responder answers any reply target, not only one under the sender's own subtree",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {\n          this.emitRecoverable(new Error(`rejected liveness probe on ${m.subject}: reply target \"${m.reply ?? \"(none)\"}\" is not under the sender's own reply subtree`));\n          continue;\n        }",
+      "replace": "        if (!m.reply) continue;",
+      "expectRed": "CELL D4b",
+      "cell": "CELL D4b: a probe whose reply target is ANOTHER peer's lane is NOT answered (no confused deputy)"
+    },
+    {
+      "name": "the responder reports a plane it was not asked about, so an answer about delivery can arrive for a question about the manager",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
+      "replace": "        const answer = { plane: plane === \"manager\" ? \"delivery\" : \"manager\", responder, instance } as LivenessAnswer;",
+      "expectRed": "CELL B1",
+      "cell": "CELL B1: with a responder bound, the peer's MANAGER probe returns `bound`"
+    },
+    {
+      "name": "a peer may probe under another principal's identity slots because the subject stops pinning the caller",
+      "file": "packages/core/src/provision.ts",
+      "find": "    ...LIVENESS_PLANES.map((plane) => livenessSubject(space, plane, pr.owner, pr.actor)),",
+      "replace": "    ...LIVENESS_PLANES.map((plane) => livenessSubject(space, plane, pr.owner, \"*\")),",
+      "expectRed": "CELL D2",
+      "cell": "CELL D2: a peer CANNOT publish a probe under another principal's identity slots"
+    },
+    {
+      "name": "an agent is granted the responder's serve filter and can answer a peer's probe for a plane it does not own",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const livenessReplies = LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`);",
+      "replace": "  const livenessReplies = [...LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`), ...LIVENESS_PLANES.map((plane) => livenessServeFilter(space, plane))];",
+      "expectRed": "CELL D3",
+      "cell": "CELL D3: a peer CANNOT subscribe the responder's SERVE filter (it cannot answer for a plane)"
+    },
+    {
+      "name": "the supervisor's reply grant widens off the reply leaf so it could forge a probe as a peer",
+      "file": "packages/core/src/provision.ts",
+      "find": "        livenessReplyGrant(space, \"manager\"),",
+      "replace": "        `${spacePrefix(space)}.live.manager.>`,",
+      "expectRed": "CELL E3",
+      "cell": "CELL E3: the supervisor's reply grant is bounded to the `.reply.` leaf - it cannot publish a probe AS a peer"
+    },
+    {
+      "name": "the delivery plane's serve filter is granted to the supervisor too, so planes no longer answer only for themselves",
+      "file": "packages/core/src/provision.ts",
+      "find": "        livenessServeFilter(space, \"manager\"),\n      ],",
+      "replace": "        livenessServeFilter(space, \"manager\"),\n        livenessServeFilter(space, \"delivery\"),\n      ],",
+      "expectRed": "CELL E2",
+      "cell": "CELL E2: the `supervisor` CANNOT serve the DELIVERY plane (each plane answers for itself)"
+    },
+    {
+      "name": "a plane outside the closed set is answered instead of refused",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!isLivenessPlane(plane))",
+      "replace": "    if (false && !isLivenessPlane(plane))",
+      "expectRed": "CELL D9",
+      "cell": "CELL D9: a peer asking about a plane outside the closed set is REFUSED, not answered"
+    },
+    {
+      "name": "the answer carries the lease holder alongside presence, leaking identity to a non-owner peer",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
+      "replace": "        const answer = { plane, responder, instance, holder: this.card.id } as LivenessAnswer;",
+      "expectRed": "CELL D8",
+      "cell": "CELL D8: the wire answer carries EXACTLY {plane, responder, instance} - no holder, pid, root, lease instance id or roster"
+    },
+    {
+      "name": "the rejection notice goes back on the `error` channel, which Node rethrows with no listener attached, so a peer's probe ends the responder process",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          this.emitRecoverable(new Error(`rejected liveness probe on ${m.subject}: reply target \"${m.reply ?? \"(none)\"}\" is not under the sender's own reply subtree`));",
+      "replace": "          this.emit(\"error\", new Error(`rejected liveness probe on ${m.subject}: reply target \"${m.reply ?? \"(none)\"}\" is not under the sender's own reply subtree`));",
+      "expectRed": "CELL F1",
+      "cell": "CELL F1: with NO `error` listener attached, a probe the reply guard REJECTS leaves the responder process alive"
+    },
+    {
+      "name": "the responder mints its token per REPLY rather than per bind, so one responder looks like many and two cannot be told apart",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
+      "replace": "        const answer: LivenessAnswer = { plane, responder, instance: randomUUID() };",
+      "expectRed": "CELL G5",
+      "cell": "CELL G5 (CONTROL for G2): with ONE responder bound, repeated probes return exactly ONE token - the token names a responder, not a reply"
+    },
+    {
+      "name": "the answer names no responder at all, so two disagreeing instances are indistinguishable from one that changed state",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
+      "replace": "        const answer: LivenessAnswer = { plane, responder };",
+      "expectRed": "CELL G1",
+      "cell": "CELL G1: every answer from a bound responder NAMES which responder answered"
+    },
+    {
+      "name": "a responder token the caller cannot compare is accepted instead of refused, so a split reads as agreement",
+      "file": "packages/core/src/liveness.ts",
+      "find": "  if (instance !== undefined && (typeof instance !== \"string\" || instance === \"\")) return undefined;",
+      "replace": "  if (false && instance !== undefined) return undefined;",
+      "expectRed": "CELL G7",
+      "cell": "CELL G7: a reply naming its responder in a form that cannot be compared is REJECTED (it grades `unknown`, never `bound`)"
+    },
+    {
+      "name": "the remote-manager credential loses the manager liveness serve subscription, so a bound remote manager is reported unbound",
+      "file": "packages/core/src/provision.ts",
+      "find": "        ...(isSupervisorActor ? [livenessServeFilter(space, \"manager\")] : []),",
+      "replace": "        ...(false && isSupervisorActor ? [livenessServeFilter(space, \"manager\")] : []),",
+      "expectRed": "CELL E6",
+      "cell": "CELL E6: the REMOTE-MANAGER supervisor actor CAN subscribe the manager plane's serve filter (it binds that responder in `start()`)"
+    },
+    {
+      "name": "the remote-manager credential loses its bounded liveness reply grant, so its responder cannot answer the probe it serves",
+      "file": "packages/core/src/provision.ts",
+      "find": "        ...(isSupervisorActor ? [livenessReplyGrant(space, \"manager\")] : []),",
+      "replace": "        ...(false && isSupervisorActor ? [livenessReplyGrant(space, \"manager\")] : []),",
+      "expectRed": "CELL E7",
+      "cell": "CELL E7: that credential's liveness reply grant is bounded to the `.reply.` leaf - it cannot publish a probe AS a peer"
+    },
+    {
+      "name": "the remote-manager liveness rows go to BOTH actors, so the executor carries authority to answer a probe it never serves",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const isSupervisorActor = pin.actor === `manager_${iid}`;",
+      "replace": "  const isSupervisorActor = true;",
+      "expectRed": "CELL E9",
+      "cell": "CELL E9: the remote-manager EXECUTOR actor holds NO liveness row at all (it never binds the responder)"
+    }
+  ],
+  "suite": [
+    "packages/core/smoke/liveness-peer.smoke.ts"
+  ]
+}

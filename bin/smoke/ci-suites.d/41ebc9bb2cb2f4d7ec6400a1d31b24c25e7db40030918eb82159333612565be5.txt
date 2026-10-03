@@ -1,0 +1,3 @@
+# A credentialed NON-OWNER peer can ask whether the manager and delivery responders are bound, and
+# can learn nothing else. Unknown stays first class: a probe that could not complete is never health.
+smoke:liveness-peer

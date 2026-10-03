@@ -406,7 +406,20 @@ const SEAMS: Seam[] = [
   // in packages/core/smoke/presence-ttl-refresh-cli.smoke.ts that deletes the presence stream so
   // the provisioner can restage it file-backed. All smoke-side calls state `tls: false`. None of
   // these landings moved the pin, so this cell was red from #2311 until this correction.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 225, untypecheckedSites: 176 },
+  // 225/176 -> 227/178: two smoke-side connections in packages/core/smoke/liveness-peer.smoke.ts,
+  // both in the peer-readable liveness suite (#1577) and both under `smoke/`, so each of the two
+  // counts moves by the same two. Named individually, because a count that moves by the right
+  // amount for the wrong reason is the failure this pin exists to catch:
+  //   • `probeNc` — the fixture's own target control, which proves it is talking to ITS OWN broker
+  //     before it reports on anything (being pointed at another broker looks identical to being
+  //     refused by this one);
+  //   • `rawNc`  — the raw connection that reads a REAL reply frame's key set, since a TypeScript
+  //     type cannot stop a handler attaching an extra field.
+  // Both state `tls` explicitly, so the seam itself is unchanged. The `standaloneConnectOpts` near
+  // the top of that file is the IMPORT and is not a call site; this reader counts calls. The two
+  // are named by IDENTIFIER rather than by line, because a line number in a comment is stale the
+  // next time anything is inserted above it, and then it points a reader at the wrong call.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 227, untypecheckedSites: 178 },
 ];
 
 /**
