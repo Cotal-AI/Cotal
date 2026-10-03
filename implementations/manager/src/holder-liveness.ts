@@ -20,9 +20,9 @@
  *   - a garbled reply, or one that does not ECHO the principal asked about, is `unestablishable` —
  *     a result that does not verifiably describe THIS principal never authorizes.
  *
- * A refusal or an unreachable rail also reads the delivery lease (`lease.0`), so the refusal names
- * what is blocking the rail instead of always advising a restart (#1062). That read is diagnostic
- * only: it changes the copy, never the verdict.
+ * Each query also reads the delivery lease (`lease.0`) before it is sent, and a refusal or an
+ * unreachable rail reads it again, so the refusal names what is blocking the rail instead of always
+ * advising a restart (#1062). Those reads are diagnostic only: they change the copy, never the verdict.
  */
 import { CotalEndpoint, mintCreds, newIdentity, parsePrincipalLivenessResult, type DeliveryLeaseInfo, type SpaceAuth } from "@cotal-ai/core";
 import type { HolderLiveness } from "./reconcile-gate.js";
@@ -63,24 +63,50 @@ type DeliveryLeaseReading =
   | { state: "unreadable"; error: string }
   | { state: "held"; lease: DeliveryLeaseInfo };
 
+/** A lease time the diagnosis can print. Finite is not enough: `Date` stops at ±8.64e15 ms, and
+ *  `toISOString()` throws past it. */
+function isLeaseTime(t: unknown): t is number {
+  return typeof t === "number" && !Number.isNaN(new Date(t).getTime());
+}
+
+function leaseTime(t: number, now: number): string {
+  return `${new Date(t).toISOString()} (${Math.max(0, Math.round((now - t) / 1000))}s ago)`;
+}
+
 /** The lease row as facts. The row records no account, so the account named is the space account
- *  whose lease bucket holds it, the only account its writer can have authenticated in. `since` is
- *  re-stamped on every write, so for a ready holder it is the last renewal. */
+ *  whose lease bucket holds it, the only account its writer can have authenticated in. */
 function deliveryLeaseFacts(reading: DeliveryLeaseReading, account: string, now: number = Date.now()): string {
   if (reading.state === "absent") return "lease.0 is absent: no delivery daemon holds the shard";
   if (reading.state === "unreadable") return `lease.0 is unreadable (${reading.error})`;
-  const { holder, since, ready } = reading.lease;
-  const age = Math.max(0, Math.round((now - since) / 1000));
-  return `lease.0 is held by "${holder}" (account ${account}), ${ready ? "ready" : "NOT ready"}, row written ${new Date(since).toISOString()} (${age}s ago)`;
+  const { holder, acquiredAt, since, ready } = reading.lease;
+  const acquired = acquiredAt === undefined ? "acquired at an unknown time (the row predates that field)" : `acquired ${leaseTime(acquiredAt, now)}`;
+  return `lease.0 is held by "${holder}" (account ${account}), ${ready ? "ready" : "NOT ready"}, ${acquired}, row written ${leaseTime(since, now)}`;
+}
+
+/** Did one run of one daemon hold `lease.0` both before the query and after it failed? Only then can
+ *  the holder read afterwards be the daemon that left the query unanswered. */
+function sameLeaseHolder(before: DeliveryLeaseReading, after: DeliveryLeaseReading): boolean {
+  return (
+    before.state === "held" &&
+    after.state === "held" &&
+    before.lease.holder === after.lease.holder &&
+    before.lease.incarnation === after.lease.incarnation
+  );
 }
 
 /** Who to act on when the rail did not answer at all. Only an absent lease means no daemon is
- *  running; every other reading names something that starting another daemon would not fix. */
-function unansweredRailBlocker(reading: DeliveryLeaseReading): string {
-  if (reading.state === "absent") return "Start the delivery daemon (`cotal up` runs it) and re-run";
-  if (reading.state === "unreadable")
+ *  running; every other reading names something that starting another daemon would not fix. A
+ *  holder that took the shard while the query was outstanding was never asked, so it is not named
+ *  as the blocker. */
+function unansweredRailBlocker(before: DeliveryLeaseReading, after: DeliveryLeaseReading): string {
+  if (after.state === "absent") return "Start the delivery daemon (`cotal up` runs it) and re-run";
+  if (after.state === "unreadable")
     return "The daemon that should answer cannot be named, so do not assume none is running: fix the lease read, then re-run";
-  const { holder, ready } = reading.lease;
+  const { holder, ready } = after.lease;
+  if (!sameLeaseHolder(before, after)) {
+    const was = before.state === "held" ? `held by "${before.lease.holder}" (incarnation ${before.lease.incarnation ?? "unknown"})` : before.state;
+    return `lease.0 was ${was} when the query was sent, so "${holder}" may not be the daemon that left it unanswered. Re-run before stopping anything`;
+  }
   return ready
     ? `The blocker is "${holder}": it holds the shard as ready but did not answer. Stop or restart that process; another daemon cannot take the lease while it is held`
     : `The blocker is "${holder}": it claimed the shard and has not bound its rails. Wait for it to become ready, or stop it so its lease lapses, then re-run`;
@@ -108,8 +134,8 @@ async function readDeliveryLeaseForDiagnosis(opts: { space: string; servers: str
     await ep.start();
     const entry = await ep.readDeliveryLeaseEntry(0);
     if (!entry) return { state: "absent" };
-    const { holder, since, ready } = entry.info;
-    if (typeof holder !== "string" || typeof ready !== "boolean" || !Number.isFinite(since))
+    const { holder, acquiredAt, since, ready } = entry.info;
+    if (typeof holder !== "string" || typeof ready !== "boolean" || !isLeaseTime(since) || (acquiredAt !== undefined && !isLeaseTime(acquiredAt)))
       return { state: "unreadable", error: `row is not a lease record: ${JSON.stringify(entry.info)}` };
     return { state: "held", lease: entry.info };
   } catch (e) {
@@ -130,6 +156,8 @@ export function makeManagerHolderLivenessProbe(opts: {
   log: (line: string) => void;
 }): (principal: string) => Promise<HolderLiveness> {
   return async (principal: string): Promise<HolderLiveness> => {
+    // Read before the query so a failed query can be pinned to the holder it could have reached.
+    const leaseBefore = await readDeliveryLeaseForDiagnosis(opts);
     const id = newIdentity();
     let ep: CotalEndpoint | undefined;
     try {
@@ -165,7 +193,7 @@ export function makeManagerHolderLivenessProbe(opts: {
         state: "unestablishable",
         detail:
           `the delivery daemon is not reachable on the ctl.delivery-admin rail (${e instanceof Error ? e.message : String(e)}); ` +
-          `${deliveryLeaseFacts(lease, opts.auth.account.pub)}. ${unansweredRailBlocker(lease)}. ` +
+          `${deliveryLeaseFacts(lease, opts.auth.account.pub)}. ${unansweredRailBlocker(leaseBefore, lease)}. ` +
           `Without the liveness oracle the freeze-holder "${principal}" cannot be proven gone, and this repair never infers death from silence`,
       };
     } finally {
