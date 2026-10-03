@@ -267,7 +267,10 @@ export const claudeConnector: Connector = {
     const def = agentFile ? loadAgentFile(agentFile) : undefined;
     const model = opts.model ?? def?.model;
     if (model) assertServableModel(model);
-    const passthrough = connectorLaunchOptions("claude", opts.launchOptions);
+    // Rendered to strings here, so a value that cannot become a flag argument refuses before any file
+    // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
+    // this launch wrote before it does.
+    const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
     const artifacts: string[] = [];
@@ -317,8 +320,7 @@ export const claudeConnector: Connector = {
     // no deny-list — the spawn capability is the trust boundary (see connectorLaunchOptions), not the
     // flag set. An operator can already run `claude` with any flag directly, and a peer's cotal_spawn
     // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
-    for (const [k, v] of passthrough) {
-      const val = String(v);
+    for (const [k, val] of passthrough) {
       if (val === "") args.push(`--${k}`);
       else args.push(`--${k}`, val);
     }

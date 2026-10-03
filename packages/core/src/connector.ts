@@ -147,8 +147,8 @@ export interface LaunchSpec {
   sessionStatePath?: string;
   /** Private temporary directories this launch wrote for its child to read (a persona carrier, an
    *  MCP config file), from `writeLaunchArtifact`. The launcher that spawns this spec owns them: it
-   *  removes them with `discardLaunchArtifacts` once the child has exited, or at once when the child
-   *  never started. */
+   *  removes them with `discardLaunchArtifacts` once it has proved the child gone (see core
+   *  launch-artifacts). */
   artifacts?: string[];
 }
 

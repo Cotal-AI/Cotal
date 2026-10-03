@@ -25,6 +25,10 @@ export interface SeatRecord {
    *  the same pid at the same tick after a reboot, and be signalled for it. Absent on a record
    *  written before boot binding; such a record is never signalled. */
   bootId?: string;
+  /** Private temporary directories the launch wrote for this seat's child to read (a persona
+   *  carrier, an MCP config file). Carried here so whoever proves the seat gone removes them, even a
+   *  successor that adopted or reaped it after the launching manager died. */
+  artifacts?: string[];
 }
 
 export function seatId(): string {
@@ -116,6 +120,8 @@ export function readRecord(path: string): SeatRecord {
     throw new Error("seat record childStart is not a start token");
   if (raw.bootId !== undefined && (typeof raw.bootId !== "string" || raw.bootId.length === 0))
     throw new Error("seat record bootId is not a boot identity");
+  if (raw.artifacts !== undefined && (!Array.isArray(raw.artifacts) || raw.artifacts.some((a) => typeof a !== "string" || a.length === 0)))
+    throw new Error("seat record artifacts is not a list of paths");
   return {
     version: RECORD_VERSION,
     id: raw.id,
@@ -129,5 +135,6 @@ export function readRecord(path: string): SeatRecord {
     // Carried, not re-read from this process: a record read on another boot must still say which
     // boot its pids came from, which is the whole point of the stamp.
     ...(raw.bootId !== undefined ? { bootId: raw.bootId } : {}),
+    ...(raw.artifacts !== undefined ? { artifacts: raw.artifacts } : {}),
   };
 }
