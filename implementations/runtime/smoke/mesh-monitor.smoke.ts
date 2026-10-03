@@ -10,8 +10,8 @@
  * reads the same fact whenever it is asked.
  *
  * The suite stages each half of the contract: the design's rescue idiom driven end to end (race
- * work against `wait(down)`, kill the seat, the died branch wins), the immediate down of an
- * already-dead incarnation, the two reasons (`lapsed` vs `superseded`) split by what the name
+ * work against `wait(down)`, kill the seat, the died branch wins), the down of an already-dead
+ * incarnation once its absence outlasts the lapse confirmation window, the two reasons (`lapsed` vs `superseded`) split by what the name
  * shows now, the timeout resolving null on the recorded absolute deadline, a re-entrant call
  * attaching to that deadline rather than restarting it, and cancellation claiming the armed
  * pause. Presence rows are the suite's to write and delete — the seat-real flow-through over a
@@ -208,7 +208,7 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   const parked = await pendingEntry("mo-1", "wait");
   c("the run parks on the down-wait while the seat is alive", parked !== undefined);
   await presenceKv.delete(a.principal);
-  const out = await withDeadline(drv, 30_000, "the rescue run");
+  const out = await withDeadline(drv, 60_000, "the rescue run");
   c("the run completes", out?.status === "completed", JSON.stringify(out));
 
   const race = (await journalEntries("mo-1", "race")).filter((e) => e.state === "settled").at(-1);
@@ -229,7 +229,7 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   c("the losing work branch is cancelled by the scope", work?.status === "cancelled", work?.status);
 }
 
-// ── 2) an incarnation that is ALREADY dead resolves at the first look ──────────────────────────
+// ── 2) an incarnation that is ALREADY dead resolves once its absence is confirmed ─────────────
 {
   console.log("• 2 — the immediate down: no presence row was ever there");
   const ghost = seat("ghost", "seat2", uid("c"));
@@ -240,7 +240,7 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   const s = stepCtx(T);
   const got = await withDeadline(
     safe(h.wait({ event: { event: "down", agent: ghost.handle }, timeout: "1h" } as never, s.ctx) as Promise<unknown>),
-    8_000, "the immediate down-wait",
+    45_000, "the immediate down-wait",
   ) as { agent?: string; reason?: string } | undefined;
   c("an already-dead incarnation resolves without waiting for anything",
     got?.agent === ghost.handle && got?.reason === "lapsed", JSON.stringify(got));

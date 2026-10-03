@@ -286,7 +286,7 @@ log("outcome", r.index);
       deadlineMs: 20_000,
     });
     c("the real manager tore the seat down", reply.reply.ok === true, JSON.stringify(reply.reply));
-    const out = await Promise.race([drv, wait(45_000).then(() => undefined)]);
+    const out = await Promise.race([drv, wait(75_000).then(() => undefined)]);
     c("the died branch ends the run once the presence row lapses",
       (out as { status?: string } | undefined)?.status === "completed", JSON.stringify(out));
     const settledWait = (await entriesOf("ls-4", "wait")).find((e) => e.state === "settled");
