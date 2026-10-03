@@ -146,6 +146,61 @@ Both refusals quoted here were run on 0.58.0 and on the 0.59.0 code. That broker
 rows need nothing is read from the change, which touches only the CLI and its hints, and was not run
 on a live split deployment.
 
+## Repeated flags refused in 0.59.0
+
+A `cotal` flag given more than once is now a usage error unless the command declares it repeatable.
+On 0.58.0 the last value won with no message, so `cotal down web --space a --space b` acted on `b`
+while a wrapper that checked the first `--space` verified `a`. The break is in the command-line
+parser on the machine that runs the command, including commands added with `cotal ext add`. No
+stored state, credential or wire message changes.
+
+### What keeps working
+
+A command line that gives each flag once parses as it did on 0.58.0, in any order and in the
+`--flag=value` form. Flags whose help says repeatable, such as `--opt` and `down --session-store`,
+still collect every value. A flag-shaped word after `--` is still a positional. The daemons, units
+and agents that `cotal` starts for itself are given each flag once, so a fleet driven only by `cotal`
+commands typed by hand needs no action.
+
+### What stops working
+
+A command line that repeats any other flag exits 1 before the command runs. It prints
+`Option '--space' cannot be repeated`, or `Option '-f, --file' cannot be repeated` for a flag with a
+short form, followed by the command's help. `-f` and `--file` count as the same flag. Look for it in
+scripts, aliases and wrappers that append a flag to override one set earlier, such as a fixed
+`--space` followed by `"$@"`.
+
+### Upgrade order
+
+Change those scripts first so each flag is given once. 0.58.0 and 0.59.0 both accept that form.
+Brokers, managers and participant machines need nothing for this break, and each machine's CLI
+applies it when that machine is upgraded, so their order is the one the sections above give.
+
+### The window
+
+This break has no outage. No process restarts for it, and a refused command does nothing. The
+exposure is a script that still repeats a flag when it runs on 0.59.0: it exits 1 instead of acting on
+the last value.
+
+### Snapshot this first
+
+Nothing is rewritten, so this break has no state to back up. List the scripts, aliases and wrappers
+that call `cotal` so each one can be checked.
+
+### The upgrade end to end
+
+```sh
+# still on 0.58.0
+grep -rn 'cotal ' <your scripts and wrappers>
+# give each non-repeatable flag once, then upgrade
+npm i -g cotal-ai@0.59.0
+# run each changed script; a repeat left behind exits 1 with the usage error and does nothing
+```
+
+The refusal and its messages were run against the 0.59.0 parser and `cotal topology view`. That the
+argument lists `cotal` builds for its own processes give each flag once is read from the code, and
+was not run on a live split deployment.
+
 ## From 0.53.0 to 0.54.0
 
 Manager calls now borrow an instance-bound `manager-caller` credential. Followed mutations require
