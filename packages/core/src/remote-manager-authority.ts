@@ -99,10 +99,10 @@ export interface RemoteManagerAuthorityMaterial {
   expiresAt: number;
   actors: RemoteManagerActors;
   identities: RemoteManagerAuthorityRequest["identities"];
-  /** `prepare` returns the supervisor; `activate` returns serve+goal/session; `renew` may
-   * return every credential. An absent key is absent authority, never an implicit fallback. */
   /** Prepare returns the deterministic proof that the host will require on activate/renew. */
   nextRegistrationProof?: string;
+  /** `prepare` returns the supervisor; `activate` returns serve+goal/session; `renew` may
+   * return every credential. An absent key is absent authority, never an implicit fallback. */
   credentials: Partial<{
     supervisor: RemoteManagerCredential;
     executor: RemoteManagerCredential;

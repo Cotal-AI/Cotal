@@ -151,8 +151,6 @@ export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ s
   return { sub: payload.sub, exp: payload.exp };
 }
 
-/** Build an {@link IdpBridge}. Misconfig fails HERE, at construction — an empty pin would
- *  otherwise fail closed on every exchange with a far worse operator signal. */
 /**
  * The re-grant an elevated-view refusal points the operator at.
  *
@@ -191,6 +189,8 @@ function regrantRemedy(owner: string, actor: string, grant: ActorGrant, need: st
   );
 }
 
+/** Build an {@link IdpBridge}. Misconfig fails HERE, at construction — an empty pin would
+ *  otherwise fail closed on every exchange with a far worse operator signal. */
 export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
   if (!opts.space) throw new Error("idp bridge: a space is required");
   if (typeof opts.idp?.issuer !== "string" || !opts.idp.issuer)

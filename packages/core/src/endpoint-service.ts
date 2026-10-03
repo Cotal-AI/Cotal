@@ -196,31 +196,6 @@ export async function assertServiceNameAuthority(endpoint: string, owner: string
 
 // ---- registration (spec writes, the `provisioner-registration` principal) ---------------------
 
-/** Register (or re-register) a service instance: authenticated-registrant binding, name
- *  authority, then the spec-key CAS. The returned `registrationRevision` is the spec key's
- *  store revision (§13.7) — a re-registration advances it, which is exactly what invalidates a
- *  frozen scatter slot (§13.5 `churn`). A concurrent registration race is a loud `conflict`
- *  (§13.8: re-read and re-decide).
- *
- *  `registrant` is the BROKER-AUTHENTICATED caller of the registration request (its subject
- *  principal, §13.9 — never a payload claim): the descriptor owner must BE that caller, so a
- *  privileged owner's descriptor cannot be registered by anyone else, and a re-registration can
- *  never change an instance's ownership. `instanceId` MUST be provisioner-minted and never
- *  reused (§13.1); the allocator that enforces non-reuse is the lifecycle registry (D13) — this
- *  seam enforces what is checkable at the record: grammar, ownership stability, and CAS.
- *
- *  ISSUANCE-GATE BARRIER (§13.1). A registration is a WRITER on the instance's issuance gate: to
- *  be linearizable against an in-flight serve mint it MUST run the barrier protocol on the SAME
- *  `gate.<lifecycleUid>` key, in order: freeze the gate (so a fresh mint observes `frozen` and
- *  refuses, and a staged-but-uncommitted mint loses its revision-pinned CAS), authorize the owner
- *  under the frozen gate, revoke + VERIFIED-evict the superseded credential family, THEN advance
- *  the spec, then reopen at the successor `registrationRevision`. Old authority dies before new
- *  authority is published. This is REQUIRED, not documented: core exports no bare spec-key advance
- *  that could leave a mint's observed `registrationRevision` permanently equal to its snapshot,
- *  win a never-frozen CAS, and silently release a superseded-surface credential. The gate is
- *  created by the provisioner at instance mint (D13); a missing gate is `failed-precondition`. The
- *  production `barrier` wires to the durable KV CAS (D13/D14); the D4 seam is the typed protocol
- *  and its faithful in-memory model, so the barrier's writes serialize with the mint's on one key. */
 /** Reconstruct a registered spec's command surface from trusted registry + content-addressed
  *  store state (§13.7): EVERY command name -> the set of governed URNs its verified cluster
  *  document declares (an empty set for an un-governed command; the full command set is needed so
@@ -378,6 +353,31 @@ function serializeGovernanceCommands(commands: Map<string, Set<string>>): Record
   return out;
 }
 
+/** Register (or re-register) a service instance: authenticated-registrant binding, name
+ *  authority, then the spec-key CAS. The returned `registrationRevision` is the spec key's
+ *  store revision (§13.7) — a re-registration advances it, which is exactly what invalidates a
+ *  frozen scatter slot (§13.5 `churn`). A concurrent registration race is a loud `conflict`
+ *  (§13.8: re-read and re-decide).
+ *
+ *  `registrant` is the BROKER-AUTHENTICATED caller of the registration request (its subject
+ *  principal, §13.9 — never a payload claim): the descriptor owner must BE that caller, so a
+ *  privileged owner's descriptor cannot be registered by anyone else, and a re-registration can
+ *  never change an instance's ownership. `instanceId` MUST be provisioner-minted and never
+ *  reused (§13.1); the allocator that enforces non-reuse is the lifecycle registry (D13) — this
+ *  seam enforces what is checkable at the record: grammar, ownership stability, and CAS.
+ *
+ *  ISSUANCE-GATE BARRIER (§13.1). A registration is a WRITER on the instance's issuance gate: to
+ *  be linearizable against an in-flight serve mint it MUST run the barrier protocol on the SAME
+ *  `gate.<lifecycleUid>` key, in order: freeze the gate (so a fresh mint observes `frozen` and
+ *  refuses, and a staged-but-uncommitted mint loses its revision-pinned CAS), authorize the owner
+ *  under the frozen gate, revoke + VERIFIED-evict the superseded credential family, THEN advance
+ *  the spec, then reopen at the successor `registrationRevision`. Old authority dies before new
+ *  authority is published. This is REQUIRED, not documented: core exports no bare spec-key advance
+ *  that could leave a mint's observed `registrationRevision` permanently equal to its snapshot,
+ *  win a never-frozen CAS, and silently release a superseded-surface credential. The gate is
+ *  created by the provisioner at instance mint (D13); a missing gate is `failed-precondition`. The
+ *  production `barrier` wires to the durable KV CAS (D13/D14); the D4 seam is the typed protocol
+ *  and its faithful in-memory model, so the barrier's writes serialize with the mint's on one key. */
 export async function registerServiceInstance(
   kv: KV,
   args: {

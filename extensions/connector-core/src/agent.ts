@@ -209,22 +209,6 @@ function ingestDedupKey(id: string): string | undefined {
 }
 
 /**
- * A thin, mesh-native agent: a {@link CotalEndpoint} plus a buffered inbox and
- * name-based peer resolution. This is the shared core behind the MCP server
- * (and, later, the lifecycle hooks) — it owns the NATS connection and presence.
- *
- * Connecting is resilient: {@link start} kicks off a background retry loop so the
- * MCP server is responsive immediately even if the mesh isn't up yet.
- *
- * Emits `"incoming"` (InboxItem) when a message is buffered or an unacked durable copy
- * redelivers, so a push layer can apply its normal delivery policy again; `"mention-wake"`
- * (InboxItem) when a `focus`-mode agent is @-mentioned on a channel — the body was
- * acked-and-dropped (not buffered), so this
- * only asks the push layer to *wake* the agent to pull it; `"wake"` (no payload) to ask that
- * layer to wake the session now (the Stop→idle flush of held messages); `"error"` (Error) for
- * endpoint faults.
- */
-/**
  * The five states a caller has to tell apart, derived in one place so every consumer agrees.
  *
  * `degraded` is the one that matters and the one a single boolean gets wrong: the endpoint is bound
@@ -278,6 +262,22 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
     + `\nAnswer with: cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'`;
 }
 
+/**
+ * A thin, mesh-native agent: a {@link CotalEndpoint} plus a buffered inbox and
+ * name-based peer resolution. This is the shared core behind the MCP server
+ * (and, later, the lifecycle hooks) — it owns the NATS connection and presence.
+ *
+ * Connecting is resilient: {@link start} kicks off a background retry loop so the
+ * MCP server is responsive immediately even if the mesh isn't up yet.
+ *
+ * Emits `"incoming"` (InboxItem) when a message is buffered or an unacked durable copy
+ * redelivers, so a push layer can apply its normal delivery policy again; `"mention-wake"`
+ * (InboxItem) when a `focus`-mode agent is @-mentioned on a channel — the body was
+ * acked-and-dropped (not buffered), so this
+ * only asks the push layer to *wake* the agent to pull it; `"wake"` (no payload) to ask that
+ * layer to wake the session now (the Stop→idle flush of held messages); `"error"` (Error) for
+ * endpoint faults.
+ */
 export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
   readonly config: AgentConfig;

@@ -573,8 +573,6 @@ export async function readAcceptedRow(nc: NatsConnection, space: string, accepte
   return ref;
 }
 
-/** The named refusal an endpoint returns for a legacy (unversioned) invocation of a command
- *  that requires issued authority (SPEC §13.15 compatibility). */
 /** `details[].kind` of the refusal a command requiring issued caller authority returns to a
  *  LEGACY arrival: the request rode the unversioned rail, so no generation binds it (SPEC 13.15). */
 export const EP_UNBOUND_CALLER_AUTHORITY = "ai.cotal.ep.unbound-caller-authority";

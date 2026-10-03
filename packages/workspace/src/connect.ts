@@ -118,8 +118,9 @@ export interface Connection {
 /** The one way a command turns a {@link Connection} into endpoint auth options — spread this into
  *  `new CotalEndpoint({...})` instead of passing `creds:` directly, so a user-mode connection
  *  (bearer + sentinel) and a static/raw one (creds) ride the same call sites without each command
- *  re-learning the mode split. */
-/** The connect material for one resolved connection, spread straight into `CotalEndpoint` options
+ *  re-learning the mode split.
+ *
+ *  The connect material for one resolved connection, spread straight into `CotalEndpoint` options
  *  or a standalone helper.
  *
  *  `tls` rides along with the credentials DELIBERATELY. It used to be dropped here — this function

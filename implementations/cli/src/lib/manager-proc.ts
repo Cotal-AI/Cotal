@@ -254,10 +254,6 @@ export function startManagerDetached(
   return child.pid ?? 0;
 }
 
-/** Make the control plane available: reuse a manager already running for this folder, else start
- *  one detached. Best-effort — callers treat it as non-fatal. A caller that needs THE manager to
- *  carry a runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is
- *  taken as-is. */
 /** Refuse to stand a manager up OVER a record we cannot read or attribute.
  *
  *  Exported because `ensureManager` is not the only path that starts one: `cotal spawn -f` calls
@@ -298,6 +294,10 @@ export function assertManagerRecordReplaceable(
     );
 }
 
+/** Make the control plane available: reuse a manager already running for this folder, else start
+ *  one detached. Best-effort — callers treat it as non-fatal. A caller that needs THE manager to
+ *  carry a runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is
+ *  taken as-is. */
 export function ensureManager(
   o: ManagerStartOpts = {},
   probe: LivenessProbe = probeLiveness,

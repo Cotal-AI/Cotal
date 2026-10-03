@@ -1640,11 +1640,6 @@ export class MeshHandler {
     }
   }
 
-  /** Map a turn goal's terminal onto the effect's contract: `succeeded` carries the TurnResult
-   *  (a handoff addressee resolved against the roster — L4005 outside it, L4004 across
-   *  worktrees), `failed` splits on the manager's recorded reason, `cancelled` unwinds. The
-   *  consumed notices are marked HERE, by the goal that carried them, tolerating the re-entry
-   *  conflict (a crash between the terminal and the mark re-marks on resume). */
   /**
    * A yielded handoff's refusal class: L4005 when the addressee is not in this run's roster,
    * L4004 when it sits in a different worktree than the seat handing off, undefined when the
@@ -1659,6 +1654,11 @@ export class MeshHandler {
     return undefined;
   }
 
+  /** Map a turn goal's terminal onto the effect's contract: `succeeded` carries the TurnResult
+   *  (a handoff addressee resolved against the roster — L4005 outside it, L4004 across
+   *  worktrees), `failed` splits on the manager's recorded reason, `cancelled` unwinds. The
+   *  consumed notices are marked HERE, by the goal that carried them, tolerating the re-entry
+   *  conflict (a crash between the terminal and the mark re-marks on resume). */
   private async turnOutcome(
     req: TurnRequest,
     fact: GoalResultFact,
@@ -2467,12 +2467,6 @@ type AgentPermits = { turns?: number; wallClockMs?: number };
 type SeatAddress = { name: string; uid: string; owner: string; actor: string };
 type AskSeat = SeatAddress & { schema: unknown };
 
-/**
- * Read a spawn's `permits` as the budgets this host can enforce: `turns`, a positive integer of
- * turns the run may dispatch to the agent, and `wallClock`, a duration from the spawn after which
- * no turn is admitted. Anything else (tokens, spend) is a budget this host has no meter for, and a
- * budget it cannot enforce is refused loudly rather than accepted as a silent no-op.
- */
 /** The restart budget this host asks the manager to enforce for a spawn. */
 type AgentSupervise = { restarts: number; windowMs: number };
 
@@ -2506,6 +2500,12 @@ export function readSupervise(raw: unknown, persona: string): AgentSupervise {
   return { restarts, windowMs: windowMs ?? parseDuration("10m") };
 }
 
+/**
+ * Read a spawn's `permits` as the budgets this host can enforce: `turns`, a positive integer of
+ * turns the run may dispatch to the agent, and `wallClock`, a duration from the spawn after which
+ * no turn is admitted. Anything else (tokens, spend) is a budget this host has no meter for, and a
+ * budget it cannot enforce is refused loudly rather than accepted as a silent no-op.
+ */
 function readPermits(raw: unknown, persona: string): AgentPermits {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new Error(`spawn(${persona}): permits must be a record of budgets, got ${JSON.stringify(raw)}`);
@@ -2528,7 +2528,6 @@ function readPermits(raw: unknown, persona: string): AgentPermits {
 
 /** A worktree's holder: the live seat spawned into it, or the spawn goal still bringing one up. */
 type WorktreeHolder = { name: string; uid: string } | { pending: string };
-/** How many incomplete presence scans the worktree guard tolerates before it fails loudly. */
 /**
  * The keyed view of an append log: the last record written for each step, in the order the run
  * first reached it.
@@ -2548,6 +2547,7 @@ function foldEntries(entries: readonly JournalEntry[]): readonly JournalEntry[] 
   return new Journal({ run: first.run, entries, readOnly: true }).entries();
 }
 
+/** How many incomplete presence scans the worktree guard tolerates before it fails loudly. */
 const WORKTREE_SCAN_ATTEMPTS = 5;
 
 /** How often an action's durable terminal fact is looked for. Same argument as `WAIT_POLL_MS`. */
@@ -2578,9 +2578,6 @@ function scopeOf(key: Parameters<typeof stepKeyString>[0]): string {
  *  crash-before-bind case). Matches the manager's default readiness budget. */
 const DISCHARGE_TERMINAL_BOUND_MS = 30_000;
 
-/** The manager `spawn` args a {@link SpawnRequest} submits: persona names the persona file
- *  (`name`), `join` becomes the seat's channel subscriptions. `permits` stay on the run (they
- *  bind at `turn`); `supervise` travels because the manager is who restarts the process. */
 /**
  * #1616 proof item 5 — ALIAS NORMALIZATION POLICY. One clone reached through a symlink and through
  * its realpath is ONE writable directory, and the single-writer rule keys on identity, so the two
@@ -2624,6 +2621,9 @@ function readCwdResolution(value: unknown): CwdResolution | undefined {
   return { cwd: r.cwd, endpoint: r.endpoint, instanceId: r.instanceId, ...(typeof r.host === "string" ? { host: r.host } : {}) };
 }
 
+/** The manager `spawn` args a {@link SpawnRequest} submits: persona names the persona file
+ *  (`name`), `join` becomes the seat's channel subscriptions. `permits` stay on the run (they
+ *  bind at `turn`); `supervise` travels because the manager is who restarts the process. */
 export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
   return {
     name: req.persona,

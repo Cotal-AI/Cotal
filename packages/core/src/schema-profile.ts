@@ -253,10 +253,11 @@ export interface SchemaBundle {
   members?: Record<string, unknown>;
 }
 
-/** Applicator keywords whose VALUE is a subschema, a map of them, or an array of them. Compile
- *  cost is driven by how many subschemas the compiler generates code for, so the walk follows
- *  exactly these and nothing else. */
 /**
+ * Applicator keywords whose VALUE is a subschema, a map of them, or an array of them. Compile
+ * cost is driven by how many subschemas the compiler generates code for, so the walk follows
+ * exactly these and nothing else.
+ *
  * THE ADMITTED VOCABULARY. Any keyword outside these three sets is REFUSED at registration.
  *
  * WHY AN ALLOWLIST RATHER THAN A LONGER WALK LIST, which is the whole lesson of this guard: the node

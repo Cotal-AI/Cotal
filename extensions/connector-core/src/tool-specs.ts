@@ -11,6 +11,8 @@ import { execFileSync } from "node:child_process";
 import { z } from "zod";
 import { isConcreteChannel, channelInAllow, AmbiguousPeerError, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, LANG_PROBLEM_DETAIL_KIND, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
+// The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
+// the auto-injected block, and are used here rather than restated. See that file for the rule.
 import { attributionSafe, fmtBody, fmtItem, fmtFrom } from "./framing.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
@@ -133,6 +135,10 @@ export function parseToolArgs(spec: CotalToolSpec, args: unknown): Record<string
   );
 }
 
+/** The closed EMPTY input, for an adapter that republishes a tool with no arguments of its own.
+ *  A host given this refuses extras itself; a host given no `inputSchema` at all forwards them. */
+export const NO_TOOL_ARGS: CotalToolInput = z.strictObject({});
+
 /**
  * Refuse ANY caller-supplied argument to a tool an adapter publishes with none — returning the
  * refusal text, or `undefined` when the call is clean.
@@ -143,10 +149,6 @@ export function parseToolArgs(spec: CotalToolSpec, args: unknown): Record<string
  * tool while every sibling refuses it. The wording matches {@link parseToolArgs} so a caller cannot
  * tell which mechanism turned it away, and this stays dependency-free for hosts that bundle.
  */
-/** The closed EMPTY input, for an adapter that republishes a tool with no arguments of its own.
- *  A host given this refuses extras itself; a host given no `inputSchema` at all forwards them. */
-export const NO_TOOL_ARGS: CotalToolInput = z.strictObject({});
-
 export function refuseAnyArgs(name: string, args: unknown): string | undefined {
   const keys = args && typeof args === "object" ? Object.keys(args as Record<string, unknown>) : [];
   return keys.length ? `${name}: unknown argument(s): ${keys.join(", ")} — this tool takes no arguments` : undefined;
@@ -165,8 +167,6 @@ const ATTENTION_DESC: Record<"open" | "dnd" | "focus", string> = {
     "focus — only DMs and anycast reach your context; an @mention wakes you to pull; untagged channel chatter is held on the channel — read it with cotal_inbox",
 };
 
-/** The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
- *  the auto-injected block, and are used here rather than restated. See that file for the rule. */
 /**
  * HOW MUCH OF THE INBOX ONE RESPONSE MAY CARRY, in characters.
  *

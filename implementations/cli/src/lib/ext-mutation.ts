@@ -10,6 +10,7 @@ import {
  * while each isolated child owns the writer lock for its actual npm transaction. Both use the shared
  * crash-safe advisory primitive. This lives outside commands/seed so every path shares one lock order.
  */
+
 /** Claim the extension-prefix writer lock. `waitMs` defaults to 0 — an interactive operator `cotal
  *  ext` fails FAST on a live holder ("retry once it finishes"), never a 5-minute wait; a dead owner is
  *  still reclaimed. The reconcile passes a modest wait so a brief concurrent operator op doesn't fail

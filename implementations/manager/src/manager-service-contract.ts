@@ -399,9 +399,6 @@ const INPUT_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, bytes: { type: "integer", minimum: 0 } },
 } as const;
 
-/** `models` output, NORMALIZED: always the full catalog list ({@link ManagerServiceHandlers}
- *  wraps the ctl op's single-or-array reply). Catalog rows stay OPEN — a connector's catalog may
- *  carry host-specific fields beyond the core `ConnectorModelCatalog` shape. */
 /** `turn` (workflow runs, cotal-lang §5.3): wake the TARGET seat for one turn on behalf of a
  *  workflow run. The manager relays and stays run-ignorant: `payload` is an opaque bounded string
  *  the seat pulls back verbatim through `turn-pending` — its shape is the runtime↔connector
@@ -487,6 +484,9 @@ const MODELS_INPUT_SCHEMA = {
   type: "object", additionalProperties: false,
   properties: { agent: { type: "string" }, refresh: { type: "boolean" } },
 } as const;
+/** `models` output, NORMALIZED: always the full catalog list ({@link ManagerServiceHandlers}
+ *  wraps the ctl op's single-or-array reply). Catalog rows stay OPEN — a connector's catalog may
+ *  carry host-specific fields beyond the core `ConnectorModelCatalog` shape. */
 const MODELS_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["catalogs"],
   properties: {
@@ -968,17 +968,17 @@ export function managerShippedSurface(): { revision: number; commandCount: numbe
   return { revision: document.revision, commandCount: names.length, names };
 }
 
-/** The two-digest §13.7 content addressing for the manager document: the registered CLOSURE digest
- *  names a `{v:1, root:<artifactDigest>, members:[]}` manifest whose root names the DOCUMENT. Both
- *  artifacts are published to the `epc` store at their own digest; `clusterDigests` in the service
- *  spec carries the closure digest. Returned together so the manager publishes both then registers
- *  under the closure digest. */
 /** Public, immutable source artifacts used by both local registration and the remote
  * host-registration protocol. Exporting the same values avoids a second manager contract dialect. */
 export function managerAuthorityContractSource(): { document: ReturnType<typeof managerClusterDocument>; artifacts: unknown[] } {
   return { document: managerClusterDocument(), artifacts: managerContractArtifactValues() };
 }
 
+/** The two-digest §13.7 content addressing for the manager document: the registered CLOSURE digest
+ *  names a `{v:1, root:<artifactDigest>, members:[]}` manifest whose root names the DOCUMENT. Both
+ *  artifacts are published to the `epc` store at their own digest; `clusterDigests` in the service
+ *  spec carries the closure digest. Returned together so the manager publishes both then registers
+ *  under the closure digest. */
 export function managerClusterArtifacts(): {
   document: ReturnType<typeof managerClusterDocument>;
   rootDigest: string;

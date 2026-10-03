@@ -282,10 +282,6 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
   }
 }
 
-/** Extract the nkey subject (the agent id) from a NATS creds file's user JWT — to verify a cred file
- *  belongs to the recorded agent before `down -f` deletes it. Returns `undefined` if the file is
- *  absent, or `null` if it can't be verified (symlink / not a regular file / no JWT / unparseable) so
- *  the caller fails closed and leaves it. */
 /** The user-mode half of local authority cleanup for one RESOLVED ledger entry: revoke OUR grant
  *  row first (owner+actor-keyed, so it can only ever touch this ledger's principal — standing MINT
  *  authority even when the secret files are gone, e.g. a manager that crashed mid-deprovision),

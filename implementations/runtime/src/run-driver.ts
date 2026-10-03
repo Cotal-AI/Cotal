@@ -139,15 +139,6 @@ const ENGINES: readonly HostedEngine[] = [
 ];
 
 /**
- * The refusal for a recorded language no engine in this build serves, naming what it does serve.
- *
- * L5023 rather than L5008: L5008 is the same disagreement one layer in, where a record was handed to
- * a SPECIFIC engine whose version differs and the repair is to run it on the engine that matches.
- * Here there is no such engine to name, so it is a different sentence. The message carries the
- * recorded version AND the served set, because "this build cannot" is only actionable if it says
- * what it can.
- */
-/**
  * A record whose `languageVersion` is not the string the wire contract declares (SPEC §14.3,
  * core's run-record). Distinct from L5023 on purpose: L5023 says "a version this build does not
  * serve", and folding a malformed field into it produced the self-contradictory sentence
@@ -191,6 +182,15 @@ async function noRecordToResume(js: JetStreamClient, jsm: JetStreamManager, req:
   );
 }
 
+/**
+ * The refusal for a recorded language no engine in this build serves, naming what it does serve.
+ *
+ * L5023 rather than L5008: L5008 is the same disagreement one layer in, where a record was handed to
+ * a SPECIFIC engine whose version differs and the repair is to run it on the engine that matches.
+ * Here there is no such engine to name, so it is a different sentence. The message carries the
+ * recorded version AND the served set, because "this build cannot" is only actionable if it says
+ * what it can.
+ */
 function unservedLanguage(version: string | undefined): RuntimeFault {
   // A RECORD MAY NAME NO VERSION AT ALL, and it reaches this branch by the same route: written
   // before the field existed, it matches no engine either. The two cases get different sentences

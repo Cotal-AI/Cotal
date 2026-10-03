@@ -446,27 +446,6 @@ export class PayloadTooLarge extends Error {}
  *    formed an opinion, so the refusal was the expensive part rather than the cheap one. */
 const MAX_BODY_BYTES = 8 * 1024;
 
-/** THE LIMIT, PARSED ONCE, because three routes each re-deriving
- *  `query.get("limit") ? Number(...) : N` is how they came to disagree about the same parameter.
- *
- *  MEASURED ON THE SHIPPED ROUTES, against a real broker, before this existed:
- *    ?limit=abc       `Number("abc")` is NaN and every comparison against NaN is false, so core's
- *                     `limit <= 0` guard does not fire and the widening search's two exits can
- *                     never be true. No answer after 30s, and the ABANDONED request kept consuming
- *                     half a core with its caller long gone, invisible because the process keeps
- *                     serving everything else.
- *    ?limit=Infinity  passes the same guard, and `slice(-Infinity)` is the whole array: a channel's
- *                     entire retained history from a one word request. `1e999` is the same value.
- *    ?limit=2.5       silently truncated to 2.
- *    ?limit=" 5"      accepted as 5, because `Number()` trims whitespace.
- *
- *  So the accepted form is the narrow one: a plain run of digits naming a safe integer. `0` keeps
- *  meaning zero, which is what it already did and what a caller expects; an absent or empty
- *  parameter keeps meaning the route's own default, the one shape the old parse got right.
- *
- *  Everything else is REFUSED rather than clamped. A clamp would answer a request nobody made, and
- *  the caller who wrote `limit=2.5` would never learn that the page they read was not the page they
- *  asked for. */
 /** Codepoints `JSON.stringify` leaves RAW that PRODUCE NO GLYPH OF THEIR OWN, or that reorder the
  *  text around them, stated as Unicode PROPERTIES rather than as a hand list. That wording is
  *  narrower than "change what a reader sees" on purpose, and the narrowing is a review finding:
@@ -589,7 +568,29 @@ function canonicalChannel(name: string): string {
  *  test above it, so its value cannot carry anything the quoter would escape today. It quotes
  *  anyway: the guarantee that a refusal renders its input unambiguously should hold because the
  *  quoting site holds it, not because a regex two lines up stays exactly as narrow as it is this
- *  morning. */
+ *  morning.
+ *
+ *  THE LIMIT, PARSED ONCE, because three routes each re-deriving
+ *  `query.get("limit") ? Number(...) : N` is how they came to disagree about the same parameter.
+ *
+ *  MEASURED ON THE SHIPPED ROUTES, against a real broker, before this existed:
+ *    ?limit=abc       `Number("abc")` is NaN and every comparison against NaN is false, so core's
+ *                     `limit <= 0` guard does not fire and the widening search's two exits can
+ *                     never be true. No answer after 30s, and the ABANDONED request kept consuming
+ *                     half a core with its caller long gone, invisible because the process keeps
+ *                     serving everything else.
+ *    ?limit=Infinity  passes the same guard, and `slice(-Infinity)` is the whole array: a channel's
+ *                     entire retained history from a one word request. `1e999` is the same value.
+ *    ?limit=2.5       silently truncated to 2.
+ *    ?limit=" 5"      accepted as 5, because `Number()` trims whitespace.
+ *
+ *  So the accepted form is the narrow one: a plain run of digits naming a safe integer. `0` keeps
+ *  meaning zero, which is what it already did and what a caller expects; an absent or empty
+ *  parameter keeps meaning the route's own default, the one shape the old parse got right.
+ *
+ *  Everything else is REFUSED rather than clamped. A clamp would answer a request nobody made, and
+ *  the caller who wrote `limit=2.5` would never learn that the page they read was not the page they
+ *  asked for. */
 export function historyLimit(query: URLSearchParams, fallback: number): number {
   const raw = query.get("limit");
   if (raw === null || raw === "") return fallback;

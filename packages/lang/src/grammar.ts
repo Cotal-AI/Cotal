@@ -599,14 +599,6 @@ function patternNames(node: AnyNode, out: string[]): void {
 }
 
 /**
- * `notify`'s fact is a bounded decision record, not a message.
- *
- * This is the one place a program can push its own bytes toward another agent's context, so the
- * bound is what keeps "conversation is the data plane, the program is the control plane" true at
- * the one boundary where it is easiest to break. A literal fact is checked exactly; a computed
- * one is checked at the effect boundary by the same rules.
- */
-/**
  * `to` addresses the escalated mint and nothing else, so accepting it elsewhere records an input
  * that decides nothing, which the hash table then has to classify for no reason.
  */
@@ -708,6 +700,14 @@ function checkWaitUntil(args: AnyNode[], given: Map<string, AnyNode>, v: Validat
   }
 }
 
+/**
+ * `notify`'s fact is a bounded decision record, not a message.
+ *
+ * This is the one place a program can push its own bytes toward another agent's context, so the
+ * bound is what keeps "conversation is the data plane, the program is the control plane" true at
+ * the one boundary where it is easiest to break. A literal fact is checked exactly; a computed
+ * one is checked at the effect boundary by the same rules.
+ */
 function checkNotifyFact(fact: AnyNode | undefined, v: Validator): void {
   if (fact === undefined || fact.type !== "ObjectExpression") return; // computed: checked at run time
 
@@ -829,7 +829,6 @@ function checkNotifyFact(fact: AnyNode | undefined, v: Validator): void {
   }
 }
 
-/** True when every element of an array literal is a record literal with a string `id`. */
 /** Every `spawn` lexically inside `root` whose options carry a LITERAL `worktree` string, as
  *  [worktree, the value node] pairs. Computed worktrees are invisible here by design: they are
  *  the runtime guard's (L4008) to decide, where the value exists. */
@@ -859,6 +858,7 @@ function literalSpawnWorktrees(root: AnyNode): Array<[string, AnyNode]> {
   return out;
 }
 
+/** True when every element of an array literal is a record literal with a string `id`. */
 function arrayItemsCarryId(items: AnyNode): boolean {
   const els = (items.elements as (AnyNode | null)[]) ?? [];
   if (els.length === 0) return false;

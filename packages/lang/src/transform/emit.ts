@@ -703,7 +703,6 @@ class Emitter {
     return String((node as { raw?: string }).raw ?? String(v));
   }
 
-  /** `x++`, `--o.count`: JavaScript's meaning, with the read charged through `Number` as the walker charges it. */
   /**
    * `x++`'s operand, coerced through the seam's `update` selector.
    *
@@ -719,6 +718,7 @@ class Emitter {
     return `((${t} = ${code}), typeof ${t} === "number" ? ${t} : ${this.seam("unary", `${q("update")}, ${t}`)})`;
   }
 
+  /** `x++`, `--o.count`: JavaScript's meaning, with the read charged through `Number` as the walker charges it. */
   private update(node: AnyNode): string {
     const delta = node.operator === "++" ? "+ 1" : "- 1";
     const prefix = node.prefix === true;
@@ -956,13 +956,6 @@ class Emitter {
       .join(", ");
   }
 
-  /**
-   * The static per-call-site payload an effect carries.
-   *
-   * Only `race` needs one today: its journal entry holds a `branchDigest` over the LOSING arms'
-   * source, which the walker computes from the AST at run time. The engine has no AST then, so
-   * without this the two journals cannot be byte-identical for any race that settled.
-   */
   /**
    * The static payload a call site carries, because the engine has no AST at run time.
    *

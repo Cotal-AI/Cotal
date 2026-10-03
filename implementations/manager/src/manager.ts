@@ -923,12 +923,6 @@ function turnHoldToken(goalId: string): string {
 }
 
 /**
- * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
- * It serves control requests on the "manager" service and spawns/kills agents
- * through a pluggable {@link Runtime} (pty by default). It does NOT proxy agent
- * mesh traffic — terminal I/O streams over its own attach endpoint instead.
- */
-/**
  * Event channels in `channels` that do NOT belong to `{owner, actor}`.
  *
  * ONE HELPER FOR EVERY SEAM THAT ARMS AN ACL, and that is the whole design. The rule first existed
@@ -973,6 +967,12 @@ function isAbsentDeliveryAdmin(msg: string): boolean {
   return /no responders|\b503\b/i.test(msg);
 }
 
+/**
+ * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
+ * It serves control requests on the "manager" service and spawns/kills agents
+ * through a pluggable {@link Runtime} (pty by default). It does NOT proxy agent
+ * mesh traffic — terminal I/O streams over its own attach endpoint instead.
+ */
 export class Manager {
   private readonly space: string;
   private readonly servers: string | undefined;
@@ -1110,10 +1110,11 @@ export class Manager {
   /** P2 item 2 (M4): the live spawn goal ref for each managed agent name, so a despawn MID-GOAL
    *  drives the cancel path (transition -> cancel terminal). Cleared when the goal terminalizes. */
   private agentGoals = new Map<string, GoalRef>();
-  /** The turn relay's same-incarnation idempotency map ({@link goalAcceptances}'s twin): a
-   *  same-goalId retry serves the identical acceptance; cross-incarnation retries rebuild from
-   *  the goal-index entry (its acceptance floor + note). */
   /**
+   * The turn relay's same-incarnation idempotency map ({@link goalAcceptances}'s twin): a
+   * same-goalId retry serves the identical acceptance; cross-incarnation retries rebuild from
+   * the goal-index entry (its acceptance floor + note).
+   *
    * One entry per turn this incarnation accepted: the acceptance a duplicate submission is served
    * from, and — once the turn settles — the answer a RETRIED yield is served from.
    *
@@ -3181,33 +3182,6 @@ export class Manager {
     return true;
   }
 
-  /** The v0.4 typed command table (P2 item 1, slice 1b): every ordinary handler runs the SHARED
-   *  admission chokepoint ({@link serveGated}) and then delegates to the SAME op core the ctl
-   *  door dispatches (checklist 8: one core, two thin doors). The resume/preservation family
-   *  deliberately BYPASSES serveGated — exactly as it sits before {@link admitControl} on the ctl
-   *  door (those ops must run while `resumeRequired` fences ordinary work) — riding its own state
-   *  fences; its ep gate is the admin-grade `manager.admin` capability grant (the 1b rule: static
-   *  admin-class commands are capability-gated + untargeted, never a fabricated ledger mode).
-   *
-   *  TIER SEMANTICS on the ep door (the 1c grant-migration table): the tier lives in the CALLER'S
-   *  GRANT, refined per-op exactly as the ctl doors refine their subject tier. Owner-mode
-   *  `despawn`/`attach` keep the privileged semantics (`admin=false`, own-domain via
-   *  {@link authorizeNamed}) — every spawn-capable agent holds those rows. ANY-mode requests are
-   *  the operator instrument's cross-agent reach (rev 3): the any-mode subject row is mintable
-   *  only under operator policy (§13.2), so on a static mesh holding it IS the admin tier, and in
-   *  user mode the caller's CURRENT ledger scope must still carry `admin`
-   *  ({@link epAdminReach}, the same fresh-read authority `psOwnerFilter` consults). The
-   *  `manager.admin` family (purge + the resume/preservation ops) is capability-gated at mint AND
-   *  re-checked at serve time via {@link epAdminReach} (the `adminGated` wrapper) so a user's
-   *  revoked scope demotes the next call. `launch` is OWNER-EQUALITY on this door for everyone
-   *  (freelance HIGH #2): the deploy path is its only consumer and stamps the caller's own owner,
-   *  so cross-owner launch was a ctl-tier incidental never exercised, and keying it on the actor's
-   *  ledger scope broke the deployer-view attenuation - uniform owner-equality is the safe tier.
-   *  TWO DELIBERATE NARROWINGS vs the ctl doors (NOT bit-exact parity, panel-accepted): (1)
-   *  `define-persona` is `admin=false` for everyone (own-persona discipline; no ep consumer needs
-   *  cross-owner persona writes - an operator redefines via config, not the wire), where the ctl
-   *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
-   *  Both are least-privilege reductions, never widenings. */
   /** The run host, or one of three refusals. A remote-authority manager holds no space signer, so
    *  it cannot mint the per-run driver credential SPEC 14.6 requires without all four closed
    *  host callbacks. A local user-auth mesh is `unimplemented`: a hosted run's seats
@@ -3262,6 +3236,33 @@ export class Manager {
       throw new EpEnvelopeError("permission-denied", `run-answer is allowed to ${agent.name} only for the open pause named by its pending ask or escalation relay; ${args.runId} ${args.stepKey} is not that pause`);
   }
 
+  /** The v0.4 typed command table (P2 item 1, slice 1b): every ordinary handler runs the SHARED
+   *  admission chokepoint ({@link serveGated}) and then delegates to the SAME op core the ctl
+   *  door dispatches (checklist 8: one core, two thin doors). The resume/preservation family
+   *  deliberately BYPASSES serveGated — exactly as it sits before {@link admitControl} on the ctl
+   *  door (those ops must run while `resumeRequired` fences ordinary work) — riding its own state
+   *  fences; its ep gate is the admin-grade `manager.admin` capability grant (the 1b rule: static
+   *  admin-class commands are capability-gated + untargeted, never a fabricated ledger mode).
+   *
+   *  TIER SEMANTICS on the ep door (the 1c grant-migration table): the tier lives in the CALLER'S
+   *  GRANT, refined per-op exactly as the ctl doors refine their subject tier. Owner-mode
+   *  `despawn`/`attach` keep the privileged semantics (`admin=false`, own-domain via
+   *  {@link authorizeNamed}) — every spawn-capable agent holds those rows. ANY-mode requests are
+   *  the operator instrument's cross-agent reach (rev 3): the any-mode subject row is mintable
+   *  only under operator policy (§13.2), so on a static mesh holding it IS the admin tier, and in
+   *  user mode the caller's CURRENT ledger scope must still carry `admin`
+   *  ({@link epAdminReach}, the same fresh-read authority `psOwnerFilter` consults). The
+   *  `manager.admin` family (purge + the resume/preservation ops) is capability-gated at mint AND
+   *  re-checked at serve time via {@link epAdminReach} (the `adminGated` wrapper) so a user's
+   *  revoked scope demotes the next call. `launch` is OWNER-EQUALITY on this door for everyone
+   *  (freelance HIGH #2): the deploy path is its only consumer and stamps the caller's own owner,
+   *  so cross-owner launch was a ctl-tier incidental never exercised, and keying it on the actor's
+   *  ledger scope broke the deployer-view attenuation - uniform owner-equality is the safe tier.
+   *  TWO DELIBERATE NARROWINGS vs the ctl doors (NOT bit-exact parity, panel-accepted): (1)
+   *  `define-persona` is `admin=false` for everyone (own-persona discipline; no ep consumer needs
+   *  cross-owner persona writes - an operator redefines via config, not the wire), where the ctl
+   *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
+   *  Both are least-privilege reductions, never widenings. */
   private managerServiceDefs(): EpCommandDef[] {
     const args = (ctx: EpServeContext): Record<string, unknown> => (ctx.request.args ?? {}) as Record<string, unknown>;
     const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
@@ -3907,11 +3908,6 @@ export class Manager {
     }
   }
 
-  /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
-   *  MIN_LIFETIME), push a cooling stamp so the freed slot still counts toward the ceiling until it
-   *  expires — flooring the RECYCLE, not the call, so both free paths (despawn + exit/reap) are
-   *  covered (P4c). Floor self + own-child despawn and natural exit; NEVER admin despawn (operator
-   *  emergency-kill stays unthrottled) and NEVER the reserved-rollback path (no cold-start paid). */
   /**
    * WHY A SEAT LEFT — one line, at the one place every free path passes through.
    *
@@ -3945,6 +3941,11 @@ export class Manager {
     );
   }
 
+  /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
+   *  MIN_LIFETIME), push a cooling stamp so the freed slot still counts toward the ceiling until it
+   *  expires — flooring the RECYCLE, not the call, so both free paths (despawn + exit/reap) are
+   *  covered (P4c). Floor self + own-child despawn and natural exit; NEVER admin despawn (operator
+   *  emergency-kill stays unthrottled) and NEVER the reserved-rollback path (no cold-start paid). */
   private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
     // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle.
@@ -7021,15 +7022,6 @@ export class Manager {
     return creds;
   }
 
-  /** P2 item 2 (spawn-as-action): stand up the standing self-mediated goal-writer connection +
-   *  ActionContext. Mode-dual, mirroring {@link registerManagerService}: an AUTH mesh uses the
-   *  scoped `goal-writer` credential already minted + family-STAGED inside registration's run block
-   *  ({@link mintAndStageGoalWriter} — DISJOINT grant from the serve cred, SHARED §13.1 revocation
-   *  family); an OPEN mesh uses a bare connection (no credential system to mint from - the broker
-   *  enforces nothing). The connection presents the CURRENT credential on every (re)connect (a
-   *  renewal is adopted without reconnecting the whole endpoint); the ActionContext bonds its
-   *  KV + JS + JSM to this one connection and space (SPEC 13.4), so a composition mixup cannot splice
-   *  goal state across brokers. */
   /** #2073: dial the goal-writer's ONE standing connection and rebuild everything derived from it
    *  (the fence-resolving action context, the issuance-gate reader) — shared by the initial start
    *  and the closed-connection recovery ({@link onGoalWriterConnectionClosed}), so a redial never
@@ -7097,6 +7089,15 @@ export class Manager {
     console.error("! manager goal-writer could not be re-dialed; leaving the credential to the next renewal pass");
   }
 
+  /** P2 item 2 (spawn-as-action): stand up the standing self-mediated goal-writer connection +
+   *  ActionContext. Mode-dual, mirroring {@link registerManagerService}: an AUTH mesh uses the
+   *  scoped `goal-writer` credential already minted + family-STAGED inside registration's run block
+   *  ({@link mintAndStageGoalWriter} — DISJOINT grant from the serve cred, SHARED §13.1 revocation
+   *  family); an OPEN mesh uses a bare connection (no credential system to mint from - the broker
+   *  enforces nothing). The connection presents the CURRENT credential on every (re)connect (a
+   *  renewal is adopted without reconnecting the whole endpoint); the ActionContext bonds its
+   *  KV + JS + JSM to this one connection and space (SPEC 13.4), so a composition mixup cannot splice
+   *  goal state across brokers. */
   private async startGoalWriter(): Promise<void> {
     const identity = (this.auth || this.remoteAuthority) ? this.goalWriterIdentity! : newIdentity();
     // The mutable holder captured by the authenticator (mirrors the serve connection): a half-TTL
@@ -7153,18 +7154,6 @@ export class Manager {
     return creds;
   }
 
-  /** P2 item 6: stand up the ONE §13.6 session plane on its own standing connection. Mode-dual,
-   *  mirroring {@link startGoalWriter}: an AUTH mesh presents the scoped `session-ledger` cred
-   *  already minted + family-staged inside registration's run block ({@link mintAndStageSessionLedger});
-   *  an OPEN mesh uses a bare connection (no credential system to mint from). The connection presents
-   *  the CURRENT credential on every (re)connect, so a half-TTL renewal is adopted without reconnecting.
-   *
-   *  The offer SIGNER is a per-incarnation in-memory keypair: the static collapsed path mints AND
-   *  redeems the offer in one call ({@link ManagerSessionPlane.establishAttach}), so the manager
-   *  self-signs and self-verifies its own §13.6 grants and the keypair never leaves the process — a
-   *  holder never verifies the signature (it presents the grant back over the rail; the broker's
-   *  per-session caller cred is the holder's real fence). The plane's ledger lives in the DEDICATED
-   *  sessions bucket (createEndpointStreams provisioned it at registration). */
   /** #2073: dial the session-ledger's ONE standing connection — shared by the initial start and the
    *  closed-connection recovery ({@link onSessionLedgerConnectionClosed}), the same shape {@link
    *  dialGoalWriter} uses for its rail. The KV/JetStream clients the session plane opened from the
@@ -7209,6 +7198,18 @@ export class Manager {
     console.error("! manager session-ledger could not be re-dialed; leaving the credential to the next renewal pass");
   }
 
+  /** P2 item 6: stand up the ONE §13.6 session plane on its own standing connection. Mode-dual,
+   *  mirroring {@link startGoalWriter}: an AUTH mesh presents the scoped `session-ledger` cred
+   *  already minted + family-staged inside registration's run block ({@link mintAndStageSessionLedger});
+   *  an OPEN mesh uses a bare connection (no credential system to mint from). The connection presents
+   *  the CURRENT credential on every (re)connect, so a half-TTL renewal is adopted without reconnecting.
+   *
+   *  The offer SIGNER is a per-incarnation in-memory keypair: the static collapsed path mints AND
+   *  redeems the offer in one call ({@link ManagerSessionPlane.establishAttach}), so the manager
+   *  self-signs and self-verifies its own §13.6 grants and the keypair never leaves the process — a
+   *  holder never verifies the signature (it presents the grant back over the rail; the broker's
+   *  per-session caller cred is the holder's real fence). The plane's ledger lives in the DEDICATED
+   *  sessions bucket (createEndpointStreams provisioned it at registration). */
   private async startSessionPlane(): Promise<void> {
     const identity = (this.auth || this.remoteAuthority) ? this.sessionLedgerIdentity! : newIdentity();
     // The mutable holder captured by the authenticator (mirrors the goal-writer): a half-TTL renewal
@@ -9241,8 +9242,9 @@ export class Manager {
     }
   }
 
-  /** Managed agents cross-referenced with live presence (the manager sees the roster). */
-  /** `ownerFilter`: restrict to agents whose spawn-time stored `userOwner` equals it (the ps/status
+  /** Managed agents cross-referenced with live presence (the manager sees the roster).
+   *
+   *  `ownerFilter`: restrict to agents whose spawn-time stored `userOwner` equals it (the ps/status
    *  owner-domain bound); undefined = unbounded. {@link NO_OWNER_MATCHES} matches nothing. */
   private list(ownerFilter?: string) {
     const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));

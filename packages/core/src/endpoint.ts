@@ -495,12 +495,12 @@ export class CotalEndpoint extends EventEmitter {
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
   private deliveryAdminServeSub?: import("@nats-io/transport-node").Subscription;
-  /** When set, this endpoint hosts the Plane-3 fan-out writer + trusted reader (the server-side delivery
-   *  daemon). `aclFor` maps an owner id to its current read ACL (`allowSubscribe`) for the reader's
-   *  re-authorization — read FRESH per entry from the durable ACL registry KV, hence async. */
   /** True once {@link quiescePlane3} has stopped serving this shard pending an ownership answer.
    *  Guards {@link armPlane3} so a RECONNECT cannot silently resume serving mid-question. */
   private plane3Quiesced = false;
+  /** When set, this endpoint hosts the Plane-3 fan-out writer + trusted reader (the server-side delivery
+   *  daemon). `aclFor` maps an owner id to its current read ACL (`allowSubscribe`) for the reader's
+   *  re-authorization — read FRESH per entry from the durable ACL registry KV, hence async. */
   private plane3?: {
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>;
     /** Composition-root hook: reload+reconnect the membership feed's rw connection as part of an
@@ -4439,10 +4439,6 @@ export class CotalEndpoint extends EventEmitter {
     await this.armPlane3();
   }
 
-  /** Serve one runtime durable-membership control request (the server-side delivery daemon). The caller
-   *  id is the authenticated subject sender ({@link serveControl} fail-closes on a mismatch). Validation
-   *  is against the durable ACL registry — the SAME KV the reader re-auths against (single source of
-   *  truth, no in-memory ledger to drift). */
   /** Whether an ALREADY-DISPATCHED unit of Plane-3 work may still take effect.
    *
    *  Unsubscribing stops NEW work; it cannot recall work already in flight. A handler that entered
@@ -4461,6 +4457,10 @@ export class CotalEndpoint extends EventEmitter {
     return !this.plane3Quiesced;
   }
 
+  /** Serve one runtime durable-membership control request (the server-side delivery daemon). The caller
+   *  id is the authenticated subject sender ({@link serveControl} fail-closes on a mismatch). Validation
+   *  is against the durable ACL registry — the SAME KV the reader re-auths against (single source of
+   *  truth, no in-memory ledger to drift). */
   private async handleDeliveryControl(req: ControlRequest): Promise<ControlReply> {
     // FENCE: entered before a quiesce, resuming after it. Answering now would put a second server on
     // this shard's control rail while the winner is already READY.
@@ -6459,13 +6459,6 @@ export class CotalEndpoint extends EventEmitter {
   }
 }
 
-/** Map an authenticated parsed-subject kind to the message class surfaced to "message" listeners.
- *  Throws on `ctl` (control-plane is request/reply, never a "message") — per repo convention, no
- *  silent default: an unexpected delivering kind is a bug, not something to swallow. */
-/** A usable delivery-message id (#624): a string, possibly empty (the never-a-key case), but
- *  never absent and never a non-string. An absent or non-string id is a malformed envelope under
- *  SPEC sec 5; each delivery pump handles it per its own class (durable term, live drop, history
- *  skip) so it never reaches the receiver's id-keyed machinery as `undefined`. */
 /** What a history read failure NAMES when it could not finish. One filter subject is the useful
  *  thing to print; a set of sixty-nine of them is a wall of text in a message a human has to read,
  *  so a set says its size and the stream it was read from instead. */
@@ -6473,10 +6466,17 @@ function subjectLabel(subjects: string[]): string {
   return subjects.length === 1 ? subjects[0] : `${subjects.length} filtered subjects`;
 }
 
+/** A usable delivery-message id (#624): a string, possibly empty (the never-a-key case), but
+ *  never absent and never a non-string. An absent or non-string id is a malformed envelope under
+ *  SPEC sec 5; each delivery pump handles it per its own class (durable term, live drop, history
+ *  skip) so it never reaches the receiver's id-keyed machinery as `undefined`. */
 function isUsableMessageId(id: unknown): id is string {
   return typeof id === "string";
 }
 
+/** Map an authenticated parsed-subject kind to the message class surfaced to "message" listeners.
+ *  Throws on `ctl` (control-plane is request/reply, never a "message") — per repo convention, no
+ *  silent default: an unexpected delivering kind is a bug, not something to swallow. */
 function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
   switch (kind) {
     case "chat":
@@ -6779,11 +6779,6 @@ function authOpts(a: AuthOpts) {
   return { token: a.token, user: a.user, pass: a.pass, tls };
 }
 
-/** Decode the owner+actor PRINCIPAL from a user bearer WITHOUT verifying it — the client trusts its own
- *  bearer only to build its subjects; the broker's minted grant (from the callout, which DOES verify the
- *  bearer) is the real boundary, so a client that lied to itself would just be denied. Per the token
- *  claim semantics the OWNER is the JWT `sub` (`act.owner` merely restates it) and the ACTOR is
- *  `act.actor`. Throws on a structurally-unusable bearer (fail-loud). */
 /** The bearer's `exp` as epoch ms — what the refresh schedule keys on. A bearer without a numeric
  *  `exp` is structurally unusable for a refreshing endpoint (fail-loud, like the principal decode). */
 function bearerExpiryMs(bearer: string): number {
@@ -6799,6 +6794,11 @@ function bearerExpiryMs(bearer: string): number {
   return claims.exp * 1000;
 }
 
+/** Decode the owner+actor PRINCIPAL from a user bearer WITHOUT verifying it — the client trusts its own
+ *  bearer only to build its subjects; the broker's minted grant (from the callout, which DOES verify the
+ *  bearer) is the real boundary, so a client that lied to itself would just be denied. Per the token
+ *  claim semantics the OWNER is the JWT `sub` (`act.owner` merely restates it) and the ACTOR is
+ *  `act.actor`. Throws on a structurally-unusable bearer (fail-loud). */
 function decodeBearerPrincipal(bearer: string): { owner: string; actor: string } {
   const payload = bearer.split(".")[1];
   if (!payload) throw new Error("user-mode bearer is not a JWT (no payload segment)");

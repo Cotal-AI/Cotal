@@ -563,7 +563,6 @@ export class Journal {
     return entry;
   }
 
-  /** Record the external resource the handler created, before its terminal is awaited. */
   /**
    * Point the pending entry at a NEW open identity, before the work under it is issued.
    *
@@ -585,6 +584,7 @@ export class Journal {
     this.byKey.set(k, next);
   }
 
+  /** Record the external resource the handler created, before its terminal is awaited. */
   async bind(key: StepKey, external: Readonly<Record<string, unknown>>): Promise<void> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);

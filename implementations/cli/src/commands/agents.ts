@@ -284,16 +284,6 @@ function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanc
   return c.red("registered, no answer within the deadline") + c.dim(why);
 }
 
-/** Render one managed-agent row (process fact, mesh fact, optional auth-health line), indented for
- *  the per-manager grouping a class scatter prints.
- *
- *  Two facts, printed as two facts. The manager reports the PROCESS (`status` from the runtime
- *  handle, `uptimeMs` from its start) and the MESH presence separately, and they disagree in the
- *  common failure: a seat that is `running` for two days but `offline` on the mesh. Folding them
- *  into one word rendered ten live processes as "offline" and a 57h-old process with no roster
- *  entry as "starting…", both false. `mesh: absent` means exactly "not in the presence roster",
- *  so it prints as that; the process age next to it tells the reader whether it is a fresh start
- *  or a seat that never joined. */
 /** The mesh column of one `ps` row. A verdict needs a fresh observer: when the manager reports its
  *  own presence view as `stale` (its watch went silent past TTL) or `unpopulated` (its watch has not
  *  replayed the bucket yet), `offline` and `absent` describe the manager's watch, not the seat. Print
@@ -313,6 +303,16 @@ export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView">): string {
           : c.cyan(r.mesh);
 }
 
+/** Render one managed-agent row (process fact, mesh fact, optional auth-health line), indented for
+ *  the per-manager grouping a class scatter prints.
+ *
+ *  Two facts, printed as two facts. The manager reports the PROCESS (`status` from the runtime
+ *  handle, `uptimeMs` from its start) and the MESH presence separately, and they disagree in the
+ *  common failure: a seat that is `running` for two days but `offline` on the mesh. Folding them
+ *  into one word rendered ten live processes as "offline" and a 57h-old process with no roster
+ *  entry as "starting…", both false. `mesh: absent` means exactly "not in the presence roster",
+ *  so it prints as that; the process age next to it tells the reader whether it is a fresh start
+ *  or a seat that never joined. */
 function printAgentRow(r: AgentRow, indent = ""): void {
   const proc =
     r.status === "running"
@@ -788,19 +788,6 @@ async function establishAttachSession(
   return { ok: true, nc, grant, link, inbox: id.id, server: t.server };
 }
 
-/** Why attach cannot redeem a session grant, said in terms of what the command actually resolved.
- *
- *  Three distinct states, kept distinct because the remedy differs and a single sentence covering
- *  all three is the defect issue #722 opened on (its old text named an internal work item and no
- *  root at all). A USER-AUTH mesh holds no local seed by design. A REGISTERED static mesh has a
- *  root and it is named, so an operator can see which directory the command used rather than
- *  guessing at their cwd.
- *
- *  The third arm is an INVARIANT, not advice, and is written that way on purpose. A connection with
- *  no resolved root is what the type allows, and no supported route reaches redemption in that
- *  state: both off-registry routes are refused earlier, which `smoke:attach-auth-root` measures
- *  rather than assumes. So that arm says what its own existence would mean instead of offering a
- *  remedy for a situation that cannot currently arise. */
 /** The mesh contract that decides how attach redeems a session grant. The mode is the REGISTERED
  *  one (`MeshTarget.mode`), carried forward from the resolve. It is the only input to the decision:
  *  `spaceAuth` says whether a SEALED mesh's seed is present, and is never consulted to decide which
@@ -878,6 +865,19 @@ export function attachSessionMaterial(t: AttachSessionTarget):
   }
 }
 
+/** Why attach cannot redeem a session grant, said in terms of what the command actually resolved.
+ *
+ *  Three distinct states, kept distinct because the remedy differs and a single sentence covering
+ *  all three is the defect issue #722 opened on (its old text named an internal work item and no
+ *  root at all). A USER-AUTH mesh holds no local seed by design. A REGISTERED static mesh has a
+ *  root and it is named, so an operator can see which directory the command used rather than
+ *  guessing at their cwd.
+ *
+ *  The third arm is an INVARIANT, not advice, and is written that way on purpose. A connection with
+ *  no resolved root is what the type allows, and no supported route reaches redemption in that
+ *  state: both off-registry routes are refused earlier, which `smoke:attach-auth-root` measures
+ *  rather than assumes. So that arm says what its own existence would mean instead of offering a
+ *  remedy for a situation that cannot currently arise. */
 function attachNoSeedMessage(t: AttachSessionTarget): string {
   const shadow = t.root === undefined ? undefined : divergentCwdAnchor(t.root, t.space);
   const shadowLine = shadow

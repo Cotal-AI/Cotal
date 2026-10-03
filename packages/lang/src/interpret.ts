@@ -191,13 +191,6 @@ class Env {
   }
 }
 
-/**
- * The message of an arbitrary thrown value.
- *
- * Reading `.message` off `null` throws, and a thrown primitive is legal in a language with `throw`,
- * so every place that has to describe a failure it did not construct goes through here. A recorded
- * entry saying "Cannot read properties of null" describes the recorder, not the run.
- */
 /** An AST subtree with its source offsets removed: what the code IS, not where it sits. */
 export function stripPositions(node: unknown): unknown {
   if (Array.isArray(node)) return node.map(stripPositions);
@@ -1042,6 +1035,11 @@ class Interpreter {
       );
   }
 
+  /** An options-bag field, read the way the shared scope machinery reads one. */
+  private option(bag: unknown, key: string): unknown {
+    return option(bag, key);
+  }
+
   /**
    * The concurrency combinators.
    *
@@ -1050,11 +1048,6 @@ class Interpreter {
    * the same named effect cannot race for a counter, and replay reproduces both regardless of
    * which one finished first.
    */
-  /** An options-bag field, read the way the shared scope machinery reads one. */
-  private option(bag: unknown, key: string): unknown {
-    return option(bag, key);
-  }
-
   async callScope(name: string, argNodes: AnyNode[], env: Env, frame: Frame): Promise<unknown> {
     const spec = PRIMITIVES[name];
     if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
@@ -1358,17 +1351,6 @@ function declaredNames(pattern: AnyNode): string[] {
   return out;
 }
 
-/**
- * The binary operators, with JavaScript's meaning ON PRIMITIVES. `"a" + 1`, `true + 1` and
- * `null + 1` mean here exactly what they mean in JavaScript — primitive coercion is pure and
- * deterministic. A record, an array or a function operand is refused (L4018), a declared
- * difference: JavaScript would reach for the host's ToPrimitive machinery, which reads `valueOf`/
- * `toString` off the value — own fields a program can set to its OWN closures. Measured before the
- * refusal: `o + 1` invoked such a closure without an interpreter frame and crashed with a raw host
- * TypeError, and without one it silently produced `"[object Object]1"`. `==` and `!=` never reach
- * this function: the validator refuses them (L1025). `===`/`!==` compare identity and take any
- * operands.
- */
 /** Refuse a container or function where a primitive is needed: there is no implicit conversion. */
 function refuseCoercion(where: string, v: unknown): void {
   if (v !== null && (typeof v === "object" || typeof v === "function")) {
@@ -1394,6 +1376,17 @@ function refuseNonNumberUpdate(v: unknown): asserts v is number {
   );
 }
 
+/**
+ * The binary operators, with JavaScript's meaning ON PRIMITIVES. `"a" + 1`, `true + 1` and
+ * `null + 1` mean here exactly what they mean in JavaScript — primitive coercion is pure and
+ * deterministic. A record, an array or a function operand is refused (L4018), a declared
+ * difference: JavaScript would reach for the host's ToPrimitive machinery, which reads `valueOf`/
+ * `toString` off the value — own fields a program can set to its OWN closures. Measured before the
+ * refusal: `o + 1` invoked such a closure without an interpreter frame and crashed with a raw host
+ * TypeError, and without one it silently produced `"[object Object]1"`. `==` and `!=` never reach
+ * this function: the validator refuses them (L1025). `===`/`!==` compare identity and take any
+ * operands.
+ */
 function applyBinary(op: string, l: unknown, r: unknown): unknown {
   const a = l as number;
   const b = r as number;
