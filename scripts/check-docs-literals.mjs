@@ -15,8 +15,9 @@
 // substituted value is written as a placeholder such as `<id>`.
 //
 // Each candidate must appear in a string the shipped source holds: a string or template literal,
-// or a `+` chain of them, in packages/, extensions/, implementations/ or bin/, with smoke, test
-// and mutation files excluded. A placeholder must stand where the source substitutes a value.
+// or a `+` chain of them, in packages/, extensions/, implementations/ or bin/, with smoke, test,
+// mutation and declaration files excluded. A placeholder must stand where the source substitutes
+// a value.
 // Strings are read with the TypeScript parser from the JavaScript each file compiles to, so a
 // comment, a type or an ambient declaration that mentions a line does not count as emitting it.
 //
@@ -37,6 +38,7 @@ const sources = tracked.filter(
   (f) =>
     /^(?:packages|extensions|implementations|bin)\//.test(f) &&
     /\.(?:ts|mts|cts|tsx|js|mjs|cjs|jsx)$/.test(f) &&
+    !/\.d\.[cm]?ts$/.test(f) &&
     !/(?:^|\/)(?:smoke|mutations|tests?)\/|\.(?:smoke|selftest|test)\.[cm]?[jt]sx?$/.test(f),
 );
 
