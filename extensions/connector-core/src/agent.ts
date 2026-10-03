@@ -948,7 +948,13 @@ export class MeshAgent extends EventEmitter {
       // on a real mesh as 119 injected digests / 0 assistant turns and an emergency compaction before
       // the seat's first real order could run. It stays recallable (cotal_inbox, recall), and a
       // historical @mention stays automatic: directed catch-up is the reader's call, not noise.
-      const pullOnly = snapshottedPullOnly || (!item.mentionsMe && (item.historical || this.classificationUnsafe));
+      // A reply on a channel is pull-only too when the host answers every turn on the channel
+      // (config.channelRepliesPullOnly): that answer replies to the message that started the turn,
+      // so a turn on a peer's reply is a turn on its automatic output, and two such seats on one
+      // channel would answer each other without end (#2395).
+      const automaticReply = this.config.channelRepliesPullOnly === true && !!item.replyTo;
+      const pullOnly =
+        snapshottedPullOnly || (!item.mentionsMe && (item.historical || automaticReply || this.classificationUnsafe));
       if (pullOnly) this.excludeFromFocus(item);
       this.buffer(item, delivery.ack, pullOnly);
       return;
