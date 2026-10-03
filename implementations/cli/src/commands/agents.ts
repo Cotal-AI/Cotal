@@ -1,5 +1,5 @@
 import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
-import { divergentCwdAnchor, loadMeshes, targetFlags, userSessionAuth } from "@cotal-ai/workspace";
+import { ConnectRefusal, divergentCwdAnchor, isWorkspaceTargetError, loadMeshes, renderWorkspaceError, targetFlags, userSessionAuth } from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
@@ -608,6 +608,22 @@ export function attachRefusal(
 }
 
 /**
+ * A re-establishment that threw, classified. A connect refusal that asking again cannot fix (a
+ * missing seed, refused credentials, a user-auth mesh offered static creds) is `fatal`, so the loop
+ * exits with the refusal's own sentence and hint instead of retrying it in silence. The control
+ * resolver's mode peek rethrows a broken mesh record as a raw target error before the connect
+ * helper can wrap it, and it only rethrows the codes that are not "no mesh found", so that is fatal
+ * too. Anything else, including a broker that is not reachable yet, is transient.
+ */
+function thrownEstablishment(e: unknown): { ok: false; kind: "fatal" | "transient"; message: string } {
+  if (e instanceof ConnectRefusal && e.kind === "permanent")
+    return { ok: false, kind: "fatal", message: [e.rendered.replace(/^✗ /, ""), e.hint].filter(Boolean).join("\n") };
+  if (isWorkspaceTargetError(e))
+    return { ok: false, kind: "fatal", message: renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "") };
+  return { ok: false, kind: "transient", message: (e as Error).message };
+}
+
+/**
  * What a re-establishment TELLS the operator while it keeps trying, and what it keeps to itself.
  * Returns the line to print, or undefined for silence.
  *
@@ -658,8 +674,8 @@ async function establishAttachSession(
   // A reconnect must never cross a path that can END THE PROCESS. The mesh resolve and its
   // preflight are written to do exactly that ("no mesh running at X - run `cotal up`"), which is
   // the right answer for a person who just typed a command and the wrong one for a link that is
-  // coming back. So a RE-ESTABLISHMENT asks for the throwing form and treats the refusal as the
-  // transient it is.
+  // coming back. So a RE-ESTABLISHMENT asks for the throwing form, and the loop retries a refusal
+  // whose kind is transient and stops on a permanent one.
   //
   // Keyed off `first`, NOT off the reconnect flag, and the difference is user-visible. A refusal
   // that escapes as an exception is rendered by the dispatcher's generic handler, which prints
@@ -1121,7 +1137,7 @@ async function runAttachLoop(
       // and a resumed stdin is a ref'd handle that would hold the command open after it has already
       // printed why it is giving up.
       if (first) { releaseStdin(); throw e; }
-      est = { ok: false, kind: "transient", message: (e as Error).message };
+      est = thrownEstablishment(e);
     }
     if (!est.ok) {
       // Nothing changes for the first attach: any refusal is the same loud exit as before.
