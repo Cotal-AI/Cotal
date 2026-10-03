@@ -1,5 +1,21 @@
 # @cotal-ai/connector-core
 
+## 0.59.0
+
+### Minor Changes
+
+- b5c3619: Publish every `RUN_ERROR` on the events plane with the fixed message `run failed` and no `code` or `rawEvent`. The error text and error kind a harness reports are upstream values that can echo prompts, peer messages or tool output, and `events.<owner>.<actor>` has a different read ACL from where that text was read. Codex, Claude Code, OpenCode, jcode and pi all publish through this shared fence. An event write-ahead log frame frozen before this release whose `RUN_ERROR` has any other shape halts the emitter with `egress-run-error` on recovery instead of being republished. This is a breaking change for events-channel readers that used the message or code; see the 0.59.0 section of `docs/UPGRADING.md` for settling pending frames before the upgrade.
+
+### Patch Changes
+
+- 608f5f4: Re-attach doc comments that had drifted away from the declarations they document. A `/** */` block followed directly by another one documented nothing, so editor hovers and the published type declarations showed no doc for the intended declaration (for example `Manager`, the `plane3` field and `AclResolver`). Each such block now sits above its declaration, is merged into the block it duplicated, or is removed when its declaration no longer exists. A new `pnpm check:doc-comments` check, run as part of `check:docsbundle`, refuses a doc block followed directly by another in shipped source.
+- 8316efb: A Claude Code hook that throws after it has started to surface peer messages no longer acks them. The empty reply it returns carries nothing, so the batch stays un-acked and reaches the model on a later frame. The seat also drops `turn-pending` rows that break the manager contract, such as one with no integer deadline, which used to make every hook frame throw. A `turn-pending` reply with no `turns` array leaves the seat's known turns in place.
+- b4c69bf: A seat whose turn died on a harness-reported error now shows it on every operator surface. A Jcode seat relays the Harness error code, such as a provider `rate_limit`, as its presence `condition`, both for a turn the host drives and for one the TUI owns. `cotal ps` now carries that condition: the human row reads `waiting (rate_limit)` and `--json` rows include the `condition` object, alongside the roster, `cotal status` and `cotal endpoints`. The next turn clears the condition when it starts. Before, the seat read a bare `waiting` and the error was recorded only in its private connector log.
+
+  Presence gains an optional `activeAt`: the epoch ms of the last work event the harness reported, carried on the next heartbeat. A Jcode seat records every token and tool event of its session there. `cotal ps`, `cotal status`, `cotal endpoints` and `cotal_roster` now print a condition with its age and the age of the last work event, such as `waiting (rate_limit for 40m) · active 40m ago`, and `cotal ps --json` rows carry `activeAt`. A turn that stopped advancing while its process keeps heartbeating no longer reads like one that is still working.
+
+- 62b004b: Record the two accepted residuals of the seat reap in the security model. The reap kills the seat child's process group by membership with no per-member start identity check, and it trusts the pids and start tokens its custody record names, so a same-uid process that rewrites `record.json` chooses what the next reap signals. The `reapSeat` doc comment and the design note on signer isolation no longer claim that the reap signals only identity-matched pids.
+
 ## 0.58.0
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @cotal-ai/connector-claude-code
 
+## 0.59.0
+
+### Patch Changes
+
+- bdaa187: Keep the Claude Code connector's MCP server answering in a plain session. With no `COTAL_NAME`, `COTAL_LINK` or `COTAL_AGENT_FILE` it used to exit before `initialize`, so every plain `claude` with the plugin installed showed `Connection closed` and an MCP introspection check such as Glama's saw no tools. It now serves one static `cotal_how_to_join` tool over stdio and still stays off the mesh: no mesh agent, no broker connection and no control socket.
+- 608f5f4: Re-attach doc comments that had drifted away from the declarations they document. A `/** */` block followed directly by another one documented nothing, so editor hovers and the published type declarations showed no doc for the intended declaration (for example `Manager`, the `plane3` field and `AclResolver`). Each such block now sits above its declaration, is merged into the block it duplicated, or is removed when its declaration no longer exists. A new `pnpm check:doc-comments` check, run as part of `check:docsbundle`, refuses a doc block followed directly by another in shipped source.
+- 8316efb: A Claude Code hook that throws after it has started to surface peer messages no longer acks them. The empty reply it returns carries nothing, so the batch stays un-acked and reaches the model on a later frame. The seat also drops `turn-pending` rows that break the manager contract, such as one with no integer deadline, which used to make every hook frame throw. A `turn-pending` reply with no `turns` array leaves the seat's known turns in place.
+
 ## 0.58.0
 
 ## 0.57.0

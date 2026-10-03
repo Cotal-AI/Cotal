@@ -1,5 +1,12 @@
 # @cotal-ai/connector-hermes
 
+## 0.59.0
+
+### Patch Changes
+
+- b0ec4f9: The Hermes launcher now refuses a `COTAL_HERMES_ADOPT_HOME` that is not an absolute path, before it writes anything. A relative value used to resolve against whatever directory the launcher ran in, so the same setting installed the plugin into a different directory, or failed as missing, depending on where the seat started, and a literal `~/.hermes` that no shell expanded was taken as a directory named `~`. `docs/connect-hermes.md` now says the value must be absolute.
+- 4c3fbaf: Run a managed Hermes seat as a Hermes named profile under its temp root, so its gateway gets a systemd unit name of its own, `hermes-gateway-cotal-<id>`. Hermes used to read the managed temp home as a root and give the seat the bare `hermes-gateway` name of the operator's own gateway: the seat refused to start while the operator's gateway service was active, and every launch tried to rewrite the operator's `hermes-gateway.service` to point at the seat's temp profile.
+
 ## 0.58.0
 
 ### Patch Changes
