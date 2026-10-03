@@ -25,6 +25,11 @@ An undeclared flag is a usage error, and so is a flag given more than once unles
 repeatable, as `--opt` and `down --session-store` are. The command prints the error and its help,
 exits 1, and does not run.
 
+Command output, including error lines on stderr and the guided `setup` and `meshes add` prompts,
+is colored only when stdout is a terminal, so piped or redirected output is plain text. A non-empty
+`NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
+piped, unless it is `0` or `false`, and it takes precedence over `NO_COLOR`.
+
 Commands come from the surfaces the binary composes: the base mesh CLI, the manager
 (`supervise`), and the delivery daemon (`deliver`), plus any operator-installed extensions.
 `cotal ext add <npm-package>` installs any registry providers a package contributes: commands,
