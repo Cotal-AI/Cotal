@@ -3,6 +3,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { status } from "../src/commands/status.js";
+// The Claude skills row comes from the claude connector's setup provider; importing it registers both.
+import "../../../extensions/connector-claude-code/dist/index.js";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 const realArgv1 = process.argv[1];

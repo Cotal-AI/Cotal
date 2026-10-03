@@ -36,8 +36,8 @@ coordinating agent teams (today `team-topology`), from one canonical source, on 
   and uninstalls on its own with `claude plugin uninstall cotal-skills --scope user`. Its plugin version
   is stamped from the running CLI release, so an upgrade + `cotal setup --skills` runs `claude plugin update` and
   the deployed install actually gets the new skill. `cotal setup` installs it on first run and on repeat
-  runs, so upgraders are not left behind. `cotal status` points a stale or missing skills plugin at
-  `cotal setup --skills`.
+  runs, so upgraders are not left behind. The same provider reports the plugin and skills plugin rows
+  in `cotal status`, which point a stale or missing skills plugin at `cotal setup --skills`.
 - **Every other harness** (Codex, Cursor, OpenCode, Gemini CLI, Windsurf/Devin) reads the cross-vendor
   `~/.agents/skills/` directory convention, which has no remote index, so `cotal setup` **reconciles** it
   (and `cotal setup --skills` does only that):
