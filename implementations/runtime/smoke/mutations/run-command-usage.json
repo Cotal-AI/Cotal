@@ -13,11 +13,11 @@
     {
       "name": "the verb gate is gone, so an unroutable verb reaches answer parsing",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  if (verb === undefined || ![\"start\", \"resume\", \"ps\", \"journal\", \"answer\", \"revoke\", \"migrate\"].includes(verb)) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
+      "find": "  if (verb === undefined || ![\"start\", \"resume\", \"ps\", \"journal\", \"answer\", \"amend\", \"revoke\", \"migrate\"].includes(verb)) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
       "replace": "  if (false) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
       "expectRed": "and the usage line is printed for it too",
       "cell": "and the usage line is printed for it too",
-      "note": "An unknown verb carries complete answer-shaped arguments and invalid JSON. Without the gate it reaches answer parsing, which refuses without printing usage; neither path contacts a broker."
+      "note": "An unknown verb carries complete answer-shaped arguments and invalid JSON. Without the gate it reaches answer parsing, which refuses without printing usage; neither path contacts a broker. Re-anchored for #2363, which added `amend` to the routed verbs."
     },
     {
       "name": "the usage line loses a verb the gate still routes",
