@@ -198,7 +198,8 @@ export interface InboxResponse {
   shown: InboxItem[];
   /** Everything it does not carry. */
   held: InboxItem[];
-  /** Ids no response could ever carry, whatever the window held at the time. */
+  /** Receive keys no response could ever carry, whatever the window held at the time. Keyed like an
+   *  ack, so two id-less items (#662) are never one entry. */
   stuck: ReadonlySet<string>;
 }
 
@@ -230,11 +231,11 @@ export function renderInbox(opts: {
   warning?: string;
   budget?: number;
   /**
-   * Ids of a lane that must be delivered IN ORDER, with no gaps: focus recall, which a caller walks
-   * with a single mark rather than an acknowledgement per item. Stepping over one of these to fit a
-   * later one would either strand it, if the mark then passes it, or re-serve everything after it,
-   * if the mark stops short. The buffered lane has no such constraint, because each of its items is
-   * acked by id.
+   * Receive keys of a lane that must be delivered IN ORDER, with no gaps: focus recall, which a
+   * caller walks with a single mark rather than an acknowledgement per item. Stepping over one of
+   * these to fit a later one would either strand it, if the mark then passes it, or re-serve
+   * everything after it, if the mark stops short. The buffered lane has no such constraint, because
+   * each of its items is acked by receive key.
    */
   strictIds?: ReadonlySet<string>;
 }): InboxResponse {
@@ -256,7 +257,7 @@ export function renderInbox(opts: {
   const stuck = new Set(
     ordered
       .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget)
-      .map((i) => i.id),
+      .map((i) => i.recvKey),
   );
 
   const assemble = (shown: InboxItem[], held: InboxItem[], tier: NoteTier): string => {
@@ -291,21 +292,21 @@ export function renderInbox(opts: {
   let used = 0;
   let strictGap = false; // the in-order lane stops at its first gap; the free lane steps over its own
   for (const i of ordered) {
-    const strict = strictIds.has(i.id);
+    const strict = strictIds.has(i.recvKey);
     if (strict && strictGap) continue;
     const cost = itemCost(i);
     if (used + cost > budget) {
       // A message nothing could ever carry is not a gap: it will never become deliverable, so the
       // walk steps over it and the note says so. Anything else IS a gap, and the ordered lane waits.
-      if (strict && !stuck.has(i.id)) strictGap = true;
+      if (strict && !stuck.has(i.recvKey)) strictGap = true;
       continue;
     }
     shown.push(i);
     used += cost;
   }
   const heldOf = (): InboxItem[] => {
-    const ids = new Set(shown.map((i) => i.id));
-    return ordered.filter((i) => !ids.has(i.id));
+    const keys = new Set(shown.map((i) => i.recvKey));
+    return ordered.filter((i) => !keys.has(i.recvKey));
   };
   let held = heldOf();
   let text = assemble(shown, held, "full");
@@ -357,7 +358,7 @@ function heldNote(
   tier: NoteTier = "full",
 ): string {
   if (!held.length || tier === "none") return "";
-  const stuck = held.filter((i) => stuckIds.has(i.id));
+  const stuck = held.filter((i) => stuckIds.has(i.recvKey));
   const waiting = held.length - stuck.length;
   if (tier === "compact") {
     const bits: string[] = [];
@@ -372,7 +373,7 @@ function heldNote(
   }
   const parts: string[] = [];
   if (waiting) {
-    const dms = held.filter((i) => i.kind !== "channel" && !stuckIds.has(i.id)).length;
+    const dms = held.filter((i) => i.kind !== "channel" && !stuckIds.has(i.recvKey)).length;
     // Under peek nothing is cleared, so the next call returns THIS window again. Telling a peeking
     // caller to call again for the next batch is a promise the read cannot keep, and an obedient
     // caller loops on it forever.
@@ -748,9 +749,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // It is not the only acker: the inbox's own overflow valve acks what it evicts, so an item
         // that arrives while this call is awaiting recall can still be evicted and lost. That is the
         // buffer's documented bounded local loss (see MeshAgent.buffer), unchanged by this path.
-        const buffered = agent.peekInbox(inboxScope);
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
+          const buffered = agent.peekInbox(inboxScope);
           const { text, shown, held } = renderInbox({
             items: buffered,
             peek,
@@ -774,8 +775,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         }
         // Focus: the live buffer holds only DMs/anycast; the channel ambient + @mentions were
         // acked-and-dropped at ingest, so pull them back from the channel stream here (replay-gated,
-        // "since you entered focus"). Recall is read-only, so peek only affects the live buffer.
+        // "since you entered focus"). Recall acks nothing, so peek only affects the live buffer.
         const recall = await agent.recallAmbient();
+        // Read after recall, which can hand an id-less message back into the buffer (#662).
+        const buffered = agent.peekInbox(inboxScope);
         // RECALL HAS TO ADVANCE, or windowing it starves it. Recall is re-derived from an unchanged
         // frontier on every call, so showing its first window and stopping there returned the same
         // prefix forever while the reply promised a next batch: measured as three identical replies
@@ -826,7 +829,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           items: [...buffered, ...fresh],
           peek,
           warning,
-          strictIds: new Set(clocked.map((i) => i.id)),
+          strictIds: new Set(clocked.map((i) => i.recvKey)),
           head: (s) =>
             scope
               ? `${s.length} message${s.length === 1 ? "" : "s"}. Buffered pull-only items were cleared; normal focus channel items are read-only recall:`
@@ -855,7 +858,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // the mutation for it survived and the code went rather than the test being weakened.
           const shownRecall = all.filter((i) => !bufferedIds.has(i.recvKey));
           for (const i of shownRecall) if (aheadIds.has(i.recvKey)) agent.noteRecalledAhead(i.recvKey);
-          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.id));
+          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.recvKey));
           const last = shownClocked[shownClocked.length - 1];
           if (last) agent.noteRecalled({ ts: last.ts, id: last.recvKey });
           void stuck;

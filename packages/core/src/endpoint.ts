@@ -5969,7 +5969,10 @@ export class CotalEndpoint extends EventEmitter {
    * not a push into context) plus `dropped: true` when the window is not complete: either the
    * channel's earliest *retained* message is already newer than the watermark (some ambient aged
    * out of the per-subject window), or replay is off for the channel below. Either way the caller
-   * must say so rather than silently reporting an empty, complete window.
+   * must say so rather than silently reporting an empty, complete window. `seqs[i]` is the chat
+   * stream sequence of `messages[i]`, the one identity two identical messages do not share.
+   * `unanswered` is true when no history read answered (replay is off, or the read failed), so
+   * `messages` says nothing about what the channel retains.
    *
    * Honors the **same** per-channel replay gate as join-backfill ({@link joinPolicyFresh}): a
    * `replay=off` channel returns no messages, so `focus` can't become a history bypass for a
@@ -5982,11 +5985,11 @@ export class CotalEndpoint extends EventEmitter {
   async recallChannel(
     channel: string,
     sinceSeq: number,
-  ): Promise<{ messages: CotalMessage[]; dropped: boolean }> {
+  ): Promise<{ messages: CotalMessage[]; seqs: number[]; dropped: boolean; unanswered: boolean }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
-    if (!isConcreteChannel(channel)) return { messages: [], dropped: false };
+    if (!isConcreteChannel(channel)) return { messages: [], seqs: [], dropped: false, unanswered: true };
     const policy = await this.joinPolicyFresh(channel);
-    if (!policy.replay) return { messages: [], dropped: true };
+    if (!policy.replay) return { messages: [], seqs: [], dropped: true, unanswered: true };
     const subject = chatSubject(this.space, "*", "*", channel);
     let raw: JsMsg[];
     try {
@@ -5994,9 +5997,10 @@ export class CotalEndpoint extends EventEmitter {
     } catch (e) {
       this.emit("error", e as Error);
       if (isPermissionDenied(e)) throw e;
-      raw = [];
+      return { messages: [], seqs: [], dropped: true, unanswered: true };
     }
     const collected: CotalMessage[] = [];
+    const seqs: number[] = [];
     for (const sm of raw) {
       let msg: CotalMessage;
       try {
@@ -6009,9 +6013,10 @@ export class CotalEndpoint extends EventEmitter {
       const parsed = parseSubject(sm.subject);
       if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       collected.push(authenticatedMessage(msg, parsed));
+      seqs.push(sm.seq);
     }
     const dropped = await this.channelDropped(subject, sinceSeq);
-    return { messages: collected, dropped };
+    return { messages: collected, seqs, dropped, unanswered: false };
   }
 
   /** Did focus recall on `subject` miss ambient that aged out past the watermark? Ambient is only
