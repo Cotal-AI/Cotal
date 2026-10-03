@@ -1461,10 +1461,14 @@ export class MeshAgent extends EventEmitter {
         // message already part read, and the walk moved past the rest of it. So it is paired only with a
         // copy that the deliveries from before the read leave over. When retention cut the window, older
         // copies may be gone too, so every delivery counts and the channel is reported as incomplete.
+        // The deliveries from before the read account for as many copies as the path that delivered the
+        // most, so a late delivery on another path is not paired with the earlier message either.
+        const before = (path: (typeof FOCUS_PATHS)[number]): number =>
+          (arrivals.get(`${path}.${digest}`) ?? []).filter((d) => d.arrival <= readFrom).length;
+        const accounted = Math.max(...FOCUS_PATHS.map(before));
         const paired = (path: (typeof FOCUS_PATHS)[number]): { excluded: boolean; arrival: number }[] => {
           const seen = arrivals.get(`${path}.${digest}`) ?? [];
-          const before = seen.filter((d) => d.arrival <= readFrom).length;
-          return seen.slice(0, before + (dropped ? seen.length : Math.max(0, at.length - before)));
+          return seen.slice(0, before(path) + (dropped ? seen.length : Math.max(0, at.length - accounted)));
         };
         const live = paired("live");
         const durable = paired("durable");
