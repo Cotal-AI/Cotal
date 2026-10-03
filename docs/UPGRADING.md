@@ -81,6 +81,71 @@ If a session halts with `egress-run-error` after the upgrade, go back to step 3 
 frame abandons that epoch, an event the broker never received is lost, and removing part of the
 directory leaves a state the next start refuses.
 
+## Explicit actor grants in 0.59.0
+
+`cotal actor grant` no longer fills an omitted ACL flag with its wide default. A grant names
+`--scope`, `--allow-subscribe` and `--allow-publish`, or passes `--full` to give the ones it leaves
+off their wide defaults (`spawn,role:default`, `>` read, `>` post). Any other grant is refused. The
+break is in the CLI on the machine that holds the actor ledger, the one that ran
+`cotal up --user-auth --idp <url>`. No stored row, credential or wire message changes.
+
+### What keeps working
+
+Existing actor ledger rows keep the authority they were granted, and their users and agents connect
+as before. `actor revoke`, `actor list` and a `grant` that names all three ACL flags behave as they
+did on 0.58.0. Nothing on disk is converted.
+
+### What stops working
+
+A grant that leaves off any of the three flags without `--full` exits 1 with
+`refusing to grant "<actor>" with --scope, --allow-subscribe, --allow-publish left off`, naming the
+flags it is missing, and then prints both accepted forms. It writes no row and does not retire the
+actor's current lifecycle. An existing row stays as it was, and an actor granted for the first time
+stays out until the grant is run again. This includes the bare grant printed on 0.58.0 by
+`cotal login`, `cotal status`, `actor list` and the not-granted refusal. Look for it in provisioning
+scripts, onboarding runbooks and anything that pastes those hints.
+
+### Upgrade order
+
+Change the scripts before the ledger machine is upgraded, and make each grant name all three flags.
+0.58.0 and 0.59.0 both accept that form. To keep a wide row, write its defaults out:
+
+```sh
+cotal actor grant <actor> --sub <IdP subject> \
+  --scope spawn,role:default --allow-subscribe '>' --allow-publish '>'
+```
+
+Switch to `--full` only once the ledger machine runs 0.59.0. 0.58.0 refuses it with
+`Unknown option '--full'` before it reads the ledger. Brokers, managers and participant machines
+need nothing for this break, so their order is the one the section above gives.
+
+### The window
+
+This break has no outage. No process restarts for it, and a refused grant changes nothing. The
+exposure is a grant script that runs against 0.59.0 before it was changed: it fails and grants
+nothing.
+
+### Snapshot this first
+
+Nothing is rewritten, so this break has no state to back up. On the ledger machine, save the output
+of `cotal actor list` to compare rows after the changed scripts run, and list the scripts that call
+`cotal actor grant`.
+
+### The upgrade end to end
+
+```sh
+# on the ledger machine, still on 0.58.0
+cotal actor list > actors-before.txt
+grep -rn 'actor grant' <your provisioning scripts>
+# make every grant name --scope, --allow-subscribe and --allow-publish, run them, then upgrade
+npm i -g cotal-ai@0.59.0
+cotal actor list | diff actors-before.txt -
+```
+
+Both refusals quoted here were run on 0.58.0 and on the 0.59.0 code. That brokers, managers and stored
+rows need nothing is read from the change, which touches only the CLI and its hints, and was not run
+on a live split deployment.
+
 ## From 0.53.0 to 0.54.0
 
 Manager calls now borrow an instance-bound `manager-caller` credential. Followed mutations require

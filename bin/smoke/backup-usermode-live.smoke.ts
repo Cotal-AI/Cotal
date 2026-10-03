@@ -196,7 +196,7 @@ try {
   // preserve cut speaks ctl.admin. EVERY ledger write happens BEFORE the backup — the ledger is an
   // authority input, so a re-grant after the artifact would itself be trust drift.
   await must("actor grant cli (scope incl. admin)",
-    ["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--label", "smoke human"]);
+    ["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "smoke human"]);
   const OWNER = await cotalAuthProvider.ownerForLogin({ store: workspaceSecretStore(root), dir: stateDir, space: SPACE });
   // A retained MANAGED agent principal: real user-mode agent authority (ledger row + sentinel +
   // actor token), the material a same-principal resume must reuse rather than replace.

@@ -122,7 +122,7 @@ try {
     dir: home, idpUrl: base, clientId: CLIENT_ID,
     onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
   });
-  const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--label", "repro human"]);
+  const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "repro human"]);
   check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("granted"), grant.out.slice(-400));
   // Isolated XDG + skip-seed: this suite is not a first-run seeder. `spawn -f`
   // still boots a `claude` child, so install THIS WORKTREE's connector into the

@@ -70,21 +70,20 @@ export interface ActorRow {
    *
    *  LAYERS ABOVE DO, and that is the part a reader of this line will get wrong. Two of them:
    *
-   *   - `runActor` (`commands.ts`), behind `cotal actor grant`, fills every flag the operator omits
-   *     with the WIDEST value: `>` read, `>` post, `spawn,role:default` scope. So a row written by
-   *     that command without `--allow-subscribe` reads EVERY channel in the space, and because a
-   *     grant is an upsert of the whole row, omitting the flag on a RE-grant widens a previously
-   *     narrow row rather than leaving it alone.
+   *   - `runActor` (`commands.ts`), behind `cotal actor grant --full`, fills every flag the
+   *     operator omits with the WIDEST value: `>` read, `>` post, `spawn,role:default` scope.
+   *     Without `--full` it refuses an omitted flag, because a grant is an upsert of the whole row
+   *     and a dropped flag would widen a narrow row rather than leave it alone.
    *   - the spawn paths (`manager.ts`, the CLI's `spawn.ts`) fall back to `[]` for BOTH sets: an
    *     omitted read set is NO channel, not `general`. The post set is `[]` too, except where a
    *     spawn derives an events grant, which is appended to whatever the caller passed. Narrower,
    *     not wider, so not a hazard, but a reader asking "does anything default these before they
    *     land here" must be told both.
    *
-   *  Name the flag, or the row gets `>`. */
+   *  Name the flag: without it the grant refuses, and under `--full` the row gets `>`. */
   allowSubscribe: string[];
   /** Channel post ACL minted at connect. Explicit HERE (empty = cannot post anywhere), with the
-   *  same caveat as {@link ActorRow.allowSubscribe}: `cotal actor grant` supplies `>` for an
+   *  same caveat as {@link ActorRow.allowSubscribe}: `cotal actor grant --full` supplies `>` for an
    *  omitted `--allow-publish`. */
   allowPublish: string[];
   /** Role (scopes the TASK-queue consumer), when the actor serves one. */
@@ -445,7 +444,7 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
       if (findManagedActor(dir, owner, actor))
         throw new Error(`actor "${actor}" is a managed agent - it authenticates with its own spawn-time secret; interact with it via the mesh, or respawn it with \`cotal spawn\``);
       throw new Error(
-        `actor "${actor}" is not granted for this user - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner}\` (or --sub <their IdP subject>, printed by their \`cotal login\`), which is the FULL grant: all channels, may spawn. Narrow it by naming --allow-subscribe/--allow-publish/--scope, since an omitted flag is the wide default`,
+        `actor "${actor}" is not granted for this user - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner} --full\` (or --sub <their IdP subject>, printed by their \`cotal login\`), which is the FULL grant: all channels, may spawn. For a narrow row, name --scope, --allow-subscribe and --allow-publish instead of --full`,
       );
     }
     // MINT-boundary lifecycle stamp (SPEC 13.1): EVERY minted bearer - view or not - carries the

@@ -297,7 +297,7 @@ try {
     dir: home, idpUrl: base, clientId: CLIENT_ID,
     onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
   });
-  const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--label", "ps human"]);
+  const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "ps human"]);
   check("actor grant succeeds", grant.status === 0 && /granted/i.test(grant.out), grant.out.slice(-300));
 
   console.log("3) cotal ps under user-mode admin bearer (C: ep.one)");

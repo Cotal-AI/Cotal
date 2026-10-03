@@ -447,7 +447,7 @@ async function printTarget(selected: Selected, cmd: string, responder: DeliveryR
     if (st?.login) {
       row("login", c.green(st.login.sub) + c.dim(` · session until ${new Date(st.login.expiresAt * 1000).toISOString()}`));
       if (st.grant === "not-granted")
-        row("actor", c.yellow(`"${CLI_USER_ACTOR}" not granted - ${cmd} actor grant ${CLI_USER_ACTOR} --sub ${st.login.sub}`));
+        row("actor", c.yellow(`"${CLI_USER_ACTOR}" not granted - ${cmd} actor grant ${CLI_USER_ACTOR} --sub ${st.login.sub} --full`));
       else if (st.grant)
         row(
           "actor",

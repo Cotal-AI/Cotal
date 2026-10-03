@@ -145,9 +145,10 @@ the broker's **auth callout** checks the bearer and the ledger at connect time a
 a scoped credential on the spot. Every bearer also names a **root credential** row in the
 space's credential ledger, proved live at each connect, so revoking that one credential
 bites at the very next connect. The operator grants access with
-`cotal actor grant <actor> --sub <their id>`; a bare grant is the full envelope (all
-channels; scope `spawn,role:default`, so it may spawn and may delegate the default role), and
-`--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
+`cotal actor grant <actor> --sub <their id> --full` for the full envelope (all
+channels; scope `spawn,role:default`, so it may spawn and may delegate the default role), or names
+`--scope`, `--allow-subscribe` and `--allow-publish` for a narrow row. A grant with any of the
+three left off and no `--full` is refused.
 No ledger row, no access; there is no allow-by-default.
 
 **Space catalogs.** A successful authenticated `GET <idp>/token` may advertise one catalog with:

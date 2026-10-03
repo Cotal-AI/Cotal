@@ -9,15 +9,16 @@
 /**
  * ONE re-grant command, with EVERY defaulting field named.
  *
- * `cotal actor grant` is an upsert of the whole row and `runActor` fills each flag the operator
- * omits from a WIDE default (`>` read, `>` post, `spawn,role:default` scope). So a printed remedy
- * that leaves a field off is not neutral about that field: it silently sets it to the widest value
- * the system can express. Every caller here passes real values from a real row. Nothing is
- * invented, because a command carrying an invented value is a command whose shortest successful
- * recovery is to delete the flag, which lands back on the default this exists to avoid.
+ * `cotal actor grant` is an upsert of the whole row. `runActor` refuses a flag the operator omits,
+ * and under `--full` fills it from a WIDE default (`>` read, `>` post, `spawn,role:default` scope).
+ * So a printed remedy that leaves a field off is not neutral about that field: it fails, and the
+ * `--full` that gets it past the refusal sets that field to the widest value the system can
+ * express. Every caller here passes real values from a real row. Nothing is invented, because a
+ * command carrying an invented value is a command whose shortest successful recovery is to delete
+ * the flag, which lands back on the default this exists to avoid.
  *
- * `--scope` is emitted even when the list is EMPTY, as `--scope ''`. Omitting it is not "no scope",
- * it is `spawn,role:default`.
+ * `--scope` is emitted even when the list is EMPTY, as `--scope ''`. Omitting it is not "no scope":
+ * the grant refuses, and under `--full` it is `spawn,role:default`.
  *
  * Free-form fields are POSIX single-quote escaped: a row label like `x'; rm -rf ~` must never
  * become a live command.

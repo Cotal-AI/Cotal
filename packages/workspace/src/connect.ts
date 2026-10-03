@@ -136,7 +136,7 @@ export function endpointAuth(conn: Connection): { creds?: string; bearer?: strin
 }
 
 /** The ledger actor a HUMAN CLI connect runs as on a user-auth space (v1: one well-known name).
- *  Grant it once per user: `cotal actor grant cli --sub <your IdP subject>`. */
+ *  Grant it once per user: `cotal actor grant cli --sub <your IdP subject> --full`. */
 export const CLI_USER_ACTOR = "cli";
 
 /** The auth material for one ELEVATED user-mode connection (a "view"): bearer + sentinel for the
