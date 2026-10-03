@@ -219,9 +219,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   login: { flags: ["client-id:string", "idp:string"], positionals: false },
   logout: { flags: ["idp:string"], positionals: false },
   // Per-user auth (D4c): the actor-ledger operator surface + the auth-service daemon.
+  // `--full` (2026-10): a grant takes the wide ACL defaults only when asked; without it the
+  // grant must name --scope, --allow-subscribe and --allow-publish.
   actor: {
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "label:string", "owner:string",
+      "allow-publish:string", "allow-subscribe:string", "full:boolean", "label:string", "owner:string",
       "parent:string", "role:string", "scope:string", "space:string", "sub:string",
     ],
     positionals: true,
