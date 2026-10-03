@@ -117,10 +117,12 @@ persona is refused rather than applied, because applying it means overwriting yo
 `cotal spawn --agent hermes --resume <id>` forks Hermes session `<id>` from your own profile
 (`HERMES_HOME`, or `~/.hermes`) into the seat's managed profile. The launcher does this before the
 seat joins the mesh, through Hermes' own session store: it opens your `state.db` read-only and
-copies the session into a new session in the seat's `state.db`, the way Hermes' `/branch` does. The
-gateway keeps one session per mesh chat, so each chat whose session is still empty starts as its own
-branch of that fork, and its first turn carries the source context. Your session is never appended
-to; SQLite still creates its usual `state.db-wal` and `state.db-shm` files next to a database it
+copies the session into a new session in the seat's `state.db`, the way Hermes' `/branch` does. This
+works across the supported `hermes-agent` range. The gateway keeps one session per mesh chat, so each
+chat starts as its own branch of that fork the first time the resumed seat uses it, and its first
+turn carries the source context. A chat that still holds history from an earlier seat of the same
+name moves to its branch too, and that history stays in the seat's `state.db` under its own session.
+Your session is never appended to; SQLite still creates its usual `state.db-wal` and `state.db-shm` files next to a database it
 reads. A session that is missing or has no messages is refused before the seat joins. A seat
 relaunched under the same name keeps its fork and does not read your profile again, and resuming a
 different session under that name is refused. Resume does not combine with

@@ -8,14 +8,16 @@ steps, because the source lives in the operator's profile and the seat runs in i
   1. ``fork`` (run by the launcher before the seat joins the mesh) opens the operator's
      ``state.db`` read-only, copies the named session into a new session in the seat's
      ``state.db``, and publishes ``cotal-resume.json`` next to it. The source is only read.
-  2. ``seed_chat`` (called by the adapter) gives a mesh chat whose session is still empty a branch
-     of that fork, the way ``/branch`` does, so the chat's first turn carries the source context.
+  2. ``seed_chat`` (called by the adapter) gives each mesh chat whose session does not descend from
+     that fork a branch of it, the way ``/branch`` does, so the chat's first turn carries the source
+     context.
 
 Standalone on purpose: the launcher runs this file as a script, outside the plugin package.
 """
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import sys
@@ -35,9 +37,11 @@ def _new_session_id() -> str:
 def _copy_messages(db: Any, session_id: str, history: list) -> None:
     """Append ``history`` to ``session_id`` with the fields gateway ``/branch`` carries. Unlike
     ``/branch`` a failed row raises: a fork that silently dropped a message would be a truncated
-    transcript presented as the source."""
-    from agent.turn_context import extract_api_content_sidecar
-
+    transcript presented as the source. Hermes before 0.19 stores no ``api_content`` sidecar, so
+    there is none to carry and its ``append_message`` takes none."""
+    sidecar = None
+    if "api_content" in inspect.signature(db.append_message).parameters:
+        from agent.turn_context import extract_api_content_sidecar as sidecar
     for msg in history:
         db.append_message(
             session_id=session_id,
@@ -52,7 +56,7 @@ def _copy_messages(db: Any, session_id: str, history: list) -> None:
             reasoning_details=msg.get("reasoning_details"),
             codex_reasoning_items=msg.get("codex_reasoning_items"),
             codex_message_items=msg.get("codex_message_items"),
-            api_content=extract_api_content_sidecar(msg),
+            **({"api_content": sidecar(msg)} if sidecar else {}),
         )
 
 
@@ -125,17 +129,32 @@ def fork(source_home: str, source_id: str, seat_home: str) -> dict:
     return {**marker, "created": True}
 
 
+def _descends_from(db: Any, session_id: str, fork_id: str) -> bool:
+    """Whether ``session_id`` is ``fork_id`` or follows it through ``parent_session_id``: a branch
+    ``seed_chat`` made, or a session Hermes split off one when it compressed the context."""
+    seen = set()
+    while session_id and session_id not in seen:
+        if session_id == fork_id:
+            return True
+        seen.add(session_id)
+        row = db.get_session(session_id)
+        session_id = row.get("parent_session_id") if row else None
+    return False
+
+
 def seed_chat(store: Any, source: Any, fork_id: str) -> bool:
-    """Branch ``fork_id`` into the session of the chat ``source`` names, when that session is still
-    empty. Returns whether it branched. Called on the gateway loop with no await between the check
-    and the switch, so two messages for one new chat cannot both branch it."""
+    """Branch ``fork_id`` into the chat ``source`` names, unless the chat already holds history that
+    descends from this fork. Returns whether it branched. A chat holding history from an earlier seat
+    of the same name is switched to the branch too; that history stays in the database under its own
+    session. Called on the gateway loop with no await between the check and the switch, so two
+    messages for one new chat cannot both branch it."""
     db = getattr(store, "_db", None)
     if db is None:
         raise RuntimeError("the gateway session store has no session database, so the resumed fork cannot be seeded")
     entry = store.get_or_create_session(source)
     # Read through the database, which raises, not store.load_transcript, which returns [] on any
     # error: an unreadable chat taken for an empty one would be switched off its own history.
-    if db.get_messages_as_conversation(entry.session_id):
+    if db.get_messages_as_conversation(entry.session_id) and _descends_from(db, entry.session_id, fork_id):
         return False
     history = db.get_messages_as_conversation(fork_id)
     if not history:
