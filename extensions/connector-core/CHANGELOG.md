@@ -691,6 +691,17 @@ lineageRecorded` is now true.
   Already-running agents are not narrowed retroactively: a live seat keeps the read ACL its credential
   was minted with, across renewal, until it is respawned.
 
+  **Correction:** the read-set default-deny described above is not new in 0.33.0. It shipped in 0.28.0
+  with 86f6b10 (#821, "Remove the implicit `general` channel floor"), and so did the refusal of a send
+  with no channel and the no-channel default for the seeded `default_agent`. Upgrading from 0.28.0 or
+  later needs no migration for it. What 0.33.0 changed is narrower. The no-default-channel check in
+  `multicast` now refuses only an omitted channel (`channel === undefined` where it was `!channel`), so
+  an explicit empty-string `channel` is no longer refused as if it were omitted, and the refusal now
+  says to name or join a channel. The `cotal_send` and `cotal_leave` tool descriptions and pi's send
+  call line no longer name `general` as a default or say the last channel cannot be left, doc comments
+  state the rule and the both-keys-omitted consequence, and the `smoke:no-implicit-general` and
+  `smoke:session-channels` suites guard it.
+
 ## 0.32.0
 
 ## 0.31.0

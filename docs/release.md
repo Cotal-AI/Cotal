@@ -80,13 +80,23 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
 
    Pick the affected packages plus the semver bump (patch / minor / major), and write a
    one-line summary. Commit the generated `.changeset/<name>.md` file alongside your code
-   change.
+   change. On a branch that has been open for a long time, check that `main` has not already
+   shipped the change before you trust its changeset. Merge conflicts in the code the changeset
+   describes are the usual sign that it has.
 3. Merge to `main`.
 4. The `Changesets` workflow runs:
    - If there are pending changesets, it opens (or updates) a PR titled `chore(release):
      version packages` that bumps versions and updates `CHANGELOG.md` files.
    - When **that** PR is merged, the same workflow detects the bumped versions, runs `pnpm
      build`, and `pnpm publish`es each changed package to npm with provenance.
+
+## Correcting a released changelog entry
+
+Changesets only prepends new `## <version>` sections, so an entry in a released section stays as
+written unless someone edits it. When a released entry is wrong, add a `**Correction:**` paragraph
+under the same bullet, indented two spaces, in every `CHANGELOG.md` that carries the bullet. Keep the
+original text, since the GitHub Release for that version already published it. Use the same
+wording in each file, because `scripts/release-notes-detail.mjs` dedupes summaries by their text.
 
 ## Publication workflow
 
