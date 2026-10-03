@@ -133,6 +133,23 @@ interface Pending {
   pullOnly: boolean;
   /** Local receive time. Distinct from `item.ts`, which is the sender's stamp. */
   receivedAt: number;
+  /** #662: the focus tally a held id-less channel message is counted in, and its digest there.
+   *  Evicting it un-counts it, so recall can hand its stream copy back. */
+  idless?: { tally: Map<string, IdlessTally>; digest: string };
+}
+
+/** #662: the copies of one id-less channel message (by content) a focus episode has settled
+ *  locally. A live copy carries no stream sequence, so recall binds each settled copy to one
+ *  retained stream copy the first time a read can see it, and two identical copies never share a
+ *  sequence. */
+interface IdlessTally {
+  channel: string;
+  /** Settled copies no read has bound yet, by the recall epoch each was settled in. */
+  unbound: number[];
+  /** Stream sequences of the copies settled here or handed back. */
+  bound: Set<number>;
+  /** Copies recall handed back whose live copy has not arrived. */
+  handedBack: number;
 }
 
 /** Where a session's focus-mode recall has been read to: a timestamp plus the id that breaks its ties. */
@@ -193,7 +210,13 @@ export interface ExactDrainResult {
   missingKeys: string[];
 }
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+
+/** #662: what an id-less channel delivery shares with its stream copy. Both are the same published
+ *  bytes, read through the same authentication, so their content is all that links them. */
+function idlessDigest(m: CotalMessage): string {
+  return createHash("sha256").update(JSON.stringify(m)).digest("base64url");
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -372,6 +395,17 @@ export class MeshAgent extends EventEmitter {
   private readonly recvKeySecret = randomUUID().replace(/-/g, "");
   private recvKeySeq = 0;
   private focusExcludedIds = new Map<string, string>();
+  /** #662: id-less channel deliveries settled this focus episode, per content digest. Live ingest has
+   *  no stream sequence, so content is all an id-less delivery shares with its stream copy, and
+   *  identical copies may each have had a different disposition. So recall binds each settled copy
+   *  to a stream sequence and hands back only the copies no settled copy is bound to. Replaced, never
+   *  cleared, per episode, so a hold from an earlier episode cannot un-count a later one. */
+  private focusIdless = new Map<string, IdlessTally>();
+  /** Unbound copies plus bound sequences in {@link focusIdless}, bounded like the exclusion list. */
+  private focusIdlessEntries = 0;
+  /** Bumped as each channel's recall read starts: a copy settled before a read that the read could
+   *  not bind is behind the focus frontier or out of retention, and no later read will see it. */
+  private idlessEpoch = 0;
   private focusRecallUnsafeChannels = new Set<string>();
   private _stopping = false;
   /** Presence writes go out IN CALL ORDER (#636, #2055). setStatus is two awaited puts and every
@@ -794,6 +828,18 @@ export class MeshAgent extends EventEmitter {
     // tag is payload-forgeable).
     if (item.kind === "channel") {
       const cm = this.channelModes.get(item.channel ?? "");
+      // #662: an id-less delivery is counted, not excluded, since recall can only match it by content.
+      // A copy recall already handed back is that copy arriving late, unless it is dropped here anyway.
+      const digest = item.id === "" && (this.enteringFocus || this._attention === "focus") ? idlessDigest(m) : undefined;
+      if (digest !== undefined && cm !== "muted" && !this.dropUnsafe && this.claimHandedBack(digest)) {
+        delivery.ack();
+        // It may be a new identical message instead. That one stays unbound in the stream, so the
+        // next recall hands it back, and its mention still wakes the agent to make that call.
+        if (item.mentionsMe) this.emit("mention-wake", item);
+        return;
+      }
+      const tally = digest === undefined ? undefined : this.reserveIdless(digest, item.channel ?? "");
+      tally?.unbound.push(this.idlessEpoch);
       // chatFrontier() is asynchronous. Channel traffic retained while entering focus must not also
       // appear in post-watermark recall if it lands after the server captured the frontier.
       if (this.enteringFocus) this.excludeFromFocus(item);
@@ -818,6 +864,9 @@ export class MeshAgent extends EventEmitter {
       if (cm !== "quiet" && !snapshottedPullOnly && this._attention === "focus") {
         this.protectDisposition(item.id, "drop");
         delivery.ack();
+        // #662: recall cannot pick this copy out from an identical one with another disposition, so
+        // its body is held here, pull-only, and recall hands back only copies nothing is bound to.
+        if (item.id === "") this.buffer(item, () => {}, true, tally ? digest : undefined);
         if (item.mentionsMe) this.emit("mention-wake", item);
         return;
       }
@@ -834,8 +883,10 @@ export class MeshAgent extends EventEmitter {
     this.buffer(item, delivery.ack, false);
   }
 
-  private buffer(item: InboxItem, ack: () => void, pullOnly: boolean): void {
-    this.inbox.push({ item, ack, pullOnly, receivedAt: Date.now() });
+  private buffer(item: InboxItem, ack: () => void, pullOnly: boolean, idless?: string): void {
+    const pending: Pending = { item, ack, pullOnly, receivedAt: Date.now() };
+    if (idless !== undefined) pending.idless = { tally: this.focusIdless, digest: idless };
+    this.inbox.push(pending);
     if (this.inbox.length > MAX_INBOX) {
       // Prefer sacrificing pull-only backlog so it cannot crowd out DMs/mentions. Overflow remains
       // bounded local loss: evicted items are acked without being marked handled.
@@ -860,6 +911,8 @@ export class MeshAgent extends EventEmitter {
         const [evicted] = this.inbox.splice(index, 1);
         const sacrificingDirected = evicted.item.kind !== "channel";
         this.rememberEvicted(evicted);
+        // #662: a held id-less message is no longer settled here, so recall may hand it back.
+        if (evicted.idless?.tally === this.focusIdless) this.unsettleIdless(evicted.idless.digest);
         // ...but NOT an id that is mid-delivery. Overflow prefers the oldest, which is exactly what a
         // surfaced batch is made of, so without this an arrival can ack a message a host is still
         // trying to hand to its runtime. Evicting bounds memory; acking is what makes it
@@ -926,6 +979,7 @@ export class MeshAgent extends EventEmitter {
 
   private excludeFromFocus(item: InboxItem): void {
     if ((!this.enteringFocus && this._attention !== "focus") || item.kind !== "channel" || !item.channel) return;
+    if (item.id === "") return; // #662: an id-less delivery is counted in focusIdless instead
     if (!this.focusExcludedIds.has(item.id) && this.focusExcludedIds.size >= FOCUS_EXCLUSION_CAP) {
       const oldest = this.focusExcludedIds.entries().next().value as [string, string] | undefined;
       if (oldest) {
@@ -934,6 +988,53 @@ export class MeshAgent extends EventEmitter {
       }
     }
     this.focusExcludedIds.set(item.id, item.channel);
+  }
+
+  /** #662: the tally for one more settled or handed-back copy of an id-less message; the caller adds
+   *  the copy. At the bound, the channel's recall is reported incomplete rather than risk handing
+   *  back a copy it no longer counts. */
+  private reserveIdless(digest: string, channel: string): IdlessTally | undefined {
+    if (this.focusIdlessEntries >= FOCUS_EXCLUSION_CAP) {
+      this.focusRecallUnsafeChannels.add(channel);
+      return undefined;
+    }
+    let tally = this.focusIdless.get(digest);
+    if (!tally) this.focusIdless.set(digest, (tally = { channel, unbound: [], bound: new Set(), handedBack: 0 }));
+    this.focusIdlessEntries++;
+    return tally;
+  }
+
+  /** #662: one settled copy of an id-less message left the inbox unhandled. Identical copies are
+   *  interchangeable, so an unbound one is dropped first, else the newest bound sequence is freed. */
+  private unsettleIdless(digest: string): void {
+    const tally = this.focusIdless.get(digest);
+    if (!tally) return;
+    if (tally.unbound.length) tally.unbound.pop();
+    else if (tally.bound.size) tally.bound.delete(Math.max(...tally.bound));
+    else return;
+    this.focusIdlessEntries--;
+  }
+
+  /** #662: after a read of `channel` that started at `epoch`, a copy settled before it that it could
+   *  not bind will not be in a later read either, so it must not hide a later identical copy. A
+   *  non-empty read is the channel's whole retained window, so a bound sequence it lacks aged out. */
+  private settleIdlessRead(channel: string, epoch: number, retained: Set<number> | undefined): void {
+    for (const tally of this.focusIdless.values()) {
+      if (tally.channel !== channel) continue;
+      const before = tally.unbound.length + tally.bound.size;
+      tally.unbound = tally.unbound.filter((e) => e >= epoch);
+      if (retained) for (const seq of tally.bound) if (!retained.has(seq)) tally.bound.delete(seq);
+      this.focusIdlessEntries -= before - tally.unbound.length - tally.bound.size;
+    }
+  }
+
+  /** #662: a live copy of a message recall already handed back is that copy, and is not held again.
+   *  If it is a new identical one instead, it is still uncounted, so the next recall hands it back. */
+  private claimHandedBack(digest: string): boolean {
+    const tally = this.focusIdless.get(digest);
+    if (!tally?.handedBack) return false;
+    tally.handedBack--;
+    return true;
   }
 
   private protectDisposition(id: string, disposition: "pull-only" | "drop"): void {
@@ -1326,6 +1427,8 @@ export class MeshAgent extends EventEmitter {
     if (mode === "focus") {
       await this.requireConnected();
       this.focusExcludedIds.clear();
+      this.focusIdless = new Map();
+      this.focusIdlessEntries = 0;
       this.focusRecallUnsafeChannels.clear();
       this.enteringFocus = this._attention !== "focus";
       try {
@@ -1333,6 +1436,8 @@ export class MeshAgent extends EventEmitter {
       } catch (error) {
         this.enteringFocus = false;
         this.focusExcludedIds.clear();
+        this.focusIdless = new Map();
+        this.focusIdlessEntries = 0;
         this.focusRecallUnsafeChannels.clear();
         throw error;
       }
@@ -1342,6 +1447,8 @@ export class MeshAgent extends EventEmitter {
       this.enteringFocus = false;
       this.focusSince = undefined;
       this.focusExcludedIds.clear();
+      this.focusIdless = new Map();
+      this.focusIdlessEntries = 0;
       this.focusRecallUnsafeChannels.clear();
       this.resetRecallWalk();
     }
@@ -1376,11 +1483,43 @@ export class MeshAgent extends EventEmitter {
         droppedChannels.push(channel);
         continue;
       }
-      const { messages, dropped } = await this.ep.recallChannel(channel, this.focusSince);
-      for (const m of messages) {
-        if (!this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, "channel", true));
+      const tallies = this.focusIdless;
+      const epoch = ++this.idlessEpoch;
+      const { messages, seqs, dropped } = await this.ep.recallChannel(channel, this.focusSince);
+      // #662: each settled id-less copy is bound to one retained stream copy, oldest first, since
+      // identical copies are interchangeable. A copy no settled copy is bound to was never received
+      // (a reconnect gap) or was evicted; it is handed back into the inbox, which acks each by
+      // receive key, since the recall mark cannot order identical copies.
+      const retained = new Set<number>();
+      let incomplete = dropped;
+      for (const [i, m] of messages.entries()) {
+        if (m.id !== "") {
+          if (!this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, "channel", true));
+          continue;
+        }
+        if (tallies !== this.focusIdless) continue; // focus was left or re-entered during the read
+        const seq = seqs[i];
+        retained.add(seq);
+        const digest = idlessDigest(m);
+        const tally = tallies.get(digest);
+        if (tally?.bound.has(seq)) continue;
+        if (tally?.unbound.length) {
+          tally.unbound.shift();
+          tally.bound.add(seq);
+          continue;
+        }
+        // A full inbox leaves it in the stream for a later call, rather than evict something else.
+        const fresh = this.inbox.length < MAX_INBOX ? this.reserveIdless(digest, channel) : undefined;
+        if (!fresh) {
+          incomplete = true;
+          continue;
+        }
+        fresh.bound.add(seq);
+        fresh.handedBack++;
+        this.buffer(this.toInboxItem(m, "channel", true), () => {}, true, digest);
       }
-      if (dropped) droppedChannels.push(channel);
+      if (tallies === this.focusIdless) this.settleIdlessRead(channel, epoch, messages.length ? retained : undefined);
+      if (incomplete) droppedChannels.push(channel);
     }
     items.sort((a, b) => a.ts - b.ts);
     return { items, droppedChannels };

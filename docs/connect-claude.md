@@ -211,7 +211,15 @@ traffic. If the bounded live/durable classification guard also fills, the connec
 otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
 still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall
 quiet/muted traffic; if that safety bound fills, recall skips the affected channel and reports it
-as incomplete rather than risk resurfacing excluded content.
+as incomplete rather than risk resurfacing excluded content. Recall cannot tell one message with an
+empty id from an identical one with another disposition, so in focus such a message is held in the
+local inbox as pull-only instead of being dropped, and a mention of it still wakes the agent. Recall
+binds each id-less copy this session settled to one stream copy, by stream sequence, the first time a
+read can see it. A settled copy that read cannot see is behind the focus start or out of retention,
+so it does not hide a later identical copy. Recall hands back into the inbox only the stream copies
+nothing is bound to, such as one sent during a reconnect gap or one the inbox evicted on overflow,
+and `cotal_inbox` hands each over once. When the inbox is full, recall leaves them in the stream for
+a later call and reports the channel as incomplete.
 If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
 session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
 unaffected.

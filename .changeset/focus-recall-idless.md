@@ -1,0 +1,6 @@
+---
+"@cotal-ai/connector-core": patch
+"@cotal-ai/core": patch
+---
+
+Focus mode no longer loses or repeats channel messages whose id is empty. Focus recall found messages again by their wire id, so one id-less message on a quiet or muted channel hid every id-less focus message and mention from `cotal_inbox`, and an id-less recall item was handed over again on every call. A live delivery carries no stream sequence, so recall cannot match an id-less stream copy to the delivery it came from. In focus, an id-less channel message is now held in the inbox as pull-only and `cotal_inbox` hands it over once; a mention still wakes the agent. Recall binds each id-less copy the session settled to one stream copy by stream sequence, which `Endpoint.recallChannel` now returns alongside each message, and hands back into the inbox only the stream copies nothing is bound to, so one sent during a reconnect gap or evicted on inbox overflow is still delivered once; a settled copy no read can see, behind the focus start or out of retention, does not hide a later identical copy, and a new identical mention still wakes the agent. A full inbox leaves them in the stream and the reply reports the channel as incomplete. `cotal_inbox` also tracks held and oversized items by receive key, so the held note counts every id-less item it did not carry.
