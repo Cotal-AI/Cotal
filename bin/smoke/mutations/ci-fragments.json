@@ -25,7 +25,7 @@
     {
       "name": "fragment sharding goes back to sorted-position modulo",
       "file": "bin/smoke/ci-suites.mjs",
-      "find": "    ...fragments.filter((suite) => fragmentShard(suite, count) === shard),",
+      "find": "    ...fragments.filter((suite) => suiteShard(suite, -1, count, costs) === shard),",
       "replace": "    ...fragments.filter((_, index) => index % count === shard),",
       "expectRed": "adding another fragment before it cannot move an existing suite to another shard",
       "cell": "adding another fragment before it cannot move an existing suite to another shard"

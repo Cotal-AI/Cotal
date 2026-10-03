@@ -34,7 +34,12 @@
  * It also exits 1 when head's frozen list names a suite the base list does not: a tail append
  * is shard-stable and inventory-green, then CONFLICTS the next PR, which GitHub will not build.
  *
- * CONTROLS BUILT IN, because a bare zero is not evidence. All twenty-two run on every invocation:
+ * A PIN IN bin/smoke/ci-suite-costs.json decides its suite's shard ahead of index and hash. The
+ * table is measured from CI logs by rebalance-shards.mjs, and a move the head table pins exits 0
+ * as REBALANCED with every moved suite named, because the move is a reviewed line in the diff.
+ * A move no head pin explains, including one made by deleting a pin, is still a RE-SHARD.
+ *
+ * CONTROLS BUILT IN, because a bare zero is not evidence. All twenty-four run on every invocation:
  *   - a forced mid-file insert must report non-zero (the instrument responds at all)
  *   - identity (base vs base) must report 0
  *   - an unchanged 20-item registry under 4 -> 5 shards must move 16 items
@@ -57,6 +62,8 @@
  *   - a tail append of a new suite name must report that name
  *   - a comment-only edit of the frozen list must report nothing
  *   - a deletion from the frozen list must report nothing
+ *   - a cost-table pin must move its suite
+ *   - a pin recorded for another shard count must move nothing
  * Any failed control ABORTS with exit 2 rather than emitting a verdict.
  *
  * A third line once sat here claiming "the known production re-shard 7837b64c->d1aeafc3
@@ -74,7 +81,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { changedSuiteIndices } from "./shard-stability.mjs";
-import { addedLegacySuites, fragmentFileName } from "./ci-suites.mjs";
+import { addedLegacySuites, fragmentFileName, parseShardCosts, suiteShard } from "./ci-suites.mjs";
 
 // FIRST LINE OF OUTPUT, BEFORE ANY WORK: a gate can grep for this to prove the detector
 // actually ran. `npx tsx <missing-file>` exits 1, which is indistinguishable from
@@ -109,7 +116,7 @@ console.log("shard-stability.check v1 starting");
  * cheap; it does not perform it. THE GATE MUST STILL CHECK AGREEMENT.
  */
 const verdict: (
-  token: "RESHARD" | "STABLE" | "ABORT",
+  token: "RESHARD" | "REBALANCED" | "STABLE" | "ABORT",
   message: string,
   code: 0 | 1 | 2,
 ) => never = (token, message, code) => {
@@ -303,7 +310,7 @@ const verifierMatches = (sha: string): boolean => {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const actual = createHash("sha256").update(source).digest("hex");
-    return actual === "7f511302887d61bcfef6f7db4acf383dd90835840d723f75ab8359357f36b056";
+    return actual === "9a73df1cb332d8f38f260db870e89bba928a8a09376b637ae90e878e07c0f2e5";
   } catch {
     return false;
   }
@@ -390,21 +397,18 @@ const moved = (a: string[], b: string[], aCount: number, bCount: number): string
   return [...sa.keys()].filter((suite) => sb.has(suite) && sa.get(suite) !== sb.get(suite));
 };
 
-const fragmentShard = (suite: string, count: number): number =>
-  createHash("sha256").update(suite).digest().readUInt32BE(0) % count;
+type ShardCosts = ReturnType<typeof parseShardCosts>;
 
-const assignment = (legacy: string[], fragmentSuites: string[], count: number): Map<string, number> => {
-  const out = shardOf(legacy, count);
-  for (const suite of fragmentSuites) if (!out.has(suite)) out.set(suite, fragmentShard(suite, count));
+// The runner's own rule, from the head checkout's ci-suites.mjs, applied to each commit's blobs.
+const assignment = (legacy: string[], fragmentSuites: string[], count: number, costs: ShardCosts): Map<string, number> => {
+  const out = new Map<string, number>();
+  legacy.forEach((suite, index) => { if (!out.has(suite)) out.set(suite, suiteShard(suite, index, count, costs)); });
+  for (const suite of fragmentSuites) if (!out.has(suite)) out.set(suite, suiteShard(suite, -1, count, costs));
   return out;
 };
 
-const movedRegistry = (
-  aLegacy: string[], aFragments: string[], bLegacy: string[], bFragments: string[], aCount: number, bCount: number,
-): string[] => {
-  const a = assignment(aLegacy, aFragments, aCount), b = assignment(bLegacy, bFragments, bCount);
-  return [...a.keys()].filter((suite) => b.has(suite) && a.get(suite) !== b.get(suite));
-};
+const movedRegistry = (a: Map<string, number>, b: Map<string, number>): string[] =>
+  [...a.keys()].filter((suite) => b.has(suite) && a.get(suite) !== b.get(suite));
 
 // #1011: every ci-suites.txt entry ends its comment with the same sentence, "Appended;
 // shard assignments unchanged." That sentence is both the rule and the claim, and nothing
@@ -450,6 +454,7 @@ const replaceRefRuntimeControl = (): boolean => {
     const inputs = new Map([
       ["bin/smoke/ci-suites.txt", "smoke:first\nsmoke:second\n"],
       ["bin/smoke/ci-suites.d/control.txt", "smoke:fragment\n"],
+      ["bin/smoke/ci-suite-costs.json", '{ "count": 1, "suites": {} }\n'],
       ["bin/smoke/ci-suites.mjs", "export {};\n"],
       ["bin/smoke/shard.mjs", "export {};\n"],
       ["bin/smoke/shard-pool.mjs", "export {};\n"],
@@ -508,9 +513,40 @@ const replaceRefRuntimeControl = (): boolean => {
   }
 };
 
+// A commit before the cost table existed pins nothing; any other unreadable table aborts.
+const costsAt = (sha: string): ShardCosts => {
+  const path = "bin/smoke/ci-suite-costs.json";
+  let listed: string;
+  try {
+    listed = execFileSync("git", ["--no-replace-objects", "ls-tree", "--name-only", sha, "--", path], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch {
+    verdict("ABORT", `cannot list ${path} at '${sha}'`, 2);
+  }
+  if (listed === "") return { count: 0, suites: new Map() };
+  try {
+    return parseShardCosts(readBlob(sha, path), `${path}@${sha}`);
+  } catch (error) {
+    verdict("ABORT", (error as Error).message, 2);
+  }
+};
+
 const A = read(base), B = read(head);
 const AF = fragments(base), BF = fragments(head);
-const changed = movedRegistry(A, AF, B, BF, baseCount, headCount);
+const baseCosts = costsAt(base), headCosts = costsAt(head);
+const baseAssignment = assignment(A, AF, baseCount, baseCosts);
+const headAssignment = assignment(B, BF, headCount, headCosts);
+const changed = movedRegistry(baseAssignment, headAssignment);
+// A move the head table pins is a reviewed edit to the table, read in its diff. Every other move,
+// including one made by deleting a pin, is a re-shard nobody wrote down.
+const pinAt = (costs: ShardCosts, count: number, suite: string): number | undefined =>
+  costs.count === count ? costs.suites.get(suite)?.shard : undefined;
+const rebalanced = baseCount === headCount
+  ? changed.filter((suite) => pinAt(headCosts, headCount, suite) !== undefined)
+  : [];
+const unpinned = changed.filter((suite) => !rebalanced.includes(suite));
 const indices = changedSuiteIndices(A, B) as { changed: string[]; examined: number };
 
 // --- controls, printed before the verdict ---
@@ -717,6 +753,11 @@ const claimHistorical = appendedClaimViolations(claimControlBase,
 const freezeTail = addedLegacySuites("smoke:a\nsmoke:b\n", "smoke:a\nsmoke:b\nsmoke:NEW\n") as string[];
 const freezeComment = addedLegacySuites("smoke:a\n", "smoke:a\n# freeze note only\n") as string[];
 const freezeDelete = addedLegacySuites("smoke:a\nsmoke:b\n", "smoke:a\n") as string[];
+const pinControlList = ["smoke:a", "smoke:b"];
+const pinControlTable: ShardCosts = { count: 2, suites: new Map([["smoke:a", { seconds: 1, shard: 1 }]]) };
+const noPins: ShardCosts = { count: 0, suites: new Map() };
+const pinMoved = movedRegistry(assignment(pinControlList, [], 2, noPins), assignment(pinControlList, [], 2, pinControlTable));
+const pinOtherCount = movedRegistry(assignment(pinControlList, [], 3, noPins), assignment(pinControlList, [], 3, pinControlTable));
 console.log(`CONTROL forced mid-file insert -> ${forced.length} moved  (must be > 0)`);
 console.log(`CONTROL identity               -> ${identity.length} moved  (must be 0)`);
 console.log(`CONTROL same-shard reindex     -> ${indexRotation.changed.length} of ${indexRotation.examined} examined  (must be 20 of 20)`);
@@ -741,6 +782,8 @@ console.log(`CONTROL historical claims         -> ${claimHistorical.length} name
 console.log(`CONTROL freeze tail append        -> ${JSON.stringify(freezeTail)}  (must be ["smoke:NEW"])`);
 console.log(`CONTROL freeze comment-only       -> ${JSON.stringify(freezeComment)}  (must be [])`);
 console.log(`CONTROL freeze deletion           -> ${JSON.stringify(freezeDelete)}  (must be [])`);
+console.log(`CONTROL cost-table pin            -> ${JSON.stringify(pinMoved)}  (must be ["smoke:a"])`);
+console.log(`CONTROL pin for another count     -> ${JSON.stringify(pinOtherCount)}  (must be [])`);
 if (
   forced.length === 0 || identity.length !== 0 ||
   indexRotation.changed.length !== 20 || indexRotation.examined !== 20 ||
@@ -753,7 +796,8 @@ if (
   completeTopologyCount !== headCount + 1 || !completeTopologyDuplicatesRefused ||
   claimMidFile.length !== 1 || claimTail.length !== 0 || claimHistorical.length !== 0 ||
   freezeTail.length !== 1 || freezeTail[0] !== "smoke:NEW" ||
-  freezeComment.length !== 0 || freezeDelete.length !== 0
+  freezeComment.length !== 0 || freezeDelete.length !== 0 ||
+  pinMoved.length !== 1 || pinMoved[0] !== "smoke:a" || pinOtherCount.length !== 0
 ) {
   verdict("ABORT", "controls failed, this run cannot be trusted", 2);
 }
@@ -776,9 +820,25 @@ console.log(`\n${base.slice(0, 8)} -> ${head.slice(0, 8)}  @${baseCount}->${head
 console.log(`  suites: ${allA.length} -> ${allB.length} · added ${added.length} · removed ${removed.length}`);
 console.log(`  frozen legacy suites CHANGING INDEX: ${indices.changed.length} of ${indices.examined} examined`);
 if (indices.changed.length > 0) console.log(`  first few reindexed: ${indices.changed.slice(0, 5).join(", ")}`);
-console.log(`  pre-existing suites CHANGING SHARD: ${changed.length} of ${allA.length}`);
-if (changed.length > 0) {
-  console.log(`  first few: ${changed.slice(0, 5).join(", ")}`);
+console.log(`  pre-existing suites CHANGING SHARD: ${changed.length} of ${allA.length}, ${rebalanced.length} pinned by the cost table`);
+if (unpinned.length > 0) {
+  console.log(`  first few: ${unpinned.slice(0, 5).join(", ")}`);
+}
+for (const suite of rebalanced) {
+  console.log(`  REBALANCED ${suite}: shard ${baseAssignment.get(suite)} -> ${headAssignment.get(suite)}`);
+}
+if (added.length > 0) {
+  console.log(`  new suites run on: ${added.map((suite) => `${suite} -> shard ${headAssignment.get(suite)}`).join(", ")}`);
+}
+if (headCosts.count === headCount) {
+  const load = Array.from({ length: headCount }, () => 0), unmeasured = Array.from({ length: headCount }, () => 0);
+  for (const [suite, shard] of headAssignment) {
+    const cost = headCosts.suites.get(suite);
+    if (cost) load[shard] += cost.seconds;
+    else unmeasured[shard]++;
+  }
+  console.log(`  measured minutes per shard at head: ${load.map((value, shard) =>
+    `${shard}: ${(value / 60).toFixed(1)}${unmeasured[shard] ? ` +${unmeasured[shard]} unmeasured` : ""}`).join(", ")}`);
 }
 if (claimViolations.length > 0) {
   console.log(`  NEW entries claiming "Appended" while mid-file: ${claimViolations.join(", ")}`);
@@ -788,7 +848,7 @@ if (freezeAdds.length > 0) {
     `  FROZEN LIST APPENDED: ${freezeAdds.map((suite) => `${suite} -> bin/smoke/ci-suites.d/${fragmentFileName(suite)}`).join(", ")}`,
   );
 }
-if (indices.changed.length > 0 || removed.length > 0 || changed.length > 0 || claimViolations.length > 0 || freezeAdds.length > 0) {
+if (indices.changed.length > 0 || removed.length > 0 || unpinned.length > 0 || claimViolations.length > 0 || freezeAdds.length > 0) {
   const remedy = baseCount === headCount
     ? "Keep ci-suites.txt frozen; add new suites as one-file fragments under ci-suites.d."
     : `The shard matrix changed ${baseCount} -> ${headCount}; review every reassignment as deliberate.`;
@@ -798,11 +858,18 @@ if (indices.changed.length > 0 || removed.length > 0 || changed.length > 0 || cl
   const freezeNote = freezeAdds.length > 0
     ? ` FROZEN LIST APPENDED ${freezeAdds.map((suite) => `${suite} -> bin/smoke/ci-suites.d/${fragmentFileName(suite)}`).join(", ")}. A CONFLICTING PR gets zero CI.`
     : "";
-  const headline = indices.changed.length > 0 || removed.length > 0 || changed.length > 0
+  const headline = indices.changed.length > 0 || removed.length > 0 || unpinned.length > 0
     ? `RE-SHARD DETECTED. ${remedy}`
     : freezeAdds.length > 0
       ? `FROZEN LIST APPENDED. ${remedy}`
       : "NO pre-existing suite moved, but the registry lies about how it grew.";
   verdict("RESHARD", `${headline}${claimNote}${freezeNote}`, 1);
+}
+if (rebalanced.length > 0) {
+  verdict(
+    "REBALANCED",
+    `REBALANCED - ${rebalanced.length} suite(s) moved by bin/smoke/ci-suite-costs.json, each named above; every other pre-existing suite keeps its runner, every frozen legacy suite keeps its index.`,
+    0,
+  );
 }
 verdict("STABLE", "STABLE - every frozen legacy suite keeps its index, every pre-existing suite keeps its runner, no false append claims, no new suite on the frozen list.", 0);

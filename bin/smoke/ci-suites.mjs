@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 
 export const CI_SUITES_PATH = fileURLToPath(new URL("./ci-suites.txt", import.meta.url));
 export const CI_SUITES_DIR = fileURLToPath(new URL("./ci-suites.d", import.meta.url));
+export const CI_SUITE_COSTS_PATH = fileURLToPath(new URL("./ci-suite-costs.json", import.meta.url));
 
 /**
  * Script names in execution order. Comments and blanks removed; nothing else is.
@@ -111,15 +112,59 @@ export function fragmentShard(suite, count) {
   return createHash("sha256").update(suite).digest().readUInt32BE(0) % count;
 }
 
-/** The exact assignment the runner executes: frozen positional legacy entries plus independently
- * hashed fragment entries. Shared so the regression tests the production selector, not a copy. */
-/** @param {string[]} legacy @param {string[]} fragments @param {number} shard @param {number} count @returns {string[]} */
-export function suitesForShard(legacy, fragments, shard, count) {
+/** @typedef {{ count: number, suites: Map<string, { seconds: number, shard: number }> }} ShardCosts */
+
+/** Measured cost and pinned shard per suite, from `ci-suite-costs.json`. Neither index nor name hash
+ * knows what a suite costs, so shards drift apart as suites land; `rebalance-shards.mjs` measures
+ * CI job logs and writes this table, and a suite it lists runs on its pinned shard. The pins are
+ * committed data, so a suite moves only when a reviewed edit to the table moves it. A malformed
+ * table THROWS: a table that silently drops a pin moves that suite. */
+/** @param {string} raw @param {string} [label] @returns {ShardCosts} */
+export function parseShardCosts(raw, label = CI_SUITE_COSTS_PATH) {
+  const table = JSON.parse(raw);
+  const count = table?.count;
+  if (!Number.isInteger(count) || count < 1) throw new Error(`${label}: count must be a positive integer`);
+  if (table.suites === null || typeof table.suites !== "object" || Array.isArray(table.suites))
+    throw new Error(`${label}: suites must be an object of suite name to { seconds, shard }`);
+  /** @type {Map<string, { seconds: number, shard: number }>} */
+  const suites = new Map();
+  for (const [suite, entry] of Object.entries(table.suites)) {
+    const names = parseCiSuites(suite, label);
+    if (names.length !== 1 || names[0] !== suite) throw new Error(`${label}: not a smoke script name: ${JSON.stringify(suite)}`);
+    const { seconds, shard } = entry ?? {};
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0)
+      throw new Error(`${label}: ${suite} needs a non-negative number of seconds`);
+    if (!Number.isInteger(shard) || shard < 0 || shard >= count)
+      throw new Error(`${label}: ${suite} needs a shard from 0 to ${count - 1}`);
+    suites.set(suite, { seconds, shard });
+  }
+  return { count, suites };
+}
+
+/** @param {string} [path] @returns {ShardCosts} */
+export function readShardCosts(path = CI_SUITE_COSTS_PATH) {
+  return parseShardCosts(readFileSync(path, "utf8"), path);
+}
+
+/** One suite's runner. A pin applies only under the shard count it was measured for; any other
+ * count is already a full reassignment, so it falls to the frozen index or the name hash. */
+/** @param {string} suite @param {number} legacyIndex @param {number} count @param {ShardCosts} costs @returns {number} */
+export function suiteShard(suite, legacyIndex, count, costs) {
+  const pin = costs.count === count ? costs.suites.get(suite) : undefined;
+  if (pin) return pin.shard;
+  return legacyIndex >= 0 ? legacyIndex % count : fragmentShard(suite, count);
+}
+
+/** The exact assignment the runner executes: a pinned shard from the cost table, else the frozen
+ * positional legacy index, else the independently hashed fragment name. Shared so the regression
+ * tests the production selector, not a copy. */
+/** @param {string[]} legacy @param {string[]} fragments @param {number} shard @param {number} count @param {ShardCosts} [costs] @returns {string[]} */
+export function suitesForShard(legacy, fragments, shard, count, costs = readShardCosts()) {
   if (!Number.isInteger(shard) || !Number.isInteger(count) || count < 1 || shard < 0 || shard >= count)
     throw new Error(`invalid shard ${shard}/${count}`);
   return [
-    ...legacy.filter((_, index) => index % count === shard),
-    ...fragments.filter((suite) => fragmentShard(suite, count) === shard),
+    ...legacy.filter((suite, index) => suiteShard(suite, index, count, costs) === shard),
+    ...fragments.filter((suite) => suiteShard(suite, -1, count, costs) === shard),
   ];
 }
 
