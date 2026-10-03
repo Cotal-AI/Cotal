@@ -24,7 +24,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { claudeConnector } from "../src/extension.js";
 // @ts-expect-error - a plain .mjs build script with no type declarations
-import { asciiOnly } from "../scripts/ascii-bundle.mjs";
+import { asciiOnly } from "../build.mjs";
 
 const FLAGS = ["--optimize-for-size", "--max-semi-space-size=1"];
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
