@@ -62,13 +62,18 @@ session. The broker may or may not already hold that frame, so the halt cannot s
    stop it, and run step 2 again. Recovery publishes the frame as 0.58.0 would have, error text
    included, so it only finishes what 0.58.0 had already started.
 
-   If that start halts with `cas-loss` instead, the broker had already stored the frame and the
-   seat lost the acknowledgement, so the frame and its error text are already on the channel. No
-   restart settles that log, on 0.58.0 or later: the stream checks the frozen expectation before it
-   deduplicates the retry, so every retry of the frame halts the same way. Clear it as the halt
-   message says: purge the agent's event channel, then remove the agent's directory under the
-   events state root whole (see [Event plane](connect-claude.md#event-plane)). The purge also drops
-   the earlier frames of every session of that agent.
+   If that start halts with `cas-loss` instead, the agent's subject is no longer at the sequence this
+   log expects, and no restart settles that log, on 0.58.0 or later. A lost acknowledgement is one
+   cause: the broker stored the frame, so it and its error text are already on the channel, and every
+   retry halts the same way because the stream checks the frozen expectation before it deduplicates.
+   The halt message names the other causes, such as a second emitter for the same agent under a
+   different state root, a restored stream or frontier record, or a purged channel. With those the
+   pending frame may never have reached the broker, so a `cas-loss` does not tell you whether it
+   landed. Find and stop any second writer and rule out a restored state first. Clearing the halt
+   then means purging the agent's event channel and removing the agent's directory under the events
+   state root whole (see [Event plane](connect-claude.md#event-plane)). That abandons the pending
+   frame whether or not the broker has it, and the purge also drops the earlier frames of every
+   session of that agent.
 4. Upgrade once step 2 prints nothing.
 
 If a session halts with `egress-run-error` after the upgrade, go back to step 3 for that session on
