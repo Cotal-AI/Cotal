@@ -1,5 +1,6 @@
 import {
   registry,
+  SpawnRefused,
   type AgentHandle,
   type LaunchSpec,
   type Runtime,
@@ -40,11 +41,11 @@ export class TmuxRuntime implements Runtime {
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     if (!/^[A-Za-z0-9_.-]+$/.test(name))
-      throw new Error(
+      throw new SpawnRefused(
         `tmux runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`,
       );
     if (!tmux.available())
-      throw new Error("tmux runtime: tmux is not available — is tmux installed and on PATH?");
+      throw new SpawnRefused("tmux runtime: tmux is not available — is tmux installed and on PATH?");
 
     tmux.ensureSession(this.session, cwd);
     // P3: env -i strips the tmux server's inherited environment; only the connector-declared

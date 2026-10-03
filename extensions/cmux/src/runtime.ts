@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   registry,
+  SpawnRefused,
   type AgentHandle,
   type LaunchSpec,
   type Pane,
@@ -80,9 +81,9 @@ export class CmuxRuntime implements Runtime {
     // `name` becomes a temp-script key and a `cotal-<name>` tab id — keep it a bare token
     // so it can't traverse paths or break the workspace label.
     if (!/^[A-Za-z0-9_.-]+$/.test(name))
-      throw new Error(`cmux runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
+      throw new SpawnRefused(`cmux runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
     if (!cmux.available())
-      throw new Error(
+      throw new SpawnRefused(
         `the cmux CLI (${process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux"}) couldn't reach the app — ` +
           "is cmux running, and is this process inside a cmux surface (CMUX_SOCKET_PATH set)?",
       );

@@ -9,14 +9,16 @@
  * spawns the spec owns them from then on: it removes them once it has proved the child gone. Nothing
  * earlier is safe, since the child may read them at any point in its life. A spawn that throws is not
  * that proof, since a backend can fail after its child has started, and neither is losing the
- * connection to whatever watches the child. A refusal made before any process exists is.
+ * connection to whatever watches the child. A refusal made before any process exists is: a runtime
+ * says so by throwing {@link SpawnRefused}, and the launcher removes the files on that error only.
+ * A removal that fails leaves them owned, and the owner tries again.
  *
  * WHAT IS LEFT. On a runtime with durable custody (pty on Linux) the seat's custodian, the child's
  * parent, removes them when it sees the child exit, whether or not the launcher is still alive. Its
  * custody record keeps any it could not remove, and the reap that proves the seat gone removes those
  * and the ones a custodian killed first left, against the temp dir the record names, and keeps the
  * record until it has. On any other runtime a killed launcher's artifacts, and those of a spawn that
- * threw, stay until the OS temp reaper removes them.
+ * threw anything but {@link SpawnRefused}, stay until the OS temp reaper removes them.
  *
  * WHAT OWNER-PRIVATE MEANS. Each file is 0600 inside a 0700 directory. That is OS-user isolation:
  * any process running as the same user can read the file while it exists, as it can the agent file
@@ -31,6 +33,19 @@ import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
 /** Every artifact directory name starts with this, so {@link discardLaunchArtifacts} can refuse a
  *  path this module did not create. */
 const DIR_PREFIX = "cotal-";
+
+/**
+ * Thrown by a runtime's `spawn` for a refusal it made before starting any process (an unsafe name, a
+ * backend that is not reachable). It is the one spawn failure that proves no child will read the
+ * spec's artifacts, so the launcher removes them on it. Throw it only from checks that run before the
+ * first side effect.
+ */
+export class SpawnRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SpawnRefused";
+  }
+}
 
 /**
  * Write `body` to `<fresh private dir>/<file>` and return the file path. The directory is appended to
@@ -63,7 +78,8 @@ export function writeLaunchArtifact(artifacts: string[], prefix: string, file: s
  * Remove a launch's artifact directories. Call it only once the child is gone or never started.
  * Refuses, before removing anything, a path that is not a `cotal-` directory directly under the OS
  * temp dir: a spec carrying anything else is a connector bug, and recursive removal of whatever it
- * named is the one mistake this must never make.
+ * named is the one mistake this must never make. Otherwise it tries every directory and then throws
+ * naming each one it could not remove, so the caller can keep them owned and try again.
  */
 export function discardLaunchArtifacts(artifacts: readonly string[] | undefined): void {
   if (!artifacts?.length) return;
@@ -72,5 +88,13 @@ export function discardLaunchArtifacts(artifacts: readonly string[] | undefined)
     if (dirname(resolve(dir)) !== root || !basename(dir).startsWith(DIR_PREFIX))
       throw new Error(`refusing to remove launch artifact ${dir}: not a ${DIR_PREFIX}* directory directly under ${root}`);
   }
-  for (const dir of artifacts) rmSync(dir, { recursive: true, force: true });
+  const failed: string[] = [];
+  for (const dir of artifacts) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (e) {
+      failed.push(`${dir} (${(e as Error).message})`);
+    }
+  }
+  if (failed.length) throw new Error(`could not remove launch artifact ${failed.join(", ")}`);
 }

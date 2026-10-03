@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import {
   hardenPrivate,
   registry,
+  SpawnRefused,
   writeSecretFile,
   type AgentHandle,
   type LaunchSpec,
@@ -102,10 +103,10 @@ export class HerdrRuntime implements Runtime {
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     if (!/^[A-Za-z0-9_.-]+$/.test(name))
-      throw new Error(`herdr runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
+      throw new SpawnRefused(`herdr runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
     if (!herdr.available()) {
       const found = herdr.versionText();
-      throw new Error(
+      throw new SpawnRefused(
         `herdr runtime: no usable herdr on PATH - needs >= ${herdr.MIN_HERDR.join(".")}` +
           (found ? ` (found "${found}")` : " (herdr not installed or not on PATH)"),
       );
@@ -113,7 +114,7 @@ export class HerdrRuntime implements Runtime {
     // herdr silently substitutes $HOME for a bad --cwd; validate here so a bad workspace
     // fails loud at spawn instead of the agent starting somewhere else entirely (a non-directory
     // would otherwise die later, invisibly, at the launcher's chdir).
-    if (!isDirectory(cwd)) throw new Error(`herdr runtime: cwd ${JSON.stringify(cwd)} is not a directory`);
+    if (!isDirectory(cwd)) throw new SpawnRefused(`herdr runtime: cwd ${JSON.stringify(cwd)} is not a directory`);
     const layout = layoutFromEnv(); // before any side effects, so a bad value spawns nothing
     herdr.ensureServer(this.session);
 
