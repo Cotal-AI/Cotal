@@ -102,9 +102,10 @@ export interface Command extends Extension {
   complete?(argv: string[]): CompletionResult | Promise<CompletionResult>;
 }
 
-/** Parse `argv` against a command's declared flags — strict: an undeclared flag or a stray
- *  positional (when the command declares none) throws `parseArgs`' usage error, which the
- *  dispatcher renders as one red line plus the command's help. */
+/** Parse `argv` against a command's declared flags — strict: an undeclared flag, a stray
+ *  positional (when the command declares none), or a repeat of a flag not declared `multiple`
+ *  throws an `ERR_PARSE_ARGS*` usage error, which the dispatcher renders as one red line plus
+ *  the command's help. */
 export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
   if (cmd.rawArgs) return { values: {}, positionals: [...argv], raw: argv };
   const options: ParseArgsOptionsConfig = {};
@@ -115,12 +116,26 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
       ...(f.multiple ? { multiple: true } : {}),
     };
   }
-  const { values, positionals } = parseArgs({
+  const { values, positionals, tokens } = parseArgs({
     args: [...argv],
     options,
     allowPositionals: cmd.positionals !== undefined,
     strict: true,
+    tokens: true,
   });
+  // parseArgs keeps the last value of a repeated option with no error. Count the option tokens
+  // (`-f` and `--file` are the same option; words after `--` are positionals) and refuse a repeat.
+  const seen = new Set<string>();
+  for (const t of tokens) {
+    if (t.kind !== "option" || options[t.name]?.multiple) continue;
+    if (seen.has(t.name)) {
+      const short = options[t.name]?.short;
+      throw Object.assign(new TypeError(`Option '${short ? `-${short}, ` : ""}--${t.name}' cannot be repeated`), {
+        code: "ERR_PARSE_ARGS_REPEATED_OPTION",
+      });
+    }
+    seen.add(t.name);
+  }
   return { values: values as ParsedArgs["values"], positionals, raw: argv };
 }
 
