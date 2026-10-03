@@ -10,10 +10,23 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writ
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runDocs, searchDocs, renderDocsIndex, DOCS_VERSION } from "@cotal-ai/connector-core";
+import { runDocs, searchDocs, renderDocsIndex, docsIndexBuilt, DOCS_VERSION } from "@cotal-ai/connector-core";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
+
+// 0 — the search index is lazy: importing the module (every connector's MCP helper does) and
+// reading the index or a page must not build it; only a search does. Runs FIRST, before any
+// other section searches.
+{
+  assert.equal(docsIndexBuilt(), false, "importing connector-core must not build the docs search index");
+  renderDocsIndex();
+  await runDocs({ page: "architecture" });
+  assert.equal(docsIndexBuilt(), false, "the index and page reads don't need the search index");
+  searchDocs("presence");
+  assert.equal(docsIndexBuilt(), true, "the first search builds it");
+}
+console.log("✓ 0 — the docs search index is built on first search, not at import");
 
 // 1 — release safety: the bundle version equals the version we actually ship. A release can
 // never hand agents docs stamped for a different version than the package they installed.
@@ -250,4 +263,4 @@ console.log("✓ 6 — the built docs module serves every page in docs/ at the s
 }
 console.log("✓ 7 — the generator refuses a hollow source, naming which one");
 
-console.log("docs.smoke: OK — 7 sections");
+console.log("docs.smoke: OK — 8 sections");

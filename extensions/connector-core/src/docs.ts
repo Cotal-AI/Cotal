@@ -201,6 +201,12 @@ function buildIndex(): { sections: Section[]; df: Map<string, number>; avgdl: nu
 // young generation) for a tool most sessions never call.
 let INDEX: ReturnType<typeof buildIndex> | undefined;
 
+/** Test seam: whether the search index has been built yet. Lets the smoke catch an eager
+ *  `= buildIndex()` coming back without measuring heap (which would be flaky on CI). */
+export function docsIndexBuilt(): boolean {
+  return INDEX !== undefined;
+}
+
 export interface DocHit {
   /** Page slug to fetch in full via cotal_docs(page: slug). */
   slug: string;
