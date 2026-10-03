@@ -155,6 +155,7 @@ The **sender** of every delivery is a principal (§2), carried as **two adjacent
 | Unicast | `cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>` | 5–6 | §4 unicast |
 | Anycast | `cotal.<space>.svc.<role>.<owner>.<actor>` | 4–5 | §4 anycast |
 | Endpoint rails | `cotal.<space>.ep.<one\|all\|inst\|reply>.…`, `cotal.<space>.ep<c\|e\|f\|j\|r\|t\|w\|s>.…` | see §13.2 | §13 control surface |
+| Plane liveness | `cotal.<space>.live.<plane>.<owner>.<actor>` | 4-5 | §6.1 request/reply |
 | Trace | `cotal.<space>.trace.<instance>` | n/a | reserved |
 
 Token indexing is zero-based on `subject.split(".")`: `cotal` = 0, `<space>` = 1,
@@ -383,6 +384,92 @@ rejection on their recoverable diagnostic path.
 | `source` | string | MAY | harness-native value, relayed verbatim |
 | `message` | string | MAY | free text from the harness |
 | `since` | number | MAY | epoch ms when the condition began |
+
+### 6.1 Plane liveness
+
+A credentialed peer MAY ask whether the manager plane or the delivery plane has a bound
+responder in its space. The question is presence only. It does not read either lease bucket,
+and the peer does not need to own the plane it asks about.
+
+**Planes.** The set of planes is closed: `manager` and `delivery`. A client MUST refuse any
+other plane before it publishes anything.
+
+**Subjects.**
+
+| Purpose | Subject |
+| --- | --- |
+| Request | `cotal.<space>.live.<plane>.<owner>.<actor>` |
+| Reply | `cotal.<space>.live.<plane>.<owner>.<actor>.reply.<nonce>` |
+| Responder serve filter | `cotal.<space>.live.<plane>.*.*`, queue group `live.<plane>` |
+| Responder reply grant | `cotal.<space>.live.<plane>.*.*.reply.>` |
+
+`<owner>.<actor>` is the asking principal (§2). The plane rides the subject so a credential can
+be scoped to one plane by the broker. A `live` subject is not a delivery: `parseSubject`
+recovers no sender from it, and a reader MUST NOT treat it as one.
+
+**Request.** The body is empty. The caller names a reply subject under its own request subject,
+`<request>.reply.<nonce>`, with a fresh nonce per probe. A responder MUST drop, without
+answering, any request whose reply target is absent or is not under `<request subject>.reply.`.
+It SHOULD report that drop on its recoverable diagnostic path. It MUST NOT report it on a
+channel that can end the process, and it keeps serving.
+
+**Reply.** `LivenessAnswer`, JSON:
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `plane` | `manager` \| `delivery` | MUST | the plane asked about; a caller MUST reject a reply whose `plane` differs from the plane it asked |
+| `responder` | `ResponderState` | MUST | `bound` \| `unbound` \| `stale` \| `unknown` |
+| `instance` | string | MAY | an opaque token naming the responder that answered. Non-empty when present |
+
+A responder MUST put nothing else in the reply. In particular it carries no lease holder, pid,
+workspace path, instance id, runtime or roster.
+
+`instance` is minted fresh each time a responder binds and is derived from nothing. It is not
+the endpoint's principal, the lease row's `instanceId`, a pid, a host or a path. It lets a
+caller that probes more than once tell two responders apart from one responder whose state
+changed. The queue group hands one probe to one member, so a single answer samples one
+responder and cannot report a split across instances.
+
+**Responder verdicts.** A responder grades only itself:
+
+- manager: `bound` while its v0.4 service endpoint (§13) is serving, otherwise `unbound`. A
+  closed service connection is not serving, including while the manager re-dials it. A
+  disconnected one is not serving either, including while the client reconnects it.
+- delivery: from its own shard lease row. Absent or not ready is `unbound`. A ready row held by
+  a different instance than the responder is `stale`. A ready row it holds is `bound`.
+- A responder that cannot determine its state answers `unknown`.
+
+**Rebinding.** A responder MUST bind its serve filter again on every broker connection that
+replaces the one it bound on. A filter left on a closed connection gets the broker's
+no-responders answer, which a caller grades `unbound` for a plane that is still served. Each
+new bind mints a new `instance`.
+
+**Caller grading.** The caller grades the outcome of asking:
+
+| Outcome | `responder` | `instance` |
+| --- | --- | --- |
+| a reply that parses as above | the reply's `responder` | the reply's `instance`, if any |
+| the broker's no-responders status (503) | `unbound` | absent |
+| timeout, permission refusal, transport failure | `unknown` | absent |
+| a reply that does not parse | `unknown` | absent |
+
+Only the broker's no-responders answer yields `unbound` without a reply. Every other failure
+to get a readable reply is `unknown`. A caller MUST NOT report `unknown` as either health
+state. A caller using the NATS binding MUST request without the muxed inbox, so a
+no-responders status reaches it rather than surfacing as a timeout.
+
+**Grants.** An agent may publish the request subject for each plane under its own principal
+and subscribe `<request subject>.>` for its replies. It holds neither serve filter, so it
+cannot answer for a plane. The `delivery` profile holds the delivery plane's serve filter and
+reply grant. The `supervisor` profile holds the manager plane's pair, and the remote-manager
+profile holds them only for its supervisor actor (`manager_<instanceId>`). No responder can
+publish a request subject, because its reply grant stops at the `.reply.` leaf. Appendix B
+lists the agent rows.
+
+Reference implementation: `livenessSubject`, `livenessServeFilter` and `livenessReplyGrant`
+in `packages/core/src/subjects.ts`; `LivenessAnswer`, `parseLivenessAnswer` and
+`responderFromProbe` in `packages/core/src/liveness.ts`; `CotalEndpoint.serveLiveness`,
+`serveDeliveryLiveness` and `probeLiveness` in `packages/core/src/endpoint.ts`.
 
 ---
 
@@ -4171,6 +4258,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 `sub.allow`:
 
 - `inbox`
+- `P.live.<manager|delivery>.<owner>.<actor>.>` (replies to its own plane liveness probes, §6.1)
 - `P.ep.reply.*.*.*.<owner>.<actor>.<uid>.*` (exact arity; the agent's own endpoint reply rail: every endpoint's replies to THIS caller triple + nonce, §13.2; replies never ride the per-connection `inbox`)
 - `P.epe.…`; the exact fully-qualified event subtrees of every minted read capability
   (§13.9 event-read row), incl. the caller's own per-goal subtree
@@ -4183,6 +4271,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `P.chat.<owner>.<actor>.<ch>` for every `allowPublish` channel (post ACL; none by default)
 - `P.inst.*.*.<owner>.<actor>` (DM any recipient, forge-locked to me as sender)
 - `P.svc.*.<owner>.<actor>` (anycast any role, as me)
+- `P.live.<manager|delivery>.<owner>.<actor>` (plane liveness probe, as me, §6.1; the agent holds no `live` serve filter)
 - endpoint request forms per minted capability (§13.9): every agent gets the baseline set
   (`describe` on all endpoints; the delivery endpoint's durable join/leave/list commands;
   self-targeted manager commands with authz-mode `self`, including `run-answer`, which the manager
@@ -4416,6 +4505,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-02 | **Plane liveness (§6.1), additive.** A credentialed peer can ask whether the manager or delivery plane has a bound responder, on `live.<plane>.<owner>.<actor>` with the reply under `<request>.reply.<nonce>`. The reply is `LivenessAnswer`: `plane`, a `ResponderState` verdict, and an optional opaque per-bind `instance` token that distinguishes responders without identifying them. Only the broker's no-responders answer grades `unbound`; every other failure to get a readable reply grades `unknown`. Agents gain the per-plane request and reply rows; the `delivery`, `supervisor` and remote-manager supervisor credentials gain their plane's serve filter and bounded reply grant. A responder binds again on every connection that replaces the one it bound on, and the manager is not `bound` while its service connection is closed or disconnected. |
 | 2026-09-28 | **The `auth` endpoint becomes a conforming registered endpoint (Cotal #399), closing the two gaps the prior two rounds named.** The plane's boot registers `svc.auth.<instanceId>` through the standard `registerServiceInstance` path and publishes its `retire-lifecycle` contract artifacts to the content-addressed contract store, so the endpoint now serves the reserved `describe` and answers the v1 envelope (`ep.v1`) instead of the legacy `{op,args}`/`{ok,data,error}` body this document states are deleted; a legacy body is refused `unsupported-version` as envelope validation, never an ACL denial. The requester side moves from a hand-built subject to the generic client (`resolveService` + `invokeCommand`), still minted in `exact` mode target-pinned to one incarnation at mint time, and gains the baseline `describe` row plus a bounded contract-store direct-get row so it can resolve the endpoint's registered digests before it calls; a body target that disagrees with the exact subject triple is refused `target-mismatch`. Two new §13.9 rows record the registered instance and the requester's describe/store-read grants. |
 | 2026-09-27 | **Id-less messages are not publish-deduplicated on the durable plane (§8).** The reference Plane-3 fan-out writer and membership-transfer frame publish carry no `Nats-Msg-Id` for a message whose `id` is `""`, so two distinct id-less posts on a durable channel both reach a member and a redelivery of one id-less post may surface twice; a message with a real id keeps its idempotent publish key unchanged. Classification: reference-binding behaviour, no wire-envelope or schema change, protocolVersion unchanged. |
 | 2026-09-09 | **Issued authority and run admission (§13.15, §14.8).** A caller's request may ride a versioned rail (`ep.v1`) that pins the credential's issuer-accepted **generation** beside its triple; the issuer persists the generation's immutable permission ceiling as evidence before returning material, and a client learns its generation from an issuer-written accepted row. A hosted workflow run is admitted under the caller's resolved ceiling, recorded once per run in a dedicated store the driver cannot write, checked before every channel effect, and revoked by an independent marker; resume, takeover and reconcile continue under the original admission, a fork is a new admission, and a local run is admitted from operator evidence named on the command line. `run-start` on the legacy rail is refused by name. Three new per-space stores, two new one-shot profiles (`issuer`, `run-admitter`), and an admission read on the run mediator and operator profiles. **Breaking pre-1.0 authority change: minor.** |

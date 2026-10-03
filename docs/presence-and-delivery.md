@@ -1,6 +1,6 @@
 # Message flow
 
-> **Concept** (informative) · **For:** everyone · **Normative:** [SPEC §4](../SPEC.md#4-delivery-modes), [§6](../SPEC.md#6-presence-and-discovery), [§7](../SPEC.md#7-channels), [§8](../SPEC.md#8-nats--jetstream-binding)
+> **Concept** (informative) · **For:** everyone · **Normative:** [SPEC §4](../SPEC.md#4-delivery-modes), [§6](../SPEC.md#6-presence-and-discovery), [§6.1](../SPEC.md#61-plane-liveness), [§7](../SPEC.md#7-channels), [§8](../SPEC.md#8-nats--jetstream-binding)
 
 How peers see each other and how messages reach them: the presence directory, the three
 delivery modes, and the two delivery guarantees. This page explains; the linked spec
@@ -69,6 +69,58 @@ says the presence watch has not completed its initial snapshot, so the list may 
 missing name is not an absence verdict, and under a `stale` view it names the silent-since instant
 and labels the rows last-known. A send or DM to a name the observer cannot verify is refused with
 that condition rather than sent, instead of being reported as an unknown peer.
+
+## Plane liveness
+
+Presence tells you which peers are around. It does not tell you whether the manager or the
+delivery daemon is up, and the lease buckets that do know are not readable by agents. So when a
+join or a send fails, a peer used to have no way to separate a credential problem from a dead
+manager or an unbound delivery daemon.
+
+Any credentialed peer can now ask. It sends an empty request on
+`cotal.<space>.live.<plane>.<owner>.<actor>`, where `<plane>` is `manager` or `delivery` and
+`<owner>.<actor>` is its own principal, and names its reply subject under that request as
+`<request>.reply.<nonce>`. In code this is `CotalEndpoint.probeLiveness(plane)`. Any other plane
+name is refused before anything is sent.
+
+The reply is a `LivenessAnswer`:
+
+```json
+{ "plane": "delivery", "responder": "bound", "instance": "3f1c0b52-..." }
+```
+
+`responder` is one of `bound`, `unbound`, `stale` or `unknown`. `instance` is an opaque token
+the responder mints each time it binds. Two answers with different tokens came from two
+responders, which is how a caller probing more than once can spot two manager instances that
+disagree. The token identifies nothing else: it is not the instance id, the principal, a pid, a
+host or a path. The reply carries nothing beyond these three fields, so the lease row's holder
+and workspace path never leave the responder.
+
+How the caller reads the outcome:
+
+| What happened | `responder` |
+| --- | --- |
+| a well-formed reply | whatever the reply says |
+| the broker answered "no responders" | `unbound` |
+| timeout, permission refusal, transport failure | `unknown` |
+| a reply that does not parse | `unknown` |
+
+`unknown` means the probe did not find out. It is never a health report. Each responder grades
+only itself. The manager says `bound` while its service endpoint is serving, and `unbound` while
+that connection is down, both while the client reconnects it and while the manager re-dials it
+after a close. The delivery daemon
+reads its own shard lease: no ready row is `unbound`, a ready row held by another instance is
+`stale`, its own ready row is `bound`. A responder that cannot read its own state answers
+`unknown`.
+
+Responders serve `live.<plane>.*.*` in the queue group `live.<plane>`, so one probe gets one
+answer from one instance. Only the plane's own credential holds that filter, and its reply grant
+stops at the `.reply.` leaf, so a responder cannot forge a probe and an agent cannot answer one.
+A request whose reply target is outside the caller's own `.reply.` subtree is dropped with a
+warning, and the responder keeps serving. When an endpoint replaces its broker connection it
+binds its responders again on the new one, under a new token, so a reconnect does not leave the
+plane looking unbound. The normative rules are in
+[SPEC §6.1](../SPEC.md#61-plane-liveness).
 
 ## Three delivery modes
 
