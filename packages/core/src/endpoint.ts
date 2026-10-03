@@ -5007,17 +5007,21 @@ export class CotalEndpoint extends EventEmitter {
         // then failing the delete would keep the entry with nothing left to remove it. A failed delete
         // stays pending and retries, bounded by the same ceiling; an entry the stream no longer holds
         // is already removed (the broker answers a delete of a missing sequence with 10043).
+        let failure: Error | undefined;
         try { await this.jsm!.streams.deleteMessage(inboxStream(this.space), m.seq, false); }
-        catch (e) {
-          if (!isJetStreamMissing(e, 10043)) {
-            if (redeliveries >= READER_MAX_REDELIVERIES) {
-              m.term();
-              this.emit("error", new Error(`plane-3 reader: gave up removing entry ${m.seq} for retired lifecycle ${owner}.${pr.lifecycleUid} after ${redeliveries} redeliveries: ${(e as Error).message}`));
-              return;
-            }
-            m.nak(2000);
+        catch (e) { if (!isJetStreamMissing(e, 10043)) failure = e instanceof Error ? e : new Error(String(e)); }
+        // FENCE AFTER THE DELETE, which is broker I/O. A daemon that stopped serving while it was in
+        // flight leaves the entry to the holder: a term here would move the shared durable past an entry
+        // the failed delete left stored, so the holder would never retry it.
+        if (!this.plane3MayAct()) return;
+        if (failure) {
+          if (redeliveries >= READER_MAX_REDELIVERIES) {
+            m.term();
+            this.emit("error", new Error(`plane-3 reader: gave up removing entry ${m.seq} for retired lifecycle ${owner}.${pr.lifecycleUid} after ${redeliveries} redeliveries: ${failure.message}`));
             return;
           }
+          m.nak(2000);
+          return;
         }
         m.ack();
         return;
