@@ -44,6 +44,14 @@ class FakeAgent extends EventEmitter {
     return Promise.resolve({ items: [], droppedChannels: [] });
   }
 
+  answersQuestion(): boolean {
+    return false;
+  }
+
+  withCorrelation<T>(_correlation: unknown, fn: () => T): T {
+    return fn();
+  }
+
   private remove(keys: readonly string[]): ExactDrainResult {
     // Keys are receive keys now (the bridge addresses deliveries by InboxItem.recvKey, #624).
     const wanted = new Set(keys);

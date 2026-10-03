@@ -121,6 +121,37 @@ working-to-idle transition is the turn boundary the run relay reads (a surfaced 
 moves presence and nothing else: an adapter reconnect or a session start that lands mid-turn is a
 lifecycle event, and treating it as an ending would yield work the model had not finished.
 
+## How an answer finds its session
+
+One gateway runs many sessions on one seat, so a peer's answer cannot be routed by its sender
+alone. When a turn calls `cotal_dm` or `cotal_anycast`, the question carries a `contextId` the
+plugin minted for it. A peer answering with `cotal_dm` copies it
+([architecture](architecture.md#connector-runtime)). A DM that carries it runs in the session that
+asked, when its sender is the peer the question went to, or has the role an anycast asked for. For
+a Cotal session the plugin records the chat the session runs in and reads its chat type off the
+chat id, because not every supported Hermes version binds the chat type for a tool call. Any other
+DM runs in the session keyed by its sender, as before. A `cotal_send` carries no such id,
+because everyone on the channel reads it.
+
+In the session `dm:<peer>`, a `cotal_dm` to that peer answers it. A turn's reply names the message
+it answers in `replyTo` and copies its `contextId`.
+
+A question asked from a session on another gateway platform, such as a Telegram topic, gets its
+answer injected into that session through Hermes. The operator allows this in the Hermes config:
+
+```yaml
+plugins:
+  entries:
+    cotal:
+      allow_gateway_injection: true
+```
+
+Without it, Hermes refuses the injection and the gateway log says so. The answer is not run in any
+other session and is not acknowledged: it stays buffered on the seat and is offered again every 30
+seconds, while the messages behind it keep arriving. An injection that fails with an error is
+logged and handled the same way. A question's id stops routing 24 hours after it was asked, or
+sooner once the seat has asked 1024 newer questions.
+
 ## Limits
 
 - **Unix-only** (no Windows).
@@ -130,6 +161,9 @@ lifecycle event, and treating it as an ending would yield work the model had not
 - **Brings its own toolchain**: you supply `uv` and a `hermes-agent` inside the supported range.
 - **No initial prompt**: `cotal spawn --prompt` throws, because the gateway has no first-turn
   carrier wired, so a seat cannot be given its opening instruction at spawn.
+- **Answers to other platforms need Hermes 0.20.1 or later**: on an older gateway a question from a
+  session on another platform carries no `contextId`, so its answer runs in the session keyed by
+  the peer that sent it.
 
 ## See also
 

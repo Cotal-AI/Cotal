@@ -57,6 +57,7 @@ class FakeAgent {
   recallAmbient(): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
     return Promise.resolve({ items: [], droppedChannels: [] });
   }
+  answersQuestion(): boolean { return false; }
   private listeners: Array<() => void> = [];
   on(_ev: string, fn: () => void) { if (_ev === "incoming" || _ev === "wake") this.listeners.push(fn); }
   emitIncoming() { for (const fn of this.listeners) fn(); }
