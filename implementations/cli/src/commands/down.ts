@@ -958,8 +958,9 @@ async function assertControlPlaneQuiesced(space: string, server: string): Promis
   }
 }
 
-/** Read current KV subjects by Direct Get so the cut check leaves no ephemeral/native consumer. */
-/** Exported for the gated tombstone cell. A regression test for the lease walk has to run through
+/** Read current KV subjects by Direct Get so the cut check leaves no ephemeral/native consumer.
+ *
+ *  Exported for the gated tombstone cell. A regression test for the lease walk has to run through
  *  THIS function, not a transcription of it: a copy carries its own `allowEmpty` parameter, so it
  *  stays green when the argument at the real call site is removed and proves nothing about the fix. */
 export async function readPresenceWithoutConsumer(space: string, server: string): Promise<{ roster: Presence[]; managerId: string }> {

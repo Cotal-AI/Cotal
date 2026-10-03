@@ -41,6 +41,13 @@ export class TlsMaterialError extends Error {
   }
 }
 
+/** Whether a dial host is an IP literal (v4 or v6) rather than a DNS name. Decides which of Node's
+ *  two certificate matchers applies: IP SANs answer to `checkIP`, DNS SANs to `checkHost`, and
+ *  neither one falls back to the other. */
+function isIpLiteral(host: string): boolean {
+  return net.isIP(host) !== 0;
+}
+
 /**
  * Validate a cert/key pair BEFORE the broker is started or reloaded. Throws `TlsMaterialError`
  * on anything wrong; never returns a "degraded" result and never falls back to plaintext.
@@ -56,13 +63,6 @@ export class TlsMaterialError extends Error {
  *                 a broker may bind `0.0.0.0` while clients verify `broker.example`. Omit only
  *                 when no dial name is known yet.
  */
-/** Whether a dial host is an IP literal (v4 or v6) rather than a DNS name. Decides which of Node's
- *  two certificate matchers applies: IP SANs answer to `checkIP`, DNS SANs to `checkHost`, and
- *  neither one falls back to the other. */
-function isIpLiteral(host: string): boolean {
-  return net.isIP(host) !== 0;
-}
-
 export function validateTlsMaterial(t: TlsRequired, opts: { dialHost?: string; now?: Date } = {}): TlsMaterial {
   const now = opts.now ?? new Date();
 

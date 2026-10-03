@@ -268,15 +268,6 @@ export async function mint(args: ParsedArgs): Promise<void> {
 }
 
 /**
- * Where `--provision` connects, and whose trust it may mint under. The mesh is resolved the way
- * every other command resolves it (registry, `--space`, `--server`), then held to THIS folder's
- * auth: same space, and the same account key. Without that last check two roots that each ran
- * `cotal up` for a space of the same name would let `--provision` mint under whichever one the
- * registry resolved, and the flag would silently change the minting authority `cotal mint` has
- * always taken from the folder it runs in (measured: a mint from root A signed by root B's key).
- * Every refusal here fires before anything is minted or connected.
- */
-/**
  * The root whose `.cotal/agents` holds the persona card this mint reads its ACLs from: the
  * RESOLVED MESH's, honouring `--space`/`--server`, the same root `cotal spawn` and `cotal personas`
  * resolve.
@@ -315,6 +306,15 @@ export function resolveMintTarget(values: { space?: string; server?: string }): 
   }
 }
 
+/**
+ * Where `--provision` connects, and whose trust it may mint under. The mesh is resolved the way
+ * every other command resolves it (registry, `--space`, `--server`), then held to THIS folder's
+ * auth: same space, and the same account key. Without that last check two roots that each ran
+ * `cotal up` for a space of the same name would let `--provision` mint under whichever one the
+ * registry resolved, and the flag would silently change the minting authority `cotal mint` has
+ * always taken from the folder it runs in (measured: a mint from root A signed by root B's key).
+ * Every refusal here fires before anything is minted or connected.
+ */
 async function provisionTarget(auth: SpaceAuth | undefined, flags: { space?: string; server?: string }, resolved?: MeshTarget): Promise<MeshTarget> {
   const target = resolved ?? await resolveTargetOrExit({ space: flags.space ?? auth?.space, server: flags.server });
   if (auth && target.space !== auth.space) {

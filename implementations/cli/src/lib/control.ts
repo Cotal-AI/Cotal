@@ -195,8 +195,9 @@ async function askManagerEp(
  *  the call went UNANSWERED, as core marks it (`EP_UNANSWERED`: no responder, or the reply
  *  deadline elapsed with nothing attributed to the request). `up`'s resume readiness poll keys on it;
  *  it used to key on the message prefix, which turned an operator-facing string into a control-flow
- *  predicate in another file. */
-/** The manager's error CODE, when there was one. A caller that has to DECIDE on a refusal — the
+ *  predicate in another file.
+ *
+ *  `code` is the manager's error CODE, when there was one. A caller that has to DECIDE on a refusal — the
  *  attach loop distinguishing "you may not" from "that seat is gone" from "try again" — was left
  *  matching English, because both renderings below collapse the envelope to
  *  `message ?? code` and the code is the only stable half. */

@@ -160,12 +160,6 @@ export function personaDir(root: string): string {
   return join(root, ".cotal", "agents");
 }
 
-/** Refuse to resolve a single mesh when ROOT's on-disk account inventory says it hosts more than
- *  one tenant (or an unreadable one). The disk is the tenant authority ahead of the registry: a
- *  broker with several account records is several tenants even if only one is registered, so any
- *  path that would otherwise auto-pick (a bare local root, a `--server` that names this broker)
- *  must refuse here. `--space` is the way to name one. A root with 0 or 1 accounts (open or
- *  single-tenant) passes untouched. */
 /** Load a space's composed trust, converting a COMPOSITION failure into a typed target error. The
  *  record can pass the on-disk shape gate yet fail to compose - a malformed account JWT, or a
  *  well-formed one signed by a foreign operator - and `loadSpaceAuth` throws a raw error there.
@@ -180,6 +174,12 @@ function loadTrustOrThrow(root: string, space: string): SpaceAuth | undefined {
   }
 }
 
+/** Refuse to resolve a single mesh when ROOT's on-disk account inventory says it hosts more than
+ *  one tenant (or an unreadable one). The disk is the tenant authority ahead of the registry: a
+ *  broker with several account records is several tenants even if only one is registered, so any
+ *  path that would otherwise auto-pick (a bare local root, a `--server` that names this broker)
+ *  must refuse here. `--space` is the way to name one. A root with 0 or 1 accounts (open or
+ *  single-tenant) passes untouched. */
 function assertRootIsSingleTenant(root: string): void {
   // `accountInventory`'s readdir can THROW (EACCES/ELOOP on `.cotal/auth`): it lets that propagate
   // so the broker-wide guards fail CLOSED, but the resolver is a presentation surface and must

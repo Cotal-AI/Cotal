@@ -1104,14 +1104,6 @@ export interface EmitUnit {
 export type RecordMapper<T> = (record: T) => { runId: string; events: AguiEvent[] } | null;
 
 /**
- * The emitter has stopped and will not publish again without operator action.
- *
- * Halting is a SUCCESS of this design, not a failure of it: every halt below is a case where the
- * alternative is to report success for a message that was not stored, or to fold an ack for a body
- * we did not write. A halt is loud, bounded and recoverable by a human; the alternative is silent
- * and permanent.
- */
-/**
  * A bracket violation that is OURS, not the writer's: the machine that tracks open runs and messages
  * was lost across a process restart.
  *
@@ -1132,6 +1124,14 @@ export class AguiBracketStateLost extends AguiVocabularyError {
   }
 }
 
+/**
+ * The emitter has stopped and will not publish again without operator action.
+ *
+ * Halting is a SUCCESS of this design, not a failure of it: every halt below is a case where the
+ * alternative is to report success for a message that was not stored, or to fold an ack for a body
+ * we did not write. A halt is loud, bounded and recoverable by a human; the alternative is silent
+ * and permanent.
+ */
 export class AguiEmitterHalted extends Error {
   constructor(
     readonly reason: "duplicate-ack" | "cas-loss" | "egress-policy" | "egress-unreadable" | "egress-extra-property" | "egress-run-error",

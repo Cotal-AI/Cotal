@@ -274,11 +274,6 @@ export function principalNameKey(owner: string, actor: string): string {
   return principalKey(owner, actor).name;
 }
 
-/** Inverse of {@link principalKey}'s dot-form `key`: split a principal `<owner>.<actor>` back into its
- *  two tokens, or `null` if it isn't a valid one. Owner/actor tokens are `[A-Za-z0-9_]+` (dot-free), so a
- *  single `.` separates them unambiguously — exactly two segments, both {@link assertValidOwnerToken}-valid.
- *  Used where a stored principal (a member/from.id dot-form) must be re-split to feed the owner+actor
- *  subject builders (e.g. fan-out → `dinboxSubject`). */
 /** A deprovision target is a LIFECYCLE, never an alias (SPEC §13.1 "the teardown credential is
  *  minted target-pinned to `(principal, lifecycleUid)` by exact name"): the principal dot-form
  *  (`u_….<actor>`, user-mode agents) or a bare static/dev actor id (an nkey pub — never contains a
@@ -307,6 +302,11 @@ export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: 
   return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid), memberChannels };
 }
 
+/** Inverse of {@link principalKey}'s dot-form `key`: split a principal `<owner>.<actor>` back into its
+ *  two tokens, or `null` if it isn't a valid one. Owner/actor tokens are `[A-Za-z0-9_]+` (dot-free), so a
+ *  single `.` separates them unambiguously — exactly two segments, both {@link assertValidOwnerToken}-valid.
+ *  Used where a stored principal (a member/from.id dot-form) must be re-split to feed the owner+actor
+ *  subject builders (e.g. fan-out → `dinboxSubject`). */
 export function parsePrincipalKey(key: string): { owner: string; actor: string } | null {
   if (typeof key !== "string") return null;
   const dot = key.indexOf(".");

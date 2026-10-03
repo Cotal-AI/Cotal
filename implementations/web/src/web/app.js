@@ -119,14 +119,14 @@ function setConn(live) {
   el.querySelector(".t").textContent = live ? "live" : "disconnected";
 }
 
-/** Say WHICH sources are showing their last good value, and why. Visible, not a console line: the
- *  whole point of keeping the snapshot is that the reader knows they are looking at it. Cleared by
- *  the next refresh in which everything landed, which is what recovery looks like from here. */
 /** What the marker is currently saying, so a source read OUTSIDE the poll can add to it without
  *  erasing the poll's own findings. `refresh()` sets the four polled sources; the open channel's
  *  history is read later, inside `select()`, and a bare `setStale([channel])` there would drop the
  *  roster/channels/dms/activity refusals from the same label. */
 let staleNow = [];
+/** Say WHICH sources are showing their last good value, and why. Visible, not a console line: the
+ *  whole point of keeping the snapshot is that the reader knows they are looking at it. Cleared by
+ *  the next refresh in which everything landed, which is what recovery looks like from here. */
 function setStale(stale) {
   staleNow = stale;
   renderStale();

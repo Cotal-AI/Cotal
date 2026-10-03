@@ -135,12 +135,6 @@ function serializeTurn(host: EffectHost, agent: string, dispatch: () => Promise<
 }
 
 /**
- * Perform one effect, or replay it.
- *
- * Everything durable happens here. A handler is called only in the `miss` and `pending` cases,
- * and in `pending` it is told to re-bind rather than re-issue.
- */
-/**
  * An `EffectError`'s `detail` is a RECORDED VALUE, and until this function it was the last one with
  * no domain check on it.
  *
@@ -173,6 +167,12 @@ function recordableError(e: EffectError, kind: string): { readonly error: EntryE
   }
 }
 
+/**
+ * Perform one effect, or replay it.
+ *
+ * Everything durable happens here. A handler is called only in the `miss` and `pending` cases,
+ * and in `pending` it is told to re-bind rather than re-issue.
+ */
 export async function performEffect(
   host: EffectHost,
   kind: EffectKind,

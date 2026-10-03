@@ -164,12 +164,6 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
   }
 
   /**
-   * Start at most once, bind the path once.
-   *
-   * Returns `undefined` when there is nothing to run against — a dead holder or a path this holder
-   * cannot take — rather than throwing, so a caller cannot mistake "no emitter" for "pumped".
-   */
-  /**
    * Close the open run at a turn boundary the record stream cannot see.
    *
    * Same contract as {@link adopt} and {@link flush}: synchronous, non-throwing, work on the chain,
@@ -198,6 +192,12 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     });
   }
 
+  /**
+   * Start at most once, bind the path once.
+   *
+   * Returns `undefined` when there is nothing to run against — a dead holder or a path this holder
+   * cannot take — rather than throwing, so a caller cannot mistake "no emitter" for "pumped".
+   */
   private async ensureStarted(path: unknown, context?: StartContext): Promise<AguiEmitter<T> | undefined> {
     if (this.dead) return undefined;
     if (typeof path !== "string" || path.length === 0) return undefined;

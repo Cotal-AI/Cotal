@@ -9,10 +9,6 @@ import { permissionsFor, assertDerivedOwnerToken, type MintPrincipal, type MintO
 import { VIEW_REQUIRED_SCOPE } from "./token.js";
 import type { UserTokenSession, ValidatedUserToken } from "./token.js";
 
-/** The per-agent channel/role ACL a user-mode grant needs — resolved SERVER-SIDE (the spawn ledger /
- *  persona registry, keyed by the authenticated principal), because the user token carries the identity
- *  and capabilities but NOT the channel read/post ACL. Injected by the composition root that launches the
- *  callout (`cotal up`), so this package stays free of any ledger/persona storage concern. */
 /** #2312: the identity plane's session decision (see `session-redemption.ts`). */
 export type SessionVerifier = (
   principal: { owner: string; actor: string; lifecycleUid?: string },
@@ -23,6 +19,10 @@ export type SessionVerifier = (
  *  binds the minted JWT to, instead of the bearer's. Stripped before the JWT is encoded. */
 export const SESSION_EXP = "__cotalSessionExp";
 
+/** The per-agent channel/role ACL a user-mode grant needs — resolved SERVER-SIDE (the spawn ledger /
+ *  persona registry, keyed by the authenticated principal), because the user token carries the identity
+ *  and capabilities but NOT the channel read/post ACL. Injected by the composition root that launches the
+ *  callout (`cotal up`), so this package stays free of any ledger/persona storage concern. */
 export type AclResolver = (
   t: ValidatedUserToken,
 ) => Pick<MintOpts, "allowSubscribe" | "allowPublish" | "role" | "lifecycleUid"> & {

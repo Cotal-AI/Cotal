@@ -875,12 +875,6 @@ export const cotal: Plugin = async () => {
     return sessionID ?? (await sessionReady);
   }
 
-  /** Drive a turn carrying the current inbox batch (and the boot briefing once) into the visible
-   *  session via the server API — server-side, so it can't race like the TUI input box, and the TUI
-   *  renders it live (it subscribes to that session's events). Surfaces the items but does NOT ack
-   *  them — ackSurfaced runs on turn completion, so a crash/error redelivers. `override` replaces
-   *  the body (a bare nudge, e.g. a focus @mention pull) and surfaces nothing to ack. Self-guards
-   *  re-entrancy and never prompts into a running turn (opencode would COALESCE onto it). */
   /** THE PHASE REFUSAL, as one predicate read twice rather than two copies of the same condition.
    *  `drive` reads it on entry and again after session creation resumes, and both readings have to
    *  mean the same thing: a copy is what lets a later change update one site and leave the other
@@ -909,6 +903,12 @@ export const cotal: Plugin = async () => {
    *  content; see the note on the slot itself. */
   const workPending = (): boolean => bootPending() || pendingOverride !== undefined || pendingForWake() > 0;
 
+  /** Drive a turn carrying the current inbox batch (and the boot briefing once) into the visible
+   *  session via the server API — server-side, so it can't race like the TUI input box, and the TUI
+   *  renders it live (it subscribes to that session's events). Surfaces the items but does NOT ack
+   *  them — ackSurfaced runs on turn completion, so a crash/error redelivers. `override` replaces
+   *  the body (a bare nudge, e.g. a focus @mention pull) and surfaces nothing to ack. Self-guards
+   *  re-entrancy and never prompts into a running turn (opencode would COALESCE onto it). */
   async function drive(override?: string): Promise<void> {
     // THE REFUSALS LIVE HERE, at the one place this connector submits a turn, rather than at each
     // caller.

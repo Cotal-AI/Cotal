@@ -225,9 +225,6 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
 
 // ---- the user arm: supplied pinned trust ----------------------------------------------------
 
-/** What a remote user-auth registration supplies: the pins nothing on this machine could derive.
- *  Exported where the mesh runs; carried by `--user-auth-file`, or served at the space's
- *  `/.well-known/cotal-mesh` for `--from`. */
 /** The issuer a space's exchange answers /health with — the auth daemon's own token issuer, a
  *  stable URN derived from the space (auth's `spaceIssuer`), deliberately NOT the IdP issuer:
  *  the IdP names who vouches for humans, this names the exchange minting for the space. The cli

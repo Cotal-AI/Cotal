@@ -187,7 +187,6 @@ function systemdUnitStatus(unit: string): { state: string; enabled: boolean | "u
   return { state: state === "not-found" ? "not-found" : state, enabled };
 }
 
-/** Read the provenance fields a unit/plist carries. */
 /** Read the provenance fields a unit/plist carries. The marker must be a WHOLE LINE at the
  *  very start of the file, exactly as this command writes it: a substring anywhere else (a
  *  Description= that quotes the phrase, a comment mid-file) is how an operator-written unit

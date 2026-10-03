@@ -262,24 +262,6 @@ export function spawnPersonaRef(configFlag: string | undefined, positionals: rea
 }
 
 /**
- * `cotal spawn <name-or-path>` — launch an agent in the FOREGROUND of this
- * terminal from a local agent file, joined to the mesh with its persona.
- *
- * With `--detach` the manager spawns it into a detached PTY you `cotal attach` to;
- * otherwise `cotal spawn` hands THIS terminal straight to the agent: run it in your
- * shell, or inside a cmux/tmux pane, and the real Claude TUI takes over. One grammar,
- * two run modes.
- *
- * The launch recipe is the connector's `buildLaunch` (the single source of truth,
- * shared with the manager); only *how the spec runs* differs — foreground exec
- * here vs. a supervised runtime in the manager. The connector is resolved from
- * the registry by agent type, composed at the root.
- *
- * The mesh it joins — creds and personas together — is resolved by {@link resolveMeshTarget}, so a
- * bare `cotal spawn <persona>` from any directory finds the running mesh (one up, or the `current`
- * default) instead of mistaking `~/.cotal` for a space.
- */
-/**
  * Auto-number `requested` past any peer already present on the mesh (foo → foo-2 → foo-3) — the same
  * series the manager's spawn funnel uses (firstFreeName). Foreground `cotal spawn` doesn't go through
  * the manager, so it has no name reservation: this is a best-effort, advisory check. It connects a
@@ -462,6 +444,24 @@ async function spawnDetached(
   );
 }
 
+/**
+ * `cotal spawn <name-or-path>` — launch an agent in the FOREGROUND of this
+ * terminal from a local agent file, joined to the mesh with its persona.
+ *
+ * With `--detach` the manager spawns it into a detached PTY you `cotal attach` to;
+ * otherwise `cotal spawn` hands THIS terminal straight to the agent: run it in your
+ * shell, or inside a cmux/tmux pane, and the real Claude TUI takes over. One grammar,
+ * two run modes.
+ *
+ * The launch recipe is the connector's `buildLaunch` (the single source of truth,
+ * shared with the manager); only *how the spec runs* differs — foreground exec
+ * here vs. a supervised runtime in the manager. The connector is resolved from
+ * the registry by agent type, composed at the root.
+ *
+ * The mesh it joins — creds and personas together — is resolved by {@link resolveMeshTarget}, so a
+ * bare `cotal spawn <persona>` from any directory finds the running mesh (one up, or the `current`
+ * default) instead of mistaking `~/.cotal` for a space.
+ */
 export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
   const values = args.values as FlagValues<typeof spawnFlags>;

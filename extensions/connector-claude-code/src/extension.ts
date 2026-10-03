@@ -111,12 +111,6 @@ const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const MCP_CJS = resolve(PLUGIN_ROOT, "dist", "mcp.cjs");
 
 /**
- * The Claude Code connector: launches the real `claude` with the Cotal identity in
- * the environment and the mesh channel enabled, so the session joins the mesh and
- * wakes on incoming peer messages. Self-registers on import; the manager resolves it
- * by agent type "claude".
- */
-/**
  * Refuse a model this connector cannot serve, at LAUNCH, the way an unsupported `variant` is
  * refused below.
  *
@@ -148,6 +142,12 @@ function assertServableModel(model: string): void {
   );
 }
 
+/**
+ * The Claude Code connector: launches the real `claude` with the Cotal identity in
+ * the environment and the mesh channel enabled, so the session joins the mesh and
+ * wakes on incoming peer messages. Self-registers on import; the manager resolves it
+ * by agent type "claude".
+ */
 export const claudeConnector: Connector = {
   kind: "connector",
   name: "claude",

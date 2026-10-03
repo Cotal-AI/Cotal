@@ -872,9 +872,6 @@ async function componentEp(
   return { ep, close: () => ep.stop().catch(() => {}) };
 }
 
-/** A service registration is the health target itself.  Calling its `status` command through a
- * generic endpoint does not work on this base because a passive status endpoint has no v0.4 caller
- * rail; a one-shot standalone caller does. */
 /** The static arm's one-shot service instrument, unchanged from before the user-mode fix: a fresh
  *  identity, its minted deployer credential, and the caller triple on the SAME identity — a
  *  mismatched random actor would turn an authorized manager into a false no-answer. */
@@ -887,6 +884,9 @@ async function staticServiceAuth(auth: SpaceAuth | undefined): Promise<{ creds?:
   };
 }
 
+/** A service registration is the health target itself.  Calling its `status` command through a
+ * generic endpoint does not work on this base because a passive status endpoint has no v0.4 caller
+ * rail; a one-shot standalone caller does. */
 async function managerServiceHealth(
   target: MeshTarget,
   auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } },

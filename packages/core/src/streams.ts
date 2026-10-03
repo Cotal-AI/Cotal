@@ -752,20 +752,6 @@ export async function clearChannel(opts: {
   }
 }
 
-/** Delete a departed agent LIFECYCLE's provisioning footprint (#159 Part B) — the teardown counterpart
- *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS incarnation: its two
- *  bind-only durables (`dm_<o>-<a>-<uid>`, `dlv_<o>-<a>-<uid>`) and its lifecycle-keyed read-ACL row.
- *  Idempotent — a missing consumer / absent ACL row is a no-op (the agent may have exited before a
- *  durable was created, or a re-run). LIFECYCLE-EXACT by construction (SPEC §13.1): every name this
- *  deletes embeds the target uid, so a stale/replayed teardown for a retired lifecycle names only
- *  retired resources — it structurally cannot touch a same-alias successor, and the deprovisioner
- *  cred's exact-name grants make a wrong-uid delete broker-DENIED, not just a no-op.
- *
- *  Does NOT touch the role-SHARED `svc_<role>` TASK durable (deleting it would break the role's other
- *  agents — it lives until space teardown), nor the ephemeral `chathist_…-<uid>` history consumers (they
- *  self-clean on the agent's disconnect). The creds FILE is removed by the caller (a manager-local
- *  filesystem concern, not a broker one). Pass a TARGET-PINNED `deprovisioner` cred (see
- *  {@link mintCreds}); a bare connection (open mode) never calls this — an open mesh mints nothing. */
 /**
  * Bounded accounting for logical resources inspected, deleted, verified absent, or refused
  * during agent lifecycle deprovisioning.
@@ -801,6 +787,20 @@ export class DeprovisionError extends Error {
   }
 }
 
+/** Delete a departed agent LIFECYCLE's provisioning footprint (#159 Part B) — the teardown counterpart
+ *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS incarnation: its two
+ *  bind-only durables (`dm_<o>-<a>-<uid>`, `dlv_<o>-<a>-<uid>`) and its lifecycle-keyed read-ACL row.
+ *  Idempotent — a missing consumer / absent ACL row is a no-op (the agent may have exited before a
+ *  durable was created, or a re-run). LIFECYCLE-EXACT by construction (SPEC §13.1): every name this
+ *  deletes embeds the target uid, so a stale/replayed teardown for a retired lifecycle names only
+ *  retired resources — it structurally cannot touch a same-alias successor, and the deprovisioner
+ *  cred's exact-name grants make a wrong-uid delete broker-DENIED, not just a no-op.
+ *
+ *  Does NOT touch the role-SHARED `svc_<role>` TASK durable (deleting it would break the role's other
+ *  agents — it lives until space teardown), nor the ephemeral `chathist_…-<uid>` history consumers (they
+ *  self-clean on the agent's disconnect). The creds FILE is removed by the caller (a manager-local
+ *  filesystem concern, not a broker one). Pass a TARGET-PINNED `deprovisioner` cred (see
+ *  {@link mintCreds}); a bare connection (open mode) never calls this — an open mesh mints nothing. */
 export async function deprovisionAgent(opts: {
   servers: string;
   space: string;

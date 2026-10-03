@@ -1055,6 +1055,10 @@ export async function mintPublicUserJwt(
   return { jwt, exp: validDates.exp };
 }
 
+/** The profiles whose credential carries caller rails, and can therefore be minted as an
+ *  issuance (SPEC 13.15). Everything else is infrastructure or a one-shot with no rail to bind. */
+const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "control-caller-privileged", "control-caller-admin", "deployer"]);
+
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
  *  exactly what each profile does. Every profile is now enumerated least-privilege — the former
  *  allow-all `manager` is gone (its roles split across supervisor/provisioner/operator/purger and the
@@ -1068,10 +1072,6 @@ export async function mintPublicUserJwt(
  *  owner + ledger actor + the per-connection ephemeral nkey; the static/dev mint passes
  *  `{owner:"local", actor:<id>, connId:<id>}` via {@link principalOf}. EXPORTED so the callout's injected
  *  `permissionsFor` hook can feed a validated principal straight into the same builder. */
-/** The profiles whose credential carries caller rails, and can therefore be minted as an
- *  issuance (SPEC 13.15). Everything else is infrastructure or a one-shot with no rail to bind. */
-const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "control-caller-privileged", "control-caller-admin", "deployer"]);
-
 export function permissionsFor(
   profile: Profile,
   space: string,
@@ -2322,17 +2322,6 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   };
 }
 
-/** The ephemeral, LIFECYCLE-PINNED §13.1 state-write permission set for the STATIC manager's
- *  lifecycle executor (Unit B). One credential per lifecycle OPERATION (activation, terminal,
- *  renewal ledger append): every grant names exactly ONE incarnation's keys — the alias head,
- *  the uid reservation, the manager slot row, the issuance gate, and the `cred.<uid>.>` ledger
- *  family — so a leaked executor cred can move one incarnation's state machine and nothing else.
- *
- *  Reads: records reads ride the keyed Direct Get form (the key is ON the subject, so the read
- *  grant stays key-pinned); the auth store is leader-served (`allow_direct=false`), so its reads
- *  are body-selected `STREAM.MSG.GET` — stream-scoped, NOT key-scoped (the requested key rides
- *  the PAYLOAD, which a subject grant cannot see). NAMED RESIDUAL: for its one-shot lifetime the
- *  executor can READ (never write) other rows in the auth store. */
 /** The ISSUER permission set (SPEC 13.15): value-writes on the evidence store (evidence, attempt,
  *  source index: create-only and CAS rows, keyed by generation) and on the accepted-row store
  *  (create-only, keyed by the client's token); the leader-served point read on the evidence
@@ -2381,6 +2370,17 @@ function runAdmitterPermissions(space: string, pr: MintPrincipal, pin: { endpoin
   };
 }
 
+/** The ephemeral, LIFECYCLE-PINNED §13.1 state-write permission set for the STATIC manager's
+ *  lifecycle executor (Unit B). One credential per lifecycle OPERATION (activation, terminal,
+ *  renewal ledger append): every grant names exactly ONE incarnation's keys — the alias head,
+ *  the uid reservation, the manager slot row, the issuance gate, and the `cred.<uid>.>` ledger
+ *  family — so a leaked executor cred can move one incarnation's state machine and nothing else.
+ *
+ *  Reads: records reads ride the keyed Direct Get form (the key is ON the subject, so the read
+ *  grant stays key-pinned); the auth store is leader-served (`allow_direct=false`), so its reads
+ *  are body-selected `STREAM.MSG.GET` — stream-scoped, NOT key-scoped (the requested key rides
+ *  the PAYLOAD, which a subject grant cannot see). NAMED RESIDUAL: for its one-shot lifetime the
+ *  executor can READ (never write) other rows in the auth store. */
 function lifecycleExecutorPermissions(
   space: string,
   pr: MintPrincipal,
@@ -2421,19 +2421,6 @@ function lifecycleExecutorPermissions(
   };
 }
 
-/** The ephemeral, ENDPOINT-INSTANCE-PINNED endpoint-serve executor permission set (P2 item 1,
- *  1a-serve): the manager mints this per registration/serve-mint op and drives the endpoint
- *  registration barrier's `epgate` CAS + the mint fence's `epcred` stage/revoke THROUGH it — never
- *  its standing seed/supervisor connection (critic #1's manager-specific "no seed shortcut"). Every
- *  WRITE is key-pinned to exactly ONE (endpoint, instanceId): the gate `epgate.<ep>.<iid>`, its
- *  serving ledger family `epcred.<ep>.<iid>.>`, and the registration's two records keys (the
- *  instance's `svc` spec + the endpoint's governance head — `registerServiceInstance` drives the
- *  slot-take/promote over this same connection). A leaked/mis-constructed executor can move exactly
- *  one endpoint instance's serve state and nothing else. The auth store is `allow_direct=false`, so
- *  reads are leader-served `STREAM.MSG.GET` (stream-scoped, NOT key-scoped — the key rides the
- *  payload); enumeration of the epcred family rides an ordered `keys()` consumer. NAMED RESIDUAL:
- *  for its one-shot lifetime the executor can READ (never write) other auth rows — endpoint/
- *  credential metadata, no bearer bytes; every WRITE stays key-pinned. */
 /** The SELF-MEDIATED goal-writer profile (P2 item 2, spawn-as-action): exactly
  *  {@link goalWriterGrants} for ITS endpoint — the goal bind + terminal facts, the goal-record KV
  *  writes, and the leader-served fencing reads — plus the connection-scoped reply inbox. Disjoint
@@ -2493,6 +2480,19 @@ function sessionLedgerPermissions(space: string, pr: MintPrincipal): Record<stri
   return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
 }
 
+/** The ephemeral, ENDPOINT-INSTANCE-PINNED endpoint-serve executor permission set (P2 item 1,
+ *  1a-serve): the manager mints this per registration/serve-mint op and drives the endpoint
+ *  registration barrier's `epgate` CAS + the mint fence's `epcred` stage/revoke THROUGH it — never
+ *  its standing seed/supervisor connection (critic #1's manager-specific "no seed shortcut"). Every
+ *  WRITE is key-pinned to exactly ONE (endpoint, instanceId): the gate `epgate.<ep>.<iid>`, its
+ *  serving ledger family `epcred.<ep>.<iid>.>`, and the registration's two records keys (the
+ *  instance's `svc` spec + the endpoint's governance head — `registerServiceInstance` drives the
+ *  slot-take/promote over this same connection). A leaked/mis-constructed executor can move exactly
+ *  one endpoint instance's serve state and nothing else. The auth store is `allow_direct=false`, so
+ *  reads are leader-served `STREAM.MSG.GET` (stream-scoped, NOT key-scoped — the key rides the
+ *  payload); enumeration of the epcred family rides an ordered `keys()` consumer. NAMED RESIDUAL:
+ *  for its one-shot lifetime the executor can READ (never write) other auth rows — endpoint/
+ *  credential metadata, no bearer bytes; every WRITE stays key-pinned. */
 function endpointServeExecutorPermissions(
   space: string,
   pr: MintPrincipal,
@@ -2855,17 +2855,6 @@ export async function mintConnectionEvictorCreds(auth: SpaceAuth, identity: Iden
   return new TextDecoder().decode(creds);
 }
 
-/** Render the `nats-server` config that trusts ONE broker operator and serves N spaces' accounts via
- *  the in-config MEMORY resolver.
- *
- *  Broker trust (operator + system account) comes from `broker` and has exactly one owner; the
- *  per-space data accounts are listed in `spaces`. Every space account is asserted to be signed by
- *  THIS broker's operator before it is preloaded: rendering a foreign-signed account would either
- *  refuse broker boot or, worse, advertise a tenant the broker cannot actually authenticate.
- *
- *  NOTE (W4): the MEMORY resolver is one static whole-broker map, so every mutation rewrites all of
- *  it. Concurrent add/remove of spaces needs a broker-authoritative inventory with generation/CAS
- *  and atomic promotion above this function; this renderer is deliberately pure. */
 /**
  * Render the config for an OPEN (no-auth) broker.
  *
@@ -2931,6 +2920,17 @@ function renderTlsBlock(transport: BrokerTransport): string {
 `;
 }
 
+/** Render the `nats-server` config that trusts ONE broker operator and serves N spaces' accounts via
+ *  the in-config MEMORY resolver.
+ *
+ *  Broker trust (operator + system account) comes from `broker` and has exactly one owner; the
+ *  per-space data accounts are listed in `spaces`. Every space account is asserted to be signed by
+ *  THIS broker's operator before it is preloaded: rendering a foreign-signed account would either
+ *  refuse broker boot or, worse, advertise a tenant the broker cannot actually authenticate.
+ *
+ *  NOTE (W4): the MEMORY resolver is one static whole-broker map, so every mutation rewrites all of
+ *  it. Concurrent add/remove of spaces needs a broker-authoritative inventory with generation/CAS
+ *  and atomic promotion above this function; this renderer is deliberately pure. */
 export function serverConfig(
   broker: BrokerAuth,
   spaces: readonly SpaceAccountAuth[],

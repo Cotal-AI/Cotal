@@ -2740,10 +2740,6 @@ function journaledMaxFileStore(value: unknown): number | undefined {
   return value;
 }
 
-/** Record this mesh in the registry, and set it as the `current` default when there's no usable one
- *  — i.e. the first mesh, OR when `current` dangles at a space that's no longer in the registry (a
- *  ghost pointer is not a default). Never silently redirect a `current` that still resolves to a live
- *  mesh; just say another is the default and how to switch. */
 /**
  * Did THIS launch bring the broker up, or is it re-recording one that was already there?
  *
@@ -2762,6 +2758,10 @@ type Provenance = "started" | "refresh";
  *  need a live broker per case. */
 export const recordOurMeshForTest = (m: MeshEntry, provenance: Provenance): void => recordOurMesh(m, provenance);
 
+/** Record this mesh in the registry, and set it as the `current` default when there's no usable one
+ *  — i.e. the first mesh, OR when `current` dangles at a space that's no longer in the registry (a
+ *  ghost pointer is not a default). Never silently redirect a `current` that still resolves to a live
+ *  mesh; just say another is the default and how to switch. */
 function recordOurMesh(m: MeshEntry, provenance: Provenance): void {
   const cur = getCurrent();
   const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording m
@@ -3006,21 +3006,6 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
   return JSON.parse(readFileSync(path, "utf8")) as ChannelRegistryFile;
 }
 
-/** Ensure the space's trust material exists, render a server config, and mint a privileged
- *  setup creds (used to pre-create streams once the server is up). The account signing key
- *  in `.cotal/auth` is what `cotal mint` and the manager later use to issue per-agent creds.
- *
- *  USER MODE (`user` set): additionally run the registered auth provider's `prepareServer` over the
- *  SPACE-SCOPED state dir (`.cotal/auth/<space>/` — the multi-space-ready layout; nothing user-auth
- *  lives flat) and preload its extra account(s) into the broker config. The inverse is fail-closed:
- *  a space whose user-auth state exists MUST keep being started with --user-auth — regenerating the
- *  config without the callout account would silently break every sentinel connect.
- *
- *  `rotateSys` (`cotal up --rotate-sys`) is the class-3 renewal for an EXISTING space: rotate the
- *  system account, re-mint `membership-observer.creds` + `connection-evictor.creds` against the
- *  successor, and render the config from the ROTATED record so the broker this `up` starts is the one
- *  that trusts them. It belongs here because this is the single site that both owns the trust record
- *  and renders `server.conf`; anywhere else would publish creds the live broker cannot honor. */
 /**
  * Turn the `--tls-cert`/`--tls-key` pair into a validated {@link BrokerTransport}, or `plaintext`
  * when neither was given.
@@ -3225,6 +3210,21 @@ function writeOpenBrokerConf(storeDir: string, opts: { port: number; host: strin
   return confPath;
 }
 
+/** Ensure the space's trust material exists, render a server config, and mint a privileged
+ *  setup creds (used to pre-create streams once the server is up). The account signing key
+ *  in `.cotal/auth` is what `cotal mint` and the manager later use to issue per-agent creds.
+ *
+ *  USER MODE (`user` set): additionally run the registered auth provider's `prepareServer` over the
+ *  SPACE-SCOPED state dir (`.cotal/auth/<space>/` — the multi-space-ready layout; nothing user-auth
+ *  lives flat) and preload its extra account(s) into the broker config. The inverse is fail-closed:
+ *  a space whose user-auth state exists MUST keep being started with --user-auth — regenerating the
+ *  config without the callout account would silently break every sentinel connect.
+ *
+ *  `rotateSys` (`cotal up --rotate-sys`) is the class-3 renewal for an EXISTING space: rotate the
+ *  system account, re-mint `membership-observer.creds` + `connection-evictor.creds` against the
+ *  successor, and render the config from the ROTATED record so the broker this `up` starts is the one
+ *  that trusts them. It belongs here because this is the single site that both owns the trust record
+ *  and renders `server.conf`; anywhere else would publish creds the live broker cannot honor. */
 async function authSetup(
   storeDir: string,
   server: string,
@@ -3412,23 +3412,6 @@ async function assertRootBrokerStopped(root: string): Promise<void> {
   }
 }
 
-/** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph
- *  membership), at the FRESH `cotal up` while the in-memory `$SYS` signing seed still exists:
- *   - `membership-observer.creds` — SYSTEM-account CONNZ reader (the only window it can be minted: the
- *     `$SYS` seed is never persisted).
- *   - `membership-rw.creds` — DATA-account members-read + feed-write.
- *   - `membership.json` — the DATA account id (the CONNZ/event subjects pin it; non-secret, but kept
- *     0600 alongside the creds).
- *  All 0600. Best-effort: a failure logs and leaves the feed disabled (the graph degrades to traffic-
- *  only, delivery is untouched). Runs only on a FRESH space (the `if (!auth)` branch); a normal down/up
- *  keeps `.cotal/auth` + these creds and reuses them. A space provisioned before this feature has no
- *  in-memory `$SYS` seed, so it gains membership only when its auth is regenerated (a fresh `.cotal/auth`)
- *  — a documented migration property, not a silent no-op.
- *  Coupling: `cotal clean all` deletes this identity-derived set (removeLocalState in clean.ts) —
- *  a cred added here must be added to that removal list too. `membership-rw.creds` is a MIGRATED kind:
- *  its write/read/delete all go through the {@link SecretStore} seam (here, the feed reader, and clean),
- *  so the renewal owner can re-sign it into a hosted store. The observer / evictor / config stay on the
- *  raw FS (static $SYS creds + non-secret config, not renewable kinds). */
 /** Provision the DATA-account half of the membership bundle, on EVERY `up` rather than only a fresh
  *  space. Idempotent: it writes only what is absent and is silent when both are present.
  *
@@ -3478,6 +3461,23 @@ async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: str
   }
 }
 
+/** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph
+ *  membership), at the FRESH `cotal up` while the in-memory `$SYS` signing seed still exists:
+ *   - `membership-observer.creds` — SYSTEM-account CONNZ reader (the only window it can be minted: the
+ *     `$SYS` seed is never persisted).
+ *   - `membership-rw.creds` — DATA-account members-read + feed-write.
+ *   - `membership.json` — the DATA account id (the CONNZ/event subjects pin it; non-secret, but kept
+ *     0600 alongside the creds).
+ *  All 0600. Best-effort: a failure logs and leaves the feed disabled (the graph degrades to traffic-
+ *  only, delivery is untouched). Runs only on a FRESH space (the `if (!auth)` branch); a normal down/up
+ *  keeps `.cotal/auth` + these creds and reuses them. A space provisioned before this feature has no
+ *  in-memory `$SYS` seed, so it gains membership only when its auth is regenerated (a fresh `.cotal/auth`)
+ *  — a documented migration property, not a silent no-op.
+ *  Coupling: `cotal clean all` deletes this identity-derived set (removeLocalState in clean.ts) —
+ *  a cred added here must be added to that removal list too. `membership-rw.creds` is a MIGRATED kind:
+ *  its write/read/delete all go through the {@link SecretStore} seam (here, the feed reader, and clean),
+ *  so the renewal owner can re-sign it into a hosted store. The observer / evictor / config stay on the
+ *  raw FS (static $SYS creds + non-secret config, not renewable kinds). */
 async function provisionMembershipCreds(auth: SpaceAuth, root: string, space: string): Promise<void> {
   try {
     const observer = await mintMembershipObserverCreds(auth, newIdentity());
