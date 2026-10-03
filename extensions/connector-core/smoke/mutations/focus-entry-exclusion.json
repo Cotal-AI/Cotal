@@ -16,7 +16,7 @@
     {
       "name": "ingest no longer records messages arriving during focus entry",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      if (this.enteringFocus) this.excludeFromFocus(item);\n",
+      "find": "      if (this.enteringFocus) this.excludeFromFocus(item, delivery);\n",
       "replace": "",
       "expectRed": "focus-entry normal buffer is excluded from recall",
       "cell": "focus-entry normal buffer is excluded from recall"
@@ -24,7 +24,7 @@
     {
       "name": "recall no longer filters ids retained during focus entry",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        if (this.focusExcludedIds.has(this.focusExclusionKey(item))) continue;",
+      "find": "          if (this.focusExcludedIds.has(m.id)) continue;\n",
       "replace": "",
       "expectRed": "focus-entry normal buffer is excluded from recall",
       "cell": "focus-entry normal buffer is excluded from recall"

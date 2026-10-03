@@ -212,9 +212,11 @@ traffic. If the bounded live/durable classification guard also fills, the connec
 otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
 still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall
 quiet/muted traffic; if that safety bound fills, recall skips the affected channel and reports it
-as incomplete rather than risk resurfacing excluded content. The list names a message by its id, or
-a message with an empty id by its sender, channel, timestamp and content, so excluding one id-less
-message does not hide every other one from recall.
+as incomplete rather than risk resurfacing excluded content. The list names a message by its id.
+A message with an empty id has no identity recall can match, so each excluded delivery of one hides
+one stored copy with the same sender, channel, timestamp and content from recall. Excluding one
+id-less message does not hide the others, and a later publication of the same content is still
+recalled.
 If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
 session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
 unaffected.
