@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { AgentHandle, AttachSession, LaunchSpec, RuntimeReference } from "@cotal-ai/core";
+import { discardLaunchArtifacts, type AgentHandle, type AttachSession, type LaunchSpec, type RuntimeReference } from "@cotal-ai/core";
 import type { CustodialRuntime, RuntimeReapEvidence } from "./index.js";
 import { adoptSeatSync, launchSeat, loadSeat, reapSeat, seatId, unsupportedTransport, type SeatRecord } from "@cotal-ai/seat";
 
@@ -42,9 +42,16 @@ export class CustodialPtyRuntime implements CustodialRuntime {
   }
 
   spawn(name: string, spec: LaunchSpec, cwd: string, reference?: RuntimeReference): AgentHandle {
-    if (process.platform !== "linux") throw unsupportedTransport();
-    if (reference !== undefined && reference.kind !== "pty")
-      throw new Error(`cannot spawn under runtime kind "${reference.kind}" with pty`);
+    try {
+      if (process.platform !== "linux") throw unsupportedTransport();
+      if (reference !== undefined && reference.kind !== "pty")
+        throw new Error(`cannot spawn under runtime kind "${reference.kind}" with pty`);
+    } catch (e) {
+      // Refused before any process exists, so no child will read the launch's files (core
+      // launch-artifacts). Every later refusal is launchSeat's, which removes them the same way.
+      discardLaunchArtifacts(spec.artifacts);
+      throw e;
+    }
     const rec = launchSeat({
       root: this.root,
       name,
@@ -76,19 +83,6 @@ export class CustodialPtyRuntime implements CustodialRuntime {
         seat.close();
       },
     } as AgentHandle;
-  }
-
-  /** The launch artifacts the custody record for `reference` still lists, or undefined when there is
-   *  no readable record. Read from disk, never the copy pinned at spawn: the custodian drops them from
-   *  the record once it has removed them, and a successor that reaps a seat it did not launch still
-   *  owns what is left. */
-  artifactsOf(reference: RuntimeReference): readonly string[] | undefined {
-    if (reference.kind !== "pty") return undefined;
-    try {
-      return loadSeat(this.root, reference.id).artifacts;
-    } catch {
-      return undefined;
-    }
   }
 
   async reap(reference: RuntimeReference): Promise<RuntimeReapEvidence> {

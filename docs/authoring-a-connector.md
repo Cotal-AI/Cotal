@@ -56,7 +56,10 @@ passed to the child. Pass the same `artifacts` array to every call and return it
 The launcher owns those files: the manager and the foreground `cotal spawn` remove them once they
 have proved the child gone, so the child may read them at any point in its life. On a pty seat the
 seat's custodian removes them when it sees the child exit, so they go even when the manager was
-killed, and a launch refused before any process started removes them at once. On a runtime that
+killed. If the custodian cannot remove them, or is killed first, the reap that proves the seat gone
+removes them from the temp dir the launch wrote them to. A launch refused before any
+process started removes them at once. Each directory name carries a random per-launch identity, so
+a stale path can never name a later launch's directory. On a runtime that
 cannot stream an exit (tmux, cmux, orca, herdr) the manager polls the seat's status and waits for
 the runtime's exit proof. Any other spawn that throws is not proof, so its files stay for the OS
 temp reaper. Run every check that can refuse the launch, and every conversion that can throw, before the
