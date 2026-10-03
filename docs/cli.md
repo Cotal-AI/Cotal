@@ -975,6 +975,20 @@ follows to a terminal outcome rather than blocking (see [the control surface](co
 See [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
 [manifest deploy](#manifest-deploys). (`cotal start` was merged into `cotal spawn --detach`.)
 
+A manager has 50 seat slots, and each seat counts once. A slot is held by a managed seat (a row in
+that manager's `cotal ps`, including a seat still joining), by a reserved launch the manager accepted
+but has not started a process for, or by a cooling hold. A seat that ends within 10 seconds of
+starting leaves its slot cooling until those 10 seconds pass, unless an operator stopped it. A spawn
+refused at the limit states that split and whether waiting can free a slot:
+
+```text
+at capacity (50 of 50 slots: 49 managed, 0 reserved, 1 cooling); waiting frees a cooling slot in 7s, or despawn one
+```
+
+A cooling slot frees at the stated time. A launch that has not settled frees its slot only if it
+fails, and a managed seat frees its slot only when it stops. The roster counts presence, which also
+includes peers no manager owns, so its total is a different number.
+
 ## models
 
 ```bash
