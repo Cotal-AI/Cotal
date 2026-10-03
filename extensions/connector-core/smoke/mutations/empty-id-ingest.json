@@ -68,7 +68,7 @@
     {
       "name": "K4 the receive key degenerates to the wire id, restoring id-shaped addressing",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      recvKey: m.id !== \"\" ? m.id : `${this.recvKeySecret}.${++this.recvKeySeq}`,",
+      "find": "      recvKey: m.id !== \"\" ? m.id : (mintedKey ?? `${this.recvKeySecret}.${++this.recvKeySeq}`),",
       "replace": "      recvKey: m.id,",
       "expectRed": "the race: the verdict drains exactly the snapshot's delivery",
       "cell": "the race: the later arrival is neither drained nor acked",

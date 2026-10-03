@@ -189,7 +189,7 @@ export interface InboxResponse {
   shown: InboxItem[];
   /** Everything it does not carry. */
   held: InboxItem[];
-  /** Ids no response could ever carry, whatever the window held at the time. */
+  /** Receive keys of what no response could ever carry, whatever the window held at the time. */
   stuck: ReadonlySet<string>;
 }
 
@@ -221,11 +221,11 @@ export function renderInbox(opts: {
   warning?: string;
   budget?: number;
   /**
-   * Ids of a lane that must be delivered IN ORDER, with no gaps: focus recall, which a caller walks
-   * with a single mark rather than an acknowledgement per item. Stepping over one of these to fit a
-   * later one would either strand it, if the mark then passes it, or re-serve everything after it,
-   * if the mark stops short. The buffered lane has no such constraint, because each of its items is
-   * acked by id.
+   * Receive keys of a lane that must be delivered IN ORDER, with no gaps: focus recall, which a
+   * caller walks with a single mark rather than an acknowledgement per item. Stepping over one of
+   * these to fit a later one would either strand it, if the mark then passes it, or re-serve
+   * everything after it, if the mark stops short. The buffered lane has no such constraint, because
+   * each of its items is acked by id.
    */
   strictIds?: ReadonlySet<string>;
 }): InboxResponse {
@@ -244,10 +244,13 @@ export function renderInbox(opts: {
   //
   // Stuck means "no response could carry this", so it is measured against the friendliest response
   // there is: this item alone, its head, and any rider, with no held-note at all.
+  // Every set in this walk is keyed by receive key. An id-less item's wire id is the empty string,
+  // so a set of wire ids makes every id-less item the same item: a held giant vanished from the
+  // note when a small id-less item went out, and recall moved its mark past an unread one (#613).
   const stuck = new Set(
     ordered
       .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget)
-      .map((i) => i.id),
+      .map((i) => i.recvKey),
   );
 
   const assemble = (shown: InboxItem[], held: InboxItem[], tier: NoteTier): string => {
@@ -282,7 +285,7 @@ export function renderInbox(opts: {
   let used = 0;
   let strictGap = false; // the in-order lane stops at its first gap; the free lane steps over its own
   for (const i of ordered) {
-    const strict = strictIds.has(i.id);
+    const strict = strictIds.has(i.recvKey);
     if (strict && strictGap) continue;
     const cost = itemCost(i);
     if (used + cost > budget) {
@@ -295,8 +298,8 @@ export function renderInbox(opts: {
     used += cost;
   }
   const heldOf = (): InboxItem[] => {
-    const ids = new Set(shown.map((i) => i.id));
-    return ordered.filter((i) => !ids.has(i.id));
+    const keys = new Set(shown.map((i) => i.recvKey));
+    return ordered.filter((i) => !keys.has(i.recvKey));
   };
   let held = heldOf();
   let text = assemble(shown, held, "full");
@@ -348,7 +351,7 @@ function heldNote(
   tier: NoteTier = "full",
 ): string {
   if (!held.length || tier === "none") return "";
-  const stuck = held.filter((i) => stuckIds.has(i.id));
+  const stuck = held.filter((i) => stuckIds.has(i.recvKey));
   const waiting = held.length - stuck.length;
   if (tier === "compact") {
     const bits: string[] = [];
@@ -363,7 +366,7 @@ function heldNote(
   }
   const parts: string[] = [];
   if (waiting) {
-    const dms = held.filter((i) => i.kind !== "channel" && !stuckIds.has(i.id)).length;
+    const dms = held.filter((i) => i.kind !== "channel" && !stuckIds.has(i.recvKey)).length;
     // Under peek nothing is cleared, so the next call returns THIS window again. Telling a peeking
     // caller to call again for the next batch is a promise the read cannot keep, and an obedient
     // caller loops on it forever.
@@ -857,7 +860,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           if (!shown.length) {
             const part = partReply({
               agent,
-              item: buffered.find((i) => stuck.has(i.id)),
+              item: buffered.find((i) => stuck.has(i.recvKey)),
               offered: buffered,
               stuck,
               peek: peek ?? false,
@@ -926,7 +929,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           items: [...buffered, ...fresh],
           peek,
           warning,
-          strictIds: new Set(clocked.map((i) => i.id)),
+          strictIds: new Set(clocked.map((i) => i.recvKey)),
           head: (s) =>
             scope
               ? `${s.length} message${s.length === 1 ? "" : "s"}. Buffered pull-only items were cleared; normal focus channel items are read-only recall:`
@@ -944,8 +947,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // ahead record, so the mark never passes a message that has not been handed over.
           const first = clocked[0];
           const item =
-            buffered.find((i) => stuck.has(i.id)) ??
-            (first && stuck.has(first.id) ? first : aheadFresh.find((i) => stuck.has(i.id)));
+            buffered.find((i) => stuck.has(i.recvKey)) ??
+            (first && stuck.has(first.recvKey) ? first : aheadFresh.find((i) => stuck.has(i.recvKey)));
           const part = partReply({
             agent,
             item,
@@ -978,7 +981,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // the mutation for it survived and the code went rather than the test being weakened.
           const shownRecall = all.filter((i) => !bufferedIds.has(i.recvKey));
           for (const i of shownRecall) if (aheadIds.has(i.recvKey)) agent.noteRecalledAhead(i.recvKey);
-          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.id));
+          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.recvKey));
           const last = shownClocked[shownClocked.length - 1];
           if (last) agent.noteRecalled({ ts: last.ts, id: last.recvKey });
           void stuck;

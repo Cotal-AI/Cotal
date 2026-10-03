@@ -258,7 +258,7 @@
       "name": "K21 the ordered lane steps over a message nothing can carry whole",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "      if (strict) strictGap = true;",
-      "replace": "      if (strict && !stuck.has(i.id)) strictGap = true;",
+      "replace": "      if (strict && !stuck.has(i.recvKey)) strictGap = true;",
       "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "note": "A message no response could carry whole still goes out, in parts, and the walk is ordered by one mark. Step over it and the next item shown moves the mark past it, so its parts are never offered and it is lost under a reply that says nothing is left. No instance cell in this suite puts an oversized message in the recall lane beside later chatter; the enumeration does it by construction."
@@ -275,7 +275,7 @@
     {
       "name": "K23 an item stamped ahead of the clock moves the mark after all",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.id));",
+      "find": "          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.recvKey));",
       "replace": "          const shownClocked = shownRecall;",
       "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
