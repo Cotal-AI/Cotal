@@ -128,10 +128,11 @@ installable opens at publish time, so neither gate can close it. They only keep 
 out of it.
 
 When both gates pass, the job cuts the GitHub Release and tag for that version. The Release
-targets the commit that first carried the version in `bin/package.json` on `main`, which is the
-tree the packages were built from. A publishing run whose closure gate ends `UNSETTLED` skips the
-Release, and the next push that passes both gates cuts it with that same target. The step fails if
-it cannot find that commit.
+targets the oldest commit on `main` whose `bin/package.json` carries the version, which is the
+tree the packages were built from. A version that was reverted and carried again keeps that first
+commit. A publishing run whose closure gate ends `UNSETTLED` skips the Release, and the next push
+that passes both gates cuts it with that same target. The step fails if it cannot read that history
+or cannot find that commit.
 
 Re-check a version that already shipped without publishing, tagging, or changing git:
 
