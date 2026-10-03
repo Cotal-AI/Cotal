@@ -1209,6 +1209,12 @@ async function runAttachLoop(
       return await done({ kind: "ended" });
     }
     console.error(c.dim("[cotal: connection lost, reconnecting]"));
+    // Raw from here on, whether or not the session that just ended reached ready. A first session
+    // whose link died inside its opening flush never ran `onReady`, so the terminal is still cooked:
+    // the line discipline would echo the detach key as `^]` and hold it until Enter, and the reader
+    // below would never see it (#1471). The attach has already said it is attached, so Ctrl-C at a
+    // cooked tty is no longer the way out; the detach key is.
+    hold.enterRaw();
   }
 }
 
