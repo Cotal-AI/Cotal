@@ -116,6 +116,11 @@ try {
   srv = boot();
   release = teardownOnSignal(srv, dir);
   await up(OPEN);
+  // The presence bucket is memory-backed (#1356), so the restart removed it with its records.
+  // `cotal up` provisions the space after it starts a broker (postStart -> setupSpaceStreams), and
+  // this suite stands in for that step. Without it every heartbeat put is refused and presence
+  // never re-arms.
+  await setupSpaceStreams({ servers: OPEN, space });
   const fresh = await until(() => {
     const p = rosterOf(watcher, "operator");
     return p && p.ts > tsBefore + 1500 && p.status !== "offline" ? p : undefined;
