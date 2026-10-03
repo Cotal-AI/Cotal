@@ -11,6 +11,8 @@ import {
   readRunRecord,
   readRunAdmission,
   listCheckpointAmendments,
+  readCheckpointAnswer,
+  readCheckpointStatus,
   readRunRevocation,
   replayRunJournal,
   runDriverCaller,
@@ -104,10 +106,29 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
   };
 }
 
+/** The answer a settled `ask` accepted, read off its pause's status and answer record. An ask's
+ *  frozen result is the answer's value alone, so unlike a checkpoint's it names no answer to print. */
+async function acceptedAskAnswer(kv: KV, endpoint: string, token: string): Promise<StepJournalRow["answer"]> {
+  const status = await readCheckpointStatus(kv, { endpoint, token });
+  const answerId = status?.value.state === "resumed" ? status.value.settledAnswerId : undefined;
+  if (answerId === undefined) return undefined;
+  const a = await readCheckpointAnswer(kv, endpoint, token, answerId);
+  if (a === undefined)
+    throw new Error(`checkpoint "${token}" settled naming the answer ${answerId}, which is not on record; reconcile the store`);
+  return {
+    answerId,
+    ...(a.value !== undefined ? { value: a.value } : {}),
+    by: a.by,
+    ...(a.artifact !== undefined ? { artifact: a.artifact } : {}),
+    at: a.at,
+  };
+}
+
 /** The journal view `cotal run journal` prints, as rows. The step key is rendered by the export
  *  the journal itself keys with, so it is the key `answer` takes back. A settled checkpoint or
  *  `ask` also lists the amendments filed under the token it settled under (an ask's last attempt
- *  token rides its pending entries), read from the answer records on `kv`. */
+ *  token rides its pending entries), read from the answer records on `kv`, and a settled ask the
+ *  answer its last attempt accepted. */
 export async function journalRows(
   kv: KV,
   endpoint: string,
@@ -126,16 +147,18 @@ export async function journalRows(
     const token = e.state !== "settled" || (e.kind !== "checkpoint" && e.kind !== "ask") ? undefined
       : e.kind === "ask" ? askTokens.get(row.step) ?? e.requestId : e.requestId;
     const amendments = token === undefined ? [] : await listCheckpointAmendments(kv, endpoint, token);
-    rows.push(amendments.length === 0 ? row : {
+    const answer = row.answer ?? (token !== undefined && e.kind === "ask" ? await acceptedAskAnswer(kv, endpoint, token) : undefined);
+    rows.push({
       ...row,
-      amendments: amendments.map((a) => ({
+      ...(answer !== undefined ? { answer } : {}),
+      ...(amendments.length === 0 ? {} : { amendments: amendments.map((a) => ({
         answerId: a.answerId,
         supersedes: a.supersedes as string,
         ...(a.value !== undefined ? { value: a.value } : {}),
         by: a.by,
         ...(a.artifact !== undefined ? { artifact: a.artifact } : {}),
         at: a.at,
-      })),
+      })) }),
     });
   }
   return rows;

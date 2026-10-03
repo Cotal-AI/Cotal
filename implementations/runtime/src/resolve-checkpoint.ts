@@ -38,6 +38,7 @@ import {
   newTakeoverId,
   recordCheckpointAnswer,
   checkpointAnswerId,
+  newAmendmentId,
   readCheckpointAnswer,
   readCheckpointSpec,
   readCheckpointStatus,
@@ -281,22 +282,16 @@ export async function locateAcceptedAnswer(
 
 /**
  * The WRITE half of an amendment: file a create-only answer record under the accepted answer's
- * token that names it as `supersedes`. No token is presented, so the pause stays settled and the run
- * never reads this record; the journal lists it under the step.
+ * token that names it as `supersedes`, under a fresh id, so every call is its own filing. No token
+ * is presented, so the pause stays settled and the run never reads this record; the journal lists
+ * it under the step.
  */
 export async function amendAcceptedAnswer(
   deps: ResolveCheckpointDeps,
   req: { readonly accepted: AcceptedAnswer; readonly by: string; readonly value?: unknown; readonly artifact?: string; readonly now: number },
 ): Promise<{ readonly token: string; readonly answerId: string; readonly supersedes: string }> {
   const { token, answerId: supersedes } = req.accepted;
-  const answerId = checkpointAnswerId({
-    token,
-    by: req.by,
-    ...(req.value !== undefined ? { value: req.value } : {}),
-    ...(req.artifact !== undefined ? { artifact: req.artifact } : {}),
-    supersedes,
-    at: req.now,
-  });
+  const answerId = newAmendmentId();
   await recordCheckpointAnswer(deps.kv, deps.endpoint, {
     v: 1,
     token,
