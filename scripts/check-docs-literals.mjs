@@ -8,11 +8,13 @@
 // non-hollow bundle. Neither reads the source, so the stale quote ships in the bundle that
 // `cotal_docs` serves.
 //
-// A candidate is a backticked span in docs/ (docs/design exempt, fenced blocks stripped) that
-// reads as emitted operator prose: it starts with a lowercase letter, has four or more words, uses
-// only lowercase letters, digits, spaces and `,;:.()'-`, and its first word is not a command or a
-// `cotal` subcommand the docs quote, which makes it an invocation rather than output. A
-// substituted value is written as a placeholder such as `<id>`.
+// A candidate is a code span in docs/ (docs/design exempt) that reads as emitted operator prose:
+// it starts with a lowercase letter, has four or more words, uses only lowercase letters, digits,
+// spaces and `,;:.()'-`, and its first word is not a command or a `cotal` subcommand the docs
+// quote, which makes it an invocation rather than output. A substituted value is written as a
+// placeholder such as `<id>`. Pages are read with a Markdown parser, so text in a fenced or
+// indented code block is never a span, whether the block sits at the top level, in a block quote
+// or in a list item.
 //
 // Each candidate must appear in a string the shipped source holds: a string or template literal,
 // or a `+` chain of them, in packages/, extensions/, implementations/ or bin/, with smoke, test,
@@ -22,6 +24,7 @@
 // comment, a type or an ambient declaration that mentions a line does not count as emitting it.
 //
 // Exit 0 when every candidate is emitted, 1 when a quote names a string the source does not hold.
+import { lexer, walkTokens } from "marked";
 import ts from "typescript";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -42,42 +45,30 @@ const sources = tracked.filter(
     !/(?:^|\/)(?:smoke|mutations|tests?)\/|\.(?:smoke|selftest|test)\.[cm]?[jt]sx?$/.test(f),
 );
 
-const fenceLine = /^[ \t]*(`{3,}|~{3,})(.*)$/;
-const span = /(?<!`)`([^`\n]+)`(?!`)/g;
 const placeholder = /<[a-z][a-z0-9-]*>/g;
 const prose = /^[a-z][a-z0-9 ,;:.()'-]*$/;
 const commands = new Set(["cotal", "pnpm", "npm", "npx", "node", "tsx", "git", "gh", "claude", "codex",
   "opencode", "jcode", "hermes", "pi", "tmux", "cmux", "herdr", "orca", "nats", "nats-server", "docker",
   "systemctl", "journalctl", "curl", "sudo", "cd", "export", "uv"]);
 
-// Blank fenced blocks, keeping line numbers. As in CommonMark, a backtick fence's info string has
-// no backtick, and a block closes on a bare fence of the same character at least as long as the
-// one that opened it, or at the end of the page.
-const unfence = (text) => {
-  let open = "";
-  return text
-    .split("\n")
-    .map((line) => {
-      const m = fenceLine.exec(line);
-      if (open) {
-        if (m && m[1][0] === open[0] && m[1].length >= open.length && !m[2].trim()) open = "";
-        return "";
-      }
-      if (!m || (m[1][0] === "`" && m[2].includes("`"))) return line;
-      open = m[1];
-      return "";
-    })
-    .join("\n");
-};
-
+// The parser's top-level blocks concatenate back to the page, so a span's line is found by locating
+// its raw text inside the block that holds it.
 const spans = [];
 for (const page of pages) {
-  const text = unfence(readFileSync(join(repoRoot, page), "utf8"));
-  for (const m of text.matchAll(span)) {
-    const line = text.slice(0, m.index).split("\n").length;
-    spans.push({ page, line, text: m[1] });
-    const invoked = /^cotal ([a-z][a-z0-9-]*)/.exec(m[1]);
-    if (invoked) commands.add(invoked[1]);
+  const text = readFileSync(join(repoRoot, page), "utf8").replace(/\r\n?/g, "\n");
+  let start = 0;
+  for (const block of lexer(text)) {
+    let from = 0;
+    walkTokens([block], (token) => {
+      if (token.type !== "codespan") return;
+      const at = block.raw.indexOf(token.raw, from);
+      if (at >= 0) from = at + token.raw.length;
+      const line = text.slice(0, start + Math.max(at, 0)).split("\n").length;
+      spans.push({ page, line, text: token.text });
+      const invoked = /^cotal ([a-z][a-z0-9-]*)/.exec(token.text);
+      if (invoked) commands.add(invoked[1]);
+    });
+    start += block.raw.length;
   }
 }
 

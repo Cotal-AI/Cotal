@@ -37,14 +37,15 @@ external scheduler that creates workflow runs.
 green run suggests:
 
 - `check:docs-voice` grades prose style in `docs/` and never reads source.
-- `check:docs-literals` reads each backticked span in `docs/` that looks like emitted operator
-  prose (four or more lowercase words, not a command) and fails when no string or template literal
-  in shipped source holds it. A substituted value is written as a placeholder such as `<id>`, and
-  it must stand where the source substitutes one. Strings are read from the JavaScript each file
+- `check:docs-literals` reads each code span in `docs/` that looks like emitted operator prose
+  (four or more lowercase words, not a command) and fails when no string or template literal in
+  shipped source holds it. A substituted value is written as a placeholder such as `<id>`, and it
+  must stand where the source substitutes one. Strings are read from the JavaScript each file
   compiles to, so a comment, a type or an ambient declaration does not count as emitting a line.
-  Fenced blocks are skipped, closing as CommonMark closes them. A capitalized, short or
-  punctuation-heavy quote is not a candidate, so a rename of one of those is still caught only by
-  review.
+  Pages are read with a Markdown parser (`marked`), so text in a fenced or indented code block is
+  never a candidate, in a block quote or list item as well as at the top level. A capitalized,
+  short or punctuation-heavy quote is not a candidate, so a rename of one of those is still caught
+  only by review.
 - `check-docs-bundle.mjs` proves the generator turns the pages into a bundle that is not hollow.
   It does not prove that the pages agree with the code.
 
