@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname } from "node:path";
 import * as pty from "@lydell/node-pty";
@@ -18,9 +18,11 @@ import {
   UNATTENDED_MS as UNATTENDED_DEFAULT_MS,
   encodeFrame,
   type ClientRequest,
+  type SeatExit,
   type ServerMessage,
 } from "./protocol.js";
-import { RECORD_VERSION, bootToken, processStartToken, writeRecord, type SeatRecord } from "./record.js";
+import { ConnectorDiagnosticReader } from "./diagnostic.js";
+import { RECORD_VERSION, bootToken, exitPath, processStartToken, writeRecord, type SeatRecord } from "./record.js";
 import { StartupConfirmMatcher, unmatchedConfirmMessage } from "./startup-confirm.js";
 
 export interface CustodianLaunch {
@@ -99,7 +101,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   let seenClient = false;
   let cols = DEFAULT_COLS;
   let rows = DEFAULT_ROWS;
-  let exit: { code?: number; signal?: number } | undefined;
+  let exit: SeatExit | undefined;
+  const diagnostic = new ConnectorDiagnosticReader();
   const dataSubs = new Map<number, Set<Socket>>();
   const waiters = new Map<Socket, Set<number>>();
   const controllers = new Set<Socket>();
@@ -115,6 +118,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   let server: ReturnType<typeof createServer> | undefined;
   /** Wait for the first adopter when the child has already exited at listen. */
   const LAUNCH_HANDOFF_MS = 5_000;
+  /** How long a child already gone from /proc may wait for node-pty to report how it ended. */
+  const EXIT_STATUS_GRACE_MS = 1_000;
   const UNATTENDED_MS = launch.unattendedMs ?? UNATTENDED_DEFAULT_MS;
 
   if (confirmMatcher) {
@@ -149,6 +154,19 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     } catch {
       return true;
     }
+  };
+
+  /**
+   * Mark a child that /proc shows gone as exited WITHOUT a status, but only once node-pty has had
+   * time to report the status itself. node-pty reports an exit only when the pty closes, and when a
+   * descendant still holds the pty open it forces that close 200 ms after reaping the child. The
+   * exit event carries whatever is known when it is sent, so marking earlier sent no status.
+   */
+  let goneSince: number | undefined;
+  const markGone = (): void => {
+    if (!alive || !childGone()) return;
+    goneSince ??= Date.now();
+    if (Date.now() - goneSince >= EXIT_STATUS_GRACE_MS) markExited({});
   };
 
   const settleTerminal = (): void => {
@@ -279,12 +297,39 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       return;
     }
     alive = false;
-    exit = info ?? exit ?? {};
+    const last = diagnostic.read();
+    exit = { ...(info ?? exit ?? {}), ...(last ? { diagnostic: last } : {}) };
+    // Kept beside the custody record so a reap that runs after every controller is gone, even in a
+    // successor manager, can still say how the child ended. Renamed into place, so a reader never
+    // sees half a record.
+    const exitFile = exitPath(launch.recordPath);
+    try {
+      writeFileSync(`${exitFile}.tmp`, `${JSON.stringify(exit)}\n`, { mode: 0o600 });
+      renameSync(`${exitFile}.tmp`, exitFile);
+    } catch (e) {
+      // A seat directory that is already gone has nobody left to read the record. Any other failure
+      // loses the only account a later reap has, so it is said where an operator can find it, and
+      // the reap reports the record missing or unreadable.
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+        const line = `exit record not written: ${(e as Error).message}\n`;
+        try {
+          unlinkSync(`${exitFile}.tmp`);
+        } catch {
+          /* never created */
+        }
+        try {
+          if (launch.logPath) appendFileSync(launch.logPath, line, { mode: 0o600 });
+          else process.stderr.write(line);
+        } catch {
+          /* the log can sit on the same failed storage */
+        }
+      }
+    }
     if (confirmTimer) {
       clearTimeout(confirmTimer);
       confirmTimer = undefined;
     }
-    for (const sock of controllers) send(sock, { event: "exit" });
+    for (const sock of controllers) send(sock, { event: "exit", exit });
     resolveWaiters();
     settleTerminal();
     armUnobservedHandoff();
@@ -292,6 +337,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
 
   proc.onData((d) => {
     term.write(d);
+    diagnostic.push(d);
     if (early.length < MAX_FRAME_SIZE) {
       early += early.length + d.length > MAX_FRAME_SIZE ? d.slice(0, MAX_FRAME_SIZE - early.length) : d;
     }
@@ -314,7 +360,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       reap = undefined;
       return;
     }
-    if (childGone()) markExited({});
+    markGone();
   }, 50);
   reap.unref();
 
@@ -435,7 +481,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           clearTimeout(handoffTimer);
           handoffTimer = undefined;
         }
-        if (alive && childGone()) markExited({});
+        markGone();
         send(sock, {
           id: req.id,
           ok: true,
@@ -447,7 +493,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           status: alive ? "running" : "exited",
           ...(exit ? { exit } : {}),
         });
-        if (!alive) send(sock, { event: "exit" });
+        if (!alive) send(sock, { event: "exit", ...(exit ? { exit } : {}) });
         return;
       }
       case "snapshot": {
@@ -463,7 +509,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         session.owned.add(sub);
         send(sock, { id: req.id, ok: true, op: "subscribe-output", sub });
         if (early) send(sock, { event: "output", sub, data: Buffer.from(early, "utf8").toString("base64") });
-        if (!alive) send(sock, { event: "exit", sub });
+        if (!alive) send(sock, { event: "exit", sub, ...(exit ? { exit } : {}) });
         return;
       }
       case "unsubscribe-output": {
@@ -503,7 +549,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         return;
       }
       case "wait-exit": {
-        if (alive && childGone()) markExited({});
+        markGone();
         if (!alive) {
           send(sock, { id: req.id, ok: true, op: "wait-exit", exit });
           return;
@@ -514,7 +560,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         return;
       }
       case "health": {
-        if (alive && childGone()) markExited({});
+        markGone();
         send(sock, {
           id: req.id,
           ok: true,

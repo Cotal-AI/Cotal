@@ -80,8 +80,12 @@ export interface AgentHandle {
    *  process (tmux/cmux/orca/herdr attach to an externally-owned one) cannot see how it ended, and
    *  a caller must say so rather than print a zero it never measured. Defaulting to `code: 0` here
    *  would fabricate a clean exit on exactly the seats whose death nobody can account for, which is
-   *  the failure this exists to end. */
-  exitInfo?(): { code?: number; signal?: number } | undefined;
+   *  the failure this exists to end.
+   *
+   *  `diagnostic` is the last line the child printed under a connector's `[cotal-<name>]` or
+   *  `[cotal-<name>/<part>]` prefix, for a backend that reads the child's output; absent when it
+   *  printed none. */
+  exitInfo?(): { code?: number; signal?: number; diagnostic?: string } | undefined;
   /** Open a live attach. Throws on backends that can't stream (e.g. tmux/cmux, which
    *  you attach to natively). */
   attach(): AttachSession;

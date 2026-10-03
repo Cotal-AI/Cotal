@@ -3,6 +3,7 @@ import {
   FrameReader,
   encodeFrame,
   type ClientRequest,
+  type SeatExit,
   type ServerEvent,
   type ServerReply,
   type StopMode,
@@ -15,7 +16,7 @@ export interface HelloInfo {
   cols: number;
   rows: number;
   status: "running" | "exited";
-  exit?: { code?: number; signal?: number };
+  exit?: SeatExit;
 }
 
 interface Pending {
@@ -35,6 +36,7 @@ export class SeatClient {
   private exits = new Set<() => void>();
   private helloInfo: HelloInfo | undefined;
   private pendingExit = false;
+  private pendingExitInfo: SeatExit | undefined;
   private closed = false;
 
   constructor(private readonly record: SeatRecord) {}
@@ -75,7 +77,7 @@ export class SeatClient {
       cols: reply.cols,
       rows: reply.rows,
       status: this.pendingExit ? "exited" : reply.status,
-      ...(reply.exit ? { exit: reply.exit } : {}),
+      ...((reply.exit ?? this.pendingExitInfo) ? { exit: reply.exit ?? this.pendingExitInfo } : {}),
     };
     return this.helloInfo;
   }
@@ -105,6 +107,11 @@ export class SeatClient {
     } finally {
       if (this.pendingSubscribe === fn) this.pendingSubscribe = undefined;
     }
+  }
+
+  /** How the child ended, once the custodian has said so (hello, exit event, or wait-exit). */
+  exitInfo(): SeatExit | undefined {
+    return this.helloInfo?.exit ?? this.pendingExitInfo;
   }
 
   onExit(fn: () => void): () => void {
@@ -143,7 +150,7 @@ export class SeatClient {
     if (!reply.ok) throw new Error(reply.error);
   }
 
-  async waitExit(): Promise<{ code?: number; signal?: number } | undefined> {
+  async waitExit(): Promise<SeatExit | undefined> {
     const reply = await this.request({ op: "wait-exit" });
     if (!reply.ok || reply.op !== "wait-exit") throw new Error(reply.ok ? "unexpected wait-exit reply" : reply.error);
     if (this.helloInfo) this.helloInfo.status = "exited";
@@ -184,8 +191,13 @@ export class SeatClient {
         return;
       }
       if (msg.event === "exit") {
-        if (this.helloInfo) this.helloInfo.status = "exited";
-        else this.pendingExit = true;
+        if (this.helloInfo) {
+          this.helloInfo.status = "exited";
+          if (msg.exit) this.helloInfo.exit = msg.exit;
+        } else {
+          this.pendingExit = true;
+          if (msg.exit) this.pendingExitInfo = msg.exit;
+        }
         for (const fn of this.exits) fn();
         this.exits.clear();
       }

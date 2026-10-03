@@ -3944,7 +3944,7 @@ export class Manager {
       const info = a.handle.exitInfo?.();
       detail = info === undefined
         ? `exit detail unavailable from runtime "${a.handle.kind}"`
-        : `exit code ${info.code ?? "unknown"}${info.signal === undefined ? "" : `, signal ${info.signal}`}`;
+        : `exit code ${info.code ?? "unknown"}${info.signal === undefined ? "" : `, signal ${info.signal}`}${info.diagnostic ? `; last connector diagnostic: ${info.diagnostic}` : ""}`;
     } catch (e) {
       // A runtime that throws while being asked has told us something real; it must not take the
       // log line (or the free path it sits on) down with it.
