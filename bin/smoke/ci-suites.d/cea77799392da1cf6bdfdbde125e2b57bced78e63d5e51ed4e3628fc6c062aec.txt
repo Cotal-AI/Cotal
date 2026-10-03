@@ -1,0 +1,2 @@
+# Two Claude Code sessions hosted in one process by serveClaudeSession: isolated identity, wake and teardown.
+smoke:claude-hosted-sessions

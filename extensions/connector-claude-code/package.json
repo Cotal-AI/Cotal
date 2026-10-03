@@ -15,10 +15,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp.d.ts",
+      "require": "./dist/mcp.cjs"
     }
   },
   "scripts": {
-    "test": "tsx smoke/launch-env.smoke.ts",
+    "test": "tsx smoke/launch-env.smoke.ts && tsx smoke/hosted-sessions.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
     "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/mcp.ts src/hook.ts --bundle --platform=node --format=cjs --target=node20 --outdir=dist --out-extension:.js=.cjs",
