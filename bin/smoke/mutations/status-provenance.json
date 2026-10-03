@@ -30,11 +30,12 @@
     },
     {
       "name": "the stale skills row hides the compared versions",
-      "file": "implementations/cli/src/commands/status.ts",
-      "find": "      return c.yellow(`${skills.version ? `v${skills.version} ≠ v${cliVersion()} · ` : \"\"}stale · ${displayCmd()} setup --skills`);",
-      "replace": "      return c.yellow(`stale · ${displayCmd()} setup --skills`);",
+      "file": "extensions/connector-claude-code/src/setup.ts",
+      "find": "  return row(\"warn\", `${typeof match.version === \"string\" ? `v${match.version} ≠ v${version} · ` : \"\"}stale · ${skillsRemedy}`);",
+      "replace": "  return row(\"warn\", `stale · ${skillsRemedy}`);",
       "expectRed": "source status names the source checkout root",
-      "cell": "source status names the source checkout root"
+      "cell": "source status names the source checkout root",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build"
     }
   ]
 }

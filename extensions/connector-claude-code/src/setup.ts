@@ -1,9 +1,10 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { registry, type ConnectorSetupProvider } from "@cotal-ai/core";
+import { registry, type ConnectorSetupProvider, type ConnectorStatusInput, type ConnectorStatusRow } from "@cotal-ai/core";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-claude.md";
@@ -152,6 +153,41 @@ function install(name: string, scope: string, expectedVersion?: string): void {
   verify(name, scope, expectedVersion);
 }
 
+/** One installed-plugin entry, as `claude plugin list --json` reports it. */
+type PluginEntry = Record<string, unknown>;
+
+/** The installed Claude Code plugins, or undefined when Claude cannot be launched or queried (both of
+ *  which status renders as "unknown" rather than "absent"). ONE spawn serves both rows. */
+function pluginList(): PluginEntry[] | undefined {
+  const result = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" });
+  if (result.status !== 0) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(result.stdout || "[]");
+    return Array.isArray(parsed) ? (parsed as PluginEntry[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The skills plugin vs the running CLI release, by the SAME predicate `verify` enforces after an
+ *  install (id, scope, enabled, errors, version), so status never blesses a plugin the installer would
+ *  reject. Stale, missing and broken all name the scoped remedy. */
+function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }: ConnectorStatusInput): ConnectorStatusRow {
+  const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude skills", state, text });
+  if (entries === undefined) return row("off", "unknown");
+  const match = entries.find((entry) => entry.id === `cotal-skills@${MARKETPLACE}` && entry.scope === "user");
+  if (!match || match.enabled === false) return row("off", `not installed · ${skillsRemedy}`);
+  const errors = (match.errors ?? match.error) as unknown;
+  if (Array.isArray(errors) ? errors.length > 0 : Boolean(errors)) return row("error", `load error · ${skillsRemedy}`);
+  if (match.version === version) return row("ok", "current");
+  return row("warn", `${typeof match.version === "string" ? `v${match.version} ≠ v${version} · ` : ""}stale · ${skillsRemedy}`);
+}
+
+// All handoffs in one setup run share a single Claude session: the first spawn pins a generated UUID
+// (--session-id), later spawns --resume it, so Claude keeps the context of earlier failures. stdio is
+// inherited, so pinning our own id is the only way to find the session again.
+let assistSession: string | undefined;
+
 export const claudeSetupProvider: ConnectorSetupProvider = {
   kind: "connector-setup",
   name: "claude",
@@ -190,6 +226,25 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
         rmSync(payload, { recursive: true, force: true });
       }
     },
+  },
+  assist: {
+    title: "Claude",
+    run(prompt) {
+      const sessionArgs = assistSession ? ["--resume", assistSession] : ["--session-id", (assistSession = randomUUID())];
+      const child = spawn("claude", [prompt, "--permission-mode", "auto", ...sessionArgs], { stdio: "inherit" });
+      return new Promise<void>((resolve, reject) => {
+        child.on("exit", () => resolve());
+        child.on("error", reject);
+      });
+    },
+  },
+  status(input) {
+    const plugins = pluginList();
+    const plugin = plugins?.some((entry) => entry.id === `cotal@${MARKETPLACE}`) ?? false;
+    return [
+      { label: "Claude plugin", state: plugin ? "ok" : "off", text: plugin ? "installed" : "not installed" },
+      skillsRow(plugins, input),
+    ];
   },
 };
 

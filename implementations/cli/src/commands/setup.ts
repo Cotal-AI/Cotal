@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { registry, type Connector, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorSkillsSetupInput, type ConnectorStatusRow, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   findCotalRoot,
   homeCotalDir,
@@ -24,7 +24,7 @@ import { abortIfCancel } from "../lib/cancel.js";
 import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
-import { machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 
@@ -51,7 +51,8 @@ export const setupFlags = [
  * (no onboarded stamp) gets the full narrated flow; later runs get a status card. `--full`
  * forces the full flow. By default it seeds ONE agent (the `default` persona a bare `cotal spawn`
  * launches); the guided expert team (david/sven/me) is opt-in via `--demo` (and `--full`). Each
- * failed step offers an interactive Claude handoff (COTAL_SKIP_ASSIST=1 disables).
+ * failed step offers the debug handoff of each present connector that declares one
+ * (COTAL_SKIP_ASSIST=1 disables).
  */
 export async function setup(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof setupFlags>;
@@ -110,7 +111,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
       },
     },
   ];
-  if (!(await runSteps(core, log, { yes }))) return abort();
+  if (!(await runSteps(core, log, { yes, assists: connectorAssists }))) return abort();
 
   // Connectors: which agents should be able to join. MEMBERSHIP is the live registry plus the
   // installed extension manifest — every connector that declares itself is a choice — and each
@@ -127,7 +128,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
     }
     const step = await connectorSetupStep(candidate.connector, "connector");
     if (step) {
-      if (!(await runSteps([step], log, { yes }))) return abort();
+      if (!(await runSteps([step], log, { yes, assists: connectorAssists }))) return abort();
     } else {
       p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
       log.line(`connector ${candidate.value}: ready (no install)`);
@@ -139,7 +140,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
   for (const candidate of candidates) {
     if (candidate.missing.length) continue;
     const step = await connectorSetupStep(candidate.connector, "skills");
-    if (step && !(await runSteps([step], log, { yes }))) return abort();
+    if (step && !(await runSteps([step], log, { yes, assists: connectorAssists }))) return abort();
   }
 
   // Your agent: the generic `default` persona a bare `cotal spawn` launches — one agent, yours to
@@ -387,6 +388,17 @@ async function reconcileConnectorSkills(): Promise<void> {
   }
 }
 
+/** The debug handoffs a failed step may offer: every connector on the setup surface whose provider
+ * declares one and whose executables are present. Resolved when a step fails, never earlier. */
+async function connectorAssists(): Promise<ConnectorAssist[]> {
+  const assists: ConnectorAssist[] = [];
+  for (const connector of await setupConnectorSurface()) {
+    const provider = await connectorSetupProvider(connector);
+    if (provider?.assist && setupProviderAvailable(provider)) assists.push(provider.assist);
+  }
+  return assists;
+}
+
 /** Pure availability rule for connector-owned setup actions. No executable means no harness write;
  * the caller still continues to the cross-vendor Agent Skills reconcile. */
 export function setupProviderAvailable(provider: Pick<ConnectorSetupProvider, "requires">): boolean {
@@ -413,6 +425,7 @@ function webInstalled(): boolean {
 export async function readyCard(cwd: string): Promise<void> {
   const mesh = await meshStatus(cwd);
   const m = await machineStatus();
+  const connectorRows = await cardConnectorRows();
   const web = await webUp();
   const mgr = managerUp();
   const cmd = displayCmd();
@@ -433,7 +446,7 @@ export async function readyCard(cwd: string): Promise<void> {
   note(
     [
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
-      line(m.claudePlugin, `plugin   ${dim(m.claudePlugin ? "installed" : "not installed")}`),
+      ...connectorRows.map((r) => line(r.state === "ok", `${r.label.padEnd(8)} ${dim(r.text)}`)),
       line(mesh.reachable !== false, `mesh     ${dim(meshLine)}`),
       line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup`)}`),
       line(mgr, `manager  ${dim(mgr ? "running" : `not running · start: ${cmd} up, or: ${cmd} supervise`)}`),
@@ -448,6 +461,16 @@ export async function readyCard(cwd: string): Promise<void> {
     ].join("\n"),
     brandBold("cotal · status"),
   );
+}
+
+/** The card's connector-reported rows. A manifest that cannot list connectors becomes one row naming
+ *  why, like the status Machine section. */
+async function cardConnectorRows(): Promise<ConnectorStatusRow[]> {
+  try {
+    return await connectorStatusRows(connectorHarnesses());
+  } catch (e) {
+    return [{ label: "connectors", state: "error", text: (e as Error).message }];
+  }
 }
 
 /** Reconcile Cotal's authored skills into the cross-vendor `~/.agents/skills` directory that Codex,

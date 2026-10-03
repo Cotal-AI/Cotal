@@ -12,12 +12,12 @@
   "mutations": [
     {
       "name": "S1 restore unscoped Claude skills remedy",
-      "file": "implementations/cli/src/commands/status.ts",
-      "find": "return c.yellow(`${skills.version ? `v${skills.version} ≠ v${cliVersion()} · ` : \"\"}stale · ${displayCmd()} setup --skills`);",
-      "replace": "return c.yellow(`${skills.version ? `v${skills.version} ≠ v${cliVersion()} · ` : \"\"}stale · ${displayCmd()} setup`);",
+      "file": "implementations/cli/src/lib/status.ts",
+      "find": "const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills` };",
+      "replace": "const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup` };",
       "expectRed": "stale Claude skills recommend setup --skills",
       "cell": "stale Claude skills recommend setup --skills",
-      "note": "Restores the issue's Claude skills row. Typecheck stays green. The status subprocess still prints the header.",
+      "note": "Restores the issue's Claude skills row through the remedy the CLI hands every setup provider. Typecheck stays green. The status subprocess still prints the header.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {

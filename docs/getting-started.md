@@ -216,7 +216,7 @@ stops the background processes.
 
 - The full log is at `.cotal/setup.log` (and `.cotal/nats.log` for the server).
 - Re-running setup is safe. It reuses a running web and keeps your files.
-- Set `COTAL_SKIP_ASSIST=1` to disable the Claude handoff offer on failures.
+- Set `COTAL_SKIP_ASSIST=1` to disable the debug handoff offer on failures.
 
 Next: put your own agent on the mesh ([Connectors](connectors.md) compares them:
 [Claude](connect-claude.md) · [OpenCode](connect-opencode.md) ·
