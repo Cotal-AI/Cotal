@@ -242,12 +242,13 @@ const envFileName = (mesh: string): string => `cotal-manager@${spaceKey(mesh)}.e
  *  empty one means the current directory) is resolved against this shell's cwd, because the unit
  *  starts in the mesh root, where the same spelling names another directory. An entry with a `..`
  *  segment is pinned as the directory it reaches now, symlinks followed: the shell's lookup steps
- *  up from a symlink's target, a lexical resolve from its name. Refused rather than guessed when
- *  absent, when a `..` entry reaches no directory, when a resolved entry contains the separator,
- *  and when it holds a line break the env file and plist cannot carry. */
+ *  up from a symlink's target, a lexical resolve from its name. A PATH set to the empty string is
+ *  one empty entry. Refused rather than guessed when unset, when a `..` entry reaches no
+ *  directory, when a resolved entry contains the separator, and when it holds a line break the
+ *  env file and plist cannot carry. */
 function installerPath(): string {
   const raw = process.env.PATH;
-  if (!raw) throw new Error("PATH is not set - `cotal service install` pins this shell's PATH into the unit so the manager resolves the same harness binaries");
+  if (raw === undefined) throw new Error("PATH is not set - `cotal service install` pins this shell's PATH into the unit so the manager resolves the same harness binaries");
   const dirs = raw.split(delimiter).map((dir) => {
     if (isAbsolute(dir)) return dir;
     if (!dir.split(sep).includes("..")) return resolve(dir);
