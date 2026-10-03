@@ -17,9 +17,27 @@ cotal --version           # cotal-ai version + each installed extension's (also 
 cotal <command> --help    # one command's flags and usage
 ```
 
-`npx cotal-ai <command>` runs it without a global install; in a dev clone, `pnpm cotal <command>`
-runs it through `tsx` with no build step. Bare `cotal` prints help. Every command generates its own
-`--help`, usage, and shell completion from its declared flags.
+`npx cotal-ai <command>` runs it without a global install. Bare `cotal` prints help. Every command
+generates its own `--help`, usage, and shell completion from its declared flags.
+
+In a dev clone, `pnpm cotal <command>` runs `bin/cotal.ts` through `tsx`, but `bin/` loads the other
+packages from their built `dist/`. Run `pnpm build` after `pnpm install`, and again after you edit a
+package, or the command fails with `ERR_MODULE_NOT_FOUND` for `@cotal-ai/cli/dist/index.js` or runs
+the old code.
+
+Most commands then stop with `refusing to reconcile the operator-global seed store ... from a source
+checkout`. A checkout never writes the connector store an installed `cotal` uses. For day-to-day
+work, set `COTAL_SKIP_CONNECTOR_SEED=1` to skip that seed step:
+
+```bash
+pnpm install
+pnpm build
+COTAL_SKIP_CONNECTOR_SEED=1 pnpm cotal status
+```
+
+Pointing `XDG_CONFIG_HOME` at a scratch dir, as the refusal suggests, is not enough by itself. A test
+that needs the seed from a checkout also sets `COTAL_ALLOW_CHECKOUT_SEED=1`, as described under
+[Built-in connectors are seeded extensions](#built-in-connectors-are-seeded-extensions).
 
 An undeclared flag is a usage error, and so is a flag given more than once unless it is
 repeatable, as `--opt` and `down --session-store` are. The command prints the error and its help,
