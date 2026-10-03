@@ -1431,6 +1431,17 @@ against that private config root; the unit itself starts with `COTAL_SKIP_CONNEC
 so a manager is never interrupted mid-seed by a restart. An install whose pre-seed cannot
 complete (network unreachable, registry error) refuses instead of deferring.
 
+The same file pins `PATH` to the `PATH` of the shell that ran `install`, and on macOS the plist's
+`EnvironmentVariables` carry it too. Without it the unit inherits the service manager's own short
+`PATH`, which usually lacks `~/.local/bin` and Homebrew, so the manager's boot inventory would
+report a harness unavailable that your shell resolves. Install from a shell that resolves every
+harness the service should launch, and reinstall after moving one. A relative entry, including
+an empty one, is resolved against the directory you ran `install` from, because the unit starts in
+the mesh root where the same spelling names another directory. An entry with a `..` segment is
+pinned as the directory your shell reaches through it, with symlinks followed, and refuses when it
+reaches none. A `PATH` set to the empty string is one empty entry, so it pins that directory. An
+unset `PATH` refuses.
+
 Every value the unit derives from a path (`WorkingDirectory`, the `EnvironmentFile` path, the
 `ExecStart` tokens) is escaped for systemd specifiers (`%` becomes `%%`), so a mesh root that
 contains `%` starts over its real path instead of a path systemd rewrote by expanding it. The

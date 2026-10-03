@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { accessSync, constants, existsSync } from "node:fs";
 import { arch, cpus, homedir, totalmem } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import type { CompletionResult, ParsedArgs } from "@cotal-ai/core";
 import {
   commandIsCotalSupervisor,
@@ -234,10 +234,43 @@ const serviceStateDir = (unitDir: string, mesh: string): string => join(unitDir,
  *  lines are a publication surface on a multi-user host). */
 const envFileName = (mesh: string): string => `cotal-manager@${spaceKey(mesh)}.env`;
 
-function writeEnvFile(mesh: string, server: string, stateDir: string): string {
+/** The installing shell's PATH, which the unit pins. A service manager hands its units its own
+ *  PATH (the systemd user manager's `/usr/local/bin:/usr/bin`, launchd's `/usr/bin:/bin`), which
+ *  lacks `~/.local/bin` and Homebrew, so an inherited PATH boots a manager that reports a harness
+ *  unavailable even though the operator's shell resolves it. An entry that is not absolute (an
+ *  empty one means the current directory) is resolved against this shell's cwd, because the unit
+ *  starts in the mesh root, where the same spelling names another directory. An entry with a `..`
+ *  segment is pinned as the directory it reaches now, symlinks followed: the shell's lookup steps
+ *  up from a symlink's target, a lexical resolve from its name. A PATH set to the empty string is
+ *  one empty entry. Refused rather than guessed when unset, when a `..` entry reaches no
+ *  directory, when a resolved entry contains the separator, and when it holds a line break the
+ *  env file and plist cannot carry. */
+function installerPath(): string {
+  const raw = process.env.PATH;
+  if (raw === undefined) throw new Error("PATH is not set - `cotal service install` pins this shell's PATH into the unit so the manager resolves the same harness binaries");
+  const dirs = raw.split(delimiter).map((dir) => {
+    if (isAbsolute(dir)) return dir;
+    if (!dir.split(sep).includes("..")) return resolve(dir);
+    try {
+      // `.native` is libc realpath(3), which walks like the kernel; the JS one collapses `..` first.
+      return realpathSync.native(dir);
+    } catch {
+      throw new Error(`PATH entry "${dir}" has a ".." segment and reaches no directory from here - make it absolute or remove it`);
+    }
+  });
+  if (dirs.some((dir) => dir.includes(delimiter))) throw new Error(`PATH has a relative entry that resolves to a directory containing "${delimiter}" - run install from another directory or make the entry absolute`);
+  const pinned = dirs.join(delimiter);
+  if (/[\r\n]/.test(pinned)) throw new Error("PATH contains a line break - it cannot be pinned into the unit's environment");
+  return pinned;
+}
+
+function writeEnvFile(mesh: string, server: string, stateDir: string, pathEnv: string): string {
   const path = join(stateDir, envFileName(mesh));
   const body = [
     `# ${MARKER}`,
+    // Double-quoted with `"` `\` `` ` `` `$` escaped, the only characters systemd unescapes inside
+    // double quotes (it does no `$VAR` expansion here), so any PATH reaches the manager verbatim.
+    `PATH="${pathEnv.replace(/["\\`$]/g, "\\$&")}"`,
     `COTAL_SPACE=${mesh}`,
     // The REGISTERED server, never a default: a mesh on a non-default port would otherwise boot
     // its unit into a permanent crash loop on the supervise target mismatch.
@@ -313,6 +346,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
   // healthy service over nothing, so the argv is proven here, not at unit start. The mesh
   // facts do NOT ride this argv (see the EnvironmentFile below).
   const exec = [...selfArgv(), "supervise"];
+  const pathEnv = installerPath();
   if (process.platform === "linux") {
     assertSystemdUser();
     const unit = systemdUnitName(mesh);
@@ -323,7 +357,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     // leave a state directory that no unit file names, because uninstall works from the unit.
     snapshotMeshEntry(mesh, stateDir);
     preseedService(stateDir);
-    const envFile = writeEnvFile(mesh, server, stateDir);
+    const envFile = writeEnvFile(mesh, server, stateDir, pathEnv);
     const body = [
       `# ${MARKER}`,
       `# cotal-mesh: ${mesh}`,
@@ -368,7 +402,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     // Same validate-first rule as the Linux arm.
     snapshotMeshEntry(mesh, stateDir);
     preseedService(stateDir);
-    const envFile = writeEnvFile(mesh, server, stateDir);
+    const envFile = writeEnvFile(mesh, server, stateDir, pathEnv);
     const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const body = [
       `<!-- ${MARKER} -->`,
@@ -386,6 +420,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
       `  <key>WorkingDirectory</key><string>${esc(root)}</string>`,
       `  <key>EnvironmentVariables</key>`,
       `<dict>`,
+      `    <key>PATH</key><string>${esc(pathEnv)}</string>`,
       `    <key>COTAL_SPACE</key><string>${esc(mesh)}</string>`,
       `    <key>COTAL_SERVER</key><string>${esc(server)}</string>`,
       `    <key>COTAL_HOME</key><string>${esc(stateDir)}</string>`,
