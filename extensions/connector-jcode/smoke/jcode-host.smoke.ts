@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CotalEndpoint, eventChannel, isAguiFramePart, isReachable, parsePrincipalKey, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
+import { RUN_ERROR_EGRESS_MESSAGE } from "@cotal-ai/connector-core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -483,15 +484,27 @@ try {
   );
   await waitFor("Jcode journal fold", () => readJsonLines<{ ev: string }>(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
   await waitFor(
-    "a journal fold keeps the events-armed Jcode seat alive and publishes its named discontinuity",
+    "a journal fold keeps the events-armed Jcode seat alive and ends the folded run with the fixed RUN_ERROR",
     () => fold.exitCode !== null || fold.signalCode !== null || frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_ERROR")) ? true : undefined,
   );
   const foldedFrames = frames.slice(foldStart);
   const foldEvents = foldedFrames.flatMap((frame) => frame.events);
+  // Since #1431 the connector's code `jcode_journal_fold` stays in the seat: a published RUN_ERROR
+  // carries only the fixed message. On the wire the fold is the run that opened the checkpoint tool
+  // ending with that tool's observation closed and then one RUN_ERROR, never RUN_FINISHED.
+  const foldRunId = foldedFrames.find((frame) =>
+    frame.events.some((event) => event.type === "TOOL_CALL_START" && event.toolCallId === "checkpoint-tool"))?.runId;
+  const foldRunEvents = foldedFrames.filter((frame) => frame.runId === foldRunId).flatMap((frame) => frame.events);
+  const foldTerminals = foldRunEvents.filter((event) => event.type === "RUN_ERROR" || event.type === "RUN_FINISHED");
+  const foldToolEnd = foldRunEvents.findIndex((event) => event.type === "TOOL_CALL_END" && event.toolCallId === "checkpoint-tool");
+  const foldRunError = foldRunEvents.findIndex((event) => event.type === "RUN_ERROR");
   check(
-    "a journal fold keeps the events-armed Jcode seat alive and publishes its named discontinuity",
-    fold.exitCode === null && fold.signalCode === null && foldEvents.some((event) => event.type === "RUN_ERROR" && event.code === "jcode_journal_fold"),
-    { exitCode: fold.exitCode, signalCode: fold.signalCode, foldEvents, stderr: foldErr },
+    "a journal fold keeps the events-armed Jcode seat alive and ends the folded run with the fixed RUN_ERROR",
+    fold.exitCode === null && fold.signalCode === null && foldRunId !== undefined &&
+      foldTerminals.length === 1 && foldTerminals[0]!.type === "RUN_ERROR" &&
+      foldTerminals[0]!.message === RUN_ERROR_EGRESS_MESSAGE && !("code" in foldTerminals[0]!) && !("rawEvent" in foldTerminals[0]!) &&
+      foldToolEnd >= 0 && foldToolEnd < foldRunError,
+    { exitCode: fold.exitCode, signalCode: fold.signalCode, foldRunId, foldEvents, stderr: foldErr },
   );
   await stopHostTree(fold, "SIGTERM");
 
