@@ -5006,10 +5006,10 @@ export class CotalEndpoint extends EventEmitter {
         // Remove BEFORE the ack. The ack ends the reader's work on this entry, so acking first and
         // then failing the delete would keep the entry with nothing left to remove it. A failed delete
         // stays pending and retries, bounded by the same ceiling; an entry the stream no longer holds
-        // is already removed.
+        // is already removed (the broker answers a delete of a missing sequence with 10043).
         try { await this.jsm!.streams.deleteMessage(inboxStream(this.space), m.seq, false); }
         catch (e) {
-          if (!isJetStreamMissing(e, JetStreamApiCodes.NoMessageFound)) {
+          if (!isJetStreamMissing(e, 10043)) {
             if (redeliveries >= READER_MAX_REDELIVERIES) {
               m.term();
               this.emit("error", new Error(`plane-3 reader: gave up removing entry ${m.seq} for retired lifecycle ${owner}.${pr.lifecycleUid} after ${redeliveries} redeliveries: ${(e as Error).message}`));
