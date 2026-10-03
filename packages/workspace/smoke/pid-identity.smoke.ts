@@ -285,18 +285,19 @@ try {
 
     let g2Threw = false;
     try {
-      writePidPair(gPath, newTarget.pid!, { onStep: (step) => { if (step === "unlink-old-pin") throw new Error("planted crash after unlink-old-pin"); } });
+      writePidPair(gPath, newTarget.pid!, { onStep: (step) => { if (step === "bridge-pin") throw new Error("planted crash after bridge-pin"); } });
     } catch { g2Threw = true; }
-    check("G2 a crash after `unlink-old-pin` leaves the OLD pid with no pin (legacy, never torn)",
-      g2Threw && parsePid(readFileSync(gPath, "utf8")) === oldTarget.pid && verifyIdentityPin(gPath).kind === "legacy",
-      { pidfile: readFileSync(gPath, "utf8"), verdict: verifyIdentityPin(gPath).kind });
+    check("G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
+      g2Threw && parsePid(readFileSync(gPath, "utf8")) === oldTarget.pid && verifyIdentityPin(gPath).kind === "match"
+        && readFileSync(identityPinPath(gPath), "utf8").trim().split("\n").length === 2,
+      { pidfile: readFileSync(gPath, "utf8"), pin: readFileSync(identityPinPath(gPath), "utf8"), verdict: verifyIdentityPin(gPath).kind });
 
     let g3Threw = false;
     try {
       writePidPair(gPath, newTarget.pid!, { onStep: (step) => { if (step === "publish-pid") throw new Error("planted crash after publish-pid"); } });
     } catch { g3Threw = true; }
-    check("G3 a crash after `publish-pid` leaves the NEW pid with no pin (legacy, never torn-pairing)",
-      g3Threw && parsePid(readFileSync(gPath, "utf8")) === newTarget.pid && verifyIdentityPin(gPath).kind === "legacy",
+    check("G3 a crash after `publish-pid` leaves the NEW pid checked against its own pin line (match, never legacy or torn-pairing)",
+      g3Threw && parsePid(readFileSync(gPath, "utf8")) === newTarget.pid && verifyIdentityPin(gPath).kind === "match",
       { pidfile: readFileSync(gPath, "utf8"), verdict: verifyIdentityPin(gPath).kind });
 
     let g4Ok = true;
@@ -316,8 +317,8 @@ try {
     try {
       writePidPair(firstPath, firstTarget.pid!, { onStep: (step) => { if (step === "publish-pid") throw new Error("planted crash after publish-pid, first start"); } });
     } catch { g5Threw = true; }
-    check("G5 a first-start crash after `publish-pid` leaves a bare NEW pid with no pin (legacy)",
-      g5Threw && parsePid(readFileSync(firstPath, "utf8")) === firstTarget.pid && !existsSync(identityPinPath(firstPath)));
+    check("G5 a first-start crash after `publish-pid` leaves the NEW pid already pinned (match, never legacy)",
+      g5Threw && parsePid(readFileSync(firstPath, "utf8")) === firstTarget.pid && verifyIdentityPin(firstPath).kind === "match");
     reap(firstTarget.child);
 
     check("G6 no `.publish.` temporary survives ANY of G1 through G5",

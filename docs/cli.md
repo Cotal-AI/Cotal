@@ -359,6 +359,12 @@ and the manager, delivery and auth-service stops, applies the same rule. A pin t
 start means the pid was reused, so teardown refuses and preserves it. A torn or unreadable pin also
 refuses.
 
+The pidfile and its pin are published by renames, and the pidfile rename is the commit point. Just
+before it, the pin holds two lines: the old process's and the new one's. A launcher that dies
+mid-publish therefore leaves the old record or the new one, each checked against its own pin line,
+never a pidfile without its pin. A CLI older than this change reads a two-line pin as torn and
+refuses.
+
 The pidfile pid and the pin pid are two coordinates. Automatic cleanup follows **proven death of
 the pidfile target** (ESRCH on that pid): a torn sibling pin does not wedge a dead pidfile pid.
 A torn pairing where the pin names another pid, while the pidfile pid is still live or not proven
