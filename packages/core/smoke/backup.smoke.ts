@@ -63,6 +63,20 @@ assert.throws(
   () => validateSpaceBackupInventory(space, [...inventory.full, ...inventory.excluded.map((s) => s.name), "FOREIGN"]),
   /unexpected.*FOREIGN/,
 );
+// At rest (a stopped store on a fresh broker, what backup reads) the memory-backed presence bucket
+// (#1356) is gone, and that alone must not refuse. A file-backed one an older cotal left is accepted
+// too. Live, presence stays required, and at rest every OTHER stream stays exact.
+const presence = inventory.excluded.filter((s) => s.class === "transient").map((s) => s.name);
+assert.deepEqual(presence, [`KV_cotal_presence_${space}`]);
+const withoutPresence = [...inventory.full, ...inventory.excluded.map((s) => s.name)].filter((n) => !presence.includes(n));
+assert.deepEqual(validateSpaceBackupInventory(space, withoutPresence, { atRest: true }), inventory);
+assert.deepEqual(validateSpaceBackupInventory(space, [...withoutPresence, ...presence], { atRest: true }), inventory);
+assert.throws(() => validateSpaceBackupInventory(space, withoutPresence), /missing \[KV_cotal_presence_backup_smoke\]/);
+assert.throws(() => validateSpaceBackupInventory(space, inventory.full, { atRest: true }), /missing/);
+assert.throws(
+  () => validateSpaceBackupInventory(space, [...withoutPresence, "FOREIGN"], { atRest: true }),
+  /unexpected.*FOREIGN/,
+);
 
 for (const stream of inventory.full) {
   const config = canonicalBackupStreamConfig(space, stream);

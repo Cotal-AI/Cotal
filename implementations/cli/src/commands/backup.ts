@@ -114,7 +114,8 @@ async function collectInventory(nc: NatsConnection, space: string, selected: Spa
     if (next <= offset) throw new Error("JetStream stream inventory pagination made no progress");
     offset = next;
   }
-  validateSpaceBackupInventory(space, streamNames);
+  // The clone is a stopped store on a fresh broker, so the memory-backed presence bucket is gone.
+  validateSpaceBackupInventory(space, streamNames, { atRest: true });
   const inventory = spaceBackupInventory(space);
   const expected = inventory[selected];
   const consumersByStream: Record<string, ConsumerInfo[]> = {};
