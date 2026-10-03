@@ -1336,6 +1336,11 @@ export class MeshHandler {
     if (req.placement !== undefined && req.placement.endpoint !== this.binding.endpoint)
       throw new EffectError("L4000", "spawn",
         `spawn(${req.persona}) placement targets endpoint ${JSON.stringify(req.placement.endpoint)} but this run is bound to ${JSON.stringify(this.binding.endpoint)}; refusing rather than dispatching off-binding`);
+    // The manager reads only a boolean `events`, so any other value would arm the default plane
+    // the author was trying to opt out of. Refused before anything is submitted.
+    if (req.events !== undefined && typeof req.events !== "boolean")
+      throw new EffectError("L4000", "spawn",
+        `spawn(${req.persona}) events must be true or false; refusing ${JSON.stringify(req.events)} rather than launching with the default event plane`);
 
     // A recorded goalId is a previous attempt's ACCEPTANCE: the submission landed and its
     // identity was bound before the crash. Go straight back to the terminal. An entry that says
@@ -2653,7 +2658,8 @@ function readCwdResolution(value: unknown): CwdResolution | undefined {
 
 /** The manager `spawn` args a {@link SpawnRequest} submits: persona names the persona file
  *  (`name`), `join` becomes the seat's channel subscriptions. `permits` stay on the run (they
- *  bind at `turn`); `supervise` travels because the manager is who restarts the process. */
+ *  bind at `turn`); `supervise` travels because the manager is who restarts the process, and
+ *  `events` because the manager is who arms the event plane (`false` is `--no-events`). */
 export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
   return {
     name: req.persona,
@@ -2667,6 +2673,7 @@ export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
     ...(req.role !== undefined ? { role: req.role } : {}),
     ...(req.join !== undefined && req.join.length > 0 ? { subscribe: req.join.map((c) => c.channel) } : {}),
     ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),
+    ...(req.events !== undefined ? { events: req.events } : {}),
   };
 }
 

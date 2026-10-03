@@ -689,7 +689,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         );
       const model = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "model") as string | undefined);
       const variant = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "variant") as string | undefined);
-      // Every accepted option is forwarded, including the three that are policy rather than
+      // Every accepted option is forwarded, including the four that are policy rather than
       // identity. Dropping them here would be silent: the validator accepts `permits`, so an
       // author who writes a budget gets no error and no budget. They are deliberately absent
       // from `hashedOptions` (§5.12) because they decide the INTERPRETATION of a result, not the
@@ -713,6 +713,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           ? { supervise: option(bag, "supervise") as Record<string, unknown> }
           : {}),
         ...(option(bag, "onFork") !== undefined ? { onFork: option(bag, "onFork") as "respawn" | "adopt" } : {}),
+        ...(option(bag, "events") !== undefined ? { events: option(bag, "events") as boolean } : {}),
       };
       return await performEffect(host,
         "spawn",
