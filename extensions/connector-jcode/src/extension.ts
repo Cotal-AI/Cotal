@@ -6,6 +6,7 @@ import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSp
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { parse as parseToml } from "smol-toml";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
+import { readJcodeForkSource } from "./session-fork.js";
 
 const FROM_BUILD = import.meta.url.includes("/dist/");
 const HOST_ENTRY = fileURLToPath(new URL(`./${FROM_BUILD ? "host.js" : "host-main.ts"}`, import.meta.url));
@@ -116,6 +117,9 @@ export const jcodeConnector: Connector = {
   supportsModelVariant: true,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // Jcode serves a first turn from an initial message — see buildLaunch
+  // `--resume` forks the named session from the operator's Jcode home into the seat's private home
+  // before its instance starts (session-fork.ts). The seat owns the copy; the source is only read.
+  supportsResume: true,
   eventChannel,
   listModels: listJcodeModels,
   launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
@@ -125,8 +129,9 @@ export const jcodeConnector: Connector = {
       throw new Error("jcode connector is not supported on Windows — Jcode's released Harness API bridge is a Unix-socket surface");
     if (opts.continueSession)
       throw new Error("jcode connector does not support exact-session continuation — its private Harness API instance is retired with the seat");
-    if (opts.resume)
-      throw new Error("jcode connector: resuming an existing session is not supported — the private Harness API instance never shares a session with another seat");
+    // Read the source here so a missing or unreadable transcript refuses before the seat launches.
+    const resumeHome = opts.resume ? userJcodeHome() : undefined;
+    if (opts.resume) readJcodeForkSource(resumeHome!, opts.resume);
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("jcode connector: tool-sharing (connectors.jcode.mcpServers) is not implemented — the connector owns the private MCP configuration that carries cotal_*");
 
@@ -141,6 +146,11 @@ export const jcodeConnector: Connector = {
       COTAL_JCODE_HOME: opts.workspaceRoot ?? process.cwd(),
     };
     if (opts.resolvedBinaries?.jcode) env.COTAL_JCODE_BIN = opts.resolvedBinaries.jcode;
+    // The host forks from the same home this launch validated, not from whatever its own env resolves.
+    if (opts.resume) {
+      env.COTAL_JCODE_RESUME = opts.resume;
+      env.COTAL_JCODE_RESUME_HOME = resumeHome!;
+    }
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;

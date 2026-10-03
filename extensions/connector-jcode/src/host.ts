@@ -9,6 +9,7 @@ import { hardenPrivate, loadAgentFile, type PresenceCondition, type PresenceCond
 import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
+import { forkJcodeSession, type JcodeFork } from "./session-fork.js";
 import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
 import {
   classifyReadinessProviderRefusal,
@@ -423,8 +424,16 @@ export async function runJcodeHost(): Promise<void> {
   // The managed home stays in the workspace, but this private short alias keeps that fixed API
   // path below AF_UNIX's platform limit. Failure is fatal; a long-path fallback is the reported bug.
   let socketHome: ShortSocketHome;
+  const resumeSource = process.env.COTAL_JCODE_RESUME?.trim();
+  let fork: JcodeFork | undefined;
   try {
     mirrorJcodeCredentials(home);
+    // `cotal spawn --resume`: the fork is on disk before the seat's instance first reads its sessions.
+    if (resumeSource) {
+      const sourceHome = process.env.COTAL_JCODE_RESUME_HOME?.trim();
+      if (!sourceHome) throw new Error("COTAL_JCODE_RESUME_HOME is not set — the launch must name the home it validated the source in");
+      fork = forkJcodeSession({ sourceHome, sessionId: resumeSource, seatHome: home, cwd });
+    }
     socketHome = shortSocketHome(home);
   } catch (error) {
     // These refusals name local paths, which the public startup diagnostic never renders, so
@@ -1785,7 +1794,11 @@ export async function runJcodeHost(): Promise<void> {
     const sessionsPath = storedSessionsPath(socketHome.jcodeHome);
     const stored = inspectStoredSessions(socketHome.jcodeHome);
     let listingFailed = false;
-    if (isEmptyStoredSessionsDirectory(stored)) {
+    if (fork) {
+      // An operator fork names its session. It is never chosen by size among the home's others,
+      // which may be left from an earlier seat of the same name.
+      prior = { session_id: fork.forkId };
+    } else if (isEmptyStoredSessionsDirectory(stored)) {
       writeJcodeDiagnostic(
         `[cotal-jcode] stored sessions directory is empty (${stored.path}); starting fresh without listing\n`,
       );
@@ -1827,7 +1840,9 @@ export async function runJcodeHost(): Promise<void> {
       if (prior) {
         session = await client.attachSession(prior.session_id);
         writeJcodeDiagnostic(
-          `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
+          fork
+            ? `[cotal-jcode] ${fork.created ? "forked" : "continued its fork of"} session ${resumeSource} as ${prior.session_id}\n`
+            : `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
         );
       } else {
         session = await client.createSession(cwd);
@@ -1846,7 +1861,8 @@ export async function runJcodeHost(): Promise<void> {
         boundStoredSessionCause(panic ?? `${(error as Error).message ?? ""}\n${bridgeStderr}`),
       );
     }
-    const resumed = prior !== undefined;
+    // A fork made by this launch carries the source's history but not this seat's briefing.
+    const resumed = prior !== undefined && fork?.created !== true;
     sessionId = session.session_id;
     agent.setContextId(sessionId);
     if (events) {
