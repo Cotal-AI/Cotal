@@ -47,11 +47,12 @@ export interface CustodianLaunch {
 
 /** The longest connector diagnostic kept: one line, enough for an error and the path it names. */
 const DIAGNOSTIC_MAX = 240;
-/** How much of an unfinished output line is held while waiting for its end. */
-const LINE_TAIL_MAX = 4096;
+/** How much of the start of an unfinished output line is held while waiting for its end. */
+const LINE_HEAD_MAX = 4096;
 
-/** The last `[cotal-<name>] …` line in `text`, with terminal escapes and control bytes removed.
- *  Connectors print their own diagnostics under that prefix; nothing else the child prints is kept. */
+/** The last line in `text` that starts with a `[cotal-<name>]` prefix, with terminal escapes and
+ *  control bytes removed. Connectors print their own diagnostics under that prefix; nothing else
+ *  the child prints is kept, including a line that only quotes the prefix after other text. */
 function lastConnectorDiagnostic(text: string): string | undefined {
   const plain = text
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
@@ -59,7 +60,7 @@ function lastConnectorDiagnostic(text: string): string | undefined {
     .replace(/\x1b./g, "")
     .replace(/\r/g, "\n")
     .replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
-  const line = plain.match(/\[cotal-[a-z0-9-]+\][^\n]*/g)?.at(-1)?.trim();
+  const line = plain.match(/^ *\[cotal-[a-z0-9-]+\][^\n]*/gm)?.at(-1)?.trim();
   if (!line) return undefined;
   return line.length > DIAGNOSTIC_MAX ? `${line.slice(0, DIAGNOSTIC_MAX)}…` : line;
 }
@@ -120,9 +121,10 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   let cols = DEFAULT_COLS;
   let rows = DEFAULT_ROWS;
   let exit: SeatExit | undefined;
-  // The child's last connector diagnostic, and the unfinished line it may still be printing.
+  // The child's last connector diagnostic, and the start of the unfinished line it may still be
+  // printing.
   let diagnostic: string | undefined;
-  let lineTail = "";
+  let lineHead = "";
   const dataSubs = new Map<number, Set<Socket>>();
   const waiters = new Map<Socket, Set<number>>();
   const controllers = new Set<Socket>();
@@ -317,7 +319,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       return;
     }
     alive = false;
-    const last = lastConnectorDiagnostic(lineTail) ?? diagnostic;
+    const last = lastConnectorDiagnostic(lineHead) ?? diagnostic;
     exit = { ...(info ?? exit ?? {}), ...(last ? { diagnostic: last } : {}) };
     // Kept beside the custody record so a reap that runs after every controller is gone, even in a
     // successor manager, can still say how the child ended.
@@ -338,11 +340,12 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
 
   proc.onData((d) => {
     term.write(d);
-    // Only complete lines are scanned, so a diagnostic split across chunks is read whole.
-    const text = lineTail + d;
+    // Only complete lines are scanned, so a diagnostic split across chunks is read whole. The start
+    // of an unfinished line is what is held, because its prefix decides whether it is a diagnostic.
+    const text = lineHead + d;
     const cut = Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r"));
     if (cut >= 0 && text.lastIndexOf("[cotal-", cut) >= 0) diagnostic = lastConnectorDiagnostic(text.slice(0, cut)) ?? diagnostic;
-    lineTail = text.slice(cut + 1).slice(-LINE_TAIL_MAX);
+    lineHead = text.slice(cut + 1, cut + 1 + LINE_HEAD_MAX);
     if (early.length < MAX_FRAME_SIZE) {
       early += early.length + d.length > MAX_FRAME_SIZE ? d.slice(0, MAX_FRAME_SIZE - early.length) : d;
     }
