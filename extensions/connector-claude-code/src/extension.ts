@@ -109,6 +109,11 @@ const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
 /** The cotal MCP server bundle, supplied explicitly so a spawned session can run with ONLY this
  *  MCP server (see buildLaunch's --strict-mcp-config). */
 const MCP_CJS = resolve(PLUGIN_ROOT, "dist", "mcp.cjs");
+/** Node flags for that server, kept in step with .mcp.json. Every session runs its own copy, so its
+ *  resident size is paid once per agent. The server is an idle I/O relay; without these V8 keeps a
+ *  young generation of ~9MB that is almost all empty, and grows old space for throughput it never
+ *  needs. Not `--lite-mode`/`--jitless`: those remove `WebAssembly`, which node's `fetch` needs. */
+const MCP_NODE_FLAGS = ["--optimize-for-size", "--max-semi-space-size=1"];
 
 /**
  * Refuse a model this connector cannot serve, at LAUNCH, the way an unsupported `variant` is
@@ -260,7 +265,7 @@ export const claudeConnector: Connector = {
     // presence) plus any the operator explicitly opted to share (`shared`, from the cotal config).
     // The plugin itself stays enabled (its hooks + the dev-channels wake path are unaffected).
     // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
-    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: [MCP_CJS] } };
+    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: [...MCP_NODE_FLAGS, MCP_CJS] } };
     // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
     // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
     // expands it from the child env at launch — see the mcpKeys forwarding above), never the resolved

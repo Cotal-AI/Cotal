@@ -1,0 +1,2 @@
+# The per-session MCP server launches with the footprint flags, and fetch still works under them.
+smoke:claude-mcp-footprint
