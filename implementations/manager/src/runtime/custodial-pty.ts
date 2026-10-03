@@ -5,15 +5,17 @@ import type { AgentHandle, AttachSession, LaunchSpec, RuntimeReference } from "@
 import type { CustodialRuntime, RuntimeReapEvidence } from "./index.js";
 import { adoptSeatSync, launchSeat, loadSeat, reapSeat, seatId, unsupportedTransport, type SeatRecord } from "@cotal-ai/seat";
 
-function defaultCustodyRoot(): string {
-  return join(homedir(), ".cotal", "seats");
+/** Where custodial pty seats keep their records: `COTAL_SEAT_ROOT`, else `~/.cotal/seats`. */
+export function custodyRoot(): string {
+  return process.env.COTAL_SEAT_ROOT ?? join(homedir(), ".cotal", "seats");
 }
 
 /**
- * Production pty runtime on Linux: a one-shot launcher starts a detached
- * per-seat custodian, then this process holds only a proxy AgentHandle.
- * `createRuntime("pty")` does not construct this class off Linux. Spawn and
- * adopt still throw the named transport error if it is instantiated there.
+ * Linux custodial pty: a one-shot launcher starts a detached per-seat
+ * custodian, then this process holds only a proxy AgentHandle.
+ * `createRuntime("pty")` no longer spawns through this class (#1391); it uses
+ * it only to adopt and reap seats a pre-repair manager left running. Spawn and
+ * adopt throw the named transport error off Linux.
  */
 export class CustodialPtyRuntime implements CustodialRuntime {
   readonly kind = "pty" as const;
@@ -27,7 +29,7 @@ export class CustodialPtyRuntime implements CustodialRuntime {
    */
   private readonly records = new Map<string, SeatRecord>();
 
-  constructor(private readonly root: string = process.env.COTAL_SEAT_ROOT ?? defaultCustodyRoot()) {
+  constructor(private readonly root: string = custodyRoot()) {
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
   }
 

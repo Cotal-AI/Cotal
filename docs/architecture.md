@@ -160,9 +160,9 @@ laterally; the manager only births and configures them.
   through presence, so a bring-your-own-terminal agent it never spawned still shows up in
   `ps`.
 - **Pluggable runtimes.** Spawning is abstracted behind a `Runtime` contract (like pm2 or
-  docker for agent TUIs): **`pty`** ships built-in (a detached per-seat custodian owns the
-  pseudo-terminal on Linux; watch or type via `cotal attach`; other platforms still spawn
-  in-process, and `adopt` throws until their transport lands); **`tmux`**, **`cmux`**, **`orca`**, and **`herdr`** are
+  docker for agent TUIs): **`pty`** ships built-in (the manager owns the pseudo-terminal
+  in-process on every platform; watch or type via `cotal attach`; on Linux it still adopts
+  seats an earlier manager left under a detached custodian, and elsewhere `adopt` throws); **`tmux`**, **`cmux`**, **`orca`**, and **`herdr`** are
   extensions that put each teammate in its own native terminal surface (explicit opt-ins
   that throw when the extension isn't loaded, never a silent fallback); **byo** is the
   floor (a human's own terminal, tracked via presence); **host** (Agent SDK, true mid-turn

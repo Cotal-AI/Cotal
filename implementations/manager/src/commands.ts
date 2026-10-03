@@ -37,6 +37,8 @@ import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProb
 import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
+import { custodyRoot } from "./runtime/custodial-pty.js";
+import { drainSeats } from "@cotal-ai/seat";
 import { c } from "./ui.js";
 import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunAdmission, remoteRunAdmissionRequest, remoteRunAttemptCredentials, remoteRunAttemptRequest, remoteRunRenewalCredentials } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
@@ -807,6 +809,27 @@ async function runDeregisterInstance(args: ParsedArgs): Promise<void> {
   }
 }
 
+/**
+ * `cotal seats`: the custody records an earlier Linux manager left when the pty runtime still
+ * started a detached custodian per seat (#1391). Read-only unless `--drain`, which retires each seat
+ * whose agent has exited and keeps every seat whose agent still runs. A refusal exits non-zero: it is
+ * a record nothing could prove safe to remove, so an operator has to look at it.
+ */
+async function runSeats(args: ParsedArgs): Promise<void> {
+  const root = custodyRoot();
+  const entries = await drainSeats(root, { drain: args.values.drain === true });
+  if (entries.length === 0) {
+    console.log(`no seat custody records under ${root}`);
+    return;
+  }
+  for (const e of entries) console.log(`${e.id}  ${e.state.padEnd(10)}  ${e.name ?? "-"}  ${e.detail}`);
+  const count = (state: string): number => entries.filter((e) => e.state === state).length;
+  console.error(
+    c.dim(`• ${entries.length} record(s) under ${root}: ${count("live-child")} live-child, ${count("childless")} childless, ${count("drained")} drained, ${count("refused")} refused`),
+  );
+  if (count("refused") > 0) process.exitCode = 1;
+}
+
 /** The manager's commands: the `supervise` daemon runner, and the guarded `reconcile-gate` repair.
  *  Self-registered on import; the `cotal` binary resolves them from the registry. */
 const managerCommands: Command[] = [
@@ -863,6 +886,15 @@ const managerCommands: Command[] = [
       { name: "instance", type: "string", value: "<id>", description: "instance id to deregister, the whole id as `cotal ps` prints it (default: this folder's persisted manager instance)" },
     ],
     run: runDeregisterInstance,
+  },
+  {
+    kind: "command",
+    name: "seats",
+    group: "Manager",
+    summary:
+      "list the pty seat custodians an earlier Linux manager left on this machine - [--drain] retires each seat whose agent has exited and never signals one whose agent still runs",
+    flags: [{ name: "drain", type: "boolean", description: "retire every seat whose agent has exited; a seat whose agent still runs is kept" }],
+    run: runSeats,
   },
 ];
 

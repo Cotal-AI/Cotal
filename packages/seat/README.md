@@ -72,5 +72,13 @@ Every custodian carries `--cotal-run <marker>` on its argv and `COTAL_RUN` in it
 `censusCustodians(run?)` reads that marker back out of `/proc/<pid>/cmdline`, which is
 world-readable, so a reaper can find and attribute orphans without walking `/proc/*/cwd`.
 
+`drainSeats(root, { drain })` lists the custody records under a root. A record that cannot be
+read, or whose start and boot identity do not tie its pids to this boot, is reported as `refused`
+and left on disk, with or without `drain`. A seat whose child still holds its recorded start
+identity is reported as `live-child` and never signalled. With `drain`, every other seat goes
+through `reapSeat`. One it cannot prove gone is reported as `refused` and left on disk, and
+`reapSeat` may already have sent `SIGKILL` to its custodian.
+`cotal seats [--drain]` is the operator command over it.
+
 Generation CAS, the crash journal, N/N-1 protocol compatibility, and manager-worker activation
 are later milestones. This package currently speaks a single implicit controller.
