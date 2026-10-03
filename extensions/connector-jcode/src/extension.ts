@@ -6,7 +6,7 @@ import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSp
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { parse as parseToml } from "smol-toml";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
-import { readJcodeForkSource } from "./session-fork.js";
+import { jcodeSeatHome, ownedJcodeFork, readJcodeForkSource } from "./session-fork.js";
 
 const FROM_BUILD = import.meta.url.includes("/dist/");
 const HOST_ENTRY = fileURLToPath(new URL(`./${FROM_BUILD ? "host.js" : "host-main.ts"}`, import.meta.url));
@@ -129,9 +129,11 @@ export const jcodeConnector: Connector = {
       throw new Error("jcode connector is not supported on Windows — Jcode's released Harness API bridge is a Unix-socket surface");
     if (opts.continueSession)
       throw new Error("jcode connector does not support exact-session continuation — its private Harness API instance is retired with the seat");
-    // Read the source here so a missing or unreadable transcript refuses before the seat launches.
+    // Read the source here so a missing or unreadable transcript refuses before the seat launches. A
+    // seat that already owns its fork continues it without the source, which may since have gone.
     const resumeHome = opts.resume ? userJcodeHome() : undefined;
-    if (opts.resume) readJcodeForkSource(resumeHome!, opts.resume);
+    if (opts.resume && !ownedJcodeFork(jcodeSeatHome(opts.workspaceRoot ?? process.cwd(), opts.space, opts.name), opts.resume))
+      readJcodeForkSource(resumeHome!, opts.resume);
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("jcode connector: tool-sharing (connectors.jcode.mcpServers) is not implemented — the connector owns the private MCP configuration that carries cotal_*");
 

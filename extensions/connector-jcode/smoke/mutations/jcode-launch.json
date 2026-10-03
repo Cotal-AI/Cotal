@@ -13,8 +13,8 @@
     {
       "name": "Jcode connector refuses resume of an unreadable transcript before launch",
       "file": "extensions/connector-jcode/src/extension.ts",
-      "find": "if (opts.resume) readJcodeForkSource(resumeHome!, opts.resume);",
-      "replace": "if (false) readJcodeForkSource(resumeHome!, opts.resume);",
+      "find": "if (opts.resume && !ownedJcodeFork(",
+      "replace": "if (false && !ownedJcodeFork(",
       "expectRed": "refuses resume of a session with no readable transcript"
     },
     {
