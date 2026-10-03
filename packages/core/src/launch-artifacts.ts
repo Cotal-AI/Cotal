@@ -14,12 +14,12 @@
  * and the launcher removes the files on that error only. A removal that fails leaves them owned, and
  * the owner tries again.
  *
- * WHAT IS LEFT. On a runtime with durable custody (pty on Linux) the seat's custodian, the child's
- * parent, removes them when it sees the child exit, whether or not the launcher is still alive. Its
- * custody record keeps any it could not remove, and the reap that proves the seat gone removes those
- * and the ones a custodian killed first left, against the temp dir the record names, and keeps the
- * record until it has. Every other launcher starts the child through {@link reclaimWithChild}, so a
- * watcher beside the child removes them once the child is gone, even when the launcher was killed.
+ * WHAT IS LEFT. On a custodial runtime the seat's custodian, the child's parent, removes them when it
+ * sees the child exit, whether or not the launcher is still alive. Its custody record keeps any it
+ * could not remove, and the reap that proves the seat gone removes those and the ones a custodian
+ * killed first left, against the temp dir the record names, and keeps the record until it has. Every
+ * other launcher starts the child through {@link reclaimWithChild}, so a watcher beside the child
+ * removes them once the child is gone, even when the launcher was killed.
  * What stays until the OS temp reaper removes it: the files of a spawn that threw anything but
  * {@link SpawnRefused} before its child started, those of a watcher that was itself SIGKILLed while
  * its launcher was dead, and on Windows, which has no POSIX shell to run the watcher, those of a

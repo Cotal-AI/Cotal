@@ -164,18 +164,19 @@ function createBackend(mode: RuntimeMode, session: string): Runtime {
  * holds for every backend: a spec's private files are removed only once the runtime has proved its
  * child gone.
  *
- * - A custodial runtime (pty on Linux) hands the files to the seat's custodian, the parent of the
- *   child: it removes them when it sees that child exit, so they go on exit, stop and the custodian's
- *   own unattended timeout whether or not any manager is still alive. The runtime removes them on a
- *   refusal made before any process existed. The end of this manager's attach stream proves nothing,
- *   since a custodian that dies leaves its child running, so nothing here listens to it. Its reap,
- *   once it proves the seat gone, removes what the custody record still lists, which covers a
- *   custodian killed before its child exited and a removal that failed.
- * - Any other runtime gets the spec through core `reclaimWithChild`, so a watcher beside the child
- *   removes the files once the child is gone even when this manager was killed. This manager also
- *   discards on the exit its attach session streams (the in-process pty). One that cannot attach
- *   (tmux, cmux, orca, herdr) is polled through `status()`, and its `waitForExit`, the proof every
- *   stop already awaits, confirms the exit before the files go.
+ * - A custodial runtime (one with `reserve` and `reap`; the built-in pty is not one) hands the files
+ *   to the seat's custodian, the parent of the child: it removes them when it sees that child exit,
+ *   so they go on exit, stop and the custodian's own unattended timeout whether or not any manager
+ *   is still alive. The runtime removes them on a refusal made before any process existed. The end
+ *   of this manager's attach stream proves nothing, since a custodian that dies leaves its child
+ *   running, so nothing here listens to it. Its reap, once it proves the seat gone, removes what the
+ *   custody record still lists, which covers a custodian killed before its child exited and a
+ *   removal that failed.
+ * - Any other runtime, the built-in pty included, gets the spec through core `reclaimWithChild`, so
+ *   a watcher beside the child removes the files once the child is gone even when this manager was
+ *   killed. This manager also discards on the exit its attach session streams (the in-process pty).
+ *   One that cannot attach (tmux, cmux, orca, herdr) is polled through `status()`, and its
+ *   `waitForExit`, the proof every stop already awaits, confirms the exit before the files go.
  * - A spawn that throws {@link SpawnRefused} failed before it handed the spec's command to anything
  *   that could start it, so its files go at once. Any other throw is not proof that nothing
  *   started (a backend can fail after its child is up), so its files stay for the child's watcher,
