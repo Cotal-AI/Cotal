@@ -64,10 +64,12 @@ function failureOf(e: unknown): RunHostOutcome {
  *  checkpoint outcome the settle named (`resolved` / `expired`) when the settled result is a
  *  checkpoint disposition, and otherwise the settled status with its error code when there is one.
  *  A settled checkpoint whose result a handler does not name reads exactly as it did before the
- *  distinction existed (#1439). */
+ *  distinction existed (#1439). Only a checkpoint settles with a disposition: any other step's
+ *  result is its value, so an `ask` answered with a record that has an `outcome` field still prints
+ *  its status. */
 export function journalOutcomeOf(e: JournalEntry): string {
   if (e.state === "pending") return "pending";
-  if (e.result !== null && typeof e.result === "object") {
+  if (e.kind === "checkpoint" && e.result !== null && typeof e.result === "object") {
     const outcome = (e.result as { readonly outcome?: unknown }).outcome;
     if (outcome === "resolved" || outcome === "expired") return outcome;
   }
@@ -83,7 +85,9 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
   const result = e.state === "settled" && e.result !== null && typeof e.result === "object"
     ? e.result as { outcome?: unknown; value?: unknown; by?: unknown; artifact?: unknown; at?: unknown; answerId?: unknown }
     : undefined;
-  const answeredPause = (e.kind === "checkpoint" || e.kind === "ask")
+  // A checkpoint's settled result names its accepted answer. An `ask`'s is the answer's value, read
+  // as data whatever fields it holds; `journalRows` reads its answer off the pause instead.
+  const answeredPause = e.kind === "checkpoint"
     && result?.outcome === "resolved"
     && typeof result.answerId === "string"
     ? {
@@ -147,7 +151,7 @@ export async function journalRows(
     const token = e.state !== "settled" || (e.kind !== "checkpoint" && e.kind !== "ask") ? undefined
       : e.kind === "ask" ? askTokens.get(row.step) ?? e.requestId : e.requestId;
     const amendments = token === undefined ? [] : await listCheckpointAmendments(kv, endpoint, token);
-    const answer = row.answer ?? (token !== undefined && e.kind === "ask" ? await acceptedAskAnswer(kv, endpoint, token) : undefined);
+    const answer = token !== undefined && e.kind === "ask" ? await acceptedAskAnswer(kv, endpoint, token) : row.answer;
     rows.push({
       ...row,
       ...(answer !== undefined ? { answer } : {}),

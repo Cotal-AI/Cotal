@@ -386,8 +386,8 @@ asked reading the source to find out what "approve" meant. After a checkpoint or
 answer, the journal prints that accepted answer's recorded value and attribution under the settled
 step. A checkpoint's comes from its frozen result, and the journal never substitutes another filed
 answer or invents fields that result does not hold. An `ask`'s result is the value alone, so its line
-is read from the answer record its last attempt's settle named. Amendments print on their own lines
-after it.
+is read from the answer record its last attempt's settle named, even when that value is a record with
+fields named like a checkpoint's. Amendments print on their own lines after it.
 An `escalate` addressed to an agent this
 run spawned is relayed to that seat through the same turn relay an `ask` uses, carrying the prompt
 and the token to answer under; a `to` naming anyone else is a person, and their pause stays the
