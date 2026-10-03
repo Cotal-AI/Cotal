@@ -195,8 +195,17 @@ function buildIndex(): { sections: Section[]; df: Map<string, number>; avgdl: nu
   return { sections, df, avgdl: total / Math.max(1, sections.length) };
 }
 
-// Built once at import: the bundle is static, so the section index is too.
-const INDEX = buildIndex();
+// Built on the first search, then kept: the bundle is static, so the index is too. NOT at import:
+// every connector process imports this module, and tokenizing the whole bundle up front costs each
+// agent's MCP helper several MB it keeps for life (and a startup allocation burst that grows V8's
+// young generation) for a tool most sessions never call.
+let INDEX: ReturnType<typeof buildIndex> | undefined;
+
+/** Test seam: whether the search index has been built yet. Lets the smoke catch an eager
+ *  `= buildIndex()` coming back without measuring heap (which would be flaky on CI). */
+export function docsIndexBuilt(): boolean {
+  return INDEX !== undefined;
+}
 
 export interface DocHit {
   /** Page slug to fetch in full via cotal_docs(page: slug). */
@@ -216,18 +225,19 @@ export function searchDocs(query: string, limit = 5): DocHit[] {
   const termSet = new Set(terms);
   if (!termSet.size) return [];
 
-  const N = INDEX.sections.length;
+  const index = (INDEX ??= buildIndex());
+  const N = index.sections.length;
   const scored: { s: Section; score: number }[] = [];
-  for (const s of INDEX.sections) {
+  for (const s of index.sections) {
     const tf = new Map<string, number>();
     for (const t of s.tokens) if (termSet.has(t)) tf.set(t, (tf.get(t) ?? 0) + 1);
     let score = 0;
     for (const t of termSet) {
       const f = tf.get(t) ?? 0;
       if (!f) continue;
-      const n = INDEX.df.get(t) ?? 0;
+      const n = index.df.get(t) ?? 0;
       const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
-      score += idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * s.len) / INDEX.avgdl)));
+      score += idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * s.len) / index.avgdl)));
     }
     if (score > 0) scored.push({ s, score });
   }
