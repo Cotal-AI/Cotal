@@ -193,7 +193,7 @@ export interface ExactDrainResult {
   missingKeys: string[];
 }
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -927,14 +927,27 @@ export class MeshAgent extends EventEmitter {
 
   private excludeFromFocus(item: InboxItem): void {
     if ((!this.enteringFocus && this._attention !== "focus") || item.kind !== "channel" || !item.channel) return;
-    if (!this.focusExcludedIds.has(item.id) && this.focusExcludedIds.size >= FOCUS_EXCLUSION_CAP) {
+    const key = this.focusExclusionKey(item);
+    if (!this.focusExcludedIds.has(key) && this.focusExcludedIds.size >= FOCUS_EXCLUSION_CAP) {
       const oldest = this.focusExcludedIds.entries().next().value as [string, string] | undefined;
       if (oldest) {
         this.focusExcludedIds.delete(oldest[0]);
         this.focusRecallUnsafeChannels.add(oldest[1]);
       }
     }
-    this.focusExcludedIds.set(item.id, item.channel);
+    this.focusExcludedIds.set(key, item.channel);
+  }
+
+  /** What focus exclusion records an item under, so {@link recallAmbient} can recognize its stored
+   *  copy: the wire id, or for an id-less item a digest of what recall reads back (channel,
+   *  authenticated sender, timestamp, text, reply and context ids, mentions). A live copy carries no
+   *  stream sequence to match by, and keying on the empty id excluded every id-less message from
+   *  recall once one was quiet or muted (#613). Sits under the secret, so it stays disjoint from wire
+   *  ids. Id-less copies that agree on all of these count as one message here. */
+  private focusExclusionKey(item: InboxItem): string {
+    if (item.id !== "") return item.id;
+    const seen = [item.channel, item.fromId, item.ts, item.text, item.replyTo, item.contextId, item.mentions];
+    return `${this.recvKeySecret}.x.${createHash("sha256").update(JSON.stringify(seen)).digest("hex")}`;
   }
 
   private protectDisposition(id: string, disposition: "pull-only" | "drop"): void {
@@ -1384,14 +1397,15 @@ export class MeshAgent extends EventEmitter {
       // chat-stream sequence, which stays put when older retained messages age out. It is zero-padded
       // so it orders like the sequence, and sits under the secret so it stays disjoint from wire ids.
       for (const [i, m] of messages.entries()) {
-        if (this.focusExcludedIds.has(m.id)) continue;
         let key: string | undefined;
         if (m.id === "") {
           const seq = seqs[i];
           if (seq === undefined) throw new Error(`recallChannel returned no stream sequence for an id-less message on ${channel}`);
           key = `${this.recvKeySecret}.r.${String(seq).padStart(16, "0")}`;
         }
-        items.push(this.toInboxItem(m, "channel", true, key));
+        const item = this.toInboxItem(m, "channel", true, key);
+        if (this.focusExcludedIds.has(this.focusExclusionKey(item))) continue;
+        items.push(item);
       }
       if (dropped) droppedChannels.push(channel);
     }
