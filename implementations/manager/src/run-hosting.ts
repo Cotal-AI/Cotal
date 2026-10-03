@@ -76,6 +76,7 @@ import {
   type RunHost,
   type RunHostDrive,
   type RunHostOpenPause,
+  type RunHostAcceptedAnswer,
   type RunHostOutcome,
   type RunHostPlanes,
   type RunListRow,
@@ -387,6 +388,38 @@ export class RunHosting {
       host.answer(planes, {
         endpoint,
         open,
+        by,
+        ...(args.value !== undefined ? { value: args.value } : {}),
+        ...(args.artifact !== undefined ? { artifact: args.artifact } : {}),
+        now: Date.now(),
+      }));
+  }
+
+  /** `run-answer` with `amend`: file a later answer beside a settled pause's accepted one. The same
+   *  two credentials an answer rides: a READ that replays the journal to the settled step and reads
+   *  which answer its settle accepted, then an ANSWERING one minted for that token alone. Nothing
+   *  is presented, so the pause stays settled. `by` is decided by the serve layer, as for an answer. */
+  async amend(
+    args: { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string },
+    by: string,
+    authorize?: (accepted: RunHostAcceptedAnswer) => void | Promise<void>,
+  ): Promise<unknown> {
+    const host = this.host();
+    const endpoint = args.endpoint ?? this.ctx.endpoint;
+    let accepted: RunHostAcceptedAnswer;
+    try {
+      accepted = await this.withOperator({ endpoint, runId: args.runId }, (planes, _kv, takeoverId) =>
+        host.locateAccepted(planes, { endpoint, runId: args.runId, takeoverId, stepKey: args.stepKey }));
+    } catch (e) {
+      if (e instanceof EpEnvelopeError) throw e;
+      if ((e as { name?: string }).name === "CheckpointNotAmendable") throw new EpEnvelopeError("not-found", (e as Error).message);
+      throw e;
+    }
+    await authorize?.(accepted);
+    return await this.withOperator({ endpoint, answers: { token: accepted.token } }, (planes) =>
+      host.amend(planes, {
+        endpoint,
+        accepted,
         by,
         ...(args.value !== undefined ? { value: args.value } : {}),
         ...(args.artifact !== undefined ? { artifact: args.artifact } : {}),

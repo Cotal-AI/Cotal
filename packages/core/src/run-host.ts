@@ -123,6 +123,26 @@ export interface RunHostAnswerRequest {
   readonly now: number;
 }
 
+/** A settled pause's accepted answer, located: the token it settled under, the id its settle named,
+ *  and who gave it. What an amendment is filed beside, and what a host authorizes an amend on. */
+export interface RunHostAcceptedAnswer {
+  readonly token: string;
+  readonly answerId: string;
+  readonly by: string;
+}
+
+/** An amendment of a settled pause's answer (SPEC 14.5): filed beside the accepted answer, never
+ *  presented, so the pause stays settled and the run never reads it. */
+export interface RunHostAmendRequest {
+  readonly endpoint: string;
+  readonly accepted: RunHostAcceptedAnswer;
+  /** The amender as the host's authorization knows them, as for an answer. */
+  readonly by: string;
+  readonly value?: unknown;
+  readonly artifact?: string;
+  readonly now: number;
+}
+
 /** One row of `cotal run ps`. Absent status means a spec with no status yet. */
 export interface RunListRow {
   readonly runId: string;
@@ -154,8 +174,9 @@ export type RunJournalRow =
       /** What an open pause asks, present only while it is open. */
       readonly asks?: string;
       readonly addressee?: string;
-      /** The accepted answer named by a settled pause result. Absent when the journal does not
-       * name one, including open and expired pauses and ordinary steps. */
+      /** The accepted answer of a settled pause: named by a checkpoint's settled result, and for an
+       * `ask`, whose result is the value alone, read from the answer record its last attempt's settle
+       * named. Absent for open and expired pauses and ordinary steps. */
       readonly answer?: {
         readonly answerId: string;
         readonly value?: unknown;
@@ -163,6 +184,17 @@ export type RunJournalRow =
         readonly artifact?: string;
         readonly at?: number;
       };
+      /** Answers filed after the pause settled, in the order the store committed them, each naming
+       *  the accepted answer it supersedes. The program acted on the accepted answer; these record
+       *  later positions, and the last is the current one. */
+      readonly amendments?: readonly {
+        readonly answerId: string;
+        readonly supersedes: string;
+        readonly value?: unknown;
+        readonly by: string;
+        readonly artifact?: string;
+        readonly at: number;
+      }[];
     };
 
 export interface RunStatusView {
@@ -196,6 +228,12 @@ export interface RunHost extends Extension {
   /** Answer a located pause through the driver's own door. A host that pins credentials mints
    *  the answering one for `req.open.token` and opens fresh planes under it for this call. */
   answer(planes: RunHostPlanes, req: RunHostAnswerRequest): Promise<unknown>;
+  /** Find a settled pause's accepted answer at a step: a read, nothing written. Refuses a step that
+   *  is still open, and one that settled without accepting an answer. */
+  locateAccepted(planes: RunHostPlanes, req: RunHostLocateRequest): Promise<RunHostAcceptedAnswer>;
+  /** File an amendment beside a located accepted answer. A host that pins credentials mints the
+   *  answering one for `req.accepted.token`; nothing is presented and the pause stays settled. */
+  amend(planes: RunHostPlanes, req: RunHostAmendRequest): Promise<unknown>;
   /** The run's record plus its journal view, or undefined when no run record exists. The replay
    *  rides a durable named by `takeoverId`, the one the caller's credential row pins. */
   status(planes: RunHostPlanes, req: { readonly endpoint: string; readonly runId: string; readonly takeoverId: string }): Promise<RunStatusView | undefined>;
