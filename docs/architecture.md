@@ -141,7 +141,8 @@ feature-by-feature.
 
 Replies carry their correlation ([SPEC §5](../SPEC.md#5-envelopes)). A `cotal_dm` to a peer
 answers the message its `replyTo` argument names, which must be one that peer sent you and no DM
-back has answered yet. Without the argument it answers the oldest such message, but only while all
+back has answered yet. The argument wins over a message the connector bound the call to. Without
+the argument it answers the oldest such message, but only while all
 of that peer's waiting messages belong to one conversation (`contextId`). When they belong to more
 than one, the DM is refused with their ids, so an answer is never put in a conversation by guess.
 The reply names the message in `replyTo` and copies its `contextId`, which belongs to the asker.

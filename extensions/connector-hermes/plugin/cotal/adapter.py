@@ -38,6 +38,15 @@ class InjectionRefused(Exception):
     sidecar offers it again later (``deferred``)."""
 
 
+def chat_type_for(chat_id: str) -> Optional[str]:
+    """The chat type of a chat_id minted on inbound, or None for an id this adapter did not mint."""
+    if chat_id.startswith("channel:"):
+        return "group"
+    if chat_id.startswith("dm:"):
+        return "dm"
+    return None
+
+
 def _target_for(chat_id: str) -> dict:
     """Reverse the chat_id minted on inbound back into a mesh reply target."""
     if chat_id.startswith("channel:"):
@@ -181,9 +190,10 @@ class CotalAdapter(BasePlatformAdapter):
 
         if kind == "channel":
             ch = msg.get("channel") or "general"
-            chat_id, chat_type, chat_name = f"channel:{ch}", "group", f"#{ch}"
+            chat_id, chat_name = f"channel:{ch}", f"#{ch}"
         else:  # dm / anycast → a turn whose reply goes straight back to the sender
-            chat_id, chat_type, chat_name = f"dm:{msg.get('fromId')}", "dm", sender
+            chat_id, chat_name = f"dm:{msg.get('fromId')}", sender
+        chat_type = chat_type_for(chat_id)
 
         # The answer to a question one of our sessions asked runs in that session. The sidecar has
         # checked that its sender is the peer the question went to.

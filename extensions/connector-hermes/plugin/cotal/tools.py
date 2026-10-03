@@ -65,12 +65,17 @@ def _calling_session() -> Optional[dict]:
     if get_session_env("HERMES_SESSION_PLATFORM", "") != "cotal":
         key = get_session_env("HERMES_SESSION_KEY", "")
         return {"session_key": key} if key and replies.can_inject() else None
+    from .adapter import chat_type_for
+
+    # Not every supported gateway binds a chat type, so it is read off the chat_id the adapter
+    # minted for the session: the answer's source must match the asker's to key the same session.
     chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
-    if not chat_id:
+    chat_type = chat_type_for(chat_id)
+    if not chat_type:
         return None
     return {
         "chat_id": chat_id,
-        "chat_type": get_session_env("HERMES_SESSION_CHAT_TYPE", ""),
+        "chat_type": chat_type,
         "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME", ""),
         "user_id": get_session_env("HERMES_SESSION_USER_ID", ""),
         "user_name": get_session_env("HERMES_SESSION_USER_NAME", ""),
