@@ -1,7 +1,7 @@
 import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
 import { ConnectRefusal, divergentCwdAnchor, isWorkspaceTargetError, loadMeshes, renderWorkspaceError, targetFlags, userSessionAuth } from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { c } from "../ui.js";
+import { c, presenceDetail } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
@@ -87,6 +87,10 @@ type AgentRow = {
   status: string;
   uptimeMs: number;
   mesh: string;
+  /** The harness-reported presence condition beside `mesh`; absent when none was reported. */
+  condition?: { code: string; source?: string; message?: string; since?: number };
+  /** Epoch ms of the seat's last reported work progress; absent when none was reported. */
+  activeAt?: number;
   /** The manager's own presence-view state when it built the row; absent from older managers. */
   meshView?: "current" | "stale" | "unpopulated";
   authHealth?: string;
@@ -289,10 +293,15 @@ function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanc
  *  replayed the bucket yet), `offline` and `absent` describe the manager's watch, not the seat. Print
  *  "mesh unknown" with the reason instead of a liveness word an operator, or a watchdog, would act
  *  on. A row from a manager that predates `meshView` carries no field and renders as before. */
-export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView">): string {
+export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt">, now = Date.now()): string {
   if (r.meshView === "stale") return c.yellow("mesh unknown") + c.dim(" (manager's presence view is stale)");
   if (r.meshView === "unpopulated") return c.yellow("mesh unknown") + c.dim(" (manager's presence view not yet populated)");
-  return r.mesh === "absent"
+  // The harness-reported condition and the last work progress ride beside the status, as the roster
+  // renders them (#618): a turn that died upstream 40m ago reads `waiting (rate_limit for 40m) ·
+  // active 40m ago`, not a bare `waiting`, and a turn that stopped advancing shows the age of its
+  // last event.
+  const condition = presenceDetail(r, now);
+  const mesh = r.mesh === "absent"
     ? c.yellow("not in roster")
     : r.mesh === "offline"
       ? c.dim("mesh offline")
@@ -301,6 +310,7 @@ export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView">): string {
         : r.mesh === "waiting"
           ? c.yellow("waiting")
           : c.cyan(r.mesh);
+  return mesh + condition;
 }
 
 /** Render one managed-agent row (process fact, mesh fact, optional auth-health line), indented for

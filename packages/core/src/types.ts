@@ -111,6 +111,10 @@ export interface Presence {
   environment?: string;
   /** Freeform "what I'm doing right now". */
   activity?: string;
+  /** Epoch ms of the last work progress the harness reported (a turn event such as a token or a tool
+   *  call). `ts` is only the heartbeat: a seat whose turn stopped advancing keeps heartbeating while
+   *  this stays old. Missing means the connector reports none. */
+  activeAt?: number;
   /** This instance's current global attention mode. Advisory, within-space observability — a peer
    *  can see "they're in focus" and choose to DM. Published from the connector's authoritative state
    *  (presence is a mirror, never the source of truth for delivery). `open`/absent ⇒ receives all. */

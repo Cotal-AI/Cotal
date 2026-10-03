@@ -5,7 +5,7 @@ import { createServer, type Server } from "node:net";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
-import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
+import { hardenPrivate, loadAgentFile, type PresenceCondition, type PresenceConditionCode } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
@@ -133,6 +133,21 @@ interface RelayEndpoint {
   dir: string;
   path: string;
   token: string;
+}
+
+const PRESENCE_CONDITION_CODES: ReadonlySet<string> = new Set<PresenceConditionCode>([
+  "rate_limit", "overloaded", "auth", "billing", "budget", "context", "model", "request", "server", "retrying", "approval", "input", "failed",
+]);
+
+/** A failed turn's condition, relayed from the Harness's own error code. Only a `HarnessError` is
+ *  relayed: it is what the Harness reported. A code outside the closed set reads `failed`, with
+ *  the native code kept as `source`. Without this the seat read `waiting` with the error only in
+ *  its private log (#618). */
+export function jcodeTurnCondition(error: unknown, since = Date.now()): PresenceCondition | undefined {
+  if (!(error instanceof HarnessError)) return undefined;
+  const source = String(error.code);
+  const code = (PRESENCE_CONDITION_CODES.has(source) ? source : "failed") as PresenceConditionCode;
+  return { code, source, message: error.message, since };
 }
 
 function privateAgentHome(space: string, name: string): string {
@@ -877,6 +892,15 @@ export async function runJcodeHost(): Promise<void> {
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let consecutiveFailures = 0;
+  /** Whether this host published a failed-turn condition that the next turn has to clear. */
+  let turnConditionPublished = false;
+  /** Relay a failed turn's Harness error as the presence condition, or clear a relayed one. The next
+   *  turn clears it when it starts, whether this host or the TUI owns that turn. */
+  const relayTurnCondition = (condition: PresenceCondition | null): void => {
+    if (!condition && !turnConditionPublished) return;
+    turnConditionPublished = condition !== null;
+    void agent.setCondition(condition).catch(() => {});
+  };
   /** One bridge recovery remains bounded, but it is bounded by time rather than one launch/attach
    *  outcome. A loaded host can lose a transient replacement race without turning that into a
    *  second provider close or an unbounded relaunch loop. */
@@ -1016,6 +1040,7 @@ export async function runJcodeHost(): Promise<void> {
     // inside the acceptance await, this boundary wipes the reservation, the selection above re-reads
     // the same item, and both deliveries land. Drop only what no live handover holds.
     releaseUnheldReservations();
+    relayTurnCondition(null);
     publishInboundHealth();
     let turnClient: JcodeClient | undefined;
     try {
@@ -1103,6 +1128,8 @@ export async function runJcodeHost(): Promise<void> {
       await events?.settled();
       surfacedIds = [];
       consecutiveFailures++;
+      const condition = jcodeTurnCondition(error);
+      if (condition) relayTurnCondition(condition);
       writeJcodeDiagnostic(
         `[cotal-jcode] turn failed (${consecutiveFailures} in a row): ${(error as Error).message}\n`,
       );
@@ -1662,7 +1689,11 @@ export async function runJcodeHost(): Promise<void> {
   const watchClient = (connected: JcodeClient): void => {
     connected.on("close", () => void recoverBridge(connected));
     const flushNativeEvent = (event: ApiEvent): void => {
-      if (!events?.running || !eventJournal || !("session_id" in event) || event.session_id !== sessionId) return;
+      if (!("session_id" in event) || event.session_id !== sessionId) return;
+      // Every work event of this seat's session, host- or TUI-owned, is progress the Harness reported:
+      // presence `activeAt`, so a turn that stopped advancing shows its age beside a live heartbeat (#618).
+      agent.noteActivity();
+      if (!events?.running || !eventJournal) return;
       events?.flush(eventJournal);
     };
     // The live API is only a wake signal. The holder serializes every flush and the source rereads
@@ -1683,9 +1714,19 @@ export async function runJcodeHost(): Promise<void> {
       if (!("session_id" in event) || event.session_id !== sessionId || event.ev !== "session_status") return;
       // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.
       // steerPending keys off sessionBusy() (driving || turnActive) so that pulse cannot drop a DM.
+      const started = !turnActive && event.status !== "idle";
       turnActive = event.status !== "idle";
+      if (started && !driving) relayTurnCondition(null);
       if (!turnActive) void finishHostIdleTurn();
       else publishInboundHealth();
+    });
+    // A turn the TUI owns fails only as an unsolicited error frame: no run() of this host is there to
+    // throw it. A host-owned turn reports the same frame through drive()'s catch. Scoped like the
+    // SDK's own run(): a frame naming another session is not this seat's.
+    connected.on("harness_error", (event: ApiEvent) => {
+      if (driving || event.ev !== "error" || ("session_id" in event && event.session_id !== sessionId)) return;
+      const condition = jcodeTurnCondition(new HarnessError(String(event.code ?? "internal"), String(event.message ?? "harness error")));
+      if (condition) relayTurnCondition(condition);
     });
     connected.on("turn_done", (event: ApiEvent) => {
       if ("session_id" in event && event.session_id === sessionId) {

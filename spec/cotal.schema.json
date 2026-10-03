@@ -416,6 +416,10 @@
     "Presence": {
       "description": "Live presence record. Stored in the space's KV bucket under key = card.id.",
       "properties": {
+        "activeAt": {
+          "description": "Epoch ms of the last work progress the harness reported (a turn event such as a token or a tool call). `ts` is only the heartbeat: a seat whose turn stopped advancing keeps heartbeating while this stays old. Missing means the connector reports none.",
+          "type": "number"
+        },
         "activity": {
           "description": "Freeform \"what I'm doing right now\".",
           "type": "string"

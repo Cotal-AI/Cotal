@@ -201,6 +201,22 @@ const AGENT_ROW_SCHEMA = {
     status: { type: "string" },
     uptimeMs: { type: "integer", minimum: 0 },
     mesh: { type: "string" },
+    // The roster's harness-reported condition beside `mesh` (SPEC §6), its four fields projected. Optional:
+    // absent when the connector reported none, and on rows from managers that predate it.
+    condition: {
+      type: "object",
+      additionalProperties: false,
+      required: ["code"],
+      properties: {
+        code: { type: "string" },
+        source: { type: "string" },
+        message: { type: "string" },
+        since: { type: "number" },
+      },
+    },
+    // The roster's `activeAt` (SPEC §6): epoch ms of the seat's last harness-reported work progress.
+    // Optional: absent when the connector reports none, and on rows from managers that predate it.
+    activeAt: { type: "number" },
     // The observing manager's presence-view state at the time of the read: `current` (the mesh
     // column is a verdict), `stale` (its watch has been silent past TTL; `mesh` is last-known),
     // or `unpopulated` (its watch has not replayed the bucket yet; `absent` means nothing).

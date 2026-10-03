@@ -2066,6 +2066,12 @@ export class MeshAgent extends EventEmitter {
     await this.inOrder(() => this.ep.setCondition(condition));
   }
 
+  /** Relay harness-reported work progress (a turn event) as presence `activeAt`. The next heartbeat
+   *  carries it, so an observer can tell a turn that stopped advancing from one that is progressing. */
+  noteActivity(at?: number): void {
+    this.ep.noteActivity(at);
+  }
+
   /** The working→idle boundary: yield `done` for every SURFACED turn (its payload was in the
    *  context of the turn that just ended; ending without an explicit yield IS the done signal),
    *  then re-poll immediately so a queued turn wakes the seat without waiting out the cadence.

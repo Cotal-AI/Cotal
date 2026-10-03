@@ -632,6 +632,8 @@ export class CotalEndpoint extends EventEmitter {
   private presenceRebindAt = 0;
   private status: PresenceStatus = "idle";
   private activity?: string;
+  /** Last harness-reported work progress. Carried by the next heartbeat, never published per event. */
+  private activeAt?: number;
   private condition?: PresenceCondition;
   /** Advances on every condition change so an older in-flight put cannot be the final KV state. */
   private conditionRevision = 0;
@@ -2664,6 +2666,12 @@ export class CotalEndpoint extends EventEmitter {
   async setStatus(status: PresenceStatus): Promise<void> {
     this.status = status;
     await this.publishPresence();
+  }
+
+  /** Record harness-reported work progress as `activeAt`. It writes nothing itself: the next heartbeat
+   *  carries it, so a stream of events costs no presence writes. */
+  noteActivity(at: number = Date.now()): void {
+    if (Number.isFinite(at) && at > (this.activeAt ?? 0)) this.activeAt = at;
   }
 
   /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
@@ -6025,6 +6033,7 @@ export class CotalEndpoint extends EventEmitter {
       condition: this.condition,
       environment: this.environment,
       activity: this.activity,
+      activeAt: this.activeAt,
       attention: this.attentionMode,
       channelModes: this.channelModes,
       ts: Date.now(),

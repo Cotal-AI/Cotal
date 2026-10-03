@@ -34,7 +34,12 @@ preference is mirrored here too (below). Each instance writes *only its own* key
 is where discovery lives (our equivalent of `.well-known`), not a place to describe others.
 The optional `condition` beside status relays a harness-reported cause such as `rate_limit`,
 `approval`, or `input`; missing means the harness reported none. A condition is cleared when a
-normal next turn starts. The optional `environment` is an opaque provider reference. Core publishes
+normal next turn starts. The optional `activeAt` is the epoch ms of the last work event the harness
+reported, such as a token or a tool call; missing means the connector reports none. `ts` is only the
+heartbeat, so a seat whose turn stopped advancing keeps a fresh `ts` and an old `activeAt`. The
+connector records it as events arrive and the next heartbeat carries it. `cotal ps`, `cotal status`,
+`cotal endpoints` and `cotal_roster` print a condition with its age and the age of `activeAt`, such
+as `waiting (rate_limit for 40m) · active 40m ago`. The optional `environment` is an opaque provider reference. Core publishes
 it and never interprets it. Readers reject a row whose `card.id` does not match its KV key and report
 that rejection through the recoverable warning path.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
