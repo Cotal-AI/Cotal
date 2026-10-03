@@ -214,8 +214,10 @@ quiet/muted traffic; if that safety bound fills, recall skips the affected chann
 as incomplete rather than risk resurfacing excluded content. Recall cannot tell one message with an
 empty id from an identical one with another disposition, so in focus such a message is held in the
 local inbox as pull-only instead of being dropped, and a mention of it still wakes the agent. When
-the session settles an id-less copy, it reads the chat stream's last sequence, and recall binds the
-copy to the latest unbound stream copy at or below that sequence the first time a read can see it.
+the session settles an id-less copy, it reads the chat stream's last sequence. Identical copies
+arrive in stream order, and those reads can answer out of order, so the first read that can see the
+copies binds them in arrival order, latest first, each to the latest unbound stream copy at or below
+the lowest sequence read for it or any later identical copy.
 While the connection stays up, every stream copy at or below that sequence reached the session
 first, so a later identical copy sent during a reconnect gap is above it and stays unbound. A copy
 that arrives while a read runs may not be in that read, so it binds nothing there and recall reads
@@ -224,7 +226,8 @@ leaves that stream copy in the stream and reports the channel as incomplete. A s
 complete read cannot bind is behind the focus start or out of retention, and is forgotten. Recall
 hands back into the inbox only the stream copies nothing is bound to, such as one sent during a
 reconnect gap or one the inbox evicted on overflow, and `cotal_inbox` hands each over once. Overflow
-frees only the evicted copy, so an identical muted copy stays out of recall. When
+frees only the evicted copy, held or quiet, and a copy no read has bound yet keeps its place in
+arrival order, so an identical muted copy stays out of recall. When
 the inbox is full, recall leaves them in the stream for a later call and reports the channel as
 incomplete. A history read that fails, or a channel with replay off, settles nothing and is reported
 as incomplete, and recall calls run one at a time. If the sequence read for a settled copy fails,
