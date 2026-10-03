@@ -687,8 +687,15 @@ async function runStartedDelivery(
     })();
   };
   stopHandler = earlyStop;
-  const earlySigint = (): void => earlyStop(0);
-  const earlySigterm = (): void => earlyStop(0);
+  // A SIGNALLED STOP NAMES ITSELF BEFORE TEARDOWN (#1443). Every other deliberate exit writes its
+  // reason first; without this line a `cotal down`, a systemd stop or Ctrl-C left the log ending on
+  // routine work, which an operator cannot tell from a silent death.
+  const onSignal = (signal: NodeJS.Signals, stop: (code: number) => void) => (): void => {
+    console.error(`• delivery: received ${signal}, exiting (space ${space}, shard ${shard})`);
+    stop(0);
+  };
+  const earlySigint = onSignal("SIGINT", earlyStop);
+  const earlySigterm = onSignal("SIGTERM", earlyStop);
   if (hosted === undefined) {
     process.on("SIGINT", earlySigint);
     process.on("SIGTERM", earlySigterm);
@@ -1008,8 +1015,8 @@ async function runStartedDelivery(
     // full teardown.
     process.off("uncaughtException", earlyUncaught);
     process.off("unhandledRejection", earlyRejection);
-    process.on("SIGINT", () => shutdown(0));
-    process.on("SIGTERM", () => shutdown(0));
+    process.on("SIGINT", onSignal("SIGINT", shutdown));
+    process.on("SIGTERM", onSignal("SIGTERM", shutdown));
   }
   /** What the broker says about THIS shard's lease key right now, the verdict a failed renew does
    *  NOT have. `unknown` never collapses into `gone`: not being able to look is not the same fact as

@@ -103,7 +103,10 @@ as a denial naming the refused subject and operation, never as another daemon ho
 daemon that is not there. The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
 for the space it serves ([Config](config.md#project-files)). That path is project-local. Detached
 `up` redirects the daemon's stdout and stderr onto the file, so wrapping the launcher in a
-systemd unit does not put those lines in that unit's journal.
+systemd unit does not put those lines in that unit's journal. A daemon stopped by SIGTERM or
+SIGINT, which is what `cotal down`, a service stop and Ctrl-C send, writes `received <signal>,
+exiting` to that log before it releases its lease. A SIGKILL, including one from the kernel OOM
+killer, ends the daemon with no line.
 
 The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
 removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a
