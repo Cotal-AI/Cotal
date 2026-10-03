@@ -96,12 +96,18 @@ export class OrcaRuntime implements Runtime {
       throw new SpawnRefused(`orca runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
     if (!orca.available()) throw new SpawnRefused("orca runtime: Orca CLI/runtime is not reachable (run `orca status --json`)");
 
-    const cwdKey = realpathSync(cwd);
-    let worktree = this.#worktrees.get(cwdKey);
-    const cachedWorktree = !!worktree;
-    if (!worktree) {
-      worktree = orca.resolveWorktree(cwd);
-      this.#cacheWorktree(cwdKey, worktree);
+    // Lookups only: no terminal exists yet, so a failure here is a refusal.
+    let cwdKey: string;
+    let worktree: orca.OrcaWorktree;
+    let cachedWorktree: boolean;
+    try {
+      cwdKey = realpathSync(cwd);
+      const cached = this.#worktrees.get(cwdKey);
+      cachedWorktree = !!cached;
+      worktree = cached ?? orca.resolveWorktree(cwd);
+      if (!cached) this.#cacheWorktree(cwdKey, worktree);
+    } catch (err) {
+      throw new SpawnRefused((err as Error).message);
     }
     const title = `cotal-${name}`;
     const launcher = privateLauncher(spec, cwd);

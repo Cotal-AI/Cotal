@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   discardLaunchArtifacts,
+  reclaimWithChild,
   registry,
   SpawnRefused,
   type AgentHandle,
@@ -170,13 +171,15 @@ function createBackend(mode: RuntimeMode, session: string): Runtime {
  *   since a custodian that dies leaves its child running, so nothing here listens to it. Its reap,
  *   once it proves the seat gone, removes what the custody record still lists, which covers a
  *   custodian killed before its child exited and a removal that failed.
- * - Any other runtime discards on the exit its attach session streams (the in-process pty). One that
- *   cannot attach (tmux, cmux, orca, herdr) is polled through `status()`, and its `waitForExit`, the
- *   proof every stop already awaits, confirms the exit before the files go. A removal that fails is
- *   tried again on the poll and on every later `waitForExit` until it succeeds.
+ * - Any other runtime gets the spec through core `reclaimWithChild`, so a watcher beside the child
+ *   removes the files once the child is gone even when this manager was killed. This manager also
+ *   discards on the exit its attach session streams (the in-process pty). One that cannot attach
+ *   (tmux, cmux, orca, herdr) is polled through `status()`, and its `waitForExit`, the proof every
+ *   stop already awaits, confirms the exit before the files go.
  * - A spawn that throws {@link SpawnRefused} refused before starting anything, so its files go at
  *   once. Any other throw is not proof that nothing started (a backend can fail after its child is
- *   up), so its files stay for the OS temp reaper.
+ *   up), so its files stay for the child's watcher, or for the OS temp reaper when no child started.
+ * - A removal that fails is tried again every few seconds until it succeeds.
  */
 function ownLaunchArtifacts(runtime: Runtime): Runtime {
   if (isCustodialRuntime(runtime)) return runtime;
@@ -184,15 +187,9 @@ function ownLaunchArtifacts(runtime: Runtime): Runtime {
   runtime.spawn = (name, spec, cwd, reference) => {
     let handle: AgentHandle;
     try {
-      handle = spawn(name, spec, cwd, reference);
+      handle = spawn(name, reclaimWithChild(spec), cwd, reference);
     } catch (e) {
-      if (e instanceof SpawnRefused) {
-        try {
-          discardLaunchArtifacts(spec.artifacts);
-        } catch (err) {
-          console.error(`! ${name}: ${(err as Error).message}`);
-        }
-      }
+      if (e instanceof SpawnRefused) removeOwned(name, spec.artifacts);
       throw e;
     }
     if (spec.artifacts?.length) discardOnExit(name, handle, spec.artifacts);
@@ -205,27 +202,36 @@ function ownLaunchArtifacts(runtime: Runtime): Runtime {
  *  failed removal is tried again. */
 const EXIT_POLL_MS = 5_000;
 
-function discardOnExit(name: string, handle: AgentHandle, artifacts: readonly string[]): void {
-  let done = false;
-  let failed = false;
-  let poll: ReturnType<typeof setInterval> | undefined;
-  // Runs only once the exit is proved. Ownership ends when the removal succeeds, not when it is
-  // tried: a failure keeps a timer retrying it (the exit poll, or one started here).
-  const finish = () => {
-    if (done) return;
+/** Remove artifacts whose child is proved gone or never started. Ownership ends when the removal
+ *  succeeds, not when it is tried: a failure keeps a timer retrying it. */
+function removeOwned(name: string, artifacts: readonly string[] | undefined): void {
+  if (!artifacts?.length) return;
+  let retry: ReturnType<typeof setInterval> | undefined;
+  const attempt = () => {
     try {
       discardLaunchArtifacts(artifacts);
     } catch (e) {
-      if (!failed) console.error(`! ${name}: ${(e as Error).message}; trying again every ${EXIT_POLL_MS / 1000}s`);
-      failed = true;
-      if (!poll) {
-        poll = setInterval(finish, EXIT_POLL_MS);
-        poll.unref();
+      if (!retry) {
+        console.error(`! ${name}: ${(e as Error).message}; trying again every ${EXIT_POLL_MS / 1000}s`);
+        retry = setInterval(attempt, EXIT_POLL_MS);
+        retry.unref();
       }
       return;
     }
+    clearInterval(retry);
+  };
+  attempt();
+}
+
+function discardOnExit(name: string, handle: AgentHandle, artifacts: readonly string[]): void {
+  let done = false;
+  let poll: ReturnType<typeof setInterval> | undefined;
+  // Runs only once the exit is proved.
+  const finish = () => {
+    if (done) return;
     done = true;
     clearInterval(poll);
+    removeOwned(name, artifacts);
   };
   // Wrapped, never called at spawn: a runtime bounds its wait for a stop (tmux gives up after
   // seconds), so a wait started at spawn would give up on every seat that outlives that bound.

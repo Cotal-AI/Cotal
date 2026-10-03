@@ -66,7 +66,7 @@ export function privateLauncher(spec: LaunchSpec, cwd: string): PrivateLauncher 
 function layoutFromEnv(): "tab" | "split" {
   const raw = process.env.COTAL_HERDR_LAYOUT ?? "tab";
   if (raw === "tab" || raw === "split") return raw;
-  throw new Error(
+  throw new SpawnRefused(
     `herdr runtime: unknown COTAL_HERDR_LAYOUT ${JSON.stringify(raw)} (expected "tab" or "split")`,
   );
 }
