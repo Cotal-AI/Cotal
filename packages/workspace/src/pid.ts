@@ -547,6 +547,12 @@ export function removePidPair(pidfilePath: string, recorded: string): void {
   }
 }
 
+/** @deprecated Use {@link removePidPair}. Removes the sibling pin alone, with no lock and no check
+ *  for a successor's record. Kept for existing consumers for one minor line. */
+export function removeIdentityPin(pidfilePath: string): void {
+  rmSync(identityPinPath(pidfilePath), { force: true });
+}
+
 /** The loud torn/unpinned refusal, in the same shape as {@link identityRefusal}: name the component,
  *  the file, what was found, and the operator's next step. Legacy records do not reach this helper:
  *  callers emit {@link identityLegacyWarning} and proceed. */
