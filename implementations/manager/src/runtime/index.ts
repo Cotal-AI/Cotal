@@ -1,6 +1,15 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { registry, type AgentHandle, type Runtime, type RuntimeKind, type RuntimeProvider, type RuntimeReference } from "@cotal-ai/core";
+import {
+  discardLaunchArtifacts,
+  registry,
+  type AgentHandle,
+  type AttachSession,
+  type Runtime,
+  type RuntimeKind,
+  type RuntimeProvider,
+  type RuntimeReference,
+} from "@cotal-ai/core";
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
 import { unsupportedTransport } from "@cotal-ai/seat";
@@ -116,6 +125,10 @@ export type RuntimeMode = RuntimeKind | "auto";
  *  resolves to. Every other name resolves a self-registered {@link RuntimeProvider}; an explicit
  *  provider that is absent or unreachable throws, never a silent fallback to pty. */
 export function createRuntime(mode: RuntimeMode, session: string): Runtime {
+  return ownLaunchArtifacts(createBackend(mode, session));
+}
+
+function createBackend(mode: RuntimeMode, session: string): Runtime {
   const kind: RuntimeKind = mode === "auto" ? "pty" : mode;
   if (kind === "pty") {
     // node-pty's native spawn-helper hangs before exec under Bun — it never becomes the child, so
@@ -140,6 +153,59 @@ export function createRuntime(mode: RuntimeMode, session: string): Runtime {
   if (!provider.available())
     throw new Error(`${kind} runtime requested but it is not reachable`);
   return provider.create({ session });
+}
+
+/**
+ * The launcher's half of core launch-artifacts, installed on every runtime this module creates so it
+ * holds for every backend: a spawn removes its spec's private files once the child is gone, or at
+ * once when the spawn throws. Two signals prove the child gone: the exit an attach session streams
+ * (pty), and a `waitForExit` that resolves, which every stop awaits and which is the only proof a
+ * runtime that cannot attach (tmux, cmux, orca, herdr) gives. A released handle gives neither, so a
+ * seat that outlives this manager keeps its files.
+ */
+function ownLaunchArtifacts(runtime: Runtime): Runtime {
+  const spawn = runtime.spawn.bind(runtime);
+  runtime.spawn = (name, spec, cwd, reference) => {
+    const discard = discardOnce(name, spec.artifacts);
+    let handle: AgentHandle;
+    try {
+      handle = spawn(name, spec, cwd, reference);
+    } catch (e) {
+      discard();
+      throw e;
+    }
+    if (spec.artifacts?.length) discardOnExit(handle, discard);
+    return handle;
+  };
+  return runtime;
+}
+
+function discardOnce(name: string, artifacts: readonly string[] | undefined): () => void {
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    try {
+      discardLaunchArtifacts(artifacts);
+    } catch (e) {
+      console.error(`! ${name}: ${(e as Error).message}`);
+    }
+  };
+}
+
+function discardOnExit(handle: AgentHandle, discard: () => void): void {
+  // Wrapped, never called from here: a runtime bounds its wait for a stop (tmux gives up after
+  // seconds), so a wait started at spawn would give up on every seat that outlives that bound.
+  const wait = handle.waitForExit?.bind(handle);
+  if (wait) handle.waitForExit = () => wait().then(discard);
+  let session: AttachSession;
+  try {
+    session = handle.attach();
+  } catch {
+    return; // no exit stream: the wrapped wait above is this runtime's only proof
+  }
+  session.onExit(discard);
+  if (handle.status() === "exited") discard();
 }
 
 /** Walk up from `startDir` to the pnpm workspace root (for spawning `pnpm cotal …`). */
