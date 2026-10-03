@@ -365,6 +365,12 @@ mid-publish therefore leaves the old record or the new one, each checked against
 never a pidfile without its pin. A CLI older than this change reads a two-line pin as torn and
 refuses.
 
+Publishes of one pidfile are serialized by a lock file beside it, `<pidfile>.publish.lock`, because
+the launcher and the daemon it starts both publish the same record. The next publisher reclaims a
+lock left by a crashed one. When no start token can be read for the new process, its pin line holds
+`-` in place of the token, which reads as a legacy record, and the publish ends in the legacy shape:
+a pidfile with no pin.
+
 The pidfile pid and the pin pid are two coordinates. Automatic cleanup follows **proven death of
 the pidfile target** (ESRCH on that pid): a torn sibling pin does not wedge a dead pidfile pid.
 A torn pairing where the pin names another pid, while the pidfile pid is still live or not proven

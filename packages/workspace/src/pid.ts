@@ -21,7 +21,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { processStartToken as posixStartToken } from "./advisory-lock.js";
+import { acquireLock, processStartToken as posixStartToken } from "./advisory-lock.js";
 
 /** A Node/POSIX-signalable pid: a positive INTEGER within the signed 32-bit range `process.kill`
  *  accepts (it throws `ERR_INVALID_ARG_TYPE`/`ERR_OUT_OF_RANGE` outside it). Anything else -
@@ -369,6 +369,10 @@ function parsePinLines(raw: string): ProcessIdentityRecord[] | undefined {
   return records.length === 0 ? undefined : records;
 }
 
+/** The token of a bridge line for a pid published with no start token. That publish leaves the legacy
+ *  shape, so the line reads as legacy, never as a torn pairing. */
+const NO_START_TOKEN = "-";
+
 /** The pin line of the pid the pidfile names right now, when the pin holds one. */
 function currentPinLine(pidfilePath: string): ProcessIdentityRecord | undefined {
   try {
@@ -393,9 +397,14 @@ function currentPinLine(pidfilePath: string): ProcessIdentityRecord | undefined 
  *  the commit it refuses as a torn pairing: stricter than it was, never weaker.
  *
  *  When `identityRecord` cannot establish a token (ps-less host, or a pid whose start could not be
- *  read - same rule as {@link writeIdentityPin}), there is no new line and no bridge: the pidfile is
- *  committed beside the old pin, which refuses the new pid as a torn pairing, and `publish-pin`
- *  removes it, leaving the legacy shape `writeIdentityPin` would have left, never invented.
+ *  read - same rule as {@link writeIdentityPin}), the new line carries {@link NO_START_TOKEN} and
+ *  `publish-pin` removes the pin, leaving the legacy shape `writeIdentityPin` would have left. A crash
+ *  after the commit reads that same legacy record, never the new pid paired with the old pin.
+ *
+ *  Publishers of one path are serialized by an advisory lock (`${path}.publish.lock`) held from the
+ *  read of the old line to the settled pin: the launcher and the daemon it starts both publish the
+ *  same record, and an unserialized bridge or settle could overwrite a newer publish. A crashed
+ *  holder's lock is reclaimed by the next publisher.
  *
  *  On any throw, the temporaries are removed (`finally`, best-effort) and the error rethrown; the
  *  temporary names are never read by any reader (`${path}.publish.<pid>.<hex>`, the same claim-file
@@ -410,30 +419,32 @@ export function writePidPair(
   const pinPath = identityPinPath(pidfilePath);
   const suffix = `${process.pid}.${randomBytes(4).toString("hex")}`;
   const pidTemp = `${pidfilePath}.publish.${suffix}`;
+  const pinTemp = `${pinPath}.publish.${suffix}`;
+  const bridgeTemp = `${pinPath}.publish.${suffix}.bridge`;
   const rec = identityRecord(pid, tokenAt);
-  const pinTemp = "token" in rec ? `${pinPath}.publish.${suffix}` : undefined;
-  const bridgeTemp = "token" in rec ? `${pinPath}.publish.${suffix}.bridge` : undefined;
+  const line: ProcessIdentityRecord = "token" in rec ? rec : { pid, token: NO_START_TOKEN };
   try {
     writeFileSync(pidTemp, String(pid));
-    if (pinTemp !== undefined && bridgeTemp !== undefined && "token" in rec) {
-      writeFileSync(pinTemp, formatRecord(rec));
+    if ("token" in rec) writeFileSync(pinTemp, formatRecord(rec));
+    const held = acquireLock(`${pidfilePath}.publish.lock`, { label: `the publish lock for ${pidfilePath}`, waitMs: 30_000, pollMs: 20 });
+    try {
       const old = currentPinLine(pidfilePath);
-      writeFileSync(bridgeTemp, (old !== undefined && old.pid !== pid ? [old, rec] : [rec]).map(formatRecord).join("\n"));
-    }
-    onStep("temporaries");
-    if (bridgeTemp !== undefined) {
+      writeFileSync(bridgeTemp, (old !== undefined && old.pid !== pid ? [old, line] : [line]).map(formatRecord).join("\n"));
+      onStep("temporaries");
       renameSync(bridgeTemp, pinPath);
       onStep("bridge-pin");
+      renameSync(pidTemp, pidfilePath);
+      onStep("publish-pid");
+      if ("token" in rec) renameSync(pinTemp, pinPath);
+      else rmSync(pinPath, { force: true });
+      onStep("publish-pin");
+    } finally {
+      held.release();
     }
-    renameSync(pidTemp, pidfilePath);
-    onStep("publish-pid");
-    if (pinTemp !== undefined) renameSync(pinTemp, pinPath);
-    else rmSync(pinPath, { force: true });
-    onStep("publish-pin");
   } finally {
     rmSync(pidTemp, { force: true });
-    if (pinTemp !== undefined) rmSync(pinTemp, { force: true });
-    if (bridgeTemp !== undefined) rmSync(bridgeTemp, { force: true });
+    rmSync(pinTemp, { force: true });
+    rmSync(bridgeTemp, { force: true });
   }
 }
 
@@ -487,6 +498,7 @@ export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartToke
   if (lines === undefined) return dead ? { kind: "gone" } : { kind: "torn-pin", raw: rawPin.trim() };
   const own = lines.find((r) => r.pid === pidRead);
   if (own === undefined) return dead ? { kind: "gone" } : { kind: "torn-pairing", pinPid: lines[0]!.pid };
+  if (own.token === NO_START_TOKEN) return dead ? { kind: "gone" } : { kind: "legacy" }; // a no-token publish's line
   const verdict = assertRecordIdentity(own, tokenAt);
   if (verdict.kind === "match") return { kind: "match", record: own };
   if (verdict.kind === "gone") return { kind: "gone" };

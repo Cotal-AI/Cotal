@@ -90,8 +90,8 @@
     {
       "name": "M6 the bridge pin drops the old record's line (#1238)",
       "file": "packages/workspace/src/pid.ts",
-      "find": "(old !== undefined && old.pid !== pid ? [old, rec] : [rec])",
-      "replace": "[rec]",
+      "find": "(old !== undefined && old.pid !== pid ? [old, line] : [line])",
+      "replace": "[line]",
       "expectRed": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "cell": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "note": "With only the NEW line in the bridge, the OLD pid the pidfile still names has no line of its own, so G2 reads torn-pairing instead of match: the old record would lose its check for the length of the window.",
