@@ -66,6 +66,12 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   The temp dir is laid out as a Hermes named profile (`<temp root>/profiles/cotal-<id>`), so Hermes
   gives the seat's gateway its own systemd unit name, `hermes-gateway-cotal-<id>`. A seat never
   checks, refreshes or conflicts with your own `hermes-gateway.service`.
+- The managed profile belongs to the seat and goes away with it. Its temp root is
+  `$TMPDIR/cotal-hermes-<id>`, one per seat, and it also holds the gateway's own `TMPDIR` and the
+  state Hermes keeps beside its profiles. When the seat stops, the launcher sends the gateway
+  SIGTERM, kills its process tree if it is still running 1.5 seconds later, waits for it to exit,
+  and then removes that root, so a seat stopped mid-turn leaves nothing behind either. A hard stop
+  that kills the launcher before it can do this leaves the root in place for you to delete.
   To put your own Hermes on the mesh instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).
 - The persona is written as Hermes' `SOUL.md` (its system-prompt file), the one place a system
   prompt can be set.

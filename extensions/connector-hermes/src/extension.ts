@@ -94,7 +94,7 @@ export const hermesConnector: Connector = {
     if (adoptHome) env.COTAL_HERMES_ADOPT_HOME = adoptHome;
     // The fork's provenance is the seat's own record of it, which the launcher writes into the seat's
     // profile when it forks. The launcher refuses a profile that is not where this names it.
-    const resumeRecordPath = opts.resume !== undefined ? join(hermesSeatHome(opts.space, opts.name), HERMES_FORK_RECORD) : undefined;
+    const resumeRecordPath = opts.resume !== undefined ? join(hermesSeatHome(opts.space, opts.name).home, HERMES_FORK_RECORD) : undefined;
     if (opts.resume !== undefined) {
       env.COTAL_HERMES_RESUME = opts.resume;
       env.COTAL_HERMES_RESUME_HOME = process.env.HERMES_HOME?.trim() || join(homedir(), ".hermes");
