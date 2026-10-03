@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { accessSync, constants, existsSync } from "node:fs";
-import { arch, cpus, homedir, totalmem } from "node:os";
+import { arch, cpus, homedir, totalmem, userInfo } from "node:os";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import type { CompletionResult, ParsedArgs } from "@cotal-ai/core";
 import {
@@ -21,7 +21,8 @@ import { c } from "../ui.js";
 
 /**
  * `cotal service` — run the workstation's manager as a user service, so it survives logout
- * and reboot. The manager is the only daemon this installs; the broker and every other
+ * and reboot. On Linux that holds only while the user lingers, so install refuses without it.
+ * The manager is the only daemon this installs; the broker and every other
  * component keep their existing lifecycle. The unit's ExecStart is this CLI's own argv plus
  * the `supervise` subcommand, so the supervised process is the same one the operator would
  * run by hand (`selfArgv()` refuses when this process is not the cotal entry).
@@ -334,6 +335,9 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     throw new Error(`no mesh named "${mesh}" is registered - bring it up (\`cotal up\`) or register it (\`cotal meshes add\`) before \`cotal service install\``);
   const root = entry.root;
   const server = entry.server;
+  // Before the incumbent check: an operator told to stop their manager first should not then be
+  // refused for lingering and left with no manager at all.
+  if (process.platform === "linux") requireLinger(values);
   // The manager is a singleton per space. Installing over a live one (typically `up --detach`'s)
   // would put the unit in a crash-restart loop against a lease it can never take, so refuse with
   // the exact remedy before anything is written.
@@ -389,7 +393,6 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     systemctl(["daemon-reload"]);
     const started = systemctl(["enable", "--now", unit]);
     if (started.status !== 0) throw new Error(`enabling ${unit} failed: ${started.output}`);
-    linger(values, mesh);
     console.log(c.green(`✓ service installed: ${unit}`) + c.dim(` - manager for mesh "${mesh}" under ${root} (env ${envFile})`));
     return;
   }
@@ -447,23 +450,32 @@ function install(values: { mesh?: string; linger?: boolean }): void {
   throw new Error(`\`cotal service\` is not supported on ${process.platform} - it needs systemd user units (Linux) or launchd agents (macOS)`);
 }
 
-/** Linger only when asked, never silently; report an already-lingering user instead of touching it. */
-function linger(values: { linger?: boolean }, mesh: string): void {
-  const current = run("loginctl", ["show-user", String(process.getuid?.() ?? ""), "--property=Linger", "--value"]);
-  const enabled = current.status === 0 && current.output.trim() === "yes";
-  if (values.linger) {
-    if (enabled) {
-      console.log(c.dim(`• lingering already enabled for this user`));
-      return;
-    }
-    const on = run("loginctl", ["enable-linger", String(process.getuid?.() ?? "")]);
-    if (on.status !== 0) throw new Error(`enabling linger failed: ${on.output}`);
-    console.log(c.dim(`• lingering enabled - the user manager now starts at boot`));
+/** Whether logind keeps this user's manager running without a session (lingering). */
+const lingerOn = (): boolean =>
+  run("loginctl", ["show-user", String(process.getuid?.() ?? ""), "--property=Linger", "--value"]).output.trim() === "yes";
+
+/** The root command that enables lingering. logind can refuse an unprivileged enable-linger
+ *  (`Access denied` over SSH), so this is printed for the operator; nothing here runs sudo. */
+const lingerRemedy = (): string => `sudo loginctl enable-linger ${userInfo().username}`;
+
+/** Without lingering systemd starts no user manager at boot and stops it at the user's last
+ *  logout, so an enabled user unit is inert at boot: installing one would report a service the
+ *  next reboot silently loses. Refuse BEFORE anything is written, with the root command that
+ *  fixes it. `--linger` asks logind first; lingering is never enabled silently. */
+function requireLinger(values: { linger?: boolean }): void {
+  if (lingerOn()) {
+    console.log(c.dim(`• lingering is enabled for this user - the user manager starts at boot`));
     return;
   }
-  if (enabled) console.log(c.yellow(`! lingering is already enabled for this user (the service survives logout with or without it)`));
-  else console.log(c.dim(`• the service stops at this user's last logout - pass --linger to keep it running (and start it at boot)`));
-  void mesh;
+  if (values.linger) {
+    const on = run("loginctl", ["enable-linger", String(process.getuid?.() ?? "")]);
+    if (on.status === 0) {
+      console.log(c.dim(`• lingering enabled - the user manager now starts at boot`));
+      return;
+    }
+    throw new Error(`\`loginctl enable-linger\` was refused (${on.output || "no output"}), so the service would not be boot-persistent - enable lingering as root with \`${lingerRemedy()}\`, then re-run this install`);
+  }
+  throw new Error(`lingering is off for this user, so the service would not be boot-persistent: systemd starts no user manager at boot, and the last logout stops it - enable lingering as root with \`${lingerRemedy()}\` (or pass --linger), then re-run this install`);
 }
 
 function readStatus(values: { mesh?: string }): ServiceStatus {
@@ -485,7 +497,7 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
       ...(fields.root ? { root: fields.root } : {}),
       unit: { name: unit, state: state.state, enabled: state.enabled },
       ...(fields.root ? { manager: managerHealthFor(fields.root, fields.mesh) } : {}),
-      linger: run("loginctl", ["show-user", String(process.getuid?.() ?? ""), "--property=Linger", "--value"]).output.trim() === "yes",
+      linger: lingerOn(),
     };
   }
   if (process.platform === "darwin") {
@@ -527,7 +539,7 @@ function status(values: { mesh?: string; json?: boolean }): void {
     if (s.root) console.log(`  ${"root".padEnd(16)} ${s.root}`);
     const mgr = s.manager!;
     console.log(`  ${"manager".padEnd(16)} ${mgr.state === "alive" ? c.green(`running (pid ${mgr.pid})`) : c.yellow(mgr.state)}`);
-    if (s.linger !== undefined) console.log(`  ${"linger".padEnd(16)} ${s.linger ? c.green("enabled") : c.dim("disabled")}`);
+    if (s.linger !== undefined) console.log(`  ${"linger".padEnd(16)} ${s.linger ? c.green("enabled") : c.yellow(`disabled - not boot-persistent; enable as root: ${lingerRemedy()}`)}`);
   }
   console.log(`  ${"arch".padEnd(16)} ${facts.arch}`);
   console.log(`  ${"os".padEnd(16)} ${facts.os}`);
@@ -565,9 +577,8 @@ function uninstall(values: { mesh?: string }): void {
     rmSync(serviceStateDir(dir, fields.mesh), { recursive: true, force: true });
     systemctl(["daemon-reload"]);
     systemctl(["reset-failed", unit]);
-    const lingerOn = run("loginctl", ["show-user", String(process.getuid?.() ?? ""), "--property=Linger", "--value"]).output.trim() === "yes";
     console.log(c.green(`✓ service removed: ${unit}`));
-    if (lingerOn) console.log(c.dim(`• lingering is still enabled for this user - turn it off with \`loginctl disable-linger\` if you no longer want it`));
+    if (lingerOn()) console.log(c.dim(`• lingering is still enabled for this user - turn it off with \`loginctl disable-linger\` if you no longer want it`));
     return;
   }
   if (process.platform === "darwin") {

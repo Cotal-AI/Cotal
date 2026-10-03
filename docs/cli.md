@@ -1416,7 +1416,7 @@ cotal service uninstall [--mesh <name>]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--mesh <name>` | this folder's mesh | The mesh whose manager the service runs; one unit per mesh |
-| `--linger` | off | install: also enable user lingering so the user manager starts at boot and the service survives logout. Never enabled silently |
+| `--linger` | off | install: when lingering is off, ask logind to enable it so the user manager starts at boot and the service survives logout. Never enabled silently |
 | `--json` | off | status: machine-readable output |
 
 Runs the manager as a user service so it survives logout and reboot. On Linux this installs a
@@ -1453,6 +1453,14 @@ Every value the unit derives from a path (`WorkingDirectory`, the `EnvironmentFi
 `ExecStart` tokens) is escaped for systemd specifiers (`%` becomes `%%`), so a mesh root that
 contains `%` starts over its real path instead of a path systemd rewrote by expanding it. The
 provenance comment records the root unescaped.
+
+On Linux a user unit starts at boot and survives logout only while the user lingers. Without
+lingering, systemd starts no user manager at boot, so an enabled unit stays inert until the next
+login and stops at the last logout. `install` checks lingering before it writes anything, and when
+lingering is off it fails with the root command that turns it on (`sudo loginctl enable-linger
+<user>`). With `--linger` it first asks logind to enable lingering for the current user, and fails
+with the same command when logind refuses (unprivileged users over SSH get `Access denied`).
+`service status` prints that command while lingering is off.
 
 `service install` also refuses while a manager is already running for the mesh (`cotal down
 manager` first). The restart policy is `Restart=always` with `RestartSec=20s`, chosen for
