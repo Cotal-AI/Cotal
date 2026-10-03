@@ -1583,13 +1583,14 @@ records under `COTAL_SEAT_ROOT` (default `~/.cotal/seats`), one line per seat:
 | State | Meaning |
 |---|---|
 | `live-child` | The agent process still runs. The seat is never signalled, and a manager can still adopt it |
-| `childless` | The agent has exited. `--drain` retires the seat, or refuses it when the record cannot prove which processes it names |
+| `childless` | The agent has exited. `--drain` retires the seat |
 | `drained` | `--drain` proved the custodian and the agent gone and removed the record |
-| `refused` | The record cannot be read, or the reap could not prove the processes gone. Nothing is removed |
+| `refused` | The record cannot be read, carries no start or boot identity, comes from an earlier boot, or the reap could not prove the processes gone. Nothing is signalled or removed |
 
 A drain signals only a custodian whose recorded start identity still matches the live process, so
-a reused pid is never touched. A record from an earlier boot is refused. The command exits non-zero
-when any record is refused. It is Linux-only and throws on other platforms.
+a reused pid is never touched. A record whose identity cannot tie its pids to this boot's processes
+is refused with or without `--drain`, and is never reported as running or exited. The command exits
+non-zero when any record is refused. It is Linux-only and throws on other platforms.
 
 ## send
 

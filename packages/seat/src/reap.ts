@@ -111,6 +111,22 @@ export function censusCustodians(run?: string): CustodianSighting[] {
   return out;
 }
 
+/** Why `rec`'s pids cannot be tied to the processes it recorded, or undefined when they can. A
+ *  start token counts ticks since ITS OWN boot, so it only tells two processes apart within one boot,
+ *  and a record may have outlived a reboot on disk. A record with no start identity, no boot identity,
+ *  or another boot's identity proves nothing about whatever this boot put at those pid numbers, so it
+ *  is neither signalled nor reported as running or gone. */
+function unprovedIdentity(id: string, rec: SeatRecord): string | undefined {
+  if (rec.custodianStart === undefined)
+    return `seat ${id} record carries no process start identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (a bare pid may belong to an unrelated process)`;
+  if (rec.bootId === undefined)
+    return `seat ${id} record carries no boot identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (its start tokens cannot be compared across a reboot)`;
+  const boot = bootToken();
+  if (boot !== undefined && rec.bootId !== boot)
+    return `seat ${id} record belongs to boot ${rec.bootId}, but this is boot ${boot}; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (those pids now belong to this boot's processes)`;
+  return undefined;
+}
+
 /**
  * Reap one custodied seat: a crashed manager's orphan, a lingering custodian, or a cleanly exited seat
  * whose custodian unlinked its on-disk record.
@@ -144,17 +160,9 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
       throw new Error(`seat ${id} record at ${path} is unreadable: ${(e as Error).message}`);
     }
   }
-  if (rec.custodianStart === undefined)
-    throw new Error(`seat ${id} record carries no process start identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (a bare pid may belong to an unrelated process)`);
-  // A start token counts ticks since ITS OWN boot, so it only tells two processes apart within one
-  // boot, and this record may have outlived a reboot on disk. An unbound or foreign-boot record is
-  // refused rather than signalled: the pids in it now name whatever this boot put at those numbers.
-  const boot = bootToken();
-  if (rec.bootId === undefined)
-    throw new Error(`seat ${id} record carries no boot identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (its start tokens cannot be compared across a reboot)`);
-  if (boot !== undefined && rec.bootId !== boot)
-    throw new Error(`seat ${id} record belongs to boot ${rec.bootId}, but this is boot ${boot}; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (those pids now belong to this boot's processes)`);
-  const custodianStart = rec.custodianStart;
+  const unproved = unprovedIdentity(id, rec);
+  if (unproved !== undefined) throw new Error(unproved);
+  const custodianStart = rec.custodianStart!;
   // A pinned record without a child identity means the child was gone before custody began.
   const childLive = (): boolean => rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live";
 
@@ -205,8 +213,8 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
 /** One custody record as {@link drainSeats} found it. `live-child`: the child still holds its
  *  recorded start identity, so the seat is a running agent and is never signalled. `childless`: the
  *  child is gone, so a drain would retire the seat. `drained`: a drain proved the seat gone and
- *  removed its record. `refused`: the record could not be read, or the reap did not prove exit; the
- *  record stays on disk. */
+ *  removed its record. `refused`: the record could not be read, its identity does not tie its pids
+ *  to this boot's processes, or the reap did not prove exit; the record stays on disk. */
 export interface SeatInventoryEntry {
   id: string;
   state: "live-child" | "childless" | "drained" | "refused";
@@ -224,8 +232,8 @@ export interface SeatInventoryEntry {
  * running agent, and a manager may still adopt it. Only a seat whose child is proved gone reaches
  * {@link reapSeat}. A record is written once, and a start identity that is gone never comes back, so
  * the reap that follows finds the child gone too and signals at most a custodian whose identity
- * matches the record. A record that cannot be read, or a reap that does not prove exit, is refused
- * and left on disk for the operator.
+ * matches the record. A record that cannot be read or whose identity proves nothing on this boot, or
+ * a reap that does not prove exit, is refused and left on disk for the operator.
  */
 export async function drainSeats(root: string, opts: { drain?: boolean; graceMs?: number } = {}): Promise<SeatInventoryEntry[]> {
   if (process.platform !== "linux") throw unsupportedTransport();
@@ -246,6 +254,11 @@ export async function drainSeats(root: string, opts: { drain?: boolean; graceMs?
       continue;
     }
     const seen = { id, name: rec.name, custodianPid: rec.custodianPid, childPid: rec.childPid };
+    const unproved = unprovedIdentity(id, rec);
+    if (unproved !== undefined) {
+      out.push({ ...seen, state: "refused", detail: unproved });
+      continue;
+    }
     if (rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live") {
       out.push({ ...seen, state: "live-child", detail: `child ${rec.childPid} is running; kept` });
       continue;
