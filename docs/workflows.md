@@ -81,7 +81,10 @@ bounded decision record, not prose.
   discrete-event: timed effects park at their wake times and are delivered in wake order on one
   virtual clock, so concurrent branches accumulate the durations they wrote and a simulated `race`
   is decided by the same rule a live handler produces (least recorded clock, ties by declaration
-  order). A `sleep("1m")` arm beats a `sleep("1h")` arm whatever their declaration order.
+  order). A `sleep("1m")` arm beats a `sleep("1h")` arm whatever their declaration order. Behind the
+  worker bridge the simulator delivers its next wake only after the thread reports it has reacted
+  to the last one, so a bridged simulation settles a race the same way, also when the dry run's
+  recorder wraps the simulator.
 
 Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 

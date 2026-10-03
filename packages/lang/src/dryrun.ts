@@ -106,8 +106,11 @@ export interface DryRunReport {
  *
  * Deliberately NOT a `SimHandler` subclass. A dry run over the production handler is the thing
  * that makes the report worth trusting, and inheritance would tie it to simulation forever.
+ *
+ * It implements every member, the optional ones included, so a member added to the contract is a
+ * type error here until it is forwarded rather than a hook the wrapper silently drops.
  */
-export class RecordingHandler implements EffectHandler {
+export class RecordingHandler implements Required<EffectHandler> {
   readonly spawns: SpawnRequest[] = [];
   readonly checkpointsAsked: { req: CheckpointRequest; step: string }[] = [];
   readonly waits: { req: ObserveRequest; step: string }[] = [];
@@ -163,6 +166,13 @@ export class RecordingHandler implements EffectHandler {
   }
   async closeConclave(req: ConclaveRequest, ctx: EffectContext): Promise<null> {
     return await this.inner.closeConclave(req, ctx);
+  }
+  /**
+   * Forwarded, so a simulator wrapped here keeps its pacing behind the worker bridge (#2240). A
+   * wrapped handler without the hook has nothing to pace and nothing to release.
+   */
+  useQuiescence(settled: () => Promise<void>): () => void {
+    return this.inner.useQuiescence?.(settled) ?? (() => {});
   }
 }
 
