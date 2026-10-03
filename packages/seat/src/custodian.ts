@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
+import { discardSeatArtifacts } from "./artifacts.js";
 import { peerCredentials } from "./peercred.js";
 import { preferSeatForOomKill } from "./oom.js";
 import {
@@ -44,8 +45,11 @@ export interface CustodianLaunch {
    *  Resolved by the LAUNCHER, because the launcher scrubs the environment it hands this process
    *  (the child must not inherit the caller's), so an env override read here would never see one. */
   unattendedMs?: number;
-  /** The launch's private temporary directories, copied onto the seat record. */
+  /** The launch's private temporary directories, copied onto the seat record. This custodian removes
+   *  them once it sees its child exit, the one exit it observes directly. */
   artifacts?: string[];
+  /** The launcher's temp dir, which every entry of `artifacts` must sit directly under. */
+  artifactRoot?: string;
 }
 
 function send(sock: Socket, msg: ServerMessage): void {
@@ -65,13 +69,38 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
 
-  const proc = pty.spawn(launch.command, launch.args, {
-    name: "xterm-256color",
-    cols: DEFAULT_COLS,
-    rows: DEFAULT_ROWS,
-    cwd: launch.cwd,
-    env: launch.env,
-  });
+  // Removes the launch's files, logging rather than throwing: a refused path must not take down the
+  // custodian of a live seat.
+  const discardArtifacts = (): void => {
+    try {
+      discardSeatArtifacts(launch.artifacts, launch.artifactRoot ?? "");
+    } catch (e) {
+      note(`${(e as Error).message}\n`);
+    }
+  };
+  const note = (line: string): void => {
+    try {
+      if (launch.logPath) appendFileSync(launch.logPath, line, { mode: 0o600 });
+      else process.stderr.write(line);
+    } catch {
+      /* the seat directory may already be gone */
+    }
+  };
+
+  let proc: pty.IPty;
+  try {
+    proc = pty.spawn(launch.command, launch.args, {
+      name: "xterm-256color",
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+      cwd: launch.cwd,
+      env: launch.env,
+    });
+  } catch (e) {
+    // No child was started, so none will read the files.
+    discardArtifacts();
+    throw e;
+  }
   const oomPref = preferSeatForOomKill(proc.pid);
   if (!oomPref.applied) {
     const line = `oom preference not applied to child ${proc.pid}: ${oomPref.reason}\n`;
@@ -324,6 +353,22 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           else process.stderr.write(line);
         } catch {
           /* the log can sit on the same failed storage */
+        }
+      }
+    }
+    // The child is gone, so it has made every read it will make. Remove its files before anyone is
+    // told of the exit, and drop them from the record so a later reap does not remove the same
+    // names again. Losing a controller's connection is not this: only the child's exit is.
+    if (record.artifacts) {
+      discardArtifacts();
+      delete record.artifacts;
+      if (ready) {
+        try {
+          const tmp = `${launch.recordPath}.tmp`;
+          writeRecord(tmp, record);
+          renameSync(tmp, launch.recordPath);
+        } catch (e) {
+          note(`${(e as Error).message}\n`);
         }
       }
     }

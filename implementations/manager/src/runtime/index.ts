@@ -65,8 +65,9 @@ export class RuntimeReapUnproven extends Error {
 export interface CustodialRuntime extends Runtime {
   reserve(): RuntimeReference;
   reap(reference: RuntimeReference): Promise<RuntimeReapEvidence>;
-  /** The launch artifacts (core launch-artifacts) the custody record for `reference` carries, so the
-   *  manager that adopts or reaps a seat owns them even when another manager launched it. */
+  /** The launch artifacts (core launch-artifacts) the custody record for `reference` still lists:
+   *  those of a custodian killed before its child exited, which the reap that proves the seat gone
+   *  removes, even when another manager launched it. */
   artifactsOf(reference: RuntimeReference): readonly string[] | undefined;
 }
 
@@ -163,35 +164,23 @@ function createBackend(mode: RuntimeMode, session: string): Runtime {
  * holds for every backend: a spec's private files are removed only once the runtime has proved its
  * child gone.
  *
- * - A spawned handle discards on the exit its attach session streams (pty). A runtime that cannot
- *   attach (tmux, cmux, orca, herdr) is polled through `status()`, and its `waitForExit`, the proof
- *   every stop already awaits, confirms the exit before the files go.
- * - A custodial runtime (pty) carries the files on its custody record, so a seat this manager adopts
- *   discards on its exit too, and a reap that proves a seat gone discards it. This covers a seat
- *   whose launching manager was killed: its successor adopts or reaps it by reference.
- * - A spawn that throws is not proof that nothing started (a backend can fail after its child is up),
- *   so its files stay. A custodial runtime's launch still carries them to any custody record it
- *   wrote, and the reap that later proves that seat gone removes them; otherwise the OS temp reaper
- *   does.
+ * - A custodial runtime (pty on Linux) hands the files to the seat's custodian, the parent of the
+ *   child: it removes them when it sees that child exit, so they go on exit, stop and the custodian's
+ *   own unattended timeout whether or not any manager is still alive. Its launcher removes them on a
+ *   refusal made before any process existed. The end of this manager's attach stream proves nothing,
+ *   since a custodian that dies leaves its child running, so nothing here listens to it. A reap that
+ *   proves the seat gone removes what the custody record still lists, which covers a custodian
+ *   killed before its child exited.
+ * - Any other runtime discards on the exit its attach session streams (the in-process pty). One that
+ *   cannot attach (tmux, cmux, orca, herdr) is polled through `status()`, and its `waitForExit`, the
+ *   proof every stop already awaits, confirms the exit before the files go.
+ * - Any other spawn that throws is not proof that nothing started (a backend can fail after its
+ *   child is up), so its files stay for the OS temp reaper.
  */
 function ownLaunchArtifacts(runtime: Runtime): Runtime {
-  const spawn = runtime.spawn.bind(runtime);
   const custodial = isCustodialRuntime(runtime) ? runtime : undefined;
-  const reap = custodial?.reap.bind(custodial);
-  runtime.spawn = (name, spec, cwd, reference) => {
-    const handle = spawn(name, spec, cwd, reference);
-    if (spec.artifacts?.length) discardOnExit(handle, discardOnce(name, spec.artifacts));
-    return handle;
-  };
-  if (custodial && reap) {
-    const adopt = custodial.adopt?.bind(custodial);
-    if (adopt)
-      custodial.adopt = (reference) => {
-        const handle = adopt(reference);
-        const artifacts = custodial.artifactsOf(reference);
-        if (artifacts?.length) discardOnExit(handle, discardOnce(handle.name, artifacts));
-        return handle;
-      };
+  if (custodial) {
+    const reap = custodial.reap.bind(custodial);
     custodial.reap = async (reference) => {
       // Read before the reap, which forgets the record.
       const artifacts = custodial.artifactsOf(reference);
@@ -199,7 +188,14 @@ function ownLaunchArtifacts(runtime: Runtime): Runtime {
       if (evidence.outcome === "reaped") discardOnce(`${reference.kind}:${reference.id}`, artifacts)();
       return evidence;
     };
+    return runtime;
   }
+  const spawn = runtime.spawn.bind(runtime);
+  runtime.spawn = (name, spec, cwd, reference) => {
+    const handle = spawn(name, spec, cwd, reference);
+    if (spec.artifacts?.length) discardOnExit(handle, discardOnce(name, spec.artifacts));
+    return handle;
+  };
   return runtime;
 }
 

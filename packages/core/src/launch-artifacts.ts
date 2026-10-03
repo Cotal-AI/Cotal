@@ -7,12 +7,15 @@
  * `LaunchSpec.artifacts`; it cannot remove them itself, because the child reads them after
  * `buildLaunch` returns (Claude re-reads its MCP config on `/mcp reconnect`). The launcher that
  * spawns the spec owns them from then on: it removes them once it has proved the child gone. Nothing
- * earlier is safe, since the child may read them at any point in its life, and a spawn that throws
- * is not that proof: a backend can fail after its child has started.
+ * earlier is safe, since the child may read them at any point in its life. A spawn that throws is not
+ * that proof, since a backend can fail after its child has started, and neither is losing the
+ * connection to whatever watches the child. A refusal made before any process exists is.
  *
- * WHAT IS LEFT. A runtime with durable custody carries the list on its custody record, so a manager
- * that adopts or reaps a seat after its launcher was killed removes them. Otherwise a killed
- * launcher's artifacts, and those of a spawn that threw, stay until the OS temp reaper removes them.
+ * WHAT IS LEFT. On a runtime with durable custody (pty on Linux) the seat's custodian, the child's
+ * parent, removes them when it sees the child exit, whether or not the launcher is still alive, and a
+ * reap that proves the seat gone removes them when the custodian was killed first. On any other
+ * runtime a killed launcher's artifacts, and those of a spawn that threw, stay until the OS temp
+ * reaper removes them.
  *
  * WHAT OWNER-PRIVATE MEANS. Each file is 0600 inside a 0700 directory. That is OS-user isolation:
  * any process running as the same user can read the file while it exists, as it can the agent file

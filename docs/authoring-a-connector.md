@@ -54,10 +54,12 @@ Text the child should not see in argv, such as a persona or an MCP config that n
 goes in a private file written with `writeLaunchArtifact` from `@cotal-ai/core`, with only its path
 passed to the child. Pass the same `artifacts` array to every call and return it on the `LaunchSpec`.
 The launcher owns those files: the manager and the foreground `cotal spawn` remove them once they
-have proved the child gone, so the child may read them at any point in its life. On a runtime that
+have proved the child gone, so the child may read them at any point in its life. On a pty seat the
+seat's custodian removes them when it sees the child exit, so they go even when the manager was
+killed, and a launch refused before any process started removes them at once. On a runtime that
 cannot stream an exit (tmux, cmux, orca, herdr) the manager polls the seat's status and waits for
-the runtime's exit proof. A spawn that throws is not proof, so its files stay for the OS temp
-reaper. Run every check that can refuse the launch, and every conversion that can throw, before the
+the runtime's exit proof. Any other spawn that throws is not proof, so its files stay for the OS
+temp reaper. Run every check that can refuse the launch, and every conversion that can throw, before the
 first write. The file
 is 0600 in a 0700 directory, which is OS-user isolation: any process running as the same user can
 read it while it exists.

@@ -78,13 +78,12 @@ export class CustodialPtyRuntime implements CustodialRuntime {
     } as AgentHandle;
   }
 
-  /** The launch artifacts the custody record for `reference` carries, or undefined when there is no
-   *  readable record. Read from the record, so a successor that adopts or reaps a seat it did not
-   *  launch still owns them. */
+  /** The launch artifacts the custody record for `reference` still lists, or undefined when there is
+   *  no readable record. Read from disk, never the copy pinned at spawn: the custodian drops them from
+   *  the record once it has removed them, and a successor that reaps a seat it did not launch still
+   *  owns what is left. */
   artifactsOf(reference: RuntimeReference): readonly string[] | undefined {
     if (reference.kind !== "pty") return undefined;
-    const pinned = this.records.get(reference.id);
-    if (pinned) return pinned.artifacts;
     try {
       return loadSeat(this.root, reference.id).artifacts;
     } catch {
