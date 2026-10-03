@@ -68,14 +68,14 @@ import { type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import { agentLifecycleSecretFilePaths, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveMeshTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
-import { journalStepRow } from "./run-host.js";
+import { journalRows } from "./run-host.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
-import { locateOpenCheckpoint, answerOpenCheckpoint } from "./resolve-checkpoint.js";
+import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -482,7 +482,7 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   if (unchecked.length > 0) process.exitCode = 1;
 }
 
-async function journal(planes: Planes, runId: string | undefined, takeoverId: string): Promise<void> {
+async function journal(planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
   if (runId === undefined) {
     console.error(USAGE);
     process.exit(1);
@@ -493,9 +493,7 @@ async function journal(planes: Planes, runId: string | undefined, takeoverId: st
     console.log(`run ${runId}: no journal records (never started, or retired)`);
     return;
   }
-  printJournal(runId, replay.records.map(({ record }): RunJournalRow => record.kind === "activation"
-    ? { n: record.n, kind: "activation", holder: record.holder, epoch: record.epoch, replayedTo: record.replayedTo }
-    : journalStepRow(record.n, record.entry as JournalEntry)));
+  printJournal(runId, await journalRows(planes.kv, endpoint, replay.records));
 }
 
 /** `answer --local`: the pause is found under the READ credential this call was opened on, then
@@ -521,6 +519,39 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
       { kv: writer.kv, js: writer.js, jsm: writer.jsm, space: writer.space, endpoint },
       {
         open,
+        by: values.by,
+        ...(values.value !== undefined ? { value: parsedValue } : {}),
+        ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
+        now: Date.now(),
+      },
+    );
+    console.log(JSON.stringify(result, null, 2));
+  } finally {
+    await writer.close();
+  }
+}
+
+/** `amend --local`: the accepted answer is found under the READ credential this call was opened on,
+ *  then the amendment rides a second, one-shot credential pinned to that pause's token. Nothing is
+ *  presented: the step stays settled and the run keeps the answer it acted on. */
+async function amend(values: RunValues, reader: Planes, runId: string | undefined, stepKey: string | undefined, takeoverId: string): Promise<void> {
+  if (runId === undefined || stepKey === undefined || values.by === undefined) {
+    console.error(USAGE);
+    console.error("run amend: <runId> <stepKey> and --by <who> are required");
+    process.exit(1);
+  }
+  const endpoint = values.endpoint ?? "manager";
+  const parsedValue = parseAnswerValue(values);
+  const accepted = await locateAcceptedAnswer(
+    { kv: reader.kv, js: reader.js, jsm: reader.jsm, space: reader.space, endpoint },
+    { runId, stepKey, takeoverId },
+  );
+  const writer = await openPlanes(values, "run-operator", { runOperator: { endpoint, takeoverId: newTakeoverId(), answers: { token: accepted.token } } });
+  try {
+    const result = await amendAcceptedAnswer(
+      { kv: writer.kv, js: writer.js, jsm: writer.jsm, space: writer.space, endpoint },
+      {
+        accepted,
         by: values.by,
         ...(values.value !== undefined ? { value: parsedValue } : {}),
         ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
@@ -755,6 +786,17 @@ function printJournal(runId: string, rows: readonly RunJournalRow[]): void {
       ];
       console.log(`            answered    ${facts.join("  ")}`);
     }
+    for (const m of r.amendments ?? []) {
+      const facts = [
+        ...(Object.hasOwn(m, "value") ? [`value=${JSON.stringify(m.value)}`] : []),
+        `by=${JSON.stringify(m.by)}`,
+        ...(m.artifact !== undefined ? [`artifact=${JSON.stringify(m.artifact)}`] : []),
+        `at=${JSON.stringify(m.at)}`,
+        `supersedes=${JSON.stringify(m.supersedes)}`,
+        `answerId=${JSON.stringify(m.answerId)}`,
+      ];
+      console.log(`            amended     ${facts.join("  ")}`);
+    }
   }
 }
 
@@ -795,8 +837,8 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     console.error(`run ${verb}: --endpoint is not taken on the hosted path; the manager records the run under its own endpoint. \`--local\` drives under a chosen endpoint from this process`);
     process.exit(1);
   }
-  if (verb === "answer" && values.by !== undefined) {
-    console.error("run answer: --by is not taken on the hosted path; the manager records you as the answerer from your credential. `--local --by <who>` names the answerer when driving from this process");
+  if ((verb === "answer" || verb === "amend") && values.by !== undefined) {
+    console.error(`run ${verb}: --by is not taken on the hosted path; the manager records you as the answerer from your credential. \`--local --by <who>\` names the answerer when driving from this process`);
     process.exit(1);
   }
   // The manager serves no `run-migrate` command, so there is nothing to route to: the check reads
@@ -840,10 +882,11 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     printJournal(view.runId, view.journal);
     return;
   }
-  // answer: the manager records the caller as the answerer (SPEC 14.5), so no `--by` rides.
+  // answer and amend: the manager records the caller as the answerer (SPEC 14.5), so no `--by`
+  // rides. An amend is the same served command with `amend` set.
   if (a === undefined || b === undefined) {
     console.error(USAGE);
-    console.error("run answer: <runId> <stepKey> are required");
+    console.error(`run ${verb}: <runId> <stepKey> are required`);
     process.exit(1);
   }
   const value = parseAnswerValue(values);
@@ -853,16 +896,17 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     ...endpoint,
     ...(values.value !== undefined ? { value } : {}),
     ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
+    ...(verb === "amend" ? { amend: true } : {}),
   });
   console.log(JSON.stringify(result, null, 2));
 }
 
-/** `cotal run <start|resume|ps|journal|answer>` — dispatch. The manager hosts by default;
+/** `cotal run <start|resume|ps|journal|answer|amend>` — dispatch. The manager hosts by default;
  *  `--local` drives in this process over one connection per invocation. */
 export async function runWorkflow(args: ParsedArgs): Promise<void> {
   const values = args.values as RunValues;
   const [verb, a, b] = args.positionals;
-  if (verb === undefined || !["start", "resume", "ps", "journal", "answer", "revoke", "migrate"].includes(verb)) {
+  if (verb === undefined || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate"].includes(verb)) {
     console.error(USAGE);
     process.exit(1);
   }
@@ -881,9 +925,9 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   }
   if (verb === "start") return start(values);
   if (verb === "resume") return resume(values, a);
-  // The reads ride a one-shot operator READ credential for that call; a journal or an answer names
-  // the run its replay durable is pinned to. An answer finds its pause on this credential and then
-  // writes on a second one, minted for that pause alone (see `answer`).
+  // The reads ride a one-shot operator READ credential for that call; a journal, an answer or an
+  // amend names the run its replay durable is pinned to. An answer or an amend finds its pause on
+  // this credential and then writes on a second one, minted for that pause alone (see `answer`).
   const endpoint = values.endpoint ?? "manager";
   const takeoverId = newTakeoverId();
   const planes = await openPlanes(values, "run-operator", {
@@ -891,8 +935,9 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   });
   try {
     if (verb === "ps") await ps(values, planes);
-    else if (verb === "journal") await journal(planes, a, takeoverId);
+    else if (verb === "journal") await journal(planes, endpoint, a, takeoverId);
     else if (verb === "migrate") await migrate(values, planes, a, takeoverId);
+    else if (verb === "amend") await amend(values, planes, a, b, takeoverId);
     else await answer(values, planes, a, b, takeoverId);
   } finally {
     await planes.close();

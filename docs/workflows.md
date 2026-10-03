@@ -178,12 +178,21 @@ accepted answer, it instead prints the answer value as JSON, who answered, the a
 cited, the recorded time, and the accepted answer id. Expired pauses and ordinary steps print no
 answer line.
 
+A settled step is never answered twice, so a participant who changes their mind uses `amend`. It
+files a new answer beside the accepted one, naming the answer it supersedes, and `journal` prints
+each amendment under the step as an `amended` line, oldest first. The latest line is the current
+position. The pause stays settled and the run keeps the answer it acted on. A step that is still
+open, or that settled with no answer, refuses an amend. The manager records the amender from the
+credential, as for an answer, and a spawned seat may amend only an answer recorded under its own
+name.
+
 ```bash
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run ps                                            # list run records: state, holder, lineage
 cotal run journal run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # print the durable step journal
 cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
+cotal run amend run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"no"'   # record a changed position
 cotal run migrate run-3f2a90c41b7e0d5a6c884e19b02df4a1 --local --file build-v2.cotal.js   # check an edited program against the journal
 ```
 
@@ -375,7 +384,8 @@ absolute deadline for the whole ask passing with no conforming record (its kind 
 the step key an answer is addressed by while the pause is open: the address alone left whoever was
 asked reading the source to find out what "approve" meant. After a checkpoint or `ask` accepts an
 answer, the journal prints that accepted answer's recorded value and attribution under the settled
-step. It never substitutes another filed answer or invents fields the frozen result does not hold.
+step. It never substitutes another filed answer or invents fields the frozen result does not hold;
+amendments print on their own lines after it.
 An `escalate` addressed to an agent this
 run spawned is relayed to that seat through the same turn relay an `ask` uses, carrying the prompt
 and the token to answer under; a `to` naming anyone else is a person, and their pause stays the

@@ -2026,6 +2026,7 @@ cotal run resume <runId> [--local --file <program>]
 cotal run ps [--endpoint <ep>]
 cotal run journal <runId> [--endpoint <ep>]
 cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
+cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
 cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
 ```
 
@@ -2037,10 +2038,15 @@ the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the m
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. An open pause prints its question.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
-artifact when present, time, and answer id. Expired pauses and ordinary steps print no answer line.
+artifact when present, time, and answer id, then one `amended` line per later amendment.
+Expired pauses and ordinary steps print no answer line.
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
-answerer from your credential, so no `--by` is taken there. `migrate` runs the migrate check of an
+answerer from your credential, so no `--by` is taken there. A settled step refuses a second
+`answer`. `amend` records a changed position on a settled checkpoint or `ask`: it files a new
+answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
+settled and the run keeps the answer it acted on. A step that is still open or settled without an
+answer refuses an amend. A spawned seat may amend only an answer recorded under its own name. `migrate` runs the migrate check of an
 edited program against a run's journal, from this terminal under a read credential (`--local`
 only; the manager serves no run-migrate command): it prints whether the migration is admissible,
 every orphaned step with its verdict and code, and exits 0 on admissible and non-zero on not. It
@@ -2049,7 +2055,8 @@ says so. `--timeout` sets the default
 checkpoint timeout for a drive (default 1h). `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
-(`cotal run resume <runId> --local --file <program>`); `answer --local` takes `--by <who>`. A
+(`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
+`--by <who>`. A
 user-auth mesh runs no programs yet: the manager refuses the family by name, and `--local` has no
 credential there. The guide is [workflows](workflows.md).
 

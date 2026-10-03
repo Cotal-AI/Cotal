@@ -3236,6 +3236,18 @@ export class Manager {
       throw new EpEnvelopeError("permission-denied", `run-answer is allowed to ${agent.name} only for the open pause named by its pending ask or escalation relay; ${args.runId} ${args.stepKey} is not that pause`);
   }
 
+  /** A baseline seat may amend only an answer recorded under its own name: it changes its own
+   *  position, never another answerer's. Explicit `run` holders and unmanaged operator instruments
+   *  keep the reach they have to answer, as {@link authorizeRunAnswer} does. */
+  private authorizeRunAmend(ctx: EpServeContext, accepted: { by: string }): void {
+    const caller = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
+    const agent = [...this.agents.values()].find((a) =>
+      this.managedPrincipal(a) === caller && a.lifecycleUid === ctx.subject.caller.uid);
+    if (agent === undefined || agent.launch.capabilities?.includes("run")) return;
+    if (accepted.by !== agent.name)
+      throw new EpEnvelopeError("permission-denied", `run-answer amend is allowed to ${agent.name} only for an answer recorded under its own name; this step's accepted answer is ${JSON.stringify(accepted.by)}'s`);
+  }
+
   /** The v0.4 typed command table (P2 item 1, slice 1b): every ordinary handler runs the SHARED
    *  admission chokepoint ({@link serveGated}) and then delegates to the SAME op core the ctl
    *  door dispatches (checklist 8: one core, two thin doors). The resume/preservation family
@@ -3440,7 +3452,9 @@ export class Manager {
       runStart: (ctx) => this.serveGated(ctx, () => this.runHost().start(ctx, args(ctx) as { source: string; file?: string; timeout?: string })),
       runResume: (ctx) => this.serveGated(ctx, () => this.runHost().resume(args(ctx) as { runId: string; timeout?: string })),
       runAnswer: (ctx) => this.serveGated(ctx, () => {
-        const input = args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string };
+        const input = args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string; amend?: boolean };
+        if (input.amend === true)
+          return this.runHost().amend(input, this.runAnswerer(ctx), (accepted) => this.authorizeRunAmend(ctx, accepted));
         return this.runHost().answer(input, this.runAnswerer(ctx), (open) => this.authorizeRunAnswer(ctx, input, open));
       }),
       runStatus: (ctx) => this.serveGated(ctx, () => this.runHost().status(args(ctx) as { runId: string; endpoint?: string })),

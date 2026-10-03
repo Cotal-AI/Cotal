@@ -712,13 +712,28 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
               at: { type: "number" },
             },
           },
+          amendments: {
+            type: "array",
+            items: {
+              type: "object", additionalProperties: false, required: ["answerId", "supersedes", "by", "at"],
+              properties: {
+                answerId: { type: "string" },
+                supersedes: { type: "string" },
+                value: {},
+                by: { type: "string" },
+                artifact: { type: "string" },
+                at: { type: "number" },
+              },
+            },
+          },
         },
       },
     },
   },
 } as const;
 /** No `by`: the answerer is the caller as the manager knows them, decided from the authenticated
- *  principal at the serve layer (SPEC 14.5), so a request cannot name someone else. */
+ *  principal at the serve layer (SPEC 14.5), so a request cannot name someone else. `amend` files a
+ *  later answer beside a SETTLED pause's accepted one instead of answering an open pause. */
 const RUN_ANSWER_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId", "stepKey"],
   properties: {
@@ -727,11 +742,14 @@ const RUN_ANSWER_INPUT_SCHEMA = {
     stepKey: { type: "string", minLength: 1 },
     value: {},
     artifact: { type: "string", minLength: 1 },
+    amend: { type: "boolean" },
   },
 } as const;
+/** An answer names its `settle`; an amendment names the accepted answer it `supersedes` and
+ *  presents nothing. */
 const RUN_ANSWER_OUTPUT_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["token", "answerId", "settle"],
-  properties: { token: { type: "string" }, answerId: { type: "string" }, settle: { type: "object" } },
+  type: "object", additionalProperties: false, required: ["token", "answerId"],
+  properties: { token: { type: "string" }, answerId: { type: "string" }, settle: { type: "object" }, supersedes: { type: "string" } },
 } as const;
 
 // ---- the command table (ONE source for the document, the defs, the caller contracts, AND the
@@ -924,7 +942,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  directory before a placed workflow spawn launches there.
  *
  *  18 = `goal-result` mediates a caller's own canonical terminal through the manager's trusted
- *  goal-writer, so a result remains observable after the caller's connection is replaced. */
+ *  goal-writer, so a result remains observable after the caller's connection is replaced.
+ *
+ *  19 = `run-answer` input grows `amend` (file a later answer beside a settled pause's accepted
+ *  one), its output names `supersedes` for that form, and `run-status` journal rows carry
+ *  `amendments`. Changed input and output contracts are a changed described surface even though
+ *  the command names are unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -942,7 +965,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 18,
+    revision: 19,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

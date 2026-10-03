@@ -10,6 +10,7 @@
 import {
   readRunRecord,
   readRunAdmission,
+  listCheckpointAmendments,
   readRunRevocation,
   replayRunJournal,
   runDriverCaller,
@@ -24,6 +25,8 @@ import {
   type RunHostAnswerRequest,
   type RunHostLocateRequest,
   type RunHostOpenPause,
+  type RunHostAcceptedAnswer,
+  type RunHostAmendRequest,
   type RunJournalRow,
   type RunListRow,
   type RunStatusView,
@@ -34,7 +37,8 @@ import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
-import { locateOpenCheckpoint, answerOpenCheckpoint } from "./resolve-checkpoint.js";
+import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
+import type { KV } from "@nats-io/kv";
 
 function outcomeOf(out: DriveOutcome): RunHostOutcome {
   if (out.status === "completed")
@@ -101,15 +105,38 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
 }
 
 /** The journal view `cotal run journal` prints, as rows. The step key is rendered by the export
- *  the journal itself keys with, so it is the key `answer` takes back. */
-function journalRows(records: Awaited<ReturnType<typeof replayRunJournal>>["records"]): RunJournalRow[] {
+ *  the journal itself keys with, so it is the key `answer` takes back. A settled checkpoint or
+ *  `ask` also lists the amendments filed under the token it settled under (an ask's last attempt
+ *  token rides its pending entries), read from the answer records on `kv`. */
+export async function journalRows(
+  kv: KV,
+  endpoint: string,
+  records: Awaited<ReturnType<typeof replayRunJournal>>["records"],
+): Promise<RunJournalRow[]> {
   const rows: RunJournalRow[] = [];
+  const askTokens = new Map<string, string>();
   for (const { record } of records) {
     if (record.kind === "activation") {
       rows.push({ n: record.n, kind: "activation", holder: record.holder, epoch: record.epoch, replayedTo: record.replayedTo });
       continue;
     }
-    rows.push(journalStepRow(record.n, record.entry as JournalEntry));
+    const e = record.entry as JournalEntry;
+    const row = journalStepRow(record.n, e);
+    if (typeof e.external?.askToken === "string") askTokens.set(row.step, e.external.askToken);
+    const token = e.state !== "settled" || (e.kind !== "checkpoint" && e.kind !== "ask") ? undefined
+      : e.kind === "ask" ? askTokens.get(row.step) ?? e.requestId : e.requestId;
+    const amendments = token === undefined ? [] : await listCheckpointAmendments(kv, endpoint, token);
+    rows.push(amendments.length === 0 ? row : {
+      ...row,
+      amendments: amendments.map((a) => ({
+        answerId: a.answerId,
+        supersedes: a.supersedes as string,
+        ...(a.value !== undefined ? { value: a.value } : {}),
+        by: a.by,
+        ...(a.artifact !== undefined ? { artifact: a.artifact } : {}),
+        at: a.at,
+      })),
+    });
   }
   return rows;
 }
@@ -249,6 +276,26 @@ export const cotalLangRunHost: RunHost = {
     );
   },
 
+  async locateAccepted(planes: RunHostPlanes, req: RunHostLocateRequest): Promise<RunHostAcceptedAnswer> {
+    return await locateAcceptedAnswer(
+      { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint: req.endpoint },
+      { runId: req.runId, stepKey: req.stepKey, takeoverId: req.takeoverId },
+    );
+  },
+
+  async amend(planes: RunHostPlanes, req: RunHostAmendRequest): Promise<unknown> {
+    return await amendAcceptedAnswer(
+      { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint: req.endpoint },
+      {
+        accepted: req.accepted,
+        by: req.by,
+        ...(req.value !== undefined ? { value: req.value } : {}),
+        ...(req.artifact !== undefined ? { artifact: req.artifact } : {}),
+        now: req.now,
+      },
+    );
+  },
+
   async status(planes: RunHostPlanes, req: { endpoint: string; runId: string; takeoverId: string }): Promise<RunStatusView | undefined> {
     const record = await readRunRecord(planes.kv, req.endpoint, req.runId);
     if (record === undefined) return undefined;
@@ -260,7 +307,7 @@ export const cotalLangRunHost: RunHost = {
       endpoint: req.endpoint,
       spec: record.spec.value,
       ...(record.status !== undefined ? { status: record.status.value } : {}),
-      journal: journalRows(replay.records),
+      journal: await journalRows(planes.kv, req.endpoint, replay.records),
     };
   },
 

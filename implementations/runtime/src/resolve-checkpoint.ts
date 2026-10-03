@@ -27,13 +27,20 @@
  * "the checkpoint named `approve` in this run". The journal is what maps one to the other, and it is
  * also what says whether that step is still open — which is the question a resolver most needs
  * answered before it collects a human's decision.
+ *
+ * **A settled step is never re-answered, but it can be AMENDED.** The pause stays settled and the run
+ * keeps the answer it acted on; {@link amendAcceptedAnswer} files a later position beside that
+ * answer, naming it, so a participant who changes their mind records it on the step that holds the
+ * original rather than somewhere else.
  */
 import {
   replayRunJournal,
   newTakeoverId,
   recordCheckpointAnswer,
   checkpointAnswerId,
+  readCheckpointAnswer,
   readCheckpointSpec,
+  readCheckpointStatus,
   resumeCheckpoint,
   type CheckpointSettleFact,
   type CheckpointSpecValue,
@@ -60,6 +67,27 @@ export class CheckpointNotOpen extends Error {
       }`,
     );
     this.name = "CheckpointNotOpen";
+  }
+}
+
+/** No accepted answer at this address that an amendment could be filed beside. */
+export class CheckpointNotAmendable extends Error {
+  constructor(
+    readonly runId: string,
+    readonly stepKey: string,
+    readonly why: "unknown" | "open" | "not-a-checkpoint" | "unanswered",
+  ) {
+    super(
+      `run ${runId} has no accepted answer to amend at ${stepKey}: ${
+        {
+          unknown: "no step is recorded under that key",
+          open: "that step is still open, so answer it instead",
+          "not-a-checkpoint": "that step is neither a checkpoint nor an ask",
+          unanswered: "that step settled without accepting an answer",
+        }[why]
+      }`,
+    );
+    this.name = "CheckpointNotAmendable";
   }
 }
 
@@ -219,6 +247,88 @@ export async function answerOpenCheckpoint(
     answerId,
   });
   return { token, answerId, settle };
+}
+
+/** A settled pause's accepted answer: the token it settled under, the id the settle named, and who
+ *  answered. */
+export interface AcceptedAnswer {
+  readonly token: string;
+  readonly answerId: string;
+  readonly by: string;
+}
+
+/**
+ * The READ half of an amendment: replay the run's journal to the settled pause at `stepKey`, then
+ * read which answer its settlement accepted off the checkpoint's status record. Nothing is written.
+ * The status names the id for an `ask` as well as a checkpoint, where the journal's frozen result
+ * names it for a checkpoint only.
+ */
+export async function locateAcceptedAnswer(
+  deps: ResolveCheckpointDeps,
+  req: { readonly runId: string; readonly stepKey: string; readonly takeoverId: string },
+): Promise<AcceptedAnswer> {
+  const entries = await replayRunEntries(deps, req.runId, req.takeoverId);
+  const token = settledPauseToken(entries, req.runId, req.stepKey);
+  if (token === undefined) throw new CheckpointNotAmendable(req.runId, req.stepKey, "unanswered");
+  const status = await readCheckpointStatus(deps.kv, { endpoint: deps.endpoint, token });
+  const answerId = status?.value.state === "resumed" ? status.value.settledAnswerId : undefined;
+  if (answerId === undefined) throw new CheckpointNotAmendable(req.runId, req.stepKey, "unanswered");
+  const accepted = await readCheckpointAnswer(deps.kv, deps.endpoint, token, answerId);
+  if (accepted === undefined)
+    throw new Error(`checkpoint "${token}" settled naming the answer ${answerId}, which is not on record; reconcile the store before amending`);
+  return { token, answerId, by: accepted.by };
+}
+
+/**
+ * The WRITE half of an amendment: file a create-only answer record under the accepted answer's
+ * token that names it as `supersedes`. No token is presented, so the pause stays settled and the run
+ * never reads this record; the journal lists it under the step.
+ */
+export async function amendAcceptedAnswer(
+  deps: ResolveCheckpointDeps,
+  req: { readonly accepted: AcceptedAnswer; readonly by: string; readonly value?: unknown; readonly artifact?: string; readonly now: number },
+): Promise<{ readonly token: string; readonly answerId: string; readonly supersedes: string }> {
+  const { token, answerId: supersedes } = req.accepted;
+  const answerId = checkpointAnswerId({
+    token,
+    by: req.by,
+    ...(req.value !== undefined ? { value: req.value } : {}),
+    ...(req.artifact !== undefined ? { artifact: req.artifact } : {}),
+    supersedes,
+    at: req.now,
+  });
+  await recordCheckpointAnswer(deps.kv, deps.endpoint, {
+    v: 1,
+    token,
+    answerId,
+    ...(req.value !== undefined ? { value: req.value } : {}),
+    ...(req.artifact !== undefined ? { artifact: req.artifact } : {}),
+    by: req.by,
+    at: req.now,
+    supersedes,
+  });
+  return { token, answerId, supersedes };
+}
+
+/** The token a settled checkpoint (or ask) settled under, or a loud refusal naming why the step has
+ *  none to amend. A checkpoint settles under its request id; an `ask` under its LAST attempt's
+ *  token, which rides the step's pending entries as `askToken` (attempt 1 is the request id). */
+export function settledPauseToken(
+  entries: readonly JournalEntry[],
+  runId: string,
+  stepKey: string,
+): string | undefined {
+  let entry: JournalEntry | undefined;
+  let askToken: string | undefined;
+  for (const e of entries) {
+    if (journalEntryKeyString(e) !== stepKey) continue;
+    entry = e;
+    if (typeof e.external?.askToken === "string") askToken = e.external.askToken;
+  }
+  if (entry === undefined) throw new CheckpointNotAmendable(runId, stepKey, "unknown");
+  if (entry.kind !== "checkpoint" && entry.kind !== "ask") throw new CheckpointNotAmendable(runId, stepKey, "not-a-checkpoint");
+  if (entry.state === "pending") throw new CheckpointNotAmendable(runId, stepKey, "open");
+  return entry.kind === "ask" ? askToken ?? entry.requestId : entry.requestId;
 }
 
 /** The token of the open checkpoint (or ask attempt) at this address, or a loud refusal naming
