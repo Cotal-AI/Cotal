@@ -1,7 +1,7 @@
 {
   "expected": {
-    "total": 514,
-    "honest-text": 35,
+    "total": 515,
+    "honest-text": 36,
     "presence-only-glyph/count": 57,
     "command-ack": 12,
     "non-render/control": 410
@@ -2988,6 +2988,17 @@
       "anchor": "c.yellow(r.status)",
       "class": "presence-only-glyph/count",
       "rationale": "Colors the status word by its presence class; color alone carries no progress claim beyond presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "mesh + condition",
+      "class": "honest-text",
+      "rationale": "The ps mesh column joins the status word with the harness-reported condition and last-activity age; the cited output assertion keeps a working row's unknown progress explicit.",
+      "proof": {
+        "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
+        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));"
+      }
     },
     {
       "path": "implementations/cli/src/commands/down.ts",
