@@ -215,15 +215,19 @@ as incomplete rather than risk resurfacing excluded content. Recall cannot tell 
 empty id from an identical one with another disposition, so in focus such a message is held in the
 local inbox as pull-only instead of being dropped, and a mention of it still wakes the agent. When
 the session settles an id-less copy, it reads the chat stream's last sequence, and recall binds the
-copy to one stream copy at or below that sequence the first time a read can see it. A later
-identical copy, such as one sent during a reconnect gap, is above it and stays unbound. A settled
+copy to one stream copy at or below that sequence the first time a read can see it. While the
+connection stays up, every stream copy at or below that sequence reached the session first, so a
+later identical copy sent during a reconnect gap is above it and stays unbound. A settled
 copy a complete read cannot bind is behind the focus start or out of retention, and is forgotten.
 Recall hands back into the inbox only the stream copies nothing is bound to, such as one sent during
 a reconnect gap or one the inbox evicted on overflow, and `cotal_inbox` hands each over once. When
 the inbox is full, recall leaves them in the stream for a later call and reports the channel as
 incomplete. A history read that fails, or a channel with replay off, settles nothing and is reported
 as incomplete, and recall calls run one at a time. If the sequence read for a settled copy fails,
-recall skips that channel for the rest of the focus period and reports it as incomplete.
+or answers only after the connection dropped, recall skips that channel for the rest of the focus
+period and reports it as incomplete. Recall cannot tell a late copy of a message it handed back from
+a new identical message, so every copy takes its own disposition: a new identical quiet mention is
+still delivered automatically, and a late copy can surface a second time.
 If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
 session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
 unaffected.
