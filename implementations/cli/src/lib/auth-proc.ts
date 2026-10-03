@@ -12,7 +12,7 @@ import { closeSync, existsSync, linkSync, openSync, readdirSync, readFileSync, r
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { parsePid, probeLiveness, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
 import type { SignalFn } from "./manager-proc.js";
 
 import { selfArgv } from "./self-exec.js";
@@ -276,6 +276,5 @@ export async function stopAuthService(space: string, probe: LivenessProbe = prob
     throw new Error(
       `auth-service (pid ${pid}) accepted SIGTERM but its death could not be confirmed; its pidfile at ${p} was preserved rather than recording a stop that did not happen - check \`ps -p ${pid}\``,
     );
-  removeIdentityPin(p); // proven death: the pin goes with the pidfile (#969)
-  rmSync(p, { force: true });
+  removePidPair(p, trimmed); // proven death: the pin goes with the pidfile (#969), unless a successor was published (#1238)
 }
