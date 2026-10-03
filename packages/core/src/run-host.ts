@@ -152,6 +152,11 @@ export interface RunListRow {
   readonly epoch?: number;
   readonly journalHigh?: number;
   readonly forkedFrom?: { readonly run: string; readonly step: string };
+  /** The run's pinned `startedAt`: the logical epoch its program's `run()` reports. */
+  readonly startedAt: number;
+  /** The language's hash of the program the run records, which is the `programHash` its `run()`
+   *  reports, since every resume runs the recorded source. Absent for a run with no recorded program. */
+  readonly programHash?: string;
   /** The run's revocation marker as the host read it beside the record (SPEC 14.8). Display only:
    *  `state` stays what the record holds, since a revoke writes no terminal state. */
   readonly revoked?: { readonly by: string; readonly reason: string };
@@ -167,13 +172,27 @@ export type RunJournalRow =
       readonly n: number;
       readonly kind: "step";
       readonly step: string;
+      /** The entry's effect kind (`checkpoint`, `fanOut`, ...) and name, as the journal records them. */
+      readonly effect: string;
+      readonly name: string;
       readonly state: "pending" | "settled";
       /** `pending`, or the checkpoint disposition the settled result names (`resolved` / `expired`);
        *  otherwise the settled status with its error code when there is one. */
       readonly outcome: string;
+      /** The settled status and error code as recorded; `outcome` is their presentation. */
+      readonly status?: string;
+      readonly errorCode?: string;
+      /** When the step began and, once settled, ended (epoch ms). */
+      readonly startedAt: number;
+      readonly endedAt?: number;
       /** What an open pause asks, present only while it is open. */
       readonly asks?: string;
       readonly addressee?: string;
+      /** When an open pause expires, as its entry records it. */
+      readonly deadlineAt?: number;
+      /** What an open checkpoint does on expiry (`fail`, `proceed`, `escalate`), as it was armed.
+       *  Absent where the entry records none, as on a checkpoint opened before it was recorded. */
+      readonly onExpiry?: string;
       /** The accepted answer of a settled pause: named by a checkpoint's settled result, and for an
        * `ask`, whose result is the value alone, read from the answer record its last attempt's settle
        * named. Absent for open and expired pauses and ordinary steps. */

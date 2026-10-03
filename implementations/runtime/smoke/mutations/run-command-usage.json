@@ -22,7 +22,7 @@
     {
       "name": "the usage line loses a verb the gate still routes",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "| ps [--endpoint <ep>] | journal",
+      "find": "| ps [--endpoint <ep>] [--json] | journal",
       "replace": "| journal",
       "expectRed": "the usage line names `ps`",
       "cell": "the usage line names `ps`",

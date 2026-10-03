@@ -9,6 +9,7 @@
  */
 import {
   readRunRecord,
+  readRunProgram,
   readRunAdmission,
   listCheckpointAmendments,
   readCheckpointAnswer,
@@ -34,7 +35,7 @@ import {
   type RunStatusView,
   type RunValidation,
 } from "@cotal-ai/core";
-import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
+import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, journalEntryKeyString, programHashOf, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
@@ -81,7 +82,9 @@ type StepJournalRow = Extract<RunJournalRow, { readonly kind: "step" }>;
 /** Build the one step-row view used by both hosted status reads and the local journal command. */
 export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
   const outcome = journalOutcomeOf(e);
-  const external = e.state === "pending" ? (e.external as { asks?: unknown; addressee?: unknown } | undefined) : undefined;
+  const external = e.state === "pending"
+    ? (e.external as { asks?: unknown; addressee?: unknown; deadlineAt?: unknown; onExpiry?: unknown } | undefined)
+    : undefined;
   const result = e.state === "settled" && e.result !== null && typeof e.result === "object"
     ? e.result as { outcome?: unknown; value?: unknown; by?: unknown; artifact?: unknown; at?: unknown; answerId?: unknown }
     : undefined;
@@ -102,10 +105,18 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
     n,
     kind: "step",
     step: journalEntryKeyString(e),
+    effect: e.kind,
+    name: e.name,
     state: e.state,
     outcome,
+    ...(e.status !== undefined ? { status: e.status } : {}),
+    ...(e.error?.code ? { errorCode: e.error.code } : {}),
+    startedAt: e.startedAt,
+    ...(e.endedAt !== undefined ? { endedAt: e.endedAt } : {}),
     ...(typeof external?.asks === "string" ? { asks: external.asks } : {}),
     ...(typeof external?.addressee === "string" ? { addressee: external.addressee } : {}),
+    ...(typeof external?.deadlineAt === "number" ? { deadlineAt: external.deadlineAt } : {}),
+    ...(typeof external?.onExpiry === "string" ? { onExpiry: external.onExpiry } : {}),
     ...(answeredPause !== undefined ? { answer: answeredPause } : {}),
   };
 }
@@ -367,11 +378,16 @@ export const cotalLangRunHost: RunHost = {
       } catch (err) {
         revocation = { revocationUnreadable: (err as Error).message };
       }
+      // The run's identity as its program's `run()` reports it: the pinned epoch, and the language's
+      // hash of the recorded source, which is what every resume runs (other source is a fork).
+      const program = await readRunProgram(planes.kv, endpoint, runId);
       rows.push({
         runId,
         endpoint,
         ...(st !== undefined ? { state: st.state, holder: st.holder, epoch: st.epoch, journalHigh: st.journalHigh } : {}),
         ...(lineage !== undefined ? { forkedFrom: lineage } : {}),
+        startedAt: record.spec.value.pins.startedAt,
+        ...(program !== undefined ? { programHash: programHashOf(program.source) } : {}),
         ...revocation,
       });
     }

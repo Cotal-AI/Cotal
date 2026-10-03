@@ -35,13 +35,11 @@ import {
   admissionBucket,
   createRunAdmission,
   readRunAdmission,
-  readRunRevocation,
   revokeRunAdmission,
   chatSubject,
   DEV_OWNER,
   type RunAdmission,
   type RunAdmissionView,
-  type RunRevocation,
   type IssuedSubjectAllow,
   type IssuedCaller,
   readRunProgram,
@@ -54,7 +52,6 @@ import {
   standaloneConnectOpts,
   unansweredRail,
   unansweredRequest,
-  walkKvEntries,
   type EpErrorDetail,
   type ParsedArgs,
   type RunJournalRow,
@@ -68,14 +65,14 @@ import { type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import { agentLifecycleSecretFilePaths, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveMeshTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
-import { journalRows } from "./run-host.js";
+import { cotalLangRunHost as runHost, journalRows } from "./run-host.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] | journal <runId> [--endpoint <ep>] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -101,6 +98,8 @@ interface RunValues {
   adopt?: string;
   release?: string;
   "discard-approvals"?: boolean;
+  /** `ps` and `journal` only: one JSON object per row per line on stdout. */
+  json?: boolean;
 }
 
 interface Planes {
@@ -401,99 +400,21 @@ async function drive(
 }
 
 async function ps(values: RunValues, planes: Planes): Promise<void> {
-  // Run record keys are `run.<endpoint>.<runId>.<spec|status>` in the records bucket; the scan is
-  // over the spec half, which every run has exactly once. A consumer-free walk: the records bucket
-  // is an authority stream whose consumer surface is an exact audited list (SPEC 13.9).
-  const seen = new Set<string>();
-  const rows: string[][] = [];
-  /** Why each revoked row reads `revoked`, printed under the table: the marker carries `by` and the
-   *  reason, and the table has no column for either. */
-  const revocations = new Map<string, RunRevocation>();
-  /** Rows whose revocation could not be read at all, each with the reason and its record's state,
-   *  printed to stderr after the table. */
-  const unchecked: string[] = [];
-  for (const e of await walkKvEntries(planes.kv, "run.*.*.spec")) {
-    const parts = e.key.split(".");
-    if (parts.length !== 4 || parts[3] !== "spec") continue;
-    const endpoint = parts[1] as string;
-    const runId = parts[2] as string;
-    const dedupe = `${endpoint}/${runId}`;
-    if (seen.has(dedupe)) continue;
-    seen.add(dedupe);
-    if (values.endpoint !== undefined && endpoint !== values.endpoint) continue;
-    const record = await readRunRecord(planes.kv, endpoint, runId);
-    if (record === undefined) continue;
-    const st = record.status?.value;
-    const lineage = record.spec.value.forkedFrom;
-    // THE ADMISSION STORE, not the status record alone. A revocation is a create-only marker under
-    // its own key and nothing rewrites the record (SPEC 14.8, docs/workflows.md), while the record
-    // is written only by a driver. A driver that dies mid-run therefore leaves `running` behind
-    // with nothing left to write anything else, and this table listed that run as live for as long
-    // as it existed. `resume` already reads the marker and refuses; the table was the one surface
-    // that never learned.
-    //
-    // DISPLAY ONLY. A revoke does not make a run `failed` or `released`: nobody drove it there, the
-    // journal owns the facts, and fabricating a terminal state here would put a fact in front of an
-    // operator that no host ever recorded.
-    let state = st?.state ?? "(no status)";
-    try {
-      const revoked = await readRunRevocation(planes.jsm, planes.space, endpoint, runId);
-      if (revoked !== undefined) {
-        revocations.set(dedupe, revoked);
-        state = "revoked";
-      }
-    } catch (e) {
-      // Absence of EVIDENCE, and the STATE column itself says so. A marker this call could not read
-      // (a store it could not reach, a marker version or shape it does not know) says nothing about
-      // whether the run was revoked. The record's own word is what a revoked run printed before
-      // this table read the marker, so the column says `unchecked` and the record's word goes to
-      // stderr with the reason, where `awk '{print $3}'` and `grep running` over stdout never see it.
-      // The row itself still prints: one unreadable marker does not hide the rest of the listing.
-      state = "unchecked";
-      unchecked.push(`${dedupe}: revocation marker could not be read (${(e as Error).message}); its record reads ${st?.state ?? "(no status)"}`);
-    }
-    rows.push([
-      runId,
-      endpoint,
-      state,
-      st?.holder ?? "-",
-      st === undefined ? "-" : String(st.journalHigh),
-      lineage === undefined ? "-" : `${lineage.run}@${lineage.step}`,
-    ]);
-  }
-  if (rows.length === 0) {
-    console.log(`no workflow runs recorded in space ${planes.space}`);
-    return;
-  }
-  const header = ["RUN", "ENDPOINT", "STATE", "HOLDER", "JOURNAL", "FORKED-FROM"];
-  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] as string).length)));
-  const line = (r: string[]) => r.map((cell, i) => cell.padEnd(widths[i] as number)).join("  ");
-  console.log(line(header));
-  for (const r of rows) console.log(line(r));
-  // WHO revoked it and WHY, under the table rather than in it. The marker carries both and the
-  // columns carry neither, and a state of `revoked` with no attribution anywhere sends the
-  // operator to a second command to learn what they are looking at.
-  for (const [key, r] of revocations)
-    console.log(`${key}: revoked by ${r.by} (${r.reason}); the status record is left as its driver last wrote it`);
-  // A listing with an unchecked row is incomplete, and the exit status says so after every row
-  // has been printed, as `ls` and `find` do when one entry cannot be read: the rows on stdout, the
-  // failed reads on stderr, and a non-zero status a caller can test without parsing the column.
-  for (const u of unchecked) console.error(u);
-  if (unchecked.length > 0) process.exitCode = 1;
+  // The same rows the manager answers `run-ps` with, read under this call's operator credential:
+  // the record's state beside its revocation marker (SPEC 14.8), so `--local` and hosted agree
+  // row for row, `--json` included.
+  const rows = await runHost.list(planes, values.endpoint !== undefined ? { endpoint: values.endpoint } : {});
+  printRuns(planes.space, rows, values.json === true);
 }
 
-async function journal(planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
+async function journal(values: RunValues, planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
   if (runId === undefined) {
     console.error(USAGE);
     process.exit(1);
   }
   // The replay durable is named by the takeover id this call's credential was minted for.
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
-  if (replay.records.length === 0) {
-    console.log(`run ${runId}: no journal records (never started, or retired)`);
-    return;
-  }
-  printJournal(runId, await journalRows(planes.kv, endpoint, replay.records));
+  printJournal(runId, await journalRows(planes.kv, endpoint, replay.records), values.json === true);
 }
 
 /** `answer --local`: the pause is found under the READ credential this call was opened on, then
@@ -764,7 +685,13 @@ function renderLangProblem(d: EpErrorDetail): string {
   return `  ${String(d.code ?? "L????")} ${String(d.title ?? "")} (${at})\n    ${String(d.cause ?? "")}\n    fix: ${String(d.fix ?? "")}`;
 }
 
-function printJournal(runId: string, rows: readonly RunJournalRow[]): void {
+/** `--json` prints each row unchanged as one JSON object per line, as `cotal ps --json` does for
+ *  seats: stdout carries rows only, so an empty journal prints nothing there. */
+function printJournal(runId: string, rows: readonly RunJournalRow[], json: boolean): void {
+  if (json) {
+    for (const r of rows) console.log(JSON.stringify(r));
+    return;
+  }
   if (rows.length === 0) {
     console.log(`run ${runId}: no journal records (never started, or retired)`);
     return;
@@ -800,7 +727,20 @@ function printJournal(runId: string, rows: readonly RunJournalRow[]): void {
   }
 }
 
-function printRuns(space: string, rows: readonly RunListRow[]): void {
+function printRuns(space: string, rows: readonly RunListRow[], json: boolean): void {
+  // A marker the host could not read fails the listing after every row is printed, under `--json`
+  // as in the table: its reason and the record's word on stderr, and exit 1.
+  const unchecked = rows.filter((r) => r.revocationUnreadable !== undefined);
+  const reportUnchecked = (): void => {
+    for (const r of unchecked)
+      console.error(`${r.endpoint}/${r.runId}: revocation marker could not be read (${r.revocationUnreadable}); its record reads ${r.state ?? "(no status)"}`);
+    if (unchecked.length > 0) process.exitCode = 1;
+  };
+  if (json) {
+    for (const r of rows) console.log(JSON.stringify(r));
+    reportUnchecked();
+    return;
+  }
   if (rows.length === 0) {
     console.log(`no workflow runs recorded in space ${space}`);
     return;
@@ -823,10 +763,7 @@ function printRuns(space: string, rows: readonly RunListRow[]): void {
   for (const r of rows)
     if (r.revoked !== undefined)
       console.log(`${r.endpoint}/${r.runId}: revoked by ${r.revoked.by} (${r.revoked.reason}); the status record is left as its driver last wrote it`);
-  const unchecked = rows.filter((r) => r.revocationUnreadable !== undefined);
-  for (const r of unchecked)
-    console.error(`${r.endpoint}/${r.runId}: revocation marker could not be read (${r.revocationUnreadable}); its record reads ${r.state ?? "(no status)"}`);
-  if (unchecked.length > 0) process.exitCode = 1;
+  reportUnchecked();
 }
 
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
@@ -871,15 +808,16 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   if (verb === "ps") {
     const rows = await askHost(values, "run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
     const t = values.space ?? "(the resolved mesh)";
-    printRuns(t, rows);
+    printRuns(t, rows, values.json === true);
     return;
   }
   if (verb === "journal") {
     if (a === undefined) { console.error(USAGE); process.exit(1); }
     const view = await askHost(values, "run-status", { runId: a, ...endpoint }) as RunStatusView;
     const st = view.status;
-    console.log(`run ${view.runId} on ${view.endpoint}: ${st === undefined ? "(no status)" : `${st.state}, holder ${st.holder}, epoch ${st.epoch}`}`);
-    printJournal(view.runId, view.journal);
+    // Under --json the run's header line is structure, not a row: it goes to stderr.
+    (values.json === true ? console.error : console.log)(`run ${view.runId} on ${view.endpoint}: ${st === undefined ? "(no status)" : `${st.state}, holder ${st.holder}, epoch ${st.epoch}`}`);
+    printJournal(view.runId, view.journal, values.json === true);
     return;
   }
   // answer and amend: the manager records the caller as the answerer (SPEC 14.5), so no `--by`
@@ -910,6 +848,10 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
     console.error(USAGE);
     process.exit(1);
   }
+  if (values.json === true && verb !== "ps" && verb !== "journal") {
+    console.error(`run ${verb}: --json is taken by \`ps\` and \`journal\` only`);
+    process.exit(1);
+  }
   if (verb === "revoke") {
     // Revocation is an operator act on the admission store, never a served command: the marker is
     // written from the folder's trust material, so it is `--local` only.
@@ -935,7 +877,7 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   });
   try {
     if (verb === "ps") await ps(values, planes);
-    else if (verb === "journal") await journal(planes, endpoint, a, takeoverId);
+    else if (verb === "journal") await journal(values, planes, endpoint, a, takeoverId);
     else if (verb === "migrate") await migrate(values, planes, a, takeoverId);
     else if (verb === "amend") await amend(values, planes, a, b, takeoverId);
     else await answer(values, planes, a, b, takeoverId);

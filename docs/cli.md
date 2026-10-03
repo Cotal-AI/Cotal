@@ -2084,8 +2084,8 @@ Operate durable workflow runs (cotal-lang programs) from the terminal.
 ```bash
 cotal run start --file <program> [--timeout <dur>] [--local]
 cotal run resume <runId> [--local --file <program>]
-cotal run ps [--endpoint <ep>]
-cotal run journal <runId> [--endpoint <ep>]
+cotal run ps [--endpoint <ep>] [--json]
+cotal run journal <runId> [--endpoint <ep>] [--json]
 cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
 cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
 cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
@@ -2102,6 +2102,19 @@ A pause settled with an accepted answer prints its value as JSON plus the record
 artifact when present, time, and answer id, then one `amended` line per later amendment, in the
 order the store committed them, so the last is the current position.
 Expired pauses and ordinary steps print no answer line.
+`--json` on `ps` or `journal` prints each row the manager answers with (or `--local` reads) as one
+JSON object per line. A `ps` row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
+`journalHigh`, `forkedFrom`, `startedAt` and `programHash` (the values the program's `run()`
+reports; `programHash` is absent for a run with no recorded program), and `revoked` or
+`revocationUnreadable` when the marker says so. A `journal` row is an `activation` or a `step`. A
+step row carries its `step` key, the `effect` kind and its `name`, `state`, `outcome`, the recorded
+`status` and `errorCode` once settled, and `startedAt` and `endedAt` in epoch milliseconds. An open
+pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with; a
+settled pause adds its `answer` and its `amendments`, as the text view prints them. A field the
+journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
+The run header and errors go to stderr, so stdout carries only rows; an unreadable revocation marker
+prints its reason there and still exits 1. The text view is presentation and is not a stable
+parsing target. `--json` on any other verb is refused.
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second

@@ -66,8 +66,8 @@
     {
       "name": "the table stops overriding the record's state, so a revoked run keeps printing running",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "        state = \"revoked\";",
-      "replace": "        void 0;",
+      "find": "    r.revoked !== undefined ? \"revoked\" : r.revocationUnreadable",
+      "replace": "    r.revocationUnreadable",
       "cell": "ps prints revoked for it afterwards, whatever the record says",
       "expectRed": "ps prints revoked for it afterwards, whatever the record says",
       "note": "This is the shipped state before the fix, and it is what 08cff353, the base this PR was first measured on, printed: the row reads `running`, the local holder id, journal 0, with the marker sitting unread beside it."
@@ -86,8 +86,8 @@
     {
       "name": "the revoker and the reason stop being printed under the table",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  for (const [key, r] of revocations)",
-      "replace": "  for (const [key, r] of new Map<string, RunRevocation>())",
+      "find": "    if (r.revoked !== undefined)\n      console.log(",
+      "replace": "    if (false)\n      console.log(",
       "cell": "...with the revoker and the reason under the table, since the columns carry neither",
       "expectRed": "...with the revoker and the reason under the table, since the columns carry neither",
       "note": "A state of `revoked` with no attribution anywhere sends the operator to a second command to learn who revoked it and why; the marker carries both and the columns carry neither."
@@ -104,8 +104,8 @@
     {
       "name": "an unreadable marker leaves the record's own state in the STATE column",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "      state = \"unchecked\";",
-      "replace": "      void 0;",
+      "find": "r.revocationUnreadable !== undefined ? \"unchecked\" : r.state",
+      "replace": "r.state",
       "cell": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
       "expectRed": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
       "note": "The shape the panel measured at 1d3b9099: the row keeps `running` for a run whose marker nobody read, so `awk '{print $3}'` reads the word #1621 was filed about."
@@ -113,8 +113,8 @@
     {
       "name": "the failed read goes to stdout, where grep counts the record's running",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  for (const u of unchecked) console.error(u);",
-      "replace": "  for (const u of unchecked) console.log(u);",
+      "find": "      console.error(`${r.endpoint}/${r.runId}: revocation marker could not be read",
+      "replace": "      console.log(`${r.endpoint}/${r.runId}: revocation marker could not be read",
       "cell": "...and no stdout line names that run beside running, so `grep running` does not count it as live",
       "expectRed": "...and no stdout line names that run beside running, so `grep running` does not count it as live",
       "note": "The line carries the record's own word on purpose, for the operator. On stdout it puts that run's id beside `running` again, so `grep running` counts it as live even though the column says `unchecked`."
@@ -122,8 +122,8 @@
     {
       "name": "the failed read is not reported at all",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  for (const u of unchecked) console.error(u);",
-      "replace": "  void unchecked;",
+      "find": "    for (const r of unchecked)\n      console.error(",
+      "replace": "    for (const r of [] as typeof unchecked)\n      console.error(",
       "cell": "...gives the failed read and the record's own state on stderr",
       "expectRed": "...gives the failed read and the record's own state on stderr",
       "note": "A bare `unchecked` with no reason sends the operator elsewhere to learn whether the store is down or the marker is newer than this build."
@@ -131,8 +131,8 @@
     {
       "name": "a listing with an unchecked row exits 0",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  for (const u of unchecked) console.error(u);\n  if (unchecked.length > 0) process.exitCode = 1;",
-      "replace": "  for (const u of unchecked) console.error(u);\n  void unchecked;",
+      "find": "    if (unchecked.length > 0) process.exitCode = 1;",
+      "replace": "    void unchecked;",
       "cell": "...and exits 1, because the listing is incomplete",
       "expectRed": "...and exits 1, because the listing is incomplete",
       "note": "The panel measured exit 0 through the real binary. A caller that tests the status is then told the listing is complete."
@@ -140,17 +140,17 @@
     {
       "name": "POSITIVE CONTROL for the exit-status control: every listing exits 1",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  for (const u of unchecked) console.error(u);\n  if (unchecked.length > 0) process.exitCode = 1;",
-      "replace": "  for (const u of unchecked) console.error(u);\n  process.exitCode = 1;",
+      "find": "    if (unchecked.length > 0) process.exitCode = 1;",
+      "replace": "    process.exitCode = 1;",
       "cell": "a listing whose every marker was read leaves the exit code alone",
       "expectRed": "a listing whose every marker was read leaves the exit code alone",
       "note": "Block 9's control asserts a complete listing leaves the exit code alone. This mutant shows the control can see the wrong answer, so its pass in the green run is a measurement."
     },
     {
       "name": "one unreadable marker refuses the whole listing",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "      state = \"unchecked\";\n      unchecked.push(",
-      "replace": "      if (e) throw e;\n      state = \"unchecked\";\n      unchecked.push(",
+      "file": "implementations/runtime/src/run-host.ts",
+      "find": "        revocation = { revocationUnreadable: (err as Error).message };",
+      "replace": "        throw err;",
       "cell": "...still lists every other run, so one unreadable marker hides nothing",
       "expectRed": "...still lists every other run, so one unreadable marker hides nothing",
       "note": "This is what `readRunAdmission` would do to a listing, and why the table reads the marker through its own helper: every other run disappears behind one row."
