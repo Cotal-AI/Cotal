@@ -101,9 +101,10 @@ The value must be an absolute path. The launcher refuses a relative path, and a 
 not expand, before it writes anything, because either would resolve against the directory the
 launcher runs in.
 
-The launcher then installs only its own `plugins/cotal` directory, refreshed on each launch. It
-reads your `config.yaml` and never writes it, and it leaves your `SOUL.md` alone. Enabling the
-plugin stays your decision, so add this to your `config.yaml` first:
+The launcher then installs its own `plugins/cotal` directory, refreshed on each launch, and writes
+the `cotal-tools.json` file the plugin reads. It reads your `config.yaml` and never writes it, and
+it leaves your `SOUL.md` alone. Enabling the plugin stays your decision, so add this to your
+`config.yaml` first:
 
 ```yaml
 plugins:
@@ -118,6 +119,21 @@ Without those two settings the launch fails and tells you what to add. Two more 
 follow from not writing your config. Your approval settings stay as you left them, so a profile
 that prompts for approvals will still prompt, with no human at the TUI to answer. An agent file
 persona is refused rather than applied, because applying it means overwriting your `SOUL.md`.
+
+The gateway itself is Hermes, and it writes your profile as Hermes does anywhere: its session store,
+logs and lock files, and `config.yaml` when it records a setting. On the profile's first message,
+and the first time some other one-time hints show, Hermes marks the hint as seen under
+`onboarding.seen`. It does that by loading `config.yaml` and writing the whole file back, so your
+comments are dropped and its layout can change, while your settings keep their values. To keep the
+file as you wrote it, mark the hints as seen yourself before the first launch:
+
+```yaml
+onboarding:
+  seen:
+    profile_build_offered: true
+    busy_input_prompt: true
+    tool_progress_prompt: true
+```
 
 ## Resume a session
 
