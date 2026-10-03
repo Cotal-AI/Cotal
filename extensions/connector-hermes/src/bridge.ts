@@ -48,6 +48,7 @@ import {
   AUTH_DEADLINE_MS,
   type MeshAgent,
   type AgentConfig,
+  type Correlation,
   type InboxItem,
   type CotalToolSpec,
 } from "@cotal-ai/connector-core";
@@ -164,14 +165,20 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
    *  it with no parameters (`peek` is deliberately withheld — the pull is destructive here) and its
    *  `scope` is ours, not the caller's. Validate against what we actually published, not against
    *  the spec — otherwise `peek` passes the check and is then dropped by the substitution, which is
-   *  the silent-drop this seam exists to close, reopened for one tool. */
-  const onTool = async (name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> => {
+   *  the silent-drop this seam exists to close, reopened for one tool.
+   *
+   *  The call runs under the frame's `correlation`, entered only once its args are accepted. */
+  const onTool = async (
+    name: string,
+    args: Record<string, unknown>,
+    correlation: Correlation,
+  ): Promise<{ text: string; isError: boolean }> => {
     const spec = specs.get(name);
     if (!spec) throw new Error(`unknown cotal tool: ${name}`);
     const published = name === "cotal_inbox" ? { ...spec, schema: NO_TOOL_ARGS } : spec;
     const caller = parseToolArgs(published, args);
     const a = name === "cotal_inbox" ? { scope: "pull-only" } : caller;
-    const r = await spec.run(agent, config, a);
+    const r = await agent.withCorrelation(correlation, () => spec.run(agent, config, a));
     return { text: r.text, isError: !!r.isError };
   };
 
@@ -209,9 +216,10 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
       case "tool": {
         const id = frame.id;
         try {
-          const { text, isError } = await agent.withCorrelation({ contextId: str(frame.contextId), peerId: str(frame.peerId) }, () =>
-            onTool(String(frame.name), (frame.args ?? {}) as Record<string, unknown>),
-          );
+          const { text, isError } = await onTool(String(frame.name), (frame.args ?? {}) as Record<string, unknown>, {
+            contextId: str(frame.contextId),
+            peerId: str(frame.peerId),
+          });
           sendFrame(sock, { t: "tool_result", id, ok: true, text, isError });
         } catch (e) {
           sendFrame(sock, { t: "tool_result", id, ok: false, error: (e as Error).message });
