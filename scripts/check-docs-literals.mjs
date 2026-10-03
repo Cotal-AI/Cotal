@@ -17,8 +17,8 @@
 // Each candidate must appear in a string the shipped source holds: a string or template literal,
 // or a `+` chain of them, in packages/, extensions/, implementations/ or bin/, with smoke, test
 // and mutation files excluded. A placeholder must stand where the source substitutes a value.
-// Strings come from the TypeScript parser, so a comment that mentions a line does not count as
-// emitting it.
+// Strings are read with the TypeScript parser from the JavaScript each file compiles to, so a
+// comment, a type or an ambient declaration that mentions a line does not count as emitting it.
 //
 // Exit 0 when every candidate is emitted, 1 when a quote names a string the source does not hold.
 import ts from "typescript";
@@ -40,7 +40,7 @@ const sources = tracked.filter(
     !/(?:^|\/)(?:smoke|mutations|tests?)\/|\.(?:smoke|selftest|test)\.[cm]?[jt]sx?$/.test(f),
 );
 
-const fence = /^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1[ \t]*$/gm;
+const fenceLine = /^[ \t]*(`{3,}|~{3,})(.*)$/;
 const span = /(?<!`)`([^`\n]+)`(?!`)/g;
 const placeholder = /<[a-z][a-z0-9-]*>/g;
 const prose = /^[a-z][a-z0-9 ,;:.()'-]*$/;
@@ -48,9 +48,29 @@ const commands = new Set(["cotal", "pnpm", "npm", "npx", "node", "tsx", "git", "
   "opencode", "jcode", "hermes", "pi", "tmux", "cmux", "herdr", "orca", "nats", "nats-server", "docker",
   "systemctl", "journalctl", "curl", "sudo", "cd", "export", "uv"]);
 
+// Blank fenced blocks, keeping line numbers. As in CommonMark, a backtick fence's info string has
+// no backtick, and a block closes on a bare fence of the same character at least as long as the
+// one that opened it, or at the end of the page.
+const unfence = (text) => {
+  let open = "";
+  return text
+    .split("\n")
+    .map((line) => {
+      const m = fenceLine.exec(line);
+      if (open) {
+        if (m && m[1][0] === open[0] && m[1].length >= open.length && !m[2].trim()) open = "";
+        return "";
+      }
+      if (!m || (m[1][0] === "`" && m[2].includes("`"))) return line;
+      open = m[1];
+      return "";
+    })
+    .join("\n");
+};
+
 const spans = [];
 for (const page of pages) {
-  const text = readFileSync(join(repoRoot, page), "utf8").replace(fence, (block) => block.replace(/[^\n]/g, ""));
+  const text = unfence(readFileSync(join(repoRoot, page), "utf8"));
   for (const m of text.matchAll(span)) {
     const line = text.slice(0, m.index).split("\n").length;
     spans.push({ page, line, text: m[1] });
@@ -79,8 +99,11 @@ const joined = (node) => {
   }
   return undefined;
 };
+const compilerOptions = { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.Preserve };
 for (const file of sources) {
-  const sf = ts.createSourceFile(file, readFileSync(join(repoRoot, file), "utf8"), ts.ScriptTarget.ESNext);
+  const code = readFileSync(join(repoRoot, file), "utf8");
+  const js = /\.[cm]?tsx?$/.test(file) ? ts.transpileModule(code, { fileName: file, compilerOptions }).outputText : code;
+  const sf = ts.createSourceFile(file, js, ts.ScriptTarget.ESNext);
   const visit = (node) => {
     const text = joined(node);
     if (text !== undefined) strings.push(text);
