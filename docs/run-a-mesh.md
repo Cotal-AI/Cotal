@@ -178,7 +178,9 @@ server contract is in
 
 `cotal status` prints the detailed setup, process, registry, and live mesh status. Its Machine
 section names the running CLI's source checkout, installed package root, or npx package root beside
-the version. A stale Claude skills row names the installed and CLI versions it compared. `cotal
+the version. It has one row per installed connector, which reports whether the executables that
+connector declares in `requires` are on PATH. A stale Claude skills row names the installed and CLI
+versions it compared. `cotal
 setup` (after the first run) prints the compact card.
 
 Before reporting ready, the manager resolves every installed connector's declared harness

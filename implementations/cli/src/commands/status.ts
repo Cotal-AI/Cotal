@@ -26,7 +26,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
-import { machineStatus, resolveRuntimeSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
+import { connectorHarnesses, machineStatus, resolveRuntimeSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -158,11 +158,25 @@ async function printMachine(): Promise<void> {
   row("NATS", m.nats === "missing" ? c.red("missing") : c.green(m.nats));
   row("Claude plugin", m.claudePlugin ? c.green("installed") : c.dim("not installed"));
   row("Claude skills", claudeSkillsLabel(m.claudeSkills));
-  row("Claude", m.agents.claude ? c.green("on PATH") : c.dim("not on PATH"));
-  row("OpenCode", m.agents.opencode ? c.green("on PATH") : c.dim("not on PATH"));
+  printHarnesses();
   row("Skills (.agents)", skillsSkewRow());
   row("Web extension", webExt ? c.green("installed") : c.dim("not installed"));
   row("Web process", web ? c.green(WEB_URL) : c.dim(webExt ? "down" : "not installed"));
+}
+
+/** One row per installed connector, named by the connector and judged by the executables it declares.
+ *  A manifest that cannot list them renders as one red row, so the rest of status still prints. */
+function printHarnesses(): void {
+  let harnesses;
+  try {
+    harnesses = connectorHarnesses();
+  } catch (e) {
+    row("Connectors", c.red((e as Error).message));
+    return;
+  }
+  if (!harnesses.length) row("Connectors", c.dim(`none installed · ${displayCmd()} ext seed`));
+  for (const h of harnesses)
+    row(h.name, h.missing.length ? c.dim(`${h.missing.join(", ")} not on PATH`) : c.green(h.requires.length ? `${h.requires.join(", ")} on PATH` : "in-process"));
 }
 
 /** The lease `holder` the delivery daemon THIS WORKSPACE launched would write, or `undefined` when it

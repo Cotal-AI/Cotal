@@ -18,6 +18,17 @@ export interface ConnectorSkillsSetupInput {
   readonly stateDir: string;
 }
 
+/** An interactive debug session a connector's harness can host when a setup step fails. The CLI
+ * builds the prompt and owns the menu; the provider owns the executable, its flags, and any session
+ * it keeps across handoffs in one setup run. */
+export interface ConnectorAssist {
+  /** Harness name the recovery menu shows ("Debug it with <title>"). */
+  readonly title: string;
+  /** Hand the terminal to the harness primed with `prompt`. Resolves when the operator exits it;
+   * rejects when the harness cannot be launched. */
+  run(prompt: string): Promise<void>;
+}
+
 /** Optional setup surface declared by a connector through {@link Connector.setup}. A missing or
  * broken declared provider is always a loud registry error; the CLI never substitutes a built-in
  * harness implementation. */
@@ -29,4 +40,5 @@ export interface ConnectorSetupProvider extends Extension {
   readonly requires?: readonly string[];
   readonly connector?: ConnectorSetupAction;
   readonly skills?: ConnectorSetupAction<ConnectorSkillsSetupInput>;
+  readonly assist?: ConnectorAssist;
 }

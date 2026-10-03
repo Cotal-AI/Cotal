@@ -57,8 +57,11 @@ Steps run in-process via `runSteps`
 ([`lib/steps.ts`](../implementations/cli/src/lib/steps.ts)). A step can be `optional` (asked
 Y/n), carry a `confirm` consent prompt, or be `live` (it draws its own pane via
 [`lib/live-window.ts`](../implementations/cli/src/lib/live-window.ts)). On failure, an
-interactive run offers a Claude handoff
-([`lib/assist.ts`](../implementations/cli/src/lib/assist.ts)).
+interactive run offers a debug handoff for each connector whose setup provider declares an `assist`
+and whose executables are on PATH
+([`lib/assist.ts`](../implementations/cli/src/lib/assist.ts)). The provider owns the harness
+binary and its flags; the CLI only builds the prompt. When no connector can host one, the menu says
+so in one line.
 
 The **connector picker** (`pickConnectors`) multiselects the **setup connector surface**
 (`setupConnectorSurface`): every connector name the live registry or the installed extension

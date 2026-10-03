@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -152,6 +153,11 @@ function install(name: string, scope: string, expectedVersion?: string): void {
   verify(name, scope, expectedVersion);
 }
 
+// All handoffs in one setup run share a single Claude session: the first spawn pins a generated UUID
+// (--session-id), later spawns --resume it, so Claude keeps the context of earlier failures. stdio is
+// inherited, so pinning our own id is the only way to find the session again.
+let assistSession: string | undefined;
+
 export const claudeSetupProvider: ConnectorSetupProvider = {
   kind: "connector-setup",
   name: "claude",
@@ -189,6 +195,17 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
       } finally {
         rmSync(payload, { recursive: true, force: true });
       }
+    },
+  },
+  assist: {
+    title: "Claude",
+    run(prompt) {
+      const sessionArgs = assistSession ? ["--resume", assistSession] : ["--session-id", (assistSession = randomUUID())];
+      const child = spawn("claude", [prompt, "--permission-mode", "auto", ...sessionArgs], { stdio: "inherit" });
+      return new Promise<void>((resolve, reject) => {
+        child.on("exit", () => resolve());
+        child.on("error", reject);
+      });
     },
   },
 };

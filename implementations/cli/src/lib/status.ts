@@ -2,8 +2,8 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { connect } from "node:net";
 import { delimiter, join } from "node:path";
-import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadSoleSpaceAuth, loadSpaceAuth, resolveMeshTarget, type MeshEntry } from "@cotal-ai/workspace";
+import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable, registry, type Connector } from "@cotal-ai/core";
+import { authDir, extensionConnectors, findCotalRoot, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, resolveMeshTarget, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveNatsServer } from "./nats-bin.js";
 import { cliVersion } from "./version.js";
 
@@ -68,7 +68,14 @@ export interface MachineStatus {
   nats: "path" | "bundled" | "missing";
   claudePlugin: boolean;
   claudeSkills: { state: "current" | "stale" | "missing" | "broken" | "unknown"; version?: string };
-  agents: { claude: boolean; opencode: boolean };
+}
+
+/** One installed connector's harness readiness: the executables it declares (`requires`) and the ones
+ *  of those not on PATH. */
+export interface HarnessStatus {
+  name: string;
+  requires: readonly string[];
+  missing: string[];
 }
 
 /** Machine-level readiness: the once-per-machine setup pieces. */
@@ -87,11 +94,20 @@ export async function machineStatus(): Promise<MachineStatus> {
     nats,
     claudePlugin: claudePluginInstalled(plugins),
     claudeSkills: claudeSkillsState(plugins),
-    agents: {
-      claude: onPath("claude"),
-      opencode: onPath("opencode"),
-    },
   };
+}
+
+/** Every connector this machine can launch, read off each connector's own `requires` rather than a list
+ *  of harness names: the live registry plus the installed extension manifest's cached requirements, so
+ *  status never imports connector code. A manifest that cannot answer throws, like every other reader. */
+export function connectorHarnesses(): HarnessStatus[] {
+  const declared = new Map<string, readonly string[]>();
+  for (const ext of loadExtensionsManifest().extensions)
+    for (const connector of extensionConnectors(ext)) declared.set(connector.name, connector.requires);
+  for (const connector of registry.all<Connector>("connector")) declared.set(connector.name, connector.requires ?? []);
+  return [...declared]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, requires]) => ({ name, requires, missing: requires.filter((bin) => !onPath(bin)) }));
 }
 
 /** The Claude Code skills plugin's state vs THIS CLI release: `cotal-skills@cotal-mesh` at user scope
