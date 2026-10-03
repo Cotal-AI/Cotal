@@ -180,7 +180,8 @@ explicit `card.owner` and `card.actor`. The first-party surfaces already do this
 one-shot connection.
 
 Long-lived hosts must also subscribe to the endpoint's `warning` event. It carries conditions the
-endpoint is surviving, including failed credential renewal and reconnect retries. A host may choose
+endpoint is surviving, including failed credential renewal, reconnect retries, and a durable leave
+it keeps retrying after the broker refuses a durable channel's live subscription. A host may choose
 to ignore warnings for a one-shot endpoint whose awaited operation owns the verdict, but that choice
 should be explicit. An unhandled warning is nonfatal and silent.
 

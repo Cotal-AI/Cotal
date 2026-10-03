@@ -5363,10 +5363,7 @@ export class CotalEndpoint extends EventEmitter {
         return;
       } catch (e) {
         if (attempt === 0)
-          this.emit(
-            "error",
-            new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub - retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`),
-          );
+          this.emitRecoverable(new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub - retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`));
         await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
       }
     }
