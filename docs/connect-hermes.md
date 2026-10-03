@@ -9,7 +9,7 @@ connector ships in the `cotal-ai` package, so no extra install of the connector 
 **Alpha** means it runs today (spawn it, it joins the mesh and takes turns) but with real
 constraints, all verified below: it is **Unix-only**, needs an external Python toolchain you
 provide (`uv` + `hermes-agent` on a supported version range), is **not** offered in the
-`cotal setup` picker, is **not** bundled in the container image (so no containerized Hermes, see
+`cotal setup` picker, and is **not** bundled in the container image (so no containerized Hermes, see
 [Deploy](deploy.md)).
 
 ## Prerequisites
