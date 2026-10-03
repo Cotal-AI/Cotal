@@ -105,6 +105,8 @@ type AgentRow = {
   spawner?: string;
   instanceId?: string;
   host?: string;
+  /** A `--resume` seat's fork provenance (#1500); title and hash once the seat has recorded them. */
+  resume?: { source: string; title?: string; transcriptSha256?: string };
   lifecycleUid: string;
   id: string;
 };
@@ -347,7 +349,7 @@ function printAgentRow(r: AgentRow, indent = ""): void {
 /** Extra operational facts for `--wide`. Model and requested variant are already in the compact
  *  identity row, so repeating them here would make wide output noisier without adding provenance.
  *  Only fields the manager actually recorded print; lifecycle uid is required on every row. */
-export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host">): string[] {
+export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume">): string[] {
   const facts: string[] = [];
   if (r.provider) facts.push(`provider ${r.provider}`);
   if (r.cwd) facts.push(`cwd ${r.cwd}`);
@@ -356,6 +358,10 @@ export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "s
   facts.push(`uid ${r.lifecycleUid}`);
   if (r.instanceId) facts.push(`instance ${r.instanceId}`);
   if (r.host) facts.push(`host ${r.host}`);
+  if (r.resume) {
+    const { source, title, transcriptSha256 } = r.resume;
+    facts.push(`forked from ${source}${title ? ` ${JSON.stringify(title)}` : ""}${transcriptSha256 ? ` sha256:${transcriptSha256}` : ""}`);
+  }
   return facts;
 }
 

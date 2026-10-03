@@ -13,8 +13,8 @@
     "M1 puts the restated 18 back into managerShippedSurface. The invoke cell compares live resolve",
     "size to that count, so it goes red on the named mismatch. Unique code-only return, not a comment.",
     "",
-    "M2 restores revision 18 after run-answer amend changed the shipped input/output contracts. The change",
-    "ships with its contract and handler, so 18 would name the preceding surface. The",
+    "M2 restores revision 19 after the ps row gains its resume object, the next shipped contract",
+    "change. The changed output contract ships with it, so 19 would name the preceding surface. The",
     "named revision cell runs after the service has published and a generic client has resolved the",
     "actual shipped document.",
     "",
@@ -34,12 +34,12 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 18 after run-answer amend is added",
+      "name": "M2 keep revision 19 after the ps resume row is added",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 19,",
-      "replace": "    revision: 18,",
-      "expectRed": "run-answer amend advances the manager cluster revision and retains goal-result and resolve-cwd",
-      "cell": "run-answer amend advances the manager cluster revision and retains goal-result and resolve-cwd"
+      "find": "    revision: 20,",
+      "replace": "    revision: 19,",
+      "expectRed": "the ps resume row advances the manager cluster revision and retains goal-result and resolve-cwd",
+      "cell": "the ps resume row advances the manager cluster revision and retains goal-result and resolve-cwd"
     },
     {
       "name": "M3 compile every contract pair at module scope again",

@@ -24,6 +24,7 @@ import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMa
 import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
+import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
 /** Hermes API range this connector is written against (keep in sync with pyproject.toml).
  *
@@ -47,30 +48,9 @@ import { startSidecar } from "./sidecar.js";
 const HERMES_MIN = "0.18";
 const HERMES_MAX_EXCLUSIVE = "0.22";
 
-const ILLEGAL = /[^A-Za-z0-9_-]/g;
-const tok = (s: string): string => s.trim().replace(ILLEGAL, "_").slice(0, 40) || "_";
-
 /** This package's root (where pyproject.toml + plugin/ live), resolved from this source file. */
 const PKG_DIR = fileURLToPath(new URL("..", import.meta.url));
 const PLUGIN_SRC = join(PKG_DIR, "plugin", "cotal");
-
-/**
- * The managed profile's HERMES_HOME: a Hermes named profile, `<root>/profiles/cotal-<id>`, under a
- * root of its own in tmp.
- *
- * Hermes names a gateway's systemd unit after its profile, and it reads a HERMES_HOME outside
- * ~/.hermes whose parent is not `profiles` as a root. A root's unit is the bare `hermes-gateway`,
- * which is the unit the operator's own gateway installs. Every `hermes gateway run` checks and
- * refreshes that unit, so a seat on a bare temp home refused to start while the operator's gateway
- * was active, and regenerated the operator's unit from this temp directory on every launch (written
- * by Hermes before 0.18, after which the unit failed at CHDIR once tmp was cleared). As a named
- * profile the seat's unit is `hermes-gateway-cotal-<id>`, which no operator unit carries. The id is
- * a digest of space and name: stable per seat, and inside Hermes' profile-name pattern.
- */
-function managedHome(space: string, name: string): string {
-  const id = createHash("sha256").update(`${space}\0${name}`).digest("hex").slice(0, 12);
-  return join(tmpdir(), `cotal-hermes-${tok(space)}-${tok(name)}`, "profiles", `cotal-${id}`);
-}
 
 /** The bridge socket's path id is unpredictable, unlike the control endpoint's: `id` folds in the
  *  launch's own control token alongside space/name/pid, so a same-uid process cannot compute the
@@ -317,7 +297,7 @@ async function main(): Promise<void> {
     : undefined;
   // Managed (default): a disposable profile under tmp, regenerated every launch. Adopted (opt-in):
   // the operator's own profile, into which only this connector's plugin directory is written.
-  const home = adopt ?? managedHome(config.space, config.name);
+  const home = adopt ?? hermesSeatHome(config.space, config.name);
   if (adopt) setupAdoptedProfile(home, { persona });
   else setupProfile(home, { model: process.env.HERMES_MODEL, persona });
 
@@ -329,9 +309,13 @@ async function main(): Promise<void> {
     if (adopt) throw new LaunchRefused(`${ADOPT_HOME_ENV} runs the operator's own profile, which already holds session ${resume}; continue it there with Hermes' own /resume`);
     const sourceHome = process.env.COTAL_HERMES_RESUME_HOME?.trim();
     if (!sourceHome) throw new Error("COTAL_HERMES_RESUME is set without COTAL_HERMES_RESUME_HOME");
+    // The manager reads the fork's provenance where the launch named it, so a profile elsewhere (a
+    // TMPDIR that differs from the manager's) would leave it unrecorded.
+    if (process.env.COTAL_HERMES_RESUME_RECORD !== join(home, HERMES_FORK_RECORD))
+      throw new Error(`the seat's Hermes profile ${home} is not where the launch records its fork (${process.env.COTAL_HERMES_RESUME_RECORD ?? "unset"})`);
     assertHermesVersion();
     fork = forkHermesSession({ sourceHome, source: resume, seatHome: home });
-    log(`${fork.created ? "forked" : "continuing the fork of"} Hermes session ${fork.source} as ${fork.fork} (${fork.messages} messages)`);
+    log(`${fork.created ? "forked" : "continuing the fork of"} Hermes session ${fork.source}${fork.title ? ` ${JSON.stringify(fork.title)}` : ""} as ${fork.fork} (${fork.messages} messages, transcript sha256:${fork.transcriptSha256})`);
   }
 
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads

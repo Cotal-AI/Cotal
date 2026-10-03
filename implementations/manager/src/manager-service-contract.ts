@@ -242,6 +242,15 @@ const AGENT_ROW_SCHEMA = {
     spawner: { type: "string" },
     instanceId: { type: "string" },
     host: { type: "string" },
+    // #1500: present only on a `--resume` seat. `source` is the session it forked; `title` and
+    // `transcriptSha256` appear once the seat has recorded its fork, and `title` only when the source
+    // has one.
+    resume: {
+      type: "object",
+      additionalProperties: false,
+      required: ["source"],
+      properties: { source: { type: "string" }, title: { type: "string" }, transcriptSha256: { type: "string" } },
+    },
   },
 } as const;
 
@@ -973,7 +982,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  19 = `run-answer` input grows `amend` (file a later answer beside a settled pause's accepted
  *  one), its output names `supersedes` for that form, and `run-status` journal rows carry
  *  `amendments`. Changed input and output contracts are a changed described surface even though
- *  the command names are unchanged. */
+ *  the command names are unchanged.
+ *
+ *  20 = the `ps`/`inspect` row adds `resume`: the session a `--resume` seat forked, its title and
+ *  its transcript hash. A changed output contract is a changed described surface even though the
+ *  command names are unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -991,7 +1004,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 19,
+    revision: 20,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

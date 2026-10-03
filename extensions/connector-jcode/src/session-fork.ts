@@ -25,6 +25,12 @@ export function jcodeSeatHome(root: string, space: string, name: string): string
   return join(root, ".cotal", "jcode", `${slug || "agent"}-${key}`);
 }
 
+/** The seat's record of its fork (source, fork, title, transcript hash), which the manager reads
+ *  as the fork's provenance. */
+export function jcodeForkRecordPath(seatHome: string): string {
+  return join(seatHome, MARKER);
+}
+
 export interface JcodeForkSource {
   sessionId: string;
   title?: string;
@@ -40,10 +46,31 @@ function code(error: unknown): string {
   return (error as NodeJS.ErrnoException).code ?? (error as Error).message;
 }
 
+/** `JSON.rawJSON`, from the JSON.parse source text access proposal that Node ships from 21 on.
+ *  TypeScript's lib does not declare it yet. */
+const RawJSON = JSON as JSON & {
+  rawJSON(text: string): { readonly rawJSON: string };
+  isRawJSON(value: unknown): value is { readonly rawJSON: string };
+};
+/** Parse a Jcode transcript without losing an integer a double cannot hold. Jcode's counts are
+ *  u64, so a valid count can be above 2^53: it is kept as its source text, which `JSON.stringify`
+ *  writes back unchanged into the fork. */
+function parseTranscript(text: string): unknown {
+  return JSON.parse(text, (_key, value: unknown, context?: { source?: string }) =>
+    typeof value === "number" && !Number.isSafeInteger(value) && context?.source !== undefined && /^-?\d+$/.test(context.source)
+      ? RawJSON.rawJSON(context.source)
+      : value);
+}
+
+const U64_MAX = 2n ** 64n - 1n;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+  typeof value === "object" && value !== null && !Array.isArray(value) && !RawJSON.isRawJSON(value);
 const isString = (value: unknown): value is string => typeof value === "string";
-const isCount = (value: unknown): boolean => Number.isInteger(value) && (value as number) >= 0;
+/** A u64, Jcode's type for every count the fork carries (its usize counts are u64 on the 64-bit
+ *  targets it ships for). */
+const isCount = (value: unknown): boolean => RawJSON.isRawJSON(value)
+  ? /^\d+$/.test(value.rawJSON) && BigInt(value.rawJSON) <= U64_MAX
+  : Number.isInteger(value) && (value as number) >= 0;
 const optional = (value: unknown, check: (value: unknown) => boolean): boolean =>
   value === undefined || value === null || check(value);
 
@@ -158,7 +185,7 @@ function parseJcodeSource(
 ): JcodeForkSource | undefined {
   let session: Record<string, unknown>;
   try {
-    session = JSON.parse(snapshot.toString("utf8"));
+    session = parseTranscript(snapshot.toString("utf8")) as Record<string, unknown>;
   } catch (error) {
     return refuse(`${snapshotPath} is not valid JSON (${(error as Error).message})`);
   }
@@ -189,7 +216,7 @@ function parseJcodeSource(
     const where = `line ${index + 1} of ${journalPath}`;
     let entry: { meta?: Record<string, unknown>; append_messages?: unknown };
     try {
-      entry = JSON.parse(line);
+      entry = parseTranscript(line) as typeof entry;
     } catch (error) {
       return refuse(`${where} is not valid JSON (${(error as Error).message})`);
     }
@@ -221,6 +248,8 @@ function parseJcodeSource(
 
 export interface JcodeFork {
   forkId: string;
+  title?: string;
+  transcriptSha256: string;
   /** False when this seat home already holds the fork of the same source from an earlier launch. */
   created: boolean;
   /** Whether a launch has appended the seat's briefing to the fork. A first launch that failed
@@ -261,6 +290,7 @@ export function ownedJcodeFork(seatHome: string, sessionId: string): ForkMarker 
   } catch (error) {
     throw new Error(`jcode connector: ${markerPath} is not valid JSON (${(error as Error).message}); remove it to fork session ${sessionId} again`);
   }
+  if (!isRecord(marker)) throw new Error(`jcode connector: ${markerPath} is not a fork record; remove it to fork session ${sessionId} again`);
   if (marker.source !== sessionId || typeof marker.fork !== "string" || !SESSION_ID.test(marker.fork) ||
       !existsSync(join(seatHome, "sessions", `${marker.fork}.json`)))
     return undefined;
@@ -282,7 +312,8 @@ export function markJcodeForkBriefed(seatHome: string, sessionId: string): void 
 export function forkJcodeSession(opts: { sourceHome: string; sessionId: string; seatHome: string; cwd: string }): JcodeFork {
   const sessions = join(opts.seatHome, "sessions");
   const owned = ownedJcodeFork(opts.seatHome, opts.sessionId);
-  if (owned) return { forkId: owned.fork, created: false, briefed: owned.briefed };
+  if (owned)
+    return { forkId: owned.fork, ...(owned.title !== undefined ? { title: owned.title } : {}), transcriptSha256: owned.transcriptSha256, created: false, briefed: owned.briefed };
   const source = readJcodeForkSource(opts.sourceHome, opts.sessionId);
   const now = new Date().toISOString();
   const word = /^session_([^_]+)_/.exec(opts.sessionId)?.[1] ?? "fork";
@@ -311,5 +342,5 @@ export function forkJcodeSession(opts: { sourceHome: string; sessionId: string; 
     transcriptSha256: source.transcriptSha256,
     briefed: false,
   });
-  return { forkId, created: true, briefed: false };
+  return { forkId, ...(source.title !== undefined ? { title: source.title } : {}), transcriptSha256: source.transcriptSha256, created: true, briefed: false };
 }

@@ -555,6 +555,14 @@ export type ManagerResumeIdentity =
       health: { kind: "file"; path: string };
     };
 
+/** A resumed seat's fork provenance: the session it forked, that session's title when it has one,
+ *  and the SHA-256 the connector took over the source transcript it read. */
+export interface ForkProvenance {
+  source: string;
+  title?: string;
+  transcriptSha256: string;
+}
+
 export interface ManagerResumeAgent {
   space: string;
   name: string;
@@ -579,6 +587,8 @@ export interface ManagerResumeAgent {
     shareTools?: string;
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
+    /** Where the fork came from, as the seat recorded it once it forked (#1500). */
+    resumed?: ForkProvenance;
     /** Exact current host session reported by a continuation-capable connector. */
     sessionId?: string;
     /** The connector's session pointer file on THIS host, when it declares one. Non-secret like
@@ -732,6 +742,10 @@ interface ManagedLaunch {
   events: boolean;
   shareTools?: string;
   forkSource?: string;
+  /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
+  resumed?: ForkProvenance;
+  /** The connector's {@link LaunchSpec.resumeRecordPath} for this seat's fork. */
+  resumeRecordPath?: string;
   sessionId?: string;
   unresolvedLaunchOptionKeys?: string[];
 }
@@ -2594,6 +2608,7 @@ export class Manager {
         events: a.launch.events,
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
+        ...(this.forkProvenance(a) ? { resumed: this.forkProvenance(a) } : {}),
         sessionId: a.restart?.armed ? this.readManagedSession(a) : a.launch.sessionId,
         // Additive and only when the connector supplied one. A seat with no pointer records no
         // field, which is what keeps an older inventory and a fresh one the same document shape.
@@ -4393,6 +4408,27 @@ export class Manager {
     }
   }
 
+  /** A resumed seat's fork provenance (#1500). The seat forks after it launches, so this reads the
+   *  record its connector named once the seat has written it, and keeps it on the launch so the
+   *  resume document carries it across a manager restart. Until the seat has written it, or when the
+   *  record cannot be read or does not name this seat's source, it is absent: `ps` then shows the
+   *  source id alone rather than failing the listing for every other seat. */
+  private forkProvenance(a: ManagedAgent): ForkProvenance | undefined {
+    if (a.launch.resumed || !a.launch.resumeRecordPath || !a.launch.forkSource) return a.launch.resumed;
+    let record: unknown;
+    try {
+      record = JSON.parse(readFileSync(a.launch.resumeRecordPath, "utf8"));
+    } catch {
+      return undefined;
+    }
+    const r = (typeof record === "object" && record !== null ? record : {}) as Record<string, unknown>;
+    if (r.source !== a.launch.forkSource || typeof r.transcriptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(r.transcriptSha256) ||
+        !(r.title === undefined || r.title === null || (typeof r.title === "string" && r.title.length <= 1024)))
+      return undefined;
+    a.launch.resumed = { source: r.source, ...(typeof r.title === "string" && r.title ? { title: r.title } : {}), transcriptSha256: r.transcriptSha256 };
+    return a.launch.resumed;
+  }
+
   private readManagedSession(a: ManagedAgent): string {
     return this.readManagedSessionState(a).sessionId;
   }
@@ -5579,6 +5615,7 @@ export class Manager {
           events,
           shareTools: opts.shareTools,
           forkSource: opts.resume,
+          ...(opts.resume !== undefined && spec.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
           // Opaque values may contain secrets. Preserve only their keys and require the referenced
           // persona/manifest to resolve the values again; imperative overrides have no safe payload.
           unresolvedLaunchOptionKeys:
@@ -6167,6 +6204,8 @@ export class Manager {
           events: entry.launch.events,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
+          ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),
+          ...(prepared.launchOpts.resume !== undefined && prepared.spec.resumeRecordPath ? { resumeRecordPath: prepared.spec.resumeRecordPath } : {}),
           sessionId: entry.launch.sessionId,
         },
         ...(prepared.spec.sessionStatePath
@@ -9332,6 +9371,9 @@ export class Manager {
         spawner: a.spawner,
         instanceId: this.managerInstanceId,
         host: hostname(),
+        // #1500: the session a `--resume` seat forked, with its title and transcript hash once the
+        // seat has recorded them.
+        ...(a.launch.forkSource ? { resume: this.forkProvenance(a) ?? { source: a.launch.forkSource } } : {}),
         ...(health && health.state !== "ok" ? { authHealth: health.state, authReason: health.reason } : {}),
       };
     });

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
+import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
  *  From the BUILD, `launch.js` is a self-contained ESM bundle (core + connector-core inlined): run it with
@@ -91,9 +92,13 @@ export const hermesConnector: Connector = {
     // seat cannot opt in to its own profile.
     const adoptHome = process.env.COTAL_HERMES_ADOPT_HOME?.trim();
     if (adoptHome) env.COTAL_HERMES_ADOPT_HOME = adoptHome;
+    // The fork's provenance is the seat's own record of it, which the launcher writes into the seat's
+    // profile when it forks. The launcher refuses a profile that is not where this names it.
+    const resumeRecordPath = opts.resume !== undefined ? join(hermesSeatHome(opts.space, opts.name), HERMES_FORK_RECORD) : undefined;
     if (opts.resume !== undefined) {
       env.COTAL_HERMES_RESUME = opts.resume;
       env.COTAL_HERMES_RESUME_HOME = process.env.HERMES_HOME?.trim() || join(homedir(), ".hermes");
+      env.COTAL_HERMES_RESUME_RECORD = resumeRecordPath!;
     }
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
@@ -112,7 +117,7 @@ export const hermesConnector: Connector = {
       env.HERMES_MODEL = model;
       env.COTAL_MODEL = model;
     }
-    return { command: LAUNCH_COMMAND, args: [LAUNCH_ENTRY], env };
+    return { command: LAUNCH_COMMAND, args: [LAUNCH_ENTRY], env, ...(resumeRecordPath ? { resumeRecordPath } : {}) };
   },
 };
 

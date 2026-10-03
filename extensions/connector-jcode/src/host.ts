@@ -1839,7 +1839,7 @@ export async function runJcodeHost(): Promise<void> {
         session = await client.attachSession(prior.session_id);
         writeJcodeDiagnostic(
           fork
-            ? `[cotal-jcode] ${fork.created ? "forked" : "continued its fork of"} session ${resumeSource} as ${prior.session_id}\n`
+            ? `[cotal-jcode] ${fork.created ? "forked" : "continued its fork of"} session ${resumeSource}${fork.title ? ` ${JSON.stringify(fork.title)}` : ""} (transcript sha256:${fork.transcriptSha256}) as ${prior.session_id}\n`
             : `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
         );
       } else {

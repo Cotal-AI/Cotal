@@ -125,7 +125,9 @@ name moves to its branch too, and that history stays in the seat's `state.db` un
 Your session is never appended to; SQLite still creates its usual `state.db-wal` and `state.db-shm` files next to a database it
 reads. A session that is missing or has no messages is refused before the seat joins. A seat
 relaunched under the same name keeps its fork and does not read your profile again, and resuming a
-different session under that name is refused. Resume does not combine with
+different session under that name is refused. The launcher records the source session id, its
+title, and a SHA-256 of the transcript it copied next to the fork, prints them when it forks, and the
+manager reads that record into the seat's resume document, so `cotal ps --wide` shows them. Resume does not combine with
 `COTAL_HERMES_ADOPT_HOME`, because that profile already holds the session: continue it there with
 Hermes' own `/resume`.
 
