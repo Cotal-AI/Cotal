@@ -1480,9 +1480,10 @@ interrupted restart would have: revoke the old credentials, evict their holders 
 and reopen the gate.
 
 The command revokes the old credentials 16 at a time. It then verifies every holder's eviction in
-one shared sweep on the delivery daemon, so a large credential family costs about as much as a small
-one. The daemon must serve the `evictPrincipals` verb; an older daemon refuses it and the gate stays
-frozen.
+one shared sweep on the delivery daemon. The sweep scans the broker a fixed number of times for up
+to 256 holders and kicks live connections 16 at a time, so holders that are already gone add almost
+nothing and live ones add one broker round trip per 16 connections. The daemon must serve the
+`evictPrincipals` verb; an older daemon refuses it and the gate stays frozen.
 
 If a holder is not verified gone, the command leaves the gate frozen and durably records the holders
 the sweep did verify. An interrupted sweep records nothing. A retry still repeats the freeze-holder

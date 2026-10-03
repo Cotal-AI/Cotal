@@ -245,9 +245,13 @@ export async function evictDeniedPrincipal(
  *  delivery-admin request) carries. A caller with a larger set sends it in chunks. */
 export const EVICT_PRINCIPALS_MAX = 256;
 
+/** How many KICK requests one {@link evictDeniedPrincipals} sweep has in flight at a time. */
+export const KICK_CONCURRENCY = 16;
+
 /**
  * {@link evictDeniedPrincipal} for a SET of denied principals in ONE shared sweep: one CONNZ scan
- * for the whole set, a KICK for every matching cid, and one re-scan per verify round that checks
+ * for the whole set, a KICK for every matching cid ({@link KICK_CONCURRENCY} in flight at a time,
+ * all settled before the next scan), and one re-scan per verify round that checks
  * every principal still pending. The broker work is a constant number of scans for the set rather
  * than one scan → KICK → verify cycle per principal. Each principal gets its own result, in input
  * order, with the same fail-closed reading: an under-reported scan leaves every principal it would
@@ -293,18 +297,21 @@ export async function evictDeniedPrincipals(
   }
   if (pending.size === 0) return answer();
   const kicker = typeof evictorConn === "function" ? await evictorConn() : evictorConn;
+  // KICKs are independent per connection, so they run KICK_CONCURRENCY at a time; every one of them
+  // settles before the verify re-scan reads the result.
   const kickAll = async (live: Map<string, LiveConn[]>) => {
-    for (const [p, targets] of live) {
-      const st = pending.get(p)!;
-      for (const t of targets) {
+    const queue = [...live].flatMap(([p, targets]) => targets.map((t) => ({ st: pending.get(p)!, t })));
+    const worker = async () => {
+      for (let next = queue.shift(); next; next = queue.shift()) {
         try {
-          await kick(kicker, t);
-          st.kicked++;
+          await kick(kicker, next.t);
+          next.st.kicked++;
         } catch (e) {
-          st.note = e instanceof Error ? e.message : String(e);
+          next.st.note = e instanceof Error ? e.message : String(e);
         }
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(KICK_CONCURRENCY, queue.length) }, worker));
   };
   await kickAll(byPrincipal(first.conns, pending.keys()));
 

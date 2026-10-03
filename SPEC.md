@@ -4441,11 +4441,13 @@ single-function profiles, each granting only the verbs its function needs and no
   wired into those barriers, not
   a standalone admin convenience. `evictPrincipals` is the same eviction for a set of at most 256
   distinct principals in ONE shared sweep: one CONNZ scan for the set, a KICK for every matching
-  connection, and one re-scan per verify round covering every principal still pending. Its reply
+  connection with at most 16 KICK requests in flight, and one re-scan per verify round covering
+  every principal still pending. Every KICK settles before the re-scan that verifies it. Its reply
   is one `EvictionResult` per principal in request order, each read as `evictPrincipal`'s
   (an under-reported scan leaves every principal it would have decided `verifiedGone:false,
   scanComplete:false`). Frozen-gate reconciliation (§13.1) verify-evicts its whole holder set
-  through it, so repair costs a constant number of sweeps rather than one per family holder. A
+  through it, so repair costs a constant number of sweeps rather than one per family holder, and
+  KICKing a live family costs one broker round trip per 16 live connections. A
   daemon that does not serve it refuses the verb, and the repair then leaves the gate frozen. Its READ-ONLY twin `principalLiveness` answers whether one
   principal still holds a live connection (the same CONNZ sweep, observer credential only — the
   KICK credential is never opened on that path), reporting `live` / `gone` / `unknown` with scan
