@@ -26,8 +26,9 @@ export interface SeatRecord {
    *  written before boot binding; such a record is never signalled. */
   bootId?: string;
   /** Private temporary directories the launch wrote for this seat's child to read (a persona
-   *  carrier, an MCP config file). Carried here so whoever proves the seat gone removes them, even a
-   *  successor that adopted or reaped it after the launching manager died. */
+   *  carrier, an MCP config file). The custodian removes them when its child exits and drops them from
+   *  the record; any still listed belong to a custodian killed first, and the reap that proves the
+   *  seat gone removes them. */
   artifacts?: string[];
 }
 

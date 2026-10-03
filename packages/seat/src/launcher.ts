@@ -1,7 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { discardSeatArtifacts } from "./artifacts.js";
 import { assertSeatId, capabilityToken, recordPath, seatId, socketPath, type SeatRecord, readRecord } from "./record.js";
 import { unattendedMs, assertSocketPathFits, unsupportedTransport } from "./protocol.js";
 
@@ -127,53 +129,20 @@ function pidLive(pid: number | undefined): boolean {
 }
 
 export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
-  if (process.platform !== "linux") throw unsupportedTransport();
-  mkdirSync(opts.root, { recursive: true, mode: 0o700 });
-  const id = assertSeatId(opts.id ?? seatId());
-  const token = capabilityToken();
-  const socket = assertSocketPathFits(socketPath(opts.root, id));
-  const recPath = recordPath(opts.root, id);
-  // A reserved id is spawned once. Reusing one would launch a second custodian over a live seat's
-  // record, and the reference the manager already recorded would then address the wrong processes.
-  if (existsSync(recPath)) throw new Error(`seat ${id} already holds a custody record at ${recPath}; a custody id is used for one launch`);
-  mkdirSync(dirname(recPath), { recursive: true, mode: 0o700 });
-  const logPath = join(dirname(recPath), "custodian.log");
-  const run = runMarker();
-  const payload = JSON.stringify({
-    id,
-    name: opts.name,
-    command: opts.spec.command,
-    args: opts.spec.args,
-    env: opts.spec.env ?? {},
-    cwd: opts.cwd,
-    socket,
-    token,
-    recordPath: recPath,
-    logPath,
-    confirm: opts.spec.confirm,
-    ...(opts.spec.artifacts?.length ? { artifacts: opts.spec.artifacts } : {}),
-    run,
-    // Resolved HERE, not in the custodian: the custodian's environment is scrubbed to `PATH` plus the
-    // run marker, so it cannot read an override the caller set.
-    unattendedMs: unattendedMs(),
-  });
-  // Payload carries spec.env (provider keys) and the capability token.
-  // argv is world-readable via /proc/<pid>/cmdline (0444). Inherit a 0600
-  // file as stdin so the JSON never appears on argv.
-  //
-  // The run marker is the one thing deliberately ON argv, because that is the point of it: a census
-  // must be able to attribute an orphan without the uid needed to read `/proc/<pid>/cwd`. It names a
-  // run, never a credential.
-  const launchPath = join(dirname(recPath), "launch.json");
-  writeFileSync(launchPath, payload, { mode: 0o600 });
-  const launchFd = openSync(launchPath, "r");
-  const child = spawn(process.execPath, [custodianEntry(), RUN_MARKER_FLAG, run], {
-    detached: true,
-    stdio: [launchFd, "ignore", "ignore"],
-    // COTAL_RUN is re-exported so a custodian's own descendants stay attributable to the same run,
-    // and so `/proc/<pid>/environ` answers the same question argv does for a reader who can read it.
-    env: { PATH: process.env.PATH ?? "", COTAL_RUN: run },
-  });
+  // The launch's artifacts were written under THIS process's temp dir. The custodian's environment
+  // is scrubbed, so it is told the root rather than reading its own.
+  const artifactRoot = resolve(tmpdir());
+  let started: ReturnType<typeof startCustodian>;
+  try {
+    started = startCustodian(opts, artifactRoot);
+  } catch (e) {
+    // Every throw in there comes before any process exists, so no child will read the files.
+    discardSeatArtifacts(opts.spec.artifacts, artifactRoot);
+    throw e;
+  }
+  // A throw from here on proves nothing about the child, which the custodian may have started. Its
+  // files are the custodian's to remove once it sees that child exit.
+  const { child, launchFd, launchPath, recPath, logPath } = started;
   closeSync(launchFd);
   try {
     unlinkSync(launchPath);
@@ -203,6 +172,58 @@ export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
     spawnSync("sleep", ["0.025"], { stdio: "ignore" });
   }
   throw new Error(`custodian did not write a seat record at ${recPath}`);
+}
+
+/** Every refusal a launch can make, then the custodian's spawn. A throw here means no process exists. */
+function startCustodian(opts: LaunchSeatOpts, artifactRoot: string) {
+  if (process.platform !== "linux") throw unsupportedTransport();
+  mkdirSync(opts.root, { recursive: true, mode: 0o700 });
+  const id = assertSeatId(opts.id ?? seatId());
+  const token = capabilityToken();
+  const socket = assertSocketPathFits(socketPath(opts.root, id));
+  const recPath = recordPath(opts.root, id);
+  // A reserved id is spawned once. Reusing one would launch a second custodian over a live seat's
+  // record, and the reference the manager already recorded would then address the wrong processes.
+  if (existsSync(recPath)) throw new Error(`seat ${id} already holds a custody record at ${recPath}; a custody id is used for one launch`);
+  mkdirSync(dirname(recPath), { recursive: true, mode: 0o700 });
+  const logPath = join(dirname(recPath), "custodian.log");
+  const run = runMarker();
+  const payload = JSON.stringify({
+    id,
+    name: opts.name,
+    command: opts.spec.command,
+    args: opts.spec.args,
+    env: opts.spec.env ?? {},
+    cwd: opts.cwd,
+    socket,
+    token,
+    recordPath: recPath,
+    logPath,
+    confirm: opts.spec.confirm,
+    ...(opts.spec.artifacts?.length ? { artifacts: opts.spec.artifacts, artifactRoot } : {}),
+    run,
+    // Resolved HERE, not in the custodian: the custodian's environment is scrubbed to `PATH` plus the
+    // run marker, so it cannot read an override the caller set.
+    unattendedMs: unattendedMs(),
+  });
+  // Payload carries spec.env (provider keys) and the capability token.
+  // argv is world-readable via /proc/<pid>/cmdline (0444). Inherit a 0600
+  // file as stdin so the JSON never appears on argv.
+  //
+  // The run marker is the one thing deliberately ON argv, because that is the point of it: a census
+  // must be able to attribute an orphan without the uid needed to read `/proc/<pid>/cwd`. It names a
+  // run, never a credential.
+  const launchPath = join(dirname(recPath), "launch.json");
+  writeFileSync(launchPath, payload, { mode: 0o600 });
+  const launchFd = openSync(launchPath, "r");
+  const child = spawn(process.execPath, [custodianEntry(), RUN_MARKER_FLAG, run], {
+    detached: true,
+    stdio: [launchFd, "ignore", "ignore"],
+    // COTAL_RUN is re-exported so a custodian's own descendants stay attributable to the same run,
+    // and so `/proc/<pid>/environ` answers the same question argv does for a reader who can read it.
+    env: { PATH: process.env.PATH ?? "", COTAL_RUN: run },
+  });
+  return { child, launchFd, launchPath, recPath, logPath };
 }
 
 export function loadSeat(root: string, id: string): SeatRecord {

@@ -29,9 +29,11 @@ because a session cannot change its system prompt afterward. Connectors that use
 prompt file write an owner-private temporary copy and pass only its path, so the persona body is not
 published in the agent process argv. Owner-private means OS-user isolation: any process running as
 the same user can read that copy while it exists, as it can this agent file. The launcher removes the
-copy once it has proved the agent process gone. A pty seat's custody record lists the copy, so a
-manager that later adopts or reaps the seat removes it even when the manager that launched it was
-killed. A launch that failed without that proof leaves the copy for the OS temp reaper.
+copy once it has proved the agent process gone. On a pty seat the seat's custodian removes it when
+the agent exits, even when the manager that launched it was killed. Once nothing has been connected
+to the custodian for its 600-second unattended window, it stops the agent, so the copy is gone by
+then. A launch refused before any process started removes it at once. Any other launch that
+failed, and any other killed launcher, leaves the copy for the OS temp reaper.
 
 ## Fields
 
