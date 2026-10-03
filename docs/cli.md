@@ -507,8 +507,10 @@ is still refused. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
 independent parent/deadline watchdog. It validates the canonical stream and pull-consumer inventory,
 writes native snapshots with consumers excluded, and stores conservative contiguous ACK-floor
-checkpoints separately. The original store is never opened by the backup broker, and the stack is
-not restarted implicitly. Artifact destinations must not overlap the preserved source or maintenance
+checkpoints separately. The presence bucket is memory-backed, so it does not survive the cut and
+the clone may lack it. Every other stream must be present. The original store is never opened by
+the backup broker, and the stack is not restarted implicitly. Artifact destinations must not overlap
+the preserved source or maintenance
 attempt tree. Restore artifacts and targets likewise cannot nest inside or contain each other, the
 preserved source, or the maintenance attempt tree.
 
