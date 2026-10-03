@@ -1,0 +1,48 @@
+{
+  "suite": ["implementations/cli/smoke/theme-plain-output.smoke.ts"],
+  "guard": "the theme helpers emit ANSI only on a TTY with NO_COLOR unset or empty, and are plain text otherwise",
+  "command": "pnpm --filter @cotal-ai/cli smoke:theme-plain-output",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/theme-plain-output.json",
+  "why": [
+    "Each case imports theme.ts from src in a fresh tsx child, so a mutation is seen without a build and needs no rebuild after the restore.",
+    "Each mutation is compile-clean and its anchor occurs exactly once in the named file."
+  ],
+  "mutations": [
+    {
+      "name": "T1 piped output keeps its colour",
+      "file": "implementations/cli/src/lib/theme.ts",
+      "find": "const USE_ANSI = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;",
+      "replace": "const USE_ANSI = !process.env.NO_COLOR;",
+      "expectRed": "a non-TTY stdout renders bold as plain text",
+      "cell": "a non-TTY stdout renders bold as plain text",
+      "note": "Without the TTY half, anything redirected to a file or a pipe carries escape codes."
+    },
+    {
+      "name": "T2 NO_COLOR is ignored",
+      "file": "implementations/cli/src/lib/theme.ts",
+      "find": "const USE_ANSI = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;",
+      "replace": "const USE_ANSI = Boolean(process.stdout.isTTY);",
+      "expectRed": "NO_COLOR=1 on a TTY renders bold as plain text",
+      "cell": "NO_COLOR=1 on a TTY renders bold as plain text",
+      "note": "On a non-TTY the TTY half already turns colour off, so only the TTY case can see NO_COLOR dropped."
+    },
+    {
+      "name": "T3 an empty NO_COLOR counts as set",
+      "file": "implementations/cli/src/lib/theme.ts",
+      "find": "const USE_ANSI = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;",
+      "replace": "const USE_ANSI = Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;",
+      "expectRed": "NO_COLOR= on a TTY still colours",
+      "cell": "NO_COLOR= on a TTY still colours",
+      "note": "no-color.org only counts NO_COLOR when it is present and not an empty string."
+    },
+    {
+      "name": "T4 the theme never colours",
+      "file": "implementations/cli/src/lib/theme.ts",
+      "find": "const USE_ANSI = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;",
+      "replace": "const USE_ANSI = false;",
+      "expectRed": "bold wraps in SGR 1",
+      "cell": "bold wraps in SGR 1",
+      "note": "The positive control: without it every plain-text cell passes against a theme that never colours."
+    }
+  ]
+}
