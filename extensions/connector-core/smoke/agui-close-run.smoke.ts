@@ -23,11 +23,11 @@
  *   K5  drop the `onRunClosed` report
  *       -> `holder:the-closed-run-is-reported-so-a-mapper-can-forget-it`
  *   K6  publish a finish even when a failure was reported, which is what this plane shipped
- *       -> `close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-message-and-code`
+ *       -> `close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-the-fixed-message-and-no-code`
  *   K7  drop the reason in the holder, one layer above the emitter that would have carried it
- *       -> `holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given`
- *   K8  skip the close-path bound, so an oversized failure detail still throws in packUnits
- *       -> `close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR`
+ *       -> `holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code`
+ *   K8  publish the upstream failure detail on the close instead of the fixed message
+ *       -> `close:a-short-failure-detail-is-replaced-by-the-fixed-message`
  *   K9  delete `this.run = undefined` from the shared terminal arm of AguiBrackets.accept
  *       -> `close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED`
  *       The property is real; the claim that no deletion can violate it was false. The machine
@@ -58,6 +58,7 @@ import {
   textMessageEnd,
   type AguiEvent,
   type AguiFrame,
+  RUN_ERROR_EGRESS_MESSAGE,
 } from "../src/agui.js";
 import { AguiEmitterHolder } from "../src/agui-holder.js";
 import { JsonlFileSource } from "../src/durable-source.js";
@@ -435,11 +436,11 @@ try {
     const errFrame = frameOf(ep.publishes[ep.publishes.length - 1]!);
     const ev = errFrame.events[0] as { type?: string; message?: string; code?: string; runId?: string };
     c(
-      "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-message-and-code",
+      "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-the-fixed-message-and-no-code",
       errFrame.events.length === 1 &&
         ev.type === "RUN_ERROR" &&
-        ev.message === "upstream returned 500" &&
-        ev.code === "APIError" &&
+        ev.message === RUN_ERROR_EGRESS_MESSAGE &&
+        !("code" in ev) &&
         // RUN_ERROR has no runId of its own; the FRAME is what attributes it to a run.
         ev.runId === undefined &&
         errFrame.runId === "run-e",
@@ -495,8 +496,8 @@ try {
     const frame = frameOf(ep.publishes[ep.publishes.length - 1]!);
     const ev = frame.events[0] as { type?: string; message?: string; code?: string };
     c(
-      "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given",
-      ev.type === "RUN_ERROR" && ev.message === "provider rejected the request" && ev.code === "ProviderAuthError",
+      "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code",
+      ev.type === "RUN_ERROR" && ev.message === RUN_ERROR_EGRESS_MESSAGE && !("code" in ev),
       { events: frame.events, errors: errors.map((e) => e.message) },
     );
     // An error close is still a close, so the mapper must be told to forget the run exactly as it is
@@ -532,15 +533,15 @@ try {
     c("holder:a-close-does-not-BIND-a-path", holder.path === undefined, holder.path);
   });
 
-  // ── AN OVERSIZED FAILURE DETAIL STILL CLOSES, AND A SHORT ONE IS UNCHANGED ───────────────────
+  // ── AN OVERSIZED FAILURE DETAIL STILL CLOSES, AND NEITHER IT NOR A SHORT ONE REACHES THE WIRE ──
   //
   // The close frame is the one a reader waits on. Upstream free text (`error_details` /
   // `data.message`) can encode past the live broker ceiling while still passing a 1e6 JS code-unit
   // control-socket guard. If packUnits then refuses the unit, no terminal is durable, the WAL has
   // no pending recovery, persisted brackets stay open, and the holder dies. This block drives that
   // shape through the REAL emitter and the REAL holder, at a 1 MiB ceiling, with a multibyte
-  // payload. The short-message control is the inverse: the bound must not flatten ordinary text.
-  await block("AN OVERSIZED FAILURE DETAIL STILL CLOSES, AND A SHORT ONE IS UNCHANGED", async () => {
+  // payload. Since #1431 the close publishes a fixed message, so neither detail reaches the wire.
+  await block("AN OVERSIZED FAILURE DETAIL STILL CLOSES, AND NEITHER IT NOR A SHORT ONE REACHES THE WIRE", async () => {
     const CEILING = 1_048_576;
     const oversized = { message: "€".repeat(400_000), code: "APIError" };
     const noticeNeedle = "omitted or shortened because it exceeded the frame bound";
@@ -578,11 +579,11 @@ try {
         { err: closed.err?.message, returned: closed.value, terms },
       );
       c(
-        "close:the-bounded-RUN_ERROR-explicitly-says-the-original-detail-was-omitted-or-shortened",
-        typeof errEv?.message === "string" && errEv.message.includes(noticeNeedle),
+        "close:the-oversized-RUN_ERROR-publishes-only-the-fixed-message",
+        errEv?.message === RUN_ERROR_EGRESS_MESSAGE,
         errEv?.message?.slice(0, 200),
       );
-      c("close:the-bounded-RUN_ERROR-preserves-the-failure-code", errEv?.code === "APIError", errEv?.code);
+      c("close:the-bounded-RUN_ERROR-publishes-no-failure-code", errEv !== undefined && !("code" in errEv), errEv?.code);
       c(
         "close:the-bounded-RUN_ERROR-fits-the-live-payload-ceiling",
         errEv?.type === "RUN_ERROR" &&
@@ -648,11 +649,11 @@ try {
         { errors: errors.map((e) => e.message), terms, closedRuns, failure: holder.failure?.message },
       );
       c(
-        "holder:the-bounded-RUN_ERROR-explicitly-says-the-original-detail-was-omitted-or-shortened",
-        typeof errEv?.message === "string" && errEv.message.includes(noticeNeedle),
+        "holder:the-oversized-RUN_ERROR-publishes-only-the-fixed-message",
+        errEv?.message === RUN_ERROR_EGRESS_MESSAGE,
         errEv?.message?.slice(0, 200),
       );
-      c("holder:the-bounded-RUN_ERROR-preserves-the-failure-code", errEv?.code === "APIError", errEv?.code);
+      c("holder:the-bounded-RUN_ERROR-publishes-no-failure-code", errEv !== undefined && !("code" in errEv), errEv?.code);
       c(
         "holder:the-bounded-RUN_ERROR-fits-the-live-payload-ceiling",
         errEv?.type === "RUN_ERROR" &&
@@ -710,11 +711,11 @@ try {
       const last = ep.publishes[ep.publishes.length - 1];
       const ev = last ? (frameOf(last).events[0] as { type?: string; message?: string; code?: string }) : undefined;
       c(
-        "close:CONTROL-a-short-failure-detail-is-byte-for-byte-unchanged",
+        "close:a-short-failure-detail-is-replaced-by-the-fixed-message",
         closed.err === undefined &&
           ev?.type === "RUN_ERROR" &&
-          ev.message === "upstream returned 500" &&
-          ev.code === "APIError" &&
+          ev.message === RUN_ERROR_EGRESS_MESSAGE &&
+          !("code" in ev) &&
           (last?.encodedSize ?? Infinity) <= CEILING,
         { err: closed.err?.message, ev, encodedSize: last?.encodedSize },
       );

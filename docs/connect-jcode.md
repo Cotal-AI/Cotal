@@ -207,12 +207,13 @@ the Jcode session id, which is also the AG-UI thread id. A restarted seat contin
 stored in its event write-ahead log and does not republish records already acknowledged.
 
 If Jcode checkpoints its journal, the connector validates the saved session snapshot and ends the
-interrupted event observations with `RUN_ERROR`, code `jcode_journal_fold`. Open tool observations
-end before this error; this does not claim that their executions completed. The seat stays up while
-the next journal is absent, including during a long tool call. The reader keeps its previous cursor
-until it can read the new journal from its beginning. It does not reconstruct missing output from
-the snapshot. A tool result whose start was not observed produces `jcode_tool_start_missing`, not
-an invented tool start or an unpaired end. On restart, open tools are restored from the event WAL.
+interrupted event observations with `RUN_ERROR`. Open tool observations end before this error; this
+does not claim that their executions completed. The seat stays up while the next journal is absent,
+including during a long tool call. The reader keeps its previous cursor until it can read the new
+journal from its beginning. It does not reconstruct missing output from the snapshot. A tool result
+whose start was not observed also ends the run with `RUN_ERROR`, not an invented tool start or an
+unpaired end. Like every published run error, both carry only the fixed message `run failed`: the
+connector's codes `jcode_journal_fold` and `jcode_tool_start_missing` do not leave the seat. On restart, open tools are restored from the event WAL.
 
 A missing journal without a valid snapshot for the same session remains an emitter failure.
 Malformed cursors, invalid complete records and filesystem access refusals are not checkpoints.

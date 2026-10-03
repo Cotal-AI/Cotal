@@ -191,7 +191,9 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   uses are absent from the stream while everything on the function-call path is present.
 - **Failed turns publish run errors.** Codex records a failure on
   the turn's own completion record, so a turn that hit a usage limit or an upstream error ends its
-  run with `RUN_ERROR` carrying the code Codex reported.
+  run with `RUN_ERROR` carrying the fixed message `run failed` and no code. Neither Codex's error
+  text nor its `codex_error_info` is published there: both are upstream values that can echo your
+  prompt or tool output, and the events channel has a different read ACL.
 - **No user-authored text is published, ever.** Your prompts, the peer messages injected into the
   thread, and the developer instructions the persona supplies are all withheld. The events channel
   carries a different read ACL from the channel you typed into, so republishing your own words there

@@ -224,8 +224,8 @@ try {
     failedTurnCloses.length === 1, failedTurnCloses);
   check("fail:and that close is RUN_ERROR, not RUN_FINISHED — THE DEFECT",
     failedTurnCloses[0]?.type === "RUN_ERROR", failedTurnCloses[0]);
-  check("fail:the RUN_ERROR carries the harness's own message and error name as the code",
-    failedTurnCloses[0]?.message === "upstream returned 500" && failedTurnCloses[0]?.code === "APIError",
+  check("fail:the RUN_ERROR carries the fixed message and no code",
+    failedTurnCloses[0]?.message === "run failed" && !failedTurnCloses[0]?.code,
     failedTurnCloses[0]);
 
   check("abort:the user-aborted turn closed exactly once", abortedTurnCloses.length === 1, abortedTurnCloses);

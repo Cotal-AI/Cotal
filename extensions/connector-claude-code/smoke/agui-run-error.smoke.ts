@@ -299,8 +299,8 @@ try {
     failedTurnCloses.length === 1, failedTurnCloses);
   check("fail:and that close is RUN_ERROR, not RUN_FINISHED — THE DEFECT",
     failedTurnCloses[0]?.type === "RUN_ERROR", failedTurnCloses[0]);
-  check("fail:the RUN_ERROR carries the harness's detail as the message and its error kind as the code",
-    failedTurnCloses[0]?.message === "Claude AI usage limit reached" && failedTurnCloses[0]?.code === "rate_limit",
+  check("fail:the RUN_ERROR carries the fixed message and no code",
+    failedTurnCloses[0]?.message === "run failed" && !failedTurnCloses[0]?.code,
     failedTurnCloses[0]);
 
   check("stop:the normally-ended turn closed exactly once", normalTurnCloses.length === 1, normalTurnCloses);
