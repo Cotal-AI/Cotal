@@ -60,6 +60,22 @@ def _copy_messages(db: Any, session_id: str, history: list) -> None:
         )
 
 
+def _fork_title(db: Any, title: str) -> str:
+    """The fork's title in the seat's database: the source's own, which Hermes already held to its
+    length bound. When an earlier fork there holds it (the operator removed the marker to fork
+    again), the next free ``#N`` the way ``/branch`` numbers a branch, with the title cut so the
+    number still fits ``MAX_TITLE_LENGTH``. The marker keeps the source title whole."""
+    if not db.get_session_by_title(title):
+        return title
+    base, _, n = db.get_next_title_in_lineage(title).rpartition(" #")
+    n = int(n)
+    while True:
+        name = f"{base[: db.MAX_TITLE_LENGTH - len(str(n)) - 2].rstrip()} #{n}"
+        if not db.get_session_by_title(name):
+            return name
+        n += 1
+
+
 def fork(source_home: str, source_id: str, seat_home: str) -> dict:
     """Fork ``source_id`` from ``source_home`` into ``seat_home``, or return the seat's existing
     fork of it. Raises ``LookupError`` with the whole diagnosis when it cannot."""
@@ -115,7 +131,7 @@ def fork(source_home: str, source_id: str, seat_home: str) -> dict:
         )
         _copy_messages(db, fork_id, history)
         if title:
-            db.set_session_title(fork_id, f"{title} (fork)")
+            db.set_session_title(fork_id, _fork_title(db, title))
     finally:
         db.close()
 
