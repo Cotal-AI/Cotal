@@ -9,8 +9,8 @@
     {
       "name": "the pump pops in ask order and ignores wake times",
       "file": "packages/lang/src/sim.ts",
-      "find": "        if (next === undefined || e.wake < next.wake || (e.wake === next.wake && e.seq < next.seq)) next = e;",
-      "replace": "        if (next === undefined || e.seq < next.seq) next = e;",
+      "find": "      if (next === undefined || e.wake < next.wake || (e.wake === next.wake && e.seq < next.seq)) next = e;",
+      "replace": "      if (next === undefined || e.seq < next.seq) next = e;",
       "expectRed": "two parked sleeps deliver in wake order, not ask order, each at its own wake",
       "completionMarker": "ok script entries the run never reached are named",
       "cell": "two parked sleeps deliver in wake order, not ask order, each at its own wake",

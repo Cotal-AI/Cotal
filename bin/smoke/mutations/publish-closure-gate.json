@@ -28,8 +28,8 @@
     {
       "name": "the release step stops referencing the closure-gate output",
       "file": ".github/workflows/changesets.yml",
-      "find": "steps.closure-gate.outputs.closure_ok == 'true'",
-      "replace": "true",
+      "find": "        id: release-step\n        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true'",
+      "replace": "        id: release-step\n        if: success() && github.event_name == 'push' && true",
       "expectRed": "the release step's 'if' references the closure-gate step output",
       "cell": "the release step's 'if' references the closure-gate step output"
     },
