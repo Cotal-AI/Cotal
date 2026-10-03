@@ -101,7 +101,10 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Re-prove fixtures for changed guarded sources
-        # Leave time after a step timeout to report elapsed time for that shard.
+        # Leave time after a step timeout to report elapsed time for that shard. The runner's own
+        # 130-minute budget ends first: past it, each proof gets up to 5 minutes to put its mutant
+        # back, and the run names every selected fixture it did not finish instead of being killed
+        # from outside with no tally.
         timeout-minutes: 145
         env:
           EVENT: ${{ github.event_name }}
@@ -113,7 +116,7 @@ jobs:
           base="$(bash scripts/mutation-reproof-base.sh "$EVENT" "$BASE" HEAD)"
           # A file survives a timed-out step even when its environment-file updates do not.
           date +%s > "$RUNNER_TEMP/mutation-started"
-          node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)" --shard "${{ matrix.shard }}/12"
+          node scripts/mutation-reproof.mjs --base "$base" --head "$(git rev-parse HEAD)" --shard "${{ matrix.shard }}/12" --budget-minutes 130
       - name: Report elapsed
         if: always()
         run: |
@@ -187,11 +190,12 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Re-prove every mutation fixture assigned to this shard
-        # Leave 15 minutes after a step timeout for teardown and elapsed reporting.
+        # Leave 15 minutes after a step timeout for teardown and elapsed reporting. The runner's
+        # 210-minute budget ends first, as in the changed shards.
         timeout-minutes: 225
         run: |
           date +%s > "$RUNNER_TEMP/mutation-started"
-          node scripts/mutation-reproof.mjs --all --shard "${{ matrix.shard }}/12"
+          node scripts/mutation-reproof.mjs --all --shard "${{ matrix.shard }}/12" --budget-minutes 210
       - name: Report elapsed
         if: always()
         run: |

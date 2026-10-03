@@ -98,3 +98,16 @@ health of the whole tree, so every proven fixture in the shard must produce a ki
 is pre-red, inconclusive, or graded nothing fails the sweep and is named on the
 `MUTATION REPROOF FLOOR ERODED` line, or on the `ZERO DISCRIMINATED, COULD NOT` line when no fixture
 killed. That failure opens or comments on the `ci:mutation-reproof` tracking issue.
+
+## Mutation reproof budget
+
+`mutation-reproof` takes `--budget-minutes <n>`, and the workflow passes one below each shard's step
+timeout. Selection does not estimate fixture cost, so one shard can draw more proof work than its
+step can finish. Without a budget the step was killed from outside: no tally, no word about the
+fixtures that never ran, and a mutant left in the tree. With one, each `mutation-proof` child gets
+the deadline as `--deadline <epoch-ms>`. At the deadline it cuts the running suite, kills that
+suite's process group, puts the mutant back, names the mutations it did not reach and exits 5. The
+reproof then prints `MUTATION REPROOF BUDGET EXHAUSTED`, names each selected fixture as cut short or
+not run, and exits 1. That result is UNMEASURED. It is never a pass. A fatal verdict whose base
+comparison cannot finish in the budget is reported as an unmeasured transition with the budget as
+its reason.

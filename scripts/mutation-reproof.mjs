@@ -22,6 +22,11 @@
  *   - under --all, one killing fixture held the floor up for every other fixture that had gone
  *     pre-red or inconclusive; a full sweep now requires every proven fixture to discriminate.
  *
+ * A selection can hold more proof work than the job's step has time for. With `--budget-minutes` the
+ * run ends itself instead of being killed from outside with no tally: every proof child gets the
+ * deadline, stops grading at it and puts its mutant back, and the run names each selected fixture
+ * the budget cut short or never started and exits 1. That is UNMEASURED, never a pass.
+ *
  * A fixture whose guarded source was deleted or renamed away is a DANGLING fixture: its anchor can
  * no longer resolve, so its proof is unrunnable. That is precisely the state this gate refuses, so a
  * dangling fixture is a loud failure, not a silent skip.
@@ -46,16 +51,19 @@ const COMMAND_TIMEOUT_MS = 900_000;
 // 145-minute step still had ~130 minutes left. Bound the child under that step instead
 // so a hung proof cannot sit until the job times out, and a 20-mutation fixture can finish.
 const PROOF_TIMEOUT_MS = 140 * 60 * 1000;
+// Past the --budget-minutes deadline, a proof child still gets this long to cut its suite, put its
+// mutant back (an `afterRestore` rebuild included) and exit before it is killed.
+const DEADLINE_GRACE_MS = 5 * 60 * 1000;
 
 function usage(message) {
   if (message) console.error(message);
-  console.error("usage: node scripts/mutation-reproof.mjs --base <commit> [--head <commit>] [--root <dir>] [--all] [--shard <index>/<count> | --list-shards <count>]");
+  console.error("usage: node scripts/mutation-reproof.mjs --base <commit> [--head <commit>] [--root <dir>] [--all] [--budget-minutes <n>] [--shard <index>/<count> | --list-shards <count>]");
   process.exit(2);
 }
 
 function args(argv) {
   const out = {};
-  const known = new Set(["base", "head", "root", "all", "shard", "list-shards"]);
+  const known = new Set(["base", "head", "root", "all", "shard", "list-shards", "budget-minutes"]);
   for (let i = 0; i < argv.length; i++) {
     if (!argv[i].startsWith("--")) usage(`unexpected argument: ${argv[i]}`);
     const key = argv[i].slice(2);
@@ -77,11 +85,16 @@ function runCommand(command, cwd, env) {
     const output = `REFUSING live-shaped command \`${command}\` (${liveReason}) — mutation-reproof never executes a live suite\n`;
     return { status: 2, signal: null, error: undefined, stdout: "", stderr: output, output };
   }
+  // The shell leads its own group so a timeout can kill what it forked too, as mutation-proof does.
   const run = spawnSync(command, {
-    cwd, shell: true, encoding: "utf8", timeout: COMMAND_TIMEOUT_MS,
+    cwd, shell: true, encoding: "utf8", timeout: commandTimeoutMs(),
     maxBuffer: 64 * 1024 * 1024, killSignal: "SIGKILL",
+    detached: process.platform !== "win32",
     env,
   });
+  if (run.error?.code === "ETIMEDOUT" && run.pid !== undefined && process.platform !== "win32") {
+    try { process.kill(-run.pid, "SIGKILL"); } catch { /* the group is already gone */ }
+  }
   return { ...run, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 }
 
@@ -214,6 +227,23 @@ const listShards = a["list-shards"] === undefined ? undefined : Number(a["list-s
 if (listShards !== undefined && (!Number.isInteger(listShards) || listShards < 1))
   usage(`invalid --list-shards ${a["list-shards"]}; use a shard count of at least 1`);
 if (listShards !== undefined && shard) usage("--list-shards and --shard are exclusive: one plans the fan-out, the other runs one shard of it");
+const budgetMinutes = a["budget-minutes"] === undefined ? undefined : Number(a["budget-minutes"]);
+if (budgetMinutes !== undefined && !(Number.isFinite(budgetMinutes) && budgetMinutes > 0))
+  usage(`invalid --budget-minutes ${a["budget-minutes"]}; use a positive number of minutes`);
+const deadline = budgetMinutes === undefined ? undefined : Date.now() + budgetMinutes * 60_000;
+const pastDeadline = () => deadline !== undefined && Date.now() >= deadline;
+const commandTimeoutMs = () => deadline === undefined
+  ? COMMAND_TIMEOUT_MS
+  : Math.max(1, Math.min(COMMAND_TIMEOUT_MS, deadline - Date.now()));
+const proofTimeoutMs = () => deadline === undefined
+  ? PROOF_TIMEOUT_MS
+  : Math.max(1, Math.min(PROOF_TIMEOUT_MS, deadline - Date.now() + DEADLINE_GRACE_MS));
+const proofArgs = (configPath) =>
+  [PROOF, "--config", configPath, ...(deadline === undefined ? [] : ["--deadline", String(deadline)])];
+// mutation-proof exits 5 when the deadline cut it; a kill by the grace timeout is the backstop.
+const cutByBudget = (run) => deadline !== undefined
+  && (run.status === 5 || (run.error?.code === "ETIMEDOUT" && pastDeadline()));
+const budgetReason = (what) => `the ${budgetMinutes}-minute run budget ran out before ${what} finished`;
 
 if (!a.all) {
   try {
@@ -431,8 +461,8 @@ function runProof(cwd, configPath, env) {
   // job step timed out (PR #1445, shard 10/12, 8712s). spawnSync with no timeout
   // is that hang. COMMAND_TIMEOUT_MS here is too small: one fixture is baseline
   // plus every mutant.
-  const run = spawnSync(process.execPath, [PROOF, "--config", configPath], {
-    cwd, encoding: "utf8", timeout: PROOF_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
+  const run = spawnSync(process.execPath, proofArgs(configPath), {
+    cwd, encoding: "utf8", timeout: proofTimeoutMs(), maxBuffer: 64 * 1024 * 1024,
     killSignal: "SIGKILL", env,
   });
   return { ...run, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
@@ -536,6 +566,7 @@ const rootComparisonEnv = () => comparisonEnv();
 const snapshotComparisonEnv = (options) => comparisonEnv(options);
 
 function preparationFailure(label, run) {
+  if (pastDeadline() && run.status !== 0) return budgetReason(label);
   if (run.error) return `${label} could not start: ${run.error.message}`;
   if (run.status === null || run.signal)
     return `${label} produced no exit status${run.signal ? ` (signal ${run.signal})` : ""}`;
@@ -640,15 +671,19 @@ const unmeasuredPreRed = []; // exit 4 + absent/ambiguous/unrunnable base compar
 const inconclusive = []; // INCONCLUSIVE only — unmeasured, evidence in neither direction
 const discriminated = []; // fixtures that produced at least one KILLED (including mixed)
 const zeroGraded = []; // exit 0 with no KILLED parsed: graded nothing, never counts as discrimination
+const cutShort = []; // started, and the budget ended its proof before every mutation was graded
+const notStarted = []; // the budget was spent before its proof began
 for (const { path, command, mutations } of prove) {
+  if (pastDeadline()) { notStarted.push(path); continue; }
   console.log(`\n===== ${path} =====`);
-  const run = spawnSync(process.execPath, [PROOF, "--config", path], {
-    cwd: root, encoding: "utf8", timeout: PROOF_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
+  const run = spawnSync(process.execPath, proofArgs(path), {
+    cwd: root, encoding: "utf8", timeout: proofTimeoutMs(), maxBuffer: 64 * 1024 * 1024,
     killSignal: "SIGKILL", env: rootComparisonEnv(),
   });
   const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
   process.stdout.write(run.stdout ?? "");
   process.stderr.write(run.stderr ?? "");
+  if (cutByBudget(run)) { cutShort.push(path); continue; }
   // Exit 0 means "no mutation failed to produce a clean named red", which is NOT the same as
   // "a kill was observed": mutation-proof prints `All 0 mutation(s) killed` and exits 0 for a
   // fixture whose `mutations` array is empty. Crediting discrimination on the status alone would
@@ -674,6 +709,7 @@ for (const { path, command, mutations } of prove) {
     const commands = [...new Set([command, ...mutations.map((mutation) => mutation.command)]
       .filter((fixtureCommand) => typeof fixtureCommand === "string"))];
     if (a.all) { preRed.push({ path, ...refused, baseStatus: undefined }); continue; }
+    if (pastDeadline()) { unmeasuredPreRed.push({ path, command: refused.command, reason: budgetReason("the base comparison") }); continue; }
     ensureSnapshotPrepared(snapshots.head, "head");
     ensureSnapshotPrepared(snapshots.base, "base");
     const preparationError = snapshots.head.error ?? snapshots.head.preparationError
@@ -722,6 +758,7 @@ for (const { path, command, mutations } of prove) {
   if (verdicts.some((v) => FATAL_VERDICTS.has(v))) {
     if (verdicts.includes("KILLED")) discriminated.push(path);
     if (a.all) { fatal.push(path); continue; }
+    if (pastDeadline()) { unmeasuredFatal.push({ path, reason: budgetReason("the base comparison") }); continue; }
     ensureSnapshotPrepared(snapshots.head, "head");
     ensureSnapshotPrepared(snapshots.base, "base");
     const preparationError = snapshots.head.error ?? snapshots.head.preparationError
@@ -732,7 +769,11 @@ for (const { path, command, mutations } of prove) {
       continue;
     }
     const headProof = runProof(snapshots.head.path, path, snapshotComparisonEnv());
-    const baseProof = runProof(snapshots.base.path, path, snapshotComparisonEnv());
+    const baseProof = pastDeadline() ? undefined : runProof(snapshots.base.path, path, snapshotComparisonEnv());
+    if (!baseProof || cutByBudget(headProof) || cutByBudget(baseProof)) {
+      unmeasuredFatal.push({ path, reason: budgetReason("the head and base comparison") });
+      continue;
+    }
     const headMutations = readFixtureMutations(snapshots.head.path, path);
     const baseMutations = readFixtureMutations(snapshots.base.path, path);
     const headRecordsClean = labeledVerdictsIn(headProof.output, headMutations);
@@ -801,10 +842,17 @@ if (unmeasuredFatal.length) {
   for (const { path, reason } of unmeasuredFatal)
     console.error(`  ${path} -> transition: UNMEASURED (${reason})`);
 }
+if (cutShort.length || notStarted.length) {
+  console.error(`\nMUTATION REPROOF BUDGET EXHAUSTED (${cutShort.length + notStarted.length} of ${prove.length} proven fixture(s) not finished inside the ${budgetMinutes}-minute budget; UNMEASURED, not a pass):`);
+  for (const path of cutShort)
+    console.error(`  ${path} -> cut short: the budget ended its proof before every mutation was graded; its partial verdicts are above`);
+  for (const path of notStarted) console.error(`  ${path} -> not run: the budget was spent before its proof began`);
+}
 if (fatal.length) {
   console.error(`\nMUTATION REPROOF FAILED (${fatal.length} fixture(s)): ${fatal.join(", ")}`);
 }
-if (attributablePreRed.length || unmeasuredPreRed.length || fatal.length || unmeasuredFatal.length) {
+if (attributablePreRed.length || unmeasuredPreRed.length || fatal.length || unmeasuredFatal.length
+    || cutShort.length || notStarted.length) {
   process.exit(1);
 }
 function discriminationFloor(provenCount, discriminatedCount) {

@@ -41,6 +41,10 @@
  *   node scripts/mutation-proof.mjs --file <path> --find <str> --replace <str> \
  *        --command "pnpm smoke:x" --expect-red "<substring of the failing assertion>"
  *   node scripts/mutation-proof.mjs --recover     put back what a killed proof left, and exit
+ *   --deadline <epoch-ms>   stop grading at that instant: a suite run still going is cut short and
+ *                           its mutant put back, the mutations not reached are named, and the run
+ *                           exits 5. mutation-reproof passes its run budget down this way so a
+ *                           proof ends itself, with the tree restored, before the job is killed.
  *
  * A killed proof cannot restore anything, so each mutation first writes a breadcrumb outside the
  * tree: the file, its pre-mutation hash and where the backup is. Every run reads those before it
@@ -388,6 +392,14 @@ function run(command, cwd, timeoutMs) {
   return { status: r.status, signal: r.signal, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
 }
 
+/** The suite budget: the per-command timeout, cut to what is left before `--deadline`. Only suite
+ *  runs take it; an `afterRestore` rebuild keeps its full timeout, or a deadline would leave a
+ *  `dist/` compiled from the mutant. */
+const suiteTimeoutMs = (opts) => opts.deadline === undefined
+  ? opts.timeoutMs
+  : Math.max(1, Math.min(opts.timeoutMs, opts.deadline - Date.now()));
+const pastDeadline = (opts) => opts.deadline !== undefined && Date.now() >= opts.deadline;
+
 // A line-initial pass mark: optional leading whitespace, optional ANSI colour escapes, then the
 // glyph. Not a bare glyph match — a suite can carry a `✓` inside an assertion LABEL (printed on
 // pass and often on fail alike), and counting that glyph inflates both the baseline and the
@@ -554,7 +566,7 @@ function proveOne(m, opts) {
     }
     say(`${C.dim}  mutated ${hits}× · running: ${m.command ?? opts.command}${C.off}`);
 
-    const r = run(m.command ?? opts.command, cwd, opts.timeoutMs);
+    const r = run(m.command ?? opts.command, cwd, suiteTimeoutMs(opts));
     // Keep the transcript for the report. Every verdict below is derived from `r.output` and none
     // of them printed it, so a WRONG-RED said the expected string was absent and never what was
     // there instead. `manager-runtime-deps` sat red on main and on a release PR for a day in
@@ -569,6 +581,8 @@ function proveOne(m, opts) {
         why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"}`, ticks };
     }
 
+    if (r.timedOut && pastDeadline(opts)) return { label, transcript, verdict: "INCONCLUSIVE",
+      why: "the --deadline cut this run short; it graded nothing", ticks, deadlineCut: true };
     if (r.timedOut) return { label, transcript, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
 
     // ---- FIRST QUESTION, ON EVERY PATH: did this run actually execute the check being graded? ---
@@ -747,7 +761,10 @@ let opts = {
   timeoutMs: Number(a.timeout ?? 900_000),
   progressPattern: a["progress-pattern"],
   minTicks: a["min-ticks"] === undefined ? undefined : Number(a["min-ticks"]),
+  deadline: a.deadline === undefined ? undefined : Number(a.deadline),
 };
+if (opts.deadline !== undefined && !(typeof a.deadline === "string" && Number.isFinite(opts.deadline) && opts.deadline > 0))
+  usage(`invalid --deadline ${a.deadline}; use an epoch time in milliseconds`);
 
 if (a.config) {
   // `resolve`, not `join`: an ABSOLUTE --config path joined to cwd becomes a nonexistent path under
@@ -796,8 +813,14 @@ opts.baseOutputBy = new Map();
 opts.baseTicksBy = baseTicksBy;
 for (const cmd of commands) {
   say(`${C.dim}baseline: ${cmd}${C.off}`);
-  const base = run(cmd, cwd, opts.timeoutMs);
+  const base = run(cmd, cwd, suiteTimeoutMs(opts));
   const ticks = progressCount(base.output, opts.progressPattern);
+  if (base.timedOut && pastDeadline(opts)) {
+    // Out of time is not a red baseline: exit 4 would send mutation-reproof to compare a refusal
+    // that never happened.
+    say(`${C.yellow}DEADLINE: the --deadline passed during the baseline of \`${cmd}\`; no mutation was graded.${C.off}`);
+    process.exit(5);
+  }
   if (base.status !== 0) {
     // Bounded machine-readable provenance from the exact run that refused. Re-running after exit 4
     // could observe different root state, so mutation-reproof compares this hash instead. The raw
@@ -845,7 +868,9 @@ if (opts.minTicks === undefined && [...baseTicksBy.values()].some((t) => t > 0))
 }
 
 const results = [];
+const notReached = [];
 for (const m of mutations) {
+  if (pastDeadline(opts)) { notReached.push(m); continue; }
   // Report each verdict's marks against ITS OWN suite's baseline. Two suites count different
   // things, so "8 marks (baseline 24)" across a suite boundary reads as a run that died early
   // when it may have run to completion.
@@ -939,6 +964,14 @@ if (bad === 0) {
   say(`point reaches that code — if the test builds its inputs by hand, prove that separately.${C.off}`);
 } else {
   say(`${C.red}${bad} of ${results.length} mutation(s) did not produce a clean, named red.${C.off}`);
+}
+if (notReached.length || results.some((r) => r.deadlineCut)) {
+  // A run the deadline cut is incomplete, whatever it graded before the cut, so it gets its own
+  // exit code: a caller must not read it as a pass, and must not read it as a finding either.
+  say(`${C.yellow}DEADLINE: the --deadline passed with ${notReached.length} of ${mutations.length} mutation(s) not reached${notReached.length ? ":" : "."}${C.off}`);
+  for (const m of notReached) say(`  NOT REACHED ${m.name ?? `${m.file}: ${m.find.slice(0, 48).replace(/\n/g, "⏎")}`}`);
+  await settleSignals();
+  process.exit(5);
 }
 await settleSignals();
 process.exit(bad === 0 ? 0 : 1);
