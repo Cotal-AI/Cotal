@@ -25,6 +25,47 @@ export function createRunScopeAuthority(
   }, pinned);
 }
 
+/** True when `runId` minted the entry: its request id re-derives from this run. A fork prefix keeps
+ *  the parent's ids, so a copied entry is never the child's. */
+export function ownsEntry(runId: string, entry: JournalEntry): boolean {
+  if (entry.requestId === undefined) return false;
+  const attempt = entry.attempt ?? 0;
+  if (!Number.isSafeInteger(attempt) || attempt < 0) return false;
+  const hash = digest([runId, journalEntryKeyString(entry), entry.inputHash, attempt]);
+  const expected = Buffer.from(hash.slice("sha256:".length), "hex").toString("base64url");
+  return entry.requestId === expected;
+}
+
+/**
+ * The spawns a completed run releases: its own, whatever their status, because a spawn that failed
+ * catchably can still hold a live process and the goal's terminal decides whether a seat is up. A
+ * spawn marked `onFork: "adopt"` is left up: a fork may share that seat, and no run can see whether
+ * another still uses it. A spawn whose seat a migration handed to a later spawn is left to that
+ * spawn: the receiver names it in `adoptedFrom` and holds the same goal. The receiver keeps the seat
+ * up when any spawn the seat passed through was marked `onFork: "adopt"`, because a fork taken
+ * before the migration may still share it.
+ */
+export function releasableSeats(runId: string, entries: readonly JournalEntry[]): JournalEntry[] {
+  const spawns = new Map<string, JournalEntry>();
+  const handedOver = new Set<string>();
+  for (const e of entries) {
+    if (e.kind !== "spawn") continue;
+    spawns.set(journalEntryKeyString(e), e);
+    if (typeof e.external?.adoptedFrom === "string") handedOver.add(e.external.adoptedFrom);
+  }
+  const from = (e: JournalEntry) => typeof e.external?.adoptedFrom === "string" ? spawns.get(e.external.adoptedFrom) : undefined;
+  const shared = (e: JournalEntry): boolean => {
+    const seen = new Set<JournalEntry>();
+    for (let s: JournalEntry | undefined = e; s !== undefined && !seen.has(s); s = from(s)) {
+      if (s.external?.onFork === "adopt") return true;
+      seen.add(s);
+    }
+    return false;
+  };
+  return entries.filter((e) => e.kind === "spawn" && ownsEntry(runId, e) && !shared(e)
+    && !handedOver.has(journalEntryKeyString(e)));
+}
+
 export type PauseOperation = "read" | "mint" | "attach" | "rearm" | "heartbeat" | "claim" | "fire";
 export type WaitOperation = "open" | "fetch" | "ack" | "close";
 
@@ -65,12 +106,7 @@ export class RunScopeAuthority {
   /** Fork prefixes keep settled parent ids as history. Such an entry can be replayed but
    *  cannot authorize this child to operate on a parent's checkpoint or wait consumer. */
   private owns(entry: JournalEntry): boolean {
-    if (entry.requestId === undefined) return false;
-    const attempt = entry.attempt ?? 0;
-    if (!Number.isSafeInteger(attempt) || attempt < 0) return false;
-    const hash = digest([this.runId, journalEntryKeyString(entry), entry.inputHash, attempt]);
-    const expected = Buffer.from(hash.slice("sha256:".length), "hex").toString("base64url");
-    return entry.requestId === expected;
+    return ownsEntry(this.runId, entry);
   }
 
   async journal(): Promise<readonly JournalEntry[]> {
@@ -105,6 +141,11 @@ export class RunScopeAuthority {
     const entries = await this.entries();
     const owed = this.cleanup(entries);
     return entries.filter((entry) => this.owns(entry) && owed.has(journalEntryKeyString(entry)));
+  }
+
+  /** Release authority covers the seats {@link releasableSeats} names for this attempt's run. */
+  async releaseEntries(): Promise<readonly JournalEntry[]> {
+    return releasableSeats(this.runId, await this.entries());
   }
 
   async pause(token: string, operation: PauseOperation): Promise<JournalEntry> {

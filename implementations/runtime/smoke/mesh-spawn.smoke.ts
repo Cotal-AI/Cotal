@@ -1235,12 +1235,12 @@ log("winner", out.index);
     20_000, "the adopted spawn's resume");
   c("a resume of the adopted spawn after its bind re-reads the adopted goal and submits nothing",
     reentered?.agent === handle && spawnInvokes.length === invokesBeforeResume, { got: reentered?.agent, want: handle, invokes: spawnInvokes.length - invokesBeforeResume });
-  // AND ITS DISCHARGE RELEASES THE SEAT. A cancelled adopted spawn holds a seat whose goal was never
-  // minted under this step's request id; the discharge despawns by the goal the entry bound.
-  const despawnsBefore = despawns.length;
-  await withDeadline(mk("sp-10d").discharge([bound!]).then(() => "ok", (e: unknown) => `threw: ${String((e as Error)?.message).slice(0, 120)}`), 30_000, "the adopted spawn's discharge");
-  c("a cancelled adopted spawn's discharge despawns the seat it holds, by the bound goal",
-    despawns.slice(despawnsBefore).some((d) => d.lifecycleUid === alloc?.uid), { despawned: despawns.slice(despawnsBefore), want: alloc?.uid });
+  // AND THE SEAT IS RELEASED BY THE BOUND GOAL. An adopted spawn holds a seat whose goal was never
+  // minted under this step's request id. The completed run already released it by the goal the
+  // entry bound, so a later discharge of the same entry finds it gone and tolerates that.
+  const discharged = await withDeadline(mk("sp-10d").discharge([bound!]).then(() => "ok", (e: unknown) => `threw: ${String((e as Error)?.message).slice(0, 120)}`), 30_000, "the adopted spawn's discharge");
+  c("an adopted spawn's seat is despawned by the bound goal, and a second discharge tolerates it gone",
+    discharged === "ok" && despawns.filter((d) => d.lifecycleUid === alloc?.uid).length === 1, { discharged, despawned: despawns.filter((d) => d.lifecycleUid === alloc?.uid), want: alloc?.uid });
 
   // --release: the same edit, the seat torn down at commit through the run's own discharge.
   OUTCOME.leaver = { state: "succeeded" };

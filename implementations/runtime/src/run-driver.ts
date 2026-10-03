@@ -66,6 +66,7 @@ import {
 } from "@cotal-ai/lang";
 import { runOnHostedEngine } from "./engine-host.js";
 import { RunJournalStore, replayOwnJournal } from "./journal-store.js";
+import { releasableSeats } from "./run-scope-authority.js";
 
 /**
  * What an entry in the engine table is handed: everything `drive()` prepared, with the pieces the
@@ -361,6 +362,29 @@ const dischargeOf = (handler: unknown): DischargingHandler | undefined =>
   typeof (handler as DischargingHandler | undefined)?.discharge === "function"
     ? (handler as DischargingHandler)
     : undefined;
+
+/**
+ * A handler that can release the seats a completed run spawned. Declared beside
+ * {@link DischargingHandler} for the same reason: the journal records the spawns, and ending them
+ * when the run completes is the driver's concern.
+ */
+export interface ReleasingHandler {
+  release(entries: readonly JournalEntry[]): Promise<unknown>;
+}
+
+/**
+ * Release every seat a completed run spawned. A seat belongs to the run that spawned it, so a run
+ * that completes despawns its seats, winners and plain spawns alike, through the same despawn its
+ * cancellation sweep uses for losers. {@link releasableSeats} picks them: never a fork parent's,
+ * never one a fork may share, and never one a migration handed to a later spawn. Idempotent: a seat
+ * already gone is tolerated, so a crash between this and the completed note is repaired by the next
+ * completion.
+ */
+export async function releaseSeats(runId: string, entries: readonly JournalEntry[], handler: unknown): Promise<void> {
+  if (typeof (handler as ReleasingHandler | undefined)?.release !== "function") return;
+  const seats = releasableSeats(runId, entries);
+  if (seats.length > 0) await (handler as ReleasingHandler).release(seats);
+}
 
 /**
  * Discharge every recorded cancellation whose flip is still owed: the second half of the design
@@ -678,6 +702,7 @@ async function drive(
     // engines, and a crash between the two leaves `issued: false` for the next completion's sweep
     // rather than a completed run whose discharge silently never happened.
     await dischargeCancellations(result.journal.entries(), store, req.handler);
+    await releaseSeats(req.runId, result.journal.entries(), req.handler);
     await noteFinal(req, "completed", appender.journalHigh, specRevision, statusRevision);
     return { status: "completed", result };
   } catch (e) {

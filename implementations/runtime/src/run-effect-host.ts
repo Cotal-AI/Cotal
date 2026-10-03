@@ -8,6 +8,7 @@ import { RunScopeAuthority } from "./run-scope-authority.js";
 export interface RunEffectHost extends EffectHandler {
   adopted(entries: readonly JournalEntry[]): Promise<string[]>;
   discharge(entries: readonly JournalEntry[]): Promise<void>;
+  release(entries: readonly JournalEntry[]): Promise<void>;
   restoreMigratedSeats(entries: readonly JournalEntry[]): Promise<void>;
 }
 
@@ -71,6 +72,7 @@ export function createRunEffectHost(
     closeConclave: (req, ctx) => dispatch("conclave", req, ctx, (request, current) => handler.closeConclave(request, current)),
     adopted: (entries) => handler.adopted(entries),
     discharge: (entries) => handler.discharge(entries),
+    release: (entries) => handler.release(entries),
     restoreMigratedSeats: (entries) => handler.restoreMigratedSeats(entries),
   } satisfies RunEffectHost);
 }
