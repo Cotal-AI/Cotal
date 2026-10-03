@@ -1024,6 +1024,10 @@ export class Manager {
    *  toward the ceiling (once per name, see {@link Manager.occupancy}) so two concurrent same-name
    *  spawns can't both pass the gate (P4a). */
   private readonly reserved = new Set<string>();
+  /** Reserved names whose launch already put its seat in `agents`. The name stays reserved until
+   *  the launch settles, so no other spawn can take it, but the ceiling counts that seat through
+   *  `agents` and, if it frees young, its cooling stamp, never through the reservation (#906). */
+  private readonly reservedLive = new Set<string>();
   /** Expiry stamps (`startedAt + MIN_LIFETIME`) for slots that freed while still young — a
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
@@ -5701,6 +5705,7 @@ export class Manager {
         });
       }
       this.agents.set(name, managed);
+      this.reservedLive.add(name);
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
       // orphan-rollback in `finally` no longer applies to it.
       provisioned = undefined;
@@ -5760,6 +5765,7 @@ export class Manager {
       return { ok: false, error: (e as Error).message };
     } finally {
       this.reserved.delete(name);
+      this.reservedLive.delete(name);
       // Minted but never handed to a live slot (buildLaunch / runtime.spawn threw after mint) → tear the
       // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
       if (provisioned) {
@@ -5870,7 +5876,10 @@ export class Manager {
       if (this.resumeAttemptId) this.resumeAwaitingCommit = true;
       return { ok: true, agents };
     } finally {
-      for (const name of batchReservations) this.reserved.delete(name);
+      for (const name of batchReservations) {
+        this.reserved.delete(name);
+        this.reservedLive.delete(name);
+      }
       // Preflight builds every launch before any child starts, so a refused batch, a failed launch,
       // or the agents skipped after it leave built specs no runtime ever received.
       for (const { spec, spawned } of prepared.values()) {
@@ -6277,6 +6286,7 @@ export class Manager {
         suppressCleanup: true,
       };
       this.agents.set(entry.name, managed);
+      this.reservedLive.add(entry.name);
       if (this.resumeAttemptId) this.resumedAgentNames.add(entry.name);
       await this.recordSlotRuntime(managed);
       const readiness = await this.awaitReadiness(managed, readinessTimeoutMs);
@@ -6307,7 +6317,10 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     } finally {
-      if (!batchReserved) this.reserved.delete(entry.name);
+      if (!batchReserved) {
+        this.reserved.delete(entry.name);
+        this.reservedLive.delete(entry.name);
+      }
     }
   }
 
@@ -6513,14 +6526,15 @@ export class Manager {
     return this.cooling.length;
   }
 
-  /** What holds the ceiling's slots, one count per name (#906). A launching seat sits in `reserved`
-   *  from accept until its launch settles and in `agents` once its process exists, so summing the
-   *  two set sizes counted it twice. `managed` is what this manager's `ps` lists, `reserved` is the
-   *  accepted launches that have no process yet, and `launching` is every launch not yet settled. */
+  /** What holds the ceiling's slots, one count per seat (#906). A launching seat sits in `reserved`
+   *  from accept until its launch settles, in `agents` once its process exists, and in `cooling`
+   *  if it then frees young, so a reservation stops counting once it reaches `agents`. `managed` is
+   *  what this manager's `ps` lists, `reserved` is the accepted launches that have no process yet,
+   *  and `launching` is every launch not yet settled. */
   private occupancy(): Occupancy {
     const cooling = this.coolingCount();
     let reserved = 0;
-    for (const name of this.reserved) if (!this.agents.has(name)) reserved++;
+    for (const name of this.reserved) if (!this.reservedLive.has(name)) reserved++;
     const managed = this.agents.size;
     return {
       managed,
