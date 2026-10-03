@@ -106,7 +106,9 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   carrier is a 0600 file inside a 0700 directory on POSIX, with equivalent owner-only ACL hardening
   on Windows. That is OS-user isolation: any process running as your user can read it while it
   exists. The manager or the foreground `cotal spawn` removes it, and the shared-server MCP config
-  file, once it has proved the `claude` process gone.
+  file, once it has proved the `claude` process gone. If the launcher is killed first, the pty
+  seat's custodian or, on other runtimes, a watcher started beside `claude` removes them when
+  `claude` exits.
 - **MCP isolation.** A spawned agent runs with **only** the cotal MCP server:
   `--strict-mcp-config` ignores every other MCP source, crucially the operator's personal
   `~/.claude.json` servers (several spawns each booting a heavy helper would starve

@@ -59,12 +59,16 @@ seat's custodian removes them when it sees the child exit, so they go even when 
 killed. If the custodian cannot remove them, or is killed first, the reap that proves the seat gone
 removes them from the temp dir the launch wrote them to. A launch refused before any
 process started removes them at once. Each directory name carries a random per-launch identity, so
-a stale path can never name a later launch's directory. On a runtime that
-cannot stream an exit (tmux, cmux, orca, herdr) the manager polls the seat's status and waits for
-the runtime's exit proof, and tries a failed removal again until it succeeds. A runtime that refuses
-a launch before starting any process throws `SpawnRefused` from `@cotal-ai/core`, and the manager
-removes the files at once. Any other spawn that throws is not proof, so its files stay for the OS
-temp reaper. Run every check that can refuse the launch, and every conversion that can throw, before the
+a stale path can never name a later launch's directory. Every other runtime, and the foreground
+`cotal spawn`, starts the child through `reclaimWithChild` from `@cotal-ai/core`: a POSIX shell
+starts a watcher and then runs the child in its own place, and the watcher removes the files once the
+child's process is gone, even when the launcher was killed. On a runtime that cannot stream an exit
+(tmux, cmux, orca, herdr) the manager also polls the seat's status and waits for the runtime's exit
+proof. A failed removal is tried again until it succeeds. A runtime that refuses a launch before
+starting any process throws `SpawnRefused` from `@cotal-ai/core`, and the manager removes the files
+at once. Any other spawn that throws is not proof, so its files stay for the child's watcher, or for
+the OS temp reaper when no child started. Windows has no POSIX shell for the watcher, so there a
+killed launcher's files also stay for the OS temp reaper. Run every check that can refuse the launch, and every conversion that can throw, before the
 first write. The file
 is 0600 in a 0700 directory, which is OS-user isolation: any process running as the same user can
 read it while it exists.

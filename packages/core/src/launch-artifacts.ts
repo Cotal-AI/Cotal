@@ -17,8 +17,12 @@
  * parent, removes them when it sees the child exit, whether or not the launcher is still alive. Its
  * custody record keeps any it could not remove, and the reap that proves the seat gone removes those
  * and the ones a custodian killed first left, against the temp dir the record names, and keeps the
- * record until it has. On any other runtime a killed launcher's artifacts, and those of a spawn that
- * threw anything but {@link SpawnRefused}, stay until the OS temp reaper removes them.
+ * record until it has. Every other launcher starts the child through {@link reclaimWithChild}, so a
+ * watcher beside the child removes them once the child is gone, even when the launcher was killed.
+ * What stays until the OS temp reaper removes it: the files of a spawn that threw anything but
+ * {@link SpawnRefused} before its child started, those of a watcher that was itself SIGKILLed while
+ * its launcher was dead, and on Windows, which has no POSIX shell to run the watcher, those of a
+ * killed launcher.
  *
  * WHAT OWNER-PRIVATE MEANS. Each file is 0600 inside a 0700 directory. That is OS-user isolation:
  * any process running as the same user can read the file while it exists, as it can the agent file
@@ -28,6 +32,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import type { LaunchSpec } from "./connector.js";
 import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
 
 /** Every artifact directory name starts with this, so {@link discardLaunchArtifacts} can refuse a
@@ -83,11 +88,7 @@ export function writeLaunchArtifact(artifacts: string[], prefix: string, file: s
  */
 export function discardLaunchArtifacts(artifacts: readonly string[] | undefined): void {
   if (!artifacts?.length) return;
-  const root = resolve(tmpdir());
-  for (const dir of artifacts) {
-    if (dirname(resolve(dir)) !== root || !basename(dir).startsWith(DIR_PREFIX))
-      throw new Error(`refusing to remove launch artifact ${dir}: not a ${DIR_PREFIX}* directory directly under ${root}`);
-  }
+  assertArtifactDirs(artifacts);
   const failed: string[] = [];
   for (const dir of artifacts) {
     try {
@@ -97,4 +98,47 @@ export function discardLaunchArtifacts(artifacts: readonly string[] | undefined)
     }
   }
   if (failed.length) throw new Error(`could not remove launch artifact ${failed.join(", ")}`);
+}
+
+/** Refuse any path that is not a `cotal-` directory directly under the OS temp dir. */
+function assertArtifactDirs(artifacts: readonly string[]): void {
+  const root = resolve(tmpdir());
+  for (const dir of artifacts) {
+    if (dirname(resolve(dir)) !== root || !basename(dir).startsWith(DIR_PREFIX))
+      throw new Error(`refusing to remove launch artifact ${dir}: not a ${DIR_PREFIX}* directory directly under ${root}`);
+  }
+}
+
+/** Run by `/bin/sh -c` as `<script> cotal-launch <n> <n dirs> <command> <args...>`. The watcher
+ *  ignores the hangup, interrupt and terminate signals a closing terminal or a stop sends to the
+ *  child's process group, holds no terminal, and polls the shell's pid, which `exec` hands to the
+ *  command. A reused pid only delays the removal. */
+const RECLAIM_SCRIPT = `p=$$ n=$1
+shift
+(
+  trap '' HUP INT QUIT TERM
+  while kill -0 "$p" 2>/dev/null; do sleep 1; done
+  while [ "$n" -gt 0 ]; do rm -rf -- "$1"; shift; n=$((n - 1)); done
+) </dev/null >/dev/null 2>&1 &
+shift "$n"
+exec "$@"`;
+
+/**
+ * Wrap a spec so its child owns its own artifacts. `/bin/sh` starts a watcher and then `exec`s the
+ * spec's command, so the agent keeps the shell's pid, its argv after the wrapper, its signals and its
+ * exit status. The watcher removes this launch's directories, and no other, once that pid is gone,
+ * whether or not the launcher is still alive. Use it wherever the launcher is the only other owner
+ * (every runtime but one with durable custody, and the foreground `cotal spawn`). The launcher still
+ * removes them on its own proof of exit; both removals are idempotent. A spec with no artifacts, and
+ * any spec on Windows, which has no POSIX shell, comes back unchanged.
+ */
+export function reclaimWithChild(spec: LaunchSpec): LaunchSpec {
+  const dirs = spec.artifacts;
+  if (!dirs?.length || process.platform === "win32") return spec;
+  assertArtifactDirs(dirs);
+  return {
+    ...spec,
+    command: "/bin/sh",
+    args: ["-c", RECLAIM_SCRIPT, "cotal-launch", String(dirs.length), ...dirs, spec.command, ...spec.args],
+  };
 }

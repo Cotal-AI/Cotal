@@ -10,6 +10,7 @@ import {
   firstFreeName,
   isReachable,
   loadAgentFile,
+  reclaimWithChild,
   loadCotalConfig,
   mintCreds,
   newIdentity,
@@ -978,7 +979,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         : "(actor granted; revoked automatically when this process exits)";
       console.error(c.dim(`  running as you: ${userAuth.owner}.${name} ${revokeNote}`));
     }
-    child = spawnProcess(spec.command, spec.args, {
+    // The child's watcher removes the launch's private files once it is gone, even if this process
+    // is killed first (core launch-artifacts).
+    const launched = reclaimWithChild(spec);
+    child = spawnProcess(launched.command, launched.args, {
       stdio: "inherit",
       // P3: only the connector-declared env (OS allow-list + identity + named model key) — never
       // `...process.env`, so the operator's unrelated secrets don't bleed into the foreground agent.
@@ -1023,7 +1027,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // on failure, never blocking the exit code already set above.
   if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(e as Error).message}`)));
   // The child has exited or never started, so nothing reads the launch's private files any more
-  // (core launch-artifacts). A SIGKILLed CLI cannot run this; the OS temp reaper removes those.
+  // (core launch-artifacts). A SIGKILLed CLI cannot run this; the child's watcher removes those.
   discardLaunchArtifacts(spec.artifacts);
 }
 
