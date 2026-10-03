@@ -148,7 +148,9 @@ export interface LaunchSpec {
   /** Where a `resume` launch records its fork's provenance, for a connector whose seat makes the fork
    *  after launch: a JSON file the seat writes holding `source` (the session id it forked),
    *  `transcriptSha256` (SHA-256 over the source transcript as it read it) and `title` when the
-   *  source has one. The manager records it on the seat's resume document, and `cotal ps` shows it. */
+   *  source has one. The manager records it on the seat's resume document, and `cotal ps` shows it.
+   *  The manager keeps a title of at most 1024 characters, so the connector refuses before launch a
+   *  source whose title is longer. */
   resumeRecordPath?: string;
 }
 

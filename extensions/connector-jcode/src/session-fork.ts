@@ -16,6 +16,9 @@ const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/;
 const MARKER = "cotal-resume.json";
 /** Reads of a session that keeps changing under the fork before it is refused as unstable. */
 const STABLE_READ_ATTEMPTS = 5;
+/** The longest source title a resume carries: the manager keeps at most this many characters of it
+ *  in the fork's provenance (LaunchSpec.resumeRecordPath). */
+const TITLE_MAX = 1024;
 
 /** The seat's private Jcode home under `root` (the launch's COTAL_JCODE_HOME), keyed by space and
  *  name. host.ts claims it; buildLaunch reads it to see whether the seat already owns its fork. */
@@ -52,12 +55,12 @@ const RawJSON = JSON as JSON & {
   rawJSON(text: string): { readonly rawJSON: string };
   isRawJSON(value: unknown): value is { readonly rawJSON: string };
 };
-/** Parse a Jcode transcript without losing an integer a double cannot hold. Jcode's counts are
- *  u64, so a valid count can be above 2^53: it is kept as its source text, which `JSON.stringify`
- *  writes back unchanged into the fork. */
+/** Parse a Jcode transcript keeping every number as it is spelled. A number a double does not write
+ *  back the same way (a u64 count above 2^53, 1e2, 1.0, -0) is kept as its source text, which
+ *  `JSON.stringify` writes back unchanged into the fork, so a count is checked by its spelling. */
 function parseTranscript(text: string): unknown {
   return JSON.parse(text, (_key, value: unknown, context?: { source?: string }) =>
-    typeof value === "number" && !Number.isSafeInteger(value) && context?.source !== undefined && /^-?\d+$/.test(context.source)
+    typeof value === "number" && context?.source !== undefined && context.source !== String(value)
       ? RawJSON.rawJSON(context.source)
       : value);
 }
@@ -67,10 +70,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) && !RawJSON.isRawJSON(value);
 const isString = (value: unknown): value is string => typeof value === "string";
 /** A u64, Jcode's type for every count the fork carries (its usize counts are u64 on the 64-bit
- *  targets it ships for). */
-const isCount = (value: unknown): boolean => RawJSON.isRawJSON(value)
-  ? /^\d+$/.test(value.rawJSON) && BigInt(value.rawJSON) <= U64_MAX
-  : Number.isInteger(value) && (value as number) >= 0;
+ *  targets it ships for). serde reads one only from a plain decimal integer within range: a number
+ *  with a fraction or an exponent, or -0, is a float to it and refused. */
+const isCount = (value: unknown): boolean => {
+  const spelling = RawJSON.isRawJSON(value) ? value.rawJSON : typeof value === "number" ? String(value) : "";
+  return /^(0|[1-9]\d*)$/.test(spelling) && BigInt(spelling) <= U64_MAX;
+};
 const optional = (value: unknown, check: (value: unknown) => boolean): boolean =>
   value === undefined || value === null || check(value);
 
@@ -233,6 +238,10 @@ function parseJcodeSource(
     for (const key of ["title", "system_prompt", "compaction", "model"]) session[key] = entry.meta[key] ?? null;
     messages.push(...(appended as unknown[]));
   }
+  // The manager records the title with the fork's provenance, so a title it cannot keep is refused
+  // here, before launch, rather than dropping the provenance after the seat has forked.
+  if (typeof session.title === "string" && session.title.length > TITLE_MAX)
+    refuse(`its title is ${session.title.length} characters, more than the ${TITLE_MAX} a resume records with the fork`);
   const hash = createHash("sha256").update(snapshot);
   if (journal) hash.update(journal);
   return {

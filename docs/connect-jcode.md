@@ -102,9 +102,10 @@ model. The seat gets a new session id and its briefing as the first turn after t
 source files are only read, so the source transcript is never appended to. A session id with no
 readable transcript, or one whose snapshot or journal holds fields Jcode cannot load, is refused
 before the seat launches; every carried message, content block, and compaction state is checked
-against Jcode's own schema, and the refusal names the field. Jcode stores its counts as u64, so a
-count above what a JavaScript number holds is copied byte for byte, and one above the u64 range is
-refused. The source may be live: the connector
+against Jcode's own schema, and the refusal names the field. Jcode stores its counts as u64 and
+reads one only as a plain decimal integer, so a count above what a JavaScript number holds is copied
+byte for byte, and one above the u64 range or spelled with a fraction or an exponent (`1e3`, `1.0`)
+is refused. The source may be live: the connector
 reads it until two reads agree and every journal line is newer than the snapshot, so a Jcode
 checkpoint caught mid-way is neither lost nor applied twice, and a session that keeps changing is
 refused with a request to retry. A seat relaunched under the same name continues its
@@ -112,7 +113,8 @@ fork rather than forking again, without reading the source, which may since have
 seat's briefing is recorded separately from the fork, so a first launch that fails after forking
 still briefs the seat on its next launch. The seat records the source session id, its title, and a
 SHA-256 of the snapshot and journal it read, prints them when it forks, and the manager reads that
-record into the seat's resume document, so `cotal ps --wide` shows them.
+record into the seat's resume document, so `cotal ps --wide` shows them. The manager keeps a title
+of at most 1024 characters, so a source with a longer title is refused before the seat launches.
 
 Connector diagnostics are written both to the spawning terminal and to an owner-only
 `<private-home>/logs/connector-<timestamp>-<pid>.log`, so a failed launch remains inspectable after
