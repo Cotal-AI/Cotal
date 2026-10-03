@@ -176,7 +176,7 @@ interface ServiceStatus {
   root?: string;
   unit?: { name: string; state: string; enabled: boolean | "unknown" };
   manager?: { state: string; pid?: number };
-  linger?: boolean;
+  linger?: boolean | { error: string };
 }
 
 /** systemd state for one unit: `inactive`/`not-found` handled without throwing. */
@@ -450,9 +450,17 @@ function install(values: { mesh?: string; linger?: boolean }): void {
   throw new Error(`\`cotal service\` is not supported on ${process.platform} - it needs systemd user units (Linux) or launchd agents (macOS)`);
 }
 
-/** Whether logind keeps this user's manager running without a session (lingering). */
-const lingerOn = (): boolean =>
-  run("loginctl", ["show-user", String(process.getuid?.() ?? ""), "--property=Linger", "--value"]).output.trim() === "yes";
+/** Whether logind keeps this user's manager running without a session (lingering). Only a
+ *  query that exits 0 and prints `yes` or `no` is an answer. Anything else (logind unreachable,
+ *  no loginctl, other output) comes back as its error, because a Linger that could not be read
+ *  is not "off". */
+function readLinger(): boolean | { error: string } {
+  const q = run("loginctl", ["show-user", String(process.getuid?.() ?? ""), "--property=Linger", "--value"]);
+  if (q.status === 0 && (q.output === "yes" || q.output === "no")) return q.output === "yes";
+  const how = q.status !== null ? `exited ${q.status}: ${q.output || "no output"}`
+    : q.output ? `did not finish: ${q.output}` : "could not run (is loginctl installed?)";
+  return { error: `\`loginctl show-user --property=Linger\` ${how}` };
+}
 
 /** The root command that enables lingering. logind can refuse an unprivileged enable-linger
  *  (`Access denied` over SSH), so this is printed for the operator; nothing here runs sudo. */
@@ -463,7 +471,10 @@ const lingerRemedy = (): string => `sudo loginctl enable-linger ${userInfo().use
  *  next reboot silently loses. Refuse BEFORE anything is written, with the root command that
  *  fixes it. `--linger` asks logind first; lingering is never enabled silently. */
 function requireLinger(values: { linger?: boolean }): void {
-  if (lingerOn()) {
+  const linger = readLinger();
+  if (typeof linger === "object")
+    throw new Error(`could not read whether this user lingers, so install cannot confirm the service would start at boot: ${linger.error} - make that query answer, then re-run this install`);
+  if (linger) {
     console.log(c.dim(`• lingering is enabled for this user - the user manager starts at boot`));
     return;
   }
@@ -497,7 +508,7 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
       ...(fields.root ? { root: fields.root } : {}),
       unit: { name: unit, state: state.state, enabled: state.enabled },
       ...(fields.root ? { manager: managerHealthFor(fields.root, fields.mesh) } : {}),
-      linger: lingerOn(),
+      linger: readLinger(),
     };
   }
   if (process.platform === "darwin") {
@@ -539,7 +550,7 @@ function status(values: { mesh?: string; json?: boolean }): void {
     if (s.root) console.log(`  ${"root".padEnd(16)} ${s.root}`);
     const mgr = s.manager!;
     console.log(`  ${"manager".padEnd(16)} ${mgr.state === "alive" ? c.green(`running (pid ${mgr.pid})`) : c.yellow(mgr.state)}`);
-    if (s.linger !== undefined) console.log(`  ${"linger".padEnd(16)} ${s.linger ? c.green("enabled") : c.yellow(`disabled - not boot-persistent; enable as root: ${lingerRemedy()}`)}`);
+    if (s.linger !== undefined) console.log(`  ${"linger".padEnd(16)} ${s.linger === true ? c.green("enabled") : s.linger === false ? c.yellow(`disabled - not boot-persistent; enable as root: ${lingerRemedy()}`) : c.yellow(`unknown - ${s.linger.error}`)}`);
   }
   console.log(`  ${"arch".padEnd(16)} ${facts.arch}`);
   console.log(`  ${"os".padEnd(16)} ${facts.os}`);
@@ -578,7 +589,7 @@ function uninstall(values: { mesh?: string }): void {
     systemctl(["daemon-reload"]);
     systemctl(["reset-failed", unit]);
     console.log(c.green(`✓ service removed: ${unit}`));
-    if (lingerOn()) console.log(c.dim(`• lingering is still enabled for this user - turn it off with \`loginctl disable-linger\` if you no longer want it`));
+    if (readLinger() === true) console.log(c.dim(`• lingering is still enabled for this user - turn it off with \`loginctl disable-linger\` if you no longer want it`));
     return;
   }
   if (process.platform === "darwin") {

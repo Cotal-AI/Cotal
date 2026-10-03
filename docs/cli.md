@@ -1460,7 +1460,10 @@ login and stops at the last logout. `install` checks lingering before it writes 
 lingering is off it fails with the root command that turns it on (`sudo loginctl enable-linger
 <user>`). With `--linger` it first asks logind to enable lingering for the current user, and fails
 with the same command when logind refuses (unprivileged users over SSH get `Access denied`).
-`service status` prints that command while lingering is off.
+`service status` prints that command while lingering is off. A Linger query that does not answer
+`yes` or `no` (logind unreachable, no `loginctl`) is never read as off: `install` refuses with
+the query's own error and enables nothing, and `service status` shows lingering as unknown with
+that error (`--json` gives `"linger": { "error": ... }`).
 
 `service install` also refuses while a manager is already running for the mesh (`cotal down
 manager` first). The restart policy is `Restart=always` with `RestartSec=20s`, chosen for
