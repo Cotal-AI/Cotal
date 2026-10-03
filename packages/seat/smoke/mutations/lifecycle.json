@@ -103,7 +103,7 @@
     {
       "name": "signal a record that belongs to another boot",
       "file": "packages/seat/src/reap.ts",
-      "find": "  if (boot !== undefined && rec.bootId !== boot)\n    throw new Error(`seat ${id} record belongs to boot ${rec.bootId}, but this is boot ${boot}; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (those pids now belong to this boot's processes)`);\n",
+      "find": "  if (boot !== undefined && rec.bootId !== boot)\n    return `seat ${id} record belongs to boot ${rec.bootId}, but this is boot ${boot}; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (those pids now belong to this boot's processes)`;\n",
       "replace": "",
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
       "expectRed": "a record from another boot refuses to signal",
