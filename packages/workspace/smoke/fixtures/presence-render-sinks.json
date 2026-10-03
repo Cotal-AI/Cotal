@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 515,
+    "total": 516,
     "honest-text": 36,
     "presence-only-glyph/count": 57,
     "command-ack": 12,
-    "non-render/control": 410
+    "non-render/control": 411
   },
   "renderers": [
     {
@@ -968,6 +968,20 @@
       "anchor": "` - manager for mesh \"${mesh}\" under ${root}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`exited ${q.status}: ${q.output || \"no output\"}`",
+      "class": "non-render/control",
+      "rationale": "loginctl's exit status inside the error text of a Linger query that did not answer yes or no; a process result, no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service.ts",
+      "kind": "derived-output",
+      "anchor": "`\\`loginctl show-user --property=Linger\\` ${how}`",
+      "class": "non-render/control",
+      "rationale": "loginctl's exit status inside the error text of a Linger query that did not answer yes or no; a process result, no agent presence is rendered."
     },
     {
       "path": "implementations/cli/src/commands/service.ts",
@@ -3431,13 +3445,6 @@
       "path": "implementations/cli/src/commands/service.ts",
       "kind": "derived-output",
       "anchor": "join(userUnitDir(), unit)",
-      "class": "non-render/control",
-      "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
-    },
-    {
-      "path": "implementations/cli/src/commands/service.ts",
-      "kind": "derived-output",
-      "anchor": "linger(values, mesh)",
       "class": "non-render/control",
       "rationale": "Service unit management: writes or reads systemd/launchd unit files, probes process liveness, or computes unit paths and health; no agent presence is rendered."
     },

@@ -120,7 +120,7 @@ const baseCommands: Command[] = [
     positionals: "<install | status | uninstall>",
     flags: [
       { name: "mesh", type: "string", value: "<name>", description: "the mesh whose manager the service runs (default: this folder's)" },
-      { name: "linger", type: "boolean", description: "install: also enable user lingering so the service starts at boot and survives logout (never enabled silently)" },
+      { name: "linger", type: "boolean", description: "install: when lingering is off, ask logind to enable it so the service starts at boot and survives logout (never enabled silently; install refuses without lingering)" },
       { name: "json", type: "boolean", description: "status: machine-readable output" },
     ],
     run: service,
