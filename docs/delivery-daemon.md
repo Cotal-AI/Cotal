@@ -30,9 +30,11 @@ read checks it must apply. A conformant deployment may realize the backstop diff
   and surfacing does not lose the message; the entry redelivers ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
   An entry addressed to a retired lifecycle is dropped and removed from the store the first time
   the reader meets it. Retirement leaves a tombstone on that lifecycle's read-ACL row, and a retired
-  lifecycle never comes back, so a later reader with a fresh cursor does not pay for it again. An
-  entry whose owner has no ACL row at all is retried, then given up after ten redeliveries, and kept,
-  because a missing row does not prove the owner is gone.
+  lifecycle never comes back, so a later reader with a fresh cursor does not pay for it again. The
+  reader acks such an entry only after the delete succeeds. A failed delete leaves the entry pending,
+  so it is retried and given up after ten redeliveries, and an entry the stream no longer holds counts
+  as removed. An entry whose owner has no ACL row at all is retried, then given up after ten
+  redeliveries, and kept, because a missing row does not prove the owner is gone.
 - **Membership registry.** A privileged-written record of who is a durable member of each
   channel, carrying per-member join and leave cursors so a post concurrent with a join or leave
   orders deterministically ([SPEC §7](../SPEC.md#7-channels)). It is broker-known truth, not

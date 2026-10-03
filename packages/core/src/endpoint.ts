@@ -5003,9 +5003,23 @@ export class CotalEndpoint extends EventEmitter {
       // An ACL row that is merely absent proves nothing and still defers below.
       if (await aclRetired(await this.aclRegistry(), owner, pr.lifecycleUid)) {
         if (!this.plane3MayAct()) return;
-        m.ack();
+        // Remove BEFORE the ack. The ack ends the reader's work on this entry, so acking first and
+        // then failing the delete would keep the entry with nothing left to remove it. A failed delete
+        // stays pending and retries, bounded by the same ceiling; an entry the stream no longer holds
+        // is already removed.
         try { await this.jsm!.streams.deleteMessage(inboxStream(this.space), m.seq, false); }
-        catch (e) { this.emit("error", new Error(`plane-3 reader: could not remove entry ${m.seq} for retired lifecycle ${owner}.${pr.lifecycleUid}: ${(e as Error).message}`)); }
+        catch (e) {
+          if (!isJetStreamMissing(e, JetStreamApiCodes.NoMessageFound)) {
+            if (redeliveries >= READER_MAX_REDELIVERIES) {
+              m.term();
+              this.emit("error", new Error(`plane-3 reader: gave up removing entry ${m.seq} for retired lifecycle ${owner}.${pr.lifecycleUid} after ${redeliveries} redeliveries: ${(e as Error).message}`));
+              return;
+            }
+            m.nak(2000);
+            return;
+          }
+        }
+        m.ack();
         return;
       }
       // UNKNOWN owner — the manager has not (re)hydrated this owner's ACL yet (e.g. right after a
