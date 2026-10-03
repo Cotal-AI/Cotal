@@ -355,6 +355,11 @@ try {
   await resident.close();
   await statusWatcher;
 
+  // The presence bucket is memory-backed (#1356), so the restart removed it. `cotal up` provisions
+  // the space after it starts a broker (postStart -> setupSpaceStreams), and this suite stands in
+  // for that step. Without it the next delivery context fails its presence bind with "stream not found".
+  await setupSpaceStreams({ servers, space: spaces[0], creds: await mintCreds(auths[0], newIdentity(), "provisioner") });
+
   // ── 7. Sustained broker loss detection ──────────────────────────────────────
   process.env.COTAL_DELIVERY_BROKER_GONE_MS = "1200";
   process.env.COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS = "3000";
