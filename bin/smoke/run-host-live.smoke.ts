@@ -32,7 +32,7 @@ const {
   probeConnect, resolveService, invokeCommand, DEV_OWNER, LANG_PROBLEM_DETAIL_KIND, principalKey,
   openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
-  issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel,
+  issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
 } = await import("@cotal-ai/core");
 const { jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
@@ -93,6 +93,28 @@ const kids: ChildProcess[] = [];
 const scratch: string[] = [home];
 let rc = 1;
 
+// Seat processes this suite's managers spawned, each with its kernel start time so a recycled pid is
+// never mistaken for one of ours. Read only from the managers' own handles.
+const ownedSeats: Array<{ name: string; pid: number; start: string | undefined }> = [];
+const procStart = (pid: number): string | undefined => {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+  } catch { return undefined; }
+};
+const seatAlive = (s: { pid: number; start: string | undefined }): boolean => {
+  try { process.kill(s.pid, 0); } catch { return false; }
+  return s.start === undefined || procStart(s.pid) === s.start;
+};
+const liveSeats = async (ms: number): Promise<string[]> => {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const live = ownedSeats.filter(seatAlive).map((s) => s.name);
+    if (live.length === 0 || Date.now() > deadline) return live;
+    await wait(100);
+  }
+};
+
 // ── Phase A: JWT-auth broker, the `run` capability alone ─────────────────────────────────────
 const spaceA = `runhost-${Math.random().toString(36).slice(2, 8)}`;
 const auth = await createSpaceAuth(spaceA);
@@ -130,6 +152,7 @@ try {
     space: spaceA, servers: brokerA.servers, auth,
     reloadStoreIdentity: { kind: "fs", root: resolve(wsA) },
   });
+  const deliveryBootAt = Date.now();
   mgr = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
   await mgr.start();
 
@@ -316,7 +339,11 @@ try {
       return pendingStep(v, "/ask:size#0") ? v : undefined;
     }, 30_000);
     c("the ask parks after both baseline seats are spawned", pendingStep(parked, "/ask:size#0") !== undefined, parked?.journal);
-    const managed = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string; issued?: { generation: string; acceptedToken: string } }> };
+    const managed = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string; issued?: { generation: string; acceptedToken: string }; handle: { pid?: number } }> };
+    for (const name of ["asked", "other"]) {
+      const pid = managed.agents.get(name)?.handle.pid;
+      if (pid !== undefined) ownedSeats.push({ name, pid, start: procStart(pid) });
+    }
     const seatCall = async (name: string, command: string, args?: Record<string, unknown>, self = true) => {
       const a = managed.agents.get(name)!;
       const creds = readFileSync(agentLifecycleSecretFilePaths(wsA, spaceA, name, a.lifecycleUid).creds, "utf8");
@@ -416,8 +443,22 @@ try {
     const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
     const parked = await until(async () => { const v = await status(runId); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
     c("a second checkpoint program parks under epoch 1", parked?.status?.epoch === 1 && stateOf(parked) === "running", parked?.status);
-    await mgr.stop();
+    // The default pty runtime runs seats in this process and cannot hand them to a successor, so a
+    // sparing stop is refused. The restart takes the predecessor's seats down with it.
+    await mgr.stop({ withAgents: true });
     mgr = undefined;
+    const leftBehind = await liveSeats(5_000);
+    c("the stopped predecessor took its own seat processes down with it",
+      ownedSeats.length === 2 && leftBehind.length === 0, { seats: ownedSeats.map((s) => s.name), leftBehind });
+    // A restart more than one delivery-lease TTL after the daemon came up is the ordinary case on a
+    // real mesh. The successor challenges the daemon before it remints, and only the lease holder
+    // may answer, so the daemon must still hold its lease then. Reaching this point takes about one
+    // TTL, so wait past it rather than let the host's load decide which case runs.
+    await wait(Math.max(0, deliveryBootAt + LEASE_TTL_MS + LEASE_TTL_MS / 4 - Date.now()));
+    const leaseRow = await delivery!.ep.readDeliveryLeaseEntry(0).catch(() => undefined);
+    c("more than one delivery-lease TTL after it came up, the delivery daemon still holds its lease",
+      Date.now() - deliveryBootAt > LEASE_TTL_MS && leaseRow !== undefined && delivery!.ep.ownsDeliveryLease(leaseRow.info),
+      { sinceBootMs: Date.now() - deliveryBootAt, rowPresent: leaseRow !== undefined });
     const t0 = Date.now();
     mgrB = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
     await mgrB.start();
@@ -607,6 +648,12 @@ try {
 } catch (e) {
   fail++;
   console.log("  ✗ FAIL: phase A threw", (e as Error).stack ?? String(e));
+  // Phase B reuses `mgr`, so a phase-A manager a throw left running must stop here, seats with it,
+  // or it keeps driving runs and logging into phase B's captured output.
+  try { await mgr?.stop({ withAgents: true }); } catch { /* reported by the teardown census */ }
+  try { await mgrB?.stop({ withAgents: true }); } catch { /* reported by the teardown census */ }
+  mgr = undefined;
+  mgrB = undefined;
 }
 
 // ── Phase B: open broker, the shipped `cotal run` client ─────────────────────────────────────
@@ -667,16 +714,27 @@ try {
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
 }
 
-const EXPECTED_CELLS = 67;
+// Teardown runs on the failing path too, so a phase that threw with seats up still takes them down.
+// Phase A's own catch already stopped `mgrB`; `mgr` here is phase B's.
+try { await nc?.drain(); } catch { /* teardown */ }
+try { await mgr?.stop({ withAgents: true }); } catch { /* teardown */ }
+try { await delivery?.stop(); } catch { /* teardown */ }
+{
+  const leftBehind = await liveSeats(5_000);
+  c("teardown: no seat process this suite's managers spawned outlives the managers' own stop", leftBehind.length === 0, leftBehind);
+  // Bounded fallback for a red run: only the pids recorded above, and only while their start time
+  // still matches, so nothing this suite did not spawn is ever signalled.
+  for (const s of ownedSeats) if (seatAlive(s)) { try { process.kill(s.pid, "SIGKILL"); } catch { /* gone */ } }
+  const stillUp = await liveSeats(5_000);
+  if (stillUp.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.join(", ")}`);
+}
+
+const EXPECTED_CELLS = 70;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
 }
 rc = fail === 0 ? 0 : 1;
-try { await nc?.drain(); } catch { /* teardown */ }
-try { await mgr?.stop(); } catch { /* teardown */ }
-try { await mgrB?.stop(); } catch { /* teardown */ }
-try { await delivery?.stop(); } catch { /* teardown */ }
 for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* gone */ } }
 await brokerA.stop().catch(() => undefined);
 for (const d of scratch) rmSync(d, { recursive: true, force: true });
