@@ -65,6 +65,9 @@ export class RuntimeReapUnproven extends Error {
 export interface CustodialRuntime extends Runtime {
   reserve(): RuntimeReference;
   reap(reference: RuntimeReference): Promise<RuntimeReapEvidence>;
+  /** The launch artifacts (core launch-artifacts) the custody record for `reference` carries, so the
+   *  manager that adopts or reaps a seat owns them even when another manager launched it. */
+  artifactsOf(reference: RuntimeReference): readonly string[] | undefined;
 }
 
 /** Whether this backend custodies its own processes. Both methods are required together: a runtime
@@ -157,26 +160,46 @@ function createBackend(mode: RuntimeMode, session: string): Runtime {
 
 /**
  * The launcher's half of core launch-artifacts, installed on every runtime this module creates so it
- * holds for every backend: a spawn removes its spec's private files once the child is gone, or at
- * once when the spawn throws. Two signals prove the child gone: the exit an attach session streams
- * (pty), and a `waitForExit` that resolves, which every stop awaits and which is the only proof a
- * runtime that cannot attach (tmux, cmux, orca, herdr) gives. A released handle gives neither, so a
- * seat that outlives this manager keeps its files.
+ * holds for every backend: a spec's private files are removed only once the runtime has proved its
+ * child gone.
+ *
+ * - A spawned handle discards on the exit its attach session streams (pty). A runtime that cannot
+ *   attach (tmux, cmux, orca, herdr) is polled through `status()`, and its `waitForExit`, the proof
+ *   every stop already awaits, confirms the exit before the files go.
+ * - A custodial runtime (pty) carries the files on its custody record, so a seat this manager adopts
+ *   discards on its exit too, and a reap that proves a seat gone discards it. This covers a seat
+ *   whose launching manager was killed: its successor adopts or reaps it by reference.
+ * - A spawn that throws is not proof that nothing started (a backend can fail after its child is up),
+ *   so its files stay. A custodial runtime's launch still carries them to any custody record it
+ *   wrote, and the reap that later proves that seat gone removes them; otherwise the OS temp reaper
+ *   does.
  */
 function ownLaunchArtifacts(runtime: Runtime): Runtime {
   const spawn = runtime.spawn.bind(runtime);
+  const custodial = isCustodialRuntime(runtime) ? runtime : undefined;
+  const reap = custodial?.reap.bind(custodial);
   runtime.spawn = (name, spec, cwd, reference) => {
-    const discard = discardOnce(name, spec.artifacts);
-    let handle: AgentHandle;
-    try {
-      handle = spawn(name, spec, cwd, reference);
-    } catch (e) {
-      discard();
-      throw e;
-    }
-    if (spec.artifacts?.length) discardOnExit(handle, discard);
+    const handle = spawn(name, spec, cwd, reference);
+    if (spec.artifacts?.length) discardOnExit(handle, discardOnce(name, spec.artifacts));
     return handle;
   };
+  if (custodial && reap) {
+    const adopt = custodial.adopt?.bind(custodial);
+    if (adopt)
+      custodial.adopt = (reference) => {
+        const handle = adopt(reference);
+        const artifacts = custodial.artifactsOf(reference);
+        if (artifacts?.length) discardOnExit(handle, discardOnce(handle.name, artifacts));
+        return handle;
+      };
+    custodial.reap = async (reference) => {
+      // Read before the reap, which forgets the record.
+      const artifacts = custodial.artifactsOf(reference);
+      const evidence = await reap(reference);
+      if (evidence.outcome === "reaped") discardOnce(`${reference.kind}:${reference.id}`, artifacts)();
+      return evidence;
+    };
+  }
   return runtime;
 }
 
@@ -193,19 +216,46 @@ function discardOnce(name: string, artifacts: readonly string[] | undefined): ()
   };
 }
 
+/** How often a handle with no exit stream is asked whether its child has exited. */
+const EXIT_POLL_MS = 5_000;
+
 function discardOnExit(handle: AgentHandle, discard: () => void): void {
-  // Wrapped, never called from here: a runtime bounds its wait for a stop (tmux gives up after
+  let poll: ReturnType<typeof setInterval> | undefined;
+  const finish = () => {
+    if (poll) clearInterval(poll);
+    discard();
+  };
+  // Wrapped, never called at spawn: a runtime bounds its wait for a stop (tmux gives up after
   // seconds), so a wait started at spawn would give up on every seat that outlives that bound.
   const wait = handle.waitForExit?.bind(handle);
-  if (wait) handle.waitForExit = () => wait().then(discard);
+  if (wait) handle.waitForExit = () => wait().then(finish);
   let session: AttachSession;
   try {
     session = handle.attach();
   } catch {
-    return; // no exit stream: the wrapped wait above is this runtime's only proof
+    // No exit stream. Poll the runtime's own status and let its wait prove the exit, so a seat that
+    // ends on its own is cleaned up as well as one that is stopped.
+    if (!wait) return;
+    let waiting = false;
+    poll = setInterval(() => {
+      if (waiting) return;
+      let exited: boolean;
+      try {
+        exited = handle.status() === "exited";
+      } catch {
+        return;
+      }
+      if (!exited) return;
+      waiting = true;
+      wait().then(finish, () => {
+        waiting = false;
+      });
+    }, EXIT_POLL_MS);
+    poll.unref();
+    return;
   }
-  session.onExit(discard);
-  if (handle.status() === "exited") discard();
+  session.onExit(finish);
+  if (handle.status() === "exited") finish();
 }
 
 /** Walk up from `startDir` to the pnpm workspace root (for spawning `pnpm cotal …`). */

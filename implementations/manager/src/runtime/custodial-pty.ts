@@ -48,7 +48,7 @@ export class CustodialPtyRuntime implements CustodialRuntime {
     const rec = launchSeat({
       root: this.root,
       name,
-      spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: spec.confirm },
+      spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: spec.confirm, artifacts: spec.artifacts },
       cwd,
       ...(reference ? { id: reference.id } : {}),
     });
@@ -76,6 +76,20 @@ export class CustodialPtyRuntime implements CustodialRuntime {
         seat.close();
       },
     } as AgentHandle;
+  }
+
+  /** The launch artifacts the custody record for `reference` carries, or undefined when there is no
+   *  readable record. Read from the record, so a successor that adopts or reaps a seat it did not
+   *  launch still owns them. */
+  artifactsOf(reference: RuntimeReference): readonly string[] | undefined {
+    if (reference.kind !== "pty") return undefined;
+    const pinned = this.records.get(reference.id);
+    if (pinned) return pinned.artifacts;
+    try {
+      return loadSeat(this.root, reference.id).artifacts;
+    } catch {
+      return undefined;
+    }
   }
 
   async reap(reference: RuntimeReference): Promise<RuntimeReapEvidence> {

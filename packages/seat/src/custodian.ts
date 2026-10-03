@@ -44,6 +44,8 @@ export interface CustodianLaunch {
    *  Resolved by the LAUNCHER, because the launcher scrubs the environment it hands this process
    *  (the child must not inherit the caller's), so an env override read here would never see one. */
   unattendedMs?: number;
+  /** The launch's private temporary directories, copied onto the seat record. */
+  artifacts?: string[];
 }
 
 function send(sock: Socket, msg: ServerMessage): void {
@@ -388,6 +390,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     // Bind the pids to THIS boot: their start tokens are ticks since boot and the record outlives a
     // reboot on disk, so without this a survivor could match an innocent process on the next boot.
     ...(bootId === undefined ? {} : { bootId }),
+    ...(launch.artifacts?.length ? { artifacts: launch.artifacts } : {}),
   };
 
   server = createServer((sock) => {

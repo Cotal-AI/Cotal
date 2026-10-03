@@ -10,6 +10,8 @@ export interface SeatLaunchSpec {
   args: string[];
   env?: Record<string, string>;
   confirm?: string;
+  /** The launch's private temporary directories, recorded on the seat record (see SeatRecord). */
+  artifacts?: string[];
 }
 
 export interface LaunchSeatOpts {
@@ -149,6 +151,7 @@ export function launchSeat(opts: LaunchSeatOpts): SeatRecord {
     recordPath: recPath,
     logPath,
     confirm: opts.spec.confirm,
+    ...(opts.spec.artifacts?.length ? { artifacts: opts.spec.artifacts } : {}),
     run,
     // Resolved HERE, not in the custodian: the custodian's environment is scrubbed to `PATH` plus the
     // run marker, so it cannot read an override the caller set.

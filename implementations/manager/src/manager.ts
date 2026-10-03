@@ -13,6 +13,7 @@ import {
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
   assertLifecycleToken,
+  discardLaunchArtifacts,
   divergentSecretStoreNotice,
   parseDaemonStoreAnswer,
   parseSecretStoreIdentity,
@@ -752,6 +753,9 @@ interface ManagedLaunch {
 
 interface PreparedResume {
   spec: LaunchSpec;
+  /** Set once the spec is handed to runtime.spawn, which owns its launch artifacts from then on. A
+   *  spec never handed over is the batch's to discard. */
+  spawned?: boolean;
   launchOpts: LaunchOpts;
   id?: string;
   creds?: string;
@@ -5772,6 +5776,7 @@ export class Manager {
     const release = this.beginLifecycle(true);
     if (!release) return { ok: false, agents: [], error: this.maintenanceError() };
     const batchReservations: string[] = [];
+    const prepared = new Map<string, PreparedResume>();
     try {
       if (inventory.version !== "cotal-manager-resume/v1")
         return { ok: false, agents: [], error: `unsupported manager resume inventory version ${String(inventory.version)}` };
@@ -5836,7 +5841,6 @@ export class Manager {
         this.reserved.add(entry.name);
         batchReservations.push(entry.name);
       }
-      const prepared = new Map<string, PreparedResume>();
       const preflight: Array<{ name: string; reply: ControlReply }> = [];
       for (const entry of inventory.agents) {
         const reply = await this.resumePreservedAgent(entry, true, true, prepared);
@@ -5864,6 +5868,16 @@ export class Manager {
       return { ok: true, agents };
     } finally {
       for (const name of batchReservations) this.reserved.delete(name);
+      // Preflight builds every launch before any child starts, so a refused batch, a failed launch,
+      // or the agents skipped after it leave built specs no runtime ever received.
+      for (const { spec, spawned } of prepared.values()) {
+        if (spawned) continue;
+        try {
+          discardLaunchArtifacts(spec.artifacts);
+        } catch (e) {
+          console.error(`! resume: ${(e as Error).message}`);
+        }
+      }
       release();
     }
   }
@@ -6212,6 +6226,7 @@ export class Manager {
       const resumeId = entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id;
       const custody = this.reserveCustody();
       if (custody) await this.recordSlotCustody({ name: entry.name, id: resumeId, lifecycleUid: entry.identity.lifecycleUid }, custody);
+      prepared.spawned = true;
       const handle = await this.spawnCustodied(entry.name, prepared.spec, entry.launch.cwd, custody);
       const managed: ManagedAgent = {
         name: entry.name,
