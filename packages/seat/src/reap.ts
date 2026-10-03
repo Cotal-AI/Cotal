@@ -120,8 +120,11 @@ export function censusCustodians(run?: string): CustodianSighting[] {
  * start identities to execute the same kernel identity and group checks. An unknown reference with neither
  * on-disk file nor pinned record returns `absent` (failing closed as RuntimeReapUnproven).
  *
- * Signals only a pid whose current start identity matches the record, verifies the custodian, the child
- * and the child's whole process group gone, then removes the custody record directory.
+ * Signals the custodian and the child only while their current start identity matches the record. The
+ * child's descendants are not in the record, so its process group is signalled by pgid and then swept by
+ * membership alone, and the record's contents are trusted as written; docs/security.md lists both as
+ * accepted residuals. Verifies the custodian, the child and the child's whole process group gone, then
+ * removes the custody record directory.
  */
 export async function reapSeat(root: string, id: string, opts: { graceMs?: number; pinnedRecord?: SeatRecord } = {}): Promise<SeatReapEvidence> {
   if (process.platform !== "linux") throw unsupportedTransport();

@@ -55,6 +55,11 @@ child, keeps the process. A connected socket that never authenticated does not: 
 session, no output subscription and no wait, so a settle owes it nothing. A seat whose child has
 already exited at listen stays up briefly so the launcher can adopt it.
 
+A reap signals the custodian and the child only while each carries its recorded start identity.
+The child's descendants are not in the record, so the reap kills the child's process group by
+membership. The record carries no authentication, so a same-uid process that rewrites it chooses
+what the next reap signals. `docs/security.md` lists both as accepted residuals.
+
 A custodian with no authenticated controller stops its child and exits after `UNATTENDED_MS`
 (ten minutes, overridable at launch with `COTAL_SEAT_UNATTENDED_MS`). The window restarts at each
 disconnect, so a manager that detaches and re-adopts keeps its seats; one that crashes, or a suite

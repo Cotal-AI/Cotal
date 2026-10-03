@@ -631,7 +631,8 @@ Measured on this filesystem: a `0040` file could not be read by its own owner
    `SCM_RIGHTS` anywhere in `packages/seat`, so the PTY master descriptor stays in the
    custodian and the manager drives the seat by frames over the socket it already
    connected.
-8. `reapSeat` signals only pids whose recorded start identity still matches, and
+8. `reapSeat` signals the custodian and the child only while their recorded start
+   identity still matches, then the child's process group by membership, and
    `kill(2)` across a uid boundary is `EPERM` for an unprivileged sender (measured
    against pid 1). A manager that must reap a `cotal-agent` custodian therefore goes
    back through the `cotal-seat-launch` helper, which is the only process that may
