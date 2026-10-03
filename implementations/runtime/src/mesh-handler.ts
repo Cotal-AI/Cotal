@@ -770,16 +770,28 @@ export class MeshHandler {
       console.error(`! discharge: the spawn goal "${goalId}" settled ${fact.state} with no readable agent identity; if its seat is up it must be despawned by hand (cotal ps)`);
       return;
     }
-    const reply = await this.invokeManager(await this.manager(), "despawn", { graceful: true }, {
-      target: { mode: "owner", ...target },
-      deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
-    });
-    // Tolerated refusals are the two "already gone" shapes: `not-found` (no such agent), and
-    // `expired` (the target's lifecycle mapping is gone or rotated — this despawn pins one
-    // incarnation, and an incarnation the mapping no longer names is not running).
-    const code = reply.reply.ok === false ? reply.reply.error?.code : undefined;
-    if (code !== undefined && code !== "not-found" && code !== "expired")
-      throw new Error(`the spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
+    // The manager that committed the terminal allocated the seat, and a manager's target resolver
+    // knows only its own seats: any other member answers `expired` for this one while it runs. So a
+    // miss says "already gone" only from the allocator. One from another member is re-issued on the
+    // class rail, and a bounded run of them leaves the discharge open rather than claiming it gone.
+    const allocator = fact.committer?.instanceId;
+    for (let attempt = 0; ; attempt += 1) {
+      const reply = await this.invokeManager(await this.manager(), "despawn", { graceful: true }, {
+        target: { mode: "owner", ...target },
+        deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
+      });
+      // Tolerated refusals are the two "already gone" shapes: `not-found` (no such agent), and
+      // `expired` (the target's lifecycle mapping is gone or rotated — this despawn pins one
+      // incarnation, and an incarnation the mapping no longer names is not running).
+      const code = reply.reply.ok === false ? reply.reply.error?.code : undefined;
+      if (code === undefined) return;
+      if (code !== "not-found" && code !== "expired")
+        throw new Error(`the spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
+      if (allocator === undefined || reply.responder.instanceId === allocator) return;
+      if (attempt === DESPAWN_ROUTE_ATTEMPTS)
+        throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator}, but ${attempt + 1} despawns reached only other managers, whose miss does not mean it is gone; the discharge stays open to retry`);
+      this.managerService = undefined;
+    }
   }
 
   /**
@@ -2577,6 +2589,10 @@ const TURN_ACCEPT_DEADLINE_MS = 30_000;
  *  attempt costs a describe and an invoke round trip and never an elapsed deadline: a call nobody
  *  answers raises its own `deadline-exceeded`, which is not a bind refusal and is not re-issued. */
 const BIND_SPLIT_REISSUES = 8;
+/** How many class-rail despawns a discharge sends before it stops waiting for the allocating
+ *  manager to answer. Each lands on one of m managers at random, so m = 2 misses all of them with
+ *  probability 2^-33. */
+const DESPAWN_ROUTE_ATTEMPTS = 32;
 /** A step key's enclosing scope: the journal's own rendering (`entry.scope`), re-derived so the
  *  live path and the adoption rebuild key the handoff memos identically. */
 function scopeOf(key: Parameters<typeof stepKeyString>[0]): string {

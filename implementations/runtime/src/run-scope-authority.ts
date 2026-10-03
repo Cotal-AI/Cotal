@@ -40,10 +40,15 @@ export function ownsEntry(runId: string, entry: JournalEntry): boolean {
  * The spawns a completed run releases: its own, whatever their status, because a spawn that failed
  * catchably can still hold a live process and the goal's terminal decides whether a seat is up. A
  * spawn marked `onFork: "adopt"` is left up: a fork may share that seat, and no run can see whether
- * another still uses it.
+ * another still uses it. A spawn whose seat a migration handed to a later spawn is left to that
+ * spawn: the receiver names it in `adoptedFrom`, holds the same goal, and its own policy decides.
  */
-export function releasableSeat(runId: string, entry: JournalEntry): boolean {
-  return entry.kind === "spawn" && ownsEntry(runId, entry) && entry.external?.onFork !== "adopt";
+export function releasableSeats(runId: string, entries: readonly JournalEntry[]): JournalEntry[] {
+  const handedOver = new Set<string>();
+  for (const e of entries)
+    if (e.kind === "spawn" && typeof e.external?.adoptedFrom === "string") handedOver.add(e.external.adoptedFrom);
+  return entries.filter((e) => e.kind === "spawn" && ownsEntry(runId, e) && e.external?.onFork !== "adopt"
+    && !handedOver.has(journalEntryKeyString(e)));
 }
 
 export type PauseOperation = "read" | "mint" | "attach" | "rearm" | "heartbeat" | "claim" | "fire";
@@ -123,10 +128,9 @@ export class RunScopeAuthority {
     return entries.filter((entry) => this.owns(entry) && owed.has(journalEntryKeyString(entry)));
   }
 
-  /** Release authority covers the seats {@link releasableSeat} names for this attempt's run. */
+  /** Release authority covers the seats {@link releasableSeats} names for this attempt's run. */
   async releaseEntries(): Promise<readonly JournalEntry[]> {
-    const entries = await this.entries();
-    return entries.filter((entry) => releasableSeat(this.runId, entry));
+    return releasableSeats(this.runId, await this.entries());
   }
 
   async pause(token: string, operation: PauseOperation): Promise<JournalEntry> {
