@@ -29,13 +29,18 @@ provide (`uv` + `hermes-agent` on a supported version range), is **not** offered
 ## Spawn it
 
 ```bash
-cotal spawn --agent hermes            # foreground in this terminal
-COTAL_DEFAULT_AGENT=hermes cotal spawn # make it the default harness (an explicit --agent wins)
+cotal spawn --agent hermes --no-events            # foreground in this terminal
+COTAL_DEFAULT_AGENT=hermes cotal spawn --no-events # make it the default harness (an explicit --agent wins)
 ```
 
-Or set `agent: hermes` in a team [manifest](manifest.md). Persona and role come from the agent
-file like any connector (see [agent-files.md](agent-files.md)). A [workflow](workflows.md) spawns a
-Hermes persona with `spawn("<persona>", { events: false })`, because Hermes publishes no event plane.
+Hermes publishes no AG-UI event plane, so pass `--no-events` when you spawn it. The plane is on by
+default, and a launch that arms it is refused before the gateway starts. A space whose
+registration policy requires the event plane cannot run Hermes.
+
+Or set `agent: hermes` and `events: false` in a team [manifest](manifest.md). Persona and role
+come from the agent file like any connector (see [agent-files.md](agent-files.md)). A
+[workflow](workflows.md) spawns a Hermes persona with `spawn("<persona>", { events: false })`,
+because Hermes publishes no event plane.
 
 Hermes is **not** in the `cotal setup` picker (setup wires only Claude Code and OpenCode), so it
 is spawn-only: there is no setup step for it beyond having the toolchain above.
@@ -66,7 +71,7 @@ names:
 ```bash
 export HERMES_INFERENCE_PROVIDER=custom
 export CUSTOM_BASE_URL=http://127.0.0.1:8000/v1
-cotal spawn --agent hermes --model <model>
+cotal spawn --agent hermes --no-events --model <model>
 ```
 
 ```json
@@ -126,7 +131,7 @@ Set `COTAL_HERMES_ADOPT_HOME` to your profile directory to run the gateway there
 
 ```bash
 export COTAL_HERMES_ADOPT_HOME="$HOME/.hermes"
-cotal spawn --agent hermes
+cotal spawn --agent hermes --no-events
 ```
 
 The value must be an absolute path. The launcher refuses a relative path, and a `~` your shell did
