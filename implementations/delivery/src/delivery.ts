@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -27,7 +27,7 @@ import {
   type TimerWriterHandle,
 } from "@cotal-ai/core";
 import { PermissionViolationError } from "@nats-io/transport-node";
-import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removeIdentityPin, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { mayServeOn, leaseAction, type LeaseReading } from "./watchdog.js";
 import { DeliveryTransportHealth } from "./transport-health.js";
@@ -312,9 +312,7 @@ export function recordDeliveryPid(root: string, space: string): () => void {
   writePidPair(pidPath, process.pid);
   return () => {
     try {
-      if (readFileSync(pidPath, "utf8").trim() !== mine) return; // a successor's record: not ours to remove
-      removeIdentityPin(pidPath);
-      rmSync(pidPath, { force: true });
+      removePidPair(pidPath, mine); // a successor's record is not ours to remove
     } catch {
       /* already gone, or unreadable: leaving a record we cannot prove is ours is the safe error */
     }
@@ -927,7 +925,8 @@ async function runStartedDelivery(
     // THE RECORD GOES FIRST, AND SYNCHRONOUSLY. Everything below this line talks to a broker that
     // may be dead and is bounded only by the 2s hard exit; a record left behind because a drain
     // hung is a record that outlives its process, which is this issue's defect re-entering through
-    // the exit path. `rmSync` needs no broker and cannot hang, so it runs before any of it.
+    // the exit path. Removing it needs no broker, and waits only on a publish of the same record
+    // that is in flight (#1238), so it runs before any of it.
     unrecordPid?.();
     // Hard-exit fallback: a graceful release/stop talks to the broker, which may be DEAD (the broker-gone
     // exit path) — don't let that hang the process. Force exit if the graceful path doesn't finish quickly.

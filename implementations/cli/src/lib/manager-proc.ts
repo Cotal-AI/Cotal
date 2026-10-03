@@ -10,7 +10,7 @@ import {
   readProcessCommand, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE,
   type CommandReader, type LivenessProbe, type LocalProcessContext,
-  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, parsePositiveIntegerFlag, removeIdentityPin, verifyIdentityPin, writePidPair,
+  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, parsePositiveIntegerFlag, removePidPair, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 /** The `--max-sessions` value a live `cotal supervise` argv is actually serving.
  *
@@ -345,11 +345,11 @@ export async function stopManager(
   const p = PID_PATH(space);
   const marker = DELIVERY_AWARE_MARKER(space);
   // Records are cleared only on PROVEN death; the identity pin is removed with them so the next
-  // start does not inherit a pin for a process that no longer exists (#969).
+  // start does not inherit a pin for a process that no longer exists (#969), unless a successor was
+  // published meanwhile (#1238).
   const clear = (): void => {
     rmSync(marker, { force: true });
-    removeIdentityPin(p);
-    rmSync(p, { force: true });
+    removePidPair(p, raw);
   };
   if (!existsSync(p)) {
     rmSync(marker, { force: true }); // a marker with no pid records nothing

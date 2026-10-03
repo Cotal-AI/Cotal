@@ -66,7 +66,7 @@ import {
 import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { parsePid, probeLiveness, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -489,10 +489,9 @@ export async function stopLocalProcess(
     // a throw that must PRESERVE the record - an unattributable pidfile, a process we could not
     // signal, or a death we could not confirm (`unknown`). The old `|| !isAlive(pid)` clause treated
     // `unknown` as gone and deleted a live process's record; it is gone.
-    if (stopped) {
-      removeIdentityPin(pidPath); // proven death: the pin goes with the pidfile (#969)
-      rmSync(pidPath, { force: true });
-    }
+    // The pin goes with the pidfile (#969), and only while the pidfile still names the stopped pid: a
+    // publish that committed a successor meanwhile is left whole (#1238).
+    if (stopped) removePidPair(pidPath, rawPid);
     rmSync(marker, { force: true });
   }
 }

@@ -111,7 +111,7 @@ import {
   type RestoreListenerProof,
   readBrokerPolicy,
   writeBrokerPolicy,
-  removeIdentityPin,
+  removePidPair,
   writePidPair,
   localProcessPath,
   MANAGER_PIDFILE,
@@ -1281,7 +1281,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
   // so a later `cotal spawn` doesn't try to join a dead mesh.
   child.on("exit", async (code, signal) => {
-    removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true });
+    removePidPair(cotalPath("nats.pid"), String(child.pid));
     // Logged, never silently swallowed; the daemon kill runs in stopDelivery's finally regardless.
     await stopDelivery(undefined, undefined, space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
     await stopManager(undefined, undefined, undefined, space).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
@@ -2495,7 +2495,7 @@ export async function startMeshDetached(
   tailing = false;
   if (!ready) {
     child.kill("SIGTERM");
-    if (opts.boundListener) removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true });
+    removePidPair(cotalPath("nats.pid"), String(child.pid));
     throw new Error(`nats-server did not become reachable at ${server} - see ${logPath}`);
   }
   let brokerVer: BrokerFacts;
@@ -2503,7 +2503,7 @@ export async function startMeshDetached(
     brokerVer = await brokerVersion(server, space, setup?.creds);
   } catch (e) {
     child.kill("SIGTERM");
-    if (opts.boundListener) removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true });
+    removePidPair(cotalPath("nats.pid"), String(child.pid));
     throw e;
   }
   if (belowPresenceSafeBroker(brokerVer.version) && brokerVer.presenceFileBacked)
@@ -2537,7 +2537,7 @@ export async function startMeshDetached(
       await postStart(server, space, setup, seedFile);
     } catch (e) {
       try { child.kill("SIGTERM"); } catch { /* already gone */ }
-      try { removeIdentityPin(cotalPath("nats.pid")); rmSync(cotalPath("nats.pid"), { force: true }); } catch { /* best effort */ }
+      try { removePidPair(cotalPath("nats.pid"), String(child.pid)); } catch { /* best effort */ }
       throw e;
     }
   } else {

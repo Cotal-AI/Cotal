@@ -23,7 +23,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removeIdentityPin, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, writePidPair,
+  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, writePidPair,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
   refreshRegistrationPolicy,
   type MeshEntry,
@@ -88,10 +88,8 @@ export function recordManagerPid(root: string, space: string): () => void {
   return () => {
     for (const p of [markerPath, pidPath]) {
       try {
-        if (readFileSync(p, "utf8").trim() === mine) {
-          if (p === pidPath) removeIdentityPin(pidPath);
-          rmSync(p, { force: true });
-        }
+        if (p === pidPath) removePidPair(pidPath, mine);
+        else if (readFileSync(p, "utf8").trim() === mine) rmSync(p, { force: true });
       } catch {
         /* already gone, or unreadable: leaving a record we cannot prove is ours is the safe error */
       }

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, openSync, closeSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, openSync, closeSync, writeFileSync, readFileSync } from "node:fs";
 import {
   DEFAULT_SERVER,
   LEASE_TTL_MS,
@@ -8,7 +8,7 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -304,8 +304,7 @@ export async function stopDelivery(
     for (const k of keys) await credsStore().delete(k);
   };
   const removeRecords = async (): Promise<void> => {
-    removeIdentityPin(p); // records go only on proven death; the pin goes with the pidfile (#969)
-    rmSync(p, { force: true });
+    removePidPair(p, raw); // records go only on proven death; the pin goes with the pidfile (#969), unless a successor was published (#1238)
     await dropCreds();
   };
   if (!existsSync(p)) {
