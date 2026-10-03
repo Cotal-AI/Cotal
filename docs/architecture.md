@@ -183,7 +183,8 @@ laterally; the manager only births and configures them.
 - **Bounded spawn.** A gate caps concurrent and in-flight agents and a minimum-lifetime
   floor bounds spawn/despawn churn, so a capability-holding but compromised peer cannot
   fork-bomb the host. The gate runs at goal acceptance, before any identity is minted or
-  process launched, so a refused spawn leaves nothing behind.
+  process launched, so a refused spawn leaves nothing behind. A refusal states what holds the
+  slots and whether waiting can free one.
 - **Declared environment boundary.** A spawned agent receives a fixed OS allow-list (PATH/HOME/
   locale, including PATH entries connector binaries live in), the machine-wide `COTAL_*` operator
   knobs, connector-declared provider inputs, explicitly shared MCP references, and names
