@@ -106,5 +106,19 @@ acceptsChannel(
   `${"cc".repeat(MAX_CHANNEL_LENGTH / 2 - 1)}.x`,
 );
 
+// ── Channel syntax rules: segment structure, wildcards, and character constraints. ───────────
+refusesChannel("an empty channel is refused", "", /empty segment/);
+refusesChannel("a channel with leading dot is refused", ".general", /empty segment/);
+refusesChannel("a channel with trailing dot is refused", "general.", /empty segment/);
+refusesChannel("a channel with double dot is refused", "team..backend", /empty segment/);
+refusesChannel("a channel with non-terminal '>' is refused", "team.>.backend", /'>' is only valid as the last segment/);
+acceptsChannel("a channel with terminal '>' wildcard is accepted", "team.>");
+acceptsChannel("a channel with single-level '*' wildcard is accepted", "team.*.alerts");
+refusesChannel("a channel segment with space is refused", "team.backend dev", /NATS-safe token/);
+refusesChannel("a channel containing '/' is refused", "team/backend", /NATS-safe token/);
+refusesChannel("a channel containing '#' is refused", "team#alerts", /NATS-safe token/);
+acceptsChannel("a channel with hyphens and underscores is accepted", "team-1_a.backend-2_b");
+
 console.log(`valid-name smoke: ${ok} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
+
