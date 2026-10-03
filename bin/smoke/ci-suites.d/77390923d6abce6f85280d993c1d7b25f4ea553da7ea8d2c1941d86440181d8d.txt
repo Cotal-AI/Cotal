@@ -1,0 +1,3 @@
+# The run-host-live seat cleanup signals only a seat whose start identity verifies. A missing or
+# changed identity is refused or counted exited, and never signalled.
+smoke:owned-seats

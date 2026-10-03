@@ -54,6 +54,8 @@ const { bootBroker } = await import("../../implementations/manager/smoke/_boot-b
 // The delivery daemon: the liveness oracle a manager restart on an auth mesh verify-evicts through
 // (SPEC 13.1), and the timer writer a checkpoint's deadline schedule is armed by.
 const { bootDeliveryDaemon } = await import("../../implementations/manager/smoke/_boot-delivery.js");
+const { recordOwnedSeat, awaitSeatsExited, killVerifiedSeats } = await import("./_owned-seats.js");
+type OwnedSeatT = import("./_owned-seats.js").OwnedSeat;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const execFile = promisify(execFileProc);
@@ -93,27 +95,9 @@ const kids: ChildProcess[] = [];
 const scratch: string[] = [home];
 let rc = 1;
 
-// Seat processes this suite's managers spawned, each with its kernel start time so a recycled pid is
-// never mistaken for one of ours. Read only from the managers' own handles.
-const ownedSeats: Array<{ name: string; pid: number; start: string | undefined }> = [];
-const procStart = (pid: number): string | undefined => {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-  } catch { return undefined; }
-};
-const seatAlive = (s: { pid: number; start: string | undefined }): boolean => {
-  try { process.kill(s.pid, 0); } catch { return false; }
-  return s.start === undefined || procStart(s.pid) === s.start;
-};
-const liveSeats = async (ms: number): Promise<string[]> => {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    const live = ownedSeats.filter(seatAlive).map((s) => s.name);
-    if (live.length === 0 || Date.now() > deadline) return live;
-    await wait(100);
-  }
-};
+// Seat processes this suite's managers spawned, each recorded with its start identity from the
+// managers' own handles. `_owned-seats.ts` judges them by the shipped identity rule.
+const ownedSeats: OwnedSeatT[] = [];
 
 // ── Phase A: JWT-auth broker, the `run` capability alone ─────────────────────────────────────
 const spaceA = `runhost-${Math.random().toString(36).slice(2, 8)}`;
@@ -342,7 +326,7 @@ try {
     const managed = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string; issued?: { generation: string; acceptedToken: string }; handle: { pid?: number } }> };
     for (const name of ["asked", "other"]) {
       const pid = managed.agents.get(name)?.handle.pid;
-      if (pid !== undefined) ownedSeats.push({ name, pid, start: procStart(pid) });
+      if (pid !== undefined) ownedSeats.push(recordOwnedSeat(name, pid));
     }
     const seatCall = async (name: string, command: string, args?: Record<string, unknown>, self = true) => {
       const a = managed.agents.get(name)!;
@@ -447,9 +431,11 @@ try {
     // sparing stop is refused. The restart takes the predecessor's seats down with it.
     await mgr.stop({ withAgents: true });
     mgr = undefined;
-    const leftBehind = await liveSeats(5_000);
+    const leftBehind = await awaitSeatsExited(ownedSeats, 5_000);
     c("the stopped predecessor took its own seat processes down with it",
-      ownedSeats.length === 2 && leftBehind.length === 0, { seats: ownedSeats.map((s) => s.name), leftBehind });
+      ownedSeats.length === 2 && ownedSeats.every((s) => s.token !== undefined)
+        && leftBehind.running.length === 0 && leftBehind.unverifiable.length === 0,
+      { seats: ownedSeats.map((s) => ({ name: s.name, identity: s.token !== undefined })), leftBehind });
     // A restart more than one delivery-lease TTL after the daemon came up is the ordinary case on a
     // real mesh. The successor challenges the daemon before it remints, and only the lease holder
     // may answer, so the daemon must still hold its lease then. Reaching this point takes about one
@@ -720,13 +706,18 @@ try { await nc?.drain(); } catch { /* teardown */ }
 try { await mgr?.stop({ withAgents: true }); } catch { /* teardown */ }
 try { await delivery?.stop(); } catch { /* teardown */ }
 {
-  const leftBehind = await liveSeats(5_000);
-  c("teardown: no seat process this suite's managers spawned outlives the managers' own stop", leftBehind.length === 0, leftBehind);
-  // Bounded fallback for a red run: only the pids recorded above, and only while their start time
-  // still matches, so nothing this suite did not spawn is ever signalled.
-  for (const s of ownedSeats) if (seatAlive(s)) { try { process.kill(s.pid, "SIGKILL"); } catch { /* gone */ } }
-  const stillUp = await liveSeats(5_000);
-  if (stillUp.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.join(", ")}`);
+  // An unverifiable seat is a failure here, never an exit: the cell cannot claim a clean teardown
+  // for a process whose identity it could not check.
+  const leftBehind = await awaitSeatsExited(ownedSeats, 5_000);
+  c("teardown: no seat process this suite's managers spawned outlives the managers' own stop",
+    leftBehind.running.length === 0 && leftBehind.unverifiable.length === 0, leftBehind);
+  // Bounded fallback for a red run: SIGKILL only a recorded seat whose start identity still
+  // verifies. An unverifiable one is refused and reported, never signalled.
+  const { signalled, refused } = killVerifiedSeats(ownedSeats);
+  if (signalled.length) console.log(`  ! SIGKILLed verified seat processes left running: ${signalled.join(", ")}`);
+  if (refused.length) console.log(`  ! refused to signal seats with unverifiable identity: ${JSON.stringify(refused)}`);
+  const stillUp = await awaitSeatsExited(ownedSeats, 5_000);
+  if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
 const EXPECTED_CELLS = 70;

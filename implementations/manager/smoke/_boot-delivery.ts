@@ -53,6 +53,9 @@ export async function bootDeliveryDaemon(opts: {
   servers: string;
   auth: SpaceAuth;
   reloadStoreIdentity: SecretStoreIdentity;
+  /** How often the lease is renewed. Defaults to half of `LEASE_TTL_MS`, as the shipped daemon
+   *  renews; the fixture's own smoke shortens it to observe renewal without waiting a TTL. */
+  renewIntervalMs?: number;
 }): Promise<DeliveryDaemon> {
   const { space, servers, auth, reloadStoreIdentity } = opts;
   // The $SYS pair the eviction executor connects with: an observer that can CONNZ-scan the account
@@ -93,7 +96,7 @@ export async function bootDeliveryDaemon(opts: {
     renewing = ep.renewDeliveryLease(0, revision)
       .then((next) => { revision = next; }, () => { revision = undefined; clearInterval(renew); })
       .finally(() => { renewing = undefined; });
-  }, Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
+  }, opts.renewIntervalMs ?? Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
   renew.unref?.();
   let stopped = false;
   return {
