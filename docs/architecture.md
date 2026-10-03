@@ -146,10 +146,11 @@ of that peer's waiting messages belong to one conversation (`contextId`). When t
 than one, the DM is refused with their ids, so an answer is never put in a conversation by guess.
 The reply names the message in `replyTo` and copies its `contextId`, which belongs to the asker.
 The message counts as answered once the reply is published, so a failed send leaves it for the
-retry. With nothing to answer, a DM carries the connector's own `contextId`, if it sets one. A
-connector that runs several host sessions on one seat (Hermes) stamps each question with a
-`contextId` of its own, and routes an answer back to the session that asked only when the answer
-copies it and comes from the peer the question went to.
+retry. Until then it is still waiting, and a DM without `replyTo` sent meanwhile is refused if
+another conversation is waiting too. With nothing to answer, a DM carries the connector's own
+`contextId`, if it sets one. A connector that runs several host sessions on one seat (Hermes)
+stamps each question with a `contextId` of its own, and routes an answer back to the session that
+asked only when the answer copies it and comes from the peer the question went to.
 
 The endpoint underneath self-heals: when the transport connection dies terminally, a
 supervisor rebuilds it (rebuilds are serialized and coalesced), and unacked in-flight

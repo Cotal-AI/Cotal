@@ -694,10 +694,10 @@ export class MeshAgent extends EventEmitter {
   /** The unanswered message a DM to `peerId` answers. `replyTo` names it, and must be a message
    *  from that peer that is still waiting for an answer. Otherwise the scope's `replyTo` names it if
    *  it is that peer's, else it is the oldest one from that peer no other DM in flight is answering.
-   *  The oldest is taken only while all of that peer's waiting messages share one conversation
-   *  (`contextId`): across several, a guess could put the answer in the wrong conversation, so the
-   *  DM is refused with the list to choose from. A caller with its own `contextId` answers only in
-   *  the conversation its scope names. */
+   *  The oldest is taken only while all of that peer's waiting messages, including those a DM in
+   *  flight is answering, share one conversation (`contextId`): across several, a guess could put
+   *  the answer in the wrong conversation, so the DM is refused with the list to choose from. A
+   *  caller with its own `contextId` answers only in the conversation its scope names. */
   private answering(peerId: string, replyTo?: string): { id: string; contextId?: string } | undefined {
     if (replyTo) {
       const e = this.unanswered.get(replyTo);
@@ -711,7 +711,8 @@ export class MeshAgent extends EventEmitter {
       return e && e.fromId === peerId ? { id: c.replyTo, contextId: e.contextId } : undefined;
     }
     if (c?.contextId && c.peerId !== peerId) return undefined;
-    const waiting = [...this.unanswered].filter(([, e]) => e.fromId === peerId && !e.pending);
+    // One a DM in flight is answering still waits until that DM is published, so it still counts.
+    const waiting = [...this.unanswered].filter(([, e]) => e.fromId === peerId);
     if (new Set(waiting.map(([, e]) => e.contextId)).size > 1) {
       const list = waiting.map(([id, e]) => `  • replyTo: ${attributionSafe(id)} — "${attributionSafe(e.text ?? "")}"`);
       throw new Error(
@@ -719,7 +720,7 @@ export class MeshAgent extends EventEmitter {
           `"replyTo" set to the id of the one this answers:\n${list.join("\n")}`,
       );
     }
-    const [first] = waiting;
+    const first = waiting.find(([, e]) => !e.pending);
     return first && { id: first[0], contextId: first[1].contextId };
   }
 

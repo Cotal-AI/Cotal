@@ -189,7 +189,16 @@ class CotalAdapter(BasePlatformAdapter):
         # checked that its sender is the peer the question went to.
         asker = replies.asking_session(msg.get("contextId")) if msg.get("answersQuestion") is True else None
         if asker and "session_key" in asker:  # a session on another platform
-            if replies.inject(format_injection(msg), asker["session_key"]):
+            try:
+                taken = replies.inject(format_injection(msg), asker["session_key"])
+            except Exception:
+                # A host that raised has not taken it: keep the answer for the asker, as for a refusal.
+                logger.exception(
+                    "cotal: the host failed to run an answer in session %s; it is kept and offered again",
+                    asker["session_key"],
+                )
+                raise InjectionRefused(asker["session_key"]) from None
+            if taken:
                 return
             # Running it in another session would consume the answer where nobody asked for it.
             logger.warning(

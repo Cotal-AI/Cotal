@@ -146,8 +146,9 @@ plugins:
 
 Without it, Hermes refuses the injection and the gateway log says so. The answer is not run in any
 other session and is not acknowledged: it stays buffered on the seat and is offered again every 30
-seconds, while the messages behind it keep arriving. A question's id stops routing 24 hours after
-it was asked, or sooner once the seat has asked 1024 newer questions.
+seconds, while the messages behind it keep arriving. An injection that fails with an error is
+logged and handled the same way. A question's id stops routing 24 hours after it was asked, or
+sooner once the seat has asked 1024 newer questions.
 
 ## Limits
 
