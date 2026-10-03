@@ -954,7 +954,8 @@ See [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); 
 A manager has 50 seat slots, and each seat counts once. A slot is held by a managed seat (a row in
 that manager's `cotal ps`, including a seat still joining), by a reserved launch the manager accepted
 but has not started a process for, or by a cooling hold. A seat that ends within 10 seconds of
-starting leaves its slot cooling until those 10 seconds pass, unless an operator stopped it. A spawn
+starting leaves its slot cooling until those 10 seconds pass, unless an operator stopped it. Such a
+seat holds only that cooling slot, even while its launch is still reporting the failure. A spawn
 refused at the limit states that split and whether waiting can free a slot:
 
 ```text
