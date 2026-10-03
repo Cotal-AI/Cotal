@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
+import { discardSeatArtifacts } from "./artifacts.js";
 import { bootToken, exitPath, isSeatId, processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
 import { RUN_MARKER_FLAG } from "./launcher.js";
 import { unsupportedTransport, type SeatExit } from "./protocol.js";
@@ -220,6 +221,22 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
       return members.length === 0;
     }, graceMs);
     if (!empty) throw new Error(`seat ${id}: ${group} process(es) still in group ${rec.childPid} ${graceMs}ms after SIGKILL; exit not proved`);
+  }
+  // The launch artifacts the record still lists, read again now that the custodian is proved gone and
+  // can no longer change it: ones it had not removed when it died, or could not remove. Never the
+  // pinned copy, which still lists what the custodian has since removed, so its names may have been
+  // reused. A failed removal keeps the record, so a later reap of this reference tries again.
+  let latest: SeatRecord | undefined;
+  try {
+    latest = readRecord(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+      throw new Error(`seat ${id}: exit proved, but its record at ${path} is unreadable: ${(e as Error).message}; custody record kept`);
+  }
+  try {
+    discardSeatArtifacts(latest?.artifacts, latest?.artifactRoot);
+  } catch (e) {
+    throw new Error(`seat ${id}: exit proved, but ${(e as Error).message}; custody record kept so a later reap retries`);
   }
   const hadPath = existsSync(path);
   const dir = dirname(path);

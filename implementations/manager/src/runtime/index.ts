@@ -64,11 +64,9 @@ export class RuntimeReapUnproven extends Error {
  */
 export interface CustodialRuntime extends Runtime {
   reserve(): RuntimeReference;
+  /** Also removes the launch artifacts (core launch-artifacts) the custody record still lists, once
+   *  the seat is proved gone, even when another manager launched it. */
   reap(reference: RuntimeReference): Promise<RuntimeReapEvidence>;
-  /** The launch artifacts (core launch-artifacts) the custody record for `reference` still lists:
-   *  those of a custodian killed before its child exited, which the reap that proves the seat gone
-   *  removes, even when another manager launched it. */
-  artifactsOf(reference: RuntimeReference): readonly string[] | undefined;
 }
 
 /** Whether this backend custodies its own processes. Both methods are required together: a runtime
@@ -166,11 +164,11 @@ function createBackend(mode: RuntimeMode, session: string): Runtime {
  *
  * - A custodial runtime (pty on Linux) hands the files to the seat's custodian, the parent of the
  *   child: it removes them when it sees that child exit, so they go on exit, stop and the custodian's
- *   own unattended timeout whether or not any manager is still alive. Its launcher removes them on a
+ *   own unattended timeout whether or not any manager is still alive. The runtime removes them on a
  *   refusal made before any process existed. The end of this manager's attach stream proves nothing,
- *   since a custodian that dies leaves its child running, so nothing here listens to it. A reap that
- *   proves the seat gone removes what the custody record still lists, which covers a custodian
- *   killed before its child exited.
+ *   since a custodian that dies leaves its child running, so nothing here listens to it. Its reap,
+ *   once it proves the seat gone, removes what the custody record still lists, which covers a
+ *   custodian killed before its child exited and a removal that failed.
  * - Any other runtime discards on the exit its attach session streams (the in-process pty). One that
  *   cannot attach (tmux, cmux, orca, herdr) is polled through `status()`, and its `waitForExit`, the
  *   proof every stop already awaits, confirms the exit before the files go.
@@ -178,18 +176,7 @@ function createBackend(mode: RuntimeMode, session: string): Runtime {
  *   child is up), so its files stay for the OS temp reaper.
  */
 function ownLaunchArtifacts(runtime: Runtime): Runtime {
-  const custodial = isCustodialRuntime(runtime) ? runtime : undefined;
-  if (custodial) {
-    const reap = custodial.reap.bind(custodial);
-    custodial.reap = async (reference) => {
-      // Read before the reap, which forgets the record.
-      const artifacts = custodial.artifactsOf(reference);
-      const evidence = await reap(reference);
-      if (evidence.outcome === "reaped") discardOnce(`${reference.kind}:${reference.id}`, artifacts)();
-      return evidence;
-    };
-    return runtime;
-  }
+  if (isCustodialRuntime(runtime)) return runtime;
   const spawn = runtime.spawn.bind(runtime);
   runtime.spawn = (name, spec, cwd, reference) => {
     const handle = spawn(name, spec, cwd, reference);

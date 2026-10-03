@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname } from "node:path";
 import * as pty from "@lydell/node-pty";
@@ -71,9 +71,9 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
 
   // Removes the launch's files, logging rather than throwing: a refused path must not take down the
   // custodian of a live seat.
-  const discardArtifacts = (): void => {
+  const discardArtifacts = (artifacts: readonly string[] | undefined): void => {
     try {
-      discardSeatArtifacts(launch.artifacts, launch.artifactRoot ?? "");
+      discardSeatArtifacts(artifacts, launch.artifactRoot);
     } catch (e) {
       note(`${(e as Error).message}\n`);
     }
@@ -98,7 +98,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     });
   } catch (e) {
     // No child was started, so none will read the files.
-    discardArtifacts();
+    discardArtifacts(launch.artifacts);
     throw e;
   }
   const oomPref = preferSeatForOomKill(proc.pid);
@@ -357,11 +357,17 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       }
     }
     // The child is gone, so it has made every read it will make. Remove its files before anyone is
-    // told of the exit, and drop them from the record so a later reap does not remove the same
-    // names again. Losing a controller's connection is not this: only the child's exit is.
+    // told of the exit, and drop the removed ones from the record so a later reap does not remove the
+    // same names again. One that could not be removed stays listed, so the reap that proves this seat
+    // gone tries it again. Losing a controller's connection is not this: only the child's exit is.
     if (record.artifacts) {
-      discardArtifacts();
-      delete record.artifacts;
+      discardArtifacts(record.artifacts);
+      const left = record.artifacts.filter((dir) => existsSync(dir));
+      if (left.length) record.artifacts = left;
+      else {
+        delete record.artifacts;
+        delete record.artifactRoot;
+      }
       if (ready) {
         try {
           const tmp = `${launch.recordPath}.tmp`;
@@ -435,7 +441,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     // Bind the pids to THIS boot: their start tokens are ticks since boot and the record outlives a
     // reboot on disk, so without this a survivor could match an innocent process on the next boot.
     ...(bootId === undefined ? {} : { bootId }),
-    ...(launch.artifacts?.length ? { artifacts: launch.artifacts } : {}),
+    ...(launch.artifacts?.length ? { artifacts: launch.artifacts, artifactRoot: launch.artifactRoot } : {}),
   };
 
   server = createServer((sock) => {
