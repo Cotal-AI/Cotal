@@ -1494,6 +1494,15 @@ export async function performScope(
   return outcome.value;
 }
 
+/**
+ * A HOST STACK EXHAUSTION AMONG THE JOINED BRANCHES leaves the scope bare (§9.2), whichever branch
+ * raised it and whatever another branch did first: a failure or a winner that settled earlier would
+ * otherwise carry it into a recorded outcome the program can catch.
+ */
+function throwIfStackExhausted(settled: readonly PromiseSettledResult<unknown>[]): void {
+  const exhausted = settled.find((r): r is PromiseRejectedResult => r.status === "rejected" && isStackExhaustion(r.reason));
+  if (exhausted !== undefined) throw exhausted.reason as Error;
+}
 
 export async function runScope(
   host: EffectHost,
@@ -1592,7 +1601,7 @@ export async function runScope(
         // failure, because a rejecting branch cancels its siblings and can crash before they
         // hear it, so a failed scope owes its losers exactly as a winning one does.
         for (const f of frames) f.signal.cancel("a sibling branch failed");
-        await Promise.allSettled(running);
+        throwIfStackExhausted(await Promise.allSettled(running));
         frame.clock.join(frames.map((f) => f.clock));
         const losers = branches.filter((k) => k !== failed);
         throw new ScopeFailed(e, { branches, cancel: { losers, issued: false } });
@@ -1686,8 +1695,7 @@ export async function runScope(
     const settled = await Promise.allSettled(running);
     // A HOST STACK EXHAUSTION cancels no sibling (§9.2), so it leaves before the cancel below: that
     // cancel reaches every arm's handlers, and a live handler would pass it on to external work.
-    const exhausted = settled.find((r): r is PromiseRejectedResult => r.status === "rejected" && isStackExhaustion(r.reason));
-    if (exhausted !== undefined) throw exhausted.reason as Error;
+    throwIfStackExhausted(settled);
     // Every arm has settled, so whatever cut it did not get earlier no longer matters; the
     // signal still says cancelled, which is what a nested branch that outlives this line reads.
     for (const f of frames) f.signal.cancel("a sibling branch won the race");
@@ -1825,7 +1833,7 @@ export async function runScope(
         throw e;
       }
       for (const f of frames) f.signal.cancel("a sibling branch failed");
-      await Promise.allSettled(launched);
+      throwIfStackExhausted(await Promise.allSettled(launched));
       frame.clock.join(frames.map((f) => f.clock));
       const losers = branchKeys.filter((k) => k !== failed);
       throw new ScopeFailed(e, { branches: branchKeys, cancel: { losers, issued: false } });
