@@ -21,6 +21,10 @@ cotal <command> --help    # one command's flags and usage
 runs it through `tsx` with no build step. Bare `cotal` prints help. Every command generates its own
 `--help`, usage, and shell completion from its declared flags.
 
+An undeclared flag is a usage error, and so is a flag given more than once unless it is
+repeatable, as `--opt` and `down --session-store` are. The command prints the error and its help,
+exits 1, and does not run.
+
 Commands come from the surfaces the binary composes: the base mesh CLI, the manager
 (`supervise`), and the delivery daemon (`deliver`), plus any operator-installed extensions.
 `cotal ext add <npm-package>` installs any registry providers a package contributes: commands,

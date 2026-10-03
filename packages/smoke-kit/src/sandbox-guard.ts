@@ -47,8 +47,9 @@ function parseSmokeDown(args: readonly string[]): ParsedSmokeDown | undefined {
     // Calling the same Node parser as the CLI's parseCommandArgs is necessary. Applying the same
     // acceptance test makes the guard agree on which parsed value the CLI will honor. This is a
     // safety lower bound: the guard may refuse more values, but must never accept one the consumer
-    // treats as absent. Do not replace this with argv scanning: flag order, `--space=value`, and
-    // repeated non-multiple flags are valid, and parseArgs deterministically applies last-wins.
+    // treats as absent. Do not replace this with argv scanning: flag order and `--space=value` are
+    // valid. A repeated non-multiple flag reads last-wins here, but parseCommandArgs refuses it as a
+    // usage error, so accepting one never lets the CLI act on a space this guard did not check.
     const { positionals, values } = parseArgs({
       args: args.slice(1),
       options: downOptions,
