@@ -213,10 +213,11 @@ otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and no
 still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall
 quiet/muted traffic; if that safety bound fills, recall skips the affected channel and reports it
 as incomplete rather than risk resurfacing excluded content. The list names a message by its id.
-A message with an empty id has no identity recall can match, so each excluded delivery of one hides
-one stored copy with the same sender, channel, timestamp and content from recall. Excluding one
+A message with an empty id has no identity recall can match, so the list records each delivery of
+one in focus. Recall pairs the stored copies with the same sender, channel, timestamp and content
+with those deliveries, newest first, and hides a copy whose delivery was excluded. Excluding one
 id-less message does not hide the others, and a later publication of the same content is still
-recalled.
+recalled after the excluded copy ages out. Excluding a later copy does not hide an earlier one.
 If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
 session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
 unaffected.

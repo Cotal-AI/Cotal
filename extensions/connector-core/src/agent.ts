@@ -167,11 +167,14 @@ const CLASSIFICATION_CAP = 4096;
 const FOCUS_EXCLUSION_CAP = 4096;
 const PROTECTED_DISPOSITION_CAP = 4096;
 
-/** One focus exclusion. An id-less delivery also records what recall can match it by (#613): the
- *  digest of what recall reads back and the path that delivered it. */
+const FOCUS_PATHS = ["live", "durable", "backfill"] as const;
+
+/** One delivery focus recall accounts for. A wire id is recorded only when it is excluded. An id-less
+ *  delivery is recorded whether or not it was excluded (#613), with what recall pairs it to a stored
+ *  copy by: the digest of what recall reads back, the path that delivered it, and its order there. */
 interface FocusExclusion {
   channel: string;
-  copy?: { digest: string; path: "live" | "durable" | "backfill" };
+  copy?: { digest: string; path: (typeof FOCUS_PATHS)[number]; excluded: boolean };
 }
 
 /** Repeated async NATS status errors can arrive once per ordered-consumer retry. They describe one
@@ -380,6 +383,7 @@ export class MeshAgent extends EventEmitter {
    * minted key stays recognizable for the session's life, with nothing to expire or overflow. */
   private readonly recvKeySecret = randomUUID().replace(/-/g, "");
   private recvKeySeq = 0;
+  /** Excluded wire ids, and every id-less channel delivery in focus (see {@link FocusExclusion}). */
   private focusExcludedIds = new Map<string, FocusExclusion>();
   private focusRecallUnsafeChannels = new Set<string>();
   private _stopping = false;
@@ -825,6 +829,7 @@ export class MeshAgent extends EventEmitter {
       // Current normal+focus remains the stronger hard gate unless this exact id was previously
       // received pull-only. classificationUnsafe must not turn focus-dropped traffic into a buffer.
       if (cm !== "quiet" && !snapshottedPullOnly && this._attention === "focus") {
+        this.noteForFocus(item, delivery, false);
         this.protectDisposition(item.id, "drop");
         delivery.ack();
         if (item.mentionsMe) this.emit("mention-wake", item);
@@ -933,13 +938,19 @@ export class MeshAgent extends EventEmitter {
     this.evictedClassifications.set(p.item.id, { pullOnly: p.pullOnly, channel: p.item.channel });
   }
 
-  /** Keep an item out of focus recall. A wire id is matched directly. An id-less item has no identity
-   *  recall can match: a live copy carries no stream sequence, and keying on the empty id excluded
-   *  every id-less message once one was quiet or muted (#613). So each id-less delivery is recorded
-   *  under its own receive key and stands for ONE stored copy with the same content, and a later
-   *  identical publication stays recallable (see {@link recallAmbient}). */
+  /** Keep an item out of focus recall. */
   private excludeFromFocus(item: InboxItem, delivery: Delivery): void {
+    this.noteForFocus(item, delivery, true);
+  }
+
+  /** Record a channel delivery for focus recall. A wire id is matched directly, so it is recorded only
+   *  when excluded. An id-less item has no identity recall can match: a live copy carries no stream
+   *  sequence, and keying on the empty id excluded every id-less message once one was quiet or muted
+   *  (#613). So every id-less delivery in focus is recorded under its own receive key, excluded or
+   *  not, and {@link recallAmbient} pairs it with one stored copy. */
+  private noteForFocus(item: InboxItem, delivery: Delivery, excluded: boolean): void {
     if ((!this.enteringFocus && this._attention !== "focus") || item.kind !== "channel" || !item.channel) return;
+    if (!excluded && item.id !== "") return;
     const key = item.id !== "" ? item.id : item.recvKey;
     if (!this.focusExcludedIds.has(key) && this.focusExcludedIds.size >= FOCUS_EXCLUSION_CAP) {
       const oldest = this.focusExcludedIds.entries().next().value as [string, FocusExclusion] | undefined;
@@ -949,12 +960,12 @@ export class MeshAgent extends EventEmitter {
       }
     }
     const path = item.historical ? "backfill" : delivery.durable ? "durable" : "live";
-    const copy: FocusExclusion["copy"] = item.id !== "" ? undefined : { digest: this.idlessDigest(item), path };
+    const copy: FocusExclusion["copy"] = item.id !== "" ? undefined : { digest: this.idlessDigest(item), path, excluded };
     this.focusExcludedIds.set(key, { channel: item.channel, copy });
   }
 
   /** What recall reads back of an id-less message (channel, authenticated sender, timestamp, text,
-   *  reply and context ids, mentions), so an excluded delivery can be matched to a stored copy. */
+   *  reply and context ids, mentions), so a delivery can be paired with a stored copy. */
   private idlessDigest(item: InboxItem): string {
     const seen = [item.channel, item.fromId, item.ts, item.text, item.replyTo, item.contextId, item.mentions];
     return createHash("sha256").update(JSON.stringify(seen)).digest("hex");
@@ -1391,16 +1402,13 @@ export class MeshAgent extends EventEmitter {
       return { items: [], droppedChannels: [] };
     const items: InboxItem[] = [];
     const droppedChannels: string[] = [];
-    // How many stored copies of each id-less message to skip: one per excluded delivery (#613). The
-    // live and durable paths can each deliver the same publication, so it is the most any one path
-    // excluded. Recall skips the earliest copies, the same ones on every call.
-    const skip = new Map<string, number>();
-    const perPath = new Map<string, number>();
+    // Whether each id-less delivery in focus was excluded, per path and content, in arrival order.
+    const arrivals = new Map<string, boolean[]>();
     for (const { copy } of this.focusExcludedIds.values()) {
       if (!copy) continue;
-      const n = (perPath.get(`${copy.path}.${copy.digest}`) ?? 0) + 1;
-      perPath.set(`${copy.path}.${copy.digest}`, n);
-      skip.set(copy.digest, Math.max(skip.get(copy.digest) ?? 0, n));
+      const seen = arrivals.get(`${copy.path}.${copy.digest}`);
+      if (seen) seen.push(copy.excluded);
+      else arrivals.set(`${copy.path}.${copy.digest}`, [copy.excluded]);
     }
     for (const channel of this.ep.joinedChannels()) {
       if (!isConcreteChannel(channel)) {
@@ -1417,25 +1425,39 @@ export class MeshAgent extends EventEmitter {
       // it, and a key minted afresh per call re-serves the item forever (#613). The key is its
       // chat-stream sequence, which stays put when older retained messages age out. It is zero-padded
       // so it orders like the sequence, and sits under the secret so it stays disjoint from wire ids.
-      for (const [i, m] of messages.entries()) {
+      const read = messages.map((m, i) => {
         let key: string | undefined;
         if (m.id === "") {
           const seq = seqs[i];
           if (seq === undefined) throw new Error(`recallChannel returned no stream sequence for an id-less message on ${channel}`);
           key = `${this.recvKeySecret}.r.${String(seq).padStart(16, "0")}`;
         }
-        const item = this.toInboxItem(m, "channel", true, key);
+        return this.toInboxItem(m, "channel", true, key);
+      });
+      // An id-less message is paired with its deliveries newest first, on each path (#613). One sender's
+      // messages are stored in order and retention removes the oldest first, so the newest stored copy
+      // is the one delivered last. A copy paired with an excluded delivery is skipped. Pairing from the
+      // oldest end hid a later publication once the excluded copy aged out, and let an exclusion land
+      // on an earlier recallable copy while the excluded one came back.
+      const copies = new Map<string, number[]>();
+      for (const [i, item] of read.entries()) {
+        if (item.id !== "") continue;
+        const digest = this.idlessDigest(item);
+        const at = copies.get(digest);
+        if (at) at.push(i);
+        else copies.set(digest, [i]);
+      }
+      const skipped = new Set<number>();
+      for (const [digest, at] of copies)
+        for (const path of FOCUS_PATHS) {
+          const seen = arrivals.get(`${path}.${digest}`) ?? [];
+          for (let k = 1; k <= Math.min(at.length, seen.length); k++) if (seen[seen.length - k]) skipped.add(at[at.length - k]);
+        }
+      for (const [i, m] of messages.entries()) {
         if (m.id !== "") {
           if (this.focusExcludedIds.has(m.id)) continue;
-        } else {
-          const digest = this.idlessDigest(item);
-          const left = skip.get(digest) ?? 0;
-          if (left > 0) {
-            skip.set(digest, left - 1);
-            continue;
-          }
-        }
-        items.push(item);
+        } else if (skipped.has(i)) continue;
+        items.push(read[i]);
       }
       if (dropped) droppedChannels.push(channel);
     }
