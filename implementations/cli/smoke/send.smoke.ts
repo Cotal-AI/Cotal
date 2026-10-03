@@ -20,6 +20,7 @@ import {
   CotalEndpoint,
   createSpaceAuth,
   DEV_OWNER,
+  dmDurable,
   isReachable,
   mintCreds,
   mintLifecycleUid,
@@ -254,25 +255,14 @@ try {
   check("`cotal send dm` to an absent agent exits non-zero", missing.code !== 0, missing.code);
   check("`cotal send dm` to an absent agent says 'no agent'", /no agent/i.test(missing.stderr), missing.stderr);
 
-  // M3: stop bob, send within the retained-card window (a graceful stop publishes `offline`
-  // synchronously, before its lifecycle uid is retired), and assert the line names the offline
-  // status rather than fabricating "delivered".
-  await bob.stop();
-  const offlineText = `offline-${randomUUID().slice(0, 6)}`;
-  const offlineDm = await run(["send", "dm", "bob", offlineText]);
-  check("`cotal send dm` to a just-stopped recipient still exits 0", offlineDm.code === 0, offlineDm.stderr);
-  check(
-    "the offline-window `send dm` line reports the recipient as offline at send, never delivered",
-    /stored seq \d+/.test(offlineDm.stdout) && offlineDm.stdout.includes("recipient offline at send") && !offlineDm.stdout.includes("delivered"),
-    offlineDm.stdout,
-  );
-
-  // M3: `cotal deliver pending <name>` against the real broker with a minted admin credential.
-  // A second recipient (carol) proves the filter: her durable is untouched by bob's read.
+  // The admin credential for the `deliver pending` reads below is minted before bob stops, so no
+  // setup sits inside the retained-card window that the by-name read depends on.
   const adminIdentity = newIdentity();
   const adminCreds = join(tmp, "admin.creds");
   writeFileSync(adminCreds, await mintCreds(auth, adminIdentity, "admin"), { mode: 0o600 });
 
+  // A second recipient (carol) proves the filter: her send is held in the DM stream before bob's
+  // read below, and that read must never list it.
   const carolIdentity = newIdentity();
   const carolUid = mintLifecycleUid();
   const carolCreds = await provisionAgent(provisioner, auth, carolIdentity, {
@@ -300,6 +290,23 @@ try {
   const carolDm = await run(["send", "dm", "carol", carolText]);
   check("`cotal send dm` to carol (stopped) exits 0", carolDm.code === 0, carolDm.stderr);
 
+  // M3: stop bob, send within the retained-card window (a graceful stop publishes `offline`
+  // synchronously, before its lifecycle uid is retired), and assert the line names the offline
+  // status rather than fabricating "delivered".
+  await bob.stop();
+  const offlineText = `offline-${randomUUID().slice(0, 6)}`;
+  const offlineDm = await run(["send", "dm", "bob", offlineText]);
+  check("`cotal send dm` to a just-stopped recipient still exits 0", offlineDm.code === 0, offlineDm.stderr);
+  check(
+    "the offline-window `send dm` line reports the recipient as offline at send, never delivered",
+    /stored seq \d+/.test(offlineDm.stdout) && offlineDm.stdout.includes("recipient offline at send") && !offlineDm.stdout.includes("delivered"),
+    offlineDm.stdout,
+  );
+
+  // M3: `cotal deliver pending <name>` against the real broker with the admin credential. Name
+  // resolution needs bob's offline card, and the presence bucket keeps it for one TTL (6000 ms,
+  // SPEC §8) after the stop above, so the by-name read runs next. Reads made after the card can
+  // have aged out go through `--durable`, as docs/cli.md prescribes.
   const pendingBob = await run(["deliver", "pending", "bob", "--creds", adminCreds, "--space", space, "--server", servers]);
   check("`deliver pending bob` exits 0 with the admin credential", pendingBob.code === 0, pendingBob.stderr);
   check("`deliver pending bob` reports at least one pending message", /pending [1-9]\d*/.test(pendingBob.stdout), pendingBob.stdout);
@@ -317,11 +324,14 @@ try {
   const pendingDurableMissing = await run(["deliver", "pending", "bob", "--durable", "dm_local-nope-nope", "--creds", adminCreds, "--space", space, "--server", servers]);
   check("`deliver pending bob --durable dm_local-nope-nope` exits non-zero with not-found", pendingDurableMissing.code !== 0 && /not-found/i.test(pendingDurableMissing.stderr), pendingDurableMissing.stderr);
 
-  const pendingCarolForId = await run(["deliver", "pending", "carol", "--creds", adminCreds, "--space", space, "--server", servers]);
+  // Carol's card can be gone by now, so her held send's id is read through her exact durable
+  // (the same owner/actor the credential-derived principal carries).
+  const carolDurable = dmDurable(DEV_OWNER, carolIdentity.id, carolUid);
+  const pendingCarolForId = await run(["deliver", "pending", "carol", "--durable", carolDurable, "--creds", adminCreds, "--space", space, "--server", servers]);
   const carolIdMatch = pendingCarolForId.stdout.match(/^\s*([0-9a-f-]{8,})\s+from=/m);
   check(
     "`deliver pending bob` never lists carol's held send",
-    !carolIdMatch || !pendingBob.stdout.includes(carolIdMatch[1]),
+    carolIdMatch !== null && !pendingBob.stdout.includes(carolIdMatch[1]),
     { carolId: carolIdMatch?.[1], pendingBobStdout: pendingBob.stdout },
   );
 
