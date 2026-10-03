@@ -426,7 +426,12 @@ const SEAMS: Seam[] = [
   // Hermes sidecar bundle, whose copy of the seam (counted since 161/119) offset the missed call.
   // These counts are for a BUILT tree, the one `smoke:ci` scans after `pnpm build`; a tree that
   // never ran the bundle finds 227/178.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 228, untypecheckedSites: 178 },
+  // 228/178 -> 229/179: one smoke-side call, `reader` in
+  // implementations/manager/smoke/boot-delivery-lease.smoke.ts, a second `delivery` principal that
+  // reads the lease row back from the bucket and takes it over, so the fixture's renew and release
+  // are judged from the broker rather than from the fixture's own bookkeeping. Under `smoke/`, so
+  // both counts move by one. It states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 229, untypecheckedSites: 179 },
 ];
 
 /**

@@ -1,0 +1,3 @@
+# The shared delivery fixture renews its lease, stops renewing on a refused CAS, and releases only
+# a row it still owns after any in-flight renew lands.
+smoke:boot-delivery-lease
