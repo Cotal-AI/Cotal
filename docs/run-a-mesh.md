@@ -371,12 +371,12 @@ update. On Linux it can still adopt and reap seats that an earlier manager launc
 detached per-seat custodian, so those seats drain under the new manager; it starts no new
 custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal seats`
 lists the custodians left on the machine, and `cotal seats --drain` retires the ones whose agent
-has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). When a
-custodian's agent exits on its own, the manager logs a `seat reaped:` line with the exit code and,
-for a signalled child, the signal number, as the custodian recorded them. The line ends with the
-last line the child printed that starts with a connector's `[cotal-<name>]` or
-`[cotal-<name>/<part>]` prefix, cut to 240 characters, when it printed one. The custodian keeps the
-same record beside the seat's custody record, so a later reap of that seat, including one by a
+has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). When a pty
+agent exits on its own, in-process or under a custodian, the manager logs a `seat reaped:` line
+with the exit code and, for a signalled child, the signal number. The line ends with the last line
+the child printed that starts with a connector's `[cotal-<name>]` or `[cotal-<name>/<part>]`
+prefix, cut to 240 characters, when it printed one. A custodian keeps the same record beside the
+seat's custody record, so a later reap of that seat, including one by a
 successor manager, reports how the child ended. When the custodian cannot write that record, it
 says why in the seat's `custodian.log`, and a later reap of a child that ended on its own reports
 the record as missing or unreadable. Optional runtimes are installed

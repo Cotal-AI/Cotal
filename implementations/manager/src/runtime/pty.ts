@@ -2,7 +2,7 @@ import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import type { AgentHandle, AttachSession, LaunchSpec, Runtime, RuntimeReference } from "@cotal-ai/core";
-import { StartupConfirmMatcher, unmatchedConfirmMessage, unsupportedTransport, preferSeatForOomKill } from "@cotal-ai/seat";
+import { ConnectorDiagnosticReader, StartupConfirmMatcher, unmatchedConfirmMessage, unsupportedTransport, preferSeatForOomKill } from "@cotal-ai/seat";
 import { preparePtyLaunch } from "./windows-launch.js";
 
 const DEFAULT_COLS = 120;
@@ -67,7 +67,9 @@ export class LegacyPtyRuntime implements Runtime {
     // used to drop them on the floor — leaving the manager unable to say why any seat had died.
     // Retained here so `exitInfo` can answer after the fact; stays undefined while the child lives,
     // because "not exited yet" and "exited cleanly" must never read the same.
-    let exit: { code?: number; signal?: number } | undefined;
+    let exit: { code?: number; signal?: number; diagnostic?: string } | undefined;
+    // The child's last connector diagnostic, carried on `exit` so the reap line can name it.
+    const diagnostic = new ConnectorDiagnosticReader();
 
     // Honor LaunchSpec.confirm literally: match the connector-owned text in normalized early output,
     // press Enter exactly once when it appears, and fail loud if the declared gate never materializes.
@@ -86,6 +88,7 @@ export class LegacyPtyRuntime implements Runtime {
 
     proc.onData((d) => {
       term.write(d); // mirror into the screen model for attach-time reconstruction
+      diagnostic.push(d);
       const b = Buffer.from(d, "utf8");
       for (const fn of dataSubs) fn(b);
       if (confirmMatcher?.push(d)) {
@@ -98,7 +101,8 @@ export class LegacyPtyRuntime implements Runtime {
       alive = false;
       // `signal` is absent on an ordinary exit and 0 is a real exit code, so both are recorded as
       // present-or-absent rather than coalesced into one number.
-      exit = { code: exitCode, ...(signal === undefined ? {} : { signal }) };
+      const last = diagnostic.read();
+      exit = { code: exitCode, ...(signal === undefined ? {} : { signal }), ...(last ? { diagnostic: last } : {}) };
       if (confirmTimer) clearTimeout(confirmTimer);
       for (const fn of exitSubs) fn();
     });
