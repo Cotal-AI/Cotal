@@ -209,12 +209,18 @@ class BridgeClient:
         self._send(frame)
 
     def call_tool(
-        self, name: str, args: dict, timeout: float = 30.0, context_id: Optional[str] = None
+        self,
+        name: str,
+        args: dict,
+        timeout: float = 30.0,
+        context_id: Optional[str] = None,
+        peer_id: Optional[str] = None,
     ) -> str:
         """Invoke a cotal_* tool on the sidecar and block for its text result (raises on transport
         error/timeout). The sidecar runs the shared spec, so the text is already model-ready; an
         in-tool logical error comes back flagged and is prefixed for the model. ``context_id`` is
-        stamped on what this one call sends."""
+        stamped on a question this one call asks; ``peer_id`` is the peer whose session the call
+        runs in, so a DM to it answers that peer rather than asking."""
         rid = uuid.uuid4().hex
         ev = threading.Event()
         box: dict = {}
@@ -223,6 +229,8 @@ class BridgeClient:
             frame = {"t": "tool", "id": rid, "name": name, "args": args}
             if context_id:
                 frame["contextId"] = context_id
+            if peer_id:
+                frame["peerId"] = peer_id
             self._send(frame)
             if not ev.wait(timeout):
                 raise TimeoutError(f"cotal tool '{name}' timed out")

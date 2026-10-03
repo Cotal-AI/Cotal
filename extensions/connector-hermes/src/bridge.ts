@@ -13,8 +13,11 @@
  *     {t:"reply", target, text, replyTo?, contextId?}
  *                                              adapter: route a turn's reply back to its origin,
  *                                              answering message <replyTo> in conversation <contextId>
- *     {t:"tool", id, name, args, contextId?}   tools: invoke a cotal_* tool (full shared surface);
- *                                              its sends carry <contextId>, for this call only
+ *     {t:"tool", id, name, args, contextId?, peerId?}
+ *                                              tools: invoke a cotal_* tool (full shared surface);
+ *                                              a question it asks carries <contextId>, this call
+ *                                              only; a DM to <peerId>, whose session it runs in,
+ *                                              answers that peer
  *
  *   sidecar → Python
  *     {t:"incoming", msg}                      push one buffered mesh message (for handle_message)
@@ -29,8 +32,9 @@
  * bridge never has to enumerate the surface — full parity by construction.
  *
  * One gateway runs many sessions over this one seat, so correlation is per frame, never the seat's
- * single context id: the adapter stamps each session's questions with its own `contextId` and
- * routes an answer that carries it back to that session (see adapter.py).
+ * single context id: the plugin stamps each question with its own `contextId`, and an incoming DM
+ * carries `answersQuestion` when it copies one from the peer the question went to, so the adapter
+ * can run it in the session that asked (see replies.py).
  */
 import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
@@ -63,7 +67,7 @@ function log(msg: string): void {
 }
 
 /** The inbox item, flattened for the Python side (handle_message builds a MessageEvent from it). */
-function wireItem(i: InboxItem): Record<string, unknown> {
+function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
   return {
     id: i.id,
     // #624: the opaque per-delivery receive key. The sidecar echoes this back on `delivered`, so
@@ -86,6 +90,9 @@ function wireItem(i: InboxItem): Record<string, unknown> {
     text: i.text,
     replyTo: i.replyTo,
     contextId: i.contextId,
+    // The DM answers a question this seat asked, from the peer it asked: only then may the adapter
+    // route it by its contextId (see MeshAgent.answersQuestion).
+    answersQuestion: agent.answersQuestion(i),
   };
 }
 
@@ -130,7 +137,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     if (!pending.length) return;
     const next = pending[0];
     awaitingId = next.recvKey;
-    sendFrame(adapter, { t: "incoming", msg: wireItem(next) });
+    sendFrame(adapter, { t: "incoming", msg: wireItem(agent, next) });
   };
 
   agent.on("incoming", () => pump());
@@ -202,7 +209,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
       case "tool": {
         const id = frame.id;
         try {
-          const { text, isError } = await agent.withCorrelation({ contextId: str(frame.contextId) }, () =>
+          const { text, isError } = await agent.withCorrelation({ contextId: str(frame.contextId), peerId: str(frame.peerId) }, () =>
             onTool(String(frame.name), (frame.args ?? {}) as Record<string, unknown>),
           );
           sendFrame(sock, { t: "tool_result", id, ok: true, text, isError });

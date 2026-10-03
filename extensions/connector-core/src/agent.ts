@@ -130,6 +130,9 @@ export interface InboxItem {
 export interface Correlation {
   contextId?: string;
   replyTo?: string;
+  /** The peer whose conversation the call runs in, for a caller with its own `contextId`: a DM to
+   *  that peer answers it, and a DM to any other peer is a new question. */
+  peerId?: string;
 }
 
 /** An inbox entry: the normalized message plus its JetStream ack handle. */
@@ -174,8 +177,9 @@ const MAX_AHEAD = 256;
 const CLASSIFICATION_CAP = 4096;
 const FOCUS_EXCLUSION_CAP = 4096;
 const PROTECTED_DISPOSITION_CAP = 4096;
-/** How many peers' unanswered DMs one session remembers for reply correlation. */
-const MAX_UNANSWERED = 1024;
+/** How many unanswered directed messages, and how many asked questions, one session remembers for
+ *  reply correlation. */
+const MAX_CORRELATIONS = 1024;
 /** Repeated async NATS status errors can arrive once per ordered-consumer retry. They describe one
  * fault, not one hundred useful facts; keep the first visible and summarize at most twice a minute. */
 const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
@@ -371,8 +375,12 @@ export class MeshAgent extends EventEmitter {
   private _contextId: string | undefined;
   /** The per-call correlation a {@link withCorrelation} scope binds for the sends inside it. */
   private readonly correlation = new AsyncLocalStorage<Correlation>();
-  /** Per peer id, the newest live DM it sent us that no DM back has answered yet (bounded). */
-  private readonly unanswered = new Map<string, Correlation>();
+  /** By message id, oldest first: the live DMs and anycasts peers sent us that no DM back has
+   *  answered yet (bounded). `pending` marks one a DM in flight is answering. */
+  private readonly unanswered = new Map<string, { fromId: string; contextId?: string; pending?: boolean }>();
+  /** By `contextId`, the questions this seat asked inside a {@link withCorrelation} scope, and whom
+   *  they went to (bounded). See {@link answersQuestion}. */
+  private readonly asked = new Map<string, { peerId?: string; role?: string }>();
   /** Chat-stream frontier captured when this agent entered `focus` — recall surfaces ambient
    *  published after it ("since you entered focus"). Undefined unless in focus. */
   private focusSince?: number;
@@ -637,25 +645,59 @@ export class MeshAgent extends EventEmitter {
     this._contextId = clean ? clean : undefined;
   }
 
-  /** Run `fn` with a per-call correlation: every send, DM and anycast it makes stamps the
-   *  `contextId` and `replyTo` given here, ahead of the defaults (a DM's answered message, then
-   *  the agent-wide context id from {@link setContextId}). A connector that serves several host
-   *  sessions from one seat uses it, because one agent-wide context id cannot tell two concurrent
-   *  sessions apart. */
+  /** Run `fn` with a per-call correlation for the sends it makes. A `replyTo` names the message a
+   *  DM answers, and `contextId` is then that message's conversation. Without a `replyTo`,
+   *  `contextId` is the caller's own conversation: a send, a question DM or an anycast carries it
+   *  ahead of the agent-wide one from {@link setContextId}, and {@link answersQuestion} recognizes
+   *  a DM back that copies it. A connector that serves several host sessions from one seat uses it,
+   *  because one agent-wide context id cannot tell two concurrent sessions apart. */
   withCorrelation<T>(correlation: Correlation, fn: () => T): T {
     const contextId = correlation.contextId?.trim() || undefined;
     const replyTo = correlation.replyTo?.trim() || undefined;
-    return this.correlation.run({ contextId, replyTo }, fn);
+    const peerId = correlation.peerId?.trim() || undefined;
+    return this.correlation.run({ contextId, replyTo, peerId }, fn);
   }
 
-  /** The correlation an outgoing message carries. `answered` is the message a DM answers: a reply
+  /** Whether `item` is a live DM answering a question this seat asked inside a
+   *  {@link withCorrelation} scope: it copies that question's `contextId`, and its authenticated
+   *  sender is the peer the question went to, or has the role an anycast question went to. A
+   *  `contextId` is a string any peer can set, so the copy alone proves nothing. */
+  answersQuestion(item: InboxItem): boolean {
+    if (item.kind !== "dm" || item.historical || !item.contextId) return false;
+    const q = this.asked.get(item.contextId);
+    return !!q && (q.peerId === item.fromId || (!!q.role && q.role === item.fromRole));
+  }
+
+  /** The correlation a send carries, and the question it asks (a `contextId` the caller's scope
+   *  owns, which {@link recordQuestion} remembers). `answered` is the message a DM answers: a reply
    *  copies its `contextId`, which belongs to the asker, and names it in `replyTo` (SPEC §5). */
-  private stamp(answered?: Correlation): Correlation {
+  private stamp(answered?: { id: string; contextId?: string }): { stamp: Correlation; own?: string } {
     const c = this.correlation.getStore();
-    return {
-      contextId: c?.contextId ?? answered?.contextId ?? this._contextId,
-      replyTo: c?.replyTo ?? answered?.replyTo,
-    };
+    if (c?.replyTo) return { stamp: { replyTo: c.replyTo, contextId: c.contextId ?? this._contextId } };
+    if (answered?.contextId) return { stamp: { replyTo: answered.id, contextId: answered.contextId } };
+    return { stamp: { replyTo: answered?.id, contextId: c?.contextId ?? this._contextId }, own: c?.contextId };
+  }
+
+  /** Remember a question this seat asked, so {@link answersQuestion} can recognize its answer. */
+  private recordQuestion(contextId: string | undefined, to: { peerId?: string; role?: string }): void {
+    if (!contextId) return;
+    this.asked.delete(contextId);
+    this.asked.set(contextId, to);
+    if (this.asked.size > MAX_CORRELATIONS) this.asked.delete(this.asked.keys().next().value!);
+  }
+
+  /** The unanswered message a DM to `peerId` answers: the one the scope names in `replyTo` if it is
+   *  that peer's, else the oldest one from that peer no other DM in flight is answering. A caller
+   *  with its own `contextId` answers only in the conversation its scope names. */
+  private answering(peerId: string): { id: string; contextId?: string } | undefined {
+    const c = this.correlation.getStore();
+    if (c?.replyTo) {
+      const e = this.unanswered.get(c.replyTo);
+      return e && e.fromId === peerId ? { id: c.replyTo, contextId: e.contextId } : undefined;
+    }
+    if (c?.contextId && c.peerId !== peerId) return undefined;
+    for (const [id, e] of this.unanswered) if (e.fromId === peerId && !e.pending) return { id, contextId: e.contextId };
+    return undefined;
   }
 
   /** Begin connecting with background retry. Resolves after the first completed mesh join. */
@@ -816,11 +858,10 @@ export class MeshAgent extends EventEmitter {
     if (!meta)
       throw new Error(`message ${m.id} delivered without MessageMeta — its class is unauthenticated`);
     const item = this.toInboxItem(m, meta.kind, meta.historical);
-    if (item.kind === "dm" && !item.historical && item.id !== "") {
-      // The next DM back to this peer answers this one (see dm()).
-      this.unanswered.delete(item.fromId);
-      this.unanswered.set(item.fromId, { replyTo: item.id, contextId: item.contextId });
-      if (this.unanswered.size > MAX_UNANSWERED) this.unanswered.delete(this.unanswered.keys().next().value!);
+    if ((item.kind === "dm" || item.kind === "anycast") && !item.historical && item.id !== "" && !this.answersQuestion(item)) {
+      // A DM back to this peer answers it (see dm()). An answer to our own question needs none.
+      this.unanswered.set(item.id, { fromId: item.fromId, contextId: item.contextId });
+      if (this.unanswered.size > MAX_CORRELATIONS) this.unanswered.delete(this.unanswered.keys().next().value!);
     }
     // Per-channel override is the FINAL word for a channel message (DMs/anycast are never channel-
     // scoped, so they bypass this entirely and always buffer). Evaluated BEFORE the global mode:
@@ -1433,7 +1474,7 @@ export class MeshAgent extends EventEmitter {
     await this.requireConnected();
     const clean = normalizeMentions(mentions);
     if (clean) await this.assertKnownMentions(clean);
-    return this.ep.multicast(text, { channel, mentions: clean, ...this.stamp() });
+    return this.ep.multicast(text, { channel, mentions: clean, ...this.stamp().stamp });
   }
 
   /**
@@ -1495,7 +1536,9 @@ export class MeshAgent extends EventEmitter {
 
   async anycast(role: string, text: string): Promise<CotalMessage> {
     await this.requireConnected();
-    return this.ep.anycast(role, text, this.stamp());
+    const { stamp, own } = this.stamp();
+    this.recordQuestion(own, { role });
+    return this.ep.anycast(role, text, stamp);
   }
 
   /** Resolve a peer by instance id (exact) or display name. Deterministic and fail-loud: returns
@@ -1540,11 +1583,20 @@ export class MeshAgent extends EventEmitter {
     // The only status we can truthfully attribute is the roster snapshot taken right before the
     // publish: recipient state can change the instant after, and the ack never tells us either way.
     const recipientStatusAtSend = peer.status;
-    // A DM back to a peer answers the newest DM it sent us, once.
-    const answered = this.unanswered.get(peer.card.id);
-    this.unanswered.delete(peer.card.id);
-    const { msg, ack } = await this.ep.unicastAttributed(peer.card.id, text, this.stamp(answered));
-    return { msg, peer, ack, recipientStatusAtSend };
+    // A DM back to a peer answers the oldest message it sent us that no DM has answered yet. It
+    // counts as answered only once the DM is published, so a failed send leaves it to the retry.
+    const answered = this.answering(peer.card.id);
+    const entry = answered && this.unanswered.get(answered.id);
+    const { stamp, own } = this.stamp(answered);
+    this.recordQuestion(own, { peerId: peer.card.id });
+    if (entry) entry.pending = true;
+    try {
+      const { msg, ack } = await this.ep.unicastAttributed(peer.card.id, text, stamp);
+      if (answered) this.unanswered.delete(answered.id);
+      return { msg, peer, ack, recipientStatusAtSend };
+    } finally {
+      if (entry) entry.pending = false;
+    }
   }
 
   // ---- supervision ---------------------------------------------------------

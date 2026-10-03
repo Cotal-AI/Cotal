@@ -140,11 +140,13 @@ over it that binds to its host's native mechanism: an installed plugin + MCP ser
 feature-by-feature.
 
 Replies carry their correlation ([SPEC §5](../SPEC.md#5-envelopes)). A `cotal_dm` to a peer
-answers the newest DM that peer sent you that no DM back has answered yet: it names that message
-in `replyTo` and copies its `contextId`, which belongs to the asker. With nothing to answer, a DM
-carries the connector's own `contextId`, if it sets one. A connector that runs several host
-sessions on one seat (Hermes) gives each session its own `contextId` and routes an answer carrying
-it back to the session that asked.
+answers the oldest DM or anycast that peer sent you that no DM back has answered yet: it names that
+message in `replyTo` and copies its `contextId`, which belongs to the asker. The message counts as
+answered once the reply is published, so a failed send leaves it for the retry. With nothing to
+answer, a DM carries the connector's own `contextId`, if it sets one. A connector that runs several
+host sessions on one seat (Hermes) stamps each question with a `contextId` of its own, and routes
+an answer back to the session that asked only when the answer copies it and comes from the peer
+the question went to.
 
 The endpoint underneath self-heals: when the transport connection dies terminally, a
 supervisor rebuilds it (rebuilds are serialized and coalesced), and unacked in-flight

@@ -6,12 +6,13 @@ and calls ``handle_message`` — which wakes an idle session or **queues + inter
 Outbound: the gateway hands a turn's reply to ``send()``, which the adapter routes back to that
 message's mesh origin (the channel it came in on, or a DM to the sender), as a reply to it.
 
-A DM answering a question a cotal session asked goes to that session, not to ``dm:<sender>``
-(see replies.py).
+A DM answering a question one of this gateway's sessions asked goes to that session, not to
+``dm:<sender>`` (see replies.py).
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from typing import Any, Optional
 
@@ -26,6 +27,10 @@ from gateway.config import Platform, PlatformConfig
 from . import hooks, replies
 from .bridge_client import get_client
 from .framing import format_injection
+
+logger = logging.getLogger(__name__)
+# How many delivered messages a turn reply can still name as the one it answers.
+MAX_ANSWERING = 1024
 
 
 def _target_for(chat_id: str) -> dict:
@@ -42,8 +47,9 @@ class CotalAdapter(BasePlatformAdapter):
         super().__init__(config, Platform("cotal"))
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._client = get_client()
-        # chat_id -> the last message from that chat's own origin, which its turn reply answers.
-        self._answering: dict[str, dict] = {}
+        # message id -> the contextId of a message delivered into its sender's own chat, for the
+        # turn reply that names it (the gateway's ``reply_to``).
+        self._answering: dict[str, Optional[str]] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect the bridge and start receiving.
@@ -116,11 +122,14 @@ class CotalAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Any = None, metadata: Any = None
     ) -> SendResult:
-        # The gateway delivers a turn's reply here → route it back to the message's mesh origin,
-        # copying the answered message's contextId (it belongs to the asker) and naming it in replyTo.
-        answered = self._answering.get(chat_id, {})
+        # The gateway delivers a turn's reply here → route it back to the message's mesh origin. A
+        # reply to a message delivered here names it and copies its contextId (it belongs to the
+        # asker); otherwise the sidecar pairs a DM reply with its peer's oldest unanswered message.
+        answered = str(reply_to) if reply_to is not None else None
+        if answered not in self._answering:
+            answered = None
         self._client.reply(
-            _target_for(chat_id), content, answered.get("id"), answered.get("contextId")
+            _target_for(chat_id), content, answered, self._answering.get(answered) if answered else None
         )
         return SendResult(success=True, message_id=uuid.uuid4().hex)
 
@@ -165,11 +174,26 @@ class CotalAdapter(BasePlatformAdapter):
         else:  # dm / anycast → a turn whose reply goes straight back to the sender
             chat_id, chat_type, chat_name = f"dm:{msg.get('fromId')}", "dm", sender
 
-        asker = replies.asking_session(msg.get("contextId")) if kind == "dm" else None
-        if asker:  # the answer to a question one of our sessions asked: run it in that session
+        # The answer to a question one of our sessions asked runs in that session. The sidecar has
+        # checked that its sender is the peer the question went to.
+        asker = replies.asking_session(msg.get("contextId")) if msg.get("answersQuestion") is True else None
+        if asker and "session_key" in asker:  # a session on another platform
+            if replies.inject(format_injection(msg), asker["session_key"]):
+                return
+            logger.warning(
+                "cotal: the host refused to run an answer in session %s, so it runs in %s; allow it "
+                "with plugins.entries.cotal.allow_gateway_injection: true",
+                asker["session_key"],
+                chat_id,
+            )
+            asker = None
+        if asker:
             source = self.build_source(**asker)
         else:
-            self._answering[chat_id] = {"id": msg.get("id"), "contextId": msg.get("contextId")}
+            if msg.get("id"):
+                self._answering[msg["id"]] = msg.get("contextId")
+                if len(self._answering) > MAX_ANSWERING:
+                    del self._answering[next(iter(self._answering))]
             source = self.build_source(
                 chat_id=chat_id,
                 chat_name=chat_name,

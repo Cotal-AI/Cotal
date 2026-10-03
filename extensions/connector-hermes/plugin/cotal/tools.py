@@ -20,9 +20,10 @@ from typing import Any, Callable, Optional
 from . import replies
 from .bridge_client import get_client
 
-# The tools that publish a message. A call from a cotal session stamps that session's context id,
-# so a peer's answer can be routed back to the session that asked (see replies.py).
-_SENDS = frozenset({"cotal_dm", "cotal_send", "cotal_anycast"})
+# The tools that ask a question of a peer, or of one agent of a role. Each call stamps a context id
+# minted for that question, so the answer can be routed back to the session that asked (see
+# replies.py). A channel broadcast is not one: everyone on the channel reads its context id.
+_QUESTIONS = frozenset({"cotal_dm", "cotal_anycast"})
 
 
 def _spec(descriptor: dict) -> dict:
@@ -43,9 +44,12 @@ def _handler(name: str) -> Callable[..., str]:
     signature can't reject a kwarg the host adds."""
     def run(args: dict, **_ctx: Any) -> str:
         try:
-            session = _calling_session() if name in _SENDS else None
+            session = _calling_session() if name in _QUESTIONS else None
             context_id = replies.issue(session) if session else None
-            return get_client().call_tool(name, args or {}, context_id=context_id)
+            # A cotal session dm:<peer id> is that peer's conversation: a DM to it there answers it.
+            chat_id = (session or {}).get("chat_id", "")
+            peer_id = chat_id[len("dm:"):] if chat_id.startswith("dm:") else None
+            return get_client().call_tool(name, args or {}, context_id=context_id, peer_id=peer_id)
         except Exception as e:  # surfaced back to the model as the tool result
             return f"cotal error: {e}"
 
@@ -53,12 +57,14 @@ def _handler(name: str) -> Callable[..., str]:
 
 
 def _calling_session() -> Optional[dict]:
-    """The gateway source of the cotal session this tool call runs in, or None for a session on
-    another platform. The gateway binds it per task (``gateway.session_context``, Hermes 0.16+)."""
+    """The gateway session this tool call runs in: a cotal session's gateway source, or the session
+    key of a session on another platform when the host can inject into it; None otherwise. The
+    gateway binds these per task (``gateway.session_context``)."""
     from gateway.session_context import get_session_env
 
     if get_session_env("HERMES_SESSION_PLATFORM", "") != "cotal":
-        return None
+        key = get_session_env("HERMES_SESSION_KEY", "")
+        return {"session_key": key} if key and replies.can_inject() else None
     chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
     if not chat_id:
         return None
