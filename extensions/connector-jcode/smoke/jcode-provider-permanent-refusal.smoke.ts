@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessError } from "@1jehuang/jcode-sdk";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
-import { PERMANENT_BRIDGE_RECOVERY_CODES, permanentBridgeRecoveryFailure } from "../src/host.js";
+import { BRIDGE_RECOVERY_WINDOW_MS, PERMANENT_BRIDGE_RECOVERY_CODES, permanentBridgeRecoveryFailure } from "../src/host.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -165,8 +165,11 @@ try {
       String((entry.frame as { content?: unknown } | undefined)?.content ?? "").includes("SIMULATE_PROVIDER_STALL"),
     ),
   );
+  // The refusal answers the replacement's attach, so it arrives inside the host's recovery window,
+  // after the broken tree's teardown and the relaunch (#1219).
   await waitFor("persistent permanent replacement refusal", () =>
     entries().find((entry) => entry.ev === "attach_refused" && entry.code === "invalid_request"),
+    BRIDGE_RECOVERY_WINDOW_MS,
   );
   const terminalDeadline = Date.now() + 10_000;
   while (

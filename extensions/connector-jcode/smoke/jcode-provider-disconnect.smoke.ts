@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { BRIDGE_RECOVERY_WINDOW_MS } from "../src/host.js";
 
 // #781: a provider stream can make Jcode close the Harness API connection while a seat is in an
 // inbox-driven turn. That failed turn must not take the mesh seat down with it. This uses the real
@@ -24,6 +25,9 @@ async function freePort(): Promise<number> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
 }
+// A wait on a step of a bridge recovery passes the host's own BRIDGE_RECOVERY_WINDOW_MS. On a loaded
+// runner, teardown, relaunch and attach can outlast the 20 s default while the host is still inside
+// its window, and a shorter budget reds a recovery the host is entitled to finish (#1219).
 async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 20_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -172,7 +176,7 @@ try {
     await waitFor("pending-kickoff recovery reattachment", () => {
       const attaches = entriesOf(kickoffLog).filter((entry) => entry.ev === "session_path" && entry.req === "attach_session");
       return attaches.length ? attaches : undefined;
-    });
+    }, BRIDGE_RECOVERY_WINDOW_MS);
     const recoveredKickoff = await waitFor("pending kickoff after recovery without inbox wake", () => {
       const turns = entriesOf(kickoffLog).filter(
         (entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" &&
@@ -289,7 +293,7 @@ try {
     await waitFor("ambiguous kickoff recovery reattachment", () => {
       const attaches = entriesOf(ambiguousLog).filter((entry) => entry.ev === "session_path" && entry.req === "attach_session");
       return attaches.length ? attaches : undefined;
-    });
+    }, BRIDGE_RECOVERY_WINDOW_MS);
     await waitFor("ambiguous kickoff seat returns to the roster", () => ambiguousPeerId);
     await sleep(500);
     const ambiguousAttempts = entriesOf(ambiguousLog).filter(
@@ -340,12 +344,13 @@ try {
     await waitFor("post-join kickoff turn boundary", () => entries().find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("You are now connected to the Cotal mesh as")));
     await operator.unicast(peerId!, "SIMULATE_PROVIDER_STALL");
     await waitFor("simulated provider disconnect", () => existsSync(closeOnce) ? closeOnce : undefined);
-    await waitFor("synthetic transient recovery attach failure", () => existsSync(failAttachOnce) ? failAttachOnce : undefined).catch(() => undefined);
+    await waitFor("synthetic transient recovery attach failure", () => existsSync(failAttachOnce) ? failAttachOnce : undefined, BRIDGE_RECOVERY_WINDOW_MS).catch(() => undefined);
     check("the recovery attempt deterministically loses its first attach race (#971)", entries().some((entry) => entry.ev === "attach_failed_once"), entries());
     await waitFor("recovery retry or seat exit after the transient attach loss", () =>
       stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window") || child!.exitCode !== null
         ? true
         : undefined,
+      BRIDGE_RECOVERY_WINDOW_MS,
     );
     check("provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)", child.exitCode === null && stderr.includes("private Harness replacement not ready yet; retrying inside its one recovery window"), { code: child.exitCode, stderr });
     await waitFor("recovery Harness connection", () => {
@@ -353,7 +358,7 @@ try {
         (entry) => entry.ev === "request" && (entry.frame as { req?: string }).req === "hello",
       );
       return hellos.length >= 3 ? hellos : undefined;
-    });
+    }, BRIDGE_RECOVERY_WINDOW_MS);
     const transientBridges = entries().filter(
       (entry): entry is { ev: string; pid: number } => entry.ev === "listening" && typeof entry.pid === "number",
     );
@@ -367,7 +372,7 @@ try {
         (entry) => entry.ev === "session_path" && entry.req === "attach_session" && entry.session_id === "fake-session",
       );
       return attempts.length >= 2 ? attempts : undefined;
-    });
+    }, BRIDGE_RECOVERY_WINDOW_MS);
     check("recovered Harness client reattaches the existing private session after the transient loss (#971)", reattachments.length >= 2, reattachments);
 
     const retriedTurn = await waitFor("unacknowledged stalled turn redelivery", () => {
@@ -455,7 +460,7 @@ try {
     await waitFor("safety mesh presence", () => safetyPeerId);
     await waitFor("safety post-join kickoff turn boundary", () => entriesOf(safetyLog).find((entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("You are now connected to the Cotal mesh as")));
     await operator.unicast(safetyPeerId!, "SIMULATE_UNPROVEN_TEARDOWN");
-    await waitFor("safety replacement attach failure", () => existsSync(safetyFailAttachOnce) ? true : undefined);
+    await waitFor("safety replacement attach failure", () => existsSync(safetyFailAttachOnce) ? true : undefined, BRIDGE_RECOVERY_WINDOW_MS);
     const safetyDeadline = Date.now() + 10_000;
     while (
       safetyChild.exitCode === null &&

@@ -122,7 +122,8 @@ current provider-login state rather than silently start with stale or partial au
 
 If a provider failure closes the private Harness API connection during a mesh-driven turn, the
 connector leaves that turn's inbox batch unacknowledged and opens one bounded recovery window for a
-private replacement connection to the same session. A transient launch or attach failure retries
+private replacement connection to the same session. The window lasts 60 seconds from the close, and
+stopping the broken private tree counts against it. A transient launch or attach failure retries
 inside that window, so a loaded host gets the same result as a fast one without creating an
 unbounded connector relaunch loop. The seat reports `waiting` while it reconnects, then redrives
 that unacknowledged batch only after the session attaches. Each failed replacement must be proven
