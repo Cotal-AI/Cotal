@@ -1476,11 +1476,27 @@ cursor is harmless because its old gate revision cannot authorize a later freeze
 |---|---|---|
 | `holder-alive` | The freeze-holder still has a live connection: a manager *is* running | Stop that process first. Reconciling would evict a live manager's credentials |
 | `holder-unknown` | The connection sweep could not prove the holder absent | Not safe to proceed: an unprovable holder is treated as a live one. Re-run once the broker answers completely |
-| `liveness-unestablishable` | The delivery daemon could not be asked at all | Start it (`cotal up` runs it) and re-run. Silence is never read as death |
+| `liveness-unestablishable` | The delivery daemon gave no verdict: it was unreachable, timed out, or refused | Act on the delivery lease line in the refusal (below). Silence is never read as death |
 | `not-frozen` / `no-gate` | The gate is open, or there is no gate at that coordinate | Nothing to repair: check `--endpoint` / `--instance` |
 | `wrong-op-kind` | Frozen under a takeover or retirement, not a registration | Out of scope for this command; it will not reinterpret another operation's intent |
 | `eviction-unverified` | The holder looked gone but eviction could not be verified | The gate is left frozen, unchanged. Investigate the broker before retrying |
 | `raced` | A newer manager moved the gate mid-repair | Re-run `cotal doctor` and look again |
+
+When the daemon gives no verdict, the refusal also reads the delivery lease (`lease.0`) and names
+what is blocking the rail:
+
+| Lease reading | What to do |
+|---|---|
+| absent | No daemon is running. Start it (`cotal up` runs it) and re-run |
+| unreadable | The daemon cannot be named, so do not assume none is running. Fix the lease read, then re-run |
+| held, not ready | That holder claimed the shard and has not bound its rails. Wait for it, or stop it so its lease lapses |
+| held, ready, no answer | That holder is wedged or cut off. Stop or restart it. Another daemon cannot take the lease while it is held |
+
+A daemon that answered and refused keeps its own reason, followed by the same lease line. The lease
+line names the holder, whether it is ready, the space account that holds the lease bucket, and when
+the row was last written. A ready holder rewrites the row on every renewal. The lease read never
+changes the outcome: the gate stays frozen and the command exits 2. A manager's boot self-heal uses
+the same check and reports the same line.
 
 There is no `--force`, and no path that discards gate state: the only way this reopens a gate is by
 proving the holder is gone and then completing the operation properly.

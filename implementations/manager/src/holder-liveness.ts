@@ -19,8 +19,12 @@
  *     command exists to avoid;
  *   - a garbled reply, or one that does not ECHO the principal asked about, is `unestablishable` —
  *     a result that does not verifiably describe THIS principal never authorizes.
+ *
+ * A refusal or an unreachable rail also reads the delivery lease (`lease.0`), so the refusal names
+ * what is blocking the rail instead of always advising a restart (#1062). That read is diagnostic
+ * only: it changes the copy, never the verdict.
  */
-import { CotalEndpoint, mintCreds, newIdentity, parsePrincipalLivenessResult, type SpaceAuth } from "@cotal-ai/core";
+import { CotalEndpoint, mintCreds, newIdentity, parsePrincipalLivenessResult, type DeliveryLeaseInfo, type SpaceAuth } from "@cotal-ai/core";
 import type { HolderLiveness } from "./reconcile-gate.js";
 
 /**
@@ -49,6 +53,72 @@ export function holderLivenessFromReply(data: unknown, principal: string): Holde
     state: parsed.state,
     detail: `delivery-daemon CONNZ sweep, sweepComplete=${String(parsed.sweepComplete)}${parsed.note ? `: ${parsed.note}` : ""}`,
   };
+}
+
+/** What `lease.0` says about the daemon that should have answered. `absent` and `unreadable` stay
+ *  apart for the reason `readDeliveryLeaseEntry` keeps them apart: a row that cannot be read is not
+ *  evidence that nobody holds the shard. */
+type DeliveryLeaseReading =
+  | { state: "absent" }
+  | { state: "unreadable"; error: string }
+  | { state: "held"; lease: DeliveryLeaseInfo };
+
+/** The lease row as facts. The row records no account, so the account named is the space account
+ *  whose lease bucket holds it, the only account its writer can have authenticated in. `since` is
+ *  re-stamped on every write, so for a ready holder it is the last renewal. */
+function deliveryLeaseFacts(reading: DeliveryLeaseReading, account: string, now: number = Date.now()): string {
+  if (reading.state === "absent") return "lease.0 is absent: no delivery daemon holds the shard";
+  if (reading.state === "unreadable") return `lease.0 is unreadable (${reading.error})`;
+  const { holder, since, ready } = reading.lease;
+  const age = Math.max(0, Math.round((now - since) / 1000));
+  return `lease.0 is held by "${holder}" (account ${account}), ${ready ? "ready" : "NOT ready"}, row written ${new Date(since).toISOString()} (${age}s ago)`;
+}
+
+/** Who to act on when the rail did not answer at all. Only an absent lease means no daemon is
+ *  running; every other reading names something that starting another daemon would not fix. */
+function unansweredRailBlocker(reading: DeliveryLeaseReading): string {
+  if (reading.state === "absent") return "Start the delivery daemon (`cotal up` runs it) and re-run";
+  if (reading.state === "unreadable")
+    return "The daemon that should answer cannot be named, so do not assume none is running: fix the lease read, then re-run";
+  const { holder, ready } = reading.lease;
+  return ready
+    ? `The blocker is "${holder}": it holds the shard as ready but did not answer. Stop or restart that process; another daemon cannot take the lease while it is held`
+    : `The blocker is "${holder}": it claimed the shard and has not bound its rails. Wait for it to become ready, or stop it so its lease lapses, then re-run`;
+}
+
+/** Read `lease.0` under a per-call read-only `observer` credential, the profile `cotal status` reads
+ *  it with; the evictor credential holds no lease read by design. Never throws: a failed read is
+ *  itself a reading. */
+async function readDeliveryLeaseForDiagnosis(opts: { space: string; servers: string; auth: SpaceAuth }): Promise<DeliveryLeaseReading> {
+  const id = newIdentity();
+  let ep: CotalEndpoint | undefined;
+  try {
+    ep = new CotalEndpoint({
+      space: opts.space,
+      servers: opts.servers,
+      creds: await mintCreds(opts.auth, id, "observer", { expiresInSeconds: 60 }),
+      card: { id: id.id, name: "manager-lease-diagnosis", kind: "endpoint" },
+      channels: [],
+      consume: false,
+      watchChannels: false,
+      watchPresence: false,
+      registerPresence: false,
+    });
+    ep.on("error", () => {});
+    await ep.start();
+    const entry = await ep.readDeliveryLeaseEntry(0);
+    if (!entry) return { state: "absent" };
+    const { holder, since, ready } = entry.info;
+    if (typeof holder !== "string" || typeof ready !== "boolean" || !Number.isFinite(since))
+      return { state: "unreadable", error: `row is not a lease record: ${JSON.stringify(entry.info)}` };
+    return { state: "held", lease: entry.info };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    // No lease bucket means no daemon can hold the shard, the reading `cotal status --components` gives it.
+    return /stream not found/i.test(error) ? { state: "absent" } : { state: "unreadable", error };
+  } finally {
+    await ep?.stop().catch(() => {});
+  }
 }
 
 /** Build the reconciler's `probeHolder(principal) → verdict`. Per-call connection, exactly as the
@@ -81,7 +151,7 @@ export function makeManagerHolderLivenessProbe(opts: {
       if (!r.ok)
         return {
           state: "unestablishable",
-          detail: `the delivery daemon refused the liveness query: ${r.error ?? "(no error copy)"}`,
+          detail: `the delivery daemon refused the liveness query: ${r.error ?? "(no error copy)"}; ${deliveryLeaseFacts(await readDeliveryLeaseForDiagnosis(opts), opts.auth.account.pub)}`,
         };
       const verdict = holderLivenessFromReply(r.data, principal);
       opts.log(`manager-holder-liveness: ${principal}: ${verdict.state} (${verdict.detail})`);
@@ -90,12 +160,13 @@ export function makeManagerHolderLivenessProbe(opts: {
       // The rail is unreachable, or the request TIMED OUT. Both are UNKNOWABILITY, and neither is
       // death: this is the branch a mutation would have to corrupt to turn verify-dead into
       // assume-dead-on-timeout, and it is the reason the reconciler refuses instead of proceeding.
+      const lease = await readDeliveryLeaseForDiagnosis(opts);
       return {
         state: "unestablishable",
         detail:
           `the delivery daemon is not reachable on the ctl.delivery-admin rail (${e instanceof Error ? e.message : String(e)}); ` +
-          `without the liveness oracle the freeze-holder "${principal}" cannot be proven gone. ` +
-          "Start the delivery daemon (`cotal up` runs it) and re-run — this repair never infers death from silence",
+          `${deliveryLeaseFacts(lease, opts.auth.account.pub)}. ${unansweredRailBlocker(lease)}. ` +
+          `Without the liveness oracle the freeze-holder "${principal}" cannot be proven gone, and this repair never infers death from silence`,
       };
     } finally {
       await ep?.stop().catch(() => {});
