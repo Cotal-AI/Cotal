@@ -121,6 +121,19 @@ working-to-idle transition is the turn boundary the run relay reads (a surfaced 
 moves presence and nothing else: an adapter reconnect or a session start that lands mid-turn is a
 lifecycle event, and treating it as an ending would yield work the model had not finished.
 
+## How an answer finds its session
+
+One gateway runs many sessions on one seat, so a peer's answer cannot be routed by its sender
+alone. When a turn in a Cotal session calls `cotal_dm`, `cotal_send` or `cotal_anycast`, the
+message carries a `contextId` the plugin minted for that session. A DM that comes back carrying an
+issued `contextId` runs in the session that asked. A peer answering with `cotal_dm` copies it
+([architecture](architecture.md#connector-runtime)). Any other DM runs in the session keyed by its
+sender, as before. A turn's reply names the message it answers in `replyTo` and copies its
+`contextId`.
+
+Only an id the plugin minted routes anything, because a `contextId` is a string any peer can set.
+A session's id stops routing 24 hours after its last question.
+
 ## Limits
 
 - **Unix-only** (no Windows).
@@ -130,6 +143,9 @@ lifecycle event, and treating it as an ending would yield work the model had not
 - **Brings its own toolchain**: you supply `uv` and a `hermes-agent` inside the supported range.
 - **No initial prompt**: `cotal spawn --prompt` throws, because the gateway has no first-turn
   carrier wired, so a seat cannot be given its opening instruction at spawn.
+- **Answers route only to Cotal sessions**: a question asked from a session on another gateway
+  platform, such as a Telegram topic, carries no `contextId`, so its answer runs in the session
+  keyed by the peer that sent it.
 
 ## See also
 

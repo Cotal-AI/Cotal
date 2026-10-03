@@ -10,8 +10,11 @@
  *   Python → sidecar
  *     {t:"subscribe"}                          adapter: start receiving inbound pushes
  *     {t:"delivered", recvKey}                 adapter: turn accepted delivery <recvKey> → ack it on the stream
- *     {t:"reply", target, text}                adapter: route a turn's reply back to its origin
- *     {t:"tool", id, name, args}               tools: invoke a cotal_* tool (full shared surface)
+ *     {t:"reply", target, text, replyTo?, contextId?}
+ *                                              adapter: route a turn's reply back to its origin,
+ *                                              answering message <replyTo> in conversation <contextId>
+ *     {t:"tool", id, name, args, contextId?}   tools: invoke a cotal_* tool (full shared surface);
+ *                                              its sends carry <contextId>, for this call only
  *
  *   sidecar → Python
  *     {t:"incoming", msg}                      push one buffered mesh message (for handle_message)
@@ -24,6 +27,10 @@
  *
  * Tool calls are dispatched generically over {@link cotalToolSpecs} (looked up by name), so this
  * bridge never has to enumerate the surface — full parity by construction.
+ *
+ * One gateway runs many sessions over this one seat, so correlation is per frame, never the seat's
+ * single context id: the adapter stamps each session's questions with its own `contextId` and
+ * routes an answer that carries it back to that session (see adapter.py).
  */
 import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
@@ -47,6 +54,9 @@ interface ReplyTarget {
   /** Peer instance id (or name) for a DM/anycast reply. */
   peerId?: string;
 }
+
+/** An optional string field of a frame; anything else is absent. */
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-hermes/bridge] ${msg}\n`);
@@ -182,7 +192,9 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         return;
       case "reply":
         try {
-          await onReply((frame.target ?? {}) as ReplyTarget, String(frame.text ?? ""));
+          await agent.withCorrelation({ replyTo: str(frame.replyTo), contextId: str(frame.contextId) }, () =>
+            onReply((frame.target ?? {}) as ReplyTarget, String(frame.text ?? "")),
+          );
         } catch (e) {
           log(`reply failed: ${(e as Error).message}`);
         }
@@ -190,7 +202,9 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
       case "tool": {
         const id = frame.id;
         try {
-          const { text, isError } = await onTool(String(frame.name), (frame.args ?? {}) as Record<string, unknown>);
+          const { text, isError } = await agent.withCorrelation({ contextId: str(frame.contextId) }, () =>
+            onTool(String(frame.name), (frame.args ?? {}) as Record<string, unknown>),
+          );
           sendFrame(sock, { t: "tool_result", id, ok: true, text, isError });
         } catch (e) {
           sendFrame(sock, { t: "tool_result", id, ok: false, error: (e as Error).message });

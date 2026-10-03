@@ -4,7 +4,10 @@ Inbound: the sidecar pushes mesh messages over the bridge; the adapter builds a 
 and calls ``handle_message`` — which wakes an idle session or **queues + interrupts a running one**
 (the gateway's own busy handling), so a peer can DRIVE a live turn, not just leave a message.
 Outbound: the gateway hands a turn's reply to ``send()``, which the adapter routes back to that
-message's mesh origin (the channel it came in on, or a DM to the sender).
+message's mesh origin (the channel it came in on, or a DM to the sender), as a reply to it.
+
+A DM answering a question a cotal session asked goes to that session, not to ``dm:<sender>``
+(see replies.py).
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ from gateway.platforms.base import (
 )
 from gateway.config import Platform, PlatformConfig
 
-from . import hooks
+from . import hooks, replies
 from .bridge_client import get_client
 from .framing import format_injection
 
@@ -39,6 +42,8 @@ class CotalAdapter(BasePlatformAdapter):
         super().__init__(config, Platform("cotal"))
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._client = get_client()
+        # chat_id -> the last message from that chat's own origin, which its turn reply answers.
+        self._answering: dict[str, dict] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect the bridge and start receiving.
@@ -111,8 +116,12 @@ class CotalAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Any = None, metadata: Any = None
     ) -> SendResult:
-        # The gateway delivers a turn's reply here → route it back to the message's mesh origin.
-        self._client.reply(_target_for(chat_id), content)
+        # The gateway delivers a turn's reply here → route it back to the message's mesh origin,
+        # copying the answered message's contextId (it belongs to the asker) and naming it in replyTo.
+        answered = self._answering.get(chat_id, {})
+        self._client.reply(
+            _target_for(chat_id), content, answered.get("id"), answered.get("contextId")
+        )
         return SendResult(success=True, message_id=uuid.uuid4().hex)
 
     async def get_chat_info(self, chat_id: str) -> dict:
@@ -156,13 +165,18 @@ class CotalAdapter(BasePlatformAdapter):
         else:  # dm / anycast → a turn whose reply goes straight back to the sender
             chat_id, chat_type, chat_name = f"dm:{msg.get('fromId')}", "dm", sender
 
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_name,
-            chat_type=chat_type,
-            user_id=msg.get("fromId"),
-            user_name=sender,
-        )
+        asker = replies.asking_session(msg.get("contextId")) if kind == "dm" else None
+        if asker:  # the answer to a question one of our sessions asked: run it in that session
+            source = self.build_source(**asker)
+        else:
+            self._answering[chat_id] = {"id": msg.get("id"), "contextId": msg.get("contextId")}
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=chat_name,
+                chat_type=chat_type,
+                user_id=msg.get("fromId"),
+                user_name=sender,
+            )
         event = MessageEvent(
             # A PEER NAMES ITSELF AND WRITES ITS OWN BODY, so neither is framing. This text is
             # auto-injected into a turn rather than returned when the model asks, so the model never

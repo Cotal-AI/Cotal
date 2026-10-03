@@ -196,20 +196,34 @@ class BridgeClient:
         """
         self._send({"t": "delivered", "recvKey": recv_key})
 
-    def reply(self, target: dict, text: str) -> None:
-        """Route a turn's reply back to its mesh origin (channel broadcast or DM to the sender)."""
-        self._send({"t": "reply", "target": target, "text": text})
+    def reply(
+        self, target: dict, text: str, reply_to: Optional[str] = None, context_id: Optional[str] = None
+    ) -> None:
+        """Route a turn's reply back to its mesh origin (channel broadcast or DM to the sender),
+        answering message ``reply_to`` in the asker's conversation ``context_id``."""
+        frame = {"t": "reply", "target": target, "text": text}
+        if reply_to:
+            frame["replyTo"] = reply_to
+        if context_id:
+            frame["contextId"] = context_id
+        self._send(frame)
 
-    def call_tool(self, name: str, args: dict, timeout: float = 30.0) -> str:
+    def call_tool(
+        self, name: str, args: dict, timeout: float = 30.0, context_id: Optional[str] = None
+    ) -> str:
         """Invoke a cotal_* tool on the sidecar and block for its text result (raises on transport
         error/timeout). The sidecar runs the shared spec, so the text is already model-ready; an
-        in-tool logical error comes back flagged and is prefixed for the model."""
+        in-tool logical error comes back flagged and is prefixed for the model. ``context_id`` is
+        stamped on what this one call sends."""
         rid = uuid.uuid4().hex
         ev = threading.Event()
         box: dict = {}
         self._pending[rid] = (ev, box)
         try:
-            self._send({"t": "tool", "id": rid, "name": name, "args": args})
+            frame = {"t": "tool", "id": rid, "name": name, "args": args}
+            if context_id:
+                frame["contextId"] = context_id
+            self._send(frame)
             if not ev.wait(timeout):
                 raise TimeoutError(f"cotal tool '{name}' timed out")
             if not box.get("ok"):

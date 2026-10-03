@@ -139,6 +139,13 @@ over it that binds to its host's native mechanism: an installed plugin + MCP ser
 [pi](connect-pi.md) (alpha). The [connectors matrix](connectors.md) compares them
 feature-by-feature.
 
+Replies carry their correlation ([SPEC §5](../SPEC.md#5-envelopes)). A `cotal_dm` to a peer
+answers the newest DM that peer sent you that no DM back has answered yet: it names that message
+in `replyTo` and copies its `contextId`, which belongs to the asker. With nothing to answer, a DM
+carries the connector's own `contextId`, if it sets one. A connector that runs several host
+sessions on one seat (Hermes) gives each session its own `contextId` and routes an answer carrying
+it back to the session that asked.
+
 The endpoint underneath self-heals: when the transport connection dies terminally, a
 supervisor rebuilds it (rebuilds are serialized and coalesced), and unacked in-flight
 messages redeliver on the rebound durables, so nothing is lost across the gap. A failed

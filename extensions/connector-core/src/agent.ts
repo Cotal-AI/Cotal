@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { hostname } from "node:os";
@@ -124,6 +125,13 @@ export interface InboxItem {
   contextId?: string;
 }
 
+/** Reply correlation for outgoing messages (SPEC §5): `contextId` is the asker's conversation id,
+ *  `replyTo` the id of the message being answered. */
+export interface Correlation {
+  contextId?: string;
+  replyTo?: string;
+}
+
 /** An inbox entry: the normalized message plus its JetStream ack handle. */
 interface Pending {
   item: InboxItem;
@@ -166,6 +174,8 @@ const MAX_AHEAD = 256;
 const CLASSIFICATION_CAP = 4096;
 const FOCUS_EXCLUSION_CAP = 4096;
 const PROTECTED_DISPOSITION_CAP = 4096;
+/** How many peers' unanswered DMs one session remembers for reply correlation. */
+const MAX_UNANSWERED = 1024;
 /** Repeated async NATS status errors can arrive once per ordered-consumer retry. They describe one
  * fault, not one hundred useful facts; keep the first visible and summarize at most twice a minute. */
 const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
@@ -359,6 +369,10 @@ export class MeshAgent extends EventEmitter {
   private pullTrouble?: string;
   private turnPollBusy = false;
   private _contextId: string | undefined;
+  /** The per-call correlation a {@link withCorrelation} scope binds for the sends inside it. */
+  private readonly correlation = new AsyncLocalStorage<Correlation>();
+  /** Per peer id, the newest live DM it sent us that no DM back has answered yet (bounded). */
+  private readonly unanswered = new Map<string, Correlation>();
   /** Chat-stream frontier captured when this agent entered `focus` — recall surfaces ambient
    *  published after it ("since you entered focus"). Undefined unless in focus. */
   private focusSince?: number;
@@ -623,6 +637,27 @@ export class MeshAgent extends EventEmitter {
     this._contextId = clean ? clean : undefined;
   }
 
+  /** Run `fn` with a per-call correlation: every send, DM and anycast it makes stamps the
+   *  `contextId` and `replyTo` given here, ahead of the defaults (a DM's answered message, then
+   *  the agent-wide context id from {@link setContextId}). A connector that serves several host
+   *  sessions from one seat uses it, because one agent-wide context id cannot tell two concurrent
+   *  sessions apart. */
+  withCorrelation<T>(correlation: Correlation, fn: () => T): T {
+    const contextId = correlation.contextId?.trim() || undefined;
+    const replyTo = correlation.replyTo?.trim() || undefined;
+    return this.correlation.run({ contextId, replyTo }, fn);
+  }
+
+  /** The correlation an outgoing message carries. `answered` is the message a DM answers: a reply
+   *  copies its `contextId`, which belongs to the asker, and names it in `replyTo` (SPEC §5). */
+  private stamp(answered?: Correlation): Correlation {
+    const c = this.correlation.getStore();
+    return {
+      contextId: c?.contextId ?? answered?.contextId ?? this._contextId,
+      replyTo: c?.replyTo ?? answered?.replyTo,
+    };
+  }
+
   /** Begin connecting with background retry. Resolves after the first completed mesh join. */
   start(retryMs = 3000): Promise<void> {
     return this.connectLoop(retryMs);
@@ -781,6 +816,12 @@ export class MeshAgent extends EventEmitter {
     if (!meta)
       throw new Error(`message ${m.id} delivered without MessageMeta — its class is unauthenticated`);
     const item = this.toInboxItem(m, meta.kind, meta.historical);
+    if (item.kind === "dm" && !item.historical && item.id !== "") {
+      // The next DM back to this peer answers this one (see dm()).
+      this.unanswered.delete(item.fromId);
+      this.unanswered.set(item.fromId, { replyTo: item.id, contextId: item.contextId });
+      if (this.unanswered.size > MAX_UNANSWERED) this.unanswered.delete(this.unanswered.keys().next().value!);
+    }
     // Per-channel override is the FINAL word for a channel message (DMs/anycast are never channel-
     // scoped, so they bypass this entirely and always buffer). Evaluated BEFORE the global mode:
     //  - `muted` → hard drop, incl. @mention (a mention rides the channel; you can't keep it if you
@@ -1392,7 +1433,7 @@ export class MeshAgent extends EventEmitter {
     await this.requireConnected();
     const clean = normalizeMentions(mentions);
     if (clean) await this.assertKnownMentions(clean);
-    return this.ep.multicast(text, { channel, mentions: clean, contextId: this._contextId });
+    return this.ep.multicast(text, { channel, mentions: clean, ...this.stamp() });
   }
 
   /**
@@ -1454,7 +1495,7 @@ export class MeshAgent extends EventEmitter {
 
   async anycast(role: string, text: string): Promise<CotalMessage> {
     await this.requireConnected();
-    return this.ep.anycast(role, text, { contextId: this._contextId });
+    return this.ep.anycast(role, text, this.stamp());
   }
 
   /** Resolve a peer by instance id (exact) or display name. Deterministic and fail-loud: returns
@@ -1499,9 +1540,10 @@ export class MeshAgent extends EventEmitter {
     // The only status we can truthfully attribute is the roster snapshot taken right before the
     // publish: recipient state can change the instant after, and the ack never tells us either way.
     const recipientStatusAtSend = peer.status;
-    const { msg, ack } = await this.ep.unicastAttributed(peer.card.id, text, {
-      contextId: this._contextId,
-    });
+    // A DM back to a peer answers the newest DM it sent us, once.
+    const answered = this.unanswered.get(peer.card.id);
+    this.unanswered.delete(peer.card.id);
+    const { msg, ack } = await this.ep.unicastAttributed(peer.card.id, text, this.stamp(answered));
     return { msg, peer, ack, recipientStatusAtSend };
   }
 

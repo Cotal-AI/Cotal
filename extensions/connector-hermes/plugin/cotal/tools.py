@@ -15,9 +15,14 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
+from . import replies
 from .bridge_client import get_client
+
+# The tools that publish a message. A call from a cotal session stamps that session's context id,
+# so a peer's answer can be routed back to the session that asked (see replies.py).
+_SENDS = frozenset({"cotal_dm", "cotal_send", "cotal_anycast"})
 
 
 def _spec(descriptor: dict) -> dict:
@@ -38,11 +43,32 @@ def _handler(name: str) -> Callable[..., str]:
     signature can't reject a kwarg the host adds."""
     def run(args: dict, **_ctx: Any) -> str:
         try:
-            return get_client().call_tool(name, args or {})
+            session = _calling_session() if name in _SENDS else None
+            context_id = replies.issue(session) if session else None
+            return get_client().call_tool(name, args or {}, context_id=context_id)
         except Exception as e:  # surfaced back to the model as the tool result
             return f"cotal error: {e}"
 
     return run
+
+
+def _calling_session() -> Optional[dict]:
+    """The gateway source of the cotal session this tool call runs in, or None for a session on
+    another platform. The gateway binds it per task (``gateway.session_context``, Hermes 0.16+)."""
+    from gateway.session_context import get_session_env
+
+    if get_session_env("HERMES_SESSION_PLATFORM", "") != "cotal":
+        return None
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+    if not chat_id:
+        return None
+    return {
+        "chat_id": chat_id,
+        "chat_type": get_session_env("HERMES_SESSION_CHAT_TYPE", ""),
+        "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME", ""),
+        "user_id": get_session_env("HERMES_SESSION_USER_ID", ""),
+        "user_name": get_session_env("HERMES_SESSION_USER_NAME", ""),
+    }
 
 
 def _load_descriptors() -> list[dict]:
