@@ -1400,8 +1400,9 @@ export class MeshAgent extends EventEmitter {
    *  the per-channel window — and wildcard subscriptions (`team.>`), which recall cannot read back
    *  per concrete sub-channel (#977: a wildcard join is not itself a channel ingest can consult a
    *  replay policy for) and so cannot vouch for either (never-silent throughout). Empty unless in
-   *  focus. */
-  async recallAmbient(): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
+   *  focus. `underway` names recalled items that already went out in part: an exclusion that lands
+   *  after that does not hide one, since recall would then move past the rest of it (#613). */
+  async recallAmbient(underway: ReadonlySet<string> = new Set()): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
     if (this._attention !== "focus" || this.focusSince === undefined)
       return { items: [], droppedChannels: [] };
     const items: InboxItem[] = [];
@@ -1473,30 +1474,27 @@ export class MeshAgent extends EventEmitter {
         const live = paired("live");
         const durable = paired("durable");
         const backfill = paired("backfill");
-        // A publication's live copy arrives as it is published and its durable copy only once the
-        // delivery daemon has fanned it out. So a durable delivery that arrived before the live one
-        // paired with a copy is of an older publication, and it waits for an older copy. Otherwise a
-        // muted durable copy of an aged-out message hid a later one that arrived live.
-        let d = durable.length;
         for (let k = 1; k <= at.length; k++) {
-          const l = live[live.length - k];
           const verdicts = new Set<boolean>();
-          if (l) verdicts.add(l.excluded);
-          if (d > 0 && !(l && durable[d - 1].arrival < l.arrival)) verdicts.add(durable[--d].excluded);
-          const b = backfill[backfill.length - k];
-          if (b) verdicts.add(b.excluded);
+          for (const path of [live, durable, backfill]) {
+            const d = path[path.length - k];
+            if (d) verdicts.add(d.excluded);
+          }
           if (verdicts.has(true)) skipped.add(at[at.length - k]);
-          // Two paths can still give one copy different verdicts when its live delivery came first: one
-          // copy muted live and let through durable looks the same as two publications on either side
-          // of a path change. Such a copy is skipped, so a muted copy never comes back, and the channel
-          // is reported as incomplete rather than left silent.
+          // Two paths can give one copy different verdicts: one copy muted on one path and let through
+          // on the other looks the same as two publications on either side of a path change, whichever
+          // path delivered first, since Cotal orders nothing across subjects. Such a copy is skipped, so
+          // a muted copy never comes back, and the channel is reported as incomplete rather than left
+          // silent.
           if (verdicts.size > 1) unsure = true;
         }
       }
       for (const [i, m] of messages.entries()) {
-        if (m.id !== "") {
-          if (this.focusExcludedIds.has(m.id)) continue;
-        } else if (skipped.has(i)) continue;
+        if (!underway.has(read[i].recvKey)) {
+          if (m.id !== "") {
+            if (this.focusExcludedIds.has(m.id)) continue;
+          } else if (skipped.has(i)) continue;
+        }
         items.push(read[i]);
       }
       if (dropped || unsure) droppedChannels.push(channel);

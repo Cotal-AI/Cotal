@@ -878,7 +878,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // Focus: the live buffer holds only DMs/anycast; the channel ambient + @mentions were
         // acked-and-dropped at ingest, so pull them back from the channel stream here (replay-gated,
         // "since you entered focus"). Recall is read-only, so peek only affects the live buffer.
-        const recall = await agent.recallAmbient();
+        // A recalled message already part read stays offered until its last part goes out (#613).
+        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
+        const underway = new Set([...(partOffsets.get(agent)?.keys() ?? [])].filter((k) => !bufferedIds.has(k)));
+        const recall = await agent.recallAmbient(underway);
         // RECALL HAS TO ADVANCE, or windowing it starves it. Recall is re-derived from an unchanged
         // frontier on every call, so showing its first window and stopping there returned the same
         // prefix forever while the reply promised a next batch: measured as three identical replies
@@ -924,7 +927,6 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const warning = [droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
-        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
         const { text, shown: all, stuck } = renderInbox({
           items: [...buffered, ...fresh],
           peek,

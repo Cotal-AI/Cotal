@@ -24,7 +24,7 @@
     {
       "name": "recall no longer filters ids retained during focus entry",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "          if (this.focusExcludedIds.has(m.id)) continue;\n",
+      "find": "            if (this.focusExcludedIds.has(m.id)) continue;\n",
       "replace": "",
       "expectRed": "focus-entry normal buffer is excluded from recall",
       "cell": "focus-entry normal buffer is excluded from recall"
