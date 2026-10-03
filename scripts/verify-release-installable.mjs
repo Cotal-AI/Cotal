@@ -10,7 +10,9 @@
  * and runs the installed `cotal --version`.
  *
  * A failed attempt before the deadline is UNKNOWN, not a failure: the registry may still be
- * converging. The gate polls until an attempt succeeds or the deadline passes. The deadline also
+ * converging. The gate polls until an attempt succeeds or the deadline passes, and only a failure
+ * observed once the deadline has passed is final. Near the deadline it waits at most half of the
+ * time left instead of a full interval, so the last unknown is still retried. The deadline also
  * bounds each attempt: npm and the binary are killed when it passes, so a registry that accepts a
  * request and never answers cannot hold the gate open past it.
  *
@@ -102,11 +104,14 @@ export async function verifyInstallable(opts, log = (line) => process.stdout.wri
       return 0;
     }
     log(`attempt ${n}: ${failure}`);
-    if (Date.now() + opts.pollIntervalMs > deadline) {
+    const left = deadline - Date.now();
+    if (left <= 0) {
       log(`VERDICT: NOT INSTALLABLE: cotal-ai@${opts.version} did not install and run before the deadline.`);
       return 1;
     }
-    await new Promise((resolve) => setTimeout(resolve, opts.pollIntervalMs));
+    // A full interval near the deadline would sleep through it and make this unknown final without
+    // another look. Wait at most half of what is left, so the retry keeps the other half.
+    await new Promise((resolve) => setTimeout(resolve, Math.min(opts.pollIntervalMs, Math.floor(left / 2))));
   }
 }
 
