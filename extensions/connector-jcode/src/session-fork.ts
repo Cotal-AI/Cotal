@@ -42,11 +42,60 @@ function code(error: unknown): string {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-/** Jcode's StoredMessage requires a string id and role and an array of content blocks. */
-const isStoredMessage = (value: unknown): boolean =>
-  isRecord(value) && typeof value.id === "string" && typeof value.role === "string" && Array.isArray(value.content);
-const isOptional = (value: unknown, kind: "string" | "object"): boolean =>
-  value === undefined || value === null || (kind === "string" ? typeof value === "string" : isRecord(value));
+const isString = (value: unknown): value is string => typeof value === "string";
+const isCount = (value: unknown): boolean => Number.isInteger(value) && (value as number) >= 0;
+const optional = (value: unknown, check: (value: unknown) => boolean): boolean =>
+  value === undefined || value === null || check(value);
+
+const RFC3339 = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/;
+/** A chrono `DateTime<Utc>` as Jcode writes it, as [whole seconds in epoch ms, nanoseconds], so two
+ *  times compare at the nanosecond Jcode records rather than the millisecond a Date keeps. */
+function instant(value: unknown): [number, number] | undefined {
+  const match = isString(value) ? RFC3339.exec(value) : null;
+  const seconds = match ? Date.parse(`${match[1]}${match[3]}`) : NaN;
+  return Number.isNaN(seconds) ? undefined : [seconds, Number((match![2] ?? "").padEnd(9, "0"))];
+}
+const notAfter = (a: [number, number], b: [number, number]): boolean => a[0] < b[0] || (a[0] === b[0] && a[1] <= b[1]);
+
+/** Jcode's ContentBlock variants (serde tag `type`, snake_case) and the fields each one requires. */
+const CONTENT_BLOCKS: Record<string, (block: Record<string, unknown>) => boolean> = {
+  text: (b) => isString(b.text) && optional(b.cache_control, (c) => isRecord(c) && isString(c.type) && optional(c.ttl, isString)),
+  reasoning: (b) => isString(b.text),
+  reasoning_trace: (b) => isString(b.text),
+  anthropic_thinking: (b) => isString(b.thinking) && isString(b.signature),
+  open_a_i_reasoning: (b) => isString(b.id) && Array.isArray(b.summary) && b.summary.every(isString) &&
+    optional(b.encrypted_content, isString) && optional(b.status, isString),
+  tool_use: (b) => isString(b.id) && isString(b.name) && "input" in b && optional(b.thought_signature, isString),
+  tool_result: (b) => isString(b.tool_use_id) && isString(b.content) && optional(b.is_error, (v) => typeof v === "boolean"),
+  image: (b) => isString(b.media_type) && isString(b.data),
+  open_a_i_compaction: (b) => isString(b.encrypted_content),
+  tool_reference: (b) => isString(b.tool_use_id) && isString(b.tool_name),
+  provider_native: (b) => isString(b.provider) && "item" in b,
+};
+const isTokenUsage = (u: unknown): boolean => isRecord(u) && isCount(u.input_tokens) && isCount(u.output_tokens) &&
+  ["prompt_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].every((key) => optional(u[key], isCount));
+/** Jcode's StoredCompactionState. */
+const isCompaction = (value: unknown): boolean => isRecord(value) && isString(value.summary_text) &&
+  optional(value.openai_encrypted_content, isString) && isCount(value.covers_up_to_turn) &&
+  isCount(value.original_turn_count) && isCount(value.compacted_count);
+
+/** Why `value` is not a StoredMessage Jcode can load, or undefined when it is one. */
+function messageFault(value: unknown): string | undefined {
+  if (!isRecord(value)) return "is not an object";
+  if (!isString(value.id)) return "has no string id";
+  if (value.role !== "user" && value.role !== "assistant") return `has role ${JSON.stringify(value.role)}, not user or assistant`;
+  if (!Array.isArray(value.content)) return "has content that is not an array";
+  for (const [index, block] of value.content.entries()) {
+    const type = isRecord(block) ? block.type : undefined;
+    if (!isString(type) || !Object.hasOwn(CONTENT_BLOCKS, type) || !CONTENT_BLOCKS[type]!(block as Record<string, unknown>))
+      return `has a content block ${index + 1} that is not a Jcode ${isString(type) ? `${JSON.stringify(type)} block` : "content block"}`;
+  }
+  if (!optional(value.display_role, (v) => v === "system" || v === "background_task")) return "has an unknown display_role";
+  if (!optional(value.timestamp, (v) => instant(v) !== undefined)) return "has a timestamp that is not an RFC 3339 time";
+  if (!optional(value.tool_duration_ms, isCount)) return "has a tool_duration_ms that is not a count";
+  if (!optional(value.token_usage, isTokenUsage)) return "has a token_usage Jcode cannot read";
+  return undefined;
+}
 
 function readOptional(path: string, refuse: (why: string) => never): Buffer | undefined {
   try {
@@ -62,9 +111,11 @@ function readOptional(path: string, refuse: (why: string) => never): Buffer | un
  * failure is a named refusal, so `buildLaunch` can call this to refuse before anything launches.
  *
  * The source may be live. Jcode checkpoints by writing the folded snapshot and then unlinking the
- * journal, so two reads can straddle it and lose the journal's messages or count them twice. The
- * pair is therefore read until two consecutive reads agree and no journal message is already in
- * the snapshot, and refused as unstable when that does not happen.
+ * journal, so two reads can straddle it and lose the journal's messages or count them twice, and a
+ * pair read between the two steps holds a journal the snapshot already folded. Every Jcode save
+ * stamps `updated_at`, so such a journal is one whose lines are no newer than the snapshot. The pair
+ * is therefore read until two consecutive reads agree and every journal line is newer than the
+ * snapshot and adds no message it already holds, and refused as unstable when that does not happen.
  */
 export function readJcodeForkSource(sourceHome: string, sessionId: string): JcodeForkSource {
   if (!SESSION_ID.test(sessionId) || sessionId.includes(".."))
@@ -92,7 +143,7 @@ export function readJcodeForkSource(sourceHome: string, sessionId: string): Jcod
     if (parsed) return parsed;
     previous = undefined;
   }
-  return refuse(`${snapshotPath} kept changing while it was read, or its journal repeats messages the snapshot already holds (a Jcode checkpoint in progress); retry the resume`);
+  return refuse(`${snapshotPath} kept changing while it was read, or its journal predates the snapshot (a Jcode checkpoint in progress); retry the resume`);
 }
 
 /** Parse one coherent snapshot + journal read, or undefined when the journal was already folded
@@ -115,15 +166,21 @@ function parseJcodeSource(
     refuse(`${snapshotPath} is not a Jcode session snapshot for that id`);
   // The fields the fork carries must be what Jcode's own serde accepts, or the seat would fail on
   // them after it launched instead of here.
-  const checkFields = (where: string, fields: Record<string, unknown>) => {
+  const checkFields = (where: string, fields: Record<string, unknown>): [number, number] => {
     for (const key of ["title", "system_prompt", "model"])
-      if (!isOptional(fields[key], "string")) refuse(`${where} has a non-string ${key}`);
-    if (!isOptional(fields.compaction, "object")) refuse(`${where} has a compaction that is not an object`);
+      if (!optional(fields[key], isString)) refuse(`${where} has a non-string ${key}`);
+    if (!optional(fields.compaction, isCompaction)) refuse(`${where} has a compaction Jcode cannot read`);
+    return instant(fields.updated_at) ?? refuse(`${where} has no updated_at Jcode can read`);
   };
-  checkFields(snapshotPath, session);
+  const checkMessages = (where: string, list: unknown[]) => {
+    for (const [index, message] of list.entries()) {
+      const fault = messageFault(message);
+      if (fault) refuse(`message ${index + 1} of ${where} ${fault}`);
+    }
+  };
+  const snapshotAt = checkFields(snapshotPath, session);
   const messages = [...(session.messages as unknown[])];
-  const badMessage = messages.findIndex((message) => !isStoredMessage(message));
-  if (badMessage >= 0) refuse(`message ${badMessage + 1} of ${snapshotPath} is not a Jcode message`);
+  checkMessages(snapshotPath, messages);
   const seen = new Set(messages.map((message) => (message as { id: string }).id));
   // Jcode's apply_journal_entry: each line replaces the metadata wholesale and appends its messages.
   // Only the fields the fork carries are folded.
@@ -137,9 +194,11 @@ function parseJcodeSource(
       return refuse(`${where} is not valid JSON (${(error as Error).message})`);
     }
     if (!isRecord(entry) || !isRecord(entry.meta)) return refuse(`${where} has no metadata`);
-    checkFields(where, entry.meta);
+    // A line no newer than the snapshot was written before it, so the snapshot already folded it.
+    if (notAfter(checkFields(where, entry.meta), snapshotAt)) return undefined;
     const appended = entry.append_messages ?? [];
-    if (!Array.isArray(appended) || !appended.every(isStoredMessage)) refuse(`${where} has append_messages that are not Jcode messages`);
+    if (!Array.isArray(appended)) return refuse(`${where} has append_messages that are not a list`);
+    checkMessages(`append_messages on ${where}`, appended);
     for (const message of appended as { id: string }[]) {
       if (seen.has(message.id)) return undefined;
       seen.add(message.id);

@@ -101,9 +101,11 @@ parent is the source and which carries the source's messages, compaction state, 
 model. The seat gets a new session id and its briefing as the first turn after that history. The
 source files are only read, so the source transcript is never appended to. A session id with no
 readable transcript, or one whose snapshot or journal holds fields Jcode cannot load, is refused
-before the seat launches. The source may be live: the connector reads it until two reads agree, so
-a Jcode checkpoint caught mid-way is neither lost nor counted twice, and a session that keeps
-changing is refused with a request to retry. A seat relaunched under the same name continues its
+before the seat launches; every carried message, content block, and compaction state is checked
+against Jcode's own schema, and the refusal names the field. The source may be live: the connector
+reads it until two reads agree and every journal line is newer than the snapshot, so a Jcode
+checkpoint caught mid-way is neither lost nor applied twice, and a session that keeps changing is
+refused with a request to retry. A seat relaunched under the same name continues its
 fork rather than forking again, without reading the source, which may since have been deleted. The
 seat's briefing is recorded separately from the fork, so a first launch that fails after forking
 still briefs the seat on its next launch.
