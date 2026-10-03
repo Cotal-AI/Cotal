@@ -419,7 +419,14 @@ const SEAMS: Seam[] = [
   // the top of that file is the IMPORT and is not a call site; this reader counts calls. The two
   // are named by IDENTIFIER rather than by line, because a line number in a comment is stale the
   // next time anything is inserted above it, and then it points a reader at the wrong call.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 227, untypecheckedSites: 178 },
+  // 227/178 -> 228/178: one typechecked call that neither repin above counted, `recreateMemoryBuckets`
+  // in implementations/cli/src/commands/up.ts (ffdb45c345, #2335), the resumed up's dial that
+  // recreates the memory-backed presence bucket. It states `tls: false`. #2335 merged beside the
+  // 225/176 repin, whose branch did not contain it. 227/178 is the count of a tree WITHOUT the
+  // Hermes sidecar bundle, whose copy of the seam (counted since 161/119) offset the missed call.
+  // These counts are for a BUILT tree, the one `smoke:ci` scans after `pnpm build`; a tree that
+  // never ran the bundle finds 227/178.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 228, untypecheckedSites: 178 },
 ];
 
 /**
