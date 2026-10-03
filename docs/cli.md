@@ -2015,6 +2015,26 @@ cotal completion install [shell]              # install it persistently
 Prints or installs shell completion. Completion candidates come from each command's declared flags
 and, where useful, live mesh state (spaces, personas, managed agents) resolved offline.
 
+Enable completion in the current shell:
+
+```bash
+source <(cotal completion bash)                              # bash
+source <(cotal completion zsh)                               # zsh
+cotal completion fish | source                               # fish
+cotal completion powershell | Out-String | Invoke-Expression # powershell
+```
+
+`cotal completion install` wires completion persistently. It detects the active shell from `$SHELL`
+or takes a shell name positionally:
+
+- **bash**: writes `~/.config/cotal/completion.bash` and appends a source line to `~/.bashrc`.
+- **zsh**: writes `~/.config/cotal/completion.zsh` and appends a source line to `~/.zshrc`.
+- **fish**: writes `~/.config/fish/completions/cotal.fish` (or under `$XDG_CONFIG_HOME`), which fish loads automatically.
+- **powershell**: prints the snippet to add to `$PROFILE`.
+
+The installed stub routes tab completion to the internal `cotal __complete` dispatcher, which
+evaluates candidates from local persona files and registered command specs without network calls.
+
 ## feedback
 
 ```bash
