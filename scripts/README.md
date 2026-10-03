@@ -40,9 +40,11 @@ green run suggests:
 - `check:docs-literals` reads each backticked span in `docs/` that looks like emitted operator
   prose (four or more lowercase words, not a command) and fails when no string or template literal
   in shipped source holds it. A substituted value is written as a placeholder such as `<id>`, and
-  it must stand where the source substitutes one. Comments do not count as emitting a line. A
-  capitalized, short or punctuation-heavy quote is not a candidate, so a rename of one of those is
-  still caught only by review.
+  it must stand where the source substitutes one. Strings are read from the JavaScript each file
+  compiles to, so a comment, a type or an ambient declaration does not count as emitting a line.
+  Fenced blocks are skipped, closing as CommonMark closes them. A capitalized, short or
+  punctuation-heavy quote is not a candidate, so a rename of one of those is still caught only by
+  review.
 - `check-docs-bundle.mjs` proves the generator turns the pages into a bundle that is not hollow.
   It does not prove that the pages agree with the code.
 
