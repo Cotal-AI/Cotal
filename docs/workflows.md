@@ -382,7 +382,9 @@ answerer to read, exhausted attempts (default one) are the catchable L4006, and 
 absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`).
 `checkpoint` binds what it asks on its own entry, so `cotal run journal` prints the question under
 the step key an answer is addressed by while the pause is open: the address alone left whoever was
-asked reading the source to find out what "approve" meant. After a checkpoint or `ask` accepts an
+asked reading the source to find out what "approve" meant. The entry also records its deadline and
+the `onExpiry` the attempt was armed with, which `run journal --json` reports; what an expiry does
+is still decided from the program's source. After a checkpoint or `ask` accepts an
 answer, the journal prints that accepted answer's recorded value and attribution under the settled
 step. A checkpoint's comes from its frozen result, and the journal never substitutes another filed
 answer or invents fields that result does not hold. An `ask`'s result is the value alone, so its line

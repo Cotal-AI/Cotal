@@ -683,6 +683,8 @@ const RUN_ROW_SCHEMA = {
     holder: { type: "string" },
     epoch: { type: "integer", minimum: 0 },
     journalHigh: { type: "integer", minimum: -1 },
+    startedAt: { type: "number" },
+    programHash: { type: "string" },
     forkedFrom: {
       type: "object", additionalProperties: false, required: ["run", "step"],
       properties: { run: { type: "string" }, step: { type: "string" } },
@@ -714,10 +716,18 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
           epoch: { type: "integer", minimum: 0 },
           replayedTo: { type: "integer", minimum: 0 },
           step: { type: "string" },
+          effect: { type: "string" },
+          name: { type: "string" },
           state: { type: "string", enum: ["pending", "settled"] },
           outcome: { type: "string" },
+          status: { type: "string" },
+          errorCode: { type: "string" },
+          startedAt: { type: "number" },
+          endedAt: { type: "number" },
           asks: { type: "string" },
           addressee: { type: "string" },
+          deadlineAt: { type: "number" },
+          onExpiry: { type: "string" },
           answer: {
             type: "object", additionalProperties: false, required: ["answerId"],
             properties: {

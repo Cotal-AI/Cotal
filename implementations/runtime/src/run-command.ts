@@ -728,12 +728,17 @@ function printJournal(runId: string, rows: readonly RunJournalRow[], json: boole
 }
 
 function printRuns(space: string, rows: readonly RunListRow[], json: boolean): void {
+  // A marker the host could not read fails the listing after every row is printed, under `--json`
+  // as in the table: its reason and the record's word on stderr, and exit 1.
   const unchecked = rows.filter((r) => r.revocationUnreadable !== undefined);
-  if (json) {
-    // The row carries `revoked` and `revocationUnreadable` itself; an unreadable marker still
-    // fails the listing with exit 1, after every row is printed.
-    for (const r of rows) console.log(JSON.stringify(r));
+  const reportUnchecked = (): void => {
+    for (const r of unchecked)
+      console.error(`${r.endpoint}/${r.runId}: revocation marker could not be read (${r.revocationUnreadable}); its record reads ${r.state ?? "(no status)"}`);
     if (unchecked.length > 0) process.exitCode = 1;
+  };
+  if (json) {
+    for (const r of rows) console.log(JSON.stringify(r));
+    reportUnchecked();
     return;
   }
   if (rows.length === 0) {
@@ -758,9 +763,7 @@ function printRuns(space: string, rows: readonly RunListRow[], json: boolean): v
   for (const r of rows)
     if (r.revoked !== undefined)
       console.log(`${r.endpoint}/${r.runId}: revoked by ${r.revoked.by} (${r.revoked.reason}); the status record is left as its driver last wrote it`);
-  for (const r of unchecked)
-    console.error(`${r.endpoint}/${r.runId}: revocation marker could not be read (${r.revocationUnreadable}); its record reads ${r.state ?? "(no status)"}`);
-  if (unchecked.length > 0) process.exitCode = 1;
+  reportUnchecked();
 }
 
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
