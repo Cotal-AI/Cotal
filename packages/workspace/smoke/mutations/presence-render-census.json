@@ -78,9 +78,10 @@
     {
       "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "    \"total\": 514,",
-      "replace": "    \"total\": 513,",
-      "expectRed": "presence render census count drifted"
+      "find": "    \"total\": 515,",
+      "replace": "    \"total\": 514,",
+      "expectRed": "presence render census count drifted",
+      "note": "Re-anchored for #2362, which classified the ps mesh-column condition sink and moved the reviewed total from 514 to 515. The mutant still drifts the total by one."
     },
     {
       "name": "M10 the narrowed agent.ts anchor regresses to the bare working token",

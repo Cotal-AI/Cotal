@@ -41,10 +41,11 @@
     {
       "name": "a copied foreign token is accepted as owned",
       "file": "implementations/runtime/src/run-scope-authority.ts",
-      "find": "    return entry.requestId === expected;",
+      "find": "    return ownsEntry(this.runId, entry);",
       "replace": "    return true;",
       "expectRed": "copying a foreign token into the driver's own journal grants no host access",
-      "cell": "copying a foreign token into the driver's own journal grants no host access"
+      "cell": "copying a foreign token into the driver's own journal grants no host access",
+      "note": "Re-anchored for #2370, which moved the derivation into the exported ownsEntry() shared with completion release. Mutating the RunScopeAuthority.owns() delegation keeps this mutant to host-operation authority, as before, and leaves the release path's use of ownsEntry() intact."
     },
     {
       "name": "parent cancellation obligations are ignored",

@@ -50,11 +50,11 @@
     {
       "name": "M4 do not publish the initial drive batch",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    releaseUnheldReservations();\n    publishInboundHealth();",
-      "replace": "    releaseUnheldReservations();\n    void agent.setStatus(\"working\").catch(() => {});",
+      "find": "    releaseUnheldReservations();\n    relayTurnCondition(null);\n    publishInboundHealth();",
+      "replace": "    releaseUnheldReservations();\n    relayTurnCondition(null);\n    void agent.setStatus(\"working\").catch(() => {});",
       "expectRed": "presence activity names the initial automatic inbound batch while its run is open (#1075)",
       "cell": "presence activity names the initial automatic inbound batch while its run is open (#1075)",
-      "note": "Re-anchored for #1233: the reservation fix inserted `releaseUnheldReservations()` between `surfacedIds = [...ids]` and this call, so the old three-line anchor no longer matched and the mutation ERRORed instead of running. The line severed is unchanged: `publishInboundHealth()` is still replaced by the bare status write, so the mutant still publishes presence without naming the batch."
+      "note": "Re-anchored for #1233: the reservation fix inserted `releaseUnheldReservations()` between `surfacedIds = [...ids]` and this call, so the old three-line anchor no longer matched and the mutation ERRORed instead of running. The line severed is unchanged: `publishInboundHealth()` is still replaced by the bare status write, so the mutant still publishes presence without naming the batch. Re-anchored for #2362: the harness-condition relay inserted `relayTurnCondition(null)` between the two anchored lines; the anchor now spans it unchanged and still severs only `publishInboundHealth()`."
     },
     {
       "name": "M5 the event holder is not given the live wait",
