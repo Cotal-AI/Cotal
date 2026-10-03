@@ -63,6 +63,9 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   predictable: it is derived from the token rather than from the space and agent name alone.
 - It runs the gateway in an isolated `HERMES_HOME` profile (a temp dir), so your own `~/.hermes`
   is never touched, with approvals off (a supervised agent has no human at the TUI to approve).
+  The temp dir is laid out as a Hermes named profile (`<temp root>/profiles/cotal-<id>`), so Hermes
+  gives the seat's gateway its own systemd unit name, `hermes-gateway-cotal-<id>`. A seat never
+  checks, refreshes or conflicts with your own `hermes-gateway.service`.
   To put your own Hermes on the mesh instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).
 - The persona is written as Hermes' `SOUL.md` (its system-prompt file), the one place a system
   prompt can be set.

@@ -54,6 +54,24 @@ const tok = (s: string): string => s.trim().replace(ILLEGAL, "_").slice(0, 40) |
 const PKG_DIR = fileURLToPath(new URL("..", import.meta.url));
 const PLUGIN_SRC = join(PKG_DIR, "plugin", "cotal");
 
+/**
+ * The managed profile's HERMES_HOME: a Hermes named profile, `<root>/profiles/cotal-<id>`, under a
+ * root of its own in tmp.
+ *
+ * Hermes names a gateway's systemd unit after its profile, and it reads a HERMES_HOME outside
+ * ~/.hermes whose parent is not `profiles` as a root. A root's unit is the bare `hermes-gateway`,
+ * which is the unit the operator's own gateway installs. Every `hermes gateway run` checks and
+ * refreshes that unit, so a seat on a bare temp home refused to start while the operator's gateway
+ * was active, and regenerated the operator's unit from this temp directory on every launch (written
+ * by Hermes before 0.18, after which the unit failed at CHDIR once tmp was cleared). As a named
+ * profile the seat's unit is `hermes-gateway-cotal-<id>`, which no operator unit carries. The id is
+ * a digest of space and name: stable per seat, and inside Hermes' profile-name pattern.
+ */
+function managedHome(space: string, name: string): string {
+  const id = createHash("sha256").update(`${space}\0${name}`).digest("hex").slice(0, 12);
+  return join(tmpdir(), `cotal-hermes-${tok(space)}-${tok(name)}`, "profiles", `cotal-${id}`);
+}
+
 /** The bridge socket's path id is unpredictable, unlike the control endpoint's: `id` folds in the
  *  launch's own control token alongside space/name/pid, so a same-uid process cannot compute the
  *  path from public identity the way the old `space`+`name` name let it. The token is what
@@ -261,7 +279,7 @@ async function main(): Promise<void> {
     : undefined;
   // Managed (default): a disposable profile under tmp, regenerated every launch. Adopted (opt-in):
   // the operator's own profile, into which only this connector's plugin directory is written.
-  const home = adopt ?? join(tmpdir(), `cotal-hermes-${tok(config.space)}-${tok(config.name)}`);
+  const home = adopt ?? managedHome(config.space, config.name);
   if (adopt) setupAdoptedProfile(home, { persona });
   else setupProfile(home, { model: process.env.HERMES_MODEL, persona });
 
