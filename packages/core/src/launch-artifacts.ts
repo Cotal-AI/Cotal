@@ -9,9 +9,10 @@
  * spawns the spec owns them from then on: it removes them once it has proved the child gone. Nothing
  * earlier is safe, since the child may read them at any point in its life. A spawn that throws is not
  * that proof, since a backend can fail after its child has started, and neither is losing the
- * connection to whatever watches the child. A refusal made before any process exists is: a runtime
- * says so by throwing {@link SpawnRefused}, and the launcher removes the files on that error only.
- * A removal that fails leaves them owned, and the owner tries again.
+ * connection to whatever watches the child. A failure before the runtime has handed the spec's
+ * command to anything that could start it is: a runtime says so by throwing {@link SpawnRefused},
+ * and the launcher removes the files on that error only. A removal that fails leaves them owned, and
+ * the owner tries again.
  *
  * WHAT IS LEFT. On a runtime with durable custody (pty on Linux) the seat's custodian, the child's
  * parent, removes them when it sees the child exit, whether or not the launcher is still alive. Its
@@ -40,10 +41,10 @@ import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
 const DIR_PREFIX = "cotal-";
 
 /**
- * Thrown by a runtime's `spawn` for a refusal it made before starting any process (an unsafe name, a
- * backend that is not reachable). It is the one spawn failure that proves no child will read the
- * spec's artifacts, so the launcher removes them on it. Throw it only from checks that run before the
- * first side effect.
+ * Thrown by a runtime's `spawn` for a failure before it handed the spec's command to anything that
+ * could start it (an unsafe name, a backend that is not reachable, a launch script it could not
+ * write). It is the one spawn failure that proves no child will read the spec's artifacts, so the
+ * launcher removes them on it. Throw it only from code that runs before that handoff.
  */
 export class SpawnRefused extends Error {
   constructor(message: string) {
@@ -112,13 +113,24 @@ function assertArtifactDirs(artifacts: readonly string[]): void {
 /** Run by `/bin/sh -c` as `<script> cotal-launch <n> <n dirs> <command> <args...>`. The watcher
  *  ignores the hangup, interrupt and terminate signals a closing terminal or a stop sends to the
  *  child's process group, holds no terminal, and polls the shell's pid, which `exec` hands to the
- *  command. A reused pid only delays the removal. */
+ *  command. A reused pid only delays the removal. It is the only owner left once the launcher is
+ *  dead, so it tries every directory it could not remove again every five seconds until all are
+ *  gone. */
 const RECLAIM_SCRIPT = `p=$$ n=$1
 shift
 (
   trap '' HUP INT QUIT TERM
   while kill -0 "$p" 2>/dev/null; do sleep 1; done
-  while [ "$n" -gt 0 ]; do rm -rf -- "$1"; shift; n=$((n - 1)); done
+  while :; do
+    i=0 left=0
+    for d; do
+      [ "$i" -lt "$n" ] || break
+      rm -rf -- "$d" || left=1
+      i=$((i + 1))
+    done
+    [ "$left" = 0 ] && break
+    sleep 5
+  done
 ) </dev/null >/dev/null 2>&1 &
 shift "$n"
 exec "$@"`;

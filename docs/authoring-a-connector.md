@@ -62,11 +62,13 @@ process started removes them at once. Each directory name carries a random per-l
 a stale path can never name a later launch's directory. Every other runtime, and the foreground
 `cotal spawn`, starts the child through `reclaimWithChild` from `@cotal-ai/core`: a POSIX shell
 starts a watcher and then runs the child in its own place, and the watcher removes the files once the
-child's process is gone, even when the launcher was killed. On a runtime that cannot stream an exit
+child's process is gone, even when the launcher was killed. The watcher tries a failed removal again
+every five seconds until it succeeds. On a runtime that cannot stream an exit
 (tmux, cmux, orca, herdr) the manager also polls the seat's status and waits for the runtime's exit
-proof. A failed removal is tried again until it succeeds. A runtime that refuses a launch before
-starting any process throws `SpawnRefused` from `@cotal-ai/core`, and the manager removes the files
-at once. Any other spawn that throws is not proof, so its files stay for the child's watcher, or for
+proof. A failed removal is tried again until it succeeds. A runtime that fails before it has handed
+the child's command to its backend, because it refused the launch or could not write its own launch
+script, throws `SpawnRefused` from `@cotal-ai/core`, and the manager removes the files at once.
+Any other spawn that throws is not proof, so its files stay for the child's watcher, or for
 the OS temp reaper when no child started. Windows has no POSIX shell for the watcher, so there a
 killed launcher's files also stay for the OS temp reaper. Run every check that can refuse the launch, and every conversion that can throw, before the
 first write. The file
