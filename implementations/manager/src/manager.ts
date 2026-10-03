@@ -809,6 +809,9 @@ interface ManagedAgent {
    *  control ops refuse and no later renewal is admitted. A renewal already admitted drains before
    *  the durable terminal begins, so its row and material are included in revocation and cleanup. */
   terminalizing?: boolean;
+  /** Set while the manager has logged this seat off the mesh with its slot still held (#1208);
+   *  cleared when the seat is logged back on. */
+  offMesh?: boolean;
   /** The one renewal admitted before terminalization. Retirement drains it before revocation and
    *  cleanup; callers arriving after the latch never join it. */
   staticCredentialRenewal?: Promise<void>;
@@ -1570,6 +1573,10 @@ export class Manager {
     const reportEndpoint = (e: Error) => console.error(`! manager endpoint: ${e.message}`);
     this.ep.on("error", reportEndpoint);
     this.ep.on("warning", reportEndpoint);
+    // Every roster change and every view transition, so a seat that is offline in a fresh snapshot
+    // (recorded with no presence event) is logged the moment the view can support the verdict.
+    this.ep.on("roster", () => this.logSeatMeshTransitions());
+    this.ep.on("presence-view", () => this.logSeatMeshTransitions());
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtime.kind})`);
     // Per-instance liveness lease (P2 item 3 — the old per-space singleton is DEMOTED per D9). Acquire
@@ -3953,6 +3960,43 @@ export class Manager {
     console.error(
       `seat reaped: ${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""}) - ${causeText}; ${detail}`,
     );
+  }
+
+  /**
+   * A SEAT THAT LEAVES THE MESH WHILE ITS SLOT IS HELD GETS A LINE, AND SO DOES ITS RETURN.
+   *
+   * Seats once read `running · mesh offline` for many hours with no manager log line, so a watchdog
+   * keyed on process liveness saw nothing wrong and nobody could say when each seat dropped (#1208).
+   * The line follows the same state `ps` reads, checked on every roster change and view transition,
+   * because not every offline record arrives as a presence event: after a reconnect the fresh snapshot
+   * records an already-offline seat quietly. Only a current view is a verdict, so a stale or
+   * unpopulated one logs nothing. The match is {@link isOwnPresence}. A seat being stopped is left to
+   * the reap line. The heartbeat is the seat's own record and nothing validated it, so an unreadable
+   * one prints as unknown instead of throwing inside the watch.
+   */
+  private logSeatMeshTransitions(): void {
+    if (typeof this.ep.presenceView === "function" && this.ep.presenceView().state !== "current") return;
+    const roster = new Map(this.ep.getRoster().map((p) => [p.card.id, p]));
+    for (const a of this.agents.values()) {
+      const seen = roster.get(this.managedPrincipal(a));
+      if (a.terminalizing || !this.isOwnPresence(a, seen)) continue;
+      const who = `${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`;
+      if (seen.status === "offline" && !a.offMesh) {
+        a.offMesh = true;
+        const ts = seen.ts;
+        const last = typeof ts === "number" && !Number.isNaN(new Date(ts).getTime()) ? new Date(ts).toISOString() : "unknown";
+        console.error(`seat offline on the mesh: ${who} - last heartbeat ${last}; process ${a.handle.status()}`);
+      } else if (seen.status !== "offline" && a.offMesh) {
+        a.offMesh = false;
+        console.error(`seat back on the mesh: ${who}`);
+      }
+    }
+  }
+
+  /** Whether a roster record is this seat's own: the readiness fence's exact principal and
+   *  incarnation, so a same-named foreign peer or an older incarnation never speaks for it (#1208). */
+  private isOwnPresence(a: ManagedAgent, p: Presence | undefined): p is Presence {
+    return p !== undefined && p.card.id === this.managedPrincipal(a) && p.lifecycleUid === a.lifecycleUid;
   }
 
   /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
@@ -9280,7 +9324,8 @@ export class Manager {
         : undefined;
       // The connector-reported provider from presence (#785): the live roster card's `meta.provider`,
       // when it is a non-empty string. Absent when the connector reported none — never fabricated.
-      const providerMeta = roster.get(a.name)?.card.meta?.provider;
+      const seen = roster.get(a.name);
+      const providerMeta = seen?.card.meta?.provider;
       const provider = typeof providerMeta === "string" && providerMeta ? providerMeta : undefined;
       // The harness-reported condition beside the mesh status (#618): a turn that died upstream reads
       // `waiting` with `rate_limit` here, not a bare `waiting`. Absent when the connector reported none.
@@ -9299,6 +9344,14 @@ export class Manager {
       // that stopped advancing reads as an old `activeAt` beside a live process. Absent when none was reported.
       const activeAtReported = roster.get(a.name)?.activeAt;
       const activeAt = typeof activeAtReported === "number" && Number.isFinite(activeAtReported) ? activeAtReported : undefined;
+      // How long an offline verdict has stood (#1208): the seat's last heartbeat before it went
+      // offline. Only beside a verdict, since a stale or unpopulated view dates nothing, only from the
+      // seat's own record, since `seen` is matched by name and a same-named foreign peer or an older
+      // incarnation must not date this seat, and only when the seat's unvalidated `ts` fits the row
+      // schema, so one odd record cannot fail the reply.
+      const offlineSince = view.state === "current" && this.isOwnPresence(a, seen) && seen.status === "offline" && Number.isSafeInteger(seen.ts) && seen.ts >= 0
+        ? seen.ts
+        : undefined;
       return {
         name: a.name,
         // The spawned agent's id (nkey, or the user-mode principal) — lets an operator tool (e.g.
@@ -9311,12 +9364,13 @@ export class Manager {
         mode: a.handle.kind,
         status: a.handle.status(),
         uptimeMs: Date.now() - a.startedAt,
-        mesh: roster.get(a.name)?.status ?? "absent",
+        mesh: seen?.status ?? "absent",
         ...(condition ? { condition } : {}),
         ...(activeAt !== undefined ? { activeAt } : {}),
         // `current` is the only state in which `mesh` is a verdict; the other two are the
         // observer's own condition and travel on the row (older CLIs ignore the field).
         meshView: view.state,
+        ...(offlineSince !== undefined ? { offlineSince } : {}),
         // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
         // build a targeted (`despawn`/`attach`) request against THIS incarnation.
         lifecycleUid: a.lifecycleUid,
