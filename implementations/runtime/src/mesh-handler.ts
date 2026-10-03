@@ -614,8 +614,7 @@ export class MeshHandler {
   async release(entries: readonly JournalEntry[]): Promise<void> {
     const owed = this.services ? await this.services.authority.releaseEntries() : entries;
     for (const e of owed)
-      if (e.kind === "spawn" && e.state === "settled" && e.status === "ok" && e.requestId !== undefined)
-        await this.dischargeSpawn(e);
+      if (e.kind === "spawn" && e.requestId !== undefined) await this.dischargeSpawn(e);
   }
 
   /**

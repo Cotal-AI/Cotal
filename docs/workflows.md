@@ -335,8 +335,11 @@ request id, so a resumed run re-attaches to the same seat instead of allocating 
 failed or refused spawn is catchable as L4002 with the manager's recorded reason, and a spawn on a
 race branch that loses is despawned by the run's own cancellation sweep. A seat belongs to the run
 that spawned it: when the run completes, it despawns every seat it spawned, including a race
-winner's. A run that fails or is released keeps its seats until a resume completes it or you stop
-them with `cotal stop`. Start a seat with `cotal spawn` when it should outlive any run. `permits` are the budgets
+winner's and one whose spawn failed while its process stayed up. A spawn marked `onFork: "adopt"`
+is the exception: a fork can share that seat and no run can see whether another still uses it, so
+the seat stays up until you stop it with `cotal stop` once every run sharing it is done. A run that
+fails or is released keeps its seats until a resume completes it or you stop them with
+`cotal stop`. Start a seat with `cotal spawn` when it should outlive any run. `permits` are the budgets
 this host meters: `turns`, how many turns the run may dispatch to the agent, and `wallClock`, a
 duration from the spawn after which no turn is admitted. The turn that would exceed one is the
 catchable L4001 (kind `permit-turns` or `permit-wall-clock`; a deadline the remaining wall clock

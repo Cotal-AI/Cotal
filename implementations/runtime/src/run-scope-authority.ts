@@ -25,6 +25,27 @@ export function createRunScopeAuthority(
   }, pinned);
 }
 
+/** True when `runId` minted the entry: its request id re-derives from this run. A fork prefix keeps
+ *  the parent's ids, so a copied entry is never the child's. */
+export function ownsEntry(runId: string, entry: JournalEntry): boolean {
+  if (entry.requestId === undefined) return false;
+  const attempt = entry.attempt ?? 0;
+  if (!Number.isSafeInteger(attempt) || attempt < 0) return false;
+  const hash = digest([runId, journalEntryKeyString(entry), entry.inputHash, attempt]);
+  const expected = Buffer.from(hash.slice("sha256:".length), "hex").toString("base64url");
+  return entry.requestId === expected;
+}
+
+/**
+ * The spawns a completed run releases: its own, whatever their status, because a spawn that failed
+ * catchably can still hold a live process and the goal's terminal decides whether a seat is up. A
+ * spawn marked `onFork: "adopt"` is left up: a fork may share that seat, and no run can see whether
+ * another still uses it.
+ */
+export function releasableSeat(runId: string, entry: JournalEntry): boolean {
+  return entry.kind === "spawn" && ownsEntry(runId, entry) && entry.external?.onFork !== "adopt";
+}
+
 export type PauseOperation = "read" | "mint" | "attach" | "rearm" | "heartbeat" | "claim" | "fire";
 export type WaitOperation = "open" | "fetch" | "ack" | "close";
 
@@ -65,12 +86,7 @@ export class RunScopeAuthority {
   /** Fork prefixes keep settled parent ids as history. Such an entry can be replayed but
    *  cannot authorize this child to operate on a parent's checkpoint or wait consumer. */
   private owns(entry: JournalEntry): boolean {
-    if (entry.requestId === undefined) return false;
-    const attempt = entry.attempt ?? 0;
-    if (!Number.isSafeInteger(attempt) || attempt < 0) return false;
-    const hash = digest([this.runId, journalEntryKeyString(entry), entry.inputHash, attempt]);
-    const expected = Buffer.from(hash.slice("sha256:".length), "hex").toString("base64url");
-    return entry.requestId === expected;
+    return ownsEntry(this.runId, entry);
   }
 
   async journal(): Promise<readonly JournalEntry[]> {
@@ -107,11 +123,10 @@ export class RunScopeAuthority {
     return entries.filter((entry) => this.owns(entry) && owed.has(journalEntryKeyString(entry)));
   }
 
-  /** Release authority covers this attempt's own spawns that settled with a seat. Fork prefixes
-   *  copied from a parent are not owned, so a child run never releases its parent's seats. */
+  /** Release authority covers the seats {@link releasableSeat} names for this attempt's run. */
   async releaseEntries(): Promise<readonly JournalEntry[]> {
     const entries = await this.entries();
-    return entries.filter((entry) => this.owns(entry) && entry.kind === "spawn" && entry.state === "settled" && entry.status === "ok");
+    return entries.filter((entry) => releasableSeat(this.runId, entry));
   }
 
   async pause(token: string, operation: PauseOperation): Promise<JournalEntry> {

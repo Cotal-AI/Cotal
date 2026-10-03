@@ -66,6 +66,7 @@ import {
 } from "@cotal-ai/lang";
 import { runOnHostedEngine } from "./engine-host.js";
 import { RunJournalStore, replayOwnJournal } from "./journal-store.js";
+import { releasableSeat } from "./run-scope-authority.js";
 
 /**
  * What an entry in the engine table is handed: everything `drive()` prepared, with the pieces the
@@ -374,12 +375,13 @@ export interface ReleasingHandler {
 /**
  * Release every seat a completed run spawned. A seat belongs to the run that spawned it, so a run
  * that completes despawns its seats, winners and plain spawns alike, through the same despawn its
- * cancellation sweep uses for losers. Idempotent: a seat already gone is tolerated, so a crash
- * between this and the completed note is repaired by the next completion.
+ * cancellation sweep uses for losers. {@link releasableSeat} picks them: never a fork parent's, and
+ * never one a fork may share. Idempotent: a seat already gone is tolerated, so a crash between this
+ * and the completed note is repaired by the next completion.
  */
-export async function releaseSeats(entries: readonly JournalEntry[], handler: unknown): Promise<void> {
+export async function releaseSeats(runId: string, entries: readonly JournalEntry[], handler: unknown): Promise<void> {
   if (typeof (handler as ReleasingHandler | undefined)?.release !== "function") return;
-  const seats = entries.filter((e) => e.kind === "spawn" && e.state === "settled" && e.status === "ok");
+  const seats = entries.filter((e) => releasableSeat(runId, e));
   if (seats.length > 0) await (handler as ReleasingHandler).release(seats);
 }
 
@@ -699,7 +701,7 @@ async function drive(
     // engines, and a crash between the two leaves `issued: false` for the next completion's sweep
     // rather than a completed run whose discharge silently never happened.
     await dischargeCancellations(result.journal.entries(), store, req.handler);
-    await releaseSeats(result.journal.entries(), req.handler);
+    await releaseSeats(req.runId, result.journal.entries(), req.handler);
     await noteFinal(req, "completed", appender.journalHigh, specRevision, statusRevision);
     return { status: "completed", result };
   } catch (e) {
