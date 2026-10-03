@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname } from "node:path";
 import * as pty from "@lydell/node-pty";
@@ -50,9 +50,10 @@ const DIAGNOSTIC_MAX = 240;
 /** How much of the start of an unfinished output line is held while waiting for its end. */
 const LINE_HEAD_MAX = 4096;
 
-/** The last line in `text` that starts with a `[cotal-<name>]` prefix, with terminal escapes and
- *  control bytes removed. Connectors print their own diagnostics under that prefix; nothing else
- *  the child prints is kept, including a line that only quotes the prefix after other text. */
+/** The last line in `text` that starts with a `[cotal-<name>]` or `[cotal-<name>/<part>]` prefix,
+ *  with terminal escapes and control bytes removed. Connectors print their own diagnostics under
+ *  that prefix; nothing else the child prints is kept, including a line that only quotes the prefix
+ *  after other text. */
 function lastConnectorDiagnostic(text: string): string | undefined {
   const plain = text
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
@@ -60,7 +61,7 @@ function lastConnectorDiagnostic(text: string): string | undefined {
     .replace(/\x1b./g, "")
     .replace(/\r/g, "\n")
     .replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
-  const line = plain.match(/^ *\[cotal-[a-z0-9-]+\][^\n]*/gm)?.at(-1)?.trim();
+  const line = plain.match(/^ *\[cotal-[a-z0-9-]+(?:\/[a-z0-9-]+)?\][^\n]*/gm)?.at(-1)?.trim();
   if (!line) return undefined;
   return line.length > DIAGNOSTIC_MAX ? `${line.slice(0, DIAGNOSTIC_MAX)}…` : line;
 }
@@ -322,11 +323,30 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     const last = lastConnectorDiagnostic(lineHead) ?? diagnostic;
     exit = { ...(info ?? exit ?? {}), ...(last ? { diagnostic: last } : {}) };
     // Kept beside the custody record so a reap that runs after every controller is gone, even in a
-    // successor manager, can still say how the child ended.
+    // successor manager, can still say how the child ended. Renamed into place, so a reader never
+    // sees half a record.
+    const exitFile = exitPath(launch.recordPath);
     try {
-      writeFileSync(exitPath(launch.recordPath), `${JSON.stringify(exit)}\n`, { mode: 0o600 });
-    } catch {
-      /* the seat directory may already be gone */
+      writeFileSync(`${exitFile}.tmp`, `${JSON.stringify(exit)}\n`, { mode: 0o600 });
+      renameSync(`${exitFile}.tmp`, exitFile);
+    } catch (e) {
+      // A seat directory that is already gone has nobody left to read the record. Any other failure
+      // loses the only account a later reap has, so it is said where an operator can find it, and
+      // the reap reports the record missing or unreadable.
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+        const line = `exit record not written: ${(e as Error).message}\n`;
+        try {
+          unlinkSync(`${exitFile}.tmp`);
+        } catch {
+          /* never created */
+        }
+        try {
+          if (launch.logPath) appendFileSync(launch.logPath, line, { mode: 0o600 });
+          else process.stderr.write(line);
+        } catch {
+          /* the log can sit on the same failed storage */
+        }
+      }
     }
     if (confirmTimer) {
       clearTimeout(confirmTimer);

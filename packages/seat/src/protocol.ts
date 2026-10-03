@@ -92,9 +92,9 @@ export type ClientRequest =
   | { id: number; op: "health" };
 
 /** How the child ended, as the custodian observed it: node-pty's exit code and signal, and the
- *  last line the child printed under a connector's `[cotal-<name>]` prefix, if it printed one. Only
- *  a line that starts with that prefix is kept, so a harness's own output never leaves the seat
- *  through this field. */
+ *  last line the child printed under a connector's `[cotal-<name>]` or `[cotal-<name>/<part>]`
+ *  prefix, if it printed one. Only a line that starts with that prefix is kept, so a harness's own
+ *  output never leaves the seat through this field. */
 export type SeatExit = { code?: number; signal?: number; diagnostic?: string };
 
 export type ServerEvent =

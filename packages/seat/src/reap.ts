@@ -12,21 +12,23 @@ export type SeatReapEvidence =
   | { outcome: "absent" }
   | { outcome: "reaped"; custodian: "signalled" | "gone"; child: "signalled" | "gone"; group: number; exit?: SeatExit; detail: string };
 
-/** How the child ended, as its custodian recorded it, or undefined when no complete record exists
- *  (the child was still running, or the custodian died before writing it). */
-function recordedExit(file: string): SeatExit | undefined {
+/** How the child ended, as its custodian recorded it; why a record that exists cannot be read; or
+ *  neither when no record exists (the child was still running, or its custodian never wrote one). */
+function recordedExit(file: string): { exit?: SeatExit; unreadable?: string } {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(file, "utf8"));
-  } catch {
-    return undefined;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT" ? {} : { unreadable: (e as Error).message };
   }
-  if (typeof raw !== "object" || raw === null) return undefined;
+  if (typeof raw !== "object" || raw === null) return { unreadable: "not a JSON object" };
   const { code, signal, diagnostic } = raw as Record<string, unknown>;
   return {
-    ...(Number.isInteger(code) ? { code: code as number } : {}),
-    ...(Number.isInteger(signal) ? { signal: signal as number } : {}),
-    ...(typeof diagnostic === "string" ? { diagnostic } : {}),
+    exit: {
+      ...(Number.isInteger(code) ? { code: code as number } : {}),
+      ...(Number.isInteger(signal) ? { signal: signal as number } : {}),
+      ...(typeof diagnostic === "string" ? { diagnostic } : {}),
+    },
   };
 }
 
@@ -182,7 +184,8 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
   if (unproved !== undefined) throw new Error(unproved);
   const custodianStart = rec.custodianStart!;
   // Read before anything is signalled, so a SIGKILL sent below is never reported as how the child ended.
-  const exit = recordedExit(exitPath(path));
+  const recorded = recordedExit(exitPath(path));
+  const exit = recorded.exit;
   // A pinned record without a child identity means the child was gone before custody began.
   const childLive = (): boolean => rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live";
 
@@ -221,17 +224,22 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
   const hadPath = existsSync(path);
   const dir = dirname(path);
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  // A child already gone when the reap began ended on its own, and its custodian's record is the
+  // only account of how, so a missing or unreadable one is said rather than left out.
+  const ended = exit
+    ? `; its custodian recorded exit code ${exit.code ?? "unknown"}${exit.signal === undefined ? "" : `, signal ${exit.signal}`}${exit.diagnostic ? `, last connector diagnostic: ${exit.diagnostic}` : ""}`
+    : recorded.unreadable !== undefined
+      ? `; its custodian's exit record is unreadable: ${recorded.unreadable}`
+      : child === "gone"
+        ? "; no exit record from its custodian was found"
+        : "";
   return {
     outcome: "reaped",
     custodian,
     child,
     group,
     ...(exit ? { exit } : {}),
-    detail:
-      `custodian ${rec.custodianPid} ${custodian}, child ${rec.childPid} ${child}${groupKilled || group > 0 ? `, group ${rec.childPid} empty` : ""}; custody record ${hadPath ? "removed" : "verified gone"}` +
-      (exit
-        ? `; its custodian recorded exit code ${exit.code ?? "unknown"}${exit.signal === undefined ? "" : `, signal ${exit.signal}`}${exit.diagnostic ? `, last connector diagnostic: ${exit.diagnostic}` : ""}`
-        : ""),
+    detail: `custodian ${rec.custodianPid} ${custodian}, child ${rec.childPid} ${child}${groupKilled || group > 0 ? `, group ${rec.childPid} empty` : ""}; custody record ${hadPath ? "removed" : "verified gone"}${ended}`,
   };
 }
 
