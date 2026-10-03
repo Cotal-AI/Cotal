@@ -4117,8 +4117,9 @@ characters**, which is an id token by construction. The reference implementation
   `answerId` = the digest id of `{ token, by, value: value ?? null, artifact: artifact ?? null,
   supersedes, at }`, so each filing is its own record. A step that is still open, or that settled
   without accepting an answer, has nothing to amend and is refused. The run surface lists a settled
-  step's amendments beside its accepted answer, oldest first; the latest is the step's current
-  recorded position, and the accepted answer remains what the program acted on.
+  step's amendments beside its accepted answer in the order the records bucket committed them (each
+  record's revision); `at` is the filer's clock and never decides the order. The last one listed is
+  the step's current recorded position, and the accepted answer remains what the program acted on.
 - **`notice`**, `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>`, split: spec `{ v: 1, run,
   step, addressee, fact, at }` (create-only; `fact` is the language's bounded decision record and
   is checked against its bound BEFORE any record is written), status `{ v: 1, consumedAt, by,

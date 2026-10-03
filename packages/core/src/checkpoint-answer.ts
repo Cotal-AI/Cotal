@@ -152,16 +152,20 @@ export async function readCheckpointAnswer(
   return parseAnswer(JSON.parse(new TextDecoder().decode(entry.value)), key);
 }
 
-/** Every amendment filed under one checkpoint token, oldest first: the records that name an
- *  accepted answer they supersede. A consumer-free walk of the token's answer keys, so a READ
- *  credential lists them; answers that do not supersede (the accepted one, a racing loser) are
- *  skipped. */
+/** Every amendment filed under one checkpoint token, in the order the store committed them: the
+ *  records that name an accepted answer they supersede. A consumer-free walk of the token's answer
+ *  keys, so a READ credential lists them; answers that do not supersede (the accepted one, a racing
+ *  loser) are skipped.
+ *
+ *  The last one is the step's current position, so ORDER is the broker's: each record is
+ *  create-only, so its revision is the stream sequence that committed it. `at` is the filer's clock,
+ *  which ties within a millisecond and can run backwards between filers. */
 export async function listCheckpointAmendments(kv: KV, endpoint: string, token: string): Promise<CheckpointAnswerValue[]> {
   const filter = [RECORD_KINDS.answer.kind, endpointToken(endpoint), assertIdToken(token, "token"), "*"].join(".");
-  const out: CheckpointAnswerValue[] = [];
+  const found: { revision: number; answer: CheckpointAnswerValue }[] = [];
   for (const entry of await walkKvEntries(kv, filter)) {
     const answer = parseAnswer(JSON.parse(new TextDecoder().decode(entry.value)), entry.key);
-    if (answer.supersedes !== undefined) out.push(answer);
+    if (answer.supersedes !== undefined) found.push({ revision: entry.revision, answer });
   }
-  return out.sort((a, b) => a.at - b.at || (a.answerId < b.answerId ? -1 : 1));
+  return found.sort((a, b) => a.revision - b.revision).map((f) => f.answer);
 }

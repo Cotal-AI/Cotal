@@ -2038,7 +2038,8 @@ the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the m
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. An open pause prints its question.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
-artifact when present, time, and answer id, then one `amended` line per later amendment.
+artifact when present, time, and answer id, then one `amended` line per later amendment, in the
+order the store committed them, so the last is the current position.
 Expired pauses and ordinary steps print no answer line.
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the

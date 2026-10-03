@@ -183,8 +183,9 @@ export type RunJournalRow =
         readonly artifact?: string;
         readonly at?: number;
       };
-      /** Answers filed after the pause settled, oldest first, each naming the accepted answer it
-       *  supersedes. The program acted on the accepted answer; these record later positions. */
+      /** Answers filed after the pause settled, in the order the store committed them, each naming
+       *  the accepted answer it supersedes. The program acted on the accepted answer; these record
+       *  later positions, and the last is the current one. */
       readonly amendments?: readonly {
         readonly answerId: string;
         readonly supersedes: string;
