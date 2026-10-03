@@ -1149,6 +1149,7 @@ export class MeshHandler {
       : { endpoint: this.binding.endpoint, token: ctx.requestId };
     if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));
     let lapsedSince: number | undefined;
+    let lastReadAt = 0;
     for (;;) {
       if (ctx.signal.cancelled) {
         if (primary !== undefined) await this.cancelTimer(primary);
@@ -1157,6 +1158,7 @@ export class MeshHandler {
       const ended = await this.expired(primary);
       if (ended !== undefined) return null;
       let rows: readonly Presence[];
+      const readAt = this.now();
       try {
         rows = await this.presenceRows();
       } catch (e) {
@@ -1172,12 +1174,13 @@ export class MeshHandler {
       }
       if (!rows.some((p) => p.card?.name === name && p.lifecycleUid === uid)) {
         const reason = rows.some((p) => p.card?.name === name) ? "superseded" : "lapsed";
-        lapsedSince ??= this.now();
-        if (reason === "superseded" || this.now() - lapsedSince >= LAPSE_CONFIRM_MS) {
+        lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
+        if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
           if (primary !== undefined) await this.cancelTimer(primary);
           return { agent: ev.agent, reason, at: this.now() };
         }
       } else lapsedSince = undefined;
+      lastReadAt = readAt;
       await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
     }
   }
@@ -1638,6 +1641,7 @@ export class MeshHandler {
 
     const actx = await this.actionCtx();
     let lapsedSince: number | undefined;
+    let lastReadAt = 0;
     try {
         for (;;) {
         if (ctx.signal.cancelled) {
@@ -1653,6 +1657,7 @@ export class MeshHandler {
         if (ended !== undefined)
           throw new EffectError("L4003", "turn-deadline", `turn(${name}#${uid}) deadline elapsed before a yield`);
         let rows: readonly Presence[];
+        const readAt = this.now();
         try {
           rows = await this.presenceRows();
         } catch (e) {
@@ -1661,12 +1666,13 @@ export class MeshHandler {
         }
         if (!rows.some((pr) => pr.card?.name === name && pr.lifecycleUid === uid)) {
           const reason = rows.some((pr) => pr.card?.name === name) ? "superseded" : "lapsed";
-          lapsedSince ??= this.now();
-          if (reason === "superseded" || this.now() - lapsedSince >= LAPSE_CONFIRM_MS) {
+          lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
+          if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
             await this.cancelTimer(primary);
             throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
           }
         } else lapsedSince = undefined;
+        lastReadAt = readAt;
         await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
       }
     } catch (e) {
@@ -2505,9 +2511,21 @@ const WAIT_POLL_MS = 2_000;
  * longer (host load, a reconnect) comes back under the same lifecycle uid on its next heartbeat. One
  * absent read failed a turn L4002 while the seat went on working (#2344). Five liveness windows lets
  * a stalled seat renew, and stays short against a turn's deadline. A `superseded` read needs no
- * wait: a different incarnation already holds the name.
+ * wait: a different incarnation already holds the name. The window is measured from the end of the
+ * read that opened it to the start of the read that closes it, over reads {@link lapseWindow} chains.
  */
 const LAPSE_CONFIRM_MS = 30_000;
+/**
+ * The longest span from the start of one presence read to the end of the next across which an
+ * absent row still counts as continuously absent: the presence bucket's 6s TTL. A heartbeat keeps
+ * the row live at least that long, so a renewal cannot fall between two reads that close. A slower
+ * read or a run of failed scans leaves the gap unobserved, and the lapse window starts over.
+ */
+const PRESENCE_GAP_MS = 6_000;
+/** The start of the lapse window after an absent read that ended at `now`: kept when the previous
+ *  read began within {@link PRESENCE_GAP_MS}, otherwise this read opens a new one. */
+const lapseWindow = (lapsedSince: number | undefined, lastReadAt: number, now: number): number =>
+  lapsedSince === undefined || now - lastReadAt > PRESENCE_GAP_MS ? now : lapsedSince;
 /** The budgets this host meters for an agent, read from the spawn's `permits` record. */
 type AgentPermits = { turns?: number; wallClockMs?: number };
 /** The seat an ask is told to: its roster identity, its address, and the schema it must meet. */

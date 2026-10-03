@@ -413,7 +413,9 @@ same witness a conclave join resolves members through: the value carries the han
 a different incarnation) and the time of observation. A superseded incarnation is down at once. A
 lapsed one is down only after its presence row has stayed gone for 30 seconds, because a seat whose
 connector stalls past the row's 6-second TTL, under host load or across a reconnect, renews it under
-the same incarnation and is still working. A wait that begins after the death resolves once that
+the same incarnation and is still working. The 30 seconds count only across presence reads that
+each end within 6 seconds of the previous one starting, so a slow read or a run of failed reads, which
+could hide a renewal, starts the count over. A wait that begins after the death resolves once that
 holds, and a timeout resolves null on one absolute deadline a resumed run re-attaches to.
 `turn` wakes one seat for one host turn through the manager as a pull-shaped relay: the run
 submits the turn under the step's own identity, the manager holds it as a goal pinned to the
