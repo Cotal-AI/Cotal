@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -16,18 +17,41 @@ const files = execFileSync("git", ["ls-files", "-z", "--", "packages", "implemen
   .split("\0")
   .filter((name) => source.test(name) && !excluded.test(name));
 
+// The doc blocks of a file, in source order. Comments live only in the trivia before a token, so
+// this walks the parser's tokens and scans that trivia: a `/**` inside a string, a template literal,
+// JSX text or another comment is text, never a doc block.
+function docBlocks(name, text) {
+  const file = ts.createSourceFile(name, text, ts.ScriptTarget.Latest);
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, text);
+  const isTrivia = (kind) => kind >= ts.SyntaxKind.FirstTriviaToken && kind <= ts.SyntaxKind.LastTriviaToken;
+  const blocks = [];
+  const visit = (node) => {
+    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
+    if (!ts.isToken(node)) return node.getChildren(file).forEach(visit);
+    if (ts.isJsxText(node)) return;
+    scanner.resetTokenState(node.pos);
+    for (let kind = scanner.scan(); isTrivia(kind); kind = scanner.scan()) {
+      const start = scanner.getTokenStart();
+      const end = scanner.getTokenEnd();
+      if (kind === ts.SyntaxKind.MultiLineCommentTrivia && text.startsWith("/**", start) && !text.startsWith("/**/", start))
+        blocks.push({ start, end });
+    }
+  };
+  visit(file);
+  return blocks;
+}
+
 const failures = [];
 for (const name of files) {
-  const lines = readFileSync(`${root}/${name}`, "utf8").split("\n");
-  for (let start = 0; start < lines.length; start++) {
-    if (!lines[start].trimStart().startsWith("/**")) continue;
-    let end = start;
-    let rest = lines[start].slice(lines[start].indexOf("/**") + 3);
-    while (!rest.includes("*/") && end + 1 < lines.length) rest = lines[++end];
-    const after = rest.slice(rest.indexOf("*/") + 2).trim();
-    if (after === "" && lines[end + 1]?.trimStart().startsWith("/**"))
-      failures.push(`${name}:${start + 1}: doc block is followed by another doc block at line ${end + 2}, so it documents nothing`);
-    start = end;
+  const text = readFileSync(`${root}/${name}`, "utf8");
+  const line = (offset) => text.slice(0, offset).split("\n").length;
+  const blocks = docBlocks(name, text);
+  for (let i = 0; i + 1 < blocks.length; i++) {
+    const [block, next] = [blocks[i], blocks[i + 1]];
+    const before = text.slice(text.lastIndexOf("\n", block.start - 1) + 1, block.start);
+    const between = text.slice(block.end, next.start);
+    if (before.trim() === "" && between.trim() === "" && between.split("\n").length === 2)
+      failures.push(`${name}:${line(block.start)}: doc block is followed by another doc block at line ${line(next.start)}, so it documents nothing`);
   }
 }
 
