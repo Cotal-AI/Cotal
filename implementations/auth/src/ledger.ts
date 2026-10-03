@@ -80,7 +80,7 @@ export interface ActorRow {
    *     not wider, so not a hazard, but a reader asking "does anything default these before they
    *     land here" must be told both.
    *
-   *  Name the flag, or the row gets `>`. */
+   *  Name the flag: without it the grant refuses, and under `--full` the row gets `>`. */
   allowSubscribe: string[];
   /** Channel post ACL minted at connect. Explicit HERE (empty = cannot post anywhere), with the
    *  same caveat as {@link ActorRow.allowSubscribe}: `cotal actor grant --full` supplies `>` for an
