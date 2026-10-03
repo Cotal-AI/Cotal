@@ -157,7 +157,8 @@ delivers, the other only wakes:
   A hook whose handler throws still returns an empty reply so the session is never blocked, and
   that reply carries nothing, so it commits nothing: the batch it had started to surface stays
   un-acked and goes out on a later frame. The seat also drops any `turn-pending` row that breaks
-  the manager contract, such as one with no integer deadline, and says so once in its log.
+  the manager contract, such as one with no integer deadline, and says so once in its log. A reply
+  with no `turns` array changes nothing: the seat keeps the turns it already holds.
   This errs toward **at-least-once**: if a reply lands but its confirmation does not, the batch is
   surfaced again and flagged as a possible repeat. A duplicate injection is noise; a buried DM stops
   the peer answering at all.

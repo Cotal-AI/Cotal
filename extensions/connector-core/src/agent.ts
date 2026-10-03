@@ -1755,11 +1755,13 @@ export class MeshAgent extends EventEmitter {
       const r = await this.managerInvoke("turn-pending", undefined, { target: { mode: "self" } });
       if (!r.ok) { this.notePullTrouble(r.error ?? "refused with no message"); return; }
       const rows = (r.data as { turns?: unknown } | undefined)?.turns;
-      const all: unknown[] = Array.isArray(rows) ? rows : [];
+      // A reply with no turns array is no snapshot: reconciling on it would drop every accepted
+      // turn, including one already shown. Keep what the seat holds until a well-formed pull.
+      if (!Array.isArray(rows)) { this.notePullTrouble("turn-pending returned no turns array"); return; }
       // A responder off the contract must not reach the formatter: one row with no numeric
       // deadline made peekPendingTurns throw on every frame.
-      const turns = all.filter(isPendingTurn);
-      if (turns.length < all.length) this.notePullTrouble(`turn-pending returned ${all.length - turns.length} malformed turn(s), dropped`);
+      const turns = rows.filter(isPendingTurn);
+      if (turns.length < rows.length) this.notePullTrouble(`turn-pending returned ${rows.length - turns.length} malformed turn(s), dropped`);
       else this.pullTrouble = undefined;
       const live = new Set(turns.map((t) => t.goalId));
       for (const id of [...this.activeTurns.keys()]) if (!live.has(id)) this.activeTurns.delete(id);
