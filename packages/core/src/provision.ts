@@ -2672,6 +2672,10 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     `$JS.API.CONSUMER.MSG.NEXT.${INBOX}.${INBOX_READER_DURABLE}`,
     `$JS.API.CONSUMER.DELETE.${INBOX}.${INBOX_READER_DURABLE}`,
     `$JS.ACK.${INBOX}.${INBOX_READER_DURABLE}.>`,
+    // The reader removes an entry addressed to a retired lifecycle (its ACL row is tombstoned), so the
+    // store does not keep what no reader can ever deliver. Nothing new in substance: the reader can
+    // already ack any INBOX entry away.
+    `$JS.API.STREAM.MSG.DELETE.${INBOX}`,
     "$JS.FC.>", // ordered-consumer flow control
     // Reads: presence (@mention resolve) + channel registry (delivery class) + members + ACL (re-auth).
     ...kvRead(PKV), ...kvRead(CHKV), ...kvRead(MKV), ...kvRead(AKV),
