@@ -1,0 +1,3 @@
+# The per-session MCP server launches with the footprint flags (fetch still works under them) and
+# ships pure-ASCII bundles, so node holds its source one byte per character.
+smoke:claude-mcp-footprint
