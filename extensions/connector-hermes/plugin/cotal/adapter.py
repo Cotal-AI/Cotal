@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 MAX_ANSWERING = 1024
 
 
+class InjectionRefused(Exception):
+    """The host would not run an answer in the session that asked. The answer is not acked, and the
+    sidecar offers it again later (``deferred``)."""
+
+
 def _target_for(chat_id: str) -> dict:
     """Reverse the chat_id minted on inbound back into a mesh reply target."""
     if chat_id.startswith("channel:"):
@@ -158,11 +163,17 @@ class CotalAdapter(BasePlatformAdapter):
         after a crash). Until proven, this acks on the inject coroutine completing without error.
         """
         recv_key = msg.get("recvKey")
-        if recv_key and not fut.cancelled() and fut.exception() is None:
+        if not recv_key or fut.cancelled():
+            return
+        exc = fut.exception()
+        if exc is None:
             # Address the bridge by the per-delivery receive key (#624): the wire id of an id-less
             # message is "", which the truthiness check below would silently never deliver-ack, and
             # the bridge's own guard would then never clear its in-flight slot.
             self._client.delivered(recv_key)
+        elif isinstance(exc, InjectionRefused):
+            # Not taken: free the bridge's in-flight slot without an ack, so the answer is kept.
+            self._client.deferred(recv_key)
 
     async def _inject(self, msg: dict) -> None:
         kind = msg.get("kind")
@@ -180,13 +191,13 @@ class CotalAdapter(BasePlatformAdapter):
         if asker and "session_key" in asker:  # a session on another platform
             if replies.inject(format_injection(msg), asker["session_key"]):
                 return
+            # Running it in another session would consume the answer where nobody asked for it.
             logger.warning(
-                "cotal: the host refused to run an answer in session %s, so it runs in %s; allow it "
-                "with plugins.entries.cotal.allow_gateway_injection: true",
+                "cotal: the host refused to run an answer in session %s; it is kept and offered "
+                "again. Allow it with plugins.entries.cotal.allow_gateway_injection: true",
                 asker["session_key"],
-                chat_id,
             )
-            asker = None
+            raise InjectionRefused(asker["session_key"])
         if asker:
             source = self.build_source(**asker)
         else:

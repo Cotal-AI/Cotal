@@ -196,6 +196,11 @@ class BridgeClient:
         """
         self._send({"t": "delivered", "recvKey": recv_key})
 
+    def deferred(self, recv_key: str) -> None:
+        """Tell the sidecar delivery ``recv_key`` was not taken into a turn: it stays unacked, and
+        the sidecar offers it again later while the messages behind it keep flowing."""
+        self._send({"t": "deferred", "recvKey": recv_key})
+
     def reply(
         self, target: dict, text: str, reply_to: Optional[str] = None, context_id: Optional[str] = None
     ) -> None:

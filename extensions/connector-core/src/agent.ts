@@ -34,6 +34,7 @@ import {
   type GoalResultFact,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
+import { attributionSafe } from "./framing.js";
 import { invokeUserManager } from "./manager-call.js";
 
 // Attention modes + per-channel overrides are defined in core (they're published in presence now);
@@ -376,8 +377,12 @@ export class MeshAgent extends EventEmitter {
   /** The per-call correlation a {@link withCorrelation} scope binds for the sends inside it. */
   private readonly correlation = new AsyncLocalStorage<Correlation>();
   /** By message id, oldest first: the live DMs and anycasts peers sent us that no DM back has
-   *  answered yet (bounded). `pending` marks one a DM in flight is answering. */
-  private readonly unanswered = new Map<string, { fromId: string; contextId?: string; pending?: boolean }>();
+   *  answered yet (bounded). `pending` marks one a DM in flight is answering; `text` is the start of
+   *  its body, to name it when a DM must say which one it answers. */
+  private readonly unanswered = new Map<
+    string,
+    { fromId: string; contextId?: string; text?: string; pending?: boolean }
+  >();
   /** By `contextId`, the questions this seat asked inside a {@link withCorrelation} scope, and whom
    *  they went to (bounded). See {@link answersQuestion}. */
   private readonly asked = new Map<string, { peerId?: string; role?: string }>();
@@ -686,18 +691,36 @@ export class MeshAgent extends EventEmitter {
     if (this.asked.size > MAX_CORRELATIONS) this.asked.delete(this.asked.keys().next().value!);
   }
 
-  /** The unanswered message a DM to `peerId` answers: the one the scope names in `replyTo` if it is
-   *  that peer's, else the oldest one from that peer no other DM in flight is answering. A caller
-   *  with its own `contextId` answers only in the conversation its scope names. */
-  private answering(peerId: string): { id: string; contextId?: string } | undefined {
+  /** The unanswered message a DM to `peerId` answers. `replyTo` names it, and must be a message
+   *  from that peer that is still waiting for an answer. Otherwise the scope's `replyTo` names it if
+   *  it is that peer's, else it is the oldest one from that peer no other DM in flight is answering.
+   *  The oldest is taken only while all of that peer's waiting messages share one conversation
+   *  (`contextId`): across several, a guess could put the answer in the wrong conversation, so the
+   *  DM is refused with the list to choose from. A caller with its own `contextId` answers only in
+   *  the conversation its scope names. */
+  private answering(peerId: string, replyTo?: string): { id: string; contextId?: string } | undefined {
+    if (replyTo) {
+      const e = this.unanswered.get(replyTo);
+      if (!e || e.fromId !== peerId)
+        throw new Error(`replyTo "${attributionSafe(replyTo)}" is not a message from this peer that is waiting for an answer`);
+      return { id: replyTo, contextId: e.contextId };
+    }
     const c = this.correlation.getStore();
     if (c?.replyTo) {
       const e = this.unanswered.get(c.replyTo);
       return e && e.fromId === peerId ? { id: c.replyTo, contextId: e.contextId } : undefined;
     }
     if (c?.contextId && c.peerId !== peerId) return undefined;
-    for (const [id, e] of this.unanswered) if (e.fromId === peerId && !e.pending) return { id, contextId: e.contextId };
-    return undefined;
+    const waiting = [...this.unanswered].filter(([, e]) => e.fromId === peerId && !e.pending);
+    if (new Set(waiting.map(([, e]) => e.contextId)).size > 1) {
+      const list = waiting.map(([id, e]) => `  • replyTo: ${attributionSafe(id)} — "${attributionSafe(e.text ?? "")}"`);
+      throw new Error(
+        `this peer has messages from more than one conversation waiting for an answer. Re-send with ` +
+          `"replyTo" set to the id of the one this answers:\n${list.join("\n")}`,
+      );
+    }
+    const [first] = waiting;
+    return first && { id: first[0], contextId: first[1].contextId };
   }
 
   /** Begin connecting with background retry. Resolves after the first completed mesh join. */
@@ -860,7 +883,7 @@ export class MeshAgent extends EventEmitter {
     const item = this.toInboxItem(m, meta.kind, meta.historical);
     if ((item.kind === "dm" || item.kind === "anycast") && !item.historical && item.id !== "" && !this.answersQuestion(item)) {
       // A DM back to this peer answers it (see dm()). An answer to our own question needs none.
-      this.unanswered.set(item.id, { fromId: item.fromId, contextId: item.contextId });
+      this.unanswered.set(item.id, { fromId: item.fromId, contextId: item.contextId, text: item.text.slice(0, 80) });
       if (this.unanswered.size > MAX_CORRELATIONS) this.unanswered.delete(this.unanswered.keys().next().value!);
     }
     // Per-channel override is the FINAL word for a channel message (DMs/anycast are never channel-
@@ -1551,6 +1574,7 @@ export class MeshAgent extends EventEmitter {
   async dm(
     target: string,
     text: string,
+    opts: { replyTo?: string } = {},
   ): Promise<{
     msg: CotalMessage;
     peer: Presence;
@@ -1583,9 +1607,10 @@ export class MeshAgent extends EventEmitter {
     // The only status we can truthfully attribute is the roster snapshot taken right before the
     // publish: recipient state can change the instant after, and the ack never tells us either way.
     const recipientStatusAtSend = peer.status;
-    // A DM back to a peer answers the oldest message it sent us that no DM has answered yet. It
-    // counts as answered only once the DM is published, so a failed send leaves it to the retry.
-    const answered = this.answering(peer.card.id);
+    // A DM back to a peer answers the message `replyTo` names, or the oldest one it sent us that no
+    // DM has answered yet (see answering()). It counts as answered only once the DM is published,
+    // so a failed send leaves it to the retry.
+    const answered = this.answering(peer.card.id, opts.replyTo?.trim() || undefined);
     const entry = answered && this.unanswered.get(answered.id);
     const { stamp, own } = this.stamp(answered);
     this.recordQuestion(own, { peerId: peer.card.id });

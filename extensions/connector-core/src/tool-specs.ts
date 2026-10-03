@@ -887,10 +887,16 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       schema: {
         to: z.string().describe("The peer's name (or instance id)."),
         text: z.string().describe("The message."),
+        replyTo: z
+          .string()
+          .optional()
+          .describe(
+            "The id of the peer's message this DM answers. Omit it to answer the peer's oldest unanswered message; when that peer's waiting messages belong to more than one conversation, the DM is refused with their ids.",
+          ),
       },
-      async run(agent, _config, { to, text: msg }: { to: string; text: string }) {
+      async run(agent, _config, { to, text: msg, replyTo }: { to: string; text: string; replyTo?: string }) {
         try {
-          const { peer, ack, recipientStatusAtSend } = await agent.dm(to, msg);
+          const { peer, ack, recipientStatusAtSend } = await agent.dm(to, msg, { replyTo });
           const dup = ack.duplicate ? " duplicate publication." : "";
           return ok(
             `DM stored as seq ${ack.seq} for ${peer.card.name} (recipient was ${recipientStatusAtSend} at send; delivery not confirmed).${dup}`,

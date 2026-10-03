@@ -10,6 +10,8 @@
  *   Python → sidecar
  *     {t:"subscribe"}                          adapter: start receiving inbound pushes
  *     {t:"delivered", recvKey}                 adapter: turn accepted delivery <recvKey> → ack it on the stream
+ *     {t:"deferred", recvKey}                  adapter: the host would not take delivery <recvKey> →
+ *                                              leave it unacked, offer it again after DEFER_MS
  *     {t:"reply", target, text, replyTo?, contextId?}
  *                                              adapter: route a turn's reply back to its origin,
  *                                              answering message <replyTo> in conversation <contextId>
@@ -59,6 +61,9 @@ interface ReplyTarget {
   /** Peer instance id (or name) for a DM/anycast reply. */
   peerId?: string;
 }
+
+/** How long a delivery the host would not take waits before it is offered again. */
+const DEFER_MS = 30_000;
 
 /** An optional string field of a frame; anything else is absent. */
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
@@ -121,6 +126,8 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
   /** The single subscribed adapter connection, and the id we're currently awaiting an ack for. */
   let adapter: Socket | undefined;
   let awaitingId: string | undefined;
+  /** Receive keys of deliveries the host would not take, each held back until its timer frees it. */
+  const deferred = new Set<string>();
 
   const sendFrame = (sock: Socket, frame: Record<string, unknown>): void => {
     try {
@@ -131,12 +138,12 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
   };
 
   /** Push the oldest buffered message to the adapter, one at a time. Acks happen only on the
-   *  adapter's `delivered` (see below), so a turn that never surfaces a message redelivers it. */
+   *  adapter's `delivered` (see below), so a turn that never surfaces a message redelivers it. A
+   *  deferred one waits out its delay while the messages behind it go first. */
   const pump = (): void => {
     if (!adapter || awaitingId) return;
-    const pending = agent.peekInbox("automatic");
-    if (!pending.length) return;
-    const next = pending[0];
+    const next = agent.peekInbox("automatic").find((i) => !deferred.has(i.recvKey));
+    if (!next) return;
     awaitingId = next.recvKey;
     sendFrame(adapter, { t: "incoming", msg: wireItem(agent, next) });
   };
@@ -201,6 +208,19 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
           // overflow already acked it — just resync and let pump() surface the new front.
           agent.drainInboxDeliveries([awaitingId]);
           awaitingId = undefined;
+          pump();
+        }
+        return;
+      case "deferred":
+        // The host would not run it where it belongs (see adapter.py). It stays buffered and unacked.
+        if (typeof frame.recvKey === "string" && frame.recvKey !== "" && frame.recvKey === awaitingId) {
+          const key = awaitingId;
+          deferred.add(key);
+          awaitingId = undefined;
+          setTimeout(() => {
+            deferred.delete(key);
+            pump();
+          }, DEFER_MS).unref();
           pump();
         }
         return;

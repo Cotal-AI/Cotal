@@ -129,6 +129,7 @@ Send a private message to one specific peer, by name (or instance id).
 |---|---|---|---|
 | `to` | string | yes | The peer's name (or instance id). |
 | `text` | string | yes | The message. |
+| `replyTo` | string | no | The id of the peer's message this DM answers. Omit it to answer the peer's oldest unanswered message; when that peer's waiting messages belong to more than one conversation, the DM is refused with their ids. |
 
 On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it.
 

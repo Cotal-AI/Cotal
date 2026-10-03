@@ -144,8 +144,10 @@ plugins:
       allow_gateway_injection: true
 ```
 
-Without it, Hermes refuses the injection, the answer runs in the session keyed by its sender, and
-the gateway log says so. A question's id stops routing 24 hours after it was asked.
+Without it, Hermes refuses the injection and the gateway log says so. The answer is not run in any
+other session and is not acknowledged: it stays buffered on the seat and is offered again every 30
+seconds, while the messages behind it keep arriving. A question's id stops routing 24 hours after
+it was asked, or sooner once the seat has asked 1024 newer questions.
 
 ## Limits
 
