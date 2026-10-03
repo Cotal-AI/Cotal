@@ -338,8 +338,10 @@ that spawned it: when the run completes, it despawns every seat it spawned, incl
 winner's and one whose spawn failed while its process stayed up. A spawn marked `onFork: "adopt"`
 is the exception: a fork can share that seat and no run can see whether another still uses it, so
 the seat stays up until you stop it with `cotal stop` once every run sharing it is done. A seat a
-migration handed to a later spawn follows that spawn's policy. In a space with several managers, a
-despawn counts a seat as already gone only when the manager that allocated it says so. A run that
+migration handed to a later spawn follows that spawn's policy, and it stays up if any spawn that held
+it was marked `onFork: "adopt"`, because a fork taken before the migration may still share it. In a
+space with several managers, a despawn counts a seat as already gone only when the manager that
+allocated it says so. A run that
 fails or is released keeps its seats until a resume completes it or you stop them with
 `cotal stop`. Start a seat with `cotal spawn` when it should outlive any run. `permits` are the budgets
 this host meters: `turns`, how many turns the run may dispatch to the agent, and `wallClock`, a

@@ -773,7 +773,8 @@ export class MeshHandler {
     // The manager that committed the terminal allocated the seat, and a manager's target resolver
     // knows only its own seats: any other member answers `expired` for this one while it runs. So a
     // miss says "already gone" only from the allocator. One from another member is re-issued on the
-    // class rail, and a bounded run of them leaves the discharge open rather than claiming it gone.
+    // class rail, and so is a split refusal `invokeManager` gave up repairing, since it states that
+    // nothing ran. A bounded run of them leaves the discharge open rather than claiming it gone.
     const allocator = fact.committer?.instanceId;
     for (let attempt = 0; ; attempt += 1) {
       const reply = await this.invokeManager(await this.manager(), "despawn", { graceful: true }, {
@@ -785,11 +786,12 @@ export class MeshHandler {
       // incarnation, and an incarnation the mapping no longer names is not running).
       const code = reply.reply.ok === false ? reply.reply.error?.code : undefined;
       if (code === undefined) return;
-      if (code !== "not-found" && code !== "expired")
+      const unrun = replyRefusedBeforeEffect(reply.reply.error);
+      if (!unrun && code !== "not-found" && code !== "expired")
         throw new Error(`the spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
-      if (allocator === undefined || reply.responder.instanceId === allocator) return;
+      if (!unrun && (allocator === undefined || reply.responder.instanceId === allocator)) return;
       if (attempt === DESPAWN_ROUTE_ATTEMPTS)
-        throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator}, but ${attempt + 1} despawns reached only other managers, whose miss does not mean it is gone; the discharge stays open to retry`);
+        throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator ?? "(unrecorded)"}, but none of ${attempt + 1} despawns was answered by it, and neither another manager's miss nor a refusal that ran nothing means it is gone; the discharge stays open to retry`);
       this.managerService = undefined;
     }
   }
@@ -2590,9 +2592,11 @@ const TURN_ACCEPT_DEADLINE_MS = 30_000;
  *  answers raises its own `deadline-exceeded`, which is not a bind refusal and is not re-issued. */
 const BIND_SPLIT_REISSUES = 8;
 /** How many class-rail despawns a discharge sends before it stops waiting for the allocating
- *  manager to answer. Each lands on one of m managers at random, so m = 2 misses all of them with
- *  probability 2^-33. */
-const DESPAWN_ROUTE_ATTEMPTS = 32;
+ *  manager to answer. Each is one {@link MeshHandler.invokeManager} call, whose describe and invoke
+ *  both land on the allocator with probability 1/m^2 per trip in a space of m managers, so one call
+ *  reaches it with probability (1 - ((m-1)/m)^9) / m: about 1/2 for m = 2 and 0.23 for m = 4. All
+ *  65 then miss with probability about 2^-65 and 4e-8. */
+const DESPAWN_ROUTE_ATTEMPTS = 64;
 /** A step key's enclosing scope: the journal's own rendering (`entry.scope`), re-derived so the
  *  live path and the adoption rebuild key the handoff memos identically. */
 function scopeOf(key: Parameters<typeof stepKeyString>[0]): string {

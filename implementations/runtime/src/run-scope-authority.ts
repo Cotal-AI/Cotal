@@ -41,13 +41,28 @@ export function ownsEntry(runId: string, entry: JournalEntry): boolean {
  * catchably can still hold a live process and the goal's terminal decides whether a seat is up. A
  * spawn marked `onFork: "adopt"` is left up: a fork may share that seat, and no run can see whether
  * another still uses it. A spawn whose seat a migration handed to a later spawn is left to that
- * spawn: the receiver names it in `adoptedFrom`, holds the same goal, and its own policy decides.
+ * spawn: the receiver names it in `adoptedFrom` and holds the same goal. The receiver keeps the seat
+ * up when any spawn the seat passed through was marked `onFork: "adopt"`, because a fork taken
+ * before the migration may still share it.
  */
 export function releasableSeats(runId: string, entries: readonly JournalEntry[]): JournalEntry[] {
+  const spawns = new Map<string, JournalEntry>();
   const handedOver = new Set<string>();
-  for (const e of entries)
-    if (e.kind === "spawn" && typeof e.external?.adoptedFrom === "string") handedOver.add(e.external.adoptedFrom);
-  return entries.filter((e) => e.kind === "spawn" && ownsEntry(runId, e) && e.external?.onFork !== "adopt"
+  for (const e of entries) {
+    if (e.kind !== "spawn") continue;
+    spawns.set(journalEntryKeyString(e), e);
+    if (typeof e.external?.adoptedFrom === "string") handedOver.add(e.external.adoptedFrom);
+  }
+  const from = (e: JournalEntry) => typeof e.external?.adoptedFrom === "string" ? spawns.get(e.external.adoptedFrom) : undefined;
+  const shared = (e: JournalEntry): boolean => {
+    const seen = new Set<JournalEntry>();
+    for (let s: JournalEntry | undefined = e; s !== undefined && !seen.has(s); s = from(s)) {
+      if (s.external?.onFork === "adopt") return true;
+      seen.add(s);
+    }
+    return false;
+  };
+  return entries.filter((e) => e.kind === "spawn" && ownsEntry(runId, e) && !shared(e)
     && !handedOver.has(journalEntryKeyString(e)));
 }
 
