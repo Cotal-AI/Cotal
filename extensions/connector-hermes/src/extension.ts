@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
@@ -11,6 +13,10 @@ const LAUNCH_ENTRY = fileURLToPath(new URL(`./launch.${FROM_BUILD ? "js" : "ts"}
 const LAUNCH_COMMAND = FROM_BUILD
   ? process.execPath
   : fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+
+/** A Hermes session id as its own store mints them (`20261003_010101_ab12cd`), with room for older
+ *  shapes. It reaches a SQL parameter only, but a path or a flag is never a session. */
+const HERMES_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 
 export const HERMES_PROVIDER_KEYS: readonly string[] = [
   ...MODEL_PROVIDER_KEYS,
@@ -36,6 +42,7 @@ export const hermesConnector: Connector = {
   kind: "connector",
   name: "hermes",
   supportsFreshStart: true,
+  supportsResume: true,
   // `uv` is the external harness. It provisions the project-pinned `hermes` command below, so a
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],
@@ -46,11 +53,16 @@ export const hermesConnector: Connector = {
     // the manager can't drive (no Windows named-pipe bridge, no cooperative shutdown). No fallback.
     if (process.platform === "win32")
       throw new Error("the Hermes connector is Unix-only (AF_UNIX bridge + Python sidecar) — not supported on Windows");
-    // Resuming an existing session isn't supported by Hermes (no fork-from-transcript primitive in
-    // the gateway launcher). Throw rather than spawn fresh silently — this connector otherwise
-    // ignores opts it doesn't render, so without this guard `resume` would be dropped without a word.
-    if (opts.resume)
-      throw new Error("the Hermes connector does not support resuming an existing session (resume)");
+    // Resume forks: the launcher copies the named session out of the operator's Hermes profile into
+    // the seat's own before the seat joins the mesh, and refuses there, by name, a session it cannot
+    // find (see plugin/cotal/resume.py). The adopted profile already holds the session, so it is
+    // refused rather than forked into the operator's own state.db.
+    if (opts.resume !== undefined) {
+      if (!HERMES_SESSION_ID.test(opts.resume))
+        throw new Error(`cannot resume Hermes session ${JSON.stringify(opts.resume)}: not a Hermes session id`);
+      if (process.env.COTAL_HERMES_ADOPT_HOME?.trim())
+        throw new Error("the Hermes connector cannot resume into COTAL_HERMES_ADOPT_HOME: that profile already holds the session, so continue it there with Hermes' own /resume");
+    }
     if (opts.variant) throw new Error("the Hermes connector does not support model variants (variant)");
     // Same rule for the initial prompt: the gateway has no first-turn carrier wired, and a prompt
     // that is accepted and never submitted leaves the operator waiting on a turn that never starts.
@@ -79,6 +91,10 @@ export const hermesConnector: Connector = {
     // seat cannot opt in to its own profile.
     const adoptHome = process.env.COTAL_HERMES_ADOPT_HOME?.trim();
     if (adoptHome) env.COTAL_HERMES_ADOPT_HOME = adoptHome;
+    if (opts.resume !== undefined) {
+      env.COTAL_HERMES_RESUME = opts.resume;
+      env.COTAL_HERMES_RESUME_HOME = process.env.HERMES_HOME?.trim() || join(homedir(), ".hermes");
+    }
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;

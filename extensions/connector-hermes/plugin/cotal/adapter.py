@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from typing import Any, Optional
 
@@ -26,6 +27,7 @@ from gateway.config import Platform, PlatformConfig
 
 from . import hooks, replies
 from .bridge_client import get_client
+from .resume import seed_chat
 from .framing import format_injection
 
 logger = logging.getLogger(__name__)
@@ -245,4 +247,10 @@ class CotalAdapter(BasePlatformAdapter):
             source=source,
             message_id=msg.get("id"),
         )
+        # `cotal spawn --resume`: a chat whose session is still empty starts as a branch of the
+        # launcher's fork, so its first turn carries the source context. No await sits between the
+        # check and the switch inside seed_chat, so a second message for the same chat sees it done.
+        fork = os.environ.get("COTAL_HERMES_FORK_SESSION")
+        if fork:
+            seed_chat(getattr(self, "_session_store", None), source, fork)
         await self.handle_message(event)
