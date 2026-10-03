@@ -38,7 +38,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 29;
+const EXPECTED = 36;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -109,6 +109,9 @@ const run = (
 
 let provisioner: CotalEndpoint | undefined;
 let bob: CotalEndpoint | undefined;
+let carol: CotalEndpoint | undefined;
+let dave: CotalEndpoint | undefined;
+let witness: CotalEndpoint | undefined;
 const expectedSender = `${userInfo().username}@${hostname()}`;
 const got: Array<{ route: string; text: string; fromId: string; fromName: string }> = [];
 
@@ -259,7 +262,8 @@ try {
   // setup sits inside the retained-card window that the by-name read depends on.
   const adminIdentity = newIdentity();
   const adminCreds = join(tmp, "admin.creds");
-  writeFileSync(adminCreds, await mintCreds(auth, adminIdentity, "admin"), { mode: 0o600 });
+  const adminCredsText = await mintCreds(auth, adminIdentity, "admin");
+  writeFileSync(adminCreds, adminCredsText, { mode: 0o600 });
 
   // A second recipient (carol) proves the filter: her send is held in the DM stream before bob's
   // read below, and that read must never list it.
@@ -271,7 +275,7 @@ try {
     subscribe: [],
     allowSubscribe: [],
   });
-  const carol = new CotalEndpoint({
+  carol = new CotalEndpoint({
     space,
     servers,
     creds: carolCreds,
@@ -290,9 +294,65 @@ try {
   const carolDm = await run(["send", "dm", "carol", carolText]);
   check("`cotal send dm` to carol (stopped) exits 0", carolDm.code === 0, carolDm.stderr);
 
+  // Dave is a live, non-consuming recipient (consume:false: no inbound consumers, so nothing acks
+  // his DM durable, while registerPresence keeps his card heartbeating after the lifecycle proof).
+  // The message held for him is established while he is live, so each later read has exactly one
+  // CLI launch inside whatever window it depends on.
+  const daveIdentity = newIdentity();
+  const daveUid = mintLifecycleUid();
+  const daveCreds = await provisionAgent(provisioner, auth, daveIdentity, {
+    lifecycleUid: daveUid,
+    role: "holder",
+    subscribe: [],
+    allowSubscribe: [],
+  });
+  dave = new CotalEndpoint({
+    space,
+    servers,
+    creds: daveCreds,
+    lifecycleUid: daveUid,
+    card: { name: "dave", role: "holder", kind: "agent", id: daveIdentity.id },
+    channels: [],
+    consume: false,
+    heartbeatMs: 500,
+    ttlMs: 10_000,
+  });
+  dave.on("error", () => {});
+  await dave.start();
+  const daveDurable = dmDurable(DEV_OWNER, daveIdentity.id, daveUid);
+  const daveText = `dave-held-${randomUUID().slice(0, 6)}`;
+  const daveDm = await run(["send", "dm", "dave", daveText]);
+  check("`cotal send dm` to live non-consuming dave exits 0", daveDm.code === 0, daveDm.stderr);
+  const candidateIds = (out: string) => [...out.matchAll(/^\s+([0-9a-f-]{36})\s+from=/gm)].map((m) => m[1]);
+  const daveLive = await run(["deliver", "pending", "dave", "--creds", adminCreds, "--space", space, "--server", servers]);
+  const daveIds = candidateIds(daveLive.stdout);
+  check(
+    "`deliver pending dave` by name (live card) prints dave's exact durable, pending 1 and one candidate id",
+    daveLive.code === 0 && daveLive.stdout.split("\n")[0] === daveDurable && daveLive.stdout.split("\n")[1] === "pending 1" && daveIds.length === 1,
+    { code: daveLive.code, stdout: daveLive.stdout, stderr: daveLive.stderr, daveDurable },
+  );
+  // M2b: `--durable <name>` reads the exact consumer the by-name read printed, skipping name
+  // resolution, and reports the same pending count and candidate.
+  const daveByDurableLive = await run(["deliver", "pending", "dave", "--durable", daveDurable, "--creds", adminCreds, "--space", space, "--server", servers]);
+  check(
+    "`deliver pending dave --durable <name>` exits 0 and prints the same pending count and candidate id",
+    daveByDurableLive.code === 0 && daveByDurableLive.stdout.split("\n")[1] === "pending 1" && candidateIds(daveByDurableLive.stdout).join() === daveIds.join(),
+    daveByDurableLive.stdout,
+  );
+
+  // Retained offline card: stop dave after his message is held, and the pending read is the only
+  // CLI launch after the stop, inside the one-TTL window the offline card is kept for.
+  await dave.stop();
+  const daveRetained = await run(["deliver", "pending", "dave", "--creds", adminCreds, "--space", space, "--server", servers]);
+  check(
+    "`deliver pending dave` by name resolves the retained offline card: same durable, pending 1, same candidate id",
+    daveRetained.code === 0 && daveRetained.stdout.split("\n")[0] === daveDurable && daveRetained.stdout.split("\n")[1] === "pending 1" && candidateIds(daveRetained.stdout).join() === daveIds.join() && daveIds.length === 1,
+    { code: daveRetained.code, stdout: daveRetained.stdout, stderr: daveRetained.stderr },
+  );
+
   // M3: stop bob, send within the retained-card window (a graceful stop publishes `offline`
   // synchronously, before its lifecycle uid is retired), and assert the line names the offline
-  // status rather than fabricating "delivered".
+  // status rather than fabricating "delivered". This send is the only launch after bob's stop.
   await bob.stop();
   const offlineText = `offline-${randomUUID().slice(0, 6)}`;
   const offlineDm = await run(["send", "dm", "bob", offlineText]);
@@ -302,24 +362,16 @@ try {
     /stored seq \d+/.test(offlineDm.stdout) && offlineDm.stdout.includes("recipient offline at send") && !offlineDm.stdout.includes("delivered"),
     offlineDm.stdout,
   );
-
-  // M3: `cotal deliver pending <name>` against the real broker with the admin credential. Name
-  // resolution needs bob's offline card, and the presence bucket keeps it for one TTL (6000 ms,
-  // SPEC §8) after the stop above, so the by-name read runs next. Reads made after the card can
-  // have aged out go through `--durable`, as docs/cli.md prescribes.
-  const pendingBob = await run(["deliver", "pending", "bob", "--creds", adminCreds, "--space", space, "--server", servers]);
-  check("`deliver pending bob` exits 0 with the admin credential", pendingBob.code === 0, pendingBob.stderr);
-  check("`deliver pending bob` reports at least one pending message", /pending [1-9]\d*/.test(pendingBob.stdout), pendingBob.stdout);
+  // Bob's held send is read through his exact durable, which does not depend on his card.
+  const bobDurable = dmDurable(DEV_OWNER, bobIdentity.id, bobUid);
+  const pendingBob = await run(["deliver", "pending", "bob", "--durable", bobDurable, "--creds", adminCreds, "--space", space, "--server", servers]);
+  check("`deliver pending bob --durable` exits 0 with the admin credential", pendingBob.code === 0 && pendingBob.stdout.split("\n")[0] === bobDurable, pendingBob.stderr);
+  check("`deliver pending bob --durable` reports at least one pending message", /pending [1-9]\d*/.test(pendingBob.stdout), pendingBob.stdout);
   check(
-    "`deliver pending bob` lists the offline send's id among the candidates",
-    pendingBob.stdout.includes(offlineText) || /recent candidate ids/.test(pendingBob.stdout),
+    "`deliver pending bob --durable` lists candidate ids for the offline send",
+    candidateIds(pendingBob.stdout).length >= 1,
     pendingBob.stdout,
   );
-  // M2b: `--durable <name>` reads the exact consumer the first read just printed (its first
-  // stdout line), skipping name resolution entirely, and reports the same pending count.
-  const bobDurable = pendingBob.stdout.split("\n")[0].trim();
-  const pendingBobByDurable = await run(["deliver", "pending", "bob", "--durable", bobDurable, "--creds", adminCreds, "--space", space, "--server", servers]);
-  check("`deliver pending bob --durable <name>` exits 0 and prints the same pending count", pendingBobByDurable.code === 0 && pendingBobByDurable.stdout.split("\n")[1] === pendingBob.stdout.split("\n")[1], pendingBobByDurable.stdout);
 
   const pendingDurableMissing = await run(["deliver", "pending", "bob", "--durable", "dm_local-nope-nope", "--creds", adminCreds, "--space", space, "--server", servers]);
   check("`deliver pending bob --durable dm_local-nope-nope` exits non-zero with not-found", pendingDurableMissing.code !== 0 && /not-found/i.test(pendingDurableMissing.stderr), pendingDurableMissing.stderr);
@@ -335,6 +387,72 @@ try {
     { carolId: carolIdMatch?.[1], pendingBobStdout: pendingBob.stdout },
   );
 
+  // Expiry: a fresh core observer reads the presence bucket through its own watch snapshot. An
+  // empty bucket replays nothing, so `waitForPresenceSnapshot` reports "timeout" there and a
+  // roster with no dave would prove nothing. A live witness agent keeps one card in the bucket, so
+  // a completed snapshot is a real read of the bucket, and dave's absence from it is the broker
+  // having expired his card. Nothing here writes, refreshes or forges dave's card.
+  const witnessIdentity = newIdentity();
+  const witnessUid = mintLifecycleUid();
+  const witnessCreds = await provisionAgent(provisioner, auth, witnessIdentity, {
+    lifecycleUid: witnessUid,
+    role: "witness",
+    subscribe: [],
+    allowSubscribe: [],
+  });
+  witness = new CotalEndpoint({
+    space,
+    servers,
+    creds: witnessCreds,
+    lifecycleUid: witnessUid,
+    card: { name: "witness", role: "witness", kind: "agent", id: witnessIdentity.id },
+    channels: [],
+    consume: false,
+    heartbeatMs: 500,
+    ttlMs: 10_000,
+  });
+  witness.on("error", () => {});
+  await witness.start();
+  type BucketRead = { hydrated: boolean; witness: boolean; dave: boolean };
+  const readBucket = async (): Promise<BucketRead> => {
+    const obs = new CotalEndpoint({
+      space, servers, creds: adminCredsText, channels: [], consume: false, registerPresence: false,
+      watchPresence: true, card: { name: "send-expiry-observer", kind: "endpoint" },
+    });
+    obs.on("error", () => {});
+    try {
+      await obs.start();
+      const hydrated = (await obs.waitForPresenceSnapshot(5_000)) === "snapshot";
+      const roster = obs.getRoster();
+      return { hydrated, witness: roster.some((p) => p.card.name === "witness"), dave: roster.some((p) => p.card.name === "dave") };
+    } finally {
+      await obs.stop();
+    }
+  };
+  // Bounded wait for the broker's TTL: dave's card was last written at his stop, and the bucket
+  // keeps it for one TTL (6000 ms). The loop only waits; it never turns a missing read into success.
+  let expiryRead: BucketRead = { hydrated: false, witness: false, dave: true };
+  for (let i = 0; i < 40; i++) {
+    expiryRead = await readBucket();
+    if (!expiryRead.hydrated || !expiryRead.witness || !expiryRead.dave) break;
+    await wait(500);
+  }
+  check("the expiry observer's presence snapshot hydrated and shows the live witness", expiryRead.hydrated && expiryRead.witness, expiryRead);
+  check("that hydrated snapshot holds no card for stopped dave (expired by the broker TTL)", expiryRead.hydrated && expiryRead.witness && !expiryRead.dave, expiryRead);
+  const daveExpired = expiryRead.hydrated && expiryRead.witness && !expiryRead.dave;
+  const daveGone = await run(["deliver", "pending", "dave", "--creds", adminCreds, "--space", space, "--server", servers]);
+  check(
+    "`deliver pending dave` by name after the card expired exits non-zero with not-found",
+    daveExpired && daveGone.code !== 0 && /not-found: no agent "dave"/.test(daveGone.stderr),
+    { code: daveGone.code, stderr: daveGone.stderr },
+  );
+  const daveExpiredByDurable = await run(["deliver", "pending", "dave", "--durable", daveDurable, "--creds", adminCreds, "--space", space, "--server", servers]);
+  check(
+    "`deliver pending dave --durable` after expiry still holds pending 1 and the same candidate id",
+    daveExpiredByDurable.code === 0 && daveExpiredByDurable.stdout.split("\n")[1] === "pending 1" && candidateIds(daveExpiredByDurable.stdout).join() === daveIds.join() && daveIds.length === 1,
+    daveExpiredByDurable.stdout,
+  );
+
   const pendingMissing = await run(["deliver", "pending", "nobody-here-either", "--creds", adminCreds, "--space", space, "--server", servers]);
   check("`deliver pending` on an absent name exits non-zero", pendingMissing.code !== 0, pendingMissing.code);
   check("`deliver pending` on an absent name says not-found", /not-found/i.test(pendingMissing.stderr), pendingMissing.stderr);
@@ -348,6 +466,9 @@ try {
 
 } finally {
   await bob?.stop().catch(() => {});
+  await carol?.stop().catch(() => {});
+  await dave?.stop().catch(() => {});
+  await witness?.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
   await killAndAwaitExit(broker);
   check("the owned broker exits before its JetStream tree is removed", broker.exitCode !== null || broker.signalCode !== null);
