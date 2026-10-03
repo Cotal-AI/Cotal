@@ -26,7 +26,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
-import { connectorHarnesses, machineStatus, resolveRuntimeSpace, webUp, WEB_URL, type MachineStatus } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, resolveRuntimeSpace, webUp, WEB_URL, type HarnessStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -131,24 +131,6 @@ function cliProvenanceLabel(): string {
   return `(${kind}: ${provenance.root})`;
 }
 
-/** The `cotal-skills` Claude Code plugin (user scope) vs this CLI release: stale means an update didn't
- *  take, missing means it isn't installed, broken means it is installed but failed to load; all point at
- *  `cotal setup --skills` so a read-path status user is not routed into unscoped setup writes. */
-function claudeSkillsLabel(skills: MachineStatus["claudeSkills"]): string {
-  switch (skills.state) {
-    case "current":
-      return c.green("current");
-    case "stale":
-      return c.yellow(`${skills.version ? `v${skills.version} ≠ v${cliVersion()} · ` : ""}stale · ${displayCmd()} setup --skills`);
-    case "broken":
-      return c.red(`load error · ${displayCmd()} setup --skills`);
-    case "missing":
-      return c.dim(`not installed · ${displayCmd()} setup --skills`);
-    default:
-      return c.dim("unknown");
-  }
-}
-
 async function printMachine(): Promise<void> {
   const m = await machineStatus();
   const web = await webUp();
@@ -156,24 +138,25 @@ async function printMachine(): Promise<void> {
   section("Machine");
   row("cotal-ai", `${c.green(`v${cliVersion()}`)} ${c.dim(cliProvenanceLabel())}`);
   row("NATS", m.nats === "missing" ? c.red("missing") : c.green(m.nats));
-  row("Claude plugin", m.claudePlugin ? c.green("installed") : c.dim("not installed"));
-  row("Claude skills", claudeSkillsLabel(m.claudeSkills));
-  printHarnesses();
+  await printHarnesses();
   row("Skills (.agents)", skillsSkewRow());
   row("Web extension", webExt ? c.green("installed") : c.dim("not installed"));
   row("Web process", web ? c.green(WEB_URL) : c.dim(webExt ? "down" : "not installed"));
 }
 
-/** One row per installed connector, named by the connector and judged by the executables it declares.
- *  A manifest that cannot list them renders as one red row, so the rest of status still prints. */
-function printHarnesses(): void {
-  let harnesses;
+/** The rows each connector's setup provider reports, then one row per installed connector, named by
+ *  the connector and judged by the executables it declares. A manifest that cannot list them renders
+ *  as one red row, so the rest of status still prints. */
+async function printHarnesses(): Promise<void> {
+  let harnesses: HarnessStatus[];
   try {
     harnesses = connectorHarnesses();
   } catch (e) {
     row("Connectors", c.red((e as Error).message));
     return;
   }
+  const paint = { ok: c.green, warn: c.yellow, error: c.red, off: c.dim } as const;
+  for (const r of await connectorStatusRows(harnesses)) row(r.label, paint[r.state](r.text));
   if (!harnesses.length) row("Connectors", c.dim(`none installed · ${displayCmd()} ext seed`));
   for (const h of harnesses)
     row(h.name, h.missing.length ? c.dim(`${h.missing.join(", ")} not on PATH`) : c.green(h.requires.length ? `${h.requires.join(", ")} on PATH` : "in-process"));

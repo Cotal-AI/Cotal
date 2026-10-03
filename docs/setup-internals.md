@@ -34,8 +34,8 @@ ambiguous or broken target refuses rather than choosing a root.
 persona if it's missing,
 re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-scan gate as first
 run, so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
-installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web
-dashboard, and the manager) and for anything down it prints the exact command to start it
+installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`connectorStatusRows`/`meshStatus`/`webUp`/`managerUp` for NATS, the rows
+connector setup providers report, the mesh, the web dashboard, and the manager) and for anything down it prints the exact command to start it
 (`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
 still launches nothing.
 
@@ -61,7 +61,11 @@ interactive run offers a debug handoff for each connector whose setup provider d
 and whose executables are on PATH
 ([`lib/assist.ts`](../implementations/cli/src/lib/assist.ts)). The provider owns the harness
 binary and its flags; the CLI only builds the prompt. When no connector can host one, the menu says
-so in one line.
+so in one line. A provider may also declare `status`, which returns read-only rows about what it
+installed. `cotal status` and the setup card print them, and the CLI passes only its own version and
+the `cotal setup --skills` remedy. The extensions manifest caches each connector's setup ref, so
+status imports only connectors that declare a provider. The seed reconcile refreshes a seeded entry
+whose cache predates that ref.
 
 The **connector picker** (`pickConnectors`) multiselects the **setup connector surface**
 (`setupConnectorSurface`): every connector name the live registry or the installed extension

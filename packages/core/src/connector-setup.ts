@@ -29,6 +29,22 @@ export interface ConnectorAssist {
   run(prompt: string): Promise<void>;
 }
 
+/** Generic Cotal inputs a provider's status check compares against. */
+export interface ConnectorStatusInput {
+  /** The running CLI's release, the version connector-installed assets are expected at. */
+  readonly version: string;
+  /** The command that repairs connector skills on this machine. */
+  readonly skillsRemedy: string;
+}
+
+/** One machine-status row a provider reports for its harness. `ok` renders green, `warn` yellow,
+ * `error` red and `off` dim. */
+export interface ConnectorStatusRow {
+  readonly label: string;
+  readonly state: "ok" | "warn" | "error" | "off";
+  readonly text: string;
+}
+
 /** Optional setup surface declared by a connector through {@link Connector.setup}. A missing or
  * broken declared provider is always a loud registry error; the CLI never substitutes a built-in
  * harness implementation. */
@@ -41,4 +57,6 @@ export interface ConnectorSetupProvider extends Extension {
   readonly connector?: ConnectorSetupAction;
   readonly skills?: ConnectorSetupAction<ConnectorSkillsSetupInput>;
   readonly assist?: ConnectorAssist;
+  /** Read-only health of what this provider installs, for `cotal status` and the setup card. */
+  status?(input: ConnectorStatusInput): readonly ConnectorStatusRow[];
 }

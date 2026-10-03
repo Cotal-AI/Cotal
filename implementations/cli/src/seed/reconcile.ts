@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
   SEEDED_EXTENSIONS,
+  connectorMetadataStale,
   extensionPackageDir,
   installedExtensionVersion,
   loadExtensionsManifest,
@@ -210,12 +211,12 @@ function builtinsAccounted(): boolean {
 
 /** A package can add a registry provider without changing the seed generation in a source checkout.
  * The fast path must not preserve an older manifest that advertises only a subset of what the packed
- * built-in now registers, or lazy materialization of the new provider can never find its owner. */
+ * built-in now registers, or lazy materialization of the new provider can never find its owner. An
+ * entry whose connector metadata predates the cached setup ref is that older manifest. */
 function builtinsMetadataCurrent(): boolean {
   for (const name of SEED_BUILTINS) {
     const entry = installedEntry(name);
-    if (!entry || entry.source !== "seeded") continue;
-    if (name === "claude" && !entry.provides?.some((ref) => ref.kind === "connector-setup" && ref.name === "claude")) return false;
+    if (entry?.source === "seeded" && connectorMetadataStale(entry)) return false;
   }
   return true;
 }
@@ -349,7 +350,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       // is never auto-refreshed on upgrade — only --force may replace it.
       const isSeeded = entry.source === "seeded";
       const torn = mode === "repair" && isSeeded && (repairAllSeeded || !isIntact(name));
-      const metadataStale = isSeeded && name === "claude" && !entry.provides?.some((ref) => ref.kind === "connector-setup" && ref.name === "claude");
+      const metadataStale = isSeeded && connectorMetadataStale(entry);
       const refresh = mode === "force" || torn || metadataStale || (isSeeded && isStrictlyNewer(generation, stampGen));
       if (refresh) {
         seedOne(name, generation, nonce, true);

@@ -1,10 +1,11 @@
-import { spawnSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { connect } from "node:net";
 import { delimiter, join } from "node:path";
-import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable, registry, type Connector } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable, registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
 import { authDir, extensionConnectors, findCotalRoot, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, resolveMeshTarget, type MeshEntry } from "@cotal-ai/workspace";
+import { materializeExtension } from "../ext-loader.js";
 import { resolveNatsServer } from "./nats-bin.js";
+import { displayCmd } from "./self-exec.js";
 import { cliVersion } from "./version.js";
 
 // Moved into `@cotal-ai/workspace` (stage 4); re-exported for the CLI's many importers.
@@ -66,16 +67,16 @@ export async function meshStatus(cwd: string): Promise<MeshStatus> {
 
 export interface MachineStatus {
   nats: "path" | "bundled" | "missing";
-  claudePlugin: boolean;
-  claudeSkills: { state: "current" | "stale" | "missing" | "broken" | "unknown"; version?: string };
 }
 
-/** One installed connector's harness readiness: the executables it declares (`requires`) and the ones
- *  of those not on PATH. */
+/** One installed connector's harness readiness: the executables it declares (`requires`), the ones
+ *  of those not on PATH, and its declared setup provider (`undefined` when a manifest cached before
+ *  setup refs were cannot say). */
 export interface HarnessStatus {
   name: string;
   requires: readonly string[];
   missing: string[];
+  setup: ExtensionRef | null | undefined;
 }
 
 /** Machine-level readiness: the once-per-machine setup pieces. */
@@ -86,46 +87,43 @@ export async function machineStatus(): Promise<MachineStatus> {
   } catch {
     nats = "missing";
   }
-  // ONE `claude plugin list` for both plugin answers. This used to spawn the Claude CLI TWICE —
-  // once for the JSON listing and once for a plain-text grep — two full process startups for data a
-  // single listing already contains.
-  const plugins = claudePluginList();
-  return {
-    nats,
-    claudePlugin: claudePluginInstalled(plugins),
-    claudeSkills: claudeSkillsState(plugins),
-  };
+  return { nats };
 }
 
 /** Every connector this machine can launch, read off each connector's own `requires` rather than a list
  *  of harness names: the live registry plus the installed extension manifest's cached requirements, so
  *  status never imports connector code. A manifest that cannot answer throws, like every other reader. */
 export function connectorHarnesses(): HarnessStatus[] {
-  const declared = new Map<string, readonly string[]>();
+  const declared = new Map<string, { requires: readonly string[]; setup: ExtensionRef | null | undefined }>();
   for (const ext of loadExtensionsManifest().extensions)
-    for (const connector of extensionConnectors(ext)) declared.set(connector.name, connector.requires);
-  for (const connector of registry.all<Connector>("connector")) declared.set(connector.name, connector.requires ?? []);
+    for (const connector of extensionConnectors(ext)) declared.set(connector.name, { requires: connector.requires, setup: connector.setup });
+  for (const connector of registry.all<Connector>("connector"))
+    declared.set(connector.name, { requires: connector.requires ?? [], setup: connector.setup ?? null });
   return [...declared]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, requires]) => ({ name, requires, missing: requires.filter((bin) => !onPath(bin)) }));
+    .map(([name, { requires, setup }]) => ({ name, requires, missing: requires.filter((bin) => !onPath(bin)), setup }));
 }
 
-/** The Claude Code skills plugin's state vs THIS CLI release: `cotal-skills@cotal-mesh` at user scope
- *  should be present, error-free, and at `cliVersion()`. Surfaces a stale (un-updated), missing, or
- *  `broken` (loaded WITH errors) user-scope skill that the connector-only checks can't see. This must use
- *  the SAME health predicate the post-install verify enforces (id/scope/enabled/errors/version), so
- *  status can never bless a plugin the installer would have rejected. `unknown` when Claude isn't on PATH
- *  or can't be queried. */
-function claudeSkillsState(entries: PluginEntry[] | undefined): MachineStatus["claudeSkills"] {
-  if (entries === undefined) return { state: "unknown" };
-  const match = entries.find((e) => e.id === "cotal-skills@cotal-mesh" && e.scope === "user");
-  if (!match || match.enabled === false) return { state: "missing" };
-  const errs = (match.errors ?? match.error) as unknown;
-  if (Array.isArray(errs) ? errs.length > 0 : Boolean(errs)) return { state: "broken" }; // present but failed to load: never "current"
-  return {
-    state: match.version === cliVersion() ? "current" : "stale",
-    version: typeof match.version === "string" ? match.version : undefined,
-  };
+/** The rows each connector's setup provider reports about what it installed. Only a connector that
+ *  declares a provider is imported; one whose cached metadata predates the setup ref is read from the
+ *  connector itself. A declared provider that cannot be resolved renders as one red row naming the
+ *  error, so the rest of status still prints. */
+export async function connectorStatusRows(harnesses: readonly HarnessStatus[]): Promise<ConnectorStatusRow[]> {
+  const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills` };
+  const rows: ConnectorStatusRow[] = [];
+  for (const harness of harnesses) {
+    try {
+      const setup = harness.setup === undefined
+        ? (await materializeExtension<Connector>({ kind: "connector", name: harness.name })).setup
+        : harness.setup;
+      if (!setup) continue;
+      const provider = await materializeExtension<ConnectorSetupProvider>(setup);
+      rows.push(...(provider.status?.(input) ?? []));
+    } catch (e) {
+      rows.push({ label: `${harness.name} setup`, state: "error", text: (e as Error).message });
+    }
+  }
+  return rows;
 }
 
 export function onPath(bin: string): boolean {
@@ -147,25 +145,4 @@ export function onPath(bin: string): boolean {
     }
   }
   return false;
-}
-
-function claudePluginInstalled(entries: PluginEntry[] | undefined): boolean {
-  return entries?.some((e) => e.id === "cotal@cotal-mesh") ?? false;
-}
-
-/** One installed-plugin entry, as `claude plugin list --json` reports it. */
-type PluginEntry = Record<string, unknown>;
-
-/** The installed Claude Code plugins, or undefined when Claude is not on PATH or cannot be queried
- *  (both of which every caller renders as "unknown" rather than "absent"). ONE spawn, shared. */
-function claudePluginList(): PluginEntry[] | undefined {
-  if (!onPath("claude")) return undefined;
-  const r = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" });
-  if (r.status !== 0) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(r.stdout ?? "[]");
-    return Array.isArray(parsed) ? (parsed as PluginEntry[]) : undefined;
-  } catch {
-    return undefined;
-  }
 }

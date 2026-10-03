@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorSkillsSetupInput, type ConnectorStatusRow, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   findCotalRoot,
   homeCotalDir,
@@ -24,7 +24,7 @@ import { abortIfCancel } from "../lib/cancel.js";
 import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
-import { machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 
@@ -425,6 +425,7 @@ function webInstalled(): boolean {
 export async function readyCard(cwd: string): Promise<void> {
   const mesh = await meshStatus(cwd);
   const m = await machineStatus();
+  const connectorRows = await cardConnectorRows();
   const web = await webUp();
   const mgr = managerUp();
   const cmd = displayCmd();
@@ -445,7 +446,7 @@ export async function readyCard(cwd: string): Promise<void> {
   note(
     [
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
-      line(m.claudePlugin, `plugin   ${dim(m.claudePlugin ? "installed" : "not installed")}`),
+      ...connectorRows.map((r) => line(r.state === "ok", `${r.label.padEnd(8)} ${dim(r.text)}`)),
       line(mesh.reachable !== false, `mesh     ${dim(meshLine)}`),
       line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup`)}`),
       line(mgr, `manager  ${dim(mgr ? "running" : `not running · start: ${cmd} up, or: ${cmd} supervise`)}`),
@@ -460,6 +461,16 @@ export async function readyCard(cwd: string): Promise<void> {
     ].join("\n"),
     brandBold("cotal · status"),
   );
+}
+
+/** The card's connector-reported rows. A manifest that cannot list connectors becomes one row naming
+ *  why, like the status Machine section. */
+async function cardConnectorRows(): Promise<ConnectorStatusRow[]> {
+  try {
+    return await connectorStatusRows(connectorHarnesses());
+  } catch (e) {
+    return [{ label: "connectors", state: "error", text: (e as Error).message }];
+  }
 }
 
 /** Reconcile Cotal's authored skills into the cross-vendor `~/.agents/skills` directory that Codex,
