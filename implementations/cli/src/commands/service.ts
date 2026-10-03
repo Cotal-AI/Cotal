@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { accessSync, constants, existsSync } from "node:fs";
 import { arch, cpus, homedir, totalmem } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { CompletionResult, ParsedArgs } from "@cotal-ai/core";
 import {
   commandIsCotalSupervisor,
@@ -238,13 +238,19 @@ const envFileName = (mesh: string): string => `cotal-manager@${spaceKey(mesh)}.e
 /** The installing shell's PATH, which the unit pins. A service manager hands its units its own
  *  PATH (the systemd user manager's `/usr/local/bin:/usr/bin`, launchd's `/usr/bin:/bin`), which
  *  lacks `~/.local/bin` and Homebrew, so an inherited PATH boots a manager that reports a harness
- *  unavailable even though the operator's shell resolves it. Refused rather than guessed when
- *  absent, and when it holds a line break the env file and plist cannot carry. */
+ *  unavailable even though the operator's shell resolves it. An entry that is not absolute (an
+ *  empty one means the current directory) is resolved against this shell's cwd, because the unit
+ *  starts in the mesh root, where the same spelling names another directory. Refused rather than
+ *  guessed when absent, when a resolved entry contains the separator, and when it holds a line
+ *  break the env file and plist cannot carry. */
 function installerPath(): string {
-  const path = process.env.PATH;
-  if (!path) throw new Error("PATH is not set - `cotal service install` pins this shell's PATH into the unit so the manager resolves the same harness binaries");
-  if (/[\r\n]/.test(path)) throw new Error("PATH contains a line break - it cannot be pinned into the unit's environment");
-  return path;
+  const raw = process.env.PATH;
+  if (!raw) throw new Error("PATH is not set - `cotal service install` pins this shell's PATH into the unit so the manager resolves the same harness binaries");
+  const dirs = raw.split(delimiter).map((dir) => (isAbsolute(dir) ? dir : resolve(dir)));
+  if (dirs.some((dir) => dir.includes(delimiter))) throw new Error(`PATH has a relative entry and the current directory contains "${delimiter}" - run install from another directory or make the entry absolute`);
+  const pinned = dirs.join(delimiter);
+  if (/[\r\n]/.test(pinned)) throw new Error("PATH contains a line break - it cannot be pinned into the unit's environment");
+  return pinned;
 }
 
 function writeEnvFile(mesh: string, server: string, stateDir: string, pathEnv: string): string {
