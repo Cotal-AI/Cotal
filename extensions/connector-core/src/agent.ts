@@ -1402,14 +1402,6 @@ export class MeshAgent extends EventEmitter {
       return { items: [], droppedChannels: [] };
     const items: InboxItem[] = [];
     const droppedChannels: string[] = [];
-    // Whether each id-less delivery in focus was excluded, per path and content, in arrival order.
-    const arrivals = new Map<string, boolean[]>();
-    for (const { copy } of this.focusExcludedIds.values()) {
-      if (!copy) continue;
-      const seen = arrivals.get(`${copy.path}.${copy.digest}`);
-      if (seen) seen.push(copy.excluded);
-      else arrivals.set(`${copy.path}.${copy.digest}`, [copy.excluded]);
-    }
     for (const channel of this.ep.joinedChannels()) {
       if (!isConcreteChannel(channel)) {
         droppedChannels.push(channel);
@@ -1434,11 +1426,24 @@ export class MeshAgent extends EventEmitter {
         }
         return this.toInboxItem(m, "channel", true, key);
       });
+      // Whether each id-less delivery in focus was excluded, per path and content, in arrival order.
+      // Read after the history read, as a wire id is, so an exclusion that landed meanwhile counts.
+      const arrivals = new Map<string, boolean[]>();
+      for (const { channel: on, copy } of this.focusExcludedIds.values()) {
+        if (!copy || on !== channel) continue;
+        const seen = arrivals.get(`${copy.path}.${copy.digest}`);
+        if (seen) seen.push(copy.excluded);
+        else arrivals.set(`${copy.path}.${copy.digest}`, [copy.excluded]);
+      }
       // An id-less message is paired with its deliveries newest first, on each path (#613). One sender's
       // messages are stored in order and retention removes the oldest first, so the newest stored copy
       // is the one delivered last. A copy paired with an excluded delivery is skipped. Pairing from the
       // oldest end hid a later publication once the excluded copy aged out, and let an exclusion land
-      // on an earlier recallable copy while the excluded one came back.
+      // on an earlier recallable copy while the excluded one came back. A path need not have delivered
+      // every copy, so two paths can pair one copy with different verdicts, and nothing here tells which
+      // publication each delivery was: one copy muted on one path and let through on the other looks
+      // the same as two publications on either side of a path change. Such a copy is skipped, so a
+      // muted copy never comes back, and the channel is reported as incomplete rather than left silent.
       const copies = new Map<string, number[]>();
       for (const [i, item] of read.entries()) {
         if (item.id !== "") continue;
@@ -1448,10 +1453,16 @@ export class MeshAgent extends EventEmitter {
         else copies.set(digest, [i]);
       }
       const skipped = new Set<number>();
+      let unsure = false;
       for (const [digest, at] of copies)
-        for (const path of FOCUS_PATHS) {
-          const seen = arrivals.get(`${path}.${digest}`) ?? [];
-          for (let k = 1; k <= Math.min(at.length, seen.length); k++) if (seen[seen.length - k]) skipped.add(at[at.length - k]);
+        for (let k = 1; k <= at.length; k++) {
+          const verdicts = new Set<boolean>();
+          for (const path of FOCUS_PATHS) {
+            const seen = arrivals.get(`${path}.${digest}`) ?? [];
+            if (k <= seen.length) verdicts.add(seen[seen.length - k]);
+          }
+          if (verdicts.has(true)) skipped.add(at[at.length - k]);
+          if (verdicts.size > 1) unsure = true;
         }
       for (const [i, m] of messages.entries()) {
         if (m.id !== "") {
@@ -1459,7 +1470,7 @@ export class MeshAgent extends EventEmitter {
         } else if (skipped.has(i)) continue;
         items.push(read[i]);
       }
-      if (dropped) droppedChannels.push(channel);
+      if (dropped || unsure) droppedChannels.push(channel);
     }
     items.sort((a, b) => a.ts - b.ts);
     return { items, droppedChannels };
