@@ -652,7 +652,7 @@ export class MeshAgent extends EventEmitter {
 
   /** Run `fn` with a per-call correlation for the sends it makes. A `replyTo` names the message a
    *  DM answers unless the DM names one itself, and `contextId` is then that message's
-   *  conversation. Without a `replyTo`,
+   *  conversation, copied from the message when the scope omits it. Without a `replyTo`,
    *  `contextId` is the caller's own conversation: a send, a question DM or an anycast carries it
    *  ahead of the agent-wide one from {@link setContextId}, and {@link answersQuestion} recognizes
    *  a DM back that copies it. A connector that serves several host sessions from one seat uses it,
@@ -681,7 +681,7 @@ export class MeshAgent extends EventEmitter {
     const c = this.correlation.getStore();
     // A DM's own `replyTo` naming another message wins over the scope's, as in answering().
     if (c?.replyTo && (!answered || answered.id === c.replyTo))
-      return { stamp: { replyTo: c.replyTo, contextId: c.contextId ?? this._contextId } };
+      return { stamp: { replyTo: c.replyTo, contextId: c.contextId ?? answered?.contextId ?? this._contextId } };
     if (answered?.contextId) return { stamp: { replyTo: answered.id, contextId: answered.contextId } };
     // A scope's `contextId` is the caller's own only when the scope names no message it answers.
     const own = c?.replyTo ? undefined : c?.contextId;
