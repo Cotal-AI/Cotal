@@ -31,6 +31,21 @@ not understand is an error, not a silently ignored or literal filter.
 The guard is read-only. It does not drain GitHub's queue, retrigger a run, or diagnose or fix the
 external scheduler that creates workflow runs.
 
+## Docs checks
+
+`pnpm check:docsbundle` is the CI docs gate. It runs three checks, and each proves less than a
+green run suggests:
+
+- `check:docs-voice` grades prose style in `docs/` and never reads source.
+- `check:docs-literals` reads each backticked span in `docs/` that looks like emitted operator
+  prose (four or more lowercase words, not a command) and fails when no string or template literal
+  in shipped source holds it. A substituted value is written as a placeholder such as `<id>`, and
+  it must stand where the source substitutes one. Comments do not count as emitting a line. A
+  capitalized, short or punctuation-heavy quote is not a candidate, so a rename of one of those is
+  still caught only by review.
+- `check-docs-bundle.mjs` proves the generator turns the pages into a bundle that is not hollow.
+  It does not prove that the pages agree with the code.
+
 ## Mutation coverage
 
 Run every tracked mutation config from the current checkout:
