@@ -204,6 +204,14 @@ A single peer whose own heartbeat lapses while the watch is live still drops out
 shorter than TCP-level detection never reconnects, which is why this is a freshness gate on the
 watch rather than a `connection` event.
 
+**How the all-activity page is ordered.** When the page loads, the dashboard reads the newest chat
+messages in the order the broker stored them and the newest direct messages, orders the two sets
+together by `ts`, the time each sender wrote into its message, and keeps the newest of them. Chat
+and direct messages are stored in separate streams with no arrival order in common, so `ts` is the
+one key both carry. Where a sender's clock disagrees with the broker, messages can appear in an
+order different from the one they arrived in. Messages with the same `ts` keep the order the broker
+stored them in, and chat comes before direct messages.
+
 The all-activity read is bounded, so on a slow link it can
 come back SHORT rather than late: the header then says `partial: activity`, and the page reports how
 many sources answered out of how many were asked and names the ones that did not. A short page and a

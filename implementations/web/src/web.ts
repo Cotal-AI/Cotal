@@ -620,8 +620,8 @@ export interface ActivityPage {
   deadlineMs: number;
 }
 
-/** The all-activity backfill: recent chat history merged with DM history, oldest-first, capped, and
- *  BOUNDED.
+/** The all-activity backfill: recent chat history merged with DM history, oldest-first by `ts`,
+ *  capped, and BOUNDED.
  *
  * WHAT CHANGED AND WHY, because the previous shape had two failure modes and no good one. It fanned
  * out under `Promise.all` and awaited the DM backlog after it, so (1) one channel's rejection
@@ -722,6 +722,13 @@ export async function activityBackfill(
       if (r === LATE) missing.push(sources[i].name);
       else entries.push(...r);
     }
+    // THE PAGE IS ORDERED BY `ts`, AND THE CHAT HALF WAS CHOSEN BY ARRIVAL. The chat rows are the
+    // newest `limit` by CHAT stream sequence, the order the broker stored them in, and the DM rows
+    // are the newest `limit` of the DM stream. The two streams number their messages independently,
+    // so the sender's `ts` is the only key both halves carry: it orders the merged page and makes the
+    // final cut to `limit` across both. Where a sender's clock disagrees with arrival, two chat rows
+    // can show in an order their arrival did not imply. The sort is stable, so rows with equal `ts`
+    // keep the order the reads returned: chat in stream sequence, then DMs in stream sequence.
     entries.sort((a, b) => a.msg.ts - b.msg.ts);
     return {
       entries: entries.slice(-limit),
