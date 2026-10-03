@@ -69,7 +69,7 @@ import {
   invokeCommand,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, PresenceEvent, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -809,6 +809,9 @@ interface ManagedAgent {
    *  control ops refuse and no later renewal is admitted. A renewal already admitted drains before
    *  the durable terminal begins, so its row and material are included in revocation and cleanup. */
   terminalizing?: boolean;
+  /** Set while the manager has logged this seat off the mesh with its slot still held (#1208);
+   *  cleared when the seat is logged back on. */
+  offMesh?: boolean;
   /** The one renewal admitted before terminalization. Retirement drains it before revocation and
    *  cleanup; callers arriving after the latch never join it. */
   staticCredentialRenewal?: Promise<void>;
@@ -1570,6 +1573,7 @@ export class Manager {
     const reportEndpoint = (e: Error) => console.error(`! manager endpoint: ${e.message}`);
     this.ep.on("error", reportEndpoint);
     this.ep.on("warning", reportEndpoint);
+    this.ep.on("presence", (ev: PresenceEvent) => this.logSeatMeshTransition(ev));
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtime.kind})`);
     // Per-instance liveness lease (P2 item 3 — the old per-space singleton is DEMOTED per D9). Acquire
@@ -3953,6 +3957,32 @@ export class Manager {
     console.error(
       `seat reaped: ${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""}) - ${causeText}; ${detail}`,
     );
+  }
+
+  /**
+   * A SEAT THAT LEAVES THE MESH WHILE ITS SLOT IS HELD GETS A LINE, AND SO DOES ITS RETURN.
+   *
+   * Seats once read `running · mesh offline` for many hours with no manager log line, so a watchdog
+   * keyed on process liveness saw nothing wrong and nobody could say when each seat dropped (#1208).
+   * The endpoint's presence view already decides offline per peer, and only while its own watch is
+   * delivering, so the line rides that event. The match is the readiness fence's: exact principal and
+   * incarnation, so a same-named foreign peer or an older incarnation never speaks for this seat. A
+   * seat being stopped is left to the reap line. The heartbeat is the seat's own record and nothing
+   * validated it, so an unreadable one prints as unknown instead of throwing inside the watch.
+   */
+  private logSeatMeshTransition(ev: PresenceEvent): void {
+    const a = this.agents.get(ev.presence.card.name);
+    if (!a || a.terminalizing || ev.presence.card.id !== this.managedPrincipal(a) || ev.presence.lifecycleUid !== a.lifecycleUid) return;
+    const who = `${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`;
+    if (ev.type === "offline" && !a.offMesh) {
+      a.offMesh = true;
+      const ts = ev.presence.ts;
+      const last = typeof ts === "number" && !Number.isNaN(new Date(ts).getTime()) ? new Date(ts).toISOString() : "unknown";
+      console.error(`seat offline on the mesh: ${who} - last heartbeat ${last}; process ${a.handle.status()}`);
+    } else if (ev.type === "join" && a.offMesh) {
+      a.offMesh = false;
+      console.error(`seat back on the mesh: ${who}`);
+    }
   }
 
   /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
@@ -9280,7 +9310,8 @@ export class Manager {
         : undefined;
       // The connector-reported provider from presence (#785): the live roster card's `meta.provider`,
       // when it is a non-empty string. Absent when the connector reported none — never fabricated.
-      const providerMeta = roster.get(a.name)?.card.meta?.provider;
+      const seen = roster.get(a.name);
+      const providerMeta = seen?.card.meta?.provider;
       const provider = typeof providerMeta === "string" && providerMeta ? providerMeta : undefined;
       // The harness-reported condition beside the mesh status (#618): a turn that died upstream reads
       // `waiting` with `rate_limit` here, not a bare `waiting`. Absent when the connector reported none.
@@ -9299,6 +9330,12 @@ export class Manager {
       // that stopped advancing reads as an old `activeAt` beside a live process. Absent when none was reported.
       const activeAtReported = roster.get(a.name)?.activeAt;
       const activeAt = typeof activeAtReported === "number" && Number.isFinite(activeAtReported) ? activeAtReported : undefined;
+      // How long an offline verdict has stood (#1208): the seat's last heartbeat before it went
+      // offline. Only beside a verdict, since a stale or unpopulated view dates nothing, and only when
+      // the seat's own unvalidated `ts` fits the row schema, so one odd record cannot fail the reply.
+      const offlineSince = view.state === "current" && seen?.status === "offline" && Number.isSafeInteger(seen.ts) && seen.ts >= 0
+        ? seen.ts
+        : undefined;
       return {
         name: a.name,
         // The spawned agent's id (nkey, or the user-mode principal) — lets an operator tool (e.g.
@@ -9311,12 +9348,13 @@ export class Manager {
         mode: a.handle.kind,
         status: a.handle.status(),
         uptimeMs: Date.now() - a.startedAt,
-        mesh: roster.get(a.name)?.status ?? "absent",
+        mesh: seen?.status ?? "absent",
         ...(condition ? { condition } : {}),
         ...(activeAt !== undefined ? { activeAt } : {}),
         // `current` is the only state in which `mesh` is a verdict; the other two are the
         // observer's own condition and travel on the row (older CLIs ignore the field).
         meshView: view.state,
+        ...(offlineSince !== undefined ? { offlineSince } : {}),
         // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
         // build a targeted (`despawn`/`attach`) request against THIS incarnation.
         lifecycleUid: a.lifecycleUid,

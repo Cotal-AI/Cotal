@@ -222,6 +222,10 @@ const AGENT_ROW_SCHEMA = {
     // or `unpopulated` (its watch has not replayed the bucket yet; `absent` means nothing).
     // Optional so a v0.47 manager's rows still validate; a reader treats absence as `current`.
     meshView: { type: "string", enum: ["current", "stale", "unpopulated"] },
+    // Epoch ms of the seat's last presence heartbeat, present only when `mesh` is `offline` and
+    // `meshView` is `current`: when the offline verdict began (#1208). Optional so an older
+    // manager's rows still validate.
+    offlineSince: { type: "integer", minimum: 0 },
     lifecycleUid: { type: "string" },
     authHealth: { type: "string" },
     authReason: { type: "string" },

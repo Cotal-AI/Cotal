@@ -1065,11 +1065,16 @@ than a bare `waiting`, and `--json` carries the whole `condition` object. When t
 the seat's last work event (presence `activeAt`), the mesh fact ends with its age, such as
 `· active 3s ago`, and `--json` carries `activeAt`. A seat whose turn stopped advancing keeps
 heartbeating, so its presence row stays fresh and this age is what shows the stall. A seat can be
-`running` and `mesh offline` at once: the process is alive and its presence has lapsed. The mesh fact
-is only a verdict while the manager's own presence watch is fresh: when that watch has been silent past
-the liveness window, or has not replayed the bucket yet, every row prints `mesh unknown` with the reason
-instead (`--json` carries it as `meshView: stale | unpopulated`), because `offline` and `not in roster`
-would then describe the manager's watch rather than the seat. The manager rebinds a watch that goes
+`running` and `mesh offline` at once: the process is alive and its presence has lapsed. That row says
+how long, as in `mesh offline for 3.5h`, counted from the seat's last presence heartbeat, which
+`--json` carries as `offlineSince` (epoch ms). The manager log names each managed seat that leaves the
+mesh while its slot is held (`seat offline on the mesh: <name> ...`) and each one that comes back
+(`seat back on the mesh: <name> ...`), so a watchdog that only checks process liveness has a line to
+act on. The manager does not reap or re-key such a seat. The mesh fact is only a verdict while the
+manager's own presence watch is fresh: when that watch has been silent past the liveness window, or
+has not replayed the bucket yet, every row prints `mesh unknown` with the reason instead (`--json`
+carries it as `meshView: stale | unpopulated`), because `offline` and `not in roster` would then
+describe the manager's watch rather than the seat. The manager rebinds a watch that goes
 silent under a live connection on its own, so `mesh unknown` normally clears within a liveness window.
 On a user-auth mesh `ps` also renders each managed agent's last credential-refresh outcome, fail-closed.
 

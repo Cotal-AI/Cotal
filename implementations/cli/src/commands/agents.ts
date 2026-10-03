@@ -93,6 +93,8 @@ type AgentRow = {
   activeAt?: number;
   /** The manager's own presence-view state when it built the row; absent from older managers. */
   meshView?: "current" | "stale" | "unpopulated";
+  /** Epoch ms of the seat's last heartbeat, only beside an `offline` verdict; absent from older managers. */
+  offlineSince?: number;
   authHealth?: string;
   authReason?: string;
   // #651 enrichment: present only when the manager recorded the fact (absent is real state:
@@ -292,8 +294,10 @@ function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanc
  *  own presence view as `stale` (its watch went silent past TTL) or `unpopulated` (its watch has not
  *  replayed the bucket yet), `offline` and `absent` describe the manager's watch, not the seat. Print
  *  "mesh unknown" with the reason instead of a liveness word an operator, or a watchdog, would act
- *  on. A row from a manager that predates `meshView` carries no field and renders as before. */
-export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt">, now = Date.now()): string {
+ *  on. A row from a manager that predates `meshView` carries no field and renders as before.
+ *  An offline verdict says how long it has stood when the row carries `offlineSince` (#1208), so a
+ *  seat that dropped a minute ago reads differently from one that dropped two days ago. */
+export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince">, now = Date.now()): string {
   if (r.meshView === "stale") return c.yellow("mesh unknown") + c.dim(" (manager's presence view is stale)");
   if (r.meshView === "unpopulated") return c.yellow("mesh unknown") + c.dim(" (manager's presence view not yet populated)");
   // The harness-reported condition and the last work progress ride beside the status, as the roster
@@ -304,7 +308,7 @@ export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView" | "condition" |
   const mesh = r.mesh === "absent"
     ? c.yellow("not in roster")
     : r.mesh === "offline"
-      ? c.dim("mesh offline")
+      ? c.dim(r.offlineSince === undefined ? "mesh offline" : `mesh offline for ${fmtUptime(now - r.offlineSince)}`)
       : r.mesh === "working"
         ? c.green("working · progress unknown")
         : r.mesh === "waiting"
