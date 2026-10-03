@@ -84,12 +84,14 @@ function deliveryLeaseFacts(reading: DeliveryLeaseReading, account: string, now:
 }
 
 /** Did one run of one daemon hold `lease.0` both before the query and after it failed? Only then can
- *  the holder read afterwards be the daemon that left the query unanswered. */
+ *  the holder read afterwards be the daemon that left the query unanswered. A row with no incarnation
+ *  predates the field, and two of them cannot be proven the same run. */
 function sameLeaseHolder(before: DeliveryLeaseReading, after: DeliveryLeaseReading): boolean {
   return (
     before.state === "held" &&
     after.state === "held" &&
     before.lease.holder === after.lease.holder &&
+    before.lease.incarnation !== undefined &&
     before.lease.incarnation === after.lease.incarnation
   );
 }
@@ -97,7 +99,8 @@ function sameLeaseHolder(before: DeliveryLeaseReading, after: DeliveryLeaseReadi
 /** Who to act on when the rail did not answer at all. Only an absent lease means no daemon is
  *  running; every other reading names something that starting another daemon would not fix. A
  *  holder that took the shard while the query was outstanding was never asked, so it is not named
- *  as the blocker. */
+ *  as the blocker. Even the same ready holder on both reads is not proof it was asked: the rail is
+ *  queue-grouped, and a stopped daemon whose lease lapsed can stay subscribed and take the query. */
 function unansweredRailBlocker(before: DeliveryLeaseReading, after: DeliveryLeaseReading): string {
   if (after.state === "absent") return "Start the delivery daemon (`cotal up` runs it) and re-run";
   if (after.state === "unreadable")
@@ -108,7 +111,7 @@ function unansweredRailBlocker(before: DeliveryLeaseReading, after: DeliveryLeas
     return `lease.0 was ${was} when the query was sent, so "${holder}" may not be the daemon that left it unanswered. Re-run before stopping anything`;
   }
   return ready
-    ? `The blocker is "${holder}": it holds the shard as ready but did not answer. Stop or restart that process; another daemon cannot take the lease while it is held`
+    ? `"${holder}" held the shard as ready before and after the query, but the rail is queue-grouped, so the query may have gone to another daemon still subscribed to it, such as a stopped one whose lease lapsed. Re-run before stopping anything. If no run gets an answer, stop any other delivery daemon still running for this space, then stop or restart "${holder}"; another daemon cannot take the lease while it is held`
     : `The blocker is "${holder}": it claimed the shard and has not bound its rails. Wait for it to become ready, or stop it so its lease lapses, then re-run`;
 }
 

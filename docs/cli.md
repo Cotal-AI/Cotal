@@ -1490,20 +1490,22 @@ what is blocking the rail:
 | absent | No daemon is running. Start it (`cotal up` runs it) and re-run |
 | unreadable | The daemon cannot be named, so do not assume none is running. Fix the lease read, then re-run |
 | held, not ready | That holder claimed the shard and has not bound its rails. Wait for it, or stop it so its lease lapses |
-| held, ready, no answer | That holder is wedged or cut off. Stop or restart it. Another daemon cannot take the lease while it is held |
+| held, ready, no answer | The query may have gone to another daemon still subscribed to the rail, such as a stopped one whose lease lapsed. Re-run before stopping anything. If no run gets an answer, stop any other delivery daemon for the space, then stop or restart the holder |
 | changed hands | The holder took the shard after the query was sent, so it was never asked. Re-run before stopping anything |
 
 The command reads the lease before it sends the query and again after the query fails. It names a
-holder as the blocker only when the same run of the same daemon held the lease both times. A row
-whose times are not valid dates reads as unreadable.
+holder as the blocker only when the same run of the same daemon held the lease both times, and two
+rows from a daemon too old to record its run never count as the same run. Even then a ready holder
+may not have been asked: the rail is queue-grouped, so any daemon still subscribed to it can take
+the query. A row whose times are not valid dates reads as unreadable.
 
 A daemon that answered and refused keeps its own reason, followed by the same lease line. The lease
 line names the holder, whether it is ready, the space account that holds the lease bucket, when that
 holder acquired the shard, and when the row was last written. A ready holder rewrites the row on
-every renewal and keeps its acquisition time. A row written by a daemon that predates the
-acquisition time reports it as unknown. The lease reads never change the outcome: the gate stays
-frozen and the command exits 2. A manager's boot self-heal uses the same check and reports the same
-line.
+every renewal and keeps its acquisition time, which only a successful acquisition sets. A row
+written by a daemon that predates the acquisition time reports it as unknown. The lease reads never
+change the outcome: the gate stays frozen and the command exits 2. A manager's boot self-heal uses
+the same check and reports the same line.
 
 There is no `--force`, and no path that discards gate state: the only way this reopens a gate is by
 proving the holder is gone and then completing the operation properly.

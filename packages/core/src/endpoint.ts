@@ -3854,12 +3854,12 @@ export class CotalEndpoint extends EventEmitter {
    *  processes by design. See {@link DeliveryLeaseInfo.incarnation}. */
   private readonly leaseIncarnation = randomUUID();
 
-  /** When this endpoint last acquired each shard's lease. Every later write of that row carries it
+  /** When this endpoint last WON each shard's lease create. Every later write of that row carries it
    *  unchanged, while `since` is re-stamped. See {@link DeliveryLeaseInfo.acquiredAt}. */
   private readonly leaseAcquiredAt = new Map<number, number>();
 
-  private encodeLease(shardIndex: number, ready: boolean): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, acquiredAt: this.leaseAcquiredAt.get(shardIndex), since: Date.now(), ready } satisfies DeliveryLeaseInfo));
+  private encodeLease(shardIndex: number, ready: boolean, acquiredAt = this.leaseAcquiredAt.get(shardIndex)): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, acquiredAt, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
   }
 
   /** Is this shard's lease row one THIS ENDPOINT INSTANCE wrote? The question a daemon whose renew
@@ -3881,8 +3881,11 @@ export class CotalEndpoint extends EventEmitter {
    *  freeing a re-acquire. Acquired BEFORE binding (single-flight gate); {@link markDeliveryLeaseReady}
    *  flips it ready AFTER the loops + `ctl.delivery` are bound. Returns the lease revision. */
   async acquireDeliveryLease(shardIndex: number): Promise<number> {
-    this.leaseAcquiredAt.set(shardIndex, Date.now());
-    return (await this.deliveryRegistry()).create(leaseKey(shardIndex), this.encodeLease(shardIndex, false));
+    // Recorded only once the create wins: a refused create leaves the held row, and so its time, as it was.
+    const acquiredAt = Date.now();
+    const revision = await (await this.deliveryRegistry()).create(leaseKey(shardIndex), this.encodeLease(shardIndex, false, acquiredAt));
+    this.leaseAcquiredAt.set(shardIndex, acquiredAt);
+    return revision;
   }
 
   /** Flip the held lease to READY (CAS `kv.update`) AFTER `startPlane3` has bound the loops + the
