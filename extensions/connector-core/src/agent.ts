@@ -171,10 +171,10 @@ const FOCUS_PATHS = ["live", "durable", "backfill"] as const;
 
 /** One delivery focus recall accounts for. A wire id is recorded only when it is excluded. An id-less
  *  delivery is recorded whether or not it was excluded (#613), with what recall pairs it to a stored
- *  copy by: the digest of what recall reads back, the path that delivered it, and its order there. */
+ *  copy by: the digest of what recall reads back, the path that delivered it, and when it arrived. */
 interface FocusExclusion {
   channel: string;
-  copy?: { digest: string; path: (typeof FOCUS_PATHS)[number]; excluded: boolean };
+  copy?: { digest: string; path: (typeof FOCUS_PATHS)[number]; excluded: boolean; arrival: number };
 }
 
 /** Repeated async NATS status errors can arrive once per ordered-consumer retry. They describe one
@@ -385,6 +385,8 @@ export class MeshAgent extends EventEmitter {
   private recvKeySeq = 0;
   /** Excluded wire ids, and every id-less channel delivery in focus (see {@link FocusExclusion}). */
   private focusExcludedIds = new Map<string, FocusExclusion>();
+  /** Arrival count of id-less channel deliveries in focus, across paths. */
+  private focusArrival = 0;
   private focusRecallUnsafeChannels = new Set<string>();
   private _stopping = false;
   /** Presence writes go out IN CALL ORDER (#636, #2055). setStatus is two awaited puts and every
@@ -960,7 +962,9 @@ export class MeshAgent extends EventEmitter {
       }
     }
     const path = item.historical ? "backfill" : delivery.durable ? "durable" : "live";
-    const copy: FocusExclusion["copy"] = item.id !== "" ? undefined : { digest: this.idlessDigest(item), path, excluded };
+    const arrival = this.focusExcludedIds.get(key)?.copy?.arrival;
+    const copy: FocusExclusion["copy"] =
+      item.id !== "" ? undefined : { digest: this.idlessDigest(item), path, excluded, arrival: arrival ?? ++this.focusArrival };
     this.focusExcludedIds.set(key, { channel: item.channel, copy });
   }
 
@@ -1411,6 +1415,7 @@ export class MeshAgent extends EventEmitter {
         droppedChannels.push(channel);
         continue;
       }
+      const readFrom = this.focusArrival;
       const { messages, seqs, dropped } = await this.ep.recallChannel(channel, this.focusSince);
       // Recall reads the same stored messages again on every call, so an id-less one needs the SAME
       // key each time: the recall mark, the ahead record and a part's read position are all keyed by
@@ -1426,24 +1431,20 @@ export class MeshAgent extends EventEmitter {
         }
         return this.toInboxItem(m, "channel", true, key);
       });
-      // Whether each id-less delivery in focus was excluded, per path and content, in arrival order.
-      // Read after the history read, as a wire id is, so an exclusion that landed meanwhile counts.
-      const arrivals = new Map<string, boolean[]>();
+      // Each id-less delivery in focus, per path and content, in arrival order. Read after the history
+      // read, as a wire id is, so an exclusion that landed meanwhile counts.
+      const arrivals = new Map<string, { excluded: boolean; arrival: number }[]>();
       for (const { channel: on, copy } of this.focusExcludedIds.values()) {
         if (!copy || on !== channel) continue;
         const seen = arrivals.get(`${copy.path}.${copy.digest}`);
-        if (seen) seen.push(copy.excluded);
-        else arrivals.set(`${copy.path}.${copy.digest}`, [copy.excluded]);
+        if (seen) seen.push(copy);
+        else arrivals.set(`${copy.path}.${copy.digest}`, [copy]);
       }
       // An id-less message is paired with its deliveries newest first, on each path (#613). One sender's
       // messages are stored in order and retention removes the oldest first, so the newest stored copy
       // is the one delivered last. A copy paired with an excluded delivery is skipped. Pairing from the
       // oldest end hid a later publication once the excluded copy aged out, and let an exclusion land
-      // on an earlier recallable copy while the excluded one came back. A path need not have delivered
-      // every copy, so two paths can pair one copy with different verdicts, and nothing here tells which
-      // publication each delivery was: one copy muted on one path and let through on the other looks
-      // the same as two publications on either side of a path change. Such a copy is skipped, so a
-      // muted copy never comes back, and the channel is reported as incomplete rather than left silent.
+      // on an earlier recallable copy while the excluded one came back.
       const copies = new Map<string, number[]>();
       for (const [i, item] of read.entries()) {
         if (item.id !== "") continue;
@@ -1454,16 +1455,40 @@ export class MeshAgent extends EventEmitter {
       }
       const skipped = new Set<number>();
       let unsure = false;
-      for (const [digest, at] of copies)
+      for (const [digest, at] of copies) {
+        // A delivery that landed during the history read can be of a publication the read did not see,
+        // and pairing it newest first then put its verdict on an older copy: a later muted twin hid a
+        // message already part read, and the walk moved past the rest of it. So it is paired only with a
+        // copy that the deliveries from before the read leave over. When retention cut the window, older
+        // copies may be gone too, so every delivery counts and the channel is reported as incomplete.
+        const paired = (path: (typeof FOCUS_PATHS)[number]): { excluded: boolean; arrival: number }[] => {
+          const seen = arrivals.get(`${path}.${digest}`) ?? [];
+          const before = seen.filter((d) => d.arrival <= readFrom).length;
+          return seen.slice(0, before + (dropped ? seen.length : Math.max(0, at.length - before)));
+        };
+        const live = paired("live");
+        const durable = paired("durable");
+        const backfill = paired("backfill");
+        // A publication's live copy arrives as it is published and its durable copy only once the
+        // delivery daemon has fanned it out. So a durable delivery that arrived before the live one
+        // paired with a copy is of an older publication, and it waits for an older copy. Otherwise a
+        // muted durable copy of an aged-out message hid a later one that arrived live.
+        let d = durable.length;
         for (let k = 1; k <= at.length; k++) {
+          const l = live[live.length - k];
           const verdicts = new Set<boolean>();
-          for (const path of FOCUS_PATHS) {
-            const seen = arrivals.get(`${path}.${digest}`) ?? [];
-            if (k <= seen.length) verdicts.add(seen[seen.length - k]);
-          }
+          if (l) verdicts.add(l.excluded);
+          if (d > 0 && !(l && durable[d - 1].arrival < l.arrival)) verdicts.add(durable[--d].excluded);
+          const b = backfill[backfill.length - k];
+          if (b) verdicts.add(b.excluded);
           if (verdicts.has(true)) skipped.add(at[at.length - k]);
+          // Two paths can still give one copy different verdicts when its live delivery came first: one
+          // copy muted live and let through durable looks the same as two publications on either side
+          // of a path change. Such a copy is skipped, so a muted copy never comes back, and the channel
+          // is reported as incomplete rather than left silent.
           if (verdicts.size > 1) unsure = true;
         }
+      }
       for (const [i, m] of messages.entries()) {
         if (m.id !== "") {
           if (this.focusExcludedIds.has(m.id)) continue;

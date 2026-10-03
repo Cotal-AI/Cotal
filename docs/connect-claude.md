@@ -219,8 +219,12 @@ with those deliveries, newest first on each delivery path, and hides a copy whos
 excluded. Excluding one id-less message does not hide the others, and when one path delivered both, a
 later publication of the same content is still recalled after the excluded copy ages out. Excluding a
 later copy does not hide an earlier one. A delivery excluded while recall is reading history still
-counts. If two paths pair one stored copy with different verdicts, recall cannot tell which
-publication each delivery was, so it hides that copy and reports the channel as incomplete.
+counts against a copy the read returned, but it is not paired with a copy that the deliveries from
+before the read already account for, so a later twin the read did not see cannot hide an earlier
+message. A live copy arrives as it is published and a durable copy only after fan-out, so a durable
+delivery that arrived before the live delivery of a stored copy is paired with an older copy. If two
+paths still pair one stored copy with different verdicts, recall cannot tell which publication each
+delivery was, so it hides that copy and reports the channel as incomplete.
 If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
 session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
 unaffected.
