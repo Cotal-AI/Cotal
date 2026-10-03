@@ -111,6 +111,22 @@ lack evidence that a package will never appear. The census therefore reports an 
 errored closure as `UNSETTLED` and never fails the job on its own. Exit 1 remains reserved for future
 positive publisher evidence.
 
+Presence on the per-version endpoint does not prove a version installs: `npm install` resolves
+through the packument, which can lag that endpoint. Before the GitHub Release is cut, the install
+gate installs `cotal-ai@<version>` from the registry into a scratch prefix with a fresh cache and
+runs `cotal --version`. A failed attempt before the deadline counts as unknown and is retried every
+15 seconds. Once less than two intervals remain, the gate waits half of the remaining time instead,
+so the last failed attempt is still retried before the deadline. A version that does not install
+and run within 10 minutes fails the job, and no Release is cut:
+
+```bash
+node scripts/verify-release-installable.mjs 0.52.0
+```
+
+The window in which npm's `latest` tag points at a version whose pinned siblings are not yet
+installable opens at publish time, so neither gate can close it. They only keep the announcement
+out of it.
+
 Re-check a version that already shipped without publishing, tagging, or changing git:
 
 ```bash
