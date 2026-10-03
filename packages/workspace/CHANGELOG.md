@@ -1,5 +1,35 @@
 # @cotal-ai/workspace
 
+## 0.59.0
+
+### Minor Changes
+
+- 70bcfe3: Breaking: `cotal actor grant` no longer turns an omitted ACL flag into the wide default, so a bare grant that used to succeed now needs `--full`. A grant must name `--scope`, `--allow-subscribe` and `--allow-publish`, or pass `--full` to take `spawn,role:default`, `>` and `>` for the ones left off. Otherwise it refuses, writes nothing, and prints both forms. Dropping one flag from a narrow event-plane reader grant used to mint a row that read or posted to every channel, or could spawn, with a success line as the only sign. The hints printed by `cotal login`, `cotal status`, `actor list` and the not-granted refusal now include `--full`.
+
+### Patch Changes
+
+- 1cf7f72: `ConnectRefusal` now carries a `kind`: `transient` when the broker could not be reached or answered too slowly, or no mesh is recorded yet, and `permanent` for every other refusal. A `cotal attach` that is reconnecting after its link died now exits non-zero with the refusal's own sentence when the refusal is permanent, such as a static-auth mesh whose seed has gone missing. It used to retry that forever behind `[cotal: connection lost, reconnecting]` with no explanation.
+- 5bec8b2: `cotal attach` now opens a seat's session on a user-auth mesh. The CLI presents its bearer identity together with the session grant to the auth service's exchange, which issues a `session-caller` view bearer only after it confirms, against the redeemed `session.<id>` row and the serving manager gate, that this owner and actor hold that session. The callout re-checks the same row and mints the same `session-caller` rails with the grant's expiry that the static path mints. No local seed is read or written.
+- 608f5f4: Re-attach doc comments that had drifted away from the declarations they document. A `/** */` block followed directly by another one documented nothing, so editor hovers and the published type declarations showed no doc for the intended declaration (for example `Manager`, the `plane3` field and `AclResolver`). Each such block now sits above its declaration, is merged into the block it duplicated, or is removed when its declaration no longer exists. A new `pnpm check:doc-comments` check, run as part of `check:docsbundle`, refuses a doc block followed directly by another in shipped source.
+- 438e9ed: Close the pid record publish window. A launcher that died between removing the old identity pin and publishing the new pidfile left the old pid with no pin, which teardown signalled with only a legacy warning, even when the removed pin had been refusing a reused pid. The publish now renames a bridge pin holding the old and the new record's lines before the pidfile commit, and teardown checks the pidfile's pid against its own line, so every crash point leaves the old or the new complete record. Publishes of one pidfile are serialized by a lock, so a launcher and the daemon it starts can no longer overwrite each other's bridge or settled pin. A publish that cannot read a start token for the new process gives it a `-` pin line, so a crash after the commit reads the legacy record it was publishing, never the new pid beside the old pin. Replacing a legacy record carries its line as `-`, so an interrupted replace leaves it legacy, never torn. Teardown and a daemon's exit cleanup remove a record under the same lock, and only while the pidfile still names the pid they stopped, so a stop that races a publish can no longer leave the new pidfile with no pin. `removeIdentityPin` is deprecated in favor of `removePidPair` and stays exported unchanged for one minor line.
+- 6145abc: Resume a preserved user-auth mesh as the logged-in operator. `cotal up` after `down --preserve-state` used a static instrument whose caller has no ledger row, so the manager refused `resume-preserved` for want of `admin` and the maintenance journal degraded. The resume now uses the operator's manager view, the same caller the preserve cut used.
+- Updated dependencies [5bec8b2]
+- Updated dependencies [6c01470]
+- Updated dependencies [350c87b]
+- Updated dependencies [608f5f4]
+- Updated dependencies [4a12111]
+- Updated dependencies [b4c69bf]
+- Updated dependencies [f485c49]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [c389563]
+- Updated dependencies [eb2681e]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [446ed23]
+- Updated dependencies [15c16ff]
+- Updated dependencies [d90f9f2]
+- Updated dependencies [d0b1da3]
+  - @cotal-ai/core@0.59.0
+
 ## 0.58.0
 
 ### Minor Changes

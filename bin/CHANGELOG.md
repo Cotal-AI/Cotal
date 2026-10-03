@@ -1,5 +1,47 @@
 # cotal-ai
 
+## 0.59.0
+
+### Patch Changes
+
+- 6bc9e7b: Gate the GitHub Release on installing `cotal-ai@<version>` from the registry and running the binary, polled until a deadline with every failure before it treated as unknown and retried, so a version that passes the presence check but cannot install is no longer announced.
+- 06a8bca: Tag the GitHub Release at the commit that first carried the version, which is the tree the packages were published from. A publishing run whose closure gate ended `UNSETTLED` left the Release to the next push that saw closure, and that push tagged itself, so the Release named a commit carrying changes absent from the published tarballs. The step resolves the oldest commit on `main` that carries the version, so a version that was reverted and carried again keeps its first commit, and it fails when it cannot read that history or cannot resolve that commit.
+- Updated dependencies [70bcfe3]
+- Updated dependencies [1cf7f72]
+- Updated dependencies [fe90b42]
+- Updated dependencies [5bec8b2]
+- Updated dependencies [6c01470]
+- Updated dependencies [350c87b]
+- Updated dependencies [608f5f4]
+- Updated dependencies [8316efb]
+- Updated dependencies [4a12111]
+- Updated dependencies [b4c69bf]
+- Updated dependencies [f485c49]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [c389563]
+- Updated dependencies [57d77ab]
+- Updated dependencies [eb2681e]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [438e9ed]
+- Updated dependencies [446ed23]
+- Updated dependencies [15c16ff]
+- Updated dependencies [61d6365]
+- Updated dependencies [d90f9f2]
+- Updated dependencies [ffdb45c]
+- Updated dependencies [d0b1da3]
+- Updated dependencies [b5c3619]
+- Updated dependencies [62b004b]
+- Updated dependencies [6145abc]
+  - @cotal-ai/auth@0.59.0
+  - @cotal-ai/cli@0.59.0
+  - @cotal-ai/manager@0.59.0
+  - @cotal-ai/workspace@0.59.0
+  - @cotal-ai/core@0.59.0
+  - @cotal-ai/delivery@0.59.0
+  - @cotal-ai/connector-core@0.59.0
+  - @cotal-ai/runtime@0.59.0
+
 ## 0.58.0
 
 ### Patch Changes
