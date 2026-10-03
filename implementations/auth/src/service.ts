@@ -84,7 +84,7 @@ import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScan
 import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
 import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
-import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
+import { makeDeliveryAdminEvictor, makeDeliveryAdminHolderEvictor } from "./barrier-evict.js";
 import { resumeAgentRetirement, runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
 import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
@@ -1020,7 +1020,7 @@ export async function openAuthAuthorityPlane(opts: {
             const result = await principalOracle(principal);
             return { state: result.state, detail: result.note ?? `delivery-daemon principal sweep, sweepComplete=${String(result.sweepComplete)}` };
           },
-          evict: async (principal) => (await evict(principal)).verifiedGone,
+          evictHolders: makeDeliveryAdminHolderEvictor({ space, server, dataAccount, log }),
           log,
         });
       } finally {

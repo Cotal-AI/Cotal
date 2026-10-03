@@ -1479,9 +1479,15 @@ holder really is gone, prints what it found, and then finishes the dead operatio
 interrupted restart would have: revoke the old credentials, evict their holders with verification,
 and reopen the gate.
 
-If verification is interrupted, the command leaves the gate frozen and durably records each holder
-whose eviction was already verified. A retry still repeats the freeze-holder liveness check, then
-skips only progress bound to the same registration operation, frozen-gate revision, and holder set.
+The command revokes the old credentials 16 at a time. It then verifies every holder's eviction in
+one shared sweep on the delivery daemon, so a large credential family costs about as much as a small
+one. The daemon must serve the `evictPrincipals` verb; an older daemon refuses it and the gate stays
+frozen.
+
+If a holder is not verified gone, the command leaves the gate frozen and durably records the holders
+the sweep did verify. An interrupted sweep records nothing. A retry still repeats the freeze-holder
+liveness check, then skips only progress bound to the same registration operation, frozen-gate
+revision, and holder set.
 The output reports holders completed before this attempt, completed now, and still remaining. A new
 freeze or changed holder set starts from zero. Cursor cleanup happens only after reopen; a retained
 cursor is harmless because its old gate revision cannot authorize a later freeze.

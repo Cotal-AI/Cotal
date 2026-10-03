@@ -81,7 +81,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor } from "./endpoint-evict.js";
+import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
@@ -6608,7 +6608,7 @@ export class Manager {
       report = await reconcileEndpointGate({
         kv: authKv, space: this.space, endpoint: MANAGER_ENDPOINT, instanceId,
         probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log }),
-        evict: makeManagerEndpointEvictor({ space: this.space, servers, auth, log }),
+        evictHolders: makeManagerEndpointHolderEvictor({ space: this.space, servers, auth, log }),
         log,
         recordsKv,
       });
