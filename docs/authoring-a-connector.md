@@ -48,6 +48,18 @@ the `Connector` interface in
 [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) and the OpenCode connector in
 [`extensions/connector-opencode/`](../extensions/connector-opencode/) for a complete worked example.
 
+### Private launch files
+
+Text the child should not see in argv, such as a persona or an MCP config that names shared servers,
+goes in a private file written with `writeLaunchArtifact` from `@cotal-ai/core`, with only its path
+passed to the child. Pass the same `artifacts` array to every call and return it on the `LaunchSpec`.
+The launcher owns those files: the manager and the foreground `cotal spawn` remove them once the
+child has exited, or at once when it never started, so the child may read them at any point in its
+life. On a runtime that cannot report a self-exit (tmux, cmux, orca, herdr) the manager removes them
+when it stops the seat. Run every check that can refuse the launch before the first write. The file
+is 0600 in a 0700 directory, which is OS-user isolation: any process running as the same user can
+read it while it exists.
+
 ### Local listeners
 
 A connector that carries the `cotal_*` surface over any local listener, loopback TCP or a Unix

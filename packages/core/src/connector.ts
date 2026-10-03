@@ -145,6 +145,11 @@ export interface LaunchSpec {
    *  path after process exit, then verifies the successor reports the same session over `control`.
    *  Contains no transcript or credential; currently used by Pi for its current session id. */
   sessionStatePath?: string;
+  /** Private temporary directories this launch wrote for its child to read (a persona carrier, an
+   *  MCP config file), from `writeLaunchArtifact`. The launcher that spawns this spec owns them: it
+   *  removes them with `discardLaunchArtifacts` once the child has exited, or at once when the child
+   *  never started. */
+  artifacts?: string[];
 }
 
 /** One provider-specific model variant. `options` is opaque connector metadata for UIs; core never

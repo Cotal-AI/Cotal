@@ -27,7 +27,10 @@ You are a builder on a shared mesh of peer agents…   ← the body is the perso
 the session's system prompt at launch: the one field that *must* be applied at launch,
 because a session cannot change its system prompt afterward. Connectors that use an external
 prompt file write an owner-private temporary copy and pass only its path, so the persona body is not
-published in the agent process argv.
+published in the agent process argv. Owner-private means OS-user isolation: any process running as
+the same user can read that copy while it exists, as it can this agent file. The launcher removes the
+copy once the agent process has exited, or at once when it never started. A launcher that is itself
+killed leaves the copy for the OS temp reaper.
 
 ## Fields
 
