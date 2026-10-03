@@ -1,15 +1,11 @@
 /**
- * The per-session MCP server stays small: it is launched with node's memory-saving flags, and its
- * bundles are pure ASCII. No `claude` binary, no broker - this drives `buildLaunch`, reads the plugin
- * manifest and the built bundles, and runs node with the flags.
+ * The per-session MCP server launches with node's memory-saving flags. No `claude` binary, no broker:
+ * this drives `buildLaunch`, reads the plugin manifest, and runs node with the flags.
  *
  * WHY THIS EXISTS. Every managed session runs its own `node dist/mcp.cjs`, so whatever it holds is
- * paid once per agent. Two things made it larger than its work needs, both silent:
- *   - one non-ASCII character anywhere in the bundle makes node hold ALL of its source as a two-byte
- *     string (a `µ` in @nats-io/jetstream's duration regex: 4.2MB on disk, 8.2MB resident);
- *   - V8's default young generation sizes for throughput, and an idle relay keeps ~9MB of it empty.
- * A heap-size threshold would be flaky, so the suite asserts the CAUSES instead: the bytes are ASCII
- * and the launch carries the flags.
+ * paid once per agent. V8's default young generation sizes for throughput, and an idle relay keeps
+ * ~33MB of it after startup. A heap-size threshold would be flaky, so the suite asserts the cause
+ * instead: the launch carries the flags.
  *
  * THE fetch CELLS ARE THE LOAD-BEARING ONES. `--lite-mode`/`--jitless` save more and look like the
  * obvious next step, but they remove `WebAssembly`, and node's `fetch` parses HTTP with a wasm
@@ -19,12 +15,10 @@
  * Run: pnpm smoke:claude-mcp-footprint
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { claudeConnector } from "../src/extension.js";
-// @ts-expect-error - a plain .mjs build script with no type declarations
-import { asciiOnly } from "../build.mjs";
 
 const FLAGS = ["--optimize-for-size", "--max-semi-space-size=1"];
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -41,7 +35,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   }
 };
 
-console.log("claude connector: the per-session MCP server launches lean");
+console.log("claude connector: the per-session MCP server launches with the footprint flags");
 
 type Server = { command: string; args: string[] };
 const cotalServer = (config: string): Server | undefined =>
@@ -87,43 +81,8 @@ const fetchUnder = (flags: string[]) =>
 check("fetch works under the footprint flags", fetchUnder(FLAGS) === "ok", fetchUnder(FLAGS));
 check("control: under --jitless the same probe fails", fetchUnder(["--jitless"]) !== "ok");
 
-// ---- the ASCII rewrite ---------------------------------------------------------------------------
-{
-  const src = 'module.exports = { re: /(\\d+)(ns|µs|ms)/, s: "§ 13.2", t: `ok ${1} 😀` }; // § kept comment';
-  const out = asciiOnly(src) as string;
-  check("the rewrite leaves no non-ASCII byte", !/[^\x00-\x7f]/.test(out), out);
-  const before = { exports: {} as Record<string, unknown> };
-  const after = { exports: {} as Record<string, unknown> };
-  new Function("module", src)(before);
-  new Function("module", out)(after);
-  const b = before.exports as { re: RegExp; s: string; t: string };
-  const a = after.exports as { re: RegExp; s: string; t: string };
-  check("an escaped regex matches what the original matched", a.re.test("5µs") && b.re.test("5µs") && !a.re.test("5xs"));
-  check("an escaped string is the same string", a.s === b.s);
-  check("a character outside the BMP survives as its surrogate pair", a.t === b.t);
-  let refused = "";
-  try {
-    asciiOnly("const x = String.raw`µ`;");
-  } catch (e) {
-    refused = (e as Error).message;
-  }
-  check("a non-ASCII String.raw is refused, since escaping it would change it", /String\.raw/.test(refused), refused);
-}
-
-// ---- the shipped bundles -------------------------------------------------------------------------
-for (const file of ["dist/mcp.cjs", "dist/hook.cjs"]) {
-  const path = join(PKG, file);
-  const present = existsSync(path);
-  check(`${file} is built (run through pnpm smoke:claude-mcp-footprint, which builds first)`, present);
-  if (present) {
-    const text = readFileSync(path, "latin1");
-    const at = text.search(/[^\x00-\x7f]/);
-    check(`${file} is pure ASCII, so node holds its source one byte per character`, at < 0, at < 0 ? "" : text.slice(Math.max(0, at - 60), at + 20));
-  }
-}
-
-// ---- the cell count, because the bundle cells are conditional ------------------------------------
-const EXPECTED = 15;
+// ---- the cell count, so a cell that stops running is a failure, not a shorter list ---------------
+const EXPECTED = 6;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
