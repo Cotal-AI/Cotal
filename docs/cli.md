@@ -987,8 +987,9 @@ at capacity (50 of 50 slots: 49 managed, 0 reserved, 1 cooling); waiting frees a
 ```
 
 A cooling slot frees at the stated time. A launch that has not settled frees its slot only if it
-fails, and a managed seat frees its slot only when it stops. The roster counts presence, which also
-includes peers no manager owns, so its total is a different number.
+fails, and a managed seat frees its slot only when it stops. The refusal counts a launch as pending
+only while it holds a slot, so a launch whose seat already ended is not counted. The roster counts
+presence, which also includes peers no manager owns, so its total is a different number.
 
 ## models
 

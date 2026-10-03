@@ -6530,17 +6530,24 @@ export class Manager {
    *  from accept until its launch settles, in `agents` once its process exists, and in `cooling`
    *  if it then frees young, so a reservation stops counting once it reaches `agents`. `managed` is
    *  what this manager's `ps` lists, `reserved` is the accepted launches that have no process yet,
-   *  and `launching` is every launch not yet settled. */
+   *  and `launching` is every unsettled launch that still holds a slot through `reserved` or
+   *  `agents`. A launch whose seat already freed holds no slot but its cooling stamp, so its
+   *  failure can free nothing. */
   private occupancy(): Occupancy {
     const cooling = this.coolingCount();
     let reserved = 0;
-    for (const name of this.reserved) if (!this.reservedLive.has(name)) reserved++;
+    let launching = 0;
+    for (const name of this.reserved) {
+      const placed = this.reservedLive.has(name);
+      if (!placed) reserved++;
+      if (!placed || this.agents.has(name)) launching++;
+    }
     const managed = this.agents.size;
     return {
       managed,
       reserved,
       cooling,
-      launching: this.reserved.size,
+      launching,
       used: managed + reserved + cooling,
       nextCoolingMs: cooling ? Math.min(...this.cooling) - Date.now() : undefined,
     };
