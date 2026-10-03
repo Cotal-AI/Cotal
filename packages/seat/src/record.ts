@@ -56,6 +56,11 @@ export function recordPath(root: string, id: string): string {
   return join(root, assertSeatId(id), "record.json");
 }
 
+/** Where a custodian records how its child ended, beside the custody record it names. */
+export function exitPath(recordFile: string): string {
+  return join(dirname(recordFile), "exit.json");
+}
+
 export function socketPath(root: string, id: string): string {
   return join(root, assertSeatId(id), "seat.sock");
 }

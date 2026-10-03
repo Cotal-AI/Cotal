@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname } from "node:path";
 import * as pty from "@lydell/node-pty";
@@ -18,9 +18,10 @@ import {
   UNATTENDED_MS as UNATTENDED_DEFAULT_MS,
   encodeFrame,
   type ClientRequest,
+  type SeatExit,
   type ServerMessage,
 } from "./protocol.js";
-import { RECORD_VERSION, bootToken, processStartToken, writeRecord, type SeatRecord } from "./record.js";
+import { RECORD_VERSION, bootToken, exitPath, processStartToken, writeRecord, type SeatRecord } from "./record.js";
 import { StartupConfirmMatcher, unmatchedConfirmMessage } from "./startup-confirm.js";
 
 export interface CustodianLaunch {
@@ -42,6 +43,25 @@ export interface CustodianLaunch {
    *  Resolved by the LAUNCHER, because the launcher scrubs the environment it hands this process
    *  (the child must not inherit the caller's), so an env override read here would never see one. */
   unattendedMs?: number;
+}
+
+/** The longest connector diagnostic kept: one line, enough for an error and the path it names. */
+const DIAGNOSTIC_MAX = 240;
+/** How much of an unfinished output line is held while waiting for its end. */
+const LINE_TAIL_MAX = 4096;
+
+/** The last `[cotal-<name>] …` line in `text`, with terminal escapes and control bytes removed.
+ *  Connectors print their own diagnostics under that prefix; nothing else the child prints is kept. */
+function lastConnectorDiagnostic(text: string): string | undefined {
+  const plain = text
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b./g, "")
+    .replace(/\r/g, "\n")
+    .replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
+  const line = plain.match(/\[cotal-[a-z0-9-]+\][^\n]*/g)?.at(-1)?.trim();
+  if (!line) return undefined;
+  return line.length > DIAGNOSTIC_MAX ? `${line.slice(0, DIAGNOSTIC_MAX)}…` : line;
 }
 
 function send(sock: Socket, msg: ServerMessage): void {
@@ -99,7 +119,10 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   let seenClient = false;
   let cols = DEFAULT_COLS;
   let rows = DEFAULT_ROWS;
-  let exit: { code?: number; signal?: number } | undefined;
+  let exit: SeatExit | undefined;
+  // The child's last connector diagnostic, and the unfinished line it may still be printing.
+  let diagnostic: string | undefined;
+  let lineTail = "";
   const dataSubs = new Map<number, Set<Socket>>();
   const waiters = new Map<Socket, Set<number>>();
   const controllers = new Set<Socket>();
@@ -115,6 +138,8 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   let server: ReturnType<typeof createServer> | undefined;
   /** Wait for the first adopter when the child has already exited at listen. */
   const LAUNCH_HANDOFF_MS = 5_000;
+  /** How long a child already gone from /proc may wait for node-pty to report how it ended. */
+  const EXIT_STATUS_GRACE_MS = 1_000;
   const UNATTENDED_MS = launch.unattendedMs ?? UNATTENDED_DEFAULT_MS;
 
   if (confirmMatcher) {
@@ -149,6 +174,19 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     } catch {
       return true;
     }
+  };
+
+  /**
+   * Mark a child that /proc shows gone as exited WITHOUT a status, but only once node-pty has had
+   * time to report the status itself. node-pty reports an exit only when the pty closes, and when a
+   * descendant still holds the pty open it forces that close 200 ms after reaping the child. The
+   * exit event carries whatever is known when it is sent, so marking earlier sent no status.
+   */
+  let goneSince: number | undefined;
+  const markGone = (): void => {
+    if (!alive || !childGone()) return;
+    goneSince ??= Date.now();
+    if (Date.now() - goneSince >= EXIT_STATUS_GRACE_MS) markExited({});
   };
 
   const settleTerminal = (): void => {
@@ -279,7 +317,15 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       return;
     }
     alive = false;
-    exit = info ?? exit ?? {};
+    const last = lastConnectorDiagnostic(lineTail) ?? diagnostic;
+    exit = { ...(info ?? exit ?? {}), ...(last ? { diagnostic: last } : {}) };
+    // Kept beside the custody record so a reap that runs after every controller is gone, even in a
+    // successor manager, can still say how the child ended.
+    try {
+      writeFileSync(exitPath(launch.recordPath), `${JSON.stringify(exit)}\n`, { mode: 0o600 });
+    } catch {
+      /* the seat directory may already be gone */
+    }
     if (confirmTimer) {
       clearTimeout(confirmTimer);
       confirmTimer = undefined;
@@ -292,6 +338,11 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
 
   proc.onData((d) => {
     term.write(d);
+    // Only complete lines are scanned, so a diagnostic split across chunks is read whole.
+    const text = lineTail + d;
+    const cut = Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r"));
+    if (cut >= 0 && text.lastIndexOf("[cotal-", cut) >= 0) diagnostic = lastConnectorDiagnostic(text.slice(0, cut)) ?? diagnostic;
+    lineTail = text.slice(cut + 1).slice(-LINE_TAIL_MAX);
     if (early.length < MAX_FRAME_SIZE) {
       early += early.length + d.length > MAX_FRAME_SIZE ? d.slice(0, MAX_FRAME_SIZE - early.length) : d;
     }
@@ -314,7 +365,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       reap = undefined;
       return;
     }
-    if (childGone()) markExited({});
+    markGone();
   }, 50);
   reap.unref();
 
@@ -435,7 +486,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           clearTimeout(handoffTimer);
           handoffTimer = undefined;
         }
-        if (alive && childGone()) markExited({});
+        markGone();
         send(sock, {
           id: req.id,
           ok: true,
@@ -503,7 +554,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         return;
       }
       case "wait-exit": {
-        if (alive && childGone()) markExited({});
+        markGone();
         if (!alive) {
           send(sock, { id: req.id, ok: true, op: "wait-exit", exit });
           return;
@@ -514,7 +565,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         return;
       }
       case "health": {
-        if (alive && childGone()) markExited({});
+        markGone();
         send(sock, {
           id: req.id,
           ok: true,

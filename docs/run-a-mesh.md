@@ -373,7 +373,10 @@ custodian. A custodian whose agent has exited exits a few seconds later on its o
 lists the custodians left on the machine, and `cotal seats --drain` retires the ones whose agent
 has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). When a
 custodian's agent exits on its own, the manager logs a `seat reaped:` line with the exit code and,
-for a signalled child, the signal number, as the custodian recorded them. Optional runtimes are installed
+for a signalled child, the signal number, as the custodian recorded them. The line ends with the
+last line the child printed under a connector's `[cotal-<name>]` prefix, when it printed one. The
+custodian keeps the same record beside the seat's custody record, so a later reap of that seat,
+including one by a successor manager, reports how the child ended. Optional runtimes are installed
 through the extension surface, for example `cotal ext add @cotal-ai/orca`, then selected with
 `--runtime orca` (similarly `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`). They put teammates in native
 terminal surfaces rather than manager-owned PTYs. Runtime names are open-ended and resolved from
