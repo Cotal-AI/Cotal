@@ -174,7 +174,9 @@ not explicitly requested or clearly needed.
 when behavior changes, update the affected pages under [docs/](docs/README.md) (and
 [SPEC.md](SPEC.md) for wire changes) so they never drift from the code. Use direct sentences:
 no em dashes, filler words such as `exactly` or `fold`, list-style headings, or slogan-shaped
-"this, not that" contrasts. `pnpm check:docs-voice` enforces the mechanical parts.
+"this, not that" contrasts. `pnpm check:docs-voice` enforces the mechanical parts. An operator
+string a page quotes must be one the source still emits, with a substituted value written as a
+placeholder such as `<id>`; `pnpm check:docs-literals` checks that.
 `docs/` describes the **protocol** only; each example documents itself in its own
 `examples/*/README.md`.
 - **A doc comment sits directly above what it documents.** TypeScript attaches only the nearest

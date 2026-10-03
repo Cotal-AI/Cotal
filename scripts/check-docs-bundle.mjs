@@ -14,6 +14,10 @@
 // Writing to a temp path rather than the connector's source keeps the check side-effect free, so
 // running it never leaves a half-written artifact behind for a later build to compile.
 //
+// A pass proves the bundle carries the pages. It does not prove the pages agree with the code: a
+// page that quotes a line the binary no longer prints bundles as faithfully as a correct one.
+// `check-docs-literals.mjs` binds the quoted operator strings to the source that emits them.
+//
 // Exit 0 clean, 1 the bundle is hollow, 2 the generator could not run.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
