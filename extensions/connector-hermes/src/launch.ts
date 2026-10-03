@@ -17,7 +17,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
@@ -167,14 +167,20 @@ function parseLine(raw: string): [number, number] | null {
 const cmp = (a: [number, number], b: [number, number]): number => a[0] - b[0] || a[1] - b[1];
 
 /** Opt-in: run the gateway in the operator's OWN Hermes profile instead of a disposable one.
- *  Set to the profile directory (`~/.hermes`, or any HERMES_HOME). Unset means the managed
- *  default, which is what a spawned seat should almost always use. */
+ *  Set to the absolute path of the profile directory (`$HOME/.hermes`, or any HERMES_HOME). Unset
+ *  means the managed default, which is what a spawned seat should almost always use. */
 export const ADOPT_HOME_ENV = "COTAL_HERMES_ADOPT_HOME";
 
-/** Resolve the adopt-home opt-in, or undefined for the managed default. */
+/** Resolve the adopt-home opt-in, or undefined for the managed default. A relative value is
+ *  refused: it would resolve against whatever directory the launcher runs in, and a `~` no shell
+ *  expanded would name a directory called `~` there, so the profile written to would depend on
+ *  where the seat started. */
 export function adoptedHome(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const raw = env[ADOPT_HOME_ENV]?.trim();
-  return raw ? raw : undefined;
+  if (!raw) return undefined;
+  if (!isAbsolute(raw))
+    throw new LaunchRefused(`${ADOPT_HOME_ENV}=${raw} is not an absolute path — set it to the full path of your Hermes profile directory, e.g. ${ADOPT_HOME_ENV}=$HOME/.hermes`);
+  return raw;
 }
 
 /**

@@ -90,6 +90,10 @@ export COTAL_HERMES_ADOPT_HOME="$HOME/.hermes"
 cotal spawn --agent hermes
 ```
 
+The value must be an absolute path. The launcher refuses a relative path, and a `~` your shell did
+not expand, before it writes anything, because either would resolve against the directory the
+launcher runs in.
+
 The launcher then installs only its own `plugins/cotal` directory, refreshed on each launch. It
 reads your `config.yaml` and never writes it, and it leaves your `SOUL.md` alone. Enabling the
 plugin stays your decision, so add this to your `config.yaml` first:
