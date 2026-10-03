@@ -1116,11 +1116,13 @@ export class MeshHandler {
    * "down" here and "down or gone" at a conclave join are one definition. No live row carrying
    * the name AND this incarnation is the death, with the reason split by what the name shows now:
    * `"lapsed"` when nothing live holds the name any more, `"superseded"` when a live row holds it
-   * under a DIFFERENT incarnation — this incarnation dead with a successor already up.
+   * under a DIFFERENT incarnation — this incarnation dead with a successor already up. A lapse is
+   * read as the death only once the row has stayed absent for {@link LAPSE_CONFIRM_MS}: a seat whose
+   * connector stalled past the row's TTL renews it under the same uid, and that seat is not down.
    *
-   * NOTHING BINDS, because a death is re-observable where a matched message is not: a lifecycle
-   * uid is minted once per incarnation and never heartbeats again after its row lapses, so a
-   * crash between the observation and the settle re-observes the same death on resume — at worst
+   * NOTHING BINDS, because a death is re-observable where a matched message is not: a dead
+   * incarnation's uid never heartbeats again, so a crash between the observation and the settle
+   * re-observes the same death on resume (after a fresh confirmation window) — at worst
    * with the reason upgraded from `"lapsed"` to `"superseded"` by a successor that appeared in
    * between. `at` is the time of OBSERVATION: presence records no time of death, and inventing
    * one would be a value the planes cannot back.
@@ -1146,6 +1148,7 @@ export class MeshHandler {
       ? undefined
       : { endpoint: this.binding.endpoint, token: ctx.requestId };
     if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));
+    let lapsedSince: number | undefined;
     for (;;) {
       if (ctx.signal.cancelled) {
         if (primary !== undefined) await this.cancelTimer(primary);
@@ -1169,9 +1172,12 @@ export class MeshHandler {
       }
       if (!rows.some((p) => p.card?.name === name && p.lifecycleUid === uid)) {
         const reason = rows.some((p) => p.card?.name === name) ? "superseded" : "lapsed";
-        if (primary !== undefined) await this.cancelTimer(primary);
-        return { agent: ev.agent, reason, at: this.now() };
-      }
+        lapsedSince ??= this.now();
+        if (reason === "superseded" || this.now() - lapsedSince >= LAPSE_CONFIRM_MS) {
+          if (primary !== undefined) await this.cancelTimer(primary);
+          return { agent: ev.agent, reason, at: this.now() };
+        }
+      } else lapsedSince = undefined;
       await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
     }
   }
@@ -1511,7 +1517,9 @@ export class MeshHandler {
    * goal-bound hold (its expiry commits `failed` reason `turn-deadline`), and this client arms its
    * OWN pause under the step's request id — the L4003 authority that survives a dead manager.
    * DEATH likewise: the manager's reap hook fails pending turns `agent-down`, and this client
-   * watches presence itself (the L4002 authority when the manager died with the seat).
+   * watches presence itself (the L4002 authority when the manager died with the seat). The watch
+   * reads death the way `wait(down)` does: a superseded incarnation at once, a lapsed row only
+   * once it has stayed absent for {@link LAPSE_CONFIRM_MS}.
    *
    * Handoff honoring (lang §5.3) happens HERE: the scope's pending memo is spent at every turn's
    * begin, and when this turn targets its `to`, the link rides the submission (`handoffFrom`, the
@@ -1629,6 +1637,7 @@ export class MeshHandler {
     await this.arm(primary, deadlineAt);
 
     const actx = await this.actionCtx();
+    let lapsedSince: number | undefined;
     try {
         for (;;) {
         if (ctx.signal.cancelled) {
@@ -1652,9 +1661,12 @@ export class MeshHandler {
         }
         if (!rows.some((pr) => pr.card?.name === name && pr.lifecycleUid === uid)) {
           const reason = rows.some((pr) => pr.card?.name === name) ? "superseded" : "lapsed";
-          await this.cancelTimer(primary);
-          throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
-        }
+          lapsedSince ??= this.now();
+          if (reason === "superseded" || this.now() - lapsedSince >= LAPSE_CONFIRM_MS) {
+            await this.cancelTimer(primary);
+            throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
+          }
+        } else lapsedSince = undefined;
         await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
       }
     } catch (e) {
@@ -2487,6 +2499,15 @@ export { waitConsumerName, waitConsumerConfig } from "@cotal-ai/core";
 /** How long one poll of a wait's consumer blocks. The deadline itself is durable; this is only how
  *  late its observation can be, and a shorter poll buys latency at the cost of fetch traffic. */
 const WAIT_POLL_MS = 2_000;
+/**
+ * How long an incarnation's presence row must stay absent before `turn` and `wait(down)` read it as
+ * `lapsed`. A row is gone 6s after its last heartbeat, and a live seat whose connector stalls for
+ * longer (host load, a reconnect) comes back under the same lifecycle uid on its next heartbeat. One
+ * absent read failed a turn L4002 while the seat went on working (#2344). Five liveness windows lets
+ * a stalled seat renew, and stays short against a turn's deadline. A `superseded` read needs no
+ * wait: a different incarnation already holds the name.
+ */
+const LAPSE_CONFIRM_MS = 30_000;
 /** The budgets this host meters for an agent, read from the spawn's `permits` record. */
 type AgentPermits = { turns?: number; wallClockMs?: number };
 /** The seat an ask is told to: its roster identity, its address, and the schema it must meet. */

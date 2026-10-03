@@ -410,8 +410,11 @@ that is already dead succeeds, and the death is the wait's to observe. `wait(dow
 a monitored agent, and refuses one the run never performed `monitor` on. It reads the death off presence liveness, the
 same witness a conclave join resolves members through: the value carries the handle, the reason
 (`lapsed` when nothing live holds the name any more, `superseded` when a live row holds it under
-a different incarnation) and the time of observation, a wait that begins after the death resolves
-at once, and a timeout resolves null on one absolute deadline a resumed run re-attaches to.
+a different incarnation) and the time of observation. A superseded incarnation is down at once. A
+lapsed one is down only after its presence row has stayed gone for 30 seconds, because a seat whose
+connector stalls past the row's 6-second TTL, under host load or across a reconnect, renews it under
+the same incarnation and is still working. A wait that begins after the death resolves once that
+holds, and a timeout resolves null on one absolute deadline a resumed run re-attaches to.
 `turn` wakes one seat for one host turn through the manager as a pull-shaped relay: the run
 submits the turn under the step's own identity, the manager holds it as a goal pinned to the
 seat's incarnation, and the seat pulls it under its own reach ahead of its next host turn, so
@@ -424,8 +427,9 @@ link, a handoff to a name the run never spawned is the catchable L4005, and one 
 to a different worktree is L4004. The deadline elapsing before any yield is the catchable L4003:
 the acceptance names the instant, the manager's goal-bound hold denies at it, and the run arms its
 own pause on that same instant, so either side outliving the other still converges on the same
-answer. A seat that dies mid-turn is read off its own presence row by the run itself and is the
-catchable L4002, and a death the manager marked on the deadline terminal reads the same way. Two
+answer. A seat that dies mid-turn is read off its own presence row by the run itself, with the
+same 30-second confirmation for a lapsed row, and is the catchable L4002, and a death the manager
+marked on the deadline terminal reads the same way. Two
 turns on one seat, from two branches or from two runs, reach it one at a time: the language
 dispatches the second when the first settles, and the manager shows a seat the oldest unsettled
 turn alone. On an auth mesh the relay needs no extra grant: every spawned seat's baseline

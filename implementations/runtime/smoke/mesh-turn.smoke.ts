@@ -623,7 +623,8 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
     const p = safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(T).ctx));
     await wait(1_200);
     if (alloc !== undefined) await presenceKv.delete(`local.${alloc.actor}`);
-    const got = await withDeadline(p, 20_000, "the orphaned turn");
+    // A lapsed row is the death only once it has stayed absent for the 30s confirmation window.
+    const got = await withDeadline(p, 60_000, "the orphaned turn");
     c("the client observes the death itself and throws L4002, naming the reason",
       (got as { code?: string })?.code === "L4002" && String((got as { message?: string })?.message).includes("lapsed"),
       JSON.stringify(got));
