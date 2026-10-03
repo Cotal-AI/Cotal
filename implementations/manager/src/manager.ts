@@ -9268,6 +9268,19 @@ export class Manager {
       // when it is a non-empty string. Absent when the connector reported none — never fabricated.
       const providerMeta = roster.get(a.name)?.card.meta?.provider;
       const provider = typeof providerMeta === "string" && providerMeta ? providerMeta : undefined;
+      // The harness-reported condition beside the mesh status (#618): a turn that died upstream reads
+      // `waiting` with `rate_limit` here, not a bare `waiting`. Absent when the connector reported none.
+      // Projected field by field like `provider`: a malformed peer row must not fail this reply's schema.
+      const reported = roster.get(a.name)?.condition;
+      const condition =
+        reported && typeof reported.code === "string" && reported.code
+          ? {
+              code: reported.code,
+              ...(typeof reported.source === "string" ? { source: reported.source } : {}),
+              ...(typeof reported.message === "string" ? { message: reported.message } : {}),
+              ...(typeof reported.since === "number" && Number.isFinite(reported.since) ? { since: reported.since } : {}),
+            }
+          : undefined;
       return {
         name: a.name,
         // The spawned agent's id (nkey, or the user-mode principal) — lets an operator tool (e.g.
@@ -9281,6 +9294,7 @@ export class Manager {
         status: a.handle.status(),
         uptimeMs: Date.now() - a.startedAt,
         mesh: roster.get(a.name)?.status ?? "absent",
+        ...(condition ? { condition } : {}),
         // `current` is the only state in which `mesh` is a verdict; the other two are the
         // observer's own condition and travel on the row (older CLIs ignore the field).
         meshView: view.state,

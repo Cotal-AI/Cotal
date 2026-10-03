@@ -892,8 +892,15 @@ export async function runJcodeHost(): Promise<void> {
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let consecutiveFailures = 0;
-  /** Whether this host published a failed-turn condition that a later success has to clear. */
+  /** Whether this host published a failed-turn condition that the next turn has to clear. */
   let turnConditionPublished = false;
+  /** Relay a failed turn's Harness error as the presence condition, or clear a relayed one. The next
+   *  turn clears it when it starts, whether this host or the TUI owns that turn. */
+  const relayTurnCondition = (condition: PresenceCondition | null): void => {
+    if (!condition && !turnConditionPublished) return;
+    turnConditionPublished = condition !== null;
+    void agent.setCondition(condition).catch(() => {});
+  };
   /** One bridge recovery remains bounded, but it is bounded by time rather than one launch/attach
    *  outcome. A loaded host can lose a transient replacement race without turning that into a
    *  second provider close or an unbounded relaunch loop. */
@@ -1033,6 +1040,7 @@ export async function runJcodeHost(): Promise<void> {
     // inside the acceptance await, this boundary wipes the reservation, the selection above re-reads
     // the same item, and both deliveries land. Drop only what no live handover holds.
     releaseUnheldReservations();
+    relayTurnCondition(null);
     publishInboundHealth();
     let turnClient: JcodeClient | undefined;
     try {
@@ -1115,20 +1123,13 @@ export async function runJcodeHost(): Promise<void> {
       // rather than inheriting a penalty the seat has already recovered from.
       errorRetryMs = ERROR_RETRY_INITIAL_MS;
       consecutiveFailures = 0;
-      if (turnConditionPublished) {
-        turnConditionPublished = false;
-        void agent.setCondition(null).catch(() => {});
-      }
     } catch (error) {
       closeEventRun(error as Error);
       await events?.settled();
       surfacedIds = [];
       consecutiveFailures++;
       const condition = jcodeTurnCondition(error);
-      if (condition) {
-        turnConditionPublished = true;
-        void agent.setCondition(condition).catch(() => {});
-      }
+      if (condition) relayTurnCondition(condition);
       writeJcodeDiagnostic(
         `[cotal-jcode] turn failed (${consecutiveFailures} in a row): ${(error as Error).message}\n`,
       );
@@ -1709,9 +1710,19 @@ export async function runJcodeHost(): Promise<void> {
       if (!("session_id" in event) || event.session_id !== sessionId || event.ev !== "session_status") return;
       // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.
       // steerPending keys off sessionBusy() (driving || turnActive) so that pulse cannot drop a DM.
+      const started = !turnActive && event.status !== "idle";
       turnActive = event.status !== "idle";
+      if (started && !driving) relayTurnCondition(null);
       if (!turnActive) void finishHostIdleTurn();
       else publishInboundHealth();
+    });
+    // A turn the TUI owns fails only as an unsolicited error frame: no run() of this host is there to
+    // throw it. A host-owned turn reports the same frame through drive()'s catch. Scoped like the
+    // SDK's own run(): a frame naming another session is not this seat's.
+    connected.on("harness_error", (event: ApiEvent) => {
+      if (driving || event.ev !== "error" || ("session_id" in event && event.session_id !== sessionId)) return;
+      const condition = jcodeTurnCondition(new HarnessError(String(event.code ?? "internal"), String(event.message ?? "harness error")));
+      if (condition) relayTurnCondition(condition);
     });
     connected.on("turn_done", (event: ApiEvent) => {
       if ("session_id" in event && event.session_id === sessionId) {

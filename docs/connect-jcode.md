@@ -243,9 +243,11 @@ presence working while the session is busy, publishes `activity` naming automati
 while anything remains uncommitted, and acknowledges every initial or soft-interrupted inbox id only
 after that containing turn succeeds. A failed Cotal-owned turn or private Harness replacement leaves
 those ids unacknowledged for mesh redelivery. When the Harness reports the failure itself, such as a
-provider `rate_limit`, the host relays its error code as the presence `condition`, so the roster
-reads `waiting (rate_limit)` beside the queue age. A code outside the closed vocabulary reads
-`failed` with the native code in `condition.source`. The next successful turn clears it. `cotal_inbox` pulls only buffered quiet
+provider `rate_limit`, the host relays its error code as the presence `condition`, so the roster and
+`cotal ps` read `waiting (rate_limit)`. A turn the TUI owns is covered too: its failure arrives as an
+unsolicited Harness error frame, and the host relays that the same way. A code outside the closed
+vocabulary reads `failed` with the native code in `condition.source`. The next turn clears it when it
+starts, whether the host or the TUI owns that turn. `cotal_inbox` pulls only buffered quiet
 ambient from that host-owned queue; its shared optional `peek` argument is supported, so `peek: true`
 shows those messages without clearing them.
 
