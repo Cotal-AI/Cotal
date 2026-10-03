@@ -27,6 +27,7 @@ import {
   ensureEventWalDir,
   resolveEventsStateRoot,
   controlFromEnv,
+  NO_TOOL_ARGS,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
@@ -45,12 +46,38 @@ let events: AguiEmitterHolder<ClaudeEntry> | undefined;
  *  half — an injected batch is acked only once its reply is confirmed delivered. */
 const claude = createClaudeHandle({ events: () => events });
 
+/** What a plain session's one tool says. Static: an unmanaged process knows nothing about any mesh. */
+const HOW_TO_JOIN =
+  "This Claude Code session is not on a Cotal mesh, so the cotal_* mesh tools are off. " +
+  "The Cotal plugin stays off the mesh unless the session was launched with a mesh identity " +
+  "(COTAL_NAME, COTAL_LINK or COTAL_AGENT_FILE in its environment). To work on a mesh, launch the " +
+  "session through Cotal: `cotal setup` once, `cotal up` to start a local mesh, then `cotal spawn` " +
+  "to start a Claude session that joins it (`cotal spawn <name> --detach` runs it under the manager). " +
+  "Docs: https://docs.cotal.ai/getting-started/";
+
+/** A plain `claude`: answer MCP with one static tool instead of closing stdio. Builds no MeshAgent
+ *  and no control server, so nothing reaches a broker or binds a socket. */
+async function serveUnmanaged(): Promise<void> {
+  const server = new McpServer({ name: "cotal", version: "0.0.0" });
+  server.registerTool(
+    "cotal_how_to_join",
+    {
+      title: "How to join a Cotal mesh",
+      description: "Explains why this session has no Cotal mesh tools and how to launch one that does.",
+      inputSchema: NO_TOOL_ARGS,
+    },
+    async () => ({ content: [{ type: "text" as const, text: HOW_TO_JOIN }] }),
+  );
+  await server.connect(new StdioServerTransport());
+}
+
 async function main(): Promise<void> {
   // No identity → this is a plain `claude`, not a launcher-spawned agent. Stay
-  // inert: never connect to the mesh, so an installed plugin can't make the
-  // operator's own sessions join as stray peers.
+  // off the mesh, so an installed plugin can't make the operator's own sessions
+  // join as stray peers, but still answer MCP so the client sees a working server.
   if (!hasIdentity()) {
     process.stderr.write("[cotal-connector] no COTAL_NAME — not a managed session; staying off the mesh\n");
+    await serveUnmanaged();
     return;
   }
   const config = configFromEnv();

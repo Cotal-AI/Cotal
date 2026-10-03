@@ -117,9 +117,11 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `cotal-skills` plugin installs from that same marketplace at user scope (`claude plugin install
   cotal-skills@cotal-mesh --scope user`); its manifest and install behavior ship inside the Claude connector, and
   its version tracks the CLI release so updates land.
-- **Identity-gated.** Connector code requires `COTAL_NAME` *or* `COTAL_LINK`. A plain
-  `claude` with no `COTAL_*` env stays inert and never joins, so your own sessions in a
-  repo do not appear as stray peers.
+- **Identity-gated.** Connector code requires `COTAL_NAME`, `COTAL_LINK` or `COTAL_AGENT_FILE`.
+  A plain `claude` with none of them never joins, so your own sessions in a repo do not appear
+  as stray peers. Its MCP server still answers `initialize` and lists one static tool,
+  `cotal_how_to_join`, which explains how to launch a session on a mesh. It builds no mesh
+  agent, opens no broker connection and binds no control socket.
 - **Hands-free.** The dev-channels flag prints a one-time confirm prompt. The PTY runtime waits for
   the dialog title in normalized terminal output and presses Enter once when it appears, so startup
   speed does not affect a supervised launch. If the declared prompt never appears, the seat exits
