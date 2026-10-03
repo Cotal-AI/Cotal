@@ -481,7 +481,8 @@ export interface EffectHandler {
    * with a function that resolves when the program has reacted to everything the handler has
    * answered so far. A handler that schedules its own deliveries, as the simulator does, awaits
    * it before each one; any other handler can leave it out. It returns a release the host calls
-   * when that realm is gone, after which the handler paces itself again.
+   * when that realm is gone, or never started, after which the handler paces itself again. A
+   * handler that wraps another forwards it.
    */
   useQuiescence?(settled: () => Promise<void>): () => void;
 }

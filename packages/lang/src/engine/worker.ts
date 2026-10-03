@@ -220,10 +220,17 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   }
   // Two literal spellings rather than one spread, so the crossing audit in the engine suite reads
   // exactly what the thread is handed in each route off this source.
-  const worker =
-    bridge !== undefined
+  let worker: Worker;
+  try {
+    worker = bridge !== undefined
       ? new Worker(options.entry, { workerData: { request, stop, bridge }, transferList: [bridge.port] })
       : new Worker(options.entry, { workerData: { request, stop } });
+  } catch (e) {
+    // A thread that never started never reaches `done`, where the seam closes, so close it here:
+    // the handler's quiescence hook would otherwise wait forever on a thread that does not exist.
+    host?.close();
+    throw e;
+  }
 
   const done = new Promise<WorkerRunResult>((resolve, reject) => {
     let answered = false;
