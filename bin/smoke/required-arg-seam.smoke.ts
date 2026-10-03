@@ -397,7 +397,16 @@ const SEAMS: Seam[] = [
   // remote-isolated-renewal (1), remote-run-renewal (2), remote-start-expiry-recovery (1),
   // stock-process-restart (2), deprovision-agent-auth (2). Auth service preflight and run-hosting
   // renewal add two production calls. The full reader verifies every added call states tls.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 220, untypecheckedSites: 172 },
+  // 220/172 -> 225/176: attach session redemption on a user-auth mesh (#2320) adds one typechecked
+  // call, the session-bearer arm of redeemConnectOpts in implementations/cli/src/commands/agents.ts
+  // (5bec8b225f), carrying the link's resolved tls; its proof adds three smoke-side calls in
+  // implementations/auth/smoke/user-spawn.smoke.ts (00dbb33f07, net of the two 66c1f9dbe0 dropped):
+  // the bearer dial probe, the operator grant connection and the session-ledger reader. The
+  // memory-backed presence bucket fix (#2311, 15c16ffd80) adds one smoke-side teardown connection
+  // in packages/core/smoke/presence-ttl-refresh-cli.smoke.ts that deletes the presence stream so
+  // the provisioner can restage it file-backed. All smoke-side calls state `tls: false`. None of
+  // these landings moved the pin, so this cell was red from #2311 until this correction.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 225, untypecheckedSites: 176 },
 ];
 
 /**
