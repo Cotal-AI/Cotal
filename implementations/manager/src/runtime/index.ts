@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import {
   discardLaunchArtifacts,
   registry,
+  SpawnRefused,
   type AgentHandle,
   type AttachSession,
   type Runtime,
@@ -171,42 +172,60 @@ function createBackend(mode: RuntimeMode, session: string): Runtime {
  *   custodian killed before its child exited and a removal that failed.
  * - Any other runtime discards on the exit its attach session streams (the in-process pty). One that
  *   cannot attach (tmux, cmux, orca, herdr) is polled through `status()`, and its `waitForExit`, the
- *   proof every stop already awaits, confirms the exit before the files go.
- * - Any other spawn that throws is not proof that nothing started (a backend can fail after its
- *   child is up), so its files stay for the OS temp reaper.
+ *   proof every stop already awaits, confirms the exit before the files go. A removal that fails is
+ *   tried again on the poll and on every later `waitForExit` until it succeeds.
+ * - A spawn that throws {@link SpawnRefused} refused before starting anything, so its files go at
+ *   once. Any other throw is not proof that nothing started (a backend can fail after its child is
+ *   up), so its files stay for the OS temp reaper.
  */
 function ownLaunchArtifacts(runtime: Runtime): Runtime {
   if (isCustodialRuntime(runtime)) return runtime;
   const spawn = runtime.spawn.bind(runtime);
   runtime.spawn = (name, spec, cwd, reference) => {
-    const handle = spawn(name, spec, cwd, reference);
-    if (spec.artifacts?.length) discardOnExit(handle, discardOnce(name, spec.artifacts));
+    let handle: AgentHandle;
+    try {
+      handle = spawn(name, spec, cwd, reference);
+    } catch (e) {
+      if (e instanceof SpawnRefused) {
+        try {
+          discardLaunchArtifacts(spec.artifacts);
+        } catch (err) {
+          console.error(`! ${name}: ${(err as Error).message}`);
+        }
+      }
+      throw e;
+    }
+    if (spec.artifacts?.length) discardOnExit(name, handle, spec.artifacts);
     return handle;
   };
   return runtime;
 }
 
-function discardOnce(name: string, artifacts: readonly string[] | undefined): () => void {
+/** How often a handle with no exit stream is asked whether its child has exited, and how often a
+ *  failed removal is tried again. */
+const EXIT_POLL_MS = 5_000;
+
+function discardOnExit(name: string, handle: AgentHandle, artifacts: readonly string[]): void {
   let done = false;
-  return () => {
+  let failed = false;
+  let poll: ReturnType<typeof setInterval> | undefined;
+  // Runs only once the exit is proved. Ownership ends when the removal succeeds, not when it is
+  // tried: a failure keeps a timer retrying it (the exit poll, or one started here).
+  const finish = () => {
     if (done) return;
-    done = true;
     try {
       discardLaunchArtifacts(artifacts);
     } catch (e) {
-      console.error(`! ${name}: ${(e as Error).message}`);
+      if (!failed) console.error(`! ${name}: ${(e as Error).message}; trying again every ${EXIT_POLL_MS / 1000}s`);
+      failed = true;
+      if (!poll) {
+        poll = setInterval(finish, EXIT_POLL_MS);
+        poll.unref();
+      }
+      return;
     }
-  };
-}
-
-/** How often a handle with no exit stream is asked whether its child has exited. */
-const EXIT_POLL_MS = 5_000;
-
-function discardOnExit(handle: AgentHandle, discard: () => void): void {
-  let poll: ReturnType<typeof setInterval> | undefined;
-  const finish = () => {
-    if (poll) clearInterval(poll);
-    discard();
+    done = true;
+    clearInterval(poll);
   };
   // Wrapped, never called at spawn: a runtime bounds its wait for a stop (tmux gives up after
   // seconds), so a wait started at spawn would give up on every seat that outlives that bound.
@@ -230,9 +249,11 @@ function discardOnExit(handle: AgentHandle, discard: () => void): void {
       }
       if (!exited) return;
       waiting = true;
-      wait().then(finish, () => {
-        waiting = false;
-      });
+      wait()
+        .then(finish, () => {})
+        .then(() => {
+          waiting = false;
+        });
     }, EXIT_POLL_MS);
     poll.unref();
     return;

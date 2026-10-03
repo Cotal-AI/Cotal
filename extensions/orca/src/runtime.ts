@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import {
   hardenPrivate,
   registry,
+  SpawnRefused,
   writeSecretFile,
   type AgentHandle,
   type LaunchSpec,
@@ -92,8 +93,8 @@ export class OrcaRuntime implements Runtime {
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     if (!/^[A-Za-z0-9_.-]+$/.test(name))
-      throw new Error(`orca runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
-    if (!orca.available()) throw new Error("orca runtime: Orca CLI/runtime is not reachable (run `orca status --json`)");
+      throw new SpawnRefused(`orca runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
+    if (!orca.available()) throw new SpawnRefused("orca runtime: Orca CLI/runtime is not reachable (run `orca status --json`)");
 
     const cwdKey = realpathSync(cwd);
     let worktree = this.#worktrees.get(cwdKey);
