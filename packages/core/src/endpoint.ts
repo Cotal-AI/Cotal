@@ -3862,8 +3862,12 @@ export class CotalEndpoint extends EventEmitter {
    *  processes by design. See {@link DeliveryLeaseInfo.incarnation}. */
   private readonly leaseIncarnation = randomUUID();
 
-  private encodeLease(ready: boolean): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
+  /** When this endpoint last WON each shard's lease create. Every later write of that row carries it
+   *  unchanged, while `since` is re-stamped. See {@link DeliveryLeaseInfo.acquiredAt}. */
+  private readonly leaseAcquiredAt = new Map<number, number>();
+
+  private encodeLease(shardIndex: number, ready: boolean, acquiredAt = this.leaseAcquiredAt.get(shardIndex)): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, acquiredAt, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
   }
 
   /** Is this shard's lease row one THIS ENDPOINT INSTANCE wrote? The question a daemon whose renew
@@ -3885,14 +3889,18 @@ export class CotalEndpoint extends EventEmitter {
    *  freeing a re-acquire. Acquired BEFORE binding (single-flight gate); {@link markDeliveryLeaseReady}
    *  flips it ready AFTER the loops + `ctl.delivery` are bound. Returns the lease revision. */
   async acquireDeliveryLease(shardIndex: number): Promise<number> {
-    return (await this.deliveryRegistry()).create(leaseKey(shardIndex), this.encodeLease(false));
+    // Recorded only once the create wins: a refused create leaves the held row, and so its time, as it was.
+    const acquiredAt = Date.now();
+    const revision = await (await this.deliveryRegistry()).create(leaseKey(shardIndex), this.encodeLease(shardIndex, false, acquiredAt));
+    this.leaseAcquiredAt.set(shardIndex, acquiredAt);
+    return revision;
   }
 
   /** Flip the held lease to READY (CAS `kv.update`) AFTER `startPlane3` has bound the loops + the
    *  `ctl.delivery` responder — so "lease ready" proves the responder is up, not just that the slot was
    *  claimed. Returns the new revision. */
   async markDeliveryLeaseReady(shardIndex: number, revision: number): Promise<number> {
-    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(true), revision);
+    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, true), revision);
   }
 
   /** Flip the held lease back to NOT-ready, the counterpart to {@link markDeliveryLeaseReady}, for a
@@ -3905,14 +3913,14 @@ export class CotalEndpoint extends EventEmitter {
    *  the row (rather than deleting it) is deliberate: the shard is still claimed, so no third daemon
    *  should be invited in; what is being withdrawn is only the claim to be answering. */
   async markDeliveryLeaseNotReady(shardIndex: number, revision: number): Promise<number> {
-    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(false), revision);
+    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, false), revision);
   }
 
   /** Renew the held lease (CAS `kv.update` against `revision`, keeping `ready:true`) to refresh it before
    *  the bucket TTL expires it. Returns the new revision. Throws if the revision moved (lost the lease —
    *  the daemon should exit). */
   async renewDeliveryLease(shardIndex: number, revision: number): Promise<number> {
-    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(true), revision);
+    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, true), revision);
   }
 
   /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (best
