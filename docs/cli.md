@@ -1067,10 +1067,12 @@ the seat's last work event (presence `activeAt`), the mesh fact ends with its ag
 heartbeating, so its presence row stays fresh and this age is what shows the stall. A seat can be
 `running` and `mesh offline` at once: the process is alive and its presence has lapsed. That row says
 how long, as in `mesh offline for 3.5h`, counted from the seat's last presence heartbeat, which
-`--json` carries as `offlineSince` (epoch ms). The manager log names each managed seat that leaves the
-mesh while its slot is held (`seat offline on the mesh: <name> ...`) and each one that comes back
-(`seat back on the mesh: <name> ...`), so a watchdog that only checks process liveness has a line to
-act on. The manager does not reap or re-key such a seat. The mesh fact is only a verdict while the
+`--json` carries as `offlineSince` (epoch ms). The age is read only from the seat's own presence
+record, matched on its principal and lifecycle uid, so a same-named peer or an older lifecycle never
+dates it. The manager log names each managed seat that is offline on the mesh while its slot is held
+(`seat offline on the mesh: <name> ...`), including one its watch first sees offline after a reconnect,
+and each one that comes back (`seat back on the mesh: <name> ...`), so a watchdog that only checks
+process liveness has a line to act on. The manager does not reap or re-key such a seat. The mesh fact is only a verdict while the
 manager's own presence watch is fresh: when that watch has been silent past the liveness window, or
 has not replayed the bucket yet, every row prints `mesh unknown` with the reason instead (`--json`
 carries it as `meshView: stale | unpopulated`), because `offline` and `not in roster` would then

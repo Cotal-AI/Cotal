@@ -69,7 +69,7 @@ import {
   invokeCommand,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, PresenceEvent, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -1573,7 +1573,10 @@ export class Manager {
     const reportEndpoint = (e: Error) => console.error(`! manager endpoint: ${e.message}`);
     this.ep.on("error", reportEndpoint);
     this.ep.on("warning", reportEndpoint);
-    this.ep.on("presence", (ev: PresenceEvent) => this.logSeatMeshTransition(ev));
+    // Every roster change and every view transition, so a seat that is offline in a fresh snapshot
+    // (recorded with no presence event) is logged the moment the view can support the verdict.
+    this.ep.on("roster", () => this.logSeatMeshTransitions());
+    this.ep.on("presence-view", () => this.logSeatMeshTransitions());
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtime.kind})`);
     // Per-instance liveness lease (P2 item 3 — the old per-space singleton is DEMOTED per D9). Acquire
@@ -3964,25 +3967,36 @@ export class Manager {
    *
    * Seats once read `running · mesh offline` for many hours with no manager log line, so a watchdog
    * keyed on process liveness saw nothing wrong and nobody could say when each seat dropped (#1208).
-   * The endpoint's presence view already decides offline per peer, and only while its own watch is
-   * delivering, so the line rides that event. The match is the readiness fence's: exact principal and
-   * incarnation, so a same-named foreign peer or an older incarnation never speaks for this seat. A
-   * seat being stopped is left to the reap line. The heartbeat is the seat's own record and nothing
-   * validated it, so an unreadable one prints as unknown instead of throwing inside the watch.
+   * The line follows the same state `ps` reads, checked on every roster change and view transition,
+   * because not every offline record arrives as a presence event: after a reconnect the fresh snapshot
+   * records an already-offline seat quietly. Only a current view is a verdict, so a stale or
+   * unpopulated one logs nothing. The match is {@link isOwnPresence}. A seat being stopped is left to
+   * the reap line. The heartbeat is the seat's own record and nothing validated it, so an unreadable
+   * one prints as unknown instead of throwing inside the watch.
    */
-  private logSeatMeshTransition(ev: PresenceEvent): void {
-    const a = this.agents.get(ev.presence.card.name);
-    if (!a || a.terminalizing || ev.presence.card.id !== this.managedPrincipal(a) || ev.presence.lifecycleUid !== a.lifecycleUid) return;
-    const who = `${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`;
-    if (ev.type === "offline" && !a.offMesh) {
-      a.offMesh = true;
-      const ts = ev.presence.ts;
-      const last = typeof ts === "number" && !Number.isNaN(new Date(ts).getTime()) ? new Date(ts).toISOString() : "unknown";
-      console.error(`seat offline on the mesh: ${who} - last heartbeat ${last}; process ${a.handle.status()}`);
-    } else if (ev.type === "join" && a.offMesh) {
-      a.offMesh = false;
-      console.error(`seat back on the mesh: ${who}`);
+  private logSeatMeshTransitions(): void {
+    if (typeof this.ep.presenceView === "function" && this.ep.presenceView().state !== "current") return;
+    const roster = new Map(this.ep.getRoster().map((p) => [p.card.id, p]));
+    for (const a of this.agents.values()) {
+      const seen = roster.get(this.managedPrincipal(a));
+      if (a.terminalizing || !this.isOwnPresence(a, seen)) continue;
+      const who = `${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`;
+      if (seen.status === "offline" && !a.offMesh) {
+        a.offMesh = true;
+        const ts = seen.ts;
+        const last = typeof ts === "number" && !Number.isNaN(new Date(ts).getTime()) ? new Date(ts).toISOString() : "unknown";
+        console.error(`seat offline on the mesh: ${who} - last heartbeat ${last}; process ${a.handle.status()}`);
+      } else if (seen.status !== "offline" && a.offMesh) {
+        a.offMesh = false;
+        console.error(`seat back on the mesh: ${who}`);
+      }
     }
+  }
+
+  /** Whether a roster record is this seat's own: the readiness fence's exact principal and
+   *  incarnation, so a same-named foreign peer or an older incarnation never speaks for it (#1208). */
+  private isOwnPresence(a: ManagedAgent, p: Presence | undefined): p is Presence {
+    return p !== undefined && p.card.id === this.managedPrincipal(a) && p.lifecycleUid === a.lifecycleUid;
   }
 
   /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
@@ -9331,9 +9345,11 @@ export class Manager {
       const activeAtReported = roster.get(a.name)?.activeAt;
       const activeAt = typeof activeAtReported === "number" && Number.isFinite(activeAtReported) ? activeAtReported : undefined;
       // How long an offline verdict has stood (#1208): the seat's last heartbeat before it went
-      // offline. Only beside a verdict, since a stale or unpopulated view dates nothing, and only when
-      // the seat's own unvalidated `ts` fits the row schema, so one odd record cannot fail the reply.
-      const offlineSince = view.state === "current" && seen?.status === "offline" && Number.isSafeInteger(seen.ts) && seen.ts >= 0
+      // offline. Only beside a verdict, since a stale or unpopulated view dates nothing, only from the
+      // seat's own record, since `seen` is matched by name and a same-named foreign peer or an older
+      // incarnation must not date this seat, and only when the seat's unvalidated `ts` fits the row
+      // schema, so one odd record cannot fail the reply.
+      const offlineSince = view.state === "current" && this.isOwnPresence(a, seen) && seen.status === "offline" && Number.isSafeInteger(seen.ts) && seen.ts >= 0
         ? seen.ts
         : undefined;
       return {
