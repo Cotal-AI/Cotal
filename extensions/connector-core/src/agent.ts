@@ -1674,14 +1674,16 @@ export class MeshAgent extends EventEmitter {
    *  the per-channel window — and wildcard subscriptions (`team.>`), which recall cannot read back
    *  per concrete sub-channel (#977: a wildcard join is not itself a channel ingest can consult a
    *  replay policy for) and so cannot vouch for either (never-silent throughout). Empty unless in
-   *  focus. Calls run one at a time (#662). */
-  async recallAmbient(): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
-    const run = this.recallLock.then(() => this.recallAmbientOnce());
+   *  focus. Calls run one at a time (#662). `underway` names recalled items that already went out in
+   *  part: an exclusion that lands after that does not hide one, since recall would then move past
+   *  the rest of it (#613). */
+  async recallAmbient(underway: ReadonlySet<string> = new Set()): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
+    const run = this.recallLock.then(() => this.recallAmbientOnce(underway));
     this.recallLock = run.catch(() => {});
     return run;
   }
 
-  private async recallAmbientOnce(): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
+  private async recallAmbientOnce(underway: ReadonlySet<string>): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
     if (this._attention !== "focus" || this.focusSince === undefined)
       return { items: [], droppedChannels: [] };
     const items: InboxItem[] = [];
@@ -1746,7 +1748,7 @@ export class MeshAgent extends EventEmitter {
       let incomplete = dropped;
       for (const [i, m] of messages.entries()) {
         if (m.id !== "") {
-          if (!this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, "channel", true));
+          if (underway.has(m.id) || !this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, "channel", true));
           continue;
         }
         if (tallies !== this.focusIdless) continue; // focus was left or re-entered during the read
