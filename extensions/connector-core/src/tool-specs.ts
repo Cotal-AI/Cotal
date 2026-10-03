@@ -400,6 +400,24 @@ function heldNote(
  */
 const partOffsets = new WeakMap<MeshAgent, Map<string, number>>();
 
+/**
+ * One `cotal_inbox` read at a time per agent (#613). A read decides what to hide, render and clear from
+ * state it took before awaiting recall, so a second read that overlapped it decided from a snapshot the
+ * first had already moved past: it hid a recalled message the first had just read in part, and moved
+ * the recall mark past the rest of it. A read waits for the one before it to finish, failed or not.
+ */
+const inboxReads = new WeakMap<MeshAgent, Promise<unknown>>();
+
+function oneReadAtATime<A>(
+  read: (agent: MeshAgent, config: AgentConfig, args: A) => Promise<ToolResult>,
+): (agent: MeshAgent, config: AgentConfig, args: A) => Promise<ToolResult> {
+  return (agent, config, args) => {
+    const turn = (inboxReads.get(agent) ?? Promise.resolve()).then(() => read(agent, config, args));
+    inboxReads.set(agent, turn.catch(() => undefined));
+    return turn;
+  };
+}
+
 /** The read position for an oversized message, after dropping positions of messages no longer offered. */
 function partCursor(agent: MeshAgent, offered: readonly InboxItem[]): Map<string, number> {
   let m = partOffsets.get(agent);
@@ -831,7 +849,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
-      async run(agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }) {
+      run: oneReadAtATime(async (agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }) => {
         const inboxScope = scope ?? "all";
         // SELECT, RENDER, THEN CLEAR EXACTLY WHAT WENT OUT (#603). The old order drained the whole
         // scope up front, so a payload too large for the host to deliver had already been marked
@@ -989,7 +1007,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           void stuck;
         }
         return ok(text);
-      },
+      }),
     },
     {
       name: "cotal_send",

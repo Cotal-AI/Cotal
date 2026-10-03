@@ -1460,16 +1460,16 @@ export class MeshAgent extends EventEmitter {
         // A delivery that landed during the history read can be of a publication the read did not see,
         // and pairing it newest first then put its verdict on an older copy: a later muted twin hid a
         // message already part read, and the walk moved past the rest of it. So it is paired only with a
-        // copy that the deliveries from before the read leave over. When retention cut the window, older
-        // copies may be gone too, so every delivery counts and the channel is reported as incomplete.
-        // The deliveries from before the read account for as many copies as the path that delivered the
-        // most, so a late delivery on another path is not paired with the earlier message either.
-        const before = (path: (typeof FOCUS_PATHS)[number]): number =>
-          (arrivals.get(`${path}.${digest}`) ?? []).filter((d) => d.arrival <= readFrom).length;
-        const accounted = Math.max(...FOCUS_PATHS.map(before));
+        // copy that its own path's deliveries from before the read leave over. When retention cut the
+        // window, older copies may be gone too, so every delivery counts and the channel is reported as
+        // incomplete. Each path is counted on its own: a late delivery on a path that had not yet
+        // delivered every copy can be that copy's own muted mirror, so it is paired, and a verdict that
+        // conflicts with another path's hides the copy before any of it goes out. A message already part
+        // read is kept through `underway`.
         const paired = (path: (typeof FOCUS_PATHS)[number]): { excluded: boolean; arrival: number }[] => {
           const seen = arrivals.get(`${path}.${digest}`) ?? [];
-          return seen.slice(0, before(path) + (dropped ? seen.length : Math.max(0, at.length - accounted)));
+          const before = seen.filter((d) => d.arrival <= readFrom).length;
+          return seen.slice(0, before + (dropped ? seen.length : Math.max(0, at.length - before)));
         };
         const live = paired("live");
         const durable = paired("durable");

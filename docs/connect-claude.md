@@ -219,13 +219,16 @@ with those deliveries, newest first on each delivery path, and hides a copy whos
 excluded. Excluding one id-less message does not hide the others, and when one path delivered both, a
 later publication of the same content is still recalled after the excluded copy ages out. Excluding a
 later copy does not hide an earlier one. A delivery excluded while recall is reading history still
-counts against a copy the read returned, but it is not paired with a copy that the deliveries from
-before the read already account for, so a later twin the read did not see cannot hide an earlier
-message. Cotal orders nothing across delivery paths, so if two paths pair one stored copy with
-different verdicts, recall cannot tell which publication each delivery was. It hides that copy and
-reports the channel as incomplete, so a muted copy on one path that aged out can keep a later
-publication delivered on the other path out of recall, with that warning. A recalled message that
-already went out in part is read to its last part, even if an exclusion lands after its first part.
+counts against a copy the read returned, but it is not paired with a copy that the deliveries on its
+own path from before the read already account for, so a later twin the read did not see cannot hide
+an earlier message delivered on the same path. Cotal orders nothing across delivery paths, so if two
+paths pair one stored copy with different verdicts, recall cannot tell which publication each delivery
+was. It hides that copy before any of it goes out and reports the channel as incomplete, so a muted
+copy on one path that aged out can keep a later publication delivered on the other path out of recall,
+with that warning. A recalled message that already went out in part is read to its last part, even if
+an exclusion lands after its first part. One session reads its inbox one call at a time: a
+`cotal_inbox` call that overlaps another waits for it to finish, so neither decides from a view the
+other has already moved past.
 If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
 session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
 unaffected.
