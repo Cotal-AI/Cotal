@@ -52,6 +52,17 @@ export async function readAcl(
   }
 }
 
+/**
+ * True when one lifecycle's ACL row was REMOVED: the exact key's latest value is a DEL/PURGE marker.
+ * Only retirement writes that marker (deprovision purges the exact `<owner>.<actor>.<uid>` key), and
+ * a retired lifecycle is never revived (SPEC §13.1), so this proves the lifecycle is gone. A key
+ * that was never written proves nothing: that is the unknown owner the reader still DEFERS.
+ */
+export async function aclRetired(kv: KV, owner: string, lifecycleUid: string): Promise<boolean> {
+  const e = await kv.get(aclKey(owner, lifecycleUid));
+  return e?.operation === "DEL" || e?.operation === "PURGE";
+}
+
 /** Error for an alias with MORE than one live ACL row: §13.1's invariant is at most one live
  *  lifecycle per alias, so two rows are split-brain evidence (a reservation breach or an unfinished
  *  teardown), and an alias-level authorizer MUST refuse loudly rather than pick one. */

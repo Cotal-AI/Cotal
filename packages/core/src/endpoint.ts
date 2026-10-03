@@ -89,7 +89,7 @@ import {
   durableEligible,
   StaleMembershipWrite,
 } from "./members.js";
-import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
+import { openAclRegistry, readAcl, readAclForAlias, aclRetired, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
 import { openDeliveryRegistry, type DeliveryLeaseInfo, type ManagerLeaseInfo } from "./lease.js";
 import {
   openChannelRegistry,
@@ -4994,9 +4994,20 @@ export class CotalEndpoint extends EventEmitter {
     const redeliveries = m.info?.deliveryCount ?? 1; // JsMsg delivery attempts (1 on first delivery)
     // Lifecycle-exact ACL re-auth (SPEC 13.1): the entry was addressed to pr.lifecycleUid's inbox, so
     // the row read is that lifecycle's exact key — a retired lifecycle's purged row reads as unknown
-    // and its residual entries terminate at the redelivery ceiling, never against the successor's row.
+    // and its residual entries are removed below, never authorized against the successor's row.
     const acl = await this.plane3?.aclFor(owner, pr.lifecycleUid);
     if (acl === undefined) {
+      // RETIRED lifecycle: its exact ACL key carries retirement's tombstone, so no attempt can ever
+      // deliver this entry. Drop it AND remove it from the store. Deferring it to the ceiling and
+      // keeping it would make every reader that starts from a fresh cursor pay the same sweep again.
+      // An ACL row that is merely absent proves nothing and still defers below.
+      if (await aclRetired(await this.aclRegistry(), owner, pr.lifecycleUid)) {
+        if (!this.plane3MayAct()) return;
+        m.ack();
+        try { await this.jsm!.streams.deleteMessage(inboxStream(this.space), m.seq, false); }
+        catch (e) { this.emit("error", new Error(`plane-3 reader: could not remove entry ${m.seq} for retired lifecycle ${owner}.${pr.lifecycleUid}: ${(e as Error).message}`)); }
+        return;
+      }
       // UNKNOWN owner — the manager has not (re)hydrated this owner's ACL yet (e.g. right after a
       // manager PROCESS restart). This is NOT a revocation: DEFER (redeliver), never drop — an ack here
       // would lose at-least-once on restart (impl-review BLOCKER-2). A delayed nak + a redelivery

@@ -1,0 +1,5 @@
+---
+"@cotal-ai/core": patch
+---
+
+The Plane-3 trusted reader now removes a durable inbox entry addressed to a retired lifecycle the first time it meets one. Retirement purges the lifecycle's read-ACL row and leaves a tombstone, so the reader drops the entry and deletes it from the inbox stream at once, without ten redeliveries and a give-up line. Before this, every such entry was given up and kept, so any reader that started from a fresh cursor swept the whole backlog again. An entry whose ACL row is simply missing is still retried, given up and kept, because a missing row does not prove the owner is gone. The `delivery` credential gains `STREAM.MSG.DELETE` on the inbox stream for this.
