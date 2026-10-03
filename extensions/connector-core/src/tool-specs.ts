@@ -154,6 +154,15 @@ export function refuseAnyArgs(name: string, args: unknown): string | undefined {
   return keys.length ? `${name}: unknown argument(s): ${keys.join(", ")} — this tool takes no arguments` : undefined;
 }
 
+/** Compact age: `12s`, `47m`, `3h`, `2d`. */
+function ageText(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86_400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86_400)}d`;
+}
+
 function statusGlyph(s: PresenceStatus): string {
   return s === "working" ? "●" : s === "waiting" ? "◐" : s === "idle" ? "○" : "·";
 }
@@ -706,7 +715,12 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
                 .map(([c]) => `#${c}`)
             : [];
           const mutedHint = muted.length ? ` (locally muted ${muted.join(", ")}; DM to reach)` : "";
-          const condition = p.condition ? ` (${p.condition.code})` : "";
+          // The condition with how long it has held, and the age of the last harness-reported work
+          // event (#618): a turn that died or stopped advancing 40m ago no longer reads like a live one.
+          const now = Date.now();
+          const since = p.condition?.since;
+          const active = p.activeAt === undefined ? "" : ` · active ${ageText(now - p.activeAt)} ago`;
+          const condition = (p.condition ? ` (${p.condition.code}${since === undefined ? "" : ` for ${ageText(now - since)}`})` : "") + active;
           const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
           return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
         });

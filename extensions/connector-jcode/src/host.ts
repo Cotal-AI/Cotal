@@ -1689,7 +1689,11 @@ export async function runJcodeHost(): Promise<void> {
   const watchClient = (connected: JcodeClient): void => {
     connected.on("close", () => void recoverBridge(connected));
     const flushNativeEvent = (event: ApiEvent): void => {
-      if (!events?.running || !eventJournal || !("session_id" in event) || event.session_id !== sessionId) return;
+      if (!("session_id" in event) || event.session_id !== sessionId) return;
+      // Every work event of this seat's session, host- or TUI-owned, is progress the Harness reported:
+      // presence `activeAt`, so a turn that stopped advancing shows its age beside a live heartbeat (#618).
+      agent.noteActivity();
+      if (!events?.running || !eventJournal) return;
       events?.flush(eventJournal);
     };
     // The live API is only a wake signal. The holder serializes every flush and the source rereads

@@ -1044,9 +1044,12 @@ facts per managed agent, because they answer different questions: the process fa
 own runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact
 from the roster (`idle` / `working` / `waiting` / `mesh offline`, or `not in roster` when the seat has
 no presence row at all: a seat that has not joined yet, or one that never did). When the seat's
-connector relays a harness-reported condition, the mesh fact carries its code, so a seat whose turn
-died on a provider rate limit reads `waiting (rate_limit)` rather than a bare `waiting`, and `--json`
-carries the whole `condition` object. A seat can be
+connector relays a harness-reported condition, the mesh fact carries its code and how long it has
+held, so a seat whose turn died on a provider rate limit reads `waiting (rate_limit for 40m)` rather
+than a bare `waiting`, and `--json` carries the whole `condition` object. When the connector reports
+the seat's last work event (presence `activeAt`), the mesh fact ends with its age, such as
+`· active 3s ago`, and `--json` carries `activeAt`. A seat whose turn stopped advancing keeps
+heartbeating, so its presence row stays fresh and this age is what shows the stall. A seat can be
 `running` and `mesh offline` at once: the process is alive and its presence has lapsed. The mesh fact
 is only a verdict while the manager's own presence watch is fresh: when that watch has been silent past
 the liveness window, or has not replayed the bucket yet, every row prints `mesh unknown` with the reason

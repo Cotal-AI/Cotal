@@ -9281,6 +9281,10 @@ export class Manager {
               ...(typeof reported.since === "number" && Number.isFinite(reported.since) ? { since: reported.since } : {}),
             }
           : undefined;
+      // The seat's last harness-reported work progress (#618). `ts` is only its heartbeat, so a turn
+      // that stopped advancing reads as an old `activeAt` beside a live process. Absent when none was reported.
+      const activeAtReported = roster.get(a.name)?.activeAt;
+      const activeAt = typeof activeAtReported === "number" && Number.isFinite(activeAtReported) ? activeAtReported : undefined;
       return {
         name: a.name,
         // The spawned agent's id (nkey, or the user-mode principal) — lets an operator tool (e.g.
@@ -9295,6 +9299,7 @@ export class Manager {
         uptimeMs: Date.now() - a.startedAt,
         mesh: roster.get(a.name)?.status ?? "absent",
         ...(condition ? { condition } : {}),
+        ...(activeAt !== undefined ? { activeAt } : {}),
         // `current` is the only state in which `mesh` is a verdict; the other two are the
         // observer's own condition and travel on the row (older CLIs ignore the field).
         meshView: view.state,

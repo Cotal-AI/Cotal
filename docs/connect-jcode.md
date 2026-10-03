@@ -244,10 +244,13 @@ while anything remains uncommitted, and acknowledges every initial or soft-inter
 after that containing turn succeeds. A failed Cotal-owned turn or private Harness replacement leaves
 those ids unacknowledged for mesh redelivery. When the Harness reports the failure itself, such as a
 provider `rate_limit`, the host relays its error code as the presence `condition`, so the roster and
-`cotal ps` read `waiting (rate_limit)`. A turn the TUI owns is covered too: its failure arrives as an
+`cotal ps` read `waiting (rate_limit for 2m)`. A turn the TUI owns is covered too: its failure arrives as an
 unsolicited Harness error frame, and the host relays that the same way. A code outside the closed
 vocabulary reads `failed` with the native code in `condition.source`. The next turn clears it when it
-starts, whether the host or the TUI owns that turn. `cotal_inbox` pulls only buffered quiet
+starts, whether the host or the TUI owns that turn. The host also records every work event of its
+session, such as a token or a tool call, as presence `activeAt`, whether the host or the TUI owns the
+turn. A turn that stopped advancing therefore shows the age of its last event, `· active 40m ago`,
+beside a heartbeat that is still fresh. `cotal_inbox` pulls only buffered quiet
 ambient from that host-owned queue; its shared optional `peek` argument is supported, so `peek: true`
 shows those messages without clearing them.
 
