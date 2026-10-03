@@ -267,7 +267,7 @@ try {
   const reconcileA = await errOf(() => reconcileEndpointGate({
     kv: epKv, space: SPACE, endpoint: ENDPOINT, instanceId: IID_A,
     probeHolder: async () => ({ state: "gone", detail: "smoke: CONNZ sweep proves the holder absent" }),
-    evict: async () => true,
+    evictHolders: async (hs) => hs.map(() => true),
     log: () => {},
     recordsKv,
   }) as Promise<{ reopenedAtGeneration: number }>);
@@ -309,7 +309,7 @@ try {
   const refusedByReconciler = await errOf(() => reconcileEndpointGate({
     kv: epKv, space: SPACE, endpoint: ENDPOINT, instanceId: IID_C,
     probeHolder: async () => ({ state: "gone", detail: "smoke: holder proven absent" }),
-    evict: async () => true, log: () => {}, recordsKv,
+    evictHolders: async (hs) => hs.map(() => true), log: () => {}, recordsKv,
   }));
   c("`reconcile-gate` REFUSES this residue `not-frozen`, so it has no repair-tool exit at all",
     /not "frozen"/.test(refusedByReconciler.message), refusedByReconciler.message);
@@ -358,7 +358,7 @@ try {
   const healE = () => stage("reopen E's gate", () => reconcileEndpointGate({
     kv: epKv, space: SPACE, endpoint: ENDPOINT, instanceId: IID_E,
     probeHolder: async () => ({ state: "gone", detail: "smoke: holder proven absent" }),
-    evict: async () => true, log: () => {}, recordsKv,
+    evictHolders: async (hs) => hs.map(() => true), log: () => {}, recordsKv,
   }));
   // Staged TWICE on purpose, so the orphan's stamp lands at generation 1 rather than 0. A stamp of
   // 0 has nothing below it, so the `behind the stamp` case could not be expressed against it and

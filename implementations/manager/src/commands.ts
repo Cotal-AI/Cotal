@@ -30,7 +30,7 @@ import {
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
-import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
+import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } from "./deregister-instance.js";
@@ -702,7 +702,7 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
     const report = await reconcileEndpointGate({
       kv, space, endpoint, instanceId,
       probeHolder: makeManagerHolderLivenessProbe({ space, servers, auth, log: (l) => console.error(c.dim(`  ${l}`)) }),
-      evict: makeManagerEndpointEvictor({ space, servers, auth, log: (l) => console.error(c.dim(`  ${l}`)) }),
+      evictHolders: makeManagerEndpointHolderEvictor({ space, servers, auth, log: (l) => console.error(c.dim(`  ${l}`)) }),
       log: (l) => console.error(`  ${l}`),
       recordsKv,
     });

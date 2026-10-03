@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  evictDeniedPrincipalWithCreds,
+  evictDeniedPrincipalsWithCreds,
   isPlaneConnTuple,
   isPrincipalOwnerToken,
   observePlaneLivenessWithCreds,
@@ -163,27 +163,35 @@ async function loadCheckedSys(target: ScanTarget, verb: string, need: "observer"
  * never a standing $SYS connection in the daemon.
  */
 export async function executeEviction(server: string, target: ScanTarget, principal: string): Promise<EvictionResult> {
+  return (await executeEvictions(server, target, [principal], "evictPrincipal"))[0]!;
+}
+
+/** {@link executeEviction} for a SET of principals in one shared sweep (`evictPrincipals`): the
+ *  same per-principal validation, one observer connection and one scan → KICK → verify for all. */
+export async function executeEvictions(server: string, target: ScanTarget, principals: readonly string[], verb = "evictPrincipals"): Promise<EvictionResult[]> {
   // Fail-closed principal validation — the KICK targets come from the observer's own CONNZ scan,
   // but the FILTER must be a REAL principal: syntax alone is not enough, because CONNZ attribution
   // only ever surfaces owners that pass isPrincipalOwnerToken (`local` / derived `u_…`), so a
   // syntactically-valid non-principal like `foo.bar` could scan completely, match nothing, and
   // return a HEALTHY verified no-op — false confidence for a typo'd or old-shape target (the
   // critic's slice-6 catch). Same owner boundary as attribution, refused loudly instead.
-  const parsed = parsePrincipalKey(principal);
-  if (!parsed || !isPrincipalOwnerToken(parsed.owner))
-    throw new Error(`evictPrincipal: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
-  const { accountId } = validateScanTarget(target, "evictPrincipal");
+  for (const principal of principals) {
+    const parsed = parsePrincipalKey(principal);
+    if (!parsed || !isPrincipalOwnerToken(parsed.owner))
+      throw new Error(`${verb}: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
+  }
+  const { accountId } = validateScanTarget(target, verb);
   // The observer is enough to answer a complete scan that matches nothing. The evictor is loaded
   // only once that scan finds a live connection to kick, and a missing one still refuses with the
   // provisioning message (never a silent deny-new-only). When the opener loads both halves, the
   // torn-rotation check still runs.
-  const sys = await loadCheckedSys(target, "evictPrincipal", "observer");
-  return evictDeniedPrincipalWithCreds({
+  const sys = await loadCheckedSys(target, verb, "observer");
+  return evictDeniedPrincipalsWithCreds({
     servers: server,
     observerCreds: sys.observer,
     accountId,
-    principal,
-    openEvictor: async () => (await loadCheckedSys(target, "evictPrincipal", "both")).evictor as string,
+    principals,
+    openEvictor: async () => (await loadCheckedSys(target, verb, "both")).evictor as string,
   });
 }
 

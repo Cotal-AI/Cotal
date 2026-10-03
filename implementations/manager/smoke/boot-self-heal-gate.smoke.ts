@@ -37,7 +37,7 @@ import {
   mintMembershipObserverCreds, mintConnectionEvictorCreds,
   principalKey, standaloneConnectOpts, epAuthBucket, DEV_OWNER,
   endpointRegistrationBarrier, epgateKey, parseEndpointGate, mintLifecycleUid,
-  observePrincipalLivenessWithCreds, evictDeniedPrincipalWithCreds,
+  observePrincipalLivenessWithCreds, evictDeniedPrincipalWithCreds, evictDeniedPrincipalsWithCreds,
   CotalEndpoint, CONTROL_DELIVERY_ADMIN,
   type ControlReply,
 } from "@cotal-ai/core";
@@ -126,6 +126,13 @@ const startDaemon = async (): Promise<CotalEndpoint> => {
     if (req.op === "evictPrincipal") {
       const result = await evictDeniedPrincipalWithCreds({
         servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
+      });
+      return { ok: true, data: result };
+    }
+    if (req.op === "evictPrincipals") {
+      const principals = (req.args as { principals?: string[] })?.principals ?? [];
+      const result = await evictDeniedPrincipalsWithCreds({
+        servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principals,
       });
       return { ok: true, data: result };
     }
