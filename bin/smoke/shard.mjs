@@ -144,6 +144,15 @@ function reportNeverRan(i) {
 function failAt(cmd, i, reason, status) {
   console.error(`\n✗ shard ${shard}/${count} FAILED at: ${cmd} (${reason})`);
   reportNeverRan(i);
+  // A step that continues on error reports its job green, and then the plan printed above is the
+  // only place a suite that never started is named. State the coverage, and under GitHub Actions
+  // annotate the job with it, so a non-blocking lane still says how much of its plan it ran.
+  const coverage = `started ${started.size} of ${planned.length} planned smoke(s)`;
+  console.error(`  shard ${shard}/${count} ${coverage}`);
+  if (process.env.GITHUB_ACTIONS === "true") {
+    const message = `${cmd} (${reason}); ${coverage}`.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+    console.log(`::error title=smoke shard ${shard}/${count} failed::${message}`);
+  }
   failure = status;
 }
 

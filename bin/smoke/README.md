@@ -56,6 +56,14 @@ suite stops its detached daemon groups on exit and on those signals, including p
 Broker and custodian leaks remain failures. Existing suite watchdogs and the CI job timeout
 remain in force.
 
+## Failure reports
+
+A shard stops at its first failing suite. It names that suite, lists the planned suites that
+never started, and prints how many of its planned suites started. Under GitHub Actions it also
+emits an error annotation with the failing suite and that count. The Windows smoke lane continues
+on error, so its job reports success over a red shard, and the annotation on the run summary is
+where that job states its coverage.
+
 `pnpm smoke:ci:offline` keeps its existing live-suite exclusions and reports them. It is
 not the full gate or a replacement name for a smaller testing tier.
 
