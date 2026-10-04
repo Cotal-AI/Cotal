@@ -4038,14 +4038,25 @@ export class Manager {
       // Shred every local secret this attempt materialized. The HOST's rows are the host's to
       // reconcile: a participant holds no writer, so it must not pretend to roll back a grant or a
       // durable it never authored. A retry with the same requestId re-enters the same enrollment.
+      // A failed removal joins the refusal instead of throwing: once the host enrolled a uid, the
+      // caller holds the name at it, and a throw here would lose that uid.
+      const unshredded: string[] = [];
+      const shred = async (remove: () => unknown) => {
+        try {
+          await remove();
+        } catch (err) {
+          unshredded.push((err as Error).message);
+        }
+      };
       for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files]) {
-        await secrets.delete(agentSecretKeyForFile(family.actorToken, this.space)).catch(() => {});
-        await secrets.delete(agentSecretKeyForFile(family.sentinelCreds, this.space)).catch(() => {});
-        rmSync(family.actorToken, { force: true });
-        rmSync(family.sentinelCreds, { force: true });
-        rmSync(family.health, { force: true });
+        await shred(() => secrets.delete(agentSecretKeyForFile(family.actorToken, this.space)));
+        await shred(() => secrets.delete(agentSecretKeyForFile(family.sentinelCreds, this.space)));
+        await shred(() => rmSync(family.actorToken, { force: true }));
+        await shred(() => rmSync(family.sentinelCreds, { force: true }));
+        await shred(() => rmSync(family.health, { force: true }));
       }
-      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}`, ...(enrolled ? { enrolled } : {}) };
+      const leftover = unshredded.length ? `; cleanup failed: ${unshredded.join("; ")}` : "";
+      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}${leftover}`, ...(enrolled ? { enrolled } : {}) };
     }
   }
 
