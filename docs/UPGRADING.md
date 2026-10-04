@@ -201,10 +201,10 @@ The refusal and its messages were run against the 0.59.0 parser and `cotal topol
 argument lists `cotal` builds for its own processes give each flag once is read from the code, and
 was not run on a live split deployment.
 
-## Detached spawns from a seat's shell in 0.59.0
+## Detached spawns from a seat's shell in 0.62.0
 
 On a static or open mesh, `cotal spawn --detach` run inside a managed seat's shell now launches as
-that seat. On 0.58.0 it minted a one-shot operator instrument, so the manager recorded that
+that seat. On 0.61.0 it minted a one-shot operator instrument, so the manager recorded that
 instrument as the spawner and the seat's own `cotal_despawn` of the child was refused with
 `not authorized: <seat> was not spawned by <caller> (admin tier required)`. The break is in the CLI
 on the machine where the seats run. No stored state, credential or wire message changes.
@@ -249,11 +249,11 @@ which of their children must outlive the seat.
 ### The upgrade end to end
 
 ```sh
-# still on 0.58.0: find the seats that spawn from their shell
+# still on 0.61.0: find the seats that spawn from their shell
 grep -rln 'cotal spawn' .cotal/agents
 # add `capabilities: [spawn]` to each of those agent files that lacks it, and launch any child
 # that must outlive its seat from an operator terminal instead
-npm i -g cotal-ai@0.59.0
+npm i -g cotal-ai@0.62.0
 ```
 
 The attribution, the despawn, the refusal of a seat without `spawn`, the stop on seat exit and a
