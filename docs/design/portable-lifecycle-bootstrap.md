@@ -349,6 +349,9 @@ The delegated arm of the spawn path runs when `this.runtime.spawnDelegated` is d
    manager's host can honour, naming the choice:
    - `resume`: the session id names a session on the manager's host, and a delegated child starts
      a fresh connector session. Portable resume is not part of this cut.
+   - `continuity: exact`: the recorded session and the proof that binds it live on the manager's
+     host, and the handoff carries no session. It is refused with no record too, because the child
+     has no path to prove a first session back to the manager.
    - `cwd`: the path is on the manager's filesystem. The child runs in the provider resource's own
      working directory and never in the manager's workspace root.
    - shared MCP servers: the set `connectorServers(loadCotalConfig(workspaceRoot), agent,
