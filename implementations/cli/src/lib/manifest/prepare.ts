@@ -36,6 +36,8 @@ export interface PreparedAgent {
   agentType: string;
   /** Manager-host directory, forwarded without resolving on the deploying machine. */
   cwd?: string;
+  /** Session continuity mode, forwarded to the manager (which owns the session id). */
+  continuity?: "none" | "exact";
   /** Persona file path (or undefined for an inline agent). */
   persona?: string;
   /** Effective values (manifest override ?? persona default). */
@@ -143,6 +145,7 @@ export function prepareAgent(agent: ResolvedAgent, persona: AgentDef | undefined
       name: agent.name,
       agentType: agent.agentType,
       cwd: agent.cwd,
+      continuity: agent.continuity,
       persona: agent.persona,
       model,
       variant,

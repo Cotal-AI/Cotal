@@ -164,6 +164,7 @@ function resolveAgents(
     name,
     agentType: connector(name, entry.agent),
     cwd: entry.cwd,
+    continuity: entry.continuity,
     persona: entry.persona ? personaPath(entry.persona) : undefined,
     model: entry.model,
     variant: entry.variant,

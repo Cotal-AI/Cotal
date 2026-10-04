@@ -47,7 +47,7 @@ agents:
     prompt: Introduce yourself in #general and assign the first task.
 ```
 
-Per-agent keys: `persona`, `agent` (harness override), `cwd`, `model`, `variant`, `role`,
+Per-agent keys: `persona`, `agent` (harness override), `cwd`, `continuity`, `model`, `variant`, `role`,
 `description`, `instructions`, `prompt`, `capabilities` (`spawn`,
 [what it grants](identity-and-auth.md); on a per-user-auth mesh also `role:<r>`, so the
 agent may delegate that role when spawning; `admin` is never accepted from a manifest),
@@ -61,7 +61,29 @@ against the manager workspace, matching `cotal spawn --cwd`; an absolute path is
 as supplied. Omitting it keeps the manager workspace as the default. It is never resolved
 against the manifest or persona directory on the deploying machine. Changing `cwd` marks
 an already-deployed agent stale and requires a restart. Empty paths and NUL bytes are
-rejected. This field controls the directory only; it does not restore a harness session.
+rejected. This field controls the directory only; `continuity` restores a harness session.
+
+`continuity` says whether an agent keeps its harness session across launches. `none`, the
+default, starts a new session every time. `exact` reopens the session the manager last
+bound to this agent name, so after `cotal down` and `cotal up -f` the agent comes back
+with its previous context. The manager owns the session id: on the first launch it
+records the session the connector proves over its authenticated control endpoint in
+`<manager workspace>/.cotal/continuity/<name>.json`. A connector that offers no such proof
+fails the launch, and nothing is recorded. The record follows the agent: crash recovery
+updates it when it rebinds a session, and a stop or a preservation cut records the
+session the agent last ran, including one it switched to itself. Every later launch, and
+a preserved resume of the session that cut retained, reopens the session under the same
+proof and fails if the connector reports a different one. A reopen also fails when the
+harness no longer has that session, for example after its transcript was deleted or when
+the agent never answered and so nothing was stored; the manager never starts an empty
+session under the old id, and a failed launch names the file to remove to start a new
+one. The manifest never names a session id, and the imperative `cotal spawn --resume`
+fork stays separate. A reopened session does not get the kickoff
+`prompt` again. The manager refuses to reopen a recorded session whose space, connector
+or resolved `cwd` differs from the declaration, and names the file to remove to start a
+new session. A connector that cannot reopen an existing session refuses the manifest at
+preflight (today only `pi` can). Switching `continuity` marks an already-deployed agent
+stale.
 
 `instructions` and `prompt` differ in kind: `instructions` become the session's **system
 prompt** (who the agent is), while `prompt` is a **kickoff message** auto-submitted once

@@ -40,11 +40,12 @@ export const piConnector: Connector = {
   requires: ["pi"],
   supportsResume: true,
   supportsSessionContinuation: true,
+  supportsSessionReopen: true,
   supportsPrompt: true, // pi takes the prompt as its positional initial message — see buildLaunch
   eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
-    if (opts.resume && opts.continueSession)
-      throw new Error("pi connector: resume (fork source) and continueSession (same session) are mutually exclusive");
+    if ([opts.resume, opts.continueSession, opts.reopenSession].filter(Boolean).length > 1)
+      throw new Error("pi connector: resume (fork source), continueSession and reopenSession (same session) are mutually exclusive");
     if (opts.variant) throw new Error("pi connector: model variants (variant) are not implemented");
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("pi connector: MCP tool-sharing is not implemented");
@@ -94,12 +95,15 @@ export const piConnector: Connector = {
     // exact already-meshed session rather than forking it again. A fresh managed seat gets an exact
     // UUID at launch, so even an idle/no-prompt Pi has a recoverable session identity before its
     // first turn (Pi otherwise creates no session until a turn starts).
-    const freshSessionId = !opts.resume && !opts.continueSession ? randomUUID() : undefined;
+    // A manifest `continuity: exact` reopen uses `--session`, which opens an existing session and
+    // exits when there is none; `--session-id` would create an empty session under the same id.
+    const freshSessionId = !opts.resume && !opts.continueSession && !opts.reopenSession ? randomUUID() : undefined;
     if (freshSessionId) env.COTAL_PI_FRESH_SESSION = "1";
     if (opts.resume) args.push("--fork", opts.resume);
+    else if (opts.reopenSession) args.push("--session", opts.reopenSession);
     else if (opts.continueSession) args.push("--session-id", opts.continueSession);
     else args.push("--session-id", freshSessionId!);
-    const expectedSessionId = opts.continueSession ?? freshSessionId;
+    const expectedSessionId = opts.reopenSession ?? opts.continueSession ?? freshSessionId;
     if (expectedSessionId) env.COTAL_PI_EXPECTED_SESSION = expectedSessionId;
     // The auto-submitted first turn (`cotal spawn --prompt`). Pi takes it as its positional initial
     // message, which its parser reads as any bare argument, so it goes LAST, after every flag that

@@ -86,6 +86,12 @@ export interface LaunchOpts {
    *  CLI/manifest/model-provided field. A connector that cannot preserve its mesh surface across
    *  same-session continuation throws rather than silently launching fresh. */
   continueSession?: string;
+  /** Existing host session to reopen for a manifest `continuity: exact` agent. Unlike
+   *  {@link continueSession}, the session must already exist: a connector that honors it fails the
+   *  launch when the host has no such session, never creating an empty one under that id. Crash
+   *  recovery keeps `continueSession`, because a seat that never took a turn has no stored session
+   *  yet. Manager-internal only, never a CLI/manifest/model-provided field. */
+  reopenSession?: string;
   /** Publish this session's AG-UI event plane to the agent's own event channel (see
    *  {@link Connector.eventChannel}), so an external observer or UI can read what the agent actually
    *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to ON for a
@@ -243,9 +249,13 @@ export interface Connector extends Extension {
   /** Whether this connector can reopen the exact host session named by
    *  {@link LaunchOpts.continueSession} after a supervised process crash. Default-deny. */
   readonly supportsSessionContinuation?: boolean;
-  /** Whether a launch without {@link LaunchOpts.resume} or {@link LaunchOpts.continueSession}
-   * creates a new host session. This is the first-cutover continuity declaration: a manager may
-   * describe it as `fresh`, but must never infer it by connector name or by probing a live host. */
+  /** Whether this connector honors {@link LaunchOpts.reopenSession}: it reopens that existing host
+   *  session or fails the launch when it does not exist. Default-deny. */
+  readonly supportsSessionReopen?: boolean;
+  /** Whether a launch without {@link LaunchOpts.resume}, {@link LaunchOpts.continueSession} or
+   * {@link LaunchOpts.reopenSession} creates a new host session. This is the first-cutover
+   * continuity declaration: a manager may describe it as `fresh`, but must never infer it by
+   * connector name or by probing a live host. */
   readonly supportsFreshStart?: boolean;
   /**
    * Whether this connector can tell its host that the advertised `cotal_*` list changed.
