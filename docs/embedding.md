@@ -535,8 +535,9 @@ The runtime creates one provider resource under `managedRuntimeKey(target)`, wri
 it as one 0600 file and the persona beside it, and runs the stock bootstrap there:
 `cotal spawn --config <persona-file> --space <space> --name <actor> --expect-owner <owner> --expect-lifecycle-uid <uid>`
 with `COTAL_MANAGED_HANDOFF_FILE` naming the file. `delegatedSeatCommand` builds that argv. The
-child reads the file into memory and deletes it before it checks anything else, so even a refusal of
-its own flags leaves no file. It refuses before any broker connection or exchange request when the
+`cotal` entry reads the file into memory, deletes it and drops the variable before it parses flags,
+prints help or loads extensions, so every outcome, a refusal of its own flags included, leaves no
+file. It refuses before any broker connection or exchange request when the
 space, owner, actor, or lifecycle UID differ from the expected values, and then runs the
 enrollment-redeem consumer: it registers the mesh in its own home, writes the token to its own 0600
 file, and exchanges it through `agent-bearer --exchange-url` unchanged. It never enrolls, redeems, or
