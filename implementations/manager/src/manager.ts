@@ -349,6 +349,9 @@ export interface ManagerOptions {
    *  here binds every interface and still advertises loopback, since a wildcard is not an address a
    *  client can dial. The TERMINAL is unaffected either way: it rides the mesh session, not this face. */
   attachHost?: string;
+  /** Runs before the first agent spawn whose seat the runtime cannot release on a default stop. A
+   *  throw refuses that spawn. The daemon withdraws its published spare capability here. */
+  beforeUnreleasableSpawn?: () => void;
   /** Internal/test override for the preservation child-exit deadline. */
   preserveStopTimeoutMs?: number;
   /** Internal/test override for the endpoint registration executor lifetime. */
@@ -1290,6 +1293,10 @@ export class Manager {
   private resumeDurableCommitToken?: string;
   private readonly resumedAgentNames = new Set<string>();
   private readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
+  private readonly beforeUnreleasableSpawn?: () => void;
+  /** Never cleared: the manager does not track when its last unreleasable seat is gone, so once it
+   *  has started one it stays unable to spare for the rest of its life. */
+  private spawnedUnreleasable = false;
   private remoteExecutorCreds?: string;
   private remoteSupervisorCreds?: string;
   private remoteBundleRenewal?: Promise<void>;
@@ -1321,6 +1328,7 @@ export class Manager {
     this.eventsRequired = opts.eventsRequired === true;
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
+    this.beforeUnreleasableSpawn = opts.beforeUnreleasableSpawn;
     this.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
     this.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
     if (opts.pooled && (!opts.remoteAuthority?.accountPublicKey ||
@@ -1369,8 +1377,13 @@ export class Manager {
     return this.runtime.kind;
   }
 
-  /** Whether a default process stop can drop manager-local custody without taking agents with it. */
+  /** Whether a default process stop can drop manager-local custody without taking agents with it.
+   *  A manager that has never started a seat it cannot release has nothing such a stop would take. */
   get canSpareAgents(): boolean {
+    return this.runtimeReleases || !this.spawnedUnreleasable;
+  }
+
+  private get runtimeReleases(): boolean {
     return this.runtime.kind !== "pty" || this.runtime.supportsRelease === true;
   }
 
@@ -8557,6 +8570,10 @@ export class Manager {
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
   private async spawnCustodied(name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
+    if (!this.runtimeReleases && !this.spawnedUnreleasable) {
+      this.beforeUnreleasableSpawn?.();
+      this.spawnedUnreleasable = true;
+    }
     const handle = this.runtime.spawn(name, spec, cwd, reserved);
     if (reserved === undefined) return handle;
     const got = handle.reference;

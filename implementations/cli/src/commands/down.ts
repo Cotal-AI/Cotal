@@ -354,27 +354,9 @@ export interface StopLocalProcessOptions {
   }) => void;
 }
 
-/** Stop one recorded process and await its actual exit before the next dependency is stopped. */
-export async function stopLocalProcess(
-  component: LocalProcess,
-  context: LocalProcessContext,
-  options: StopLocalProcessOptions = {},
-): Promise<boolean> {
-  const pidPath = localProcessPath(component.pidFile, context);
-  const found = processRecorded(component, context);
-  if (!existsSync(pidPath)) return found;
-
-  const rawPid = readFileSync(pidPath, "utf8").trim();
-  if (rawPid.startsWith("removing:")) {
-    const owner = parsePid(rawPid.slice("removing:".length));
-    throw new Error(
-      owner && isAlive(owner)
-        ? `${component.name} extension removal is in progress (pid ${owner})`
-        : `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`,
-    );
-  }
-  const pid = parsePid(rawPid);
-  const marker = `${pidPath}.stopping`;
+/** Take a stop reservation at `marker` for this process, refusing while another live stop holds it.
+ *  The caller removes `marker` when its stop is over. */
+export function reserveStop(name: string, marker: string): void {
   let markerFd: number | undefined;
   for (;;) {
     // ATOMIC publish (the pid-slot pattern): fill a private temp inode with our pid FIRST, then
@@ -412,11 +394,35 @@ export async function stopLocalProcess(
       // owner or a valid pid PROVEN dead (ESRCH); refuse only a valid pid that is alive or whose
       // liveness we cannot confirm.
       if (owner !== undefined && probeLiveness(owner) !== "dead")
-        throw new Error(`${component.name} is already being stopped by another \`cotal down\` (pid ${owner})`);
+        throw new Error(`${name} is already being stopped by another process (pid ${owner})`);
       rmSync(marker, { force: true });
     }
   }
   closeSync(markerFd);
+}
+
+/** Stop one recorded process and await its actual exit before the next dependency is stopped. */
+export async function stopLocalProcess(
+  component: LocalProcess,
+  context: LocalProcessContext,
+  options: StopLocalProcessOptions = {},
+): Promise<boolean> {
+  const pidPath = localProcessPath(component.pidFile, context);
+  const found = processRecorded(component, context);
+  if (!existsSync(pidPath)) return found;
+
+  const rawPid = readFileSync(pidPath, "utf8").trim();
+  if (rawPid.startsWith("removing:")) {
+    const owner = parsePid(rawPid.slice("removing:".length));
+    throw new Error(
+      owner && isAlive(owner)
+        ? `${component.name} extension removal is in progress (pid ${owner})`
+        : `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`,
+    );
+  }
+  const pid = parsePid(rawPid);
+  const marker = `${pidPath}.stopping`;
+  reserveStop(component.name, marker);
 
   let stopped = false;
   try {

@@ -1,5 +1,6 @@
 import {
   closeSync,
+  existsSync,
   fsyncSync,
   lstatSync,
   openSync,
@@ -151,6 +152,24 @@ export function publishManagerSpareCapability(
   }
   const process = recordedManagerProcess(context, tokenAt);
   publishAtomic(path, { version: 1, process });
+}
+
+/**
+ * Withdraw this manager's spare capability before it starts an agent its runtime cannot release.
+ * The record goes first and the stop reservation is read after it: `cotal down` and Ctrl-C on a
+ * foreground `cotal up` take that reservation before they read the capability, so a stop that may
+ * already have seen the capability is seen here. That spawn is refused and the capability
+ * restored, because no agent started.
+ */
+export function withdrawManagerSpareCapability(context: LocalProcessContext): void {
+  const path = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, context);
+  if (!existsSync(path)) return;
+  rmSync(path);
+  let stopper: number | undefined;
+  try { stopper = parsePid(readFileSync(`${canonicalLocalProcessPath(MANAGER_PIDFILE, context)}.stopping`, "utf8")); } catch { stopper = undefined; }
+  if (stopper === undefined || probeLiveness(stopper) === "dead") return;
+  publishManagerSpareCapability(context, true);
+  throw new Error(`refusing to start an agent while pid ${stopper} is stopping this manager: the runtime cannot release it, so that stop would end it too`);
 }
 
 /** Refuse a bare stop before SIGTERM when this exact manager cannot safely spare its PTY child. */
