@@ -16,7 +16,8 @@
  *      materialized persona has no access frontmatter) fell back to ["general"] and joined nothing.
  *   5. RESUME (issue #23) — claude buildLaunch emits `--resume <id> --fork-session` (never one
  *      without the other, hostile id stays one argv token, coexists with the persona append);
- *      opencode + hermes THROW; and `resume` threads StartAgentOpts → LaunchOpts verbatim.
+ *      hermes builds its fork launch; opencode THROWS; and `resume` threads StartAgentOpts →
+ *      LaunchOpts verbatim.
  *   6. RESUME CAPABILITY PREFLIGHT (issue #159 Part A) — a resume request for a connector that doesn't
  *      declare `supportsResume` is rejected BEFORE any provisioning side effect (no mint, no
  *      buildLaunch), mirroring the harness preflight; `supportsResume` matrix across the connectors.
@@ -232,9 +233,10 @@ registry.register(recNoResumeCon);
 }
 
 // 5 — RESUME: fork an existing session into the mesh (issue #23). claude renders
-// `--resume <id> --fork-session`; opencode + hermes THROW (no silent fresh-spawn fallback); the id
-// threads through the manager verbatim and stays a single argv token (no shell). The manifest path
-// carries no resume by construction (see the cotal.yaml reject in cli manifest.smoke.ts).
+// `--resume <id> --fork-session`; hermes hands the id to its launcher, which forks the session;
+// opencode THROWS (no silent fresh-spawn fallback); the id threads through the manager verbatim and
+// stays a single argv token (no shell). The manifest path carries no resume by construction (see the
+// cotal.yaml reject in cli manifest.smoke.ts).
 {
   const base = { space: "smoke", name: "tester", events: false };
   const cArgs = (o: LaunchOpts) => claudeConnector.buildLaunch(o).args;
@@ -295,9 +297,17 @@ registry.register(recNoResumeCon);
   try { (await import("@cotal-ai/connector-codex")).codexConnector.buildLaunch({ ...base, continueSession: "current" }); } catch { codexContinueThrew = true; }
   check("codex: buildLaunch({continueSession}) throws", codexContinueThrew);
 
-  // opencode + hermes THROW on resume and produce NO command (fail loud, never spawn fresh silently).
-  // Hermes is excluded on win32 (its buildLaunch throws Unix-only regardless — asserted in §3).
-  const unsupportedResume = onWin ? [opencodeConnector] : [opencodeConnector, hermesConnector];
+  // hermes forks: the id rides to its launcher, and the fork's record path rides the spec and the env.
+  // Skipped on win32 (its buildLaunch throws Unix-only regardless — asserted in §3).
+  if (!onWin) {
+    let spec: LaunchSpec | undefined;
+    let err: unknown;
+    try { spec = hermesConnector.buildLaunch({ ...base, resume: "sess-1" }); } catch (e) { err = e; }
+    check("hermes: buildLaunch({resume}) builds the fork launch", spec?.env?.COTAL_HERMES_RESUME === "sess-1", err ?? spec?.env?.COTAL_HERMES_RESUME);
+    check("hermes: fork record path rides the spec and the env", !!spec?.resumeRecordPath && spec.env?.COTAL_HERMES_RESUME_RECORD === spec.resumeRecordPath, spec?.resumeRecordPath);
+  }
+  // opencode THROWS on resume and produces NO command (fail loud, never spawn fresh silently).
+  const unsupportedResume = [opencodeConnector];
   for (const con of unsupportedResume) {
     let threw = false;
     let spec: LaunchSpec | undefined;
@@ -325,7 +335,7 @@ registry.register(recNoResumeCon);
 {
   check("claude supportsResume === true", claudeConnector.supportsResume === true);
   check("opencode supportsResume falsy", !opencodeConnector.supportsResume, opencodeConnector.supportsResume);
-  check("hermes supportsResume falsy", !hermesConnector.supportsResume, hermesConnector.supportsResume);
+  check("hermes supportsResume === true", hermesConnector.supportsResume === true, hermesConnector.supportsResume);
 
   // REJECT: smoke-norsm passes the node PATH check but declares no resume support.
   resetNoResumeBuilt();
