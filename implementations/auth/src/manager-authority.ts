@@ -436,7 +436,8 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
 
 /** The served caller of a resume or an answer, checked against the run's owner (SPEC 14.8). The
  *  subject is re-parsed as {@link admitRemoteRun} parses a run-start, except that the `self` target
- *  a `run-answer` rides is accepted. A derived user owner must be
+ *  a `run-answer` rides is accepted, and must be a request this host observed and has not yet
+ *  accepted a forward of. A derived user owner must be
  *  `runOwner`; a v1 caller's issuance must resolve live and permit the subject; a legacy caller is
  *  accepted only for `run-answer` from a live managed row of that owner, the seat relay path. */
 async function authorizeServedRunCaller(args: {
@@ -450,12 +451,17 @@ async function authorizeServedRunCaller(args: {
   issued: IssuedStore;
   sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
   isLiveManagedActor: (owner: string, actor: string, lifecycleUid: string) => boolean;
+  takeObserved: (subject: string) => Promise<boolean>;
 }): Promise<void> {
   const parsed = parseEpSubject(args.served);
   if (!args.served.startsWith(`cotal.${args.space}.`) || parsed === null || parsed.plane !== "request" ||
       parsed.endpoint !== args.endpoint || parsed.command !== args.command || (parsed.target !== null && parsed.target.mode !== "self") ||
       (parsed.route === "inst" && parsed.instanceId !== args.instanceId))
     throw new EpEnvelopeError("permission-denied", `a served ${args.command} must name this space, endpoint and instance, untargeted or self-targeted`);
+  // The subject's caller is the broker's word only if the broker carried it: a manager can name any
+  // live issuance in a subject it never received.
+  if (!(await args.takeObserved(args.served)))
+    throw new EpEnvelopeError("permission-denied", `the issuing host did not observe this ${args.command} request, or already accepted a forward of it (SPEC 14.8)`);
   const caller = parsed.caller;
   if (isDerivedOwner(caller.owner) && caller.owner !== args.runOwner)
     throw new EpEnvelopeError("permission-denied", "a user resumes only a run admitted for that user and answers only on the participant manager that user registered");
@@ -496,10 +502,12 @@ export async function authorizeRemoteRunAttempt(args: {
   checkpointWaiting: (token: string) => Promise<boolean>;
   /** Whether the pause settled `resumed` naming an accepted answer: what an amendment amends. */
   checkpointSettled: (token: string) => Promise<boolean>;
-  /** The issued store and the source and ledger checks a request carrying `served` is checked with. */
+  /** The issued store, the source and ledger checks, and the observed requests a request carrying
+   *  `served` is checked with. `takeObserved` consumes the one observation of a subject. */
   issued?: IssuedStore;
   sourceIsLive?: (source: IssuedSourceRef) => Promise<boolean>;
   isLiveManagedActor?: (owner: string, actor: string, lifecycleUid: string) => boolean;
+  takeObserved?: (subject: string) => Promise<boolean>;
 }): Promise<RemoteRunAttemptGrant> {
   const r = parseRemoteRunAttemptRequest(args.request);
   await authenticateRegisteredManager(r, args, "run attempt");
@@ -512,11 +520,11 @@ export async function authorizeRemoteRunAttempt(args: {
     return view.admission;
   };
   const served = (subject: string, command: "run-resume" | "run-answer", runOwner: string) => {
-    if (args.issued === undefined || args.sourceIsLive === undefined || args.isLiveManagedActor === undefined)
-      throw new EpEnvelopeError("internal", "a served run request needs the issued store and the actor ledger on the issuing host");
+    if (args.issued === undefined || args.sourceIsLive === undefined || args.isLiveManagedActor === undefined || args.takeObserved === undefined)
+      throw new EpEnvelopeError("internal", "a served run request needs the issued store, the actor ledger and the observed requests on the issuing host");
     return authorizeServedRunCaller({
       served: subject, command, runOwner, space: r.space, endpoint: args.endpoint, instanceId: r.instanceId,
-      issued: args.issued, sourceIsLive: args.sourceIsLive, isLiveManagedActor: args.isLiveManagedActor,
+      issued: args.issued, sourceIsLive: args.sourceIsLive, isLiveManagedActor: args.isLiveManagedActor, takeObserved: args.takeObserved,
     });
   };
   if (r.attempt) {

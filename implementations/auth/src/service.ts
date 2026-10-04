@@ -78,7 +78,7 @@ import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster } from "./manager-contract.js";
-import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, authRegistrationExecutorGrants, type AuthorityClient } from "./authority-client.js";
+import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, authRegistrationExecutorGrants, servedRunRequestSubjects, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -148,6 +148,7 @@ const PUBLIC_FAILED_PER_MIN = 30; // per-PEER refused-exchange window (rolling m
 const PUBLIC_PEER_BUCKETS_MAX = 1024; // bounded LRU of per-peer failure buckets
 const PUBLIC_MAX_IN_FLIGHT = 64; // global concurrent-admission cap on the public listener
 const PUBLIC_DEADLINE_MS = 10_000; // hard wall-clock deadline per public request
+const OBSERVED_RUN_REQUEST_WINDOW_MS = 5 * 60_000; // how long an observed served resume or answer can still be forwarded
 
 type Values = Record<string, string | undefined>;
 
@@ -668,6 +669,31 @@ export async function openAuthAuthorityPlane(opts: {
   // ledger this service owns; every other coordinate goes to core's check (SPEC 13.15).
   const composedSourceIsLive = (session: IssuerSession) => (source: IssuedSourceRef): Promise<boolean> =>
     parseActorLedgerSource(source) ? Promise.resolve(ledgerActorSourceIsLive(opts.dir)(source)) : session.sourceIsLive(source);
+  // A served resume or answer is issued only for a request this host saw its caller publish, and
+  // only once (SPEC 14.8). The manager forwards from inside the handler serving the request, so an
+  // observation older than the window has no forward left to bind; the window also bounds the table.
+  const observedRunRequests = new Map<string, number>();
+  for (const subject of servedRunRequestSubjects(space))
+    remoteIssuer.nc.subscribe(subject, {
+      callback: (_err, msg) => {
+        const now = Date.now();
+        for (const [seen, expires] of observedRunRequests) {
+          if (expires > now) break;
+          observedRunRequests.delete(seen);
+        }
+        // Re-inserting keeps the table in expiry order, which the prune above stops on.
+        observedRunRequests.delete(msg.subject);
+        observedRunRequests.set(msg.subject, now + OBSERVED_RUN_REQUEST_WINDOW_MS);
+      },
+    });
+  const takeObservedRunRequest = async (subject: string): Promise<boolean> => {
+    // The broker queued the request to this connection before the manager could read it, and a
+    // flush returns only after this connection has read everything its server queued before it.
+    await remoteIssuer.nc.flush();
+    const expires = observedRunRequests.get(subject);
+    observedRunRequests.delete(subject);
+    return expires !== undefined && expires > Date.now();
+  };
   return {
     authorizeConnect: async (t) => {
       refuseIfFenced();
@@ -1216,6 +1242,7 @@ export async function openAuthAuthorityPlane(opts: {
           const row = findActorUnified(opts.dir, owner, actor);
           return row?.kind === "managed-agent" && row.lifecycleUid === lifecycleUid;
         },
+        takeObserved: takeObservedRunRequest,
         request,
         owner,
         space,

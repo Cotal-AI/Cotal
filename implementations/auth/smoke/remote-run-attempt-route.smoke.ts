@@ -360,6 +360,9 @@ try {
   const served = epRequestSubject(SPACE, {
     route: { mode: "inst", instanceId }, endpoint: "manager", command: "run-answer", target: { mode: "self" }, caller, nonce: mintLifecycleUid(),
   });
+  // The caller publishes the request the manager forwards; the host issues only for one it observed.
+  nc.publish(served);
+  await nc.flush();
   const ansIdentity = newIdentity();
   const ansReq: RemoteRunAttemptRequest = {
     ...baseReq,

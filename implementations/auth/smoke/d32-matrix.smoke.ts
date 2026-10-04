@@ -315,7 +315,16 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     // row; no DIRECT.GET and no `$KV.cotal_sessions_*` write.
     "$JS.API.STREAM.INFO.KV_cotal_sessions_d32m",
     "$JS.API.STREAM.MSG.GET.KV_cotal_sessions_d32m",
-  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  ], subscribe: [
+    "_INBOX_ibxconn0123456789.>",
+    // Read-only witness of the resume and answer requests a participant manager forwards (SPEC 14.8).
+    "cotal.d32m.ep.v1.inst.manager.*.run-resume.>",
+    "cotal.d32m.ep.v1.one.manager.run-resume.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-answer.>",
+    "cotal.d32m.ep.v1.one.manager.run-answer.>",
+    "cotal.d32m.ep.inst.manager.*.run-answer.>",
+    "cotal.d32m.ep.one.manager.run-answer.>",
+  ] },
   "auth-barrier": { publish: [
     "$JS.API.INFO",
     "$JS.API.STREAM.INFO.KV_cotal_auth_d32m",
