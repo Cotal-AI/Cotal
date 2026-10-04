@@ -148,14 +148,16 @@ export async function resolveControlTarget(
  * answer's answerer), and a one-shot instrument is a principal nothing can present again, so the
  * seat could never stop the child it asked for (#718). Connection material is intentionally not
  * inherited by shell children; the non-secret launch identity (`COTAL_NAME`, `COTAL_ID`,
- * `COTAL_LIFECYCLE_UID`, `COTAL_SPACE`) names the seat, and only a command aimed at the seat's own
- * registered space acts as it. A raw open target (`--server` plus an unregistered `--space`) keeps
- * the operator resolution, as {@link connectOrThrow} orders it:
+ * `COTAL_LIFECYCLE_UID`) names the seat, and when the launch also sets `COTAL_SPACE` only a command
+ * aimed at that registered space acts as it. A raw open target (`--server` plus an unregistered
+ * `--space`) keeps the operator resolution, as {@link connectOrThrow} orders it:
  *
  * - static mesh: the manager-owned lifecycle credential, whose accepted row (`COTAL_ACCEPTED_TOKEN`)
- *   resolves an issuer-bound generation that must name the same principal and lifecycle uid;
+ *   resolves an issuer-bound generation that must name the same principal and lifecycle uid. That
+ *   proof binds the space too, so a launch without `COTAL_SPACE` still acts as the seat, and a
+ *   target whose space holds no such credential is refused rather than answered as someone else;
  * - open mesh: no credential system, so the seat's declared triple is the caller, over the
- *   transport the registry records;
+ *   transport the registry records, and only when `COTAL_SPACE` names that space;
  * - user-auth mesh: `undefined`, because the CLI's bearer and the seat share an owner and the
  *   manager's owner-domain rule already covers that pair.
  *
@@ -170,16 +172,16 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
   const actor = process.env.COTAL_ID?.trim();
   const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
   const seatSpace = process.env.COTAL_SPACE?.trim();
-  if (!name || !actor || !uid || !seatSpace) return undefined;
+  const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim();
+  if (!name || !actor || !uid || (!seatSpace && !acceptedToken)) return undefined;
   if (flags.server && flags.space && !findMesh(flags.space)) return undefined;
   // Sweep first when no space is named, as the operator resolution does, so a kept dead record is
   // not a live candidate here either and the seat picks the same mesh the operator path would.
   const offline = flags.space ? [] : (await pruneStaleMeshes()).offline;
   const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server, offline });
-  if (mesh.space !== seatSpace) return undefined;
+  if (seatSpace && mesh.space !== seatSpace) return undefined;
   const at = { space: mesh.space, server: mesh.server, root: mesh.root, mode: mesh.mode, ...(mesh.policy ? { policy: mesh.policy } : {}) };
-  if (mesh.mode === "open") return { ...at, auth: { tls: mesh.tlsRequired, epCaller: { owner: DEV_OWNER, actor, uid } } };
-  const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim();
+  if (mesh.mode === "open") return seatSpace ? { ...at, auth: { tls: mesh.tlsRequired, epCaller: { owner: DEV_OWNER, actor, uid } } } : undefined;
   if (mesh.mode !== "auth" || !acceptedToken) return undefined;
   const path = agentLifecycleSecretFilePaths(mesh.root, mesh.space, name, uid).creds;
   if (!existsSync(path))

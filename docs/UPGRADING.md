@@ -225,6 +225,9 @@ the seat.
 - A child launched from a seat's shell is now that seat's child, so the manager stops it when the
   seat exits, as it does for a `cotal_spawn` child. A child that has to outlive the seat that
   started it now goes with the seat.
+- A seat launched without `COTAL_SPACE` is placed by its static credential. Every connector sets
+  that variable, so this only reaches a hand-built launch: from such a seat's shell, a spawn aimed at
+  a static space that holds no credential for the seat is refused instead of running as the operator.
 
 ### Upgrade order
 
