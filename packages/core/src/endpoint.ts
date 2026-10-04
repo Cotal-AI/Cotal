@@ -589,8 +589,8 @@ export class CotalEndpoint extends EventEmitter {
   /** Delete subjects of this endpoint's own consumers whose refusal watchStatus has not consumed yet
    *  (see {@link deleteOwnConsumer}). */
   private readonly ownConsumerDeletes = new Set<string>();
-  /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches (see
-   *  {@link recordOwnWatchConsumer}). */
+  /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches and
+   *  running membership scans (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
   /** True until the first successful connect completes its boot backfill — distinguishes first-connect
    *  (backfill the boot channels' history) from a reconnect (reopen the core-subs, no re-backfill).
@@ -2971,7 +2971,16 @@ export class CotalEndpoint extends EventEmitter {
     // measured at 30-34s for 89 entries against a mesh at 534ms RTT. `liveKvEntries` is ~3 round
     // trips regardless of N, and (unlike the old loop) refuses to return a truncated view rather
     // than reporting a partial roster as the whole one.
-    for (const e of await liveKvEntries(kv, { deleteOwnConsumer: (stream, name, del) => this.deleteOwnConsumer(stream, name, del) })) {
+    let scanPrefix: string | undefined;
+    const entries = await liveKvEntries(kv, {
+      onConsumer: (info) => { scanPrefix = this.recordOwnWatchConsumer(info); },
+      deleteOwnConsumer: (stream, name, del) => this.deleteOwnConsumer(stream, name, del),
+    }).finally(() => {
+      // The scan's own last delete goes out after nats.js closed its consumer, so every predecessor
+      // delete the library sent is answered ahead of it on this connection.
+      if (scanPrefix) this.ownWatchDeletePrefixes.delete(scanPrefix);
+    });
+    for (const e of entries) {
       if (e.key === MEMBERSHIP_FEED_KEY) {
         try { asOf = e.json<{ observedAt: number }>().observedAt; } catch { /* heartbeat garbled; leave undefined */ }
         continue;
@@ -3097,16 +3106,19 @@ export class CotalEndpoint extends EventEmitter {
     finally { if (!refused) this.ownConsumerDeletes.delete(subject); }
   }
 
-  /** Record the consumer behind one of this connection's own KV watches. nats.js names it
-   *  `<prefix>_<serial>` and, rebuilding it after a stall or a sequence gap, deletes the predecessor
-   *  itself with no hook before the send, so a profile without the delete row (#691) has that delete
-   *  refused. The prefix stays recorded for the connection because a retired watch's last rebuild can
-   *  be refused after the watch has stopped. */
-  private recordOwnWatchConsumer({ stream_name, name }: ConsumerInfo): void {
-    this.ownWatchDeletePrefixes.add(`$JS.API.CONSUMER.DELETE.${stream_name}.${name.slice(0, name.lastIndexOf("_") + 1)}`);
+  /** Record the consumer behind one of this connection's own KV watches or membership scans, and
+   *  return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
+   *  rebuilding it after a stall or a sequence gap, deletes the predecessor itself with no hook before
+   *  the send, so a profile without the delete row (#691) has that delete refused. A watch's prefix
+   *  stays recorded for the connection because a retired watch's last rebuild can be refused after
+   *  the watch has stopped; {@link readMembership} retires its scan's prefix itself. */
+  private recordOwnWatchConsumer({ stream_name, name }: ConsumerInfo): string {
+    const prefix = `$JS.API.CONSUMER.DELETE.${stream_name}.${name.slice(0, name.lastIndexOf("_") + 1)}`;
+    this.ownWatchDeletePrefixes.add(prefix);
+    return prefix;
   }
 
-  /** Whether `subject` deletes `<prefix>_<serial>` of a watch {@link recordOwnWatchConsumer} recorded. */
+  /** Whether `subject` deletes `<prefix>_<serial>` of a consumer {@link recordOwnWatchConsumer} recorded. */
   private isOwnWatchDelete(subject: string): boolean {
     const cut = subject.lastIndexOf("_") + 1;
     return /^\d+$/.test(subject.slice(cut)) && this.ownWatchDeletePrefixes.has(subject.slice(0, cut));
@@ -3698,7 +3710,7 @@ export class CotalEndpoint extends EventEmitter {
         if (s.error instanceof PermissionViolationError && this.confirmingChatSubs.has(s.error.subject))
           continue;
         // The echo of a refused delete of this endpoint's own consumer: one its caller already handled,
-        // or the predecessor nats.js deleted while rebuilding one of this connection's watches.
+        // or the predecessor nats.js deleted while rebuilding one of this connection's watches or scans.
         if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
           && (this.ownConsumerDeletes.delete(s.error.subject) || this.isOwnWatchDelete(s.error.subject)))
           continue;
