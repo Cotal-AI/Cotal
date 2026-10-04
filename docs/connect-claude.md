@@ -222,10 +222,11 @@ replay with it, so the largest payload and the least expendable message arrive i
 
 The local inbox is bounded. On pathological overflow it evicts pull-only items first, then other
 channel traffic, and a direct message or role request only when the whole buffer is directed mail.
-An evicted channel item is acknowledged. An evicted direct message or role request never is: it
-stays pending on the session's durable, where `cotal deliver pending <name>` counts it, and the
-broker redelivers it after the durable's ack wait until a redelivery finds room. A full inbox
-therefore delays directed mail until the session drains it.
+An evicted channel item is acknowledged. An evicted direct message or role request never is, and
+the broker redelivers it after the ack wait until a redelivery finds room. A direct message stays
+pending on the session's DM durable, where `cotal deliver pending <name>` counts it. A role request
+stays on its role's shared queue, which that command does not read. A full inbox therefore delays
+directed mail until the session drains it.
 If the bounded live/durable classification guard also fills, the connector fails closed:
 otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
 still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall

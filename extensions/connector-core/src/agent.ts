@@ -1078,8 +1078,9 @@ export class MeshAgent extends EventEmitter {
         //
         // The broker paces that delay, so nothing here has to end it. An un-acked message comes
         // back only after its durable's ack wait, so an inbox that stays full costs one redelivery
-        // per parked message per ack wait, and the message stays pending on the recipient's own
-        // durable (`cotal deliver pending` counts it) until a redelivery finds room. Giving up on
+        // per parked message per ack wait, and the message stays pending until a redelivery finds
+        // room: a DM on the recipient's own durable (`cotal deliver pending` counts it), a role
+        // request on its role's shared queue (which that command does not read). Giving up on
         // it instead, as a per-id eviction count once did (#807), acked a message the sender had
         // seen stored and the live recipient never read, with one stderr line as the only trace:
         // a seat whose turn ran long lost its oldest DMs exactly that way (#2215).
