@@ -26,8 +26,9 @@
  * `stop({ withAgents: true })` reaps.
  *
  * What runs here:
- *   SPARE phase: manager up, one live managed seat, then a plain `mgr.stop()`. The seat
- *   process and minted creds remain.
+ *   SPARE phase: manager up over the custodial pty runtime, one live managed seat, then a plain
+ *   `mgr.stop()`. The seat process and minted creds remain. The default pty runtime keeps each
+ *   PTY inside the manager process, so its seats cannot be spared and stop with it (#2440).
  *   REAP phase: a second manager on a separate root, `stop({ withAgents: true })`. That
  *   seat is dead and its creds are gone, while the independently spared seat remains.
  *   A failed run then prints the delivery daemon's state before teardown kills it: exited (code and
@@ -52,7 +53,7 @@
  * Run: pnpm smoke:manager-stop-reap
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeScratch } from "./_scratch.js";
 
@@ -63,6 +64,9 @@ const home = mkdtempSync(join(scratch, "home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = join(home, "xdg");
+// The spare phase's custodial seat keeps its custody record in this run's scratch.
+const seatRoot = join(scratch, "seats");
+process.env.COTAL_SEAT_ROOT = seatRoot;
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 
 const { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
@@ -70,7 +74,7 @@ const { CotalEndpoint, createSpaceAuth, mintConnectionEvictorCreds, mintCreds, m
 const { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, authDir, recordMesh, saveSpaceAuth, spaceSegment, workspaceSecretStore } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop) into the registry
 const { Manager } = await import("@cotal-ai/manager");
-import type { Command, Connector, LaunchOpts, SpaceAuth } from "@cotal-ai/core";
+import type { Command, Connector, LaunchOpts, RuntimeProvider, SpaceAuth } from "@cotal-ai/core";
 import { freePort } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
@@ -161,6 +165,11 @@ const seatCon: Connector = {
   },
 };
 registry.register(seatCon);
+// A plain stop can spare only a seat that outlives the manager, so the spare phase runs over the
+// custodial runtime; the default pty runtime stops its in-process seats with the manager (#2440).
+const { CustodialPtyRuntime } = await import("../../implementations/manager/src/runtime/custodial-pty.js");
+const custodialProvider: RuntimeProvider = { kind: "runtime", name: "custodial-pty", available: () => true, create: () => new CustodialPtyRuntime() };
+registry.register(custodialProvider);
 
 const cmd = (name: string): Command => {
   const c = registry.all<Command>("command").find((x) => x.name === name);
@@ -302,7 +311,7 @@ try {
   );
 
   // ── SPARE phase: one live seat, then a plain manager stop ─────────────────────────────────────
-  mgr1 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root, secretStore: sharedSecretStore });
+  mgr1 = new Manager({ space: SPACE, servers: SERVER, runtime: "custodial-pty", workspaceRoot: root, secretStore: sharedSecretStore });
   await mgr1.start();
   await spawnSeat("seatA");
   must("seat A spawned through the manager (the throwaway connector built its launch)", optsByName.has("seatA"));
@@ -372,6 +381,9 @@ try {
     const pid = pidOf(join(pidDir, `${seat}.pid`));
     if (pid !== undefined && alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
   }
+  // A custodian exits on its own once its child is gone and removes its record; let it before the
+  // scratch root goes, so no custodian of this run outlives the suite.
+  for (let i = 0; i < 50 && existsSync(seatRoot) && readdirSync(seatRoot).some((id) => existsSync(join(seatRoot, id, "record.json"))); i++) await sleep(200);
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* already gone */ } }
   if (daemon) await killAndAwaitExit(daemon, "SIGKILL");
   if (brokerProc) await killAndAwaitExit(brokerProc, "SIGKILL");

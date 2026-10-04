@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 516,
+    "total": 517,
     "honest-text": 36,
     "presence-only-glyph/count": 57,
     "command-ack": 12,
-    "non-render/control": 411
+    "non-render/control": 412
   },
   "renderers": [
     {
@@ -368,16 +368,23 @@
     {
       "path": "implementations/cli/src/lib/teardown-spare.ts",
       "kind": "derived-output",
-      "anchor": "`could not list managed agents (${reply.error ?? \"invalid ps reply\"}); agents will still be spared`",
+      "anchor": "`could not list managed agents (${reply.error ?? \"invalid ps reply\"})`",
       "class": "non-render/control",
       "rationale": "Manager control-path failure while gathering the best-effort pre-stop inventory, not a rendered agent presence status."
     },
     {
       "path": "implementations/cli/src/lib/teardown-spare.ts",
       "kind": "derived-output",
-      "anchor": "`  ${facts.join(\"  ·  \")}`",
+      "anchor": "`  ${[row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, status].filter(Boolean).join(\"  ·  \")}`",
       "class": "non-render/control",
       "rationale": "Spared-agent inventory row containing lifecycle metadata and optional manager-reported process state, not an observed work-progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/teardown-spare.ts",
+      "kind": "derived-output",
+      "anchor": "line(row, row.status)",
+      "class": "non-render/control",
+      "rationale": "Passes the manager-reported process state to the same inventory row formatter for an agent left running; the formatter is the classified sink above."
     },
     {
       "path": "implementations/cli/src/commands/down.ts",

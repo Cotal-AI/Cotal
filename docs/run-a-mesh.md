@@ -11,10 +11,11 @@ operator-only maintenance verbs. Every command's full flag set is in the
 
 `cotal up` brings up the whole local stack and bare `cotal down` stops it. Managed
 agents stay running as unmanaged OS processes; pass `--with-agents` to take them
-with the stack. Ctrl-C on a foreground `up` follows the same sparing rule and
-prints the same report as bare down; when the manager cannot prove it can spare,
+with the stack. Seats of the built-in pty runtime run inside the manager process, so
+they stop with the manager either way. Ctrl-C on a foreground `up` follows the same sparing rule
+and prints the same report as bare down; when the manager cannot prove it can spare,
 Ctrl-C refuses the teardown and leaves the stack running, and you end it with
-`cotal down --with-agents`. A current manager proves that it can detach local PTY custody before
+`cotal down --with-agents`. A current manager records what its stop does with its seats before
 bare down signals it. A pre-pin legacy manager instead receives a reduced-guarantee
 warning and is signalled according to the documented upgrade contract. Its running binary
 may still carry the older destructive SIGTERM handler, so the CLI does not claim its
@@ -289,12 +290,11 @@ nothing about the other host.
 Stop one part without tearing down the mesh by naming its registered component: `cotal down
 manager`, `cotal down delivery`, or `cotal down web`. Component names from installed extensions
 join the same surface; `cotal down` with no names retains whole-stack behavior and
-leaves managed agents running as unmanaged OS processes. `cotal down --with-agents`
-is the previous reap. If a pinned manager has no spare-capability record, stop its managed agents
-explicitly before running that whole-stack command. The record is also absent when a manager predates
-capability reporting, and that older manager may not understand the reap request. A manager on the
-built-in `pty` runtime withdraws its record before its first agent spawn, so this applies to it only
-once it has started an agent.
+leaves managed agents running as unmanaged OS processes, except pty seats, which stop with the
+manager. `cotal down --with-agents` is the previous reap. If a pinned manager has no
+spare-capability record, stop its managed agents explicitly before running that whole-stack
+command. A current manager always publishes the record, so it is absent only for an older manager,
+which may not understand the reap request.
 
 ## Remote supervised agents
 
@@ -373,9 +373,10 @@ Detach from an attached PTY with **Ctrl-]** (the agent keeps running); rebind it
 
 **Runtimes.** The manager spawns into a **pty** by default. It spawns the PTY in-process on
 every platform, so replacing the manager worker closes its seats and the pty runtime gives no hot
-update. On Linux it can still adopt and reap seats that an earlier manager launched under a
-detached per-seat custodian, so those seats drain under the new manager; it starts no new
-custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal seats`
+update. Any manager stop, bare `cotal down` included, stops and deprovisions those seats. A stopping
+manager refuses new spawns and first waits for the ones it already accepted, so their seats stop too. On Linux
+it can still adopt and reap seats that an earlier manager launched under a detached per-seat
+custodian, so those seats drain under the new manager; it starts no new custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal seats`
 lists the custodians left on the machine, and `cotal seats --drain` retires the ones whose agent
 has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). When a pty
 agent exits on its own, in-process or under a custodian, the manager logs a `seat reaped:` line

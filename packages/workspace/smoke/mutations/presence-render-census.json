@@ -78,8 +78,8 @@
     {
       "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "    \"total\": 516,",
-      "replace": "    \"total\": 515,",
+      "find": "    \"total\": 517,",
+      "replace": "    \"total\": 516,",
       "expectRed": "presence render census count drifted",
       "note": "Re-anchored for #2362, which classified the ps mesh-column condition sink and moved the reviewed total from 514 to 515, and again when the service install Linger checks moved it to 516. The mutant still drifts the total by one."
     },

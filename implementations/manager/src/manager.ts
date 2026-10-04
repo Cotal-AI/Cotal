@@ -350,9 +350,6 @@ export interface ManagerOptions {
    *  here binds every interface and still advertises loopback, since a wildcard is not an address a
    *  client can dial. The TERMINAL is unaffected either way: it rides the mesh session, not this face. */
   attachHost?: string;
-  /** Runs before the first agent spawn whose seat the runtime cannot release on a default stop. A
-   *  throw refuses that spawn. The daemon withdraws its published spare capability here. */
-  beforeUnreleasableSpawn?: () => void;
   /** Internal/test override for the preservation child-exit deadline. */
   preserveStopTimeoutMs?: number;
   /** Internal/test override for the endpoint registration executor lifetime. */
@@ -483,7 +480,8 @@ export interface ManagerOptions {
 }
 
 export interface ManagerStopOptions {
-  /** Stop and deprovision managed agents. The default only releases detachable local custody. */
+  /** Stop and deprovision managed agents. The default releases detachable local custody and stops
+   *  only the in-process seats that cannot outlive the manager. */
   withAgents?: boolean;
 }
 
@@ -1224,6 +1222,10 @@ export class Manager {
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
    * already past an earlier shutdown check cannot finish after stop() returns. */
   private startTask?: Promise<void>;
+  /** The one stop this manager runs, with the agent policy it was asked for. A stop takes seats out
+   *  of `agents` before they have exited, so a second teardown would find none and report success
+   *  while the first still waits on a live seat. */
+  private stopTask?: { withAgents: boolean; done: Promise<void> };
   /** Held as an instance field so broker-owning smokes can compress the schedule without changing
    *  production semantics. It is never a fence expiry: the durable non-retired row stays authoritative. */
   private staticReconcileRetryDelaysMs: readonly number[] = STATIC_RECONCILE_RETRY_DELAYS_MS;
@@ -1261,7 +1263,8 @@ export class Manager {
    *  for release would otherwise move the row out from under a same-cached-revision CAS delete. */
   private leaseRenewTask?: Promise<void>;
   /** Set at the top of `stop()`. `renewLease` returns at once once this is set, and its `gone` arm
-   *  does not re-acquire: a manager that is stopping never puts its own key back. */
+   *  does not re-acquire: a manager that is stopping never puts its own key back. It also closes the
+   *  lifecycle fence ({@link beginLifecycle}), so no spawn can launch a seat the stop never sees. */
   private leaseStopping = false;
   /** The class-2 renewal owner's half-TTL schedule (D5 slice 5); armed only on auth meshes. */
   private credRenewTimer?: ReturnType<typeof setInterval>;
@@ -1299,10 +1302,6 @@ export class Manager {
   private resumeDurableCommitToken?: string;
   private readonly resumedAgentNames = new Set<string>();
   private readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
-  private readonly beforeUnreleasableSpawn?: () => void;
-  /** Never cleared: the manager does not track when its last unreleasable seat is gone, so once it
-   *  has started one it stays unable to spare for the rest of its life. */
-  private spawnedUnreleasable = false;
   private remoteExecutorCreds?: string;
   private remoteSupervisorCreds?: string;
   private remoteBundleRenewal?: Promise<void>;
@@ -1334,7 +1333,6 @@ export class Manager {
     this.eventsRequired = opts.eventsRequired === true;
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
-    this.beforeUnreleasableSpawn = opts.beforeUnreleasableSpawn;
     this.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
     this.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
     if (opts.pooled && (!opts.remoteAuthority?.accountPublicKey ||
@@ -1383,14 +1381,12 @@ export class Manager {
     return this.runtime.kind;
   }
 
-  /** Whether a default process stop can drop manager-local custody without taking agents with it.
-   *  A manager that has never started a seat it cannot release has nothing such a stop would take. */
-  get canSpareAgents(): boolean {
-    return this.runtimeReleases || !this.spawnedUnreleasable;
-  }
-
-  private get runtimeReleases(): boolean {
-    return this.runtime.kind !== "pty" || this.runtime.supportsRelease === true;
+  /** What a default process stop does with this manager's seats. `release` drops manager-local
+   *  custody and leaves every seat running. `stop` means this runtime keeps its PTYs inside the
+   *  manager process, so those seats close with it: the stop stops and deprovisions them, and still
+   *  releases every seat that can outlive it. */
+  get spareSeats(): "release" | "stop" {
+    return this.runtime.kind !== "pty" || this.runtime.supportsRelease === true ? "release" : "stop";
   }
 
   /** Reattach this manager's runtime to a durable handle. Refuses by name when adopt is absent. */
@@ -2321,9 +2317,9 @@ export class Manager {
   }
 
   /** Admit one lifecycle/control operation while active. The synchronous increment is the fence:
-   * preserveState flips state before its first await, so work is either counted or rejected. */
+   * preserveState and stop close it before their first await, so work is either counted or rejected. */
   private beginLifecycle(resumeOperation = false): (() => void) | undefined {
-    if (this.maintenanceState !== "active" || (this.resumeRequired && !resumeOperation)) return undefined;
+    if (this.leaseStopping || this.maintenanceState !== "active" || (this.resumeRequired && !resumeOperation)) return undefined;
     this.lifecycleInFlight++;
     let released = false;
     return () => {
@@ -2356,6 +2352,7 @@ export class Manager {
   }
 
   private maintenanceError(): string {
+    if (this.leaseStopping) return "manager is stopping; new lifecycle/control work is fenced";
     if (this.resumeRequired) return `manager is waiting for resume attempt ${this.resumeAttemptId}; ordinary lifecycle/control work is fenced`;
     return `manager is in ${this.maintenanceState} mode; new lifecycle/control work is fenced`;
   }
@@ -2687,15 +2684,15 @@ export class Manager {
     };
   }
 
-  /** Tear down every managed agent's footprint on an explicit destructive {@link stop}. A manager exit is
+  /** Tear down every managed agent's footprint on an explicit destructive {@link stop}, or only the
+   *  in-process seats a default stop cannot detach. A manager exit is
    *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
    *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
    *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
    *  best-effort (`allSettled` + a loud log), so one slow/failed teardown can neither hang nor abort exit.
    *  The creds file is dropped even if the broker teardown fails (see {@link deprovision}). Deliberately
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
-  private async teardownManagedAgents(): Promise<void> {
-    const managed = [...this.agents.values()];
+  private async teardownManagedAgents(managed = [...this.agents.values()]): Promise<void> {
     const failures: string[] = [];
     for (const a of managed) {
       // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
@@ -2729,16 +2726,11 @@ export class Manager {
       throw new Error(`manager shutdown could not prove every seat exited: ${failures.join("; ")}`);
   }
 
-  /** Drop only this manager's local custody handles. Validate the complete snapshot before releasing
-   * any handle so a non-detachable runtime cannot leave a partially detached manager behind. */
+  /** Drop this manager's local custody of every seat that can outlive it. A pty seat whose handle
+   *  cannot be released lives in this process and closes with it, so it is left for {@link stop} to
+   *  stop instead. */
   private releaseManagedAgents(): string[] {
-    const managed = [...this.agents.values()];
-    const blocked = managed.filter((a) => a.handle.kind === "pty" && typeof a.handle.release !== "function");
-    if (blocked.length) {
-      return [
-        `manager shutdown cannot detach ${blocked.map((a) => `${a.name} (${a.handle.kind})`).join(", ")}: runtime handle does not support release`,
-      ];
-    }
+    const managed = [...this.agents.values()].filter((a) => !(a.handle.kind === "pty" && typeof a.handle.release !== "function"));
     const failures: string[] = [];
     for (const a of managed) {
       try {
@@ -2773,7 +2765,16 @@ export class Manager {
       throw new Error(`manager preservation shutdown incomplete: ${failures.join("; ")}`);
   }
 
-  async stop(options: ManagerStopOptions = {}): Promise<void> {
+  /** Every call joins the first stop and settles with it. A call that asks for a different
+   *  `withAgents` is refused, since the running stop has already applied its own policy. */
+  stop(options: ManagerStopOptions = {}): Promise<void> {
+    const withAgents = options.withAgents === true;
+    this.stopTask ??= { withAgents, done: this.stopOnce(withAgents) };
+    if (this.stopTask.withAgents === withAgents) return this.stopTask.done;
+    return Promise.reject(new Error(`manager is already stopping ${this.stopTask.withAgents ? "with" : "without"} its agents`));
+  }
+
+  private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
     this.staticReconcileStopping = true;
     const starting = this.startTask;
@@ -2793,12 +2794,21 @@ export class Manager {
     // still move the key's revision after we clear the timer, and releasing against a cached
     // revision it has since moved is a CAS the broker correctly refuses, silently, forever.
     await this.leaseRenewTask?.catch(() => {});
+    // A spawn admitted before the fence closed may still be launching. Its seat must be in the
+    // snapshot below, or it would outlive a stop that reported success.
+    await this.awaitLifecycleDrain();
     let releaseFailures: string[] = [];
     let seatFailure: Error | undefined;
     try {
       if (this.maintenanceState === "active" && !this.resumeRequired) {
-        if (options.withAgents) await this.teardownManagedAgents();
-        else releaseFailures = this.releaseManagedAgents();
+        if (withAgents) await this.teardownManagedAgents();
+        else {
+          // An in-process seat cannot be detached from the process that is exiting, so the default
+          // stop stops and deprovisions it as `withAgents` does instead of orphaning its footprint.
+          const inProcess = [...this.agents.values()].filter((a) => a.handle.kind === "pty" && typeof a.handle.release !== "function");
+          releaseFailures = this.releaseManagedAgents();
+          await this.teardownManagedAgents(inProcess);
+        }
       } else {
         // A signal after a partial preservation must never fall back into destructive teardown.
         await this.stopRetainedAgentsOnExit();
@@ -8600,10 +8610,6 @@ export class Manager {
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
   private async spawnCustodied(name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
-    if (!this.runtimeReleases && !this.spawnedUnreleasable) {
-      this.beforeUnreleasableSpawn?.();
-      this.spawnedUnreleasable = true;
-    }
     const handle = this.runtime.spawn(name, spec, cwd, reserved);
     if (reserved === undefined) return handle;
     const got = handle.reference;

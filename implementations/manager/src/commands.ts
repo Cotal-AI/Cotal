@@ -23,7 +23,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, withdrawManagerSpareCapability, workspaceSecretStore, writePidPair,
+  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
   refreshRegistrationPolicy,
   type MeshEntry,
@@ -554,7 +554,6 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken: v["resume-commit-token"],
       remoteAuthority,
-      beforeUnreleasableSpawn: () => withdrawManagerSpareCapability({ root: findCotalRoot(), space }),
     });
   } catch (e) {
     console.error(c.red(`✗ ${(e as Error).message}`));
@@ -566,7 +565,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   const managerRoot = findCotalRoot();
   const releasePidRecord = recordManagerPid(managerRoot, space);
   const managerContext = { root: managerRoot, space };
-  publishManagerSpareCapability(managerContext, mgr.canSpareAgents);
+  publishManagerSpareCapability(managerContext, mgr.spareSeats);
   console.log(
     c.green("✓ manager up") +
       c.dim(` (space ${space} · ${mgr.runtimeKind})`) +

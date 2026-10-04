@@ -5,6 +5,7 @@ import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   abortMaintenanceCut,
   assertManagerCanSpare,
+  type ManagerSpareSeats,
   armManagerShutdownIntent,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
@@ -203,6 +204,7 @@ export async function down(args: ParsedArgs): Promise<void> {
   const managerComponent = selected.find((component) => component.name === "manager");
   const managerContext = managerComponent ? contextFor(managerComponent) : undefined;
   let spared: SpareSeatRow[] | undefined;
+  let spareSeats: ManagerSpareSeats | undefined;
   let legacyManagerSpareUnverified = false;
   if (!values["with-agents"] && managerComponent && managerContext && processRecorded(managerComponent, managerContext)) {
     const managerPidPath = localProcessPath(managerComponent.pidFile, managerContext);
@@ -234,7 +236,7 @@ export async function down(args: ParsedArgs): Promise<void> {
                   console.error(c.dim("could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility"));
               }
               if (values["with-agents"]) armManagerShutdownIntent(context, attempt);
-              else if (attempt.target.token !== undefined) assertManagerCanSpare(context, undefined, attempt.target);
+              else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);
             },
           });
         } catch (e) {
@@ -293,7 +295,7 @@ export async function down(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
-  else if (spared) printSparedAgents(spared);
+  else if (spared) printSparedAgents(spared, spareSeats);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
