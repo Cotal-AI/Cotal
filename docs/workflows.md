@@ -158,9 +158,11 @@ A completed timer records its sleep step as `ok`.
 4. Check `cotal_orientation` again, then call `cotal_run` with `verb: "ps"` before starting work.
 
 Tool visibility alone does not establish execution support. Hosted runs currently require
-static authentication with issued caller authority. Open meshes can expose the tool but refuse
-hosted runs; user-auth meshes also refuse them. A legacy credential without issued authority
-must be replaced through the current issuance path before it can start a hosted run.
+a caller with issued authority, and only static authentication issues it. Open meshes can expose
+the tool but refuse hosted runs. User-auth meshes refuse them too: the host's own manager refuses
+the family by name, and a participant manager refuses a user's start because no user credential is
+an issuance yet. A legacy credential without issued authority must be replaced through the current
+issuance path before it can start a hosted run.
 
 ## Operating a run
 
@@ -221,11 +223,20 @@ project folder. A local start also names the run's channel ceiling itself:
 `--admit-read <channels> --admit-publish <channels>`, comma-separated patterns or `none`, both
 required. The record it writes says an operator admitted the run and why, and the host checks
 it the same way it checks a hosted admission. A registered remote user-auth manager can host a
-run through its issuing host. The host resolves the versioned caller against live issuance,
+run through its issuing host. The host resolves a versioned caller against live issuance,
 admits the run, and signs only the run's fixed driver, mediator and one-shot operator credentials
 for manager-held nkeys. Renewal checks the activated attempt; the manager holds no signer.
 Local user-auth runs remain unavailable because a user bearer holds no run rows. An open mesh
 hosts none either, since it issues no caller authority to admit a run under.
+
+A logged-in user cannot start a run on that remote manager yet. The user's CLI connection is minted
+by the auth callout without an issuance, so it carries no generation, its `run start` rides the
+legacy rail, and the manager refuses it with `permission-denied` and a detail naming the caller.
+`cotal run ps` works for the same user. The only callers the remote path admits today hold static
+issued credentials. [User-auth run start](design/user-auth-run-start.md) is the proposed contract
+that closes this: the callout issues the user's own connection against the user's actor-ledger row,
+the CLI calls on the versioned rail, and the issuing host binds each run to the manager's registered
+owner and checks that owner and the caller's live issuance on every resume and answer.
 
 A hosted run is **admitted** under the caller that started it. The caller's credential is an
 issuance ([identity and auth](identity-and-auth.md#issued-authority)): its requests ride a
