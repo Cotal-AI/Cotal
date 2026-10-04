@@ -309,6 +309,12 @@ live when that row is the confirmed-retired predecessor of this alias. A stopped
 roster-live until its offline update lands, so a confirmed terminal is not allowed to look like a
 live conflict.
 
+A live principal is also not refused when it is the seat a lost manager of the same logical instance
+launched for this exact incarnation. `resumePreserved` reads the static slot, and when it is active
+at the inventory's actor and lifecycle uid and records a reference the current runtime can reap, the
+manager reaps that seat after the whole inventory passes preflight, waits for the principal to leave
+presence, and launches it again. Every other live row is still refused.
+
 Then `Manager.validateRetainedAuthority` re-reads every identity input. It calls
 `inventoryReferenceError` again, and its own comment records the own-channel rule: a resume document
 is admin-supplied JSON carrying the ACLs the managed row is re-armed from, so a foreign event channel

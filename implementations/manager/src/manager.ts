@@ -78,6 +78,7 @@ import {
   requireRuntimeReap,
   RuntimeReapUnproven,
   type AgentHandle,
+  type CustodialRuntime,
   type Runtime,
   type RuntimeMode,
 } from "./runtime/index.js";
@@ -237,6 +238,9 @@ const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
+/** How long a resume waits for a reaped orphan's principal to leave presence. Presence rows age
+ * out after their 6s TTL, so three TTLs covers a killed seat that never published its leave. */
+const ORPHAN_PRESENCE_CLEAR_MS = 20_000;
 /** How much of an `input` text is written to a seat's pty at a time. Comfortably under the 4096-byte
  * kernel input buffer, so a slice is never re-split at a boundary the manager did not choose: the
  * tail of an oversized write stays queued and swallows the submit key that follows it (issue #1649).
@@ -5853,6 +5857,7 @@ export class Manager {
         return { ok: false, agents: [], error: `resume inventory belongs to space "${inventory.space}", not "${this.space}"` };
       const seen = new Set<string>();
       const principals = new Set<string>();
+      const orphans: Array<{ principal: string; reference: RuntimeReference }> = [];
       await this.ep.waitForPresenceSnapshot();
       const liveRoster = this.ep.getRoster().filter((presence) => presence.status !== "offline");
       const occupancy = this.occupancy();
@@ -5902,8 +5907,12 @@ export class Manager {
             presence.card.name !== entry.name ||
             entry.identity.lifecycleUid === confirmedPredecessor.lifecycleUid;
         });
-        if (principalIsLive)
-          return { ok: false, agents: [], error: `retained principal "${principal}" is already live and this runtime cannot authoritatively adopt it` };
+        if (principalIsLive) {
+          const orphan = await this.orphanedResumeSeat(entry, principal, liveRoster);
+          if (!orphan)
+            return { ok: false, agents: [], error: `retained principal "${principal}" is already live and this runtime cannot authoritatively adopt it` };
+          orphans.push({ principal, reference: orphan });
+        }
         if (this.agents.has(entry.name) || this.reserved.has(entry.name))
           return { ok: false, agents: [], error: `retained agent "${entry.name}" is already managed or reserved` };
       }
@@ -5923,6 +5932,12 @@ export class Manager {
           agents: preflight,
           error: `${preflightFailures.length} retained agent${preflightFailures.length === 1 ? "" : "s"} failed preflight`,
         };
+      // Only now, with the whole inventory through preflight, is an orphan reaped: a refused batch
+      // leaves every seat as it found it.
+      for (const { principal, reference } of orphans) {
+        const refusal = await this.reapOrphanedResumeSeat(principal, reference);
+        if (refusal) return { ok: false, agents: [], error: refusal };
+      }
       const agents: Array<{ name: string; reply: ControlReply }> = [];
       for (let i = 0; i < inventory.agents.length; i++) {
         const entry = inventory.agents[i];
@@ -6122,6 +6137,42 @@ export class Manager {
     } catch (e) {
       throw new Error(`retained user principal ${entry.identity.owner}.${entry.identity.actor} could not be reused: ${(e as Error).message}`);
     }
+  }
+
+  /** The seat reference behind a live retained principal, when that seat is provably one a lost
+   *  manager of this logical instance launched for this exact incarnation. The resume binds the
+   *  launched handle's reference to the incarnation's active slot before it waits for readiness, and
+   *  the coordinator journals `resume-active` only after that wait, so a coordinator crash between the
+   *  two leaves `resume-intent` behind a live seat. Undefined for everything else, which stays refused:
+   *  another incarnation's presence, a slot another instance owns, a runtime that cannot reap the
+   *  reference, and user or open meshes, which keep no slot. */
+  private async orphanedResumeSeat(entry: ManagerResumeAgent, principal: string, liveRoster: Presence[]): Promise<RuntimeReference | undefined> {
+    if (!this.auth || this.userMode || entry.identity.mode !== "static") return undefined;
+    if (typeof (this.runtime as Partial<CustodialRuntime>).reap !== "function") return undefined;
+    if (liveRoster.some((p) => p.card.id === principal && p.lifecycleUid !== entry.identity.lifecycleUid)) return undefined;
+    const slot = await this.readStaticReconcileSlot(entry.name);
+    if (slot?.phase !== "active" || slot.actor !== entry.identity.id || slot.lifecycleUid !== entry.identity.lifecycleUid) return undefined;
+    if (slot.ownerInstanceId !== undefined && slot.ownerInstanceId !== this.managerInstanceId) return undefined;
+    return slot.runtime?.kind === this.runtime.kind ? slot.runtime : undefined;
+  }
+
+  /** Reap a seat {@link orphanedResumeSeat} found, then wait for its principal to leave presence so
+   *  the relaunch's readiness cannot match the dead seat's row. Returns the refusal when the reap
+   *  proves nothing or the principal stays live, which means another process holds it. */
+  private async reapOrphanedResumeSeat(principal: string, reference: RuntimeReference): Promise<string | undefined> {
+    try {
+      const evidence = await requireRuntimeReap(this.runtime, reference);
+      console.error(`resume: reaped orphaned seat ${reference.kind}:${reference.id} of retained principal "${principal}" (${evidence.detail})`);
+    } catch (e) {
+      return `retained principal "${principal}" is already live and its recorded seat ${reference.kind}:${reference.id} could not be reaped: ${(e as Error).message}`;
+    }
+    const deadline = Date.now() + ORPHAN_PRESENCE_CLEAR_MS;
+    while (this.ep.getRoster().some((p) => p.card.id === principal && p.status !== "offline")) {
+      if (Date.now() >= deadline)
+        return `retained principal "${principal}" is still live after its recorded seat ${reference.kind}:${reference.id} was reaped, so another process holds it and this runtime cannot authoritatively adopt it`;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+    }
+    return undefined;
   }
 
   /** Validate/relaunch one retained inventory entry. Called only through resumePreserved so all

@@ -79,6 +79,29 @@ export function windowAliveRef(windowId: string): boolean {
   }
 }
 
+/** The running tmux server's pid, or undefined when no server is running. */
+export function serverPid(): string | undefined {
+  try {
+    return execFileSync("tmux", ["display-message", "-p", "#{pid}"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch (err) {
+    const e = err as { stderr?: unknown; message?: unknown };
+    if (/no server running/i.test(`${String(e.stderr ?? "")} ${String(e.message ?? "")}`)) return undefined;
+    throw err;
+  }
+}
+
+/** True if pane `paneId` sits in window `windowId` of `session`. */
+export function paneInWindow(session: string, windowId: string, paneId: string): boolean {
+  try {
+    return execFileSync("tmux", ["list-panes", "-s", "-t", session, "-F", "#{window_id} #{pane_id}"], { encoding: "utf8" })
+      .split("\n")
+      .map((l) => l.trim())
+      .includes(`${windowId} ${paneId}`);
+  } catch {
+    return false;
+  }
+}
+
 export type PaneState = "running" | "exited";
 
 /** Authoritative process state for a stable pane ID. A successful full-server listing that no
@@ -138,6 +161,9 @@ function isWindowGone(err: unknown): boolean {
 export interface WindowRefs {
   windowId: string;
   paneId: string;
+  /** The tmux server's pid. Window and pane IDs restart with a new server, so a reference that
+   *  outlives this server must carry it. */
+  serverPid: string;
 }
 
 /** Open a new tmux window `name` in `session` running `command` (a shell string).
@@ -155,12 +181,12 @@ export function openWindow(
   const args = ["new-window", "-t", `${session}:`, "-n", name, "-c", cwd];
   if (!(opts.focus ?? false)) args.push("-d");
   // -P -F prints the new window + pane IDs before returning — stable across renames and reorders.
-  args.push("-P", "-F", "#{window_id} #{pane_id}", command);
+  args.push("-P", "-F", "#{window_id} #{pane_id} #{pid}", command);
   const out = execFileSync("tmux", args, { encoding: "utf8" }).trim();
-  const [windowId, paneId] = out.split(/\s+/);
-  if (!windowId || !paneId)
+  const [windowId, paneId, serverPid] = out.split(/\s+/);
+  if (!windowId || !paneId || !serverPid)
     throw new Error(`tmux: couldn't read window/pane IDs from new-window ("${out}")`);
-  return { windowId, paneId };
+  return { windowId, paneId, serverPid };
 }
 
 /** Split `target` (a window ID `@N`, or session:window) creating a new pane running `command`.
