@@ -194,16 +194,30 @@ function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }
 
 /** The user-scope MCP servers every Claude Code session of this user loads, from the config file
  *  `claude mcp add` writes them to. `CLAUDE_CONFIG_DIR` moves that file, as it does for `claude`. */
-function userServers(): Record<string, McpServerSpec> {
+function userServers(): Record<string, unknown> {
   const path = join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".claude.json");
   if (!existsSync(path)) return {};
-  let config: { mcpServers?: Record<string, McpServerSpec> } | null;
+  let config: { mcpServers?: Record<string, unknown> } | null;
   try {
     config = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
     throw new Error(`${path}: invalid JSON - ${(e as Error).message}`);
   }
   return config?.mcpServers ?? {};
+}
+
+/** Whether setup may copy a server entry into the cotal config. That config holds secrets only as
+ *  `${VAR}` references, and literal text cannot be told apart from a secret, so every `env` and
+ *  `headers` value must be references and nothing else. Claude Code skips a malformed entry, so a
+ *  non-object one is not a server to copy. */
+function copyable(spec: unknown): spec is McpServerSpec {
+  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  return (
+    isRecord(spec) &&
+    [spec.env, spec.headers].every(
+      (values) => values === undefined || (isRecord(values) && Object.values(values).every((v) => typeof v === "string" && v.replace(ENV_REFERENCE, "") === "")),
+    )
+  );
 }
 
 // All handoffs in one setup run share a single Claude session: the first spawn pins a generated UUID
@@ -257,20 +271,16 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
       "A spawned Claude Code session gets the cotal tools plus the MCP servers your own sessions load. Each spawn starts its own copy of every shared server, so on a small machine remove the heavy ones from the cotal config or spawn with --share-tools none.",
     context: [DOCS_URL],
     run() {
-      const installed = userServers();
-      // The cotal config holds secrets only as `${VAR}` references, and a literal value cannot be
-      // told apart from a secret, so a server with one in `env` or `headers` is not copied.
-      const literal = Object.keys(installed).filter((name) =>
-        [installed[name].env, installed[name].headers].some((values) => Object.values(values ?? {}).some((v) => v.search(ENV_REFERENCE) < 0)),
-      );
-      const shared = Object.fromEntries(Object.entries(installed).filter(([name]) => !literal.includes(name)));
-      const names = Object.keys(shared);
+      const installed = Object.entries(userServers());
+      const shared = Object.fromEntries(installed.filter((entry): entry is [string, McpServerSpec] => copyable(entry[1])));
+      const left = installed.filter(([, spec]) => !copyable(spec)).map(([name]) => name);
       const path = globalConfigPath();
-      if (names.length && !seedConnectorServers("claude", shared)) return `kept the list ${path} already declares`;
-      const parts: string[] = [];
-      if (names.length) parts.push(`${names.join(", ")} via ${path}`);
-      if (literal.length) parts.push(`not shared, a literal env or headers value: ${literal.join(", ")} (add it to ${path} with \${VAR} references to share it)`);
-      return parts.join("; ") || "your Claude Code config declares none";
+      // An empty list is recorded too: a later setup keeps whatever list the first run wrote.
+      if (!seedConnectorServers("claude", shared)) return `kept the list ${path} already declares`;
+      const parts = [`${Object.keys(shared).join(", ") || "none"} via ${path}`];
+      if (left.length)
+        parts.push(`not shared: ${left.join(", ")} (setup copies a server only when its env and headers values are all \${VAR} references; add it to ${path} by hand to share it)`);
+      return parts.join("; ");
     },
   },
   assist: {

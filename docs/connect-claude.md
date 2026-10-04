@@ -489,14 +489,15 @@ original is untouched.
 A spawned session keeps your own MCP servers by default. On its first run, `cotal setup` copies
 the user-scope servers from your Claude Code config (`~/.claude.json`, or the one under
 `$CLAUDE_CONFIG_DIR`) into the cotal config file (`~/.config/cotal/config.json`) under
-`connectors.claude.mcpServers`, and names them in its output. Each entry is the familiar
-`.mcp.json` shape ([full format](config.md)). A cotal config that already declares that list
-keeps it, and a later `cotal setup` never changes it.
+`connectors.claude.mcpServers`, and names them in its output. With none to copy it writes an
+empty list. Each entry is the familiar `.mcp.json` shape ([full format](config.md)). A cotal
+config that already declares that list keeps it, and a later `cotal setup` never changes it.
 
-The cotal config holds secrets only as `${VAR}` references. Setup cannot tell a literal value from
-a secret, so it leaves out a server whose `env` or `headers` carry a literal value and names it in
-its output. To share one, add it to the cotal config with each secret written as a `${VAR}`
-reference, and export that variable where you spawn.
+The cotal config holds secrets only as `${VAR}` references. Setup cannot tell literal text from
+a secret, so it leaves out a server with an `env` or `headers` value that is anything but `${VAR}`
+references (a `Bearer ${TOKEN}` header among them) and names it in its output. To share one,
+add it to the cotal config with each secret written as a `${VAR}` reference, and export that
+variable where you spawn.
 
 At launch the connector forwards *only* the named vars the chosen servers declare and
 passes the merged config as an owner-only temp file; `--strict-mcp-config` stays on, so
