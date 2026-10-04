@@ -39,6 +39,18 @@ if (!Number.isInteger(nodeMajor) || nodeMajor < MIN_NODE_MAJOR) {
       `older Node, npm silently skips the broker binary and the CLI cannot start.\n\n` +
       remedy,
   );
+  // A delegated child's handoff file holds its actor token and is taken before anything else on a
+  // supported Node, so this refusal must not leave it on disk either. Unlink only, never read.
+  const { unlinkSync } = await import("node:fs");
+  for (const [key, path] of Object.entries(process.env)) {
+    if (key.toUpperCase() !== "COTAL_MANAGED_HANDOFF_FILE" || !path) continue;
+    try {
+      unlinkSync(path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+        process.stderr.write(`cannot remove the managed handoff file: ${(e as Error).message}\n`);
+    }
+  }
   process.exit(1);
 }
 

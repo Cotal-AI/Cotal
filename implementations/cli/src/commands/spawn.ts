@@ -19,6 +19,8 @@ import {
   parseShareSelection,
   principalKey,
   mintLifecycleUid,
+  MANAGED_HANDOFF_FILE_ENV,
+  parseManagedLifecycleHandoff,
   spawnNameError,
   provisionAgent,
   provisionAgentDurables,
@@ -33,6 +35,7 @@ import {
   type FlagValues,
   type LaunchOpts,
   type LaunchSpec,
+  type ManagedLifecycleHandoff,
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
@@ -72,6 +75,7 @@ import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
+import { claimManagedHandoff } from "../managed-handoff.js";
 import {
   checkDialPolicy,
   checkEnforcement,
@@ -178,6 +182,18 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
       throw new Error("the enrollment bundle's direct brokerAccess url does not match its stock server");
   }
   return { bundle: { ...o, ...material.material, idp } as EnrollmentBundle, ...(stock ? { stock } : {}) };
+}
+
+/** Map a parsed handoff onto the redeem consumer's shapes. Pure. */
+export function handoffEnrollmentBundle(h: ManagedLifecycleHandoff): { bundle: EnrollmentBundle; stock: UserBundle } {
+  const userAuth = { provider: h.authProvider, idp: h.idp, endpoints: { url: h.exchangeUrl }, remote: true };
+  const { bundle, stock } = checkEnrollmentBundle({
+    space: h.space, actor: h.actor, owner: h.owner, lifecycleUid: h.lifecycleUid, actorToken: h.actorToken, sentinelCreds: h.sentinelCreds,
+    subscribe: h.subscribe, allowSubscribe: h.allowSubscribe, allowPublish: h.allowPublish,
+    brokerAccess: { kind: "direct", url: h.server }, authServiceUrl: h.exchangeUrl, idp: h.idp,
+    server: h.server, tlsRequired: h.tlsRequired, userAuth, ...(h.policy ? { policy: h.policy } : {}),
+  }, h.actor);
+  return { bundle, stock: stock! };
 }
 
 async function registerEnrollmentMesh(stock: UserBundle, root: string): Promise<void> {
@@ -332,6 +348,8 @@ export const spawnFlags = [
   { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
   { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
   { name: "on", type: "string", value: "<instance>", description: "with --detach: target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not roster's `local.…` principal id" },
+  { name: "expect-owner", type: "string", value: "<u_…>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the owner the managed handoff must carry` },
+  { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
 ] as const satisfies readonly FlagSpec[];
 
 /** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
@@ -470,6 +488,9 @@ async function spawnDetached(
 export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
   const values = args.values as FlagValues<typeof spawnFlags>;
+  // Claimed first: custody already removed the file and its variable, so the text lives only here
+  // and no refusal below can leave it anywhere.
+  const handoffText = claimManagedHandoff();
   let enrollmentUrl: string | undefined;
   try {
     enrollmentUrl = enrollmentInput();
@@ -480,6 +501,40 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // The URL is the credential. Keep the local value, but remove both input forms before this
     // command can start extension, bearer-preflight, or harness children.
     scrubEnrollmentEnv(process.env);
+  }
+  let redeemedEnrollment: ReturnType<typeof checkEnrollmentBundle> | undefined;
+  if (handoffText === undefined && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined)) {
+    console.error(c.red(`✗ --expect-owner and --expect-lifecycle-uid apply only with ${MANAGED_HANDOFF_FILE_ENV}`));
+    process.exit(1);
+  }
+  if (handoffText !== undefined) {
+    const refusal =
+      enrollmentUrl ? `${MANAGED_HANDOFF_FILE_ENV} cannot be combined with ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV}`
+      : values.detach || values.file || values.creds ? `${MANAGED_HANDOFF_FILE_ENV} applies only to a foreground persona spawn without --creds`
+      : !values.space || !values.name || !values["expect-owner"] || !values["expect-lifecycle-uid"]
+        ? `${MANAGED_HANDOFF_FILE_ENV} requires --space, --name, --expect-owner and --expect-lifecycle-uid`
+      : !values.config ? `${MANAGED_HANDOFF_FILE_ENV} requires --config <persona-file>`
+      : undefined;
+    if (refusal) {
+      console.error(c.red(`✗ ${refusal}`));
+      process.exit(1);
+    }
+    try {
+      loadAgentFile(resolvePath(values.config!));
+    } catch (e) {
+      console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
+      process.exit(1);
+    }
+    try {
+      const handoff = parseManagedLifecycleHandoff(handoffText, {
+        space: values.space!, owner: values["expect-owner"]!, actor: values.name!, lifecycleUid: values["expect-lifecycle-uid"]!,
+      });
+      redeemedEnrollment = handoffEnrollmentBundle(handoff);
+      if (!findMesh(handoff.space)) await registerEnrollmentMesh(redeemedEnrollment.stock!, resolvePath(values.config!, ".."));
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
   }
   if (enrollmentUrl && (values.detach || values.file)) {
     console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} apply only to a foreground persona spawn`));
@@ -575,7 +630,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  let redeemedEnrollment: ReturnType<typeof checkEnrollmentBundle> | undefined;
   // An enrollment may bootstrap the stock remote user-mesh record before normal target resolution.
   // Redeem only when the named space is not registered; an existing entry defers redemption until
   // after persona resolution so the response actor can be checked against the requested identity.
@@ -789,18 +843,22 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const remoteProvisioningUrl = target.mode === "user" && target.userAuth?.remote
     ? target.userAuth.endpoints?.agentProvisioningUrl
     : undefined;
-  if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl && !enrollmentUrl) {
+  if (handoffText !== undefined && !(target.mode === "user" && target.userAuth?.remote)) {
+    console.error(c.red(`✗ mesh "${target.space}" is registered here as a local mesh, so it cannot host a managed handoff`));
+    process.exit(1);
+  }
+  if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl && !enrollmentUrl && !redeemedEnrollment) {
     console.error(c.red(`✗ mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`));
     console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), or run the agent there`));
     process.exit(1);
   }
-  if (target.mode === "user" && target.userAuth?.remote && enrollmentUrl) {
+  if (target.mode === "user" && target.userAuth?.remote && (enrollmentUrl || redeemedEnrollment)) {
     if (!redeemedEnrollment) {
       try {
         const provider = resolveAuthProvider();
         if (!provider.postAgentEnrollment)
           throw new Error(`the registered auth provider "${provider.name}" cannot redeem remote agent enrollments`);
-        const body = await provider.postAgentEnrollment({ url: enrollmentUrl, idpUrl: target.userAuth.idp.url });
+        const body = await provider.postAgentEnrollment({ url: enrollmentUrl!, idpUrl: target.userAuth.idp.url });
         redeemedEnrollment = checkEnrollmentBundle(body, name);
       } catch (e) {
         console.error(c.red(`✗ ${(e as Error).message}`));
