@@ -1809,7 +1809,7 @@ See [Watch a mesh](watch-a-mesh.md).
 ## deliver
 
 ```bash
-cotal deliver [--space <s>] [--server <url>] [--tls] [--creds <file>] [--shard <n>] [--shards <n>] [--dev-mint]
+cotal deliver [--space <s>] [--server <url>] [--tls] [--creds <file>] [--root <dir>] [--shard <n>] [--shards <n>] [--dev-mint]
 cotal deliver pending <name> [--limit <n>] [--durable <name>] [--json]
 ```
 
@@ -2173,7 +2173,7 @@ Two long-lived infra roles ship with the CLI. They are not part of everyday oper
 daemon comes up automatically with `cotal up --detach` in auth mode.
 
 ```bash
-cotal deliver --space <s> [--server <url>] [--creds <file>]
+cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
 cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy]
 cotal feedback-intake --keys <keys.json> [--port <n>] [--creds <file>]
 ```
@@ -2195,6 +2195,9 @@ host, or inject the same store into both processes ([embedding](embedding.md#sup
 Typed by hand on the workstation, `deliver` dials the broker recorded for `--space` in the mesh
 registry (a mismatching `--server` is refused before any dial, and a record for a different
 workspace root is refused outright); with no record for the space it falls back to the local mesh.
+The daemon serves the workspace root that `--root <dir>` names, which must hold `.cotal/`, or else
+the nearest `.cotal/` above its working directory. With neither, it refuses at start and names the
+directory it searched from, before it reads a credential or dials a broker.
 See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
 (requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.

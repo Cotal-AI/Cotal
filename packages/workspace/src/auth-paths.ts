@@ -277,6 +277,17 @@ export function findCotalRoot(start: string = process.cwd()): string {
   }
 }
 
+/** {@link findCotalRoot} for a caller that must run inside a workspace that already exists, such as
+ *  the delivery daemon: the same walk, but no `.cotal/` anywhere up the tree is a refusal naming the
+ *  directory the walk started from. The start directory is not a root anyone set up, and reading
+ *  credentials from it only surfaces later as some other, misleading failure. */
+export function requireCotalRoot(start: string = process.cwd()): string {
+  const root = findCotalRoot(start);
+  if (!existsSync(join(root, ".cotal")))
+    throw new Error(`no .cotal/ in ${resolve(start)} or any directory above it`);
+  return root;
+}
+
 /** What the CWD WALK would have resolved, when that disagrees with the root a command actually used.
  *
  *  This exists because the two can disagree silently and the disagreement is invisible in the

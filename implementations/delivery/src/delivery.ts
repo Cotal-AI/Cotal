@@ -27,7 +27,7 @@ import {
   type TimerWriterHandle,
 } from "@cotal-ai/core";
 import { PermissionViolationError } from "@nats-io/transport-node";
-import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removePidPair, requireCotalRoot, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { mayServeOn, leaseAction, type LeaseReading } from "./watchdog.js";
 import { DeliveryTransportHealth } from "./transport-health.js";
@@ -137,6 +137,8 @@ export function assertUninjectedCredsSharesCwdRoot(opts: {
   injected: boolean;
   credsPath: string;
   cwdRoot?: string;
+  /** Where `cwdRoot` came from, for the refusal: the cwd walk unless `--root` named it. */
+  via?: "process cwd" | "--root";
 }): void {
   if (opts.injected) return;
   const cwdRoot = opts.cwdRoot ?? findCotalRoot();
@@ -147,7 +149,7 @@ export function assertUninjectedCredsSharesCwdRoot(opts: {
   const credsIdentity: SecretStoreIdentity = { kind: "fs", root: credsWorkspace };
   if (sameSecretStoreIdentity(credsIdentity, cwdIdentity)) return;
   throw new Error(
-    `delivery: --creds names workstation ${formatSecretStoreIdentity(credsIdentity)} while membership-rw resolves under ${formatSecretStoreIdentity(cwdIdentity)} (process cwd). Pass both the same workstation root, or inject one SecretStore.`,
+    `delivery: --creds names workstation ${formatSecretStoreIdentity(credsIdentity)} while membership-rw resolves under ${formatSecretStoreIdentity(cwdIdentity)} (${opts.via ?? "process cwd"}). Pass both the same workstation root, or inject one SecretStore.`,
   );
 }
 
@@ -169,6 +171,27 @@ function assertNoLocalCredSourceFlags(v: Values, injected?: SecretStore): void {
     );
 }
 
+/** The workspace root a workstation daemon serves, chosen ONCE at start (#723). `--root` names it;
+ *  otherwise it is the nearest `.cotal/` above the working directory. With neither, the daemon refuses
+ *  here and names where it searched: the start directory is not a root anyone set up, and reading the
+ *  cred, the registry and the $SYS pair from it only failed later, after the dial, on a symptom. An
+ *  injected store is the composition's only credential source, so there the root holds no trust
+ *  material and a missing `.cotal/` stays allowed, as {@link recordDeliveryPid} documents. */
+function daemonRoot(v: Values, injected?: SecretStore): string {
+  if (v.root !== undefined) {
+    const root = resolve(v.root);
+    if (!existsSync(join(root, ".cotal")))
+      throw new Error(`delivery: --root ${v.root} holds no .cotal/ - name the directory that contains the workspace's .cotal/`);
+    return root;
+  }
+  if (injected) return findCotalRoot();
+  try {
+    return requireCotalRoot();
+  } catch (e) {
+    throw new Error(`delivery: ${(e as Error).message} - run the daemon from inside its workspace, or name the root with --root <dir>`);
+  }
+}
+
 /** Where the daemon's pre-minted cred lives — exactly ONE source: an injected {@link SecretStore}
  *  (a hosted composition), an explicit `--creds <file>` as an FS store over that exact file
  *  (uninjected `--creds` that names one real workstation while process cwd
@@ -184,7 +207,7 @@ function assertNoLocalCredSourceFlags(v: Values, injected?: SecretStore): void {
  *  The injected arm builds the key without touching a filesystem it does not have. `--creds` names
  *  ONE file and is per-space by the operator's own choice of path, so it is neither segmented nor
  *  migrated — the store there is rooted at that file's own directory. */
-function resolveCredsStore(v: Values, space: string, injected?: SecretStore): CredsSource {
+function resolveCredsStore(v: Values, space: string, root: string, injected?: SecretStore): CredsSource {
   if (injected) {
     const key = segmentedKey(DELIVERY_CREDS_KIND, space);
     return {
@@ -207,7 +230,6 @@ function resolveCredsStore(v: Values, space: string, injected?: SecretStore): Cr
       identity: reloadStoreIdentityFromCredsPath(p, space),
     };
   }
-  const root = findCotalRoot();
   const key = deliveryCredsKey(space, { injected: false, root });
   return {
     store: workspaceSecretStore(root),
@@ -229,7 +251,7 @@ function resolveCredsStore(v: Values, space: string, injected?: SecretStore): Cr
  *  dev run with no stored cred can opt into `--dev-mint`, which loads the local signer and self-remints
  *  a scoped `delivery` cred (one stable identity) — LOUDLY flagged as dev-only, never the production
  *  contract. */
-async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial: string; source: () => Promise<string> }> {
+async function loadDeliveryCreds(src: CredsSource, v: Values, root: string): Promise<{ initial: string; source: () => Promise<string> }> {
   const { store, key, where } = src;
   const initial = await store.get(key);
   if (initial !== undefined) {
@@ -260,7 +282,7 @@ async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial
     );
   if (v["dev-mint"] !== undefined) {
     // Space-blind dev path: the root must name exactly one space (soleSpaceOf fails loud on several).
-    const devRoot = authDir(findCotalRoot());
+    const devRoot = authDir(root);
     const devSpace = soleSpaceOf(devRoot);
     const auth = devSpace ? loadSpaceAuth(devRoot, devSpace) : undefined;
     if (!auth) throw new Error("delivery --dev-mint: no .cotal/auth here to mint from");
@@ -408,14 +430,17 @@ async function runStartedDelivery(
   // the source now needs the space that this check must precede; the check is therefore split out
   // and stays here, ahead of everything ambient.
   assertNoLocalCredSourceFlags(v, store);
+  // Every workstation read below (cred, registry, $SYS pair, membership feed, pidfile) uses this one
+  // root. A hosted context names its own state directory and borrows no cwd.
+  const root = hosted?.stateDir ?? daemonRoot(v, store);
 
   // Space comes from --space (the CLI passes it). Only --dev-mint may derive it from the local signer.
-  const space = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(findCotalRoot())) : undefined);
+  const space = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(root)) : undefined);
   if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
-  const credsSrc = resolveCredsStore(v, space, store);
+  const credsSrc = resolveCredsStore(v, space, root, store);
   if (v.creds !== undefined)
-    assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, credsPath: resolve(v.creds) });
-  const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
+    assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, credsPath: resolve(v.creds), cwdRoot: root, via: v.root !== undefined ? "--root" : "process cwd" });
+  const creds = await loadDeliveryCreds(credsSrc, v, root); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   if (hosted !== undefined && accountFromCreds(creds.initial) !== hosted.context.accountPublicKey)
     throw new Error("delivery: scoped credential account does not match the assigned hosted context");
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
@@ -436,7 +461,6 @@ async function runStartedDelivery(
   let server = v.server ?? DEFAULT_SERVER;
   let registered: MeshTarget | undefined;
   if (store === undefined) {
-    const root = findCotalRoot();
     try {
       registered = resolveMeshTarget(root, { space });
     } catch (error) {
@@ -512,12 +536,12 @@ async function runStartedDelivery(
   // is known for certain, rather than inferred later by probing the store or sniffing the
   // filesystem, both of which report "workstation" for a hosted daemon and would emit a CLI repair
   // the host cannot run. It selects the REPAIR IDIOM only; failure semantics never fork on it.
-  const scanRoot = hosted?.stateDir ?? findCotalRoot();
   const scanTarget: ScanTarget = {
-    root: scanRoot,
+    root,
+    named: v.root !== undefined,
     expectedAccount: accountFromCreds(creds.initial),
     source: store === undefined
-      ? { secrets: workspaceSecretStore(scanRoot), space, injected: false, root: scanRoot }
+      ? { secrets: workspaceSecretStore(root), space, injected: false, root }
       : { secrets: store, space, injected: true },
   };
   // The singleton lease is admission to serve this space, so the daemon must prove its scan tenancy
@@ -715,7 +739,7 @@ async function runStartedDelivery(
   // own `ready` flag already carries it; the pidfile only ever claimed a process.
   //
   // Placed one statement after the signal handlers, so every exit path from here on can remove it.
-  if (hosted === undefined) unrecordPid = recordDeliveryPid(findCotalRoot(), space);
+  if (hosted === undefined) unrecordPid = recordDeliveryPid(root, space);
   // AND THE SAME RELEASE, REACHABLE BY AN ORDINARY `catch`. The two process-level guards below
   // only see a fault that reaches the RUNTIME. A start-up rejection on the public CLI path does
   // not: `runCli` awaits this function inside its own try/catch (cli/src/command.ts), so the
@@ -865,7 +889,7 @@ async function runStartedDelivery(
     // `.cotal/membership.json` read: the file was never an independent source (same directory as the
     // creds, so a wrong root was wrong for both) and a hosted composition has none.
     ({ handle: membership, down: membershipDown } = await startMembership(
-      { space, server, accountId: scanTarget.expectedAccount },
+      { space, server, accountId: scanTarget.expectedAccount, root },
       store,
     ));
   } catch (e) {

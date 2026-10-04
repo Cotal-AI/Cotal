@@ -23,6 +23,7 @@ const deliveryCommands: Command[] = [
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the broker recorded for --space, else the local mesh)" },
       { name: "tls", type: "boolean", description: "REQUIRE TLS to the broker - refuse to connect if it is not offered" },
       { name: "creds", type: "string", value: "<file>", description: "pre-minted scoped delivery cred, or (with `pending`) an admin cred" },
+      { name: "root", type: "string", value: "<dir>", description: "workspace root holding .cotal/ (default: the nearest .cotal/ above the working directory; none is refused)" },
       { name: "shard", type: "string", value: "<n>", description: "shard index (N=1 only; non-zero is rejected)" },
       { name: "shards", type: "string", value: "<n>", description: "shard count (N=1 only; >1 is rejected)" },
       { name: "dev-mint", type: "boolean", description: "standalone dev: mint a scoped delivery cred from the local signer" },

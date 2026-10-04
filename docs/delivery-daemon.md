@@ -119,6 +119,12 @@ write happens once the daemon holds the single-flight lease, because that is the
 the space's daemon: one that loses the lease refuses to bind and exits, and must not overwrite the
 live holder's record on its way out.
 
+The daemon serves one workspace root, chosen at start: the one `cotal deliver --root <dir>` names,
+or the nearest `.cotal/` above its working directory. A workstation daemon with neither refuses at
+start and names the directory it searched from, before it reads a credential or dials a broker,
+because a directory nobody set up holds none of its credentials. A daemon with an injected store
+takes its credentials from that store and needs no `.cotal/`.
+
 Readers verify the record before believing it. A recorded pid is trusted only when the process behind
 it is alive **and** its command line names a delivery daemon, so a record that outlived its process
 and had its number reused is reported as stale rather than as a healthy daemon. `cotal down` never
