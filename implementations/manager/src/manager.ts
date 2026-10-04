@@ -3815,7 +3815,7 @@ export class Manager {
       lifecycleUid: string;
       delegatedIntent?: StartAgentOpts["delegatedIntent"];
     },
-  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
+  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string; enrolled?: { owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string } } }> {
     if (opts.delegatedIntent) {
       // startAgentActive refused a delegated launch on a manager without this callback.
       const execute = this.remoteAuthority!.executeDelegatedUserIntent!;
@@ -3958,7 +3958,7 @@ export class Manager {
       lifecycleUid: string;
     },
     enroll: NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>,
-  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
+  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string; enrolled?: { owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string } } }> {
     let provider;
     try {
       provider = resolveAuthProvider();
@@ -3977,6 +3977,9 @@ export class Manager {
     const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, opts.lifecycleUid);
     let files = staged;
     let material: Awaited<ReturnType<typeof enroll>> | undefined;
+    // Set once the host's answer passed the checks below: from then on the host holds a grant at
+    // that uid, and a later failure here reports it so the caller can keep the name.
+    let enrolled: { owner: string; lifecycleUid: string; files: typeof staged } | undefined;
     try {
       await secrets.put(agentSecretKeyForFile(staged.actorToken, this.space), actorToken);
       await materializeSecretToFile(secrets, agentSecretKeyForFile(staged.actorToken, this.space), staged.actorToken);
@@ -4001,6 +4004,7 @@ export class Manager {
       // Re-key the family onto the HOST's uid (SPEC 13.1 name-disjointness on the FS): the child's
       // credential paths must embed the uid its broker footprint carries, never the provisional one.
       files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, material.lifecycleUid);
+      enrolled = { owner: material.owner, lifecycleUid: material.lifecycleUid, files };
       if (files.actorToken !== staged.actorToken) {
         await secrets.put(agentSecretKeyForFile(files.actorToken, this.space), actorToken);
         await materializeSecretToFile(secrets, agentSecretKeyForFile(files.actorToken, this.space), files.actorToken);
@@ -4041,7 +4045,7 @@ export class Manager {
         rmSync(family.sentinelCreds, { force: true });
         rmSync(family.health, { force: true });
       }
-      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}` };
+      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}`, ...(enrolled ? { enrolled } : {}) };
     }
   }
 
@@ -5661,6 +5665,10 @@ export class Manager {
           delegatedIntent: opts.delegatedIntent,
         });
         if ("error" in prep) {
+          // The host enrolled this UID for the intent's user before the local steps failed: hold the
+          // name there, as for a launch that fails later, so its user's retirement intent can retire it.
+          if (prep.enrolled && opts.delegatedIntent)
+            provisioned = { id: principalKey(prep.enrolled.owner, name).key, name, lifecycleUid: prep.enrolled.lifecycleUid, userOwner: prep.enrolled.owner, delegated: true, secretPaths: prep.enrolled.files };
           this.reserved.delete(name);
           return { ok: false, error: prep.error };
         }

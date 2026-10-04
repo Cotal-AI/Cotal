@@ -377,8 +377,9 @@ A delegated launch with a `supervise` policy is refused, and a delegated slot ar
 recovery, because a delegated agent is never restarted (section 8). A delegated slot's stop, exit,
 reap or rollback runs none of the holder's own retirement callbacks.
 Its name stays held until `retireDelegatedAgent` receives `retired: true` for that UID, and a
-same-name spawn is refused meanwhile. A launch that fails after the host's answer, such as a
-connector that cannot build the launch, holds its name at the enrolled UID the same way.
+same-name spawn is refused meanwhile. A launch that fails after the host's answer passed the owner,
+actor and UID checks, such as a secret write, a refused bearer preflight or a connector that cannot
+build the launch, holds its name at the enrolled UID the same way.
 `retireDelegatedAgent` stops a running slot only after `retired: true` for the target and op id it
 sent, because the host's order closes the provider handle (section 7), so a refused or unconfirmed
 retirement leaves the agent running. A manager with neither a slot nor a hold for the name, such as
