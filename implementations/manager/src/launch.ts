@@ -25,6 +25,7 @@ const LaunchAgentSchema = z.strictObject({
   agent: z.string().regex(TOKEN, "agent must be a connector token ([A-Za-z0-9_-])"),
   role: z.string().regex(TOKEN, "role must be a route-safe token ([A-Za-z0-9_-])").optional(),
   cwd: z.string().min(1).refine((s) => !s.includes("\0"), "cwd must not contain a NUL byte").optional(),
+  continuity: z.literal("exact").optional(),
   model: z.string().optional(),
   variant: z.string().min(1).optional(),
   launchOptions: z.record(z.string(), z.unknown()).optional(),
@@ -204,6 +205,65 @@ export function launchAgentToStartOpts(a: MeshLaunchAgent, configPath: string, o
     owner,
     launchRef: runId ? { runId, requested: a.name, hash: a.hash } : undefined,
   };
+}
+
+/** The host session the manager last bound to a `continuity: exact` manifest agent, keyed by its
+ *  declared name. Only the manager writes it, after the connector proved the session it runs. */
+export interface ContinuityAssignment {
+  version: 1;
+  space: string;
+  name: string;
+  connector: string;
+  cwd: string;
+  sessionId: string;
+}
+
+const ContinuityAssignmentSchema = z.strictObject({
+  version: z.literal(1),
+  space: z.string().min(1),
+  name: z.string().min(1),
+  connector: z.string().min(1),
+  cwd: z.string().min(1),
+  sessionId: z.string().trim().min(1).max(4096),
+});
+
+/** The session to reopen for `continuity: exact`, or undefined when none was recorded yet (the first
+ *  launch starts a new session). An assignment recorded for another space, connector or directory is
+ *  refused rather than reopened: attaching it would restore a different seat's history. */
+export function readContinuityAssignment(root: string, want: Omit<ContinuityAssignment, "version" | "sessionId">): string | undefined {
+  const dir = realDirNoSymlink(root, ".cotal", "continuity");
+  if (!dir) return undefined;
+  const path = join(dir, `${want.name}.json`);
+  let st;
+  try {
+    st = lstatSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error(`continuity assignment ${path}: ${(e as Error).message}`);
+  }
+  if (!st.isFile()) throw new Error(`refusing continuity assignment ${path}: it is not a regular file`);
+  let parsed: ContinuityAssignment;
+  try {
+    parsed = ContinuityAssignmentSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  } catch (e) {
+    throw new Error(`continuity assignment ${path} is malformed (${(e as Error).message})`);
+  }
+  for (const key of ["space", "name", "connector", "cwd"] as const)
+    if (parsed[key] !== want[key])
+      throw new Error(
+        `continuity: exact for "${want.name}": its recorded session belongs to ${key} ${JSON.stringify(parsed[key])}, ` +
+          `not ${JSON.stringify(want[key])}; refusing to reopen it. Remove ${path} to start a new session.`,
+      );
+  return parsed.sessionId;
+}
+
+/** Record (or replace) a `continuity: exact` agent's session, atomically and 0600. */
+export function writeContinuityAssignment(root: string, assignment: Omit<ContinuityAssignment, "version">): void {
+  const dir = ensureDirNoSymlink(root, ".cotal", "continuity");
+  const path = join(dir, `${assignment.name}.json`);
+  const tmp = join(dir, `.${assignment.name}.${randomBytes(4).toString("hex")}.tmp`);
+  writeFileSync(tmp, JSON.stringify({ version: 1, ...assignment }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+  renameSync(tmp, path);
 }
 
 /** Quote a frontmatter scalar so the agent-file parser reads it back unchanged (it strips a matching

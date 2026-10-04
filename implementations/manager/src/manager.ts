@@ -85,7 +85,7 @@ import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js"
 import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
-import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
+import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting } from "./run-hosting.js";
@@ -5320,6 +5320,20 @@ export class Manager {
       return { ok: false, error: `${agent} connector does not support model variants (variant)` };
     if (prompt !== undefined && !connector.supportsPrompt)
       return { ok: false, error: `${agent} connector does not support an initial prompt (prompt)` };
+    // A manifest `continuity: exact` agent reopens the session this manager last bound to its
+    // declared name. Refused before any reserve or mint when the connector cannot reopen an exact
+    // session or the recorded assignment does not match this declaration.
+    const exact = opts.resolved?.continuity === "exact";
+    let continueSession: string | undefined;
+    if (exact) {
+      if (!connector.supportsSessionContinuation)
+        return { ok: false, error: `${agent} connector does not support exact session continuity (continuity: exact)` };
+      try {
+        continueSession = readContinuityAssignment(this.workspaceRoot, { space: this.space, name: identityName, connector: agent, cwd: resolvedCwd ?? this.workspaceRoot });
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
 
     // #4 A4 (panel): the roster the allocation consults must reflect the initial presence snapshot,
     // or a spawn immediately after manager boot races an already-live unmanaged peer and re-opens the
@@ -5599,8 +5613,10 @@ export class Manager {
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
         // construction. An unsupported connector throws here before any process is spawned.
         resume: opts.resume,
+        continueSession,
         // Initial prompt: the `--prompt` flag, or the manifest entry's `prompt:` on a resolved launch.
-        prompt,
+        // A reopened session already had its kickoff turn, so it is not submitted again.
+        prompt: continueSession === undefined ? prompt : undefined,
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
         // (materialized persona has no access frontmatter) has no channel set to read and joins
@@ -5724,6 +5740,10 @@ export class Manager {
           try {
             await this.armSessionRecovery(managed);
             managed.launch.sessionId = this.readManagedSession(managed);
+            if (continueSession !== undefined && managed.launch.sessionId !== continueSession)
+              throw new Error(`continuity: exact asked for session ${continueSession}, the connector bound ${managed.launch.sessionId}`);
+            if (exact)
+              writeContinuityAssignment(this.workspaceRoot, { space: this.space, name, connector: agent, cwd, sessionId: managed.launch.sessionId });
           } catch (error) {
             const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
             this.stopHandle(managed, false);

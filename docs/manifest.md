@@ -47,7 +47,7 @@ agents:
     prompt: Introduce yourself in #general and assign the first task.
 ```
 
-Per-agent keys: `persona`, `agent` (harness override), `cwd`, `model`, `variant`, `role`,
+Per-agent keys: `persona`, `agent` (harness override), `cwd`, `continuity`, `model`, `variant`, `role`,
 `description`, `instructions`, `prompt`, `capabilities` (`spawn`,
 [what it grants](identity-and-auth.md); on a per-user-auth mesh also `role:<r>`, so the
 agent may delegate that role when spawning; `admin` is never accepted from a manifest),
@@ -61,7 +61,21 @@ against the manager workspace, matching `cotal spawn --cwd`; an absolute path is
 as supplied. Omitting it keeps the manager workspace as the default. It is never resolved
 against the manifest or persona directory on the deploying machine. Changing `cwd` marks
 an already-deployed agent stale and requires a restart. Empty paths and NUL bytes are
-rejected. This field controls the directory only; it does not restore a harness session.
+rejected. This field controls the directory only; `continuity` restores a harness session.
+
+`continuity` says whether an agent keeps its harness session across launches. `none`, the
+default, starts a new session every time. `exact` reopens the session the manager last
+bound to this agent name, so after `cotal down` and `cotal up -f` the agent comes back
+with its previous context. The manager owns the session id: on the first launch it
+records the session the connector proves it is running in
+`<manager workspace>/.cotal/continuity/<name>.json`, and every later launch reopens that
+session and fails if the connector reports a different one. The manifest never names a
+session id, and the imperative `cotal spawn --resume` fork stays separate. A reopened
+session does not get the kickoff `prompt` again. The manager refuses to reopen a recorded
+session whose space, connector or resolved `cwd` differs from the declaration, and names
+the file to remove to start a new session. A connector that cannot reopen an exact
+session refuses the manifest at preflight (today only `pi` can). Switching `continuity`
+marks an already-deployed agent stale.
 
 `instructions` and `prompt` differ in kind: `instructions` become the session's **system
 prompt** (who the agent is), while `prompt` is a **kickoff message** auto-submitted once

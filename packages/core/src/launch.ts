@@ -16,6 +16,9 @@ export interface MeshLaunchAgent {
   agent: string;
   /** Directory on the manager host: absolute, or relative to the manager workspace. */
   cwd?: string;
+  /** `exact`: reopen the host session the manager last bound to this name (absent: a new session).
+   *  The manager keeps that session id itself; this spec never carries one. */
+  continuity?: "exact";
   role?: string;
   model?: string;
   variant?: string;
@@ -26,7 +29,8 @@ export interface MeshLaunchAgent {
   body?: string;
   /** Kickoff prompt auto-submitted at session start (the manifest's `prompt:`), forwarded to the
    *  connector exactly like the imperative `--prompt`. Part of the launch form: re-submitted on
-   *  every (re)start under this entry, and hash-covered so a change marks a running agent stale. */
+   *  every (re)start under this entry except when `continuity: exact` reopens a recorded session,
+   *  and hash-covered so a change marks a running agent stale. */
   prompt?: string;
   /** Explicit event-plane choice. Absent means on when the connector declares an event channel;
    *  `false` is the manifest equivalent of `--no-events`. */
