@@ -11,12 +11,12 @@
  *
  * NO-ORACLE = LOUD (no-fallbacks): if the daemon is unreachable the evictor THROWS an error NAMING
  * THE CURE, so the barrier's PHASE-2 failure carries it and the gate stays frozen for reconciliation
- * — a crash-restart on an auth mesh NEVER skips eviction. A reachable daemon that reports the
- * principal still connected (or a garbled/contradictory result) returns `false` (not verified),
- * which the barrier also treats as fail-closed. Verified-gone is conclusive only as (scan complete,
- * none remain).
+ * — a crash-restart on an auth mesh NEVER skips eviction. A reachable daemon that REFUSES throws its
+ * own reason instead (it answered, so it is never reported as unreachable), and a garbled or
+ * contradictory answer throws too; the barrier treats all of these as fail-closed. Verified-gone is
+ * conclusive only as (scan complete, none remain).
  */
-import { CotalEndpoint, EVICT_PRINCIPALS_MAX, mintCreds, newIdentity, type EvictionResult, type SpaceAuth } from "@cotal-ai/core";
+import { CotalEndpoint, EVICT_PRINCIPALS_MAX, mintCreds, newIdentity, type ControlReply, type EvictionResult, type SpaceAuth } from "@cotal-ai/core";
 
 /** Accept one daemon eviction result only when it verifiably describes `principal`. A garbled,
  *  foreign or internally contradictory result throws, so it never authorizes. */
@@ -51,6 +51,7 @@ export function makeManagerEndpointEvictionEvidence(opts: {
   return async (principal: string): Promise<EvictionResult> => {
     const id = newIdentity();
     let ep: CotalEndpoint | undefined;
+    let r: ControlReply;
     try {
       // A per-eviction SCOPED cred for ONE ~15s delivery-admin call (60s TTL bounds a copied cred to
       // a minute). endpoint-evictor holds EXACTLY its own delivery-admin request+reply rail — no
@@ -69,14 +70,7 @@ export function makeManagerEndpointEvictionEvidence(opts: {
       });
       ep.on("error", () => {});
       await ep.start();
-      const r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
-      if (!r.ok) {
-        // The daemon is REACHABLE but refused (e.g. the principal is still connected — a genuine live
-        // predecessor). Not verified gone → fail-closed (the barrier leaves the gate frozen).
-        opts.log(`manager-endpoint-evict: ${principal}: the delivery daemon refused the eviction: ${r.error ?? "(no error copy)"}`);
-        throw new Error(`the delivery daemon refused eviction of "${principal}": ${r.error ?? "no error copy"}`);
-      }
-      return checkedEviction(principal, r.data, opts.log);
+      r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
     } catch (e) {
       // NO-ORACLE = LOUD (pin 3, SPEC 13.1, no-fallbacks): the delivery-admin rail is unreachable, so
       // eviction is UNKNOWN. THROW naming the cure so the barrier's PHASE-2 error carries it and the
@@ -89,6 +83,15 @@ export function makeManagerEndpointEvictionEvidence(opts: {
     } finally {
       await ep?.stop().catch(() => {});
     }
+    // The daemon ANSWERED from here on, so nothing below is relabelled as unreachable: a refusal
+    // carries the daemon's own reason (e.g. a missing $SYS cred and how to re-mint it).
+    if (!r.ok) {
+      // The daemon is REACHABLE but refused (e.g. the principal is still connected — a genuine live
+      // predecessor). Not verified gone → fail-closed (the barrier leaves the gate frozen).
+      opts.log(`manager-endpoint-evict: ${principal}: the delivery daemon refused the eviction: ${r.error ?? "(no error copy)"}`);
+      throw new Error(`the delivery daemon refused eviction of "${principal}": ${r.error ?? "no error copy"}`);
+    }
+    return checkedEviction(principal, r.data, opts.log);
   };
 }
 
