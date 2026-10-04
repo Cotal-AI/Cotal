@@ -258,11 +258,14 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // flag; resume/journal/answer name an existing run positionally.
   // `--adopt` / `--release` / `--discard-approvals` (2026-09, #1863): what a `migrate` commit does
   // with an orphan or a recorded decision; the checking verb refuses them.
+  // `--json` (2026-10, #2369): `ps` and `journal` print one JSON object per row; any other verb
+  // refuses it.
   run: {
     flags: [
       "admit-publish:string", "admit-read:string", "adopt:string", "artifact:string", "by:string",
-      "creds:string", "discard-approvals:boolean", "endpoint:string", "file:string:f", "local:boolean",
-      "reason:string", "release:string", "server:string", "space:string", "timeout:string", "value:string",
+      "creds:string", "discard-approvals:boolean", "endpoint:string", "file:string:f", "json:boolean",
+      "local:boolean", "reason:string", "release:string", "server:string", "space:string",
+      "timeout:string", "value:string",
     ],
     positionals: true,
   },
