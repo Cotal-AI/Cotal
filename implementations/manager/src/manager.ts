@@ -301,10 +301,11 @@ function retireOpId(lifecycleUid: string): string {
 const NO_OWNER_MATCHES = "-no-owner-";
 
 /** A caught value's text for a refusal. A host-supplied store or callback may reject with any value,
- *  one whose `message` getter or `toString` throws included, and the refusal must still be returned. */
+ *  including one whose `message` is a Symbol or whose `message` getter or `toString` throws, and the
+ *  refusal must still be returned, so the coercion to text runs inside the guard. */
 function rejectionText(e: unknown): string {
   try {
-    return (e as Error)?.message ?? String(e);
+    return String((e as Error)?.message ?? e);
   } catch {
     return "an unreadable rejection";
   }
