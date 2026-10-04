@@ -70,7 +70,7 @@ import { PUBLIC_EXCHANGE_VIEWS, type UserTokenSession, type UserTokenView, type 
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
-import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest } from "./manager-authority.js";
+import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, type RunRequestOperation } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
@@ -669,30 +669,33 @@ export async function openAuthAuthorityPlane(opts: {
   // ledger this service owns; every other coordinate goes to core's check (SPEC 13.15).
   const composedSourceIsLive = (session: IssuerSession) => (source: IssuedSourceRef): Promise<boolean> =>
     parseActorLedgerSource(source) ? Promise.resolve(ledgerActorSourceIsLive(opts.dir)(source)) : session.sourceIsLive(source);
-  // A served resume or answer is issued only for a request this host saw its caller publish, and
-  // only once (SPEC 14.8). The manager forwards from inside the handler serving the request, so an
+  // A served resume or answer is issued only for a request this host saw its caller publish, only
+  // once, and only for what that request's envelope asked (SPEC 14.8): the forward's coordinates
+  // are the manager's word. The manager forwards from inside the handler serving the request, so an
   // observation older than the window has no forward left to bind; the window also bounds the table.
-  const observedRunRequests = new Map<string, number>();
+  const observedRunRequests = new Map<string, { expires: number; operation: RunRequestOperation }>();
   for (const subject of servedRunRequestSubjects(space))
     remoteIssuer.nc.subscribe(subject, {
       callback: (_err, msg) => {
         const now = Date.now();
-        for (const [seen, expires] of observedRunRequests) {
+        for (const [seen, { expires }] of observedRunRequests) {
           if (expires > now) break;
           observedRunRequests.delete(seen);
         }
+        const operation = observedRunRequest(msg.subject, msg.data);
+        if (operation === undefined) return;
         // Re-inserting keeps the table in expiry order, which the prune above stops on.
         observedRunRequests.delete(msg.subject);
-        observedRunRequests.set(msg.subject, now + OBSERVED_RUN_REQUEST_WINDOW_MS);
+        observedRunRequests.set(msg.subject, { expires: now + OBSERVED_RUN_REQUEST_WINDOW_MS, operation });
       },
     });
-  const takeObservedRunRequest = async (subject: string): Promise<boolean> => {
+  const takeObservedRunRequest = async (subject: string): Promise<RunRequestOperation | undefined> => {
     // The broker queued the request to this connection before the manager could read it, and a
     // flush returns only after this connection has read everything its server queued before it.
     await remoteIssuer.nc.flush();
-    const expires = observedRunRequests.get(subject);
+    const observed = observedRunRequests.get(subject);
     observedRunRequests.delete(subject);
-    return expires !== undefined && expires > Date.now();
+    return observed !== undefined && observed.expires > Date.now() ? observed.operation : undefined;
   };
   return {
     authorizeConnect: async (t) => {

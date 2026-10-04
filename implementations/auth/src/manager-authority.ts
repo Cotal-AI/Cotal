@@ -27,6 +27,8 @@ import {
   isIssuedCaller,
   issuedPermitsSubject,
   parseEpSubject,
+  parseEndpointRequest,
+  checkRequestSubjectAgreement,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 import { timingSafeEqual } from "node:crypto";
@@ -434,15 +436,42 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
   return { ...registered, kind: "manager-run-attempt", operator: { id: op.id, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId as string } : {}), ...(answers ? { answers } : {}), ...(op.served !== undefined ? { served: op.served as string } : {}) } };
 }
 
+/** What a served resume or answer asks the host to issue for: a resume names its run, an answer
+ *  the endpoint it answers on and whether it amends (SPEC 14.8). */
+export type RunRequestOperation =
+  | { command: "run-resume"; runId: string }
+  | { command: "run-answer"; endpoint: string; amend: boolean };
+
+/** The operation a resume or answer request asks for, read from the envelope its caller published
+ *  on `subject`, or undefined for a request no manager serves. */
+export function observedRunRequest(subject: string, data: Uint8Array): RunRequestOperation | undefined {
+  const parsed = parseEpSubject(subject);
+  if (parsed === null || parsed.plane !== "request") return undefined;
+  let args: Record<string, unknown> | null | undefined;
+  try {
+    const env = parseEndpointRequest(JSON.parse(new TextDecoder().decode(data)));
+    checkRequestSubjectAgreement(env, parsed);
+    args = env.args;
+  } catch {
+    return undefined;
+  }
+  if (args === null || args === undefined || typeof args.runId !== "string") return undefined;
+  if (parsed.command === "run-resume") return { command: "run-resume", runId: args.runId };
+  if (parsed.command !== "run-answer") return undefined;
+  const endpoint = args.endpoint ?? parsed.endpoint;
+  if (typeof endpoint !== "string" || (args.amend !== undefined && typeof args.amend !== "boolean")) return undefined;
+  return { command: "run-answer", endpoint, amend: args.amend === true };
+}
+
 /** The served caller of a resume or an answer, checked against the run's owner (SPEC 14.8). The
  *  subject is re-parsed as {@link admitRemoteRun} parses a run-start, except that the `self` target
  *  a `run-answer` rides is accepted, and must be a request this host observed and has not yet
- *  accepted a forward of. A derived user owner must be
+ *  accepted a forward of, asking for `operation`. A derived user owner must be
  *  `runOwner`; a v1 caller's issuance must resolve live and permit the subject; a legacy caller is
  *  accepted only for `run-answer` from a live managed row of that owner, the seat relay path. */
 async function authorizeServedRunCaller(args: {
   served: string;
-  command: "run-resume" | "run-answer";
+  operation: RunRequestOperation;
   /** The admission's owner for a resume; the manager's registered owner for an answer. */
   runOwner: string;
   space: string;
@@ -451,17 +480,25 @@ async function authorizeServedRunCaller(args: {
   issued: IssuedStore;
   sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
   isLiveManagedActor: (owner: string, actor: string, lifecycleUid: string) => boolean;
-  takeObserved: (subject: string) => Promise<boolean>;
+  takeObserved: (subject: string) => Promise<RunRequestOperation | undefined>;
 }): Promise<void> {
+  const command = args.operation.command;
   const parsed = parseEpSubject(args.served);
   if (!args.served.startsWith(`cotal.${args.space}.`) || parsed === null || parsed.plane !== "request" ||
-      parsed.endpoint !== args.endpoint || parsed.command !== args.command || (parsed.target !== null && parsed.target.mode !== "self") ||
+      parsed.endpoint !== args.endpoint || parsed.command !== command || (parsed.target !== null && parsed.target.mode !== "self") ||
       (parsed.route === "inst" && parsed.instanceId !== args.instanceId))
-    throw new EpEnvelopeError("permission-denied", `a served ${args.command} must name this space, endpoint and instance, untargeted or self-targeted`);
+    throw new EpEnvelopeError("permission-denied", `a served ${command} must name this space, endpoint and instance, untargeted or self-targeted`);
   // The subject's caller is the broker's word only if the broker carried it: a manager can name any
   // live issuance in a subject it never received.
-  if (!(await args.takeObserved(args.served)))
-    throw new EpEnvelopeError("permission-denied", `the issuing host did not observe this ${args.command} request, or already accepted a forward of it (SPEC 14.8)`);
+  const observed = await args.takeObserved(args.served);
+  if (observed === undefined)
+    throw new EpEnvelopeError("permission-denied", `the issuing host did not observe this ${command} request, or already accepted a forward of it (SPEC 14.8)`);
+  // The forward's coordinates are the manager's word; the observed request's are the caller's.
+  const forwarded = args.operation;
+  if (observed.command === "run-resume"
+    ? forwarded.command !== "run-resume" || forwarded.runId !== observed.runId
+    : forwarded.command !== "run-answer" || forwarded.endpoint !== observed.endpoint || forwarded.amend !== observed.amend)
+    throw new EpEnvelopeError("permission-denied", `the forwarded ${command} names another run, endpoint or amendment than the request the issuing host observed (SPEC 14.8)`);
   const caller = parsed.caller;
   if (isDerivedOwner(caller.owner) && caller.owner !== args.runOwner)
     throw new EpEnvelopeError("permission-denied", "a user resumes only a run admitted for that user and answers only on the participant manager that user registered");
@@ -469,11 +506,11 @@ async function authorizeServedRunCaller(args: {
     const ref = { space: args.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
     const resolved = await args.issued.resolve(ref, args.sourceIsLive);
     if (!issuedPermitsSubject(resolved.evidence.permissions.publish, args.served))
-      throw new EpEnvelopeError("permission-denied", `the caller's issued ceiling does not permit this ${args.command} subject`);
+      throw new EpEnvelopeError("permission-denied", `the caller's issued ceiling does not permit this ${command} subject`);
     return;
   }
-  if (args.command === "run-answer" && caller.owner === args.runOwner && args.isLiveManagedActor(caller.owner, caller.actor, caller.uid)) return;
-  throw new EpEnvelopeError("permission-denied", `${args.command} on a participant manager rides the versioned rail with an issued caller; only a live managed seat of the run's owner answers on the legacy rail (SPEC 14.8)`,
+  if (command === "run-answer" && caller.owner === args.runOwner && args.isLiveManagedActor(caller.owner, caller.actor, caller.uid)) return;
+  throw new EpEnvelopeError("permission-denied", `${command} on a participant manager rides the versioned rail with an issued caller; only a live managed seat of the run's owner answers on the legacy rail (SPEC 14.8)`,
     [{ kind: EP_UNBOUND_CALLER_AUTHORITY, owner: caller.owner, actor: caller.actor, uid: caller.uid }]);
 }
 
@@ -503,11 +540,12 @@ export async function authorizeRemoteRunAttempt(args: {
   /** Whether the pause settled `resumed` naming an accepted answer: what an amendment amends. */
   checkpointSettled: (token: string) => Promise<boolean>;
   /** The issued store, the source and ledger checks, and the observed requests a request carrying
-   *  `served` is checked with. `takeObserved` consumes the one observation of a subject. */
+   *  `served` is checked with. `takeObserved` consumes the one observation of a subject and
+   *  returns what its request asked for. */
   issued?: IssuedStore;
   sourceIsLive?: (source: IssuedSourceRef) => Promise<boolean>;
   isLiveManagedActor?: (owner: string, actor: string, lifecycleUid: string) => boolean;
-  takeObserved?: (subject: string) => Promise<boolean>;
+  takeObserved?: (subject: string) => Promise<RunRequestOperation | undefined>;
 }): Promise<RemoteRunAttemptGrant> {
   const r = parseRemoteRunAttemptRequest(args.request);
   await authenticateRegisteredManager(r, args, "run attempt");
@@ -519,18 +557,18 @@ export async function authorizeRemoteRunAttempt(args: {
       throw new EpEnvelopeError("permission-denied", `run ${runId} was admitted on another manager instance or endpoint`);
     return view.admission;
   };
-  const served = (subject: string, command: "run-resume" | "run-answer", runOwner: string) => {
+  const served = (subject: string, operation: RunRequestOperation, runOwner: string) => {
     if (args.issued === undefined || args.sourceIsLive === undefined || args.isLiveManagedActor === undefined || args.takeObserved === undefined)
       throw new EpEnvelopeError("internal", "a served run request needs the issued store, the actor ledger and the observed requests on the issuing host");
     return authorizeServedRunCaller({
-      served: subject, command, runOwner, space: r.space, endpoint: args.endpoint, instanceId: r.instanceId,
+      served: subject, operation, runOwner, space: r.space, endpoint: args.endpoint, instanceId: r.instanceId,
       issued: args.issued, sourceIsLive: args.sourceIsLive, isLiveManagedActor: args.isLiveManagedActor, takeObserved: args.takeObserved,
     });
   };
   if (r.attempt) {
     const a = r.attempt;
     const admission = await admitted(a.runId);
-    if (a.served !== undefined) await served(a.served, "run-resume", admission.caller.owner);
+    if (a.served !== undefined) await served(a.served, { command: "run-resume", runId: a.runId }, admission.caller.owner);
     const status = await args.readRunStatus(a.runId);
     if (status?.state === "completed" || status?.state === "failed")
       throw new EpEnvelopeError("failed-precondition", `run ${a.runId} is ${status.state}; a terminal run gets no new attempt`);
@@ -553,7 +591,7 @@ export async function authorizeRemoteRunAttempt(args: {
     // Every answer and amendment names the caller it serves; the host never answers for the manager.
     if (op.served === undefined)
       throw new EpEnvelopeError("permission-denied", "an answering run operator carries the served run-answer subject of the caller it answers for (SPEC 14.8)");
-    await served(op.served, "run-answer", args.owner);
+    await served(op.served, { command: "run-answer", endpoint: args.endpoint, amend: op.answers.amend === true }, args.owner);
   }
   const runOperator: RunOperatorGrantArgs = { endpoint: args.endpoint, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId } : {}), ...(op.answers ? { answers: { token: op.answers.token } } : {}) };
   return { kind: "operator", operator: { id: op.id, profile: "run-operator", runOperator } };

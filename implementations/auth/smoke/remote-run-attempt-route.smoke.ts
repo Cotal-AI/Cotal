@@ -360,8 +360,15 @@ try {
   const served = epRequestSubject(SPACE, {
     route: { mode: "inst", instanceId }, endpoint: "manager", command: "run-answer", target: { mode: "self" }, caller, nonce: mintLifecycleUid(),
   });
-  // The caller publishes the request the manager forwards; the host issues only for one it observed.
-  nc.publish(served);
+  // The caller publishes the request the manager forwards; the host issues only for one it observed,
+  // and only for the endpoint and amendment its envelope asked for.
+  const digest = `sha256:${"0".repeat(64)}`;
+  nc.publish(served, new TextEncoder().encode(JSON.stringify({
+    v: 1, id: mintLifecycleUid(), op: { endpoint: "manager", command: "run-answer", inputDigest: digest, outputDigest: digest },
+    class: "ephemeral", replyExpected: true, deadlineMs: 8000,
+    args: { runId: first, stepKey: "/checkpoint:approve#0" },
+    from: { id: `${httpOwner}.cli`, name: "cli" },
+  })));
   await nc.flush();
   const ansIdentity = newIdentity();
   const ansReq: RemoteRunAttemptRequest = {
