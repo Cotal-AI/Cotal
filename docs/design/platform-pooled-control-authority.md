@@ -2,6 +2,9 @@
 
 Status: proposed contract. Nothing here is implemented or released. This change adds the design and
 the normative SPEC §13 text only. It adds no runtime path, no issuer, no daemon and no exported type.
+None of the symbols in sections 3.1 and 3.2 exists in source or in a built declaration at this head,
+so a platform composition cannot import them or call the door yet. Section 8 lists each symbol's
+status and why it waits.
 The source inventory below was checked at `06f48f40473f809bcb31f2ba21b3ceb1d33ccc18` (v0.58.0).
 
 The question is how a platform runs one administrative control manager per account in `pooled`
@@ -98,7 +101,8 @@ export type PlatformControlInnerRequest =
   | RemoteRunAttemptRequest;
 
 /** Closed envelope for one service-door call. It names no profile, permission, subject, TTL, claim
- * or IdP token. The host derives the owner and every grant; nothing here is an identity assertion. */
+ * or IdP token. The host derives the owner and every grant; nothing here is an identity assertion.
+ * The inner request keeps its own operation-specific coordinates (section 3.2, step 4). */
 export interface PlatformControlAuthorityRequest<R extends PlatformControlInnerRequest = PlatformControlInnerRequest> {
   v: 1;
   kind: "platform-control-authority";
@@ -185,13 +189,30 @@ serves it. One call runs in this order, and every refusal writes nothing:
 3. `owner = platformControlOwner(...)`. The owner is never read from the request.
 4. The inner request goes through its existing closed parser. Its `actor` field must be the literal
    `"cli"`. That literal is the shipped request builders' envelope constant. The service door never
-   reads it as a ledger key, and it names no principal.
+   reads it as a ledger key, and it names no principal. The inner request keeps its existing
+   operation-specific coordinates, and the host validates them as the human route does: the
+   `session` operation's requested `exp` is capped at the host's 24h bound
+   (`implementations/auth/src/service.ts`, the `session` branch), and the run admission's
+   `run.subject` is re-parsed and checked against the caller's issued ceiling (`admitRemoteRun`).
+   Neither selects a signing subject, permission set or a lifetime past the host's bound.
 5. The call dispatches to the same functions the human route uses (`issueRemoteManagerAuthority`,
    `authorizeRemoteManagerRenewal`, maintenance, retained validation, goal-index scan, admin
    authorization, run admission and attempt). Their authorization input becomes the closed union
    `{ holder: "human"; owner; scope } | { holder: "platform"; owner; assignment }`. The platform
    arm replaces the `supervise` check with the assignment check. It never passes a synthesized
    `["supervise"]` scope.
+6. Maintenance needs one more service-only guard. In the platform arm, `targetInstanceId` must
+   equal the assignment's `instanceId` for both `evict-family-principal` and
+   `reconcile-registration`, and the observed target gate's principal must equal
+   `<p_owner>.manager_serve_<instanceId>`. Both checks run before any liveness probe, revocation,
+   eviction or reopen, and a failure is `permission-denied` with no effect. The shared
+   `authorizeRemoteManagerMaintenance` checks gate ownership only for eviction, because the human
+   path may reconcile a foreign slot holder in the same space. Reusing it with only the scope check
+   replaced would let the service view probe, revoke, evict and reopen a frozen gate a human owns.
+   The human arm keeps that foreign-slot repair unchanged. A foreign slot holder blocks platform
+   registration with the existing registration refusal, and the platform's composition passes no
+   `reconcileForeignRegistration` callback. The holder is repaired by its own owner through
+   `manager-service` maintenance, or by the host operator with `cotal reconcile-gate`.
 
 ### 3.3 What `ManagerOptions.remoteAuthority` needs
 
@@ -290,9 +311,9 @@ Each refusal maps to the SPEC clause that states it. A security reviewer can che
 | # | Refusal | Mechanism | Clause |
 |---|---|---|---|
 | R1 | No human impersonation | the closed envelope has no IdP field and refuses one; the owner is derived from the assignment in the `p_` grammar; issuance never reads or synthesizes `supervise`; proofs and gate principals are owner-bound, so neither door accepts the other's material | §13.1 Platform control authority, first and third paragraphs; §13.6 Platform control registration |
-| R2 | No takeover of another owner's instance | the service door refuses an instance whose gate principal names any other owner, including a human-owned instance; no force path; that instance retires through its own owner's path first | §13.1 Platform control authority, third paragraph |
+| R2 | No takeover of another owner's instance | the service door refuses an instance whose gate principal names any other owner, including a human-owned instance; maintenance `targetInstanceId` must be the assigned instance and its gate principal the platform serve principal before any effect (section 3.2, step 6); no force path; that instance retires through its own owner's path first | §13.1 Platform control authority, third paragraph; §13.6 Platform control registration, maintenance paragraph |
 | R3 | No local or custodial runtime | the composition must construct `pooled: true`, and the existing constructor checks refuse PTY, `auto` and custodial runtimes; the host issues no signer, provisioner or launch authority, so the family cannot run local custody on the host's behalf | §13.1 fourth paragraph; Appendix B `platform-control` |
-| R4 | No generic signing RPC | a closed union of seven existing kinds; no profile, permission, subject, TTL or claim input; unknown fields `bad-request`; managed-agent kinds `unimplemented` | §13.6 Platform control registration |
+| R4 | No generic signing RPC | a closed union of seven existing kinds; the envelope has no profile, permission, subject, TTL or claim input; inner requests keep only their existing operation-specific coordinates, validated as on the human route (session `exp` capped at the host bound, run admission `run.subject` checked against the caller's issued ceiling); unknown fields `bad-request`; managed-agent kinds `unimplemented` | §13.6 Platform control registration |
 | R5 | No new daemon, listener or protocol | one in-process method on the hosted authority handle, present only when the host supplies `platformControl`; never constructed by `runAuthService`; no route on any listener; the loopback capability is never handed out; the platform supplies its own Runtime and its own caller-bound channel | §13.6 Platform control registration |
 | R6 | Not an exchange view | `platform-control` is never a `view` on `/exchange`; the public and managed-agent exchanges refuse it as an unknown view | §13.1 Platform control authority, first paragraph |
 | R7 | No assignment, no authority | absent observer: no door on the handle. Null, revoked or stale assignment: `permission-denied`. Observer failure: `unavailable` | §13.1 second paragraph; §13.6 |
@@ -300,6 +321,18 @@ Each refusal maps to the SPEC clause that states it. A security reviewer can che
 | R9 | Human view unchanged | every existing human remote-supervision clause is byte-identical; the SPEC diff for this change is insertion-only | §13.1, §13.6, §13.9 (existing text) |
 
 ## 8. Why the declarations wait for the implementation round
+
+| Symbol | Package | Status at this head |
+|---|---|---|
+| `PlatformControlInnerRequest`, `PlatformControlAuthorityRequest`, `PlatformControlAuthorityResult` | `@cotal-ai/core` | proposed, absent from source and `dist` |
+| `PLATFORM_OWNER_PREFIX`, `assertPlatformOwnerToken` | `@cotal-ai/core` | proposed, absent |
+| `PlatformControlAssignment`, `platformControlOwner` | `@cotal-ai/auth` | proposed, absent |
+| `startAuthService` input `platformControl`, `AuthServiceHandle.platformControlAuthority` | `@cotal-ai/auth` | proposed, absent; both shipped signatures unchanged |
+| the `holder` authorization union and the maintenance guard (section 3.2, steps 5 and 6) | `@cotal-ai/auth` | proposed, absent |
+| `remoteStandingBundleRenewal`, both registration proofs, `authorizeRemoteManagerRenewal`, `ManagerOptions.pooled` | core, auth, manager | shipped, reused unchanged |
+
+This round is scoped to the contract, so the proposed rows stay in this record. They land together
+in the implementation round, for these reasons:
 
 - A door type in `@cotal-ai/core` with no producer advertises authority no host provides.
   `docs/embedding.md` already has to warn that the renewal types' presence is not an operational
@@ -328,10 +361,11 @@ row matches.
 | H8 | Restart the platform manager, then replay the predecessor's `renewStandingBundle` with the old `processEpoch` | `conflict` (stale epoch); no JWT returned |
 | H9 | Backend marks the assignment `revoked` | the next renewal is `permission-denied`; the manager keeps last-good and logs debt; after expiry the broker refuses its connections; restart needs a new assignment |
 | H10 | Present a human `manager-service` registration proof to the door for that instance, a service-view request on `/manager-service-authority` with a human IdP token, and a door call for an instance whose gate principal is a `u_` owner | all refused; the human instance's gate is unchanged |
-| H11 | Send an inner request with an extra field (`profile`, `permissions`, `ttl`), a managed-agent enrollment kind, and an unknown kind | `bad-request`, `unimplemented`, `bad-request` |
+| H11 | Send an inner request with an extra field (`profile`, `permissions`, `ttl`), a managed-agent enrollment kind, and an unknown kind. Then send a `session` request whose `exp` is 48h ahead | `bad-request`, `unimplemented`, `bad-request`; the session-serving JWT's `exp` is at most 24h after issue |
 | H12 | On the same host, a signed-in human with `supervise` runs `cotal supervise`; then without `supervise` | the first works as before; the second gets the existing refusal sentence |
 | H13 | A `u_` principal asks the platform manager to spawn, and asks `authorizeAdmin` | spawn refused on owner mismatch; `authorized: false` |
 | H14 | Check the host for new listeners and daemons, and the control worker for the capability and signer | no new listening socket in `ss -ltnp`; the control worker's environment, files and store hold neither the loopback capability nor the account signing seed |
+| H15 | Freeze a human `manager-service` registration on instance B in the same space (stop it mid-registration). Then call the door with a `reconcile-registration` maintenance request whose `targetInstanceId` is B, and with an `evict-family-principal` request that targets B. Then run the same reconciliation as B's human owner through `manager-service` | the two door calls are `permission-denied` before any probe; B's gate revision, its `epcred` family and its holders are unchanged (auth KV revisions unchanged); the human owner's reconciliation runs as before |
 
 ## 10. Residual risk
 
