@@ -37,11 +37,34 @@ export function readCiSuiteFragments(dir?: string): string[];
  * directory order and merge order. */
 /** @param {string} suite @param {number} count @returns {number} */
 export function fragmentShard(suite: string, count: number): number;
-/** The exact assignment the runner executes: frozen positional legacy entries plus independently
- * hashed fragment entries. Shared so the regression tests the production selector, not a copy. */
-/** @param {string[]} legacy @param {string[]} fragments @param {number} shard @param {number} count @returns {string[]} */
-export function suitesForShard(legacy: string[], fragments: string[], shard: number, count: number): string[];
+/** @typedef {{ count: number, suites: Map<string, { seconds: number, shard: number }> }} ShardCosts */
+/** Measured cost and pinned shard per suite, from `ci-suite-costs.json`. Neither index nor name hash
+ * knows what a suite costs, so shards drift apart as suites land; `rebalance-shards.mjs` measures
+ * CI job logs and writes this table, and a suite it lists runs on its pinned shard. The pins are
+ * committed data, so a suite moves only when a reviewed edit to the table moves it. A malformed
+ * table THROWS: a table that silently drops a pin moves that suite. */
+/** @param {string} raw @param {string} [label] @returns {ShardCosts} */
+export function parseShardCosts(raw: string, label?: string): ShardCosts;
+/** @param {string} [path] @returns {ShardCosts} */
+export function readShardCosts(path?: string): ShardCosts;
+/** One suite's runner. A pin applies only under the shard count it was measured for; any other
+ * count is already a full reassignment, so it falls to the frozen index or the name hash. */
+/** @param {string} suite @param {number} legacyIndex @param {number} count @param {ShardCosts} costs @returns {number} */
+export function suiteShard(suite: string, legacyIndex: number, count: number, costs: ShardCosts): number;
+/** The exact assignment the runner executes: a pinned shard from the cost table, else the frozen
+ * positional legacy index, else the independently hashed fragment name. Shared so the regression
+ * tests the production selector, not a copy. */
+/** @param {string[]} legacy @param {string[]} fragments @param {number} shard @param {number} count @param {ShardCosts} [costs] @returns {string[]} */
+export function suitesForShard(legacy: string[], fragments: string[], shard: number, count: number, costs?: ShardCosts): string[];
 /** The chain as the `&&` string it used to be, for consumers that grade script BODIES. */
 export function ciChainBody(): string;
 export const CI_SUITES_PATH: string;
 export const CI_SUITES_DIR: string;
+export const CI_SUITE_COSTS_PATH: string;
+export type ShardCosts = {
+    count: number;
+    suites: Map<string, {
+        seconds: number;
+        shard: number;
+    }>;
+};

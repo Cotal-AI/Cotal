@@ -13,7 +13,8 @@
  * classifier stopped working, not that the tree is clean.
  *
  * The frozen legacy list is read from `bin/smoke/ci-suites.txt`; new suites are one-file fragments
- * under `bin/smoke/ci-suites.d/`. Legacy entries keep round-robin `index % count`. Fragment entries
+ * under `bin/smoke/ci-suites.d/`. A suite pinned in `bin/smoke/ci-suite-costs.json` runs on its
+ * measured shard. Other legacy entries keep round-robin `index % count`, and other fragment entries
  * use a stable hash of their suite name, so an independently-merged fragment cannot move another.
  * Each smoke runs in its own `pnpm` subprocess. On Linux, a measured cohort of suites runs
  * concurrently with private state before the remaining serial suites. SMOKE_CI_JOBS=1 retains

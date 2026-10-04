@@ -1,7 +1,30 @@
 # Running the smoke gate
 
 `pnpm smoke:ci` builds the workspace and runs the full gate. CI builds first and calls
-`shard.mjs` for its assigned partition. Suites keep their existing shard assignments.
+`shard.mjs` for its assigned partition.
+
+## Shard assignment
+
+`ci-suite-costs.json` records each suite's measured CI duration and pins it to a shard. A suite
+with no entry keeps its old rule: its index in the frozen `ci-suites.txt`, or a hash of its name
+for a fragment. Pins apply only under the shard count the table records.
+
+Once a suite is pinned, only an edit to the table moves it. A new suite has no cost yet, so it
+lands on its hash shard, and `pnpm check:shard-stability` names that shard and prints the measured
+minutes per shard.
+When the shards drift apart, download the latest smoke job logs and rebalance:
+
+```bash
+gh api repos/Cotal-AI/Cotal/actions/jobs/<job-id>/logs > shard-0.log   # one per smoke shard job
+node bin/smoke/rebalance-shards.mjs shard-*.log
+```
+
+The script takes each suite's median duration across the logs. While the heaviest shard holds a
+suite smaller than its gap to the lightest shard, it moves the suite closest to half that gap.
+Commit the table. The stability check reports each pinned move as `REBALANCED` and still fails
+any move the table does not pin.
+
+## Pooled suites
 
 On Linux, the runner can first overlap `smoke:attach-stdin`, `smoke:opencode` and
 `smoke:delivery-starvation` when at least two of them belong to the partition and the worker
