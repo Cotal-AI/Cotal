@@ -2,6 +2,12 @@
   "name": "@cotal-ai/pi",
   "version": "0.60.0",
   "license": "Apache-2.0",
+  "keywords": [
+    "cotal",
+    "pi-coding-agent",
+    "multi-agent",
+    "agent-coordination"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Cotal-AI/Cotal.git",
