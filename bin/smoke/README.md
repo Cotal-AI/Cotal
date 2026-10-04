@@ -54,3 +54,11 @@ some package tests also rebuild their own outputs.
 `pnpm test` includes deterministic unit checks and integration checks using files,
 sockets, processes, PTYs, native modules and bundles. It does not replace the full
 smoke gate's broker, manager and agent scenarios.
+
+## Packing seat from a checkout
+
+`pnpm build` compiles the `@cotal-ai/seat` helper for the host arch only, and seat's `prepack`
+refuses a tree without both `linux-x64` and `linux-arm64`. A suite that packs the closure from a
+checkout, such as `smoke:seed-tarball:live`, packs seat from a clone in its own temporary root and
+writes a 20-byte ELF header there for each arch the host build did not make. It never writes
+`packages/seat/build/Release`, where a stand-in helper would ship on a later real pack.
