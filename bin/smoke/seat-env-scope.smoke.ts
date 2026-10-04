@@ -49,7 +49,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { LAUNCH_MATERIAL_ENV, createSpaceAuth, discardLaunchMaterial, mintCreds, mintLifecycleUid, newIdentity, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, createSpaceAuth, discardLaunchArtifacts, discardLaunchMaterial, mintCreds, mintLifecycleUid, newIdentity, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv, OPERATOR_ENV_KEEP, scrubLaunchMaterial } from "@cotal-ai/connector-core";
 import "@cotal-ai/connector-claude-code";
 import "@cotal-ai/connector-opencode";
@@ -105,6 +105,20 @@ const CONNECTORS = ["claude", "opencode", "codex", "hermes", "jcode", "pi"] as c
 
 /** What the operator-env-keep census parses as assigned per spawn, read from the same sources. */
 const parsed = perSpawnAssignments();
+
+/** Run `build` with every OPERATOR_ENV_KEEP name out of this process's environment, then put them
+ *  back. launchEnv inherits a keep-listed name only from here (matching case-insensitively), so one
+ *  in a launch built inside this scope was assigned by the connector, whatever the runner carries. */
+function withoutOperatorEnv<T>(build: () => T): T {
+  const keep = new Set<string>(OPERATOR_ENV_KEEP.map((k) => k.toLowerCase()));
+  const saved = Object.entries(process.env).filter(([k]) => keep.has(k.toLowerCase()));
+  for (const [k] of saved) delete process.env[k];
+  try {
+    return build();
+  } finally {
+    for (const [k, v] of saved) process.env[k] = v;
+  }
+}
 
 console.log(`• broker: ${SERVERS} (suite constant; this suite opens no connection to it)`);
 
@@ -167,21 +181,27 @@ for (const name of CONNECTORS) {
     assert.equal(controlFromEnv(env)?.path, spec.control.path, `A3: ${name} control socket path mismatch`);
   }
 
-  // A10 - every COTAL_ name this launch emits is one the operator-env-keep census parses.
+  // A10 - every COTAL_ name a launch emits is one the operator-env-keep census parses.
   //
   // That census reads assignments out of source, so it is silent about any spelling its patterns
   // do not know, and its "0 conflicts" then holds for a name it never saw. This observes what the
   // launch actually produced, which is silent about a different thing (paths nobody drives), so
   // requiring observed to be a subset of parsed turns a missed spelling on a driven path from a
-  // quiet gap into a red. A keep-listed name that arrived unchanged from this process's environment
-  // was inherited, not assigned, and is the one thing excluded.
-  for (const key of Object.keys(env).filter((k) => k.startsWith("COTAL_")))
-    if (!((OPERATOR_ENV_KEEP as readonly string[]).includes(key) && env[key] === process.env[key]))
-      assert.ok(
-        parsed.has(key),
-        `A10: the ${name} connector's launch emits ${key}, but the operator-env-keep census parses no assignment ` +
-          `of it, so that census cannot see it on the keep list. Teach the census the spelling this connector uses.`,
-      );
+  // quiet gap into a red. The launch it grades is built with no keep-listed name in this process's
+  // environment, so nothing in it was inherited and no name is excused. Telling inherited from
+  // assigned by comparing values let a per-spawn write pass whenever the runner carried the same
+  // value. Inheriting the keep list is env-isolate's cell.
+  const bare = withoutOperatorEnv(() => connector.buildLaunch(opts));
+  const emitted = Object.keys(bare.env ?? {}).filter((k) => k.startsWith("COTAL_"));
+  const bareMaterial = bare.env?.[LAUNCH_MATERIAL_ENV];
+  if (bareMaterial) discardLaunchMaterial(bareMaterial);
+  discardLaunchArtifacts(bare.artifacts);
+  for (const key of emitted)
+    assert.ok(
+      parsed.has(key),
+      `A10: the ${name} connector's launch emits ${key}, but the operator-env-keep census parses no assignment ` +
+        `of it, so that census cannot see it on the keep list. Teach the census the spelling this connector uses.`,
+    );
   console.log(`✓ ${name}: no material in the seat env; identity + control recovered from the material file; every COTAL_ name it emits is parsed by the census`);
 }
 
