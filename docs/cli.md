@@ -751,8 +751,8 @@ session token or sentinel credential bytes. Commands resolve the catalog `slug`;
 local or hand-registered entry also carries `offline`. A discovered entry is never probed, so it has
 no `offline` field. `tlsRequired`, `events: "required"` and a discovered entry's `catalogName` appear
 only when the record has them. An empty registry prints nothing and exits 0. The note about a default
-that matches no record goes to stderr, so stdout carries only rows. The table is presentation and is
-not a stable parsing target. `meshes add` and `meshes rm` refuse `--json`.
+that matches no record goes to stderr, so stdout carries only rows, on a first run too. The table is
+presentation and is not a stable parsing target. `meshes add` and `meshes rm` refuse `--json`.
 
 A registry record this build cannot use is refused by name, never rendered and never skipped. One
 that does not parse, or is missing a field every consumer reads (`server`, `mode`, `root`, `ts`,
@@ -2027,7 +2027,8 @@ across upgrades. `cotal ext add <your-package>` adds a third-party connector the
 dashboard (`@cotal-ai/web`, providing `command:web`) is the seventh built-in seeded on the same path.
 
 `cotal ext seed` is the maintenance entry for that seeding (it runs automatically on the first real
-command of each boot, so you rarely call it):
+command of each boot, so you rarely call it). Each seeded connector's `✓ added` line goes to stderr,
+so the command that triggered the seed keeps stdout to itself:
 
 | Flag | Meaning |
 |---|---|
