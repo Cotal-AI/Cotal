@@ -17,9 +17,9 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
 
 const REPO = join(import.meta.dirname, "..", "..");
 let pass = 0;
@@ -55,8 +55,29 @@ try {
     "implementations/auth",
     "extensions/connector-core",
   ];
+  // seat's prepack refuses a tree without both Linux helpers, and the build above is a host-only dev
+  // build. So seat packs from a clone under `base`: the host helper that build made, plus a 20-byte
+  // ELF header for each other shipped arch. The real packages/seat/build/Release is never written,
+  // because a stand-in helper left there would ship on a later genuine pack.
+  const seatSource = join(base, "seat-source");
+  const seatClone = join(seatSource, "packages", "seat");
+  cpSync(join(REPO, "packages", "seat"), seatClone, { recursive: true, filter: (src) => !src.split(sep).includes("node_modules") });
+  for (const name of ["package.json", "pnpm-workspace.yaml", "tsconfig.base.json"]) cpSync(join(REPO, name), join(seatSource, name));
+  symlinkSync(join(REPO, "node_modules"), join(seatSource, "node_modules"), "dir");
+  symlinkSync(join(REPO, "packages", "seat", "node_modules"), join(seatClone, "node_modules"), "dir");
+  for (const [arch, machine] of [["x64", 62], ["arm64", 183]] as const) {
+    if (process.platform === "linux" && process.arch === arch) continue;
+    const helper = join(seatClone, "build", "Release", `linux-${arch}`, "peercred.node");
+    mkdirSync(dirname(helper), { recursive: true });
+    const header = Buffer.alloc(20);
+    header[0] = 0x7f;
+    header.write("ELF", 1);
+    header.writeUInt16LE(machine, 18);
+    writeFileSync(helper, header);
+  }
   for (const d of dirs) {
-    execFileSync("pnpm", ["-C", join(REPO, d), "pack", "--pack-destination", tgz], { stdio: ["ignore", "ignore", "inherit"] });
+    const root = d === "packages/seat" ? seatClone : join(REPO, d);
+    execFileSync("pnpm", ["-C", root, "pack", "--pack-destination", tgz], { stdio: ["ignore", "ignore", "inherit"] });
   }
   const tarballs = readdirSync(tgz).filter((f) => f.endsWith(".tgz"));
   check("packed the full @cotal-ai closure", tarballs.length === dirs.length, tarballs.length);
