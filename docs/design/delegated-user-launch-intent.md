@@ -9,7 +9,8 @@ The source inventory below was checked at `d00f18cd62f5933c7dceb93b56559498b6665
 later fixes on main). The platform holder this record extends is the `p_` holder of
 [platform-pooled-control-authority.md](platform-pooled-control-authority.md) as it reads at commit
 `2392055fef5777a4c1c8bcbac6621aefd9e9705e`. That record is referenced here and not edited. Its R8
-and H13 rows read the same at the later `1e32152050fb83cf6d0c2c04f1564b5183d558a4`.
+and H13 rows read the same at the later `1e32152050fb83cf6d0c2c04f1564b5183d558a4` and at
+`6ca4d8e0f48d711769ea2e3710338e1e23dab82f`, where it landed on main with its door.
 
 The question is how a platform control holder can run one launch or one retirement that a real,
 signed-in user asked for, so that the intent and the resulting agent stay the user's. The answer is
@@ -268,8 +269,10 @@ export function joinOrStartDelegatedUserIntent(
   run: () => Promise<RemoteDelegatedUserIntentExecutionResult>,
 ): Promise<RemoteDelegatedUserIntentExecutionResult> | undefined;
 
-/** The platform-control record's assignment observer, unchanged. */
-export type ObservePlatformControlAssignment = (space: string, instanceId: string) => Promise<PlatformControlAssignment | null>;
+/** The platform control door's assignment observer as it shipped (`PlatformControlDeps["observeAssignment"]`,
+ * `implementations/auth/src/platform-control.ts:91` at `6ca4d8e0f`), unchanged. It is keyed by account,
+ * which has at most one current row, and both decisions require that row to name the intent's instance. */
+export type ObservePlatformControlAssignment = (space: string, accountPublicKey: string) => Promise<PlatformControlAssignment | null>;
 
 export interface AuthorizeDelegatedUserIntentAdmissionArgs {
   request: DelegatedUserIntentRequest;
@@ -382,8 +385,8 @@ own route. One admission runs in this order, and every refusal writes nothing:
 3. The host reads the user's row fresh (`ledgerAuthorizeGrant(dir)(owner, request.actor)`). It must
    carry `spawn`, the scope a user's own ctl spawn and owner-domain stop need; a missing row or a
    row without `spawn` is `permission-denied`. No `supervise` is read, required or written.
-4. Launch: `observeAssignment(space, instanceId)` is read fresh. It must exist, be `assigned` and
-   name this account. `observeManagerGate(instanceId)` must be open with principal
+4. Launch: `observeAssignment(space, accountPublicKey)` is read fresh. It must exist, be `assigned`,
+   name this account and name `instanceId` as its instance. `observeManagerGate(instanceId)` must be open with principal
    `<platformOwner>.manager_serve_<instanceId>`. The host records the assignment's `lifecycleUid`
    and revision and the gate's process epoch. A missing, revoked or foreign assignment, or a gate
    that names another principal, is `permission-denied`. A gate that is not open is
@@ -427,7 +430,7 @@ stays as written. One execution runs in this order, and every refusal before the
    and receives the flight's answer. A retry never runs step 7, step 8 or the section 7 order itself.
 3. `instanceId`, `managerLifecycleUid`, `assignmentRevision` and the operation must equal the
    record's. Any difference is `permission-denied`.
-4. `observeAssignment(space, instanceId)` is read fresh. It must exist and be `assigned`. Its space,
+4. `observeAssignment(space, accountPublicKey)` is read fresh. It must exist and be `assigned`. Its space,
    account, instance id and `assignmentRevision` must equal the record's, and its `lifecycleUid`
    must equal the record's `managerLifecycleUid`; step 3 made both equal to the request's. A null,
    `revoked` or moved assignment is `permission-denied`, as the platform-control door's own
@@ -706,12 +709,16 @@ payload. `authorizeAdmin` is unchanged.
 | `RemoteDelegatedUserIntentExecutionRequest`, `RemoteDelegatedUserIntentExecutionResult` and the three parsers | `@cotal-ai/core` | proposed, absent |
 | `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `DelegatedUserIntentIncarnation`, `DelegatedUserIntentFlights`, `joinOrStartDelegatedUserIntent`, `delegatedUserIntentHoldsAlias`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | proposed, absent |
 | `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | proposed, absent |
-| `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar | `@cotal-ai/auth`, `@cotal-ai/core` | proposed by the platform-control record, absent |
+| `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar, the platform control door | `@cotal-ai/auth`, `@cotal-ai/core` | absent at this branch's base; shipped on main at `6ca4d8e0f` (#2408) |
 | `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `activateLifecycleAtUid`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged |
 
-They land after the platform-control implementation is on main, because the holder, its owner
-grammar and its assignment observer are inputs to both decisions. A decision type with no producer
-would advertise authority no host provides.
+The platform control door landed on main at `6ca4d8e0f`, after this branch's base. Its assignment
+observer is keyed by space and account, where the platform-control record at `2392055` keyed it by
+instance, so section 4.2 and both step 4 reads follow the shipped signature and require the account's
+one current assignment to name the intent's instance. The declarations land in the implementation
+round, built on that door, because the holder, its owner grammar and its assignment observer are
+inputs to both decisions, and a decision type with no producer would advertise authority no host
+provides.
 
 ## 12. Native acceptance
 

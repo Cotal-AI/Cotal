@@ -4085,9 +4085,9 @@ request carries the space, the assigned account public key, the user's actor, on
 instance id, a request id, and one operation: `launch` with one managed-agent enrollment target
 minus its token digest, or `retire` with one `{ owner, actor, lifecycleUid }`. An unknown field,
 including an owner, IdP token, scope, serve epoch or token digest, MUST be refused as `bad-request`
-with no effect. For a launch, the host MUST read that instance's platform-control assignment and
-manager gate fresh and refuse unless the assignment is `assigned` for this account and the gate is
-open under the platform serve principal, and the requested scope and channel lists MUST lie within
+with no effect. For a launch, the host MUST read the account's platform-control assignment and that
+instance's manager gate fresh and refuse unless the assignment is `assigned` for this account and
+names that instance and the gate is open under the platform serve principal, and the requested scope and channel lists MUST lie within
 the user's actor row under the managed-agent envelope rule. For a retirement, the target owner MUST
 equal the derived owner, and the target lifecycle MUST be one that the host's own record shows a
 delegated launch on that instance produced and enrolled, for a launch target whose actor equals the
