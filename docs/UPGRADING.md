@@ -214,7 +214,8 @@ on the machine where the seats run. No stored state, credential or wire message 
 `cotal spawn --detach` from an operator terminal or from a script outside any seat launches as
 before, and so does any call with `--creds` or one aimed at a space other than the seat's own. A user-auth mesh is unchanged. A seat with
 `capabilities: [spawn]` still spawns from its shell, and can now stop that child with
-`cotal_despawn`.
+`cotal_despawn`. `--on <instance>` from a seat's shell still lands on that manager instance, now as
+the seat.
 
 ### What stops working
 
@@ -251,8 +252,9 @@ grep -rln 'cotal spawn' .cotal/agents
 npm i -g cotal-ai@0.59.0
 ```
 
-The attribution, the despawn, the refusal of a seat without `spawn` and the stop on seat exit were
-run on a local static mesh, and the attribution and the despawn on a local open mesh.
+The attribution, the despawn, the refusal of a seat without `spawn`, the stop on seat exit and a
+seat's `--on` spawn were run on a local static mesh, and the attribution and the despawn on a local
+open mesh.
 
 ## From 0.53.0 to 0.54.0
 

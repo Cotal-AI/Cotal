@@ -12,9 +12,13 @@ import {
   DEFAULT_SPACE,
   DEV_OWNER,
   dialerFor,
+  epCallerGrantRows,
+  jwtFromCreds,
+  mintCreds,
   mintLifecycleUid,
   newIdentity,
   readAcceptedRow,
+  spawnCallerCapabilities,
   standaloneConnectOpts,
   type EpCaller,
   type IssuedCaller,
@@ -151,8 +155,14 @@ export async function resolveControlTarget(
  * - open mesh: no credential system, so the seat's declared triple is the caller;
  * - user-auth mesh: `undefined`, because the CLI's bearer and the seat share an owner and the
  *   manager's owner-domain rule already covers that pair.
+ *
+ * `instanceId` (`--on <instanceId>`) pins the call to one manager instance. The seat's standing
+ * credential holds class routes only, so on a static mesh the seat's proven principal and lifecycle
+ * uid get a one-shot `manager-caller` view instead, minted from the local signer like the operator
+ * instrument `--on` already gets: every request, describe included, is pinned to that instance, it
+ * carries the spawn set only when the seat's own credential holds it, and it expires in five minutes.
  */
-export async function resolveSeatControlTarget(flags: ConnectFlags): Promise<ControlTarget | undefined> {
+export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?: string): Promise<ControlTarget | undefined> {
   const name = process.env.COTAL_NAME?.trim();
   const actor = process.env.COTAL_ID?.trim();
   const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
@@ -173,14 +183,30 @@ export async function resolveSeatControlTarget(flags: ConnectFlags): Promise<Con
     ...standaloneConnectOpts({ creds, tls: mesh.tlsRequired }),
     maxReconnectAttempts: 0,
   });
+  let epCaller: IssuedCaller;
   try {
     const ref = await readAcceptedRow(nc, mesh.space, acceptedToken);
     if (ref.owner !== DEV_OWNER || ref.actor !== actor || ref.uid !== uid)
       throw new Error(`managed seat issuance resolves to ${ref.owner}.${ref.actor}/${ref.uid}, not ${DEV_OWNER}.${actor}/${uid}`);
-    return { ...at, auth: { creds, tls: mesh.tlsRequired, epCaller: { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation } as IssuedCaller } };
+    epCaller = { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation } as IssuedCaller;
   } finally {
     await nc.drain().catch(() => nc.close());
   }
+  if (instanceId === undefined) return { ...at, auth: { creds, tls: mesh.tlsRequired, epCaller } };
+  if (!mesh.auth)
+    throw new Error(`mesh "${mesh.space}" is a static-auth mesh but the seed under ${mesh.root} is missing, so no instance-pinned view can be minted for this seat`);
+  const jwt = jwtFromCreds(creds);
+  if (!jwt) throw new Error(`managed seat credential at ${path} carries no NATS user JWT`);
+  const held = new Set<string>((JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8")) as { nats?: { pub?: { allow?: string[] } } }).nats?.pub?.allow ?? []);
+  const spawn = epCallerGrantRows(mesh.space, spawnCallerCapabilities(DEV_OWNER), epCaller).pub.every((row) => held.has(row));
+  const view = await mintCreds(mesh.auth, newIdentity(), "manager-caller", {
+    principal: { owner: DEV_OWNER, actor },
+    lifecycleUid: uid,
+    managerInstanceId: instanceId,
+    capabilities: spawn ? ["spawn"] : [],
+    expiresInSeconds: 5 * 60,
+  });
+  return { ...at, auth: { creds: view, tls: mesh.tlsRequired, epCaller: { owner: DEV_OWNER, actor, uid }, managerInstanceId: instanceId } };
 }
 
 /** The caller triple a control call rides, or a refusal naming why the credential cannot. A user

@@ -388,8 +388,9 @@ async function spawnDetached(
   const on = onInstanceOrExit(values.on, "cotal spawn <persona> --detach");
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
+  // `--on` keeps the pin on that path too.
   const flags = { space: values.space, server: values.server, creds: values.creds };
-  const t = (values.creds === undefined ? await resolveSeatControlTarget(flags) : undefined)
+  const t = (values.creds === undefined ? await resolveSeatControlTarget(flags, on) : undefined)
     ?? await resolveControlTarget(flags, "control-caller-privileged", on);
   let policy: typeof t.policy;
   try {
