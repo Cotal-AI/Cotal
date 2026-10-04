@@ -1,5 +1,0 @@
----
-"@cotal-ai/connector-hermes": patch
----
-
-The Hermes connector accepts `cotal spawn --resume <id>`. Before the seat joins the mesh, the launcher forks the named session out of the operator's Hermes profile (`HERMES_HOME`, or `~/.hermes`) into the seat's managed profile through Hermes' own session store, reading the source database read-only. The fork keeps the session's title, numbered `#N` the way `/branch` numbers a branch when the seat already holds that title from an earlier fork, and kept within Hermes' 100-character title limit. This works across the supported `hermes-agent` range, 0.18 included. Each mesh chat starts as a branch of that fork the first time the resumed seat uses it, so its first turn carries the source context; a chat holding history from an earlier seat of the same name moves to its branch too, and that history is kept under its own session. A missing or empty session is refused before the seat joins, a seat relaunched under the same name keeps its fork without reading the source again, and resume is refused together with `COTAL_HERMES_ADOPT_HOME`.

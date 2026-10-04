@@ -1,5 +1,19 @@
 # @cotal-ai/lang
 
+## 0.59.0
+
+### Patch Changes
+
+- acb713e: Keep the simulator in step with a program running behind the worker bridge. The bridge now reports when the thread has reacted to every message it was sent, and `SimHandler` waits for that before delivering its next wake, so a bridged simulation settles a `race` on the arm that finished first instead of the one declared first. Handlers gain an optional `useQuiescence` hook for this, and `RecordingHandler` forwards it, so a wrapped simulator keeps the same pacing. It returns a release that the bridge calls when it closes, including when the worker fails to start, so a `SimHandler` used for one bridged run can be reused for another run afterwards.
+- 77e2654: The record and array builtins refuse an argument of another kind in the language, so a program can no longer branch on an answer the host made up for a value it was never meant to take.
+
+  Each of these builtins read its record or array argument through a host operation that answers for any kind. Measured before the fix, on both engines: `map(5, f)` and `keys(5)` answered `[]`, `every(5, f)` answered true, `pick(5)` answered undefined, `has(f, "length")` answered true off the implementation's function wrapper, `keys("ab")` answered index strings, `concat("a", [1])` answered `"a1"` past L4018, and `keys(null)` refused with the host's error text.
+
+  `keys`, `values`, `entries`, `has` and both arguments of `merge` now take a record, and `map`, `filter`, `find`, `some`, `every`, `sort`, `slice`, `join`, `reverse`, `unique`, `sum`, `pick` and the first argument of `concat` take an array. Every other kind, a string, `null` and `undefined` included, is refused with L4016 naming the builtin and the kind, before the host is reached, as `len` already was. The refusal is catchable. The second argument of `concat` keeps the method's meaning. The spec's library-failure section, its replay posture and its change log carry the rule in the same change.
+
+- 608f5f4: Re-attach doc comments that had drifted away from the declarations they document. A `/** */` block followed directly by another one documented nothing, so editor hovers and the published type declarations showed no doc for the intended declaration (for example `Manager`, the `plane3` field and `AclResolver`). Each such block now sits above its declaration, is merged into the block it duplicated, or is removed when its declaration no longer exists. A new `pnpm check:doc-comments` check, run as part of `check:docsbundle`, refuses a doc block followed directly by another in shipped source.
+- 7b39a0b: `spawn` in a workflow program accepts `events`, the workflow form of `cotal spawn --no-events`. `events: false` starts the seat without its AG-UI event plane, so a hosted run can now start a connector that publishes none, such as Hermes. Before this the option was refused as an unknown key (L3011), and the same spawn without it was refused by the manager because an omitted `events` arms the plane. A value that is not a boolean is refused at the spawn. Like `supervise`, the option is launch policy and is not part of the step's input hash.
+
 ## 0.58.0
 
 ### Patch Changes

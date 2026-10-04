@@ -1,5 +1,77 @@
 # cotal-ai
 
+## 0.59.0
+
+### Patch Changes
+
+- 8f1a441: The comment on the release workflow's `install-probe` job now says that the probe packs each runtime sibling of `cotal-ai` and checks each tarball's declared entry points. It used to say the siblings were not packed. The release docs describe the probe too. Behaviour is unchanged.
+- ba16b69: A failed `smoke:manager-stop-reap` run now prints the state of the delivery daemon it started: whether it exited, with its exit code and signal, or is still running, read again after the rail request so a daemon that dies during it is not reported as running, what one fresh request on its `ctl.delivery-admin` rail returns, and the tail of its output. A rail timeout alone read the same for a dead, a stalled and a slow daemon, so every red run had to be investigated from scratch.
+- 6bc9e7b: Gate the GitHub Release on installing `cotal-ai@<version>` from the registry and running the binary, polled until a deadline with every failure before it treated as unknown and retried, so a version that passes the presence check but cannot install is no longer announced.
+- 06a8bca: Tag the GitHub Release at the commit that first carried the version, which is the tree the packages were published from. A publishing run whose closure gate ended `UNSETTLED` left the Release to the next push that saw closure, and that push tagged itself, so the Release named a commit carrying changes absent from the published tarballs. The step resolves the oldest commit on `main` that carries the version, so a version that was reverted and carried again keeps its first commit, and it fails when it cannot read that history or cannot resolve that commit.
+- Updated dependencies [70bcfe3]
+- Updated dependencies [1cf7f72]
+- Updated dependencies [fe90b42]
+- Updated dependencies [5bec8b2]
+- Updated dependencies [6c01470]
+- Updated dependencies [904f4b2]
+- Updated dependencies [cfc3b95]
+- Updated dependencies [b669a73]
+- Updated dependencies [972a76d]
+- Updated dependencies [350c87b]
+- Updated dependencies [608f5f4]
+- Updated dependencies [99eda4b]
+- Updated dependencies [43c4179]
+- Updated dependencies [0d267ab]
+- Updated dependencies [8316efb]
+- Updated dependencies [4a12111]
+- Updated dependencies [6662337]
+- Updated dependencies [569cb6f]
+- Updated dependencies [b4c69bf]
+- Updated dependencies [f485c49]
+- Updated dependencies [7b39a0b]
+- Updated dependencies [5f13124]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [c389563]
+- Updated dependencies [efe37a9]
+- Updated dependencies [4d2dcae]
+- Updated dependencies [57d77ab]
+- Updated dependencies [06f48f4]
+- Updated dependencies [eb2681e]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [438e9ed]
+- Updated dependencies [446ed23]
+- Updated dependencies [15c16ff]
+- Updated dependencies [61d6365]
+- Updated dependencies [8ce6be3]
+- Updated dependencies [08194ec]
+- Updated dependencies [aa12a1a]
+- Updated dependencies [d90f9f2]
+- Updated dependencies [499bd8a]
+- Updated dependencies [b84dd9a]
+- Updated dependencies [569cb6f]
+- Updated dependencies [ffdb45c]
+- Updated dependencies [d0b1da3]
+- Updated dependencies [b5c3619]
+- Updated dependencies [37075a2]
+- Updated dependencies [8d8d69a]
+- Updated dependencies [add9984]
+- Updated dependencies [62b004b]
+- Updated dependencies [6cf0ca1]
+- Updated dependencies [bd8ad18]
+- Updated dependencies [88f5128]
+- Updated dependencies [c7bfc2d]
+- Updated dependencies [63b8bb7]
+- Updated dependencies [6145abc]
+  - @cotal-ai/auth@0.59.0
+  - @cotal-ai/cli@0.59.0
+  - @cotal-ai/manager@0.59.0
+  - @cotal-ai/workspace@0.59.0
+  - @cotal-ai/core@0.59.0
+  - @cotal-ai/runtime@0.59.0
+  - @cotal-ai/delivery@0.59.0
+  - @cotal-ai/connector-core@0.59.0
+
 ## 0.58.0
 
 ### Patch Changes

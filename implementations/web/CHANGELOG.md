@@ -1,5 +1,14 @@
 # @cotal-ai/web
 
+## 0.59.0
+
+### Patch Changes
+
+- f5cbc2d: `docs/watch-a-mesh.md` now quotes the all-activity deadline reason as the server builds it, `the read did not finish within <deadline>ms`, and states the 8000 ms default in its prose. The page quoted the concrete `8000ms`, which no shipped source string holds, so the docs literal gate failed on every branch.
+- 5d98406: The dashboard's all-activity page now says why each missing source is missing. A partial page carries `reasons`, keyed by source, and the server's partial line and the page's stale marker repeat it. A read the deadline cut says it did not finish within the deadline, and a read that was refused says so with its error, so a chat read refused for exceeding the broker's `max_payload` no longer looks the same as one that ran out of time.
+- d5e20e0: The dashboard's all-activity backfill now records its ordering rule where the page is sorted and in the dashboard docs. The chat half is the newest messages by broker arrival, the merged page with direct messages is ordered by the sender's `ts` because that is the only key the two streams share, and messages with equal `ts` keep stream order with chat before direct messages. Behaviour is unchanged.
+- 608f5f4: Re-attach doc comments that had drifted away from the declarations they document. A `/** */` block followed directly by another one documented nothing, so editor hovers and the published type declarations showed no doc for the intended declaration (for example `Manager`, the `plane3` field and `AclResolver`). Each such block now sits above its declaration, is merged into the block it duplicated, or is removed when its declaration no longer exists. A new `pnpm check:doc-comments` check, run as part of `check:docsbundle`, refuses a doc block followed directly by another in shipped source.
+
 ## 0.58.0
 
 ## 0.57.0
