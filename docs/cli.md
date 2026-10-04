@@ -1498,11 +1498,13 @@ that keeps failing to start stops after 20 attempts, about seven minutes at 20 s
 the unit is left `failed` instead of restarting forever. One such failure is deliberate. After an
 unclean stop, a manager that cannot verify eviction of its predecessor's credentials exits 1 and
 leaves the issuance gate frozen, because starting without that proof could let two incarnations
-serve at once (SPEC 13.1). The log names the cause. When the delivery daemon is down, it says the
-daemon is not reachable on the `ctl.delivery-admin` rail. When the daemon answers and refuses, for
-example because the space is missing a `$SYS` cred, it prints the daemon's own reason and repair
-step. Fix that cause, then run `systemctl --user reset-failed <unit>` and `systemctl --user start
-<unit>`. The macOS agent has no start limit: launchd's `ThrottleInterval` only spaces restarts.
+serve at once (SPEC 13.1). It first waits up to 60 seconds for the delivery daemon to answer, so a
+daemon that is still starting does not fail the start. The log names the cause. When the delivery
+daemon is down, it says the daemon is not reachable on the `ctl.delivery-admin` rail. When the
+daemon answers and refuses, for example because the space is missing a `$SYS` cred, it prints the
+daemon's own reason and repair step. Fix that cause, then run `systemctl --user reset-failed
+<unit>` and `systemctl --user start <unit>`. The macOS agent has no start limit: launchd's
+`ThrottleInterval` only spaces restarts.
 
 `service status` reports the unit state from systemd/launchd, the manager's own health read from
 its pidfile at the unit's recorded root, and the machine facts a hosting side asks for:

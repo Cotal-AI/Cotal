@@ -82,7 +82,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
+import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment, type ContinuityAssignment } from "./launch.js";
@@ -995,6 +995,12 @@ function isAbsentDeliveryAdmin(msg: string): boolean {
   return /no responders|\b503\b/i.test(msg);
 }
 
+/** The store challenge went UNANSWERED while a delivery daemon exists: the rail timed out, or it had
+ *  no responder while the lease row names a holder. Both are what a daemon that is starting or
+ *  re-acquiring its lease looks like, so manager boot waits them out (#871); a renewal pass still
+ *  refuses on the first one. */
+class DeliveryAdminUnanswered extends Error {}
+
 /**
  * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
  * It serves control requests on the "manager" service and spawns/kills agents
@@ -1679,8 +1685,15 @@ export class Manager {
     // `reloadCreds` adoption on the delivery-admin rail, and persist the audit record doctor renders.
     if (this.auth) {
       // #1634: a space may be served by several managers, so ownership of the daemon's credential
-      // renewal is decided here rather than by being the only manager able to start.
-      await this.claimDaemonRenewalOwnership();
+      // renewal is decided here rather than by being the only manager able to start. #871: a daemon
+      // that is still binding or re-acquiring its lease leaves this challenge unanswered for a few
+      // seconds, so boot waits that out instead of exiting over a daemon about to answer.
+      await untilDeliveryAdminAnswers(
+        DELIVERY_ADMIN_BOOT_WAIT_MS,
+        () => this.claimDaemonRenewalOwnership(),
+        (reason, delayMs) => console.error(`! delivery-admin rail did not answer the store challenge (${reason}); retrying in ${delayMs / 1000}s`),
+        (e) => e instanceof DeliveryAdminUnanswered,
+      );
       // ARMED BEFORE the first remint, not after. That first `renewDaemonCreds()` re-signs through
       // the SecretStore, and a slow or contended store makes the one pass outlast the lease's
       // MANAGER_LEASE_TTL_MS. Arming afterwards leaves the whole first remint unprotected: the lease
@@ -1812,7 +1825,8 @@ export class Manager {
     } catch (e) {
       const msg = (e as Error).message;
       if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow();
-      throw new Error(`could not challenge the delivery daemon's SecretStore: ${msg}`);
+      const failure = `could not challenge the delivery daemon's SecretStore: ${msg}`;
+      throw /timeout/i.test(msg) ? new DeliveryAdminUnanswered(failure) : new Error(failure);
     }
     if (!reply.ok)
       throw new Error(
@@ -1889,7 +1903,7 @@ export class Manager {
     }
     const holder = entry?.info.holder;
     if (holder !== undefined && holder !== "")
-      throw new Error(
+      throw new DeliveryAdminUnanswered(
         `the delivery-admin rail reported no responder while the delivery lease names a holder ` +
           `(${holder}) - absence cannot be read off the rail alone, and nothing reminted`,
       );
@@ -6858,7 +6872,7 @@ export class Manager {
     try {
       report = await reconcileEndpointGate({
         kv: authKv, space: this.space, endpoint: MANAGER_ENDPOINT, instanceId,
-        probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log }),
+        probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log, unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }),
         evictHolders: makeManagerEndpointHolderEvictor({ space: this.space, servers, auth, log }),
         log,
         recordsKv,
@@ -7132,7 +7146,7 @@ export class Manager {
       // error text — a crash-restart never silently skips eviction (no-fallbacks).
       const barrier = endpointRegistrationBarrier(authKv, this.space, {
         endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: registrationOpId,
-        ...(auth ? { evict: makeManagerEndpointEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line) }) } : {}),
+        ...(auth ? { evict: makeManagerEndpointEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) } : {}),
       });
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
       const { registrationRevision } = await registerServiceInstance(recordsKv, {

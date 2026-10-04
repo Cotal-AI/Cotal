@@ -24,7 +24,8 @@
  * unreachable rail reads it again, so the refusal names what is blocking the rail instead of always
  * advising a restart (#1062). Those reads are diagnostic only: they change the copy, never the verdict.
  */
-import { CotalEndpoint, mintCreds, newIdentity, parsePrincipalLivenessResult, type DeliveryLeaseInfo, type SpaceAuth } from "@cotal-ai/core";
+import { CotalEndpoint, mintCreds, newIdentity, parsePrincipalLivenessResult, type ControlReply, type DeliveryLeaseInfo, type SpaceAuth } from "@cotal-ai/core";
+import { untilDeliveryAdminAnswers } from "./endpoint-evict.js";
 import type { HolderLiveness } from "./reconcile-gate.js";
 
 /**
@@ -157,28 +158,40 @@ export function makeManagerHolderLivenessProbe(opts: {
   servers: string;
   auth: SpaceAuth;
   log: (line: string) => void;
+  /** How long an UNREACHABLE rail is retried before the probe answers `unestablishable` (#871).
+   *  Manager boot passes a wait; the operator's `cotal reconcile-gate` answers on one attempt. */
+  unreachableWaitMs?: number;
 }): (principal: string) => Promise<HolderLiveness> {
   return async (principal: string): Promise<HolderLiveness> => {
-    // Read before the query so a failed query can be pinned to the holder it could have reached.
-    const leaseBefore = await readDeliveryLeaseForDiagnosis(opts);
-    const id = newIdentity();
-    let ep: CotalEndpoint | undefined;
+    // Read before each query so a failed query can be pinned to the holder it could have reached.
+    let leaseBefore = { state: "absent" } as DeliveryLeaseReading;
+    const ask = async (): Promise<ControlReply> => {
+      leaseBefore = await readDeliveryLeaseForDiagnosis(opts);
+      const id = newIdentity();
+      let ep: CotalEndpoint | undefined;
+      try {
+        const creds = await mintCreds(opts.auth, id, "endpoint-evictor", { expiresInSeconds: 60 });
+        ep = new CotalEndpoint({
+          space: opts.space,
+          servers: opts.servers,
+          creds,
+          card: { id: id.id, name: "manager-holder-liveness", kind: "endpoint" },
+          channels: [],
+          consume: false,
+          watchChannels: false,
+          watchPresence: false,
+          registerPresence: false,
+        });
+        ep.on("error", () => {});
+        await ep.start();
+        return await ep.requestDeliveryAdmin("principalLiveness", { principal }, 15_000);
+      } finally {
+        await ep?.stop().catch(() => {});
+      }
+    };
     try {
-      const creds = await mintCreds(opts.auth, id, "endpoint-evictor", { expiresInSeconds: 60 });
-      ep = new CotalEndpoint({
-        space: opts.space,
-        servers: opts.servers,
-        creds,
-        card: { id: id.id, name: "manager-holder-liveness", kind: "endpoint" },
-        channels: [],
-        consume: false,
-        watchChannels: false,
-        watchPresence: false,
-        registerPresence: false,
-      });
-      ep.on("error", () => {});
-      await ep.start();
-      const r = await ep.requestDeliveryAdmin("principalLiveness", { principal }, 15_000);
+      const r = await untilDeliveryAdminAnswers(opts.unreachableWaitMs ?? 0, ask, (reason, delayMs) =>
+        opts.log(`manager-holder-liveness: ${principal}: the ctl.delivery-admin rail did not answer (${reason}); retrying in ${delayMs / 1000}s`));
       if (!r.ok)
         return {
           state: "unestablishable",
@@ -199,8 +212,6 @@ export function makeManagerHolderLivenessProbe(opts: {
           `${deliveryLeaseFacts(lease, opts.auth.account.pub)}. ${unansweredRailBlocker(leaseBefore, lease)}. ` +
           `Without the liveness oracle the freeze-holder "${principal}" cannot be proven gone, and this repair never infers death from silence`,
       };
-    } finally {
-      await ep?.stop().catch(() => {});
     }
   };
 }

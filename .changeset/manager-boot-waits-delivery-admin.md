@@ -1,0 +1,5 @@
+---
+"@cotal-ai/manager": patch
+---
+
+A manager that starts while the delivery daemon is still binding, or while the daemon has stepped back to re-check its lease, now waits up to 60 seconds for the `ctl.delivery-admin` rail to answer instead of exiting on the first unanswered request. The wait covers the three boot steps that need the daemon: the SecretStore challenge, the boot self-heal's freeze-holder liveness check, and the re-registration's verified eviction of the superseded serve family. Before, `cotal up` could start a manager inside that window, the manager exited with `could not challenge the delivery daemon's SecretStore` or with `re-registration could not revoke + verify-evict the superseded serve family; the gate is left frozen`, and nothing restarted it until an operator ran `cotal up` again. A daemon that answers and refuses still fails the start at once, and a daemon that stays silent past the wait still fails it with the same message as before. Renewal passes and `cotal reconcile-gate` keep their single attempt.
