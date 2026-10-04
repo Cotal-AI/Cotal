@@ -32,8 +32,8 @@
     {
       "name": "recallChannel stops reporting the replay=off gate, so an ack-dropped channel reads as an empty, complete window",
       "file": "packages/core/src/endpoint.ts",
-      "find": "if (!policy.replay) return { messages: [], dropped: true };",
-      "replace": "if (!policy.replay) return { messages: [], dropped: false };",
+      "find": "if (!policy.replay) return { messages: [], seqs: [], dropped: true, unanswered: true };",
+      "replace": "if (!policy.replay) return { messages: [], seqs: [], dropped: false, unanswered: false };",
       "expectRed": "recall REPORTS the replay=off channel as dropped, not silently",
       "cell": "recall REPORTS the replay=off channel as dropped, not silently",
       "note": "The defect exactly as it shipped: `recallChannel` still correctly returns no messages for a replay=off channel (the gate itself holds -- the sibling cell `recall GATES OUT the replay=off channel` stays green), but claims the window was complete instead of naming the channel in `droppedChannels`.",

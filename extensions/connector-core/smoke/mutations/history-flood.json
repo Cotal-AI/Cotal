@@ -22,21 +22,21 @@
     {
       "name": "M1 the shipped defect: historical no longer forces pull-only",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "(!item.mentionsMe && (item.historical || this.classificationUnsafe))",
-      "replace": "(!item.mentionsMe && this.classificationUnsafe)",
+      "find": "(!item.mentionsMe && (item.historical || automaticReply || this.classificationUnsafe))",
+      "replace": "(!item.mentionsMe && (automaticReply || this.classificationUnsafe))",
       "expectRed": "automatic delivery after a 119-message backfill is EXACTLY the live work order"
     },
     {
       "name": "M2 the mention exemption is lost: directed catch-up classified as noise",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "(!item.mentionsMe && (item.historical || this.classificationUnsafe))",
-      "replace": "(item.historical || (!item.mentionsMe && this.classificationUnsafe))",
+      "find": "(!item.mentionsMe && (item.historical || automaticReply || this.classificationUnsafe))",
+      "replace": "(item.historical || (!item.mentionsMe && (automaticReply || this.classificationUnsafe)))",
       "expectRed": "the historical mention stays automatic while plain history does not"
     },
     {
       "name": "M3 the rule widens to all channel ambient: live traffic stops waking the seat",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "(!item.mentionsMe && (item.historical || this.classificationUnsafe))",
+      "find": "(!item.mentionsMe && (item.historical || automaticReply || this.classificationUnsafe))",
       "replace": "!item.mentionsMe",
       "expectRed": "live channel ambient remains automatic under open attention"
     }

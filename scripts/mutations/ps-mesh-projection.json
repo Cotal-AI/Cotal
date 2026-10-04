@@ -8,7 +8,7 @@
     {
       "name": "the row carries a constant LIVE status instead of the roster's",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "find": "        mesh: seen?.status ?? \"absent\",\n",
       "replace": "        mesh: \"idle\" as const,\n",
       "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
       "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
@@ -18,7 +18,7 @@
     {
       "name": "the row carries a constant ABSENT instead of the roster's",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "find": "        mesh: seen?.status ?? \"absent\",\n",
       "replace": "        mesh: \"absent\" as const,\n",
       "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
       "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
@@ -28,7 +28,7 @@
     {
       "name": "the roster is keyed by the agent's principal id instead of its name",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "find": "        mesh: seen?.status ?? \"absent\",\n",
       "replace": "        mesh: roster.get(a.id)?.status ?? \"absent\",\n",
       "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
       "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
@@ -38,8 +38,8 @@
     {
       "name": "the absent sentinel is dropped, so a row with no roster entry carries nothing",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
-      "replace": "        mesh: roster.get(a.name)?.status,\n",
+      "find": "        mesh: seen?.status ?? \"absent\",\n",
+      "replace": "        mesh: seen?.status,\n",
       "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
       "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
@@ -48,8 +48,8 @@
     {
       "name": "only the OFFLINE status is rewritten, so an unavailable principal renders live",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
-      "replace": "        mesh: roster.get(a.name)?.status === \"offline\" ? \"idle\" : (roster.get(a.name)?.status ?? \"absent\"),\n",
+      "find": "        mesh: seen?.status ?? \"absent\",\n",
+      "replace": "        mesh: seen?.status === \"offline\" ? \"idle\" : (seen?.status ?? \"absent\"),\n",
       "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
       "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
       "note": "A joined row is idle and a never-joining row is absent, so a rewrite that touches only offline agrees with both and needs a managed row that actually reaches offline.",
@@ -58,8 +58,8 @@
     {
       "name": "only the WORKING status is rewritten, so a row misreports what its agent is doing",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
-      "replace": "        mesh: roster.get(a.name)?.status === \"working\" ? \"idle\" : (roster.get(a.name)?.status ?? \"absent\"),\n",
+      "find": "        mesh: seen?.status ?? \"absent\",\n",
+      "replace": "        mesh: seen?.status === \"working\" ? \"idle\" : (seen?.status ?? \"absent\"),\n",
       "expectRed": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
       "cell": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
       "note": "The fixture walks the whole union, so a rewrite aimed at working has nowhere to hide either.",
@@ -68,8 +68,8 @@
     {
       "name": "only the WAITING status is rewritten, so a row misreports what its agent is doing",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
-      "replace": "        mesh: roster.get(a.name)?.status === \"waiting\" ? \"idle\" : (roster.get(a.name)?.status ?? \"absent\"),\n",
+      "find": "        mesh: seen?.status ?? \"absent\",\n",
+      "replace": "        mesh: seen?.status === \"waiting\" ? \"idle\" : (seen?.status ?? \"absent\"),\n",
       "expectRed": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
       "cell": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
       "note": "The fixture walks the whole union, so a rewrite aimed at waiting has nowhere to hide either.",

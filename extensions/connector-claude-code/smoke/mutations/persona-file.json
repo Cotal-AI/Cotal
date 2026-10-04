@@ -15,16 +15,16 @@
     {
       "name": "Claude falls back to publishing the persona body in argv",
       "file": "extensions/connector-claude-code/src/extension.ts",
-      "find": "        args.push(\"--append-system-prompt-file\", personaFile);",
-      "replace": "        args.push(\"--append-system-prompt\", def.persona);",
+      "find": "      args.push(\"--append-system-prompt-file\", writeLaunchArtifact(artifacts, \"cotal-claude-persona-\", \"persona.md\", def.persona));",
+      "replace": "      args.push(\"--append-system-prompt\", def.persona);",
       "expectRed": "the persona body is absent from every Claude argv token",
       "cell": "the persona body is absent from every Claude argv token"
     },
     {
       "name": "Claude reopens the private persona file to group and other readers",
       "file": "extensions/connector-claude-code/src/extension.ts",
-      "find": "        writeSecretFile(personaFile, def.persona);",
-      "replace": "        writeSecretFile(personaFile, def.persona); process.getBuiltinModule(\"node:fs\").chmodSync(personaFile, 0o644);",
+      "find": "      args.push(\"--append-system-prompt-file\", writeLaunchArtifact(artifacts, \"cotal-claude-persona-\", \"persona.md\", def.persona));",
+      "replace": "      const personaFile = writeLaunchArtifact(artifacts, \"cotal-claude-persona-\", \"persona.md\", def.persona); process.getBuiltinModule(\"node:fs\").chmodSync(personaFile, 0o644);\n      args.push(\"--append-system-prompt-file\", personaFile);",
       "expectRed": "the persona carrier is owner-private",
       "cell": "the persona carrier is owner-private"
     }

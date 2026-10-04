@@ -186,7 +186,8 @@ try {
   const rootPackage = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as {
     scripts?: { check?: string };
   };
-  const checkSteps = (rootPackage.scripts?.check ?? "").split("&&").map((step) => step.trim());
+  // `check` is `node scripts/check.mjs pnpm <script> pnpm <script> ...`, so each step starts at `pnpm`.
+  const checkSteps = (rootPackage.scripts?.check ?? "").split(/\s+(?=pnpm\s)/).map((step) => step.trim());
   const guardStep = checkSteps.indexOf("pnpm smoke:sandbox-guard");
   const firstLiveStep = checkSteps.findIndex((step) => /pnpm smoke:[^ ]*(?::live|-live)(?:\s|$)/.test(step));
   assert.notEqual(guardStep, -1, "check reaches smoke:sandbox-guard");
