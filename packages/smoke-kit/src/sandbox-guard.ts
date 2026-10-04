@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
+import { watchSandboxRoot } from "./stack-watchdog.js";
 
 const smokeSandboxAnchor: unique symbol = Symbol("smokeSandboxAnchor");
 
@@ -100,6 +101,8 @@ function sameDirectory(expected: RecordedDirectory, observedPath: string): "same
  * The owned `.cotal` directory is load-bearing: it terminates `findCotalRoot` inside the scratch root
  * instead of letting a bare `down` walk upward into an operator checkout. Later guards inspect only
  * these exact recorded paths and identities. They never resolve a mesh target or search ancestors.
+ * Recording also hands the root to {@link watchSandboxRoot}, so a stack started in it does not
+ * outlive the suite.
  */
 export function recordSmokeSandbox(input: {
   root: string;
@@ -113,7 +116,7 @@ export function recordSmokeSandbox(input: {
   mkdirSync(marker, { recursive: true });
   mkdirSync(cotalHome, { recursive: true });
   mkdirSync(xdgConfigHome, { recursive: true });
-  return Object.freeze({
+  const anchor: SmokeSandboxAnchor = Object.freeze({
     [smokeSandboxAnchor]: Object.freeze({
       root: directoryIdentity("root", root),
       marker: directoryIdentity("root ownership marker", marker),
@@ -121,6 +124,8 @@ export function recordSmokeSandbox(input: {
       xdgConfigHome: directoryIdentity("XDG_CONFIG_HOME", xdgConfigHome),
     }),
   });
+  watchSandboxRoot(anchor[smokeSandboxAnchor].root.physicalPath);
+  return anchor;
 }
 
 function assertRecordedSandboxDown(

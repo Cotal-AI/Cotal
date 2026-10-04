@@ -20,6 +20,15 @@ Use `SMOKE_BROKER_TOKEN` as the prefix for a broker's temporary directory and re
 with `teardownOnSignal`. The token records its owning process. Normal-path cleanup still belongs
 to the suite.
 
+`recordSmokeSandbox` also owns every process that works inside the recorded root. The first
+record starts a small `sh` watchdog that outlives the suite. When the suite's process ends, however
+it ends, SIGKILL included, the watchdog kills whatever still works in a recorded root, including the
+broker, manager and delivery daemon that `cotal up --detach` starts detached. A stack the suite
+already stopped leaves nothing to kill. A hook inside the suite cannot do this: tsx turns a signal
+the suite does not acknowledge within a few tens of milliseconds into SIGKILL, and a suite waiting
+in `spawnSync` cannot acknowledge one. The watchdog finds processes through Linux procfs, so
+nothing is watched on other platforms.
+
 The CI shard runner also assigns each suite a `SMOKE_BROKER_SCOPE`. This non-secret test marker
 is separate from `COTAL_*` connection settings, so their normal scrub leaves it intact. The token
 carries a compact digest of the scope; Linux descendants can also recover it from ancestor
