@@ -72,7 +72,7 @@ import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
 import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
-import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
+import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
@@ -1436,6 +1436,10 @@ export interface AuthServiceHandle extends HostedServiceHandle {
    *  over this context's own connection, whose grant is that instance's `describe` and `status`;
    *  neither the connection nor its credential leaves the process. */
   platformControlReadiness?(instanceId: string): Promise<EpAttributedReply>;
+  /** The manager gate the delegated user intent decisions read (SPEC 13.16). Present only with
+   *  `platformControl`. It reads over the context's own authority connection, so a host opens no
+   *  second data-account connection, and it returns the gate alone. */
+  observeManagerGate?: ObserveManagerGate;
 }
 
 /** The optional public exchange face: the CLI's `--exchange-public-*`, `--advertised-server` and
@@ -1717,6 +1721,10 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
       });
       return completeRemoteRetainedAgentValidation(retained, holder.owner, authority);
     };
+    const refuseUnlessReady = () => {
+      if (state !== "ready" || closePromise !== undefined)
+        throw new EpEnvelopeError("unavailable", "auth-service context is not ready");
+    };
     const platformDeps = platformControl === undefined ? undefined : {
       space,
       accountPublicKey: keys.dataAccount.pub,
@@ -1725,8 +1733,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
       observeManagerInstance: plane.observeManagerInstance,
     };
     const readStatus = (owner: string) => async (instanceId: string): Promise<EpAttributedReply> => {
-      if (state !== "ready" || closePromise !== undefined)
-        throw new EpEnvelopeError("unavailable", "auth-service context is not ready");
+      refuseUnlessReady();
       if (reader?.instanceId !== instanceId) {
         void reader?.client.then((c) => c.close(), () => {});
         const caller = { owner, actor: `manager_ready_${instanceId}`, uid: mintLifecycleUid() };
@@ -1754,8 +1761,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
         platformControlAuthority: makePlatformControlAuthority({
           ...platformDeps,
           dispatch: (holder, request) => {
-            if (state !== "ready" || closePromise !== undefined)
-              throw new EpEnvelopeError("unavailable", "auth-service context is not ready");
+            refuseUnlessReady();
             switch (request.kind) {
               case "manager-service-authority": return plane.issueManagerServiceAuthority({ ...holder, request });
               case "manager-service-maintenance": return plane.maintainRemoteManager({ ...holder, request });
@@ -1768,6 +1774,10 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
           },
         }),
         platformControlReadiness: makePlatformControlReadiness({ ...platformDeps, readStatus: readStatus(platformDeps.owner) }),
+        observeManagerGate: async (instanceId: string) => {
+          refuseUnlessReady();
+          return (await plane.observeManagerInstance(instanceId)).gate;
+        },
       } : {}),
       readiness(): HostedServiceState {
         if (state === "unavailable") return { state, context, cause: cause ?? "auth-service context is unavailable" };

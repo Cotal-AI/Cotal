@@ -727,6 +727,7 @@ payload. `authorizeAdmin` is unchanged.
 | `RemoteDelegatedUserIntentExecutionRequest`, `RemoteDelegatedUserIntentExecutionResult`, `parseDelegatedUserIntentRequest`, `parseRemoteDelegatedUserIntentExecutionRequest` | `@cotal-ai/core` | shipped |
 | `parseRemoteDelegatedUserIntentExecutionResult`, `resolveReadAcl` | `@cotal-ai/core` | shipped |
 | `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `DelegatedUserIntentIncarnation`, `DelegatedUserIntentFlights`, `joinOrStartDelegatedUserIntent`, `delegatedUserIntentHoldsAlias`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | shipped; stock dispatch refuses both kinds as `unimplemented` |
+| `AuthServiceHandle.observeManagerGate` | `@cotal-ai/auth` | shipped; present with `platformControl` |
 | `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | shipped |
 | `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar, the platform control door | `@cotal-ai/auth`, `@cotal-ai/core` | absent at this branch's base; shipped on main at `6ca4d8e0f` (#2408) |
 | `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `activateLifecycleAtUid`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged |
