@@ -350,7 +350,11 @@ A pinned manager with no spare-capability record is not signalled by bare `cotal
 down manager`. The missing record can mean either that the manager predates capability reporting or
 that a current manager cannot detach its agents. Stop each managed agent explicitly, then run `cotal
 down --with-agents` from the mesh root to stop the whole stack. An older manager does not understand
-the reap request, which is why the agents must already be stopped.
+the reap request, which is why the agents must already be stopped. The built-in `pty` runtime keeps
+agents inside the manager process, so it cannot detach them. Its manager publishes the record until
+its first agent spawn and withdraws it before that spawn for the rest of its life, so a stack whose
+manager never started an agent stops with bare `cotal down`. An agent spawn that arrives while `cotal
+down` is stopping that manager is refused.
 
 Bare `cotal down` inventories by pidfile. When this folder's registered broker answers and no
 `nats.pid` records it, the command does not say nothing is running. It names the space and the

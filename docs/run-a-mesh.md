@@ -292,7 +292,9 @@ join the same surface; `cotal down` with no names retains whole-stack behavior a
 leaves managed agents running as unmanaged OS processes. `cotal down --with-agents`
 is the previous reap. If a pinned manager has no spare-capability record, stop its managed agents
 explicitly before running that whole-stack command. The record is also absent when a manager predates
-capability reporting, and that older manager may not understand the reap request.
+capability reporting, and that older manager may not understand the reap request. A manager on the
+built-in `pty` runtime withdraws its record before its first agent spawn, so this applies to it only
+once it has started an agent.
 
 ## Remote supervised agents
 
