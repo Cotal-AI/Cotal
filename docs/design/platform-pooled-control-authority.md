@@ -75,8 +75,9 @@ method and not an HTTP route. Three facts about the shipped hosted path decide t
   `epcred` rows, and the issuer closures the human route reaches through its handler context.
   `AuthProvider` methods take `{ store, dir }` and run in the caller's process. The provider's
   authority methods are clients that start from this machine's human login and POST to a listener.
-- `startAuthService` writes no discovery file, and `AuthServiceHandle` exposes `url` but no
-  capability. Only `runAuthService` writes `auth-service.json` with the capability.
+- `startAuthService` writes no discovery file. Only `runAuthService` writes `auth-service.json`
+  with the capability. `AuthServiceHandle` carries the capability for the host's own loopback host
+  actions, and the door never uses or returns it.
 - The loopback capability alone authorizes the interactive and managed lifecycle-retirement doors.
   Exposing it on the hosted inputs or handle so a control worker can call a route would give that
   worker authority beyond its assignment.
@@ -189,6 +190,7 @@ export interface PlatformControlInput {
 
 export function startAuthService(inputs: HostedContextInputs & {
   port?: number;
+  publicFace?: PublicFaceInput;
   /** Present only in a platform composition. Absent: the handle has no service door. */
   platformControl?: PlatformControlInput;
   /** Trusted-host only. Forwarded unchanged to `openAuthAuthorityPlane`, which bounds it to
@@ -199,6 +201,8 @@ export function startAuthService(inputs: HostedContextInputs & {
 export interface AuthServiceHandle extends HostedServiceHandle {
   readonly url: string;
   readonly publicUrl?: string;
+  /** The per-start loopback capability. It stays in the authority process. */
+  readonly cap: string;
   /** The platform control door. Present only when `platformControl` was supplied. In-process and
    * typed: no route, no capability, no signer or capability in the result. */
   platformControlAuthority?<R extends PlatformControlInnerRequest>(
