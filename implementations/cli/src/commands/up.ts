@@ -1382,12 +1382,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
     // end while this broker serves on. Nothing else brings it back, and every static retirement then
     // fails on the ctl.delivery-admin rail and holds its name until an operator re-runs `cotal up`. A
-    // clean exit or SIGTERM/SIGINT is a deliberate stop (`cotal down delivery`) and stays stopped. A
-    // failed attempt waits out the lease TTL, the longest a dead holder's lease blocks its replacement.
+    // clean exit or SIGTERM/SIGINT is a deliberate stop (`cotal down delivery`) and stays stopped, also
+    // when it ends a replacement this loop is still waiting on: that attempt then fails, and retrying it
+    // would undo the stop. A failed attempt waits out the lease TTL, the longest a dead holder's lease
+    // blocks its replacement.
     const meshServing = () => !stopping && child.exitCode === null && child.signalCode === null;
     let restartingDelivery = false;
+    let deliveryStopped = false;
     const onDeliveryExit = (code: number | null, signal: NodeJS.Signals | null): void => {
-      if (restartingDelivery || !meshServing() || code === 0 || signal === "SIGTERM" || signal === "SIGINT") return;
+      if (code === 0 || signal === "SIGTERM" || signal === "SIGINT") {
+        deliveryStopped = true;
+        return;
+      }
+      if (restartingDelivery || !meshServing()) return;
       restartingDelivery = true;
       console.error(c.yellow(`! delivery daemon exited (${signal ? `signal ${signal}` : `code ${code}`}) while nats-server is running - restarting it`));
       void (async () => {
@@ -1395,7 +1402,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           let failure: string;
           try {
             const ensured = await ensureDelivery({ space, server, tls: transport.kind === "tls-required", onDeliveryExit });
-            // An exit that landed while this attempt was in flight was dropped above, so the record decides.
+            // An abnormal exit during this attempt was dropped above, so the record decides.
             if (deliveryUp(space)) {
               console.error(c.green(`✓ delivery daemon running again${ensured.pid !== undefined ? ` (pid ${ensured.pid})` : ""}`));
               break;
@@ -1404,6 +1411,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           } catch (e) {
             failure = (e as Error).message;
           }
+          if (deliveryStopped) break;
           console.error(c.yellow(`! delivery restart failed, retrying in ${LEASE_TTL_MS / 1000}s: ${failure}`));
           await new Promise((r) => setTimeout(r, LEASE_TTL_MS));
         }
