@@ -312,8 +312,9 @@ names on stderr both the store payloads it writes and any old generation it remo
 machine-wide re-seed or cleanup is visible when it happens. Those lines are provenance output. When a
 stderr write fails, at once or after waiting in a full pipe, the line is printed on stdout with the
 error and the reconcile still completes. If stdout fails too, the reconcile still completes and the
-run exits 1 instead of 0. A run whose stderr is closed or redirected away at launch keeps the write
-and loses the line.
+run exits 1 instead of 0. A line still waiting in a full stderr pipe when the run exits, as when the
+CLI exits on a closed stdout, is lost and also makes the run exit 1. A run whose stderr is closed or
+redirected away at launch keeps the write and loses the line.
 
 For how `cotal setup` populates the machine state and the plugin, and how the built-in connectors are
 seeded as removable extensions, see [setup internals](setup-internals.md).

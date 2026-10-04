@@ -10,7 +10,9 @@
  * EIO), at once or after waiting in a full pipe, the line is written to stdout instead with the
  * error named, and the stream's deferred `error` event is absorbed so it cannot crash the command
  * after its write. If stdout fails too, no channel is left to carry the line: the command still
- * finishes its work, and a run that would exit 0 exits 1, so the loss is never silent. The bound:
+ * finishes its work, and a run that would exit 0 exits 1, so the loss is never silent. A line still
+ * waiting in a full pipe when the process exits, as when the CLI exits at once on a closed stdout,
+ * is lost the same way and counts the same. The bound:
  * a stderr closed before the process starts is reopened by Node on /dev/null, which looks the same
  * as an operator's `2>/dev/null`, so the line is discarded where the operator sent it.
  */
@@ -33,6 +35,9 @@ export const provenance = {
 
 let absorbing = false;
 let unsaid = false;
+let watching = false;
+/** Writes still waiting in a full pipe: neither finished nor failed. An exit drops them unwritten. */
+const waiting = new Set<{ stream: NodeJS.WriteStream }>();
 
 /** Write one provenance line under the failure policy above: on stderr, else on stdout with the
  *  stderr error named, else counted as unsaid. A thrown value need not be an Error (`throw null`). */
@@ -50,31 +55,48 @@ function say(line: string): void {
 /** Write `text` to `stream`, calling `onFail` at most once if the write fails. A write can fail
  *  before it returns: it throws, or the stream is already `errored` (one that failed earlier in the
  *  same tick buffers the text and then drops it). A write left pending in a full pipe fails later,
- *  through its callback, which Node runs before the stream emits `error`. */
+ *  through its callback, which Node runs before the stream emits `error`; until it settles it is
+ *  `waiting`. One that left nothing buffered was written, though its callback runs on a later tick. */
 function send(stream: NodeJS.WriteStream, text: string, onFail: (failure: unknown) => void): void {
-  let failed = false;
-  const fail = (failure: unknown): void => {
-    if (failed) return;
-    failed = true;
-    onFail(failure);
+  const write = { stream };
+  let settled = false;
+  const settle = (): boolean => {
+    if (settled) return false;
+    settled = true;
+    waiting.delete(write);
+    return true;
   };
   try {
     stream.write(text, (e) => {
-      if (e) fail(e);
+      if (settle() && e) onFail(e);
     });
   } catch (e) {
-    fail(e);
+    if (settle()) onFail(e);
     return;
   }
-  if (stream.errored) fail(stream.errored);
+  if (stream.errored) {
+    if (settle()) onFail(stream.errored);
+  } else if (stream.writableLength > 0) {
+    waiting.add(write);
+    watchExit();
+  }
 }
 
-/** Neither channel carried a line, so the exit status is the only signal left. Set at exit, so it
- *  also holds when the command later resets `exitCode` or the CLI's stdout EPIPE handler exits 0. */
+/** Neither channel carried a line. */
 function lost(): void {
-  if (unsaid) return;
   unsaid = true;
+  watchExit();
+}
+
+/** The exit status is the only signal left for a line no channel carried, or one still waiting when
+ *  the process exits. A waiting write whose stream holds nothing more was flushed with its callback
+ *  still queued, so it does not count. Set at exit, so it also holds when the command later resets
+ *  `exitCode` or the CLI's stdout EPIPE handler exits 0. */
+function watchExit(): void {
+  if (watching) return;
+  watching = true;
   process.on("exit", (code) => {
-    if (code === 0) process.exitCode = 1;
+    for (const w of waiting) if (w.stream.writableLength > 0) unsaid = true;
+    if (unsaid && code === 0) process.exitCode = 1;
   });
 }
