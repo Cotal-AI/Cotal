@@ -138,7 +138,8 @@ relaunched under the same name keeps its fork and does not read your profile aga
 different session under that name is refused. That is why stopping the seat keeps its managed root,
 `$TMPDIR/cotal-hermes-<id>`: delete it yourself once you no longer need the fork. A fork an earlier
 build kept under `$TMPDIR/cotal-hermes-<space>-<name>` moves into that root on the seat's next
-launch, so it is continued and still refuses a different session. The launcher records the source session id, its
+launch, replacing a profile there that holds no fork, so it is continued and still refuses a
+different session. The launcher records the source session id, its
 title, and a SHA-256 of the transcript it copied next to the fork, prints them when it forks, and the
 manager reads that record into the seat's resume document, so `cotal ps --wide` shows them. Resume does not combine with
 `COTAL_HERMES_ADOPT_HOME`, because that profile already holds the session: continue it there with

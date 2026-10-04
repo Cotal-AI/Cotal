@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -37,13 +37,16 @@ export function hermesSeatHome(space: string, name: string): { root: string; hom
  * Move a `--resume` fork left under the earlier layout, `<tmp>/cotal-hermes-<space>-<name>/profiles/cotal-<id>`,
  * to the seat's {@link hermesSeatHome}, so a relaunch under the same name continues that fork and still
  * refuses a different session. Only the seat's own profile moves, because two seats could share that
- * earlier root, and only one holding a fork record, the one profile a stop keeps. Returns the path it
- * moved, or undefined when there was nothing to move or the seat already has a profile.
+ * earlier root, and only one holding a fork record, the one profile a stop keeps. A profile already at
+ * the new home without a fork record is replaced: it is disposable, left by a launch that failed or was
+ * killed before its stop, and keeping it would fork the session again. Returns the path it moved, or
+ * undefined when there was nothing to move or the seat already has a fork.
  */
 export function moveLegacyHermesFork(space: string, name: string): string | undefined {
   const { home } = hermesSeatHome(space, name);
   const legacy = join(tmpdir(), `cotal-hermes-${tok(space)}-${tok(name)}`, "profiles", `cotal-${seatId(space, name)}`);
-  if (existsSync(home) || !existsSync(join(legacy, HERMES_FORK_RECORD))) return undefined;
+  if (existsSync(join(home, HERMES_FORK_RECORD)) || !existsSync(join(legacy, HERMES_FORK_RECORD))) return undefined;
+  rmSync(home, { recursive: true, force: true });
   mkdirSync(dirname(home), { recursive: true });
   renameSync(legacy, home);
   return legacy;
