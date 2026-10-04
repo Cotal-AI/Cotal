@@ -1222,6 +1222,10 @@ export class Manager {
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
    * already past an earlier shutdown check cannot finish after stop() returns. */
   private startTask?: Promise<void>;
+  /** The one stop this manager runs, with the agent policy it was asked for. A stop takes seats out
+   *  of `agents` before they have exited, so a second teardown would find none and report success
+   *  while the first still waits on a live seat. */
+  private stopTask?: { withAgents: boolean; done: Promise<void> };
   /** Held as an instance field so broker-owning smokes can compress the schedule without changing
    *  production semantics. It is never a fence expiry: the durable non-retired row stays authoritative. */
   private staticReconcileRetryDelaysMs: readonly number[] = STATIC_RECONCILE_RETRY_DELAYS_MS;
@@ -2761,7 +2765,16 @@ export class Manager {
       throw new Error(`manager preservation shutdown incomplete: ${failures.join("; ")}`);
   }
 
-  async stop(options: ManagerStopOptions = {}): Promise<void> {
+  /** Every call joins the first stop and settles with it. A call that asks for a different
+   *  `withAgents` is refused, since the running stop has already applied its own policy. */
+  stop(options: ManagerStopOptions = {}): Promise<void> {
+    const withAgents = options.withAgents === true;
+    this.stopTask ??= { withAgents, done: this.stopOnce(withAgents) };
+    if (this.stopTask.withAgents === withAgents) return this.stopTask.done;
+    return Promise.reject(new Error(`manager is already stopping ${this.stopTask.withAgents ? "with" : "without"} its agents`));
+  }
+
+  private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
     this.staticReconcileStopping = true;
     const starting = this.startTask;
@@ -2788,7 +2801,7 @@ export class Manager {
     let seatFailure: Error | undefined;
     try {
       if (this.maintenanceState === "active" && !this.resumeRequired) {
-        if (options.withAgents) await this.teardownManagedAgents();
+        if (withAgents) await this.teardownManagedAgents();
         else {
           // An in-process seat cannot be detached from the process that is exiting, so the default
           // stop stops and deprovisions it as `withAgents` does instead of orphaning its footprint.

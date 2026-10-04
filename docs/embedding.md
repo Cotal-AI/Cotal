@@ -312,6 +312,9 @@ const mgr = new Manager({ space, servers: brokerUrl, workspaceRoot });
 await mgr.start();          // then wire your own SIGINT/SIGTERM -> mgr.stop()
 ```
 
+`stop()` runs once. A later call joins the stop in progress and settles with it, and a call that
+asks for a different `withAgents` than the running stop is refused.
+
 Unlike delivery, the manager is **not** a pre-minted-scoped-cred daemon (auth-service is also a
 signer: it holds fewer artifacts than the full trust bundle, but its data-account signing seed still
 grants complete data-account mint authority on compromise, so this is not least-privilege). On `start()`
