@@ -529,8 +529,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       const handoff = parseManagedLifecycleHandoff(handoffText, {
         space: values.space!, owner: values["expect-owner"]!, actor: values.name!, lifecycleUid: values["expect-lifecycle-uid"]!,
       });
-      redeemedEnrollment = handoffEnrollmentBundle(handoff);
-      if (!findMesh(handoff.space)) await registerEnrollmentMesh(redeemedEnrollment.stock!, resolvePath(values.config!, ".."));
+      const { bundle, stock } = handoffEnrollmentBundle(handoff);
+      redeemedEnrollment = { bundle, stock };
+      if (!findMesh(handoff.space)) await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."));
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);

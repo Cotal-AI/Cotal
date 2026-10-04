@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
-import { isIPv4 } from "node:net";
+import { isIPv4, isIPv6 } from "node:net";
 import { assertLifecycleToken } from "./subjects.js";
 
 /** The env var naming the handoff file inside the child. It carries a path, never a secret. */
@@ -69,11 +69,7 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
   } catch {
     throw new Error("the managed handoff's exchangeUrl is not a URL");
   }
-  // The `agent-bearer --exchange-url` transport rule: the actor token never crosses plaintext off
-  // the child's machine, and a name such as localhost gets no exception because resolution picks
-  // where the token goes.
-  const host = exchange.hostname.replace(/^\[|\]$/g, "");
-  if (exchange.protocol !== "https:" && !(exchange.protocol === "http:" && ((isIPv4(host) && host.startsWith("127.")) || host === "::1")))
+  if (exchange.protocol !== "https:" && !(exchange.protocol === "http:" && isLoopbackLiteral(exchange.hostname)))
     throw new Error("the managed handoff's exchangeUrl must be https://, except for a loopback HTTP literal");
   for (const k of LIST_FIELDS)
     if (!Array.isArray(doc[k]) || !(doc[k] as unknown[]).every((s) => typeof s === "string"))
@@ -83,6 +79,20 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
       (policy === null || typeof policy !== "object" || Array.isArray(policy) || Object.keys(policy).length !== 1 || policy.events !== "required"))
     throw new Error('the managed handoff\'s policy is not exactly { events: "required" }');
   return doc as unknown as ManagedLifecycleHandoff;
+}
+
+/** The `agent-bearer --exchange-url` transport rule, so the child refuses at parse what its bearer
+ *  preflight would refuse later: the actor token never crosses plaintext off the child's machine,
+ *  and a name such as localhost gets no exception because resolution picks where the token goes. */
+function isLoopbackLiteral(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isIPv4(host)) return host.startsWith("127.");
+  const mappedHex = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
+  if (!isIPv6(host)) return false;
+  if (host === "::1") return true;
+  const mapped = host.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  return mapped !== null && mapped[1].startsWith("127.");
 }
 
 /** Take the handoff file into memory and remove it: open the path without following a link,
