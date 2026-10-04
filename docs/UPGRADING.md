@@ -212,7 +212,8 @@ on the machine where the seats run. No stored state, credential or wire message 
 ### What keeps working
 
 `cotal spawn --detach` from an operator terminal or from a script outside any seat launches as
-before, and so does any call with `--creds` or one aimed at a space other than the seat's own. A user-auth mesh is unchanged. A seat with
+before, and so does any call with `--creds`, one aimed at a space other than the seat's own, or a raw
+open target named with `--server` and an unregistered `--space`. A user-auth mesh is unchanged. A seat with
 `capabilities: [spawn]` still spawns from its shell, and can now stop that child with
 `cotal_despawn`. `--on <instance>` from a seat's shell still lands on that manager instance, now as
 the seat.

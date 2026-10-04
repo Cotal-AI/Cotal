@@ -29,6 +29,7 @@ import { agentLifecycleSecretFilePaths } from "./agent-secrets.js";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
 import { connectOrExit, connectOrThrow, connectUserControlOrExit, endpointAuth, userViewAuth, type ConnectFlags } from "./connect.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
+import { findMesh } from "./mesh-registry.js";
 import { pruneStaleMeshes } from "./preflight.js";
 
 /** Endpoint auth material for one control call: a static/raw cred OR a user-mode bearer+sentinel
@@ -148,11 +149,13 @@ export async function resolveControlTarget(
  * seat could never stop the child it asked for (#718). Connection material is intentionally not
  * inherited by shell children; the non-secret launch identity (`COTAL_NAME`, `COTAL_ID`,
  * `COTAL_LIFECYCLE_UID`, `COTAL_SPACE`) names the seat, and only a command aimed at the seat's own
- * space acts as it:
+ * registered space acts as it. A raw open target (`--server` plus an unregistered `--space`) keeps
+ * the operator resolution, as {@link connectOrThrow} orders it:
  *
  * - static mesh: the manager-owned lifecycle credential, whose accepted row (`COTAL_ACCEPTED_TOKEN`)
  *   resolves an issuer-bound generation that must name the same principal and lifecycle uid;
- * - open mesh: no credential system, so the seat's declared triple is the caller;
+ * - open mesh: no credential system, so the seat's declared triple is the caller, over the
+ *   transport the registry records;
  * - user-auth mesh: `undefined`, because the CLI's bearer and the seat share an owner and the
  *   manager's owner-domain rule already covers that pair.
  *
@@ -168,10 +171,11 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
   const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
   const seatSpace = process.env.COTAL_SPACE?.trim();
   if (!name || !actor || !uid || !seatSpace) return undefined;
+  if (flags.server && flags.space && !findMesh(flags.space)) return undefined;
   const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server });
   if (mesh.space !== seatSpace) return undefined;
   const at = { space: mesh.space, server: mesh.server, root: mesh.root, mode: mesh.mode, ...(mesh.policy ? { policy: mesh.policy } : {}) };
-  if (mesh.mode === "open") return { ...at, auth: { epCaller: { owner: DEV_OWNER, actor, uid } } };
+  if (mesh.mode === "open") return { ...at, auth: { tls: mesh.tlsRequired, epCaller: { owner: DEV_OWNER, actor, uid } } };
   const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim();
   if (mesh.mode !== "auth" || !acceptedToken) return undefined;
   const path = agentLifecycleSecretFilePaths(mesh.root, mesh.space, name, uid).creds;

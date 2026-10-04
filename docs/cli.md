@@ -1000,8 +1000,9 @@ child with `cotal_despawn`, and the manager stops the child when the seat exits.
 seat whose agent file lacks `capabilities: [spawn]` is refused, because its credential holds no
 spawn subject. `--on <instance>` keeps its pin: the seat's own credential has no instance route, so
 on a static mesh the CLI mints a one-shot `manager-caller` view for the seat, pinned to that
-instance and carrying the spawn subject only when the seat's credential holds it. `--creds` and a
-user-auth mesh keep the operator path.
+instance and carrying the spawn subject only when the seat's credential holds it. On an open mesh
+the call keeps the TLS requirement the mesh records. `--creds`, `--server` with an unregistered
+`--space`, and a user-auth mesh keep the operator path.
 
 ## models
 
