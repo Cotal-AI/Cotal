@@ -20,7 +20,8 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/preflight.smoke.ts && tsx smoke/maintenance.smoke.ts && tsx smoke/manager-shutdown.smoke.ts",
+    "test": "tsx smoke/preflight.smoke.ts && tsx smoke/maintenance.smoke.ts && tsx smoke/manager-shutdown.smoke.ts && tsx smoke/color-enabled.smoke.ts",
+    "smoke:color-enabled": "tsx smoke/color-enabled.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

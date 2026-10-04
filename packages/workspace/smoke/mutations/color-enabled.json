@@ -1,0 +1,66 @@
+{
+  "suite": ["packages/workspace/smoke/color-enabled.smoke.ts"],
+  "guard": "operator color follows FORCE_COLOR first, then a non-empty NO_COLOR, then stdout.isTTY, and every c.* helper and color256 asks on each call",
+  "command": "pnpm --filter @cotal-ai/workspace smoke:color-enabled",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/color-enabled.json",
+  "why": [
+    "The suite imports colors.ts from src through tsx, so a mutation is seen without a build and needs no rebuild after the restore.",
+    "Each mutation is compile-clean and its anchor occurs exactly once in the named file."
+  ],
+  "mutations": [
+    {
+      "name": "W1 FORCE_COLOR is ignored",
+      "file": "packages/workspace/src/colors.ts",
+      "find": "  if (force !== undefined) return force !== \"0\" && force !== \"false\";",
+      "replace": "  void force;",
+      "expectRed": "FORCE_COLOR=1 colors a non-TTY stdout",
+      "cell": "FORCE_COLOR=1 colors a non-TTY stdout",
+      "note": "Without the first check a pinned FORCE_COLOR does nothing, which is the state the status-persona-root smoke's pin was in before."
+    },
+    {
+      "name": "W2 FORCE_COLOR=false counts as on",
+      "file": "packages/workspace/src/colors.ts",
+      "find": "  if (force !== undefined) return force !== \"0\" && force !== \"false\";",
+      "replace": "  if (force !== undefined) return force !== \"0\";",
+      "expectRed": "FORCE_COLOR=false on a TTY is plain",
+      "cell": "FORCE_COLOR=false on a TTY is plain",
+      "note": "Node treats `false` like `0`; only the TTY case can see it, because a non-TTY is already plain."
+    },
+    {
+      "name": "W3 NO_COLOR wins over FORCE_COLOR",
+      "file": "packages/workspace/src/colors.ts",
+      "find": "  const force = process.env.FORCE_COLOR;",
+      "replace": "  const force = process.env.NO_COLOR ? \"0\" : process.env.FORCE_COLOR;",
+      "expectRed": "FORCE_COLOR=1 wins over NO_COLOR=1",
+      "cell": "FORCE_COLOR=1 wins over NO_COLOR=1",
+      "note": "The order is the contract: FORCE_COLOR decides first, as Node does."
+    },
+    {
+      "name": "W4 NO_COLOR is ignored",
+      "file": "packages/workspace/src/colors.ts",
+      "find": "  if (process.env.NO_COLOR) return false;",
+      "replace": "",
+      "expectRed": "NO_COLOR=1 on a TTY is plain",
+      "cell": "NO_COLOR=1 on a TTY is plain",
+      "note": "On a non-TTY the TTY check already turns color off, so only the TTY case can see NO_COLOR dropped."
+    },
+    {
+      "name": "W5 piped stdout keeps its color",
+      "file": "packages/workspace/src/colors.ts",
+      "find": "  return Boolean(process.stdout.isTTY);",
+      "replace": "  return true;",
+      "expectRed": "a non-TTY stdout is plain",
+      "cell": "a non-TTY stdout is plain",
+      "note": "The original bug in #2381: escapes in pipes and log files."
+    },
+    {
+      "name": "W6 the helpers stop asking",
+      "file": "packages/workspace/src/colors.ts",
+      "find": "const sgr = (code: string) => (s: string) => (colorEnabled() ? `\\x1b[${code}m${s}\\x1b[0m` : s);",
+      "replace": "const sgr = (code: string) => (s: string) => `\\x1b[${code}m${s}\\x1b[0m`;",
+      "expectRed": "NO_COLOR=1 on a TTY is plain",
+      "cell": "NO_COLOR=1 on a TTY is plain",
+      "note": "colorEnabled() can be right while the helpers ignore it; this is the shape main had before #2405."
+    }
+  ]
+}
