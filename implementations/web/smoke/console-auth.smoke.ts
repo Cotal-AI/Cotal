@@ -747,11 +747,13 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     !(webProcess.artifacts ?? []).includes("web.session.not-declared"), webProcess.artifacts);
 }
 
-// ── 8. A LAUNCH TOKEN NEVER ENTERS THE ERROR LOG ─────────────────────────────────────────────────
+// ── 8. A LAUNCH TOKEN NEVER ENTERS A LOGGED REQUEST TARGET ───────────────────────────────────────
 // Drive the shipped process and route. A session is minted first, because the session-first gate is
 // what lets the same request carry `k` onward to a route that can throw. The second request spells
 // the parameter name and every token byte with percent escapes, so a literal-only redactor cannot
-// satisfy the cell.
+// satisfy the cell. The guarantee is no contiguous live token in the logged target. A token split
+// across two parameters is not contiguous and stays visible in halves, and the refusal reason printed
+// after the target is outside it.
 {
   const brokerPort = await freePort();
   const server = `nats://127.0.0.1:${brokerPort}`;
@@ -827,6 +829,24 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
       pathAttack.status === 400 && output.includes("limit=bad")
         && !output.includes(token) && !output.toLowerCase().includes(encodedToken.toLowerCase()),
       { status: pathAttack.status, log: output });
+
+    // Each byte may arrive raw or escaped on its own. The cells above send only the fully escaped
+    // token, which a matcher for the whole raw OR the whole escaped token also passes. Send the raw
+    // token and both parities of a mixed spelling, to the query and to the path.
+    const mixedToken = (parity: number) => [...token]
+      .map((ch, i) => (i % 2 === parity ? ch : `%${ch.charCodeAt(0).toString(16).padStart(2, "0")}`)).join("");
+    const spellings = [token, encodedToken, mixedToken(0), mixedToken(1)].map((s) => s.toLowerCase());
+    for (const [form, value] of [["raw", token], ["mixed raw-first", mixedToken(0)], ["mixed escaped-first", mixedToken(1)]]) {
+      for (const [where, target] of [["query", `/api/activity?note=${value}&limit=bad`], ["path", `/api/channels/${value}/history?limit=bad`]]) {
+        output = "";
+        const attack = await fetch(`http://127.0.0.1:${webPort}${target}`, { headers: { cookie } });
+        await attack.text();
+        await wait(150);
+        check(`a ${form} live launch token in a request ${where} is redacted from the real malformed-route diagnostic`,
+          attack.status === 400 && output.includes("limit=bad") && !spellings.some((s) => output.toLowerCase().includes(s)),
+          { form, where, status: attack.status, log: output });
+      }
+    }
   } finally {
     child?.kill("SIGTERM");
     broker.kill("SIGTERM");
