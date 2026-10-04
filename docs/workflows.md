@@ -234,8 +234,9 @@ A logged-in user starts runs on that remote manager with `cotal run start`. The 
 the user's manager connection against the user's actor-ledger row, the CLI reads the generation
 back from the connection's accepted row, and every `run` verb rides the versioned rail. The issuing
 host admits a run only for the owner who registered the manager, and on every resume and answer it
-checks that owner and that the caller's issuance is still live. Another user's start, answer or
-resume is refused, and so is a revoked actor's. [User-auth run start](design/user-auth-run-start.md)
+checks that owner and that the caller's issuance is still live. It also watches the resume and
+answer requests on the broker itself, and issues for one the manager forwards only if it saw that
+request, once. Another user's start, answer or resume is refused, and so is a revoked actor's. [User-auth run start](design/user-auth-run-start.md)
 records the path.
 
 A hosted run is **admitted** under the caller that started it. The caller's credential is an

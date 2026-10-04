@@ -20,6 +20,10 @@ Status: implemented for issue #1956. Section 4 names the shipped symbols, with t
 - `AclResolver`'s `kind` is optional, so a resolver that does not set it never issues.
 - `cotal run answer` rides the `self` target, so the forwarded subject keeps it and
   `authorizeServedRunCaller` accepts an untargeted or self-targeted subject.
+- The issuing host subscribes read-only to the resume and answer request subjects
+  (`servedRunRequestSubjects` in `authority-client.ts`), and `authorizeServedRunCaller` takes the one
+  observation of the served subject through a new `takeObserved` input before it checks the caller.
+  A forward the host did not observe, or already issued for, is refused.
 
 The source inventory was checked at `6ca4d8e0f48d711769ea2e3710338e1e23dab82f`. Line numbers are that
 head's.
@@ -420,6 +424,7 @@ No existing sentence is reworded.
 | A legacy-rail principal `run-answer` or `run-resume` on a participant manager | participant manager | `permission-denied`, `ai.cotal.ep.unbound-caller-authority` |
 | A legacy-rail `run-answer` from a managed seat of another owner, or one whose row is gone | issuing host | `permission-denied` |
 | An `operator.answers` request with no `served` | issuing host | `permission-denied`, after the pause check |
+| A served resume or answer the issuing host did not observe on the broker, or a second forward of one it did | issuing host | `permission-denied`, not observed |
 | An amendment for a pause that has no accepted answer | issuing host | `failed-precondition` |
 | A boot-reconcile attempt for a revoked run | issuing host | existing refusal, `run <runId> was revoked; a revoked run is issued nothing (SPEC 14.8)` |
 
@@ -440,13 +445,12 @@ No existing sentence is reworded.
   remains the only writer.
 - User-mode seats spawned by the run answer through the relay path on the legacy rail. Their
   attribution rests on the managed row and the manager-held relay, as it does on a static mesh.
-- A participant manager is trusted to forward the subject it served, the same delegation `admitRun`
-  already relies on. The issuing host checks that the subject names a live issuance whose ceiling
-  permits it and that a user caller is the manager's own owner, but it does not observe that this
-  caller published it. A dishonest participant manager can therefore act for its own owner's live
-  issuances and, as on main, for a static caller's, never for another user. Binding each forwarded
-  subject to a request the trusted service saw is not done; issue #2465 tracks it for every forwarded
-  run subject.
+- A participant manager forwards the `run-start` subject it served, and the issuing host checks that
+  the subject names a live issuance whose ceiling permits it and that a user caller is the manager's
+  own owner, but it does not observe that this caller published it. A dishonest participant manager
+  can therefore start runs for its own owner's live issuances and, as on main, for a static caller's,
+  never for another user. Resumes and answers are bound to a request the issuing host observed;
+  issue #2465 tracks the same binding for `run-start`.
 
 ## 9. Acceptance for the implementation round
 
