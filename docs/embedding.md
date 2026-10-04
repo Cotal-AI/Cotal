@@ -527,24 +527,30 @@ the sentinel, the channel lists, and the raw actor token). The manager enrolls o
 today, and builds the handoff from what it holds. It never sends the token to the host, never copies
 a file from its workspace or secret store, and never builds a local launch for that seat. No signer,
 issuer or callout record, loopback capability, provisioner or manager credential, control token, or
-manager path crosses.
+manager path crosses. A spawn choice that only the manager's host can honour is refused before
+enrollment: `--resume`, `--cwd`, and any shared MCP server, whether from `--share-tools` or the
+config default (`--share-tools none` passes).
 
 The runtime creates one provider resource under `managedRuntimeKey(target)`, writes the handoff into
 it as one 0600 file and the persona beside it, and runs the stock bootstrap there:
 `cotal spawn --config <persona-file> --space <space> --name <actor> --expect-owner <owner> --expect-lifecycle-uid <uid>`
 with `COTAL_MANAGED_HANDOFF_FILE` naming the file. `delegatedSeatCommand` builds that argv. The
-child reads the file once and deletes it, refuses before any broker connection or exchange request
-when the space, owner, actor, or lifecycle UID differ from the expected values, and then runs the
+child reads the file into memory and deletes it before it checks anything else, so even a refusal of
+its own flags leaves no file. It refuses before any broker connection or exchange request when the
+space, owner, actor, or lifecycle UID differ from the expected values, and then runs the
 enrollment-redeem consumer: it registers the mesh in its own home, writes the token to its own 0600
 file, and exchanges it through `agent-bearer --exchange-url` unchanged. It never enrolls, redeems, or
 mints a token or UID.
 
 Readiness is still mesh presence. A create whose answer is lost leaves the handle running, so the
-launch settles uncertain and stays held; the manager never retries it. A stop runs
-`prepareAgentRetirement` for the UID-exact target, then `stop()` on the handle `spawnDelegated`
-returned, then the terminal barrier. After the manager is gone the host runs the same steps, closes
-the resource by `managedRuntimeKey`, and finishes at `MANAGED_RETIRE_PATH`. Supply `spawnDelegated`
-only from a runtime whose host can close that resource without the manager. The enrollment redeem
+launch settles uncertain and stays held; the manager never retries it. A provider read that finds no
+resource under the key is not an exit, because the create may still land. Every close by
+`managedRuntimeKey` is fenced: it completes only once the create was answered or the provider refuses
+any later create under the key. A stop runs `prepareAgentRetirement` for the UID-exact target, then
+`stop()` on the handle `spawnDelegated` returned, then the terminal barrier. After the manager is gone
+the host runs the same steps, makes the same fenced close by `managedRuntimeKey`, and finishes at
+`MANAGED_RETIRE_PATH`. Supply `spawnDelegated` only from a runtime whose host can make that fenced
+close without the manager. The enrollment redeem
 (`COTAL_ENROLLMENT_FILE`) stays for lifecycles whose token the host generated itself; a host cannot
 mint one for a manager-enrolled lifecycle because it holds only the digest.
 
