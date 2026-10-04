@@ -26,8 +26,10 @@ Status: implemented for issue #1956. Section 4 names the shipped symbols, with t
   A forward the host did not observe, or already issued for, is refused. The observation keeps what
   the request's envelope asked for (`observedRunRequest` in `manager-authority.ts`), and a forward
   naming another run for a resume, or another endpoint or amendment for an answer, is refused. The
-  observation also keeps the request's `bind`, and a request bound to another instance or epoch than
-  the registered manager's is refused.
+  observation also keeps the request's `bind`, class and pinned contract digests. A request bound to
+  another instance or epoch than the registered manager's is refused, and so is one whose class or
+  digests differ from the command's declaration in the manager's registered cluster, which
+  `registeredCommand` reads at the gate's registration revision.
 
 The source inventory was checked at `6ca4d8e0f48d711769ea2e3710338e1e23dab82f`. Line numbers are that
 head's.

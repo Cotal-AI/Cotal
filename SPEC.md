@@ -4509,7 +4509,9 @@ only that: a resume attempt for the run its `runId` names, and an answering issu
 endpoint the answer names, the manager's own when it names none, that amends when the request set
 `amend: true` and answers when it did not. When the request carries a `bind` (§13.2) naming
 another instance or epoch than the manager's current registration, it issues nothing, since that
-manager refuses the request unrun. An answering operator issuance always carries
+manager refuses the request unrun. It issues nothing either for a request whose `class` or pinned
+`inputDigest` and `outputDigest` differ from the command's declaration in the manager's registered
+cluster (§13.7), which that manager also refuses unrun. An answering operator issuance always carries
 the served subject. An amendment's issuance marks its pause with `amend: true`, and the issuing host
 then requires that pause settled `resumed` with an accepted answer instead of waiting. A legacy-rail
 answer is accepted only from a
