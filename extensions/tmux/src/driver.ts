@@ -257,6 +257,27 @@ export function closeWindow(target: string): void {
   }
 }
 
+/** Kill window `windowId` (`@N`) only while `session` holds it and pane `paneId` (`%N`) is in it or
+ *  gone, and report whether it was killed. tmux checks and kills in one command, so a pane or window
+ *  that moves after the caller's own listing cannot pass a stale check and lose its window. */
+export function closeWindowIfHeld(session: string, windowId: string, paneId: string): boolean {
+  // Non-empty while any session lists the pane in another window.
+  const paneElsewhere = `#{S:#{W:#{P:#{?#{==:#{pane_id},${paneId}},#{?#{==:#{window_id},${windowId}},,1},}}}}`;
+  // kill-window's own exact (`=`) target checks the session: if-shell runs its command even when its
+  // `-t` names no window. tmux quotes a command string as sh does.
+  const kill = `kill-window -t ${shellQuote(`=${session}:${windowId}`)}`;
+  try {
+    const out = execFileSync("tmux", ["if-shell", "-F", `#{?${paneElsewhere},0,1}`, kill, "display-message -p refused"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return out.trim() !== "refused";
+  } catch (err) {
+    if (isWindowGone(err)) return false;
+    throw err;
+  }
+}
+
 /** Window names open in `session`, or `[]` if unreachable. */
 export function listWindows(session: string): string[] {
   try {
