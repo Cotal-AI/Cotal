@@ -182,7 +182,10 @@ inbound buffer, and late-join history. DMs and anycast are always at-least-once 
 A send result proves only that the broker accepted and stored the message at a sequence
 (`stored seq N`), not that any recipient read it: `cotal send dm` and the `cotal_dm` tool
 report that sequence together with the recipient's roster status at the moment of send
-(`idle`, `working`, or `offline`), and neither ever claims `delivered`. The stored sequence
+(`idle`, `working`, or `offline`), and neither ever claims `delivered`. A `cotal_dm` reply to a
+sender that has no roster row, such as a one-shot `cotal send`, reads
+`recipient had no roster row at send` instead: the DM stream keeps it under the sender's id, and
+it may never reach an inbox. The stored sequence
 is a fact about the stream; the status-at-send words are a fact about the roster a moment
 before publish; retention (how long the durable holds it, whether a same-name respawn
 inherits it) is a third, separate fact, covered below and inspectable with

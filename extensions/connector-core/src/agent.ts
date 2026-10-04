@@ -437,6 +437,11 @@ export class MeshAgent extends EventEmitter {
     string,
     { fromId: string; contextId?: string; text?: string; pending?: boolean }
   >();
+  /** By sender id, least recently heard first: the display name of each peer that sent us a DM or
+   *  anycast (bounded). The id is the authenticated sender (the broker forge-locks it on the
+   *  subject), so a DM back to it is addressed to a real identity even when that sender has no
+   *  roster row, as a one-shot `cotal send` never has. See {@link heldSender}. */
+  private readonly senders = new Map<string, string>();
   /** By `contextId`, the questions this seat asked inside a {@link withCorrelation} scope, and whom
    *  they went to (bounded). See {@link answersQuestion}. */
   private readonly asked = new Map<string, { peerId?: string; role?: string }>();
@@ -958,6 +963,11 @@ export class MeshAgent extends EventEmitter {
     if (!meta)
       throw new Error(`message ${m.id} delivered without MessageMeta — its class is unauthenticated`);
     const item = this.toInboxItem(m, meta.kind, meta.historical);
+    if (item.kind === "dm" || item.kind === "anycast") {
+      this.senders.delete(item.fromId);
+      this.senders.set(item.fromId, item.fromName);
+      if (this.senders.size > MAX_CORRELATIONS) this.senders.delete(this.senders.keys().next().value!);
+    }
     if ((item.kind === "dm" || item.kind === "anycast") && !item.historical && item.id !== "" && !this.answersQuestion(item)) {
       // A DM back to this peer answers it (see dm()). An answer to our own question needs none.
       this.unanswered.set(item.id, { fromId: item.fromId, contextId: item.contextId, text: item.text.slice(0, 80) });
@@ -1864,28 +1874,58 @@ export class MeshAgent extends EventEmitter {
     return resolvePeerInRoster(this.ep.getRoster(), target, { selfId: this.id });
   }
 
+  /** #384: a peer that sent us a DM or anycast and has no roster row, by its exact id or, while the
+   *  presence view is current, by a display name only one such sender carried. A one-shot
+   *  `cotal send` never registers presence, so without this a reply to it could not be addressed. */
+  private heldSender(target: string, byName: boolean): { id: string; name: string } | undefined {
+    const name = this.senders.get(target);
+    if (name !== undefined) return { id: target, name };
+    if (!byName) return undefined;
+    const want = target.trim().toLowerCase();
+    // A sender rostered again under a new name has a row now, so its old name must not collide here.
+    const rostered = new Set(this.ep.getRoster().map((p) => p.card.id));
+    const matches = [...this.senders].filter(([id, n]) => !rostered.has(id) && n.toLowerCase() === want);
+    if (matches.length > 1)
+      throw new Error(
+        `"${target}" is ambiguous - ${matches.length} senders with no roster row share that name; ` +
+          `DM by instance id instead: ${matches.map(([id, n]) => `${n} (${id})`).join("; ")}`,
+      );
+    return matches[0] && { id: matches[0][0], name: matches[0][1] };
+  }
+
   async dm(
     target: string,
     text: string,
     opts: { replyTo?: string } = {},
   ): Promise<{
     msg: CotalMessage;
-    peer: Presence;
+    /** The roster row the target resolved to; absent when it resolved to an unrostered sender. */
+    peer?: Presence;
+    recipient: { id: string; name: string };
     ack: { seq: number; duplicate: boolean };
-    recipientStatusAtSend: Presence["status"];
+    /** `unrostered`: the recipient is a peer that messaged us and has no roster row (#384). */
+    recipientStatusAtSend: Presence["status"] | "unrostered";
   }> {
     await this.requireConnected();
+    // #384: a sender's exact id is as unambiguous as a roster id, so it is never read as a roster
+    // display name; a peer that took that id as its name would otherwise receive the reply.
+    const resolve = () =>
+      this.senders.has(target) ? this.ep.getRoster().find((p) => p.card.id === target) : this.resolvePeer(target);
     // #1229: a miss is only a real "no peer" while the view is current. Under `unpopulated`
     // the roster may be a reconnect refill in progress, so wait once for the snapshot and
     // re-resolve; a still-unverifiable target refuses naming the observer's condition (never
     // "no peer"), and the DM does not go out.
     const view = this.ep.presenceView();
-    let peer = this.resolvePeer(target);
+    let peer = resolve();
     if (!peer && view.state === "unpopulated") {
       await this.ep.waitForPresenceSnapshot();
-      peer = this.resolvePeer(target);
+      peer = resolve();
     }
-    if (!peer) {
+    // #384: a target with no roster row may still be a peer that messaged us (its id is
+    // authenticated), which a one-shot `cotal send` always is. The DM goes to that identity and the
+    // space's DM stream keeps it, instead of refusing a reply nothing could ever deliver.
+    const held = peer ? undefined : this.heldSender(target, this.ep.presenceView().state === "current");
+    if (!peer && !held) {
       const after = this.ep.presenceView();
       if (after.state === "current")
         throw new Error(`no peer "${target}" in space "${this.config.space}"`);
@@ -1899,19 +1939,20 @@ export class MeshAgent extends EventEmitter {
     }
     // The only status we can truthfully attribute is the roster snapshot taken right before the
     // publish: recipient state can change the instant after, and the ack never tells us either way.
-    const recipientStatusAtSend = peer.status;
+    const recipientStatusAtSend = peer ? peer.status : "unrostered";
+    const recipient = peer ? { id: peer.card.id, name: peer.card.name } : held!;
     // A DM back to a peer answers the message `replyTo` names, or the oldest one it sent us that no
     // DM has answered yet (see answering()). It counts as answered only once the DM is published,
     // so a failed send leaves it to the retry.
-    const answered = this.answering(peer.card.id, opts.replyTo?.trim() || undefined);
+    const answered = this.answering(recipient.id, opts.replyTo?.trim() || undefined);
     const entry = answered && this.unanswered.get(answered.id);
     const { stamp, own } = this.stamp(answered);
-    this.recordQuestion(own, { peerId: peer.card.id });
+    this.recordQuestion(own, { peerId: recipient.id });
     if (entry) entry.pending = true;
     try {
-      const { msg, ack } = await this.ep.unicastAttributed(peer.card.id, text, stamp);
+      const { msg, ack } = await this.ep.unicastAttributed(recipient.id, text, stamp);
       if (answered) this.unanswered.delete(answered.id);
-      return { msg, peer, ack, recipientStatusAtSend };
+      return { msg, peer, recipient, ack, recipientStatusAtSend };
     } finally {
       if (entry) entry.pending = false;
     }

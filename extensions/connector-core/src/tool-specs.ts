@@ -1074,11 +1074,13 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
       async run(agent, _config, { to, text: msg, replyTo }: { to: string; text: string; replyTo?: string }) {
         try {
-          const { peer, ack, recipientStatusAtSend } = await agent.dm(to, msg, { replyTo });
+          const { recipient, ack, recipientStatusAtSend } = await agent.dm(to, msg, { replyTo });
           const dup = ack.duplicate ? " duplicate publication." : "";
-          return ok(
-            `DM stored as seq ${ack.seq} for ${peer.card.name} (recipient was ${recipientStatusAtSend} at send; delivery not confirmed).${dup}`,
-          );
+          const at =
+            recipientStatusAtSend === "unrostered"
+              ? "recipient had no roster row at send: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox"
+              : `recipient was ${recipientStatusAtSend} at send`;
+          return ok(`DM stored as seq ${ack.seq} for ${recipient.name} (${at}; delivery not confirmed).${dup}`);
         } catch (e) {
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates

@@ -1745,6 +1745,12 @@ from the operating system, never from `COTAL_NAME`. The wire principal comes fro
 operator credential or user bearer, not from `COTAL_NAME`, `COTAL_ID`, `COTAL_OWNER`, or
 `COTAL_ACTOR`. On an open mesh the transient endpoint self-mints its principal.
 
+The transient endpoint never joins the roster and binds no inbox. A recipient can still answer a
+`send dm` or `send ask` with `cotal_dm`, by the sender's name or by the id on the message it
+holds: the reply is stored under the sender's id in the space's DM history, which an operator's DM
+view such as the dashboard's Direct messages lens shows. The `cotal send` that asked has already
+exited, so the reply never reaches that shell.
+
 ## channels
 
 ```bash

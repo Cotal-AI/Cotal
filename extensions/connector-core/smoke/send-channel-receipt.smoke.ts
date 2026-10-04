@@ -282,7 +282,7 @@ const proto = MeshAgent.prototype as unknown as {
       },
     });
     const { peer, ack } = await agent.dm("otto", "x");
-    check("1229:h dm to a peer present in a stale-view roster still publishes", unicast.length === 1 && peer.card.name === "otto", unicast);
+    check("1229:h dm to a peer present in a stale-view roster still publishes", unicast.length === 1 && peer?.card.name === "otto", unicast);
     check("1229:h dm passes through the attributed ack sequence", ack.seq === 7, ack);
   }
 
