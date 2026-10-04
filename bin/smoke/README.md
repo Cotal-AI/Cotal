@@ -64,15 +64,28 @@ not the full gate or a replacement name for a smaller testing tier.
 A run cannot show that a suite swallowed a throw or lost a cell, so `pnpm smoke:gate-inventory`
 reads the entry file of every suite the gate reaches and refuses two shapes:
 
-- A `finally`, or a promise `.finally`, that calls `process.exit` with a status that can be 0 and
-  has no catch arm that sets a non-zero `process.exitCode`, exits non-zero or rethrows. A throw in
-  that `try` would exit 0.
-- A suite with no pinned cell count. Declare `const EXPECTED_CELLS = <n>` and fail when the cells
-  that ran `!== EXPECTED_CELLS`, after reporting failures, so a deleted cell turns the suite red.
+- A `finally`, or a promise `.finally`, that calls `process.exit` with a status that can be 0, where
+  a throw in that `try` would exit 0. A catch arm prevents it only when it exits non-zero itself, or
+  sets a non-zero `process.exitCode` that the exit reads (`process.exit()` or
+  `process.exit(process.exitCode ?? 0)`). A rethrow does not count, because the exit in `finally`
+  runs first. A promise `.catch` counts only directly before `.finally`. A status variable that
+  starts non-zero counts when the only write that clears it is the last statement of the `try`.
+- A suite with no pinned cell count. Declare `const EXPECTED_CELLS = <n>` and compare the cells that
+  ran with it by equality, after reporting failures, so a deleted cell turns the suite red. The
+  comparison must be reached and a mismatch must fail the run: an `if` whose mismatch arm throws,
+  exits non-zero, sets `process.exitCode` or counts a failure the exit status reads; a `?:` exit
+  status; a check function in the file, or the smoke kit's `check` with `finish()` called; or a
+  variable the exit status reads. A comparison that is only logged, or that follows an exit, pins
+  nothing.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed. The census refuses an entry that pins a count now or is no
-longer a reached suite, so the list only shrinks. A new or renamed suite pins its count.
+longer a reached suite, and a list longer than `UNPINNED_CEILING` in the gate, which must fall with
+the list. A new or renamed suite pins its count.
+
+A reached suite whose script names no entry file the census can read, after quotes and
+`-F <pkg> smoke:*` delegation are resolved, is refused unless `CENSUS_UNREAD` in the gate lists it
+with a reason.
 
 ## Workspace commands
 

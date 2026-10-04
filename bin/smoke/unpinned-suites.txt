@@ -1,8 +1,8 @@
 # Reached suite entry files that pin no expected cell count. This is the debt that existed when
 # `pnpm smoke:gate-inventory` started requiring a pin (#1114), not a list of decisions. The census
-# refuses a reached suite that is missing here and pins no count, and it refuses an entry that pins
-# one now or is no longer a reached suite file, so the list only shrinks. Do not add a line to admit
-# a new or renamed suite: declare `const EXPECTED_CELLS = <n>` and fail when the count differs.
+# refuses a reached suite that is missing here and pins no count, an entry that pins one now or is
+# no longer a reached suite file, and a list longer than UNPINNED_CEILING in the gate. Do not add a
+# line to admit a new or renamed suite: declare `const EXPECTED_CELLS = <n>` and fail when the count differs.
 bin/smoke/agui-render-parity.smoke.ts
 bin/smoke/attach-auth-root.smoke.ts
 bin/smoke/attach-open-mode.smoke.ts
@@ -201,7 +201,6 @@ implementations/cli/smoke/attach-host-persistence.smoke.ts
 implementations/cli/smoke/auth-pidfile.smoke.ts
 implementations/cli/smoke/backup-kv-consumer.smoke.ts
 implementations/cli/smoke/backup.smoke.ts
-implementations/cli/smoke/bind-fence-live.smoke.ts
 implementations/cli/smoke/canonical-root-missing.smoke.ts
 implementations/cli/smoke/clean.smoke.ts
 implementations/cli/smoke/command-kernel.smoke.ts
@@ -245,7 +244,6 @@ implementations/cli/smoke/persona-root.smoke.ts
 implementations/cli/smoke/persona-templates.smoke.ts
 implementations/cli/smoke/ps-mesh-column.smoke.ts
 implementations/cli/smoke/renewal-record-honesty.smoke.ts
-implementations/cli/smoke/seat-locality-honesty.smoke.ts
 implementations/cli/smoke/seed-checkout-store.smoke.ts
 implementations/cli/smoke/seed-migration-provenance.smoke.ts
 implementations/cli/smoke/seed.smoke.ts
@@ -424,7 +422,6 @@ packages/core/smoke/artifact-store.smoke.ts
 packages/core/smoke-auth.ts
 packages/core/smoke/backup-inventory.smoke.ts
 packages/core/smoke/bearer-inside-margin.smoke.ts
-packages/core/smoke/bind-fence.smoke.ts
 packages/core/smoke/broker-floor.smoke.ts
 packages/core/smoke/broker-teardown.smoke.ts
 packages/core/smoke/canonical.smoke.ts
@@ -553,7 +550,6 @@ packages/core/smoke/sub-acl-auth.smoke.ts
 packages/core/smoke/system-account-rotation-auth.smoke.ts
 packages/core/smoke/tls-serve.smoke.ts
 packages/core/smoke/tool-list-announce.smoke.ts
-packages/core/smoke/unfenced-responder.smoke.ts
 packages/core/smoke/valid-name.smoke.ts
 packages/core/smoke/wildcard-backfill.smoke.ts
 packages/lang/smoke/conformance.smoke.ts

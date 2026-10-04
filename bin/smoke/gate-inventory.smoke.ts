@@ -20,7 +20,7 @@
  * see (#1114): a `finally` that calls `process.exit` with no catch arm that fails, which turns any
  * throw into the exit status of the last line reached; and a suite with no pinned cell count, which
  * stays green when a cell is deleted. Every suite must exit non-zero on a throw. Only suites absent
- * from `unpinned-suites.txt` must pin a count, so the list is the existing debt and only shrinks.
+ * from `unpinned-suites.txt` must pin a count; the list is the existing debt, held to a ceiling here.
  *
  * Run: pnpm smoke:gate-inventory
  */
@@ -313,7 +313,7 @@ if (exemptionReviews.examined !== EXPECTED_EXEMPTIONS) {
 // resolve a target must say so, not say nothing: SKIPPING IS "I COULD NOT CHECK THIS AND KEPT QUIET".
 // It now reads the named package's manifest and resolves there; an unreadable or unknown package is
 // itself reported rather than exempted.
-const workspaceManifest = (pkgName: string): Record<string, string> | null => {
+const workspaceManifest = (pkgName: string): { dir: string; scripts: Record<string, string> } | null => {
   for (const dir of ["packages", "implementations", "extensions", "bin"]) {
     const base = join(ROOT, dir);
     if (!existsSync(base)) continue;
@@ -322,7 +322,7 @@ const workspaceManifest = (pkgName: string): Record<string, string> | null => {
       if (!existsSync(pj)) continue;
       try {
         const d = JSON.parse(readFileSync(pj, "utf8")) as { name?: string; scripts?: Record<string, string> };
-        if (d.name === pkgName) return d.scripts ?? {};
+        if (d.name === pkgName) return { dir: join(dir, entry), scripts: d.scripts ?? {} };
       } catch { /* unparseable manifest is reported by the caller, not swallowed here */ }
     }
   }
@@ -337,9 +337,9 @@ for (const name of Object.keys(pkg.scripts))
       const target = suitesIn(segment).find((t) => t !== name);
       if (!target) continue;                       // a build step, nothing to resolve
       const pkgName = filtered[1].replace(/\.\.\.$/, "");
-      const scripts = workspaceManifest(pkgName);
-      if (scripts === null) dangling.push([name, `${target} (in unresolvable package ${pkgName})`]);
-      else if (!(target in scripts)) dangling.push([name, `${target} (absent from ${pkgName})`]);
+      const found = workspaceManifest(pkgName);
+      if (found === null) dangling.push([name, `${target} (in unresolvable package ${pkgName})`]);
+      else if (!(target in found.scripts)) dangling.push([name, `${target} (absent from ${pkgName})`]);
       continue;
     }
     for (const target of suitesIn(segment))
@@ -390,18 +390,22 @@ if (staleAllowlist.length) {
 // each reached suite is parsed here, and both predicates are first run over controls that must red,
 // because a census that cannot fire is the defect it is looking for.
 const UNPINNED_PATH = join(ROOT, "bin", "smoke", "unpinned-suites.txt");
-const SUITE_FILE = /(?:^|\s)([\w./-]+\.(?:ts|tsx|mts|mjs|js|cjs))(?=\s|$)/g;
+/** The entry count of `unpinned-suites.txt`. A longer list is refused, so a new suite cannot join the
+ *  debt without editing this gate, and a higher number than the list is refused so the bound falls. */
+const UNPINNED_CEILING = 599;
+const SUITE_FILE = /(?:^|\s)["']?([\w./-]+\.(?:ts|tsx|mts|mjs|js|cjs))["']?(?=\s|$)/g;
 const PIN_NAME = /^EXPECTED(?:_[A-Z0-9]+)*$/;
+const EQUALITY = [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken];
 
 const parseSuite = (file: string, text: string): ts.SourceFile =>
   ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
 
-/** Every node under `root` matching `pred`, not descending into nested functions. */
-function findIn<T extends ts.Node>(root: ts.Node, pred: (n: ts.Node) => n is T): T[] {
+/** Every node under `root` matching `pred`, not descending into nested functions unless `deep`. */
+function findIn<T extends ts.Node>(root: ts.Node, pred: (n: ts.Node) => n is T, deep = false): T[] {
   const found: T[] = [];
   const visit = (n: ts.Node) => {
     if (pred(n)) found.push(n);
-    if (n !== root && ts.isFunctionLike(n)) return;
+    if (!deep && n !== root && ts.isFunctionLike(n)) return;
     ts.forEachChild(n, visit);
   };
   visit(root);
@@ -410,47 +414,94 @@ function findIn<T extends ts.Node>(root: ts.Node, pred: (n: ts.Node) => n is T):
 const isExitCall = (n: ts.Node): n is ts.CallExpression =>
   ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.getText() === "process.exit";
 const nonZeroLiteral = (n: ts.Node | undefined): boolean => !!n && ts.isNumericLiteral(n) && Number(n.text) !== 0;
+const setsFailingCode = (n: ts.Node): n is ts.BinaryExpression =>
+  ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && n.left.getText() === "process.exitCode" && !(ts.isNumericLiteral(n.right) && Number(n.right.text) === 0);
+const identifiersIn = (n: ts.Node): string[] => findIn(n, ts.isIdentifier, true).map((i) => i.text);
+
+/** One pass over a suite, by name: its variable declarations, the writes to each variable (assignments,
+ *  compound assignments, `++` and `--`), its named functions, and the names it calls. */
+type SuiteIndex = { decls: Map<string, ts.VariableDeclaration[]>; writes: Map<string, ts.Node[]>; functions: Map<string, ts.Node>; called: Set<string>; kitChecks: Map<string, string> };
+const suiteIndexes = new WeakMap<ts.SourceFile, SuiteIndex>();
+function indexSuite(sf: ts.SourceFile): SuiteIndex {
+  const cached = suiteIndexes.get(sf);
+  if (cached) return cached;
+  const ix: SuiteIndex = { decls: new Map(), writes: new Map(), functions: new Map(), called: new Set(), kitChecks: new Map() };
+  const add = <T>(m: Map<string, T[]>, k: string, v: T) => (m.get(k) ?? m.set(k, []).get(k)!).push(v);
+  const visit = (n: ts.Node) => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) {
+      add(ix.decls, n.name.text, n);
+      if (n.initializer && ts.isFunctionLike(n.initializer)) ix.functions.set(n.name.text, n.initializer);
+    }
+    if (ts.isFunctionDeclaration(n) && n.name && n.body) ix.functions.set(n.name.text, n.body);
+    // `const { check, finish } = createSuite()` from the smoke kit: `finish` fails the run on a failed check.
+    if (ts.isVariableDeclaration(n) && ts.isObjectBindingPattern(n.name) && n.initializer && ts.isCallExpression(n.initializer) && n.initializer.expression.getText() === "createSuite") {
+      const pattern = n.name;
+      const bound = (prop: string) => pattern.elements.find((e) => (e.propertyName ?? e.name).getText() === prop)?.name.getText();
+      const [check, finish] = [bound("check"), bound("finish")];
+      if (check && finish) ix.kitChecks.set(check, finish);
+    }
+    if (ts.isIdentifier(n) && ts.isCallExpression(n.parent)) ix.called.add(n.text);
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && ts.isIdentifier(n.left)) add(ix.writes, n.left.text, n);
+    if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken) && ts.isIdentifier(n.operand)) add(ix.writes, n.operand.text, n);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  suiteIndexes.set(sf, ix);
+  return ix;
+}
 
 /** An exit status that cannot be 0: a non-zero literal, `128 + n` signal arithmetic, or a variable
- *  initialized to a non-zero literal that only the success path clears (a fail-closed default). */
-function cannotBeZero(sf: ts.SourceFile, arg: ts.Expression | undefined): boolean {
+ *  initialized to a non-zero literal whose only other writes are non-zero literals or the last
+ *  statement of the guarded `try`, which runs only once every risky line succeeded (a fail-closed default). */
+function cannotBeZero(sf: ts.SourceFile, arg: ts.Expression | undefined, guarded?: ts.Block): boolean {
   if (!arg) return false;
   if (nonZeroLiteral(arg)) return true;
   if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.PlusToken)
     return nonZeroLiteral(arg.left) || nonZeroLiteral(arg.right);
   if (!ts.isIdentifier(arg)) return false;
-  return findIn(sf, ts.isVariableDeclaration).some((d) => ts.isIdentifier(d.name) && d.name.text === arg.text && nonZeroLiteral(d.initializer));
+  const { decls, writes } = indexSuite(sf);
+  const last = guarded?.statements[guarded.statements.length - 1];
+  // The zeroing statement runs last in the try: it is the try's last statement, or ends a block or an `if` arm that is.
+  const runsLast = (w: ts.Node): boolean => {
+    let n = w.parent;
+    if (!guarded || !ts.isExpressionStatement(n)) return false;
+    for (let p = n.parent; p !== guarded; n = p, p = p.parent)
+      if (!(ts.isBlock(p) && p.statements[p.statements.length - 1] === n) && !(ts.isIfStatement(p) && p.expression !== n)) return false;
+    return n === last;
+  };
+  return (decls.get(arg.text) ?? []).length > 0 && decls.get(arg.text)!.every((d) => nonZeroLiteral(d.initializer)) && (writes.get(arg.text) ?? []).every(
+    (w) => (ts.isBinaryExpression(w) && w.operatorToken.kind === ts.SyntaxKind.EqualsToken && nonZeroLiteral(w.right)) || runsLast(w),
+  );
 }
 
-/** A catch arm fails the run when it sets a non-zero `process.exitCode`, exits non-zero, or rethrows. */
-function failsOnCatch(sf: ts.SourceFile, body: ts.Node | undefined): boolean {
+/** A catch arm keeps a throw from leaving through this `finally` exit with status 0 when it exits
+ *  non-zero itself, or sets a non-zero `process.exitCode` that the exit honors (no status, or one that
+ *  reads `process.exitCode`). A rethrow does not count: the `finally` exit ends the process first. */
+function catchFails(sf: ts.SourceFile, body: ts.Node | undefined, exit: ts.CallExpression, guarded?: ts.Block): boolean {
   if (!body) return false;
-  const setsCode = findIn(body, ts.isBinaryExpression).some(
-    (b) => b.operatorToken.kind === ts.SyntaxKind.EqualsToken && b.left.getText() === "process.exitCode" && !(ts.isNumericLiteral(b.right) && Number(b.right.text) === 0),
-  );
-  return setsCode || findIn(body, ts.isThrowStatement).length > 0 || findIn(body, isExitCall).some((c) => cannotBeZero(sf, c.arguments[0]));
+  if (findIn(body, isExitCall).some((c) => cannotBeZero(sf, c.arguments[0], guarded))) return true;
+  const status = exit.arguments[0];
+  const honors = !status || findIn(status, (n): n is ts.Node => n.getText() === "process.exitCode").length > 0;
+  return honors && findIn(body, setsFailingCode).length > 0;
 }
 
 /** Lines of `process.exit` calls in a `finally` that can turn a throw into exit 0: a try/finally or a
- *  promise `.finally` with no failing catch arm, whose exit status can be 0. */
+ *  promise `.finally` whose catch arm does not fail through that exit, and whose exit status can be 0. */
 function swallowedThrows(sf: ts.SourceFile): number[] {
   const lines: number[] = [];
-  const flag = (block: ts.Node) => {
+  const flag = (block: ts.Node, catchArm: ts.Node | undefined, guarded?: ts.Block) => {
     for (const exit of findIn(block, isExitCall))
-      if (!cannotBeZero(sf, exit.arguments[0])) lines.push(sf.getLineAndCharacterOfPosition(exit.getStart(sf)).line + 1);
-  };
-  const promiseCatches = (receiver: ts.Expression): boolean => {
-    for (let r = receiver; ts.isCallExpression(r) && ts.isPropertyAccessExpression(r.expression); r = r.expression.expression) {
-      const handler = r.arguments[r.expression.name.text === "then" ? 1 : 0];
-      if ((r.expression.name.text === "catch" || r.expression.name.text === "then") && handler && ts.isFunctionLike(handler) && failsOnCatch(sf, handler)) return true;
-    }
-    return false;
+      if (!cannotBeZero(sf, exit.arguments[0], guarded) && !catchFails(sf, catchArm, exit, guarded))
+        lines.push(sf.getLineAndCharacterOfPosition(exit.getStart(sf)).line + 1);
   };
   const visit = (n: ts.Node) => {
-    if (ts.isTryStatement(n) && n.finallyBlock && !failsOnCatch(sf, n.catchClause?.block)) flag(n.finallyBlock);
+    if (ts.isTryStatement(n) && n.finallyBlock) flag(n.finallyBlock, n.catchClause?.block, n.tryBlock);
     if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "finally") {
       const handler = n.arguments[0];
-      if (handler && ts.isFunctionLike(handler) && !promiseCatches(n.expression.expression)) flag(handler);
+      // Only a `.catch` directly before `.finally` sees every rejection; an earlier one misses a later `.then`.
+      const prev = n.expression.expression;
+      const caught = ts.isCallExpression(prev) && ts.isPropertyAccessExpression(prev.expression) && prev.expression.name.text === "catch" ? prev.arguments[0] : undefined;
+      if (handler && ts.isFunctionLike(handler)) flag(handler, caught && ts.isFunctionLike(caught) ? caught : undefined);
     }
     ts.forEachChild(n, visit);
   };
@@ -458,18 +509,101 @@ function swallowedThrows(sf: ts.SourceFile): number[] {
   return lines;
 }
 
-/** A suite pins its count when an `EXPECTED*` constant initialized to a positive literal is an operand
- *  of an equality test. Equality catches a lost cell and an added one; `<` lets the total drift up. */
+/** Whether the run gets to `node`: no earlier statement of an enclosing block ends it (`process.exit`,
+ *  `throw`, `return`), and every enclosing function is called, or passed to a call, somewhere. */
+function reachedIn(sf: ts.SourceFile, node: ts.Node): boolean {
+  const ends = (s: ts.Statement) => ts.isThrowStatement(s) || ts.isReturnStatement(s) || (ts.isExpressionStatement(s) && isExitCall(s.expression));
+  for (let n = node; n !== sf; n = n.parent) {
+    const p = n.parent;
+    if (ts.isBlock(p) || ts.isSourceFile(p) || ts.isCaseClause(p) || ts.isDefaultClause(p))
+      for (const s of p.statements as ts.NodeArray<ts.Statement>) {
+        if (s === n) break;
+        if (ends(s)) return false;
+      }
+    if (!ts.isFunctionLike(n)) continue;
+    let site = n.parent;
+    while (ts.isParenthesizedExpression(site)) site = site.parent;
+    if (ts.isCallExpression(site)) continue;
+    const name = ts.isFunctionDeclaration(n) ? n.name : ts.isVariableDeclaration(site) && ts.isIdentifier(site.name) ? site.name : undefined;
+    if (!name || !indexSuite(sf).called.has(name.text)) return false;
+  }
+  return true;
+}
+
+/** A suite pins its count when an `EXPECTED*` constant initialized to a positive literal is compared by
+ *  equality with a tally, where the run reaches it and a mismatch fails the run: the condition of an
+ *  `if` whose mismatch arm fails, of a `?:` exit status whose mismatch arm cannot be 0, an argument of
+ *  a check function in the file that fails or of the smoke kit's `check` when `finish()` runs, or the
+ *  value of a variable the exit status reads. Equality catches a lost cell and an added one; `<` lets
+ *  the total drift up. A comparison that is only logged, or follows an exit, pins nothing. */
 function pinsCellCount(sf: ts.SourceFile): boolean {
-  const pins = new Set(
-    findIn(sf, ts.isVariableDeclaration)
-      .filter((d) => ts.isIdentifier(d.name) && PIN_NAME.test(d.name.text) && nonZeroLiteral(d.initializer))
-      .map((d) => (d.name as ts.Identifier).text),
-  );
-  const EQUALITY = [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken];
-  return findIn(sf, ts.isBinaryExpression).some(
-    (b) => EQUALITY.includes(b.operatorToken.kind) && [b.left, b.right].some((o) => ts.isIdentifier(o) && pins.has(o.text)),
-  );
+  const pins = [...indexSuite(sf).decls].filter(([name]) => PIN_NAME.test(name)).flatMap(([, ds]) => ds.filter((d) => nonZeroLiteral(d.initializer)));
+  const isPin = (o: ts.Node, at: ts.Node) =>
+    ts.isIdentifier(o) && pins.some((d) => (d.name as ts.Identifier).text === o.text && d.parent.parent.parent.pos <= at.pos && at.end <= d.parent.parent.parent.end);
+  const directFail = (arm: ts.Node) =>
+    findIn(arm, ts.isThrowStatement).length > 0 || findIn(arm, setsFailingCode).length > 0 || findIn(arm, isExitCall).some((c) => cannotBeZero(sf, c.arguments[0]));
+  // Variables that feed the exit status: read by `process.exit`, by a `process.exitCode` write, or by
+  // the condition of an `if` that throws or exits non-zero.
+  const failVars = new Set([
+    ...findIn(sf, isExitCall, true).flatMap((c) => c.arguments.flatMap(identifiersIn)),
+    ...findIn(sf, setsFailingCode, true).flatMap((b) => identifiersIn(b.right)),
+    ...findIn(sf, ts.isIfStatement, true).filter((s) => directFail(s.thenStatement)).flatMap((s) => identifiersIn(s.expression)),
+  ]);
+  const { decls, writes, functions, kitChecks, called } = indexSuite(sf);
+  // A variable whose value reaches the status reaches it too: follow declarations and assignments.
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const v of [...failVars])
+      for (const src of [...(decls.get(v) ?? []).map((d) => d.initializer), ...(writes.get(v) ?? []).map((w) => (ts.isBinaryExpression(w) ? w.right : undefined))])
+        for (const id of src ? identifiersIn(src) : [])
+          if (!failVars.has(id)) {
+            failVars.add(id);
+            grew = true;
+          }
+  }
+  const failWrites = new Set([...failVars].flatMap((v) => writes.get(v) ?? []));
+  const localFunction = (callee: ts.Expression) => (ts.isIdentifier(callee) ? functions.get(callee.text) : undefined);
+  const armFails = (arm: ts.Node, depth = 0): boolean =>
+    directFail(arm) ||
+    findIn(arm, (n): n is ts.Node => failWrites.has(n)).length > 0 ||
+    findIn(arm, ts.isCallExpression).some((c) => {
+      if (ts.isPropertyAccessExpression(c.expression) && ts.isIdentifier(c.expression.expression) && failVars.has(c.expression.expression.text) && c.expression.name.text === "push") return true;
+      const f = depth < 2 ? localFunction(c.expression) : undefined;
+      return !!f && armFails(f, depth + 1);
+    });
+  const mismatchFails = (b: ts.BinaryExpression): boolean => {
+    let n: ts.Node = b;
+    let onMismatch = b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
+    for (let p = n.parent; ; n = p, p = p.parent) {
+      if (ts.isPrefixUnaryExpression(p) && p.operator === ts.SyntaxKind.ExclamationToken) onMismatch = !onMismatch;
+      else if (!ts.isParenthesizedExpression(p) && !(ts.isBinaryExpression(p) && [ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken].includes(p.operatorToken.kind))) break;
+    }
+    const at = n.parent;
+    if (ts.isIfStatement(at) && at.expression === n) {
+      const arm = onMismatch ? at.thenStatement : at.elseStatement;
+      return !!arm && armFails(arm);
+    }
+    if (ts.isConditionalExpression(at) && at.condition === n) {
+      let status: ts.Node = at;
+      while (ts.isParenthesizedExpression(status.parent)) status = status.parent;
+      const exits = (isExitCall(status.parent) && status.parent.arguments[0] === status) || (setsFailingCode(status.parent) && status.parent.right === status);
+      return exits && cannotBeZero(sf, onMismatch ? at.whenTrue : at.whenFalse);
+    }
+    if (ts.isCallExpression(at) && at.arguments.some((a) => a === n)) {
+      const f = localFunction(at.expression);
+      const kitFinish = ts.isIdentifier(at.expression) ? kitChecks.get(at.expression.text) : undefined;
+      return (!!f && armFails(f)) || (!!kitFinish && called.has(kitFinish));
+    }
+    // A verdict held in a variable the exit status reads: `const complete = ran === EXPECTED_CELLS`.
+    if (ts.isVariableDeclaration(at) && at.initializer === n) return ts.isIdentifier(at.name) && failVars.has(at.name.text);
+    if (ts.isBinaryExpression(at) && at.operatorToken.kind === ts.SyntaxKind.EqualsToken && at.right === n) return ts.isIdentifier(at.left) && failVars.has(at.left.text);
+    return false;
+  };
+  return findIn(sf, ts.isBinaryExpression, true).some((b) => {
+    if (!EQUALITY.includes(b.operatorToken.kind)) return false;
+    const [pin, tally] = isPin(b.left, b) ? [b.left, b.right] : [b.right, b.left];
+    return isPin(pin, b) && !isPin(tally, b) && !ts.isLiteralExpression(tally) && mismatchFails(b) && reachedIn(sf, b);
+  });
 }
 
 // Controls: each predicate must red on the defect shape and pass the repaired one, or the census
@@ -482,16 +616,46 @@ const censusControls: Array<[string, boolean]> = [
   ["a catch arm setting exitCode = 1 fails the run", swallowedThrows(control(`try { f(); } catch (e) { process.exitCode = 1; } finally { process.exit(process.exitCode ?? 0); }`)).length === 0],
   ["a .catch setting exitCode = 1 fails the run", swallowedThrows(control(`main().catch(() => { process.exitCode = 1; }).finally(() => process.exit(process.exitCode ?? 0));`)).length === 0],
   ["a fail-closed default exit status fails the run", swallowedThrows(control(`let code = 1; try { f(); code = 0; } finally { process.exit(code); }`)).length === 0],
+  ["a rethrow does not fail through a finally exit", swallowedThrows(control(`try { f(); } catch (e) { throw e; } finally { process.exit(process.exitCode ?? 0); }`)).length === 1],
+  ["an exitCode the finally exit ignores does not fail the run", swallowedThrows(control(`try { f(); } catch (e) { process.exitCode = 1; } finally { process.exit(fail ? 1 : 0); }`)).length === 1],
+  ["a fail-closed default cleared before the risky line swallows", swallowedThrows(control(`let code = 1; try { code = 0; f(); } finally { process.exit(code); }`)).length === 1],
+  ["a .catch before a later .then misses its throw", swallowedThrows(control(`main().catch(() => { process.exitCode = 1; }).then(g).finally(() => process.exit(process.exitCode ?? 0));`)).length === 1],
   ["a suite with no pinned count is unpinned", !pinsCellCount(control(`let ran = 0; ran++; console.log(ran);`))],
   ["a one-sided pin is unpinned", !pinsCellCount(control(`const EXPECTED_CELLS = 5; if (ran < EXPECTED_CELLS) process.exit(1);`))],
   ["an equality pin on a literal count is pinned", pinsCellCount(control(`const EXPECTED_CELLS = 5; if (ran !== EXPECTED_CELLS) process.exit(1);`))],
+  ["a pin that is only logged is unpinned", !pinsCellCount(control(`const EXPECTED_CELLS = 5; console.log(ran !== EXPECTED_CELLS);`))],
+  ["a pin after an exit is unpinned", !pinsCellCount(control(`const EXPECTED_CELLS = 5; process.exit(0); if (ran !== EXPECTED_CELLS) process.exit(1);`))],
+  ["a pin compared with itself is unpinned", !pinsCellCount(control(`const EXPECTED_CELLS = 5; if (EXPECTED_CELLS !== EXPECTED_CELLS) process.exit(1);`))],
+  ["a pin in an async main that runs is pinned", pinsCellCount(control(`async function main() { const EXPECTED_CELLS = 5; if (ran !== EXPECTED_CELLS) process.exit(1); } main().catch(() => { process.exitCode = 1; });`))],
+  ["a pin in a check function that fails is pinned", pinsCellCount(control(`let fail = 0; const check = (ok) => { if (!ok) fail++; }; const EXPECTED = 5; check(pass + fail === EXPECTED); process.exit(fail ? 1 : 0);`))],
 ];
 const brokenControls = censusControls.filter(([, ok]) => !ok).map(([name]) => name);
 
+/** Reached suites whose body names no file the census can read, each with the reason. */
+const CENSUS_UNREAD: Record<string, string> = {
+  "smoke:feed-agent": "delegates to node --test over a glob in examples/06-feed-agent; the test runner fails the run and counts its tests",
+};
+/** The entry files a script body runs, as repo paths: the paths it names, quoted or not, and those of
+ *  a `-F <pkg> smoke:*` delegation, read from that package's manifest. */
+function entryFiles(body: string, dir = ""): string[] {
+  const files = [...body.matchAll(SUITE_FILE)].map((m) => join(dir, m[1])).filter((f) => existsSync(join(ROOT, f)));
+  for (const m of body.matchAll(/(?:-F|--filter)\s+["']?([^\s"']+)["']?\s+(?:run\s+)?(smoke(?::[A-Za-z0-9:_-]+)?)(?![A-Za-z0-9:_/.-])/g)) {
+    const found = workspaceManifest(m[1].replace(/\.\.\.$/, ""));
+    const script = found?.scripts[m[2]];
+    if (found && script) files.push(...entryFiles(script, found.dir));
+  }
+  return files;
+}
 const suiteFiles = new Map<string, string>();
-for (const name of [...reached].filter((s) => all.has(s)).sort())
-  for (const m of (pkg.scripts[name] ?? "").matchAll(SUITE_FILE))
-    if (existsSync(join(ROOT, m[1])) && !suiteFiles.has(m[1])) suiteFiles.set(m[1], name);
+const unread: string[] = [];
+for (const name of [...reached].filter((s) => all.has(s)).sort()) {
+  const files = entryFiles(pkg.scripts[name] ?? "");
+  for (const f of files) if (!suiteFiles.has(f)) suiteFiles.set(f, name);
+  // A composite is censused through the root scripts it runs; a leaf that resolves nothing is unread.
+  if (!files.length && !suitesIn(pkg.scripts[name] ?? "").some((t) => t !== name && t in pkg.scripts)) unread.push(name);
+}
+const unreadNew = unread.filter((s) => !(s in CENSUS_UNREAD));
+const unreadStale = Object.keys(CENSUS_UNREAD).filter((s) => !unread.includes(s));
 const unpinnedList = readFileSync(UNPINNED_PATH, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
 const grandfathered = new Set(unpinnedList);
 const swallowing: string[] = [];
@@ -532,6 +696,23 @@ if (unpinnedNew.length) {
   console.log(`    Declare const EXPECTED_CELLS = <n> and fail when the cells run !== EXPECTED_CELLS, after the failures.`);
 } else {
   console.log(`  ✓ every suite outside bin/smoke/unpinned-suites.txt pins its cell count`);
+}
+if (unreadNew.length || unreadStale.length) {
+  fail++;
+  console.log(`  ✗ FAIL: ${unreadNew.length} reached suite(s) name no entry file the census can read, ${unreadStale.length} CENSUS_UNREAD entr(ies) are stale:`);
+  for (const s of unreadNew) console.log(`      ${s} -> ${pkg.scripts[s]}`);
+  for (const s of unreadStale) console.log(`      ${s} (reads now, or is not reached)`);
+  console.log(`    Name the entry file in the script, or list the suite in CENSUS_UNREAD with the reason it cannot be read.`);
+} else {
+  console.log(`  ✓ every reached suite names an entry file the census reads, or is listed in CENSUS_UNREAD`);
+}
+if (unpinnedList.length !== UNPINNED_CEILING) {
+  fail++;
+  console.log(unpinnedList.length > UNPINNED_CEILING
+    ? `  ✗ FAIL: bin/smoke/unpinned-suites.txt holds ${unpinnedList.length} entries, above its ceiling of ${UNPINNED_CEILING}. A new suite pins its count rather than joining the debt.`
+    : `  ✗ FAIL: bin/smoke/unpinned-suites.txt holds ${unpinnedList.length} entries; lower UNPINNED_CEILING to ${unpinnedList.length} so the list cannot grow back.`);
+} else {
+  console.log(`  ✓ bin/smoke/unpinned-suites.txt holds ${UNPINNED_CEILING} entries, its ceiling`);
 }
 if (pinnedListed.length || goneListed.length || listDupes.length) {
   fail++;
