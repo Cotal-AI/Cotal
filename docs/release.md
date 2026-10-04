@@ -85,7 +85,10 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
    describes are the usual sign that it has.
 3. Merge to `main`. The only status check `main` requires is `attribution`. The CI aggregate
    jobs `ci-ok`, `windows-ok` and `installer-ok` are advisory: a red one reports and does not
-   block the merge, so read them before you merge.
+   block the merge, so read them before you merge. `attribution` also refuses the PR until a
+   line `Approved-at: <sha>` in its body names the PR's current head by its full sha. Add the line
+   after you review that head. A push moves the head, so review the new head and update the line.
+   Editing the body re-runs the check. Re-running the job does not, because it replays the old event.
 4. The `Changesets` workflow runs:
    - If there are pending changesets, it opens (or updates) a PR titled `chore(release):
      version packages` that bumps versions and updates `CHANGELOG.md` files. The same step
@@ -97,6 +100,8 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
      The bundles carry the docs, so `scripts/operator-literal-allowlist.json` lists them with the
      same example counts as `docs/cli.md` and `docs/run-a-mesh.md`. A release that changes those
      counts updates the bundle entries in the release PR.
+     The workflow rewrites the PR body each time it updates the PR, so add its `Approved-at` line
+     after the last update, just before you merge.
    - When **that** PR is merged, the same workflow detects the bumped versions, runs `pnpm
      build`, and `pnpm publish`es each changed package to npm with provenance.
 
