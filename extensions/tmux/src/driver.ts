@@ -111,15 +111,24 @@ export function windowSessions(windowId: string): string[] {
   }
 }
 
-/** True if pane `paneId` sits in window `windowId` of `session`. */
-export function paneInWindow(session: string, windowId: string, paneId: string): boolean {
+/** The window holding pane `paneId`, or undefined once its server no longer lists the pane. A pane
+ *  that exited under `remain-on-exit` is still listed, so it still has a window. Like
+ *  {@link paneState}, a failed listing throws instead of reading as gone. */
+export function paneWindow(paneId: string): string | undefined {
   try {
-    return execFileSync("tmux", ["list-panes", "-s", "-t", session, "-F", "#{window_id} #{pane_id}"], { encoding: "utf8" })
+    return execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{window_id}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: EXIT_PROBE_MS,
+    })
       .split("\n")
-      .map((l) => l.trim())
-      .includes(`${windowId} ${paneId}`);
-  } catch {
-    return false;
+      .find((l) => l.startsWith(`${paneId} `))
+      ?.slice(paneId.length + 1);
+  } catch (err) {
+    const e = err as { stderr?: unknown; message?: unknown };
+    const message = `${String(e.stderr ?? "")} ${String(e.message ?? "")}`;
+    if (/no server running/i.test(message)) return undefined;
+    throw new Error(`tmux: couldn't list the window holding pane ${paneId}: ${message.trim()}`, { cause: err });
   }
 }
 

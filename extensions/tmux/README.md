@@ -17,8 +17,8 @@ import.
   tmux's `pane_dead` state, including `remain-on-exit`; provider errors fail the wait closed.
   Each handle carries a reference to its tmux server, window and pane, so a later manager can reap
   the seat after the one that spawned it is gone. The reap closes the window while the session
-  still holds it, even when the agent's pane already exited, and refuses a pane or window that has
-  moved out of the session.
+  still holds it, even when the agent's pane already exited. It refuses a pane that has moved out of
+  that window, whether it still runs or has exited, and a window that has moved out of the session.
 
 - **`TerminalLayout` (`tmux`)** — opens/closes tmux windows for host-side orchestration
   (e.g. `cotal setup`). Detects the current session from `$TMUX`; must be called from inside
