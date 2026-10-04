@@ -4197,6 +4197,62 @@ consumed intent is not delegated and gains nothing from this subsection. A deleg
 preserved across a holder restart and is never restarted, because a restart would re-present a
 consumed intent.
 
+### 13.17 Managed lifecycle handoff
+
+This section is additive and not yet implemented in the reference. It covers one case: a managed
+agent already enrolled through the §13.1 managed-agent enrollment operation, whose child runs where
+the enrolling manager's filesystem is not visible (a sandbox, a container, another host).
+
+**One enrollment.** The child MUST NOT request enrollment, agent provisioning, or an enrollment
+redeem, and MUST NOT mint an actor token or a lifecycle UID. It presents the lifecycle UID the host
+selected at enrollment. A launch that needs any other UID or token is a new enrollment, not a
+handoff.
+
+**Custody.** The raw actor token stays in the custody of the manager that generated it until that
+manager releases it to the lifecycle's own child, and only to that child. The manager MUST NOT send
+it to the host or to any party other than the runtime transport that delivers it into that child,
+and the host's ledger keeps only its SHA-256 digest. The manager MUST NOT copy, link, or name any
+file from its own workspace, secret store, launch material, or temporary directory into the child.
+
+**The handoff.** The manager releases one closed handoff document, `kind`
+`cotal-managed-handoff/v1`, carrying by value: `space`, `owner`, `actor`, `lifecycleUid`, `server`,
+`tlsRequired`, `authProvider`, `idp { url, issuer, audience }`, `exchangeUrl` (the enrollment's pinned
+exchange base), `sentinelCreds`, `actorToken`, `subscribe`, `allowSubscribe`, `allowPublish`, and an
+optional `policy { events: "required" }`. It MUST NOT carry a signing seed or key, an issuer or
+callout record, the auth service's loopback capability, the owner-derivation secret, a provisioner,
+deprovisioner, delivery, membership, supervisor, or other manager credential, a control token, or a
+path on the manager's filesystem. A reader MUST refuse an unknown field. The runtime delivers the
+document into the child as one private (0600) file named by `COTAL_MANAGED_HANDOFF_FILE`, never in
+argv or in an inherited environment value. The child reads it once and removes it whatever the
+outcome, and MUST NOT forward the variable or the file into any process it starts.
+
+**Refusal before any plane.** The runtime passes the expected `space`, `owner`, `actor`, and
+`lifecycleUid` beside the file. The child MUST refuse, before any broker connection and before any
+exchange request, when the handoff's values differ from them or the document is malformed.
+
+**Exchange.** The child obtains bearers only through the existing pinned HTTPS agent-bearer exchange
+at `exchangeUrl`, presenting the raw actor token. The service matches its SHA-256 digest against the
+ledger as for any managed agent. Nothing about the exchange changes.
+
+**Readiness.** Readiness is observed from mesh presence of the exact principal and incarnation, as
+for any managed launch. A runtime create whose acknowledgement is lost or ambiguous MUST leave the
+launch held and reported as uncertain. It MUST NOT be reported as exited without an observed exit or
+close, and MUST NOT be retried into a second create, enrollment, or handoff for that lifecycle. A
+lifecycle is handed off at most once.
+
+**Retirement.** A handed-off lifecycle retires only through the existing managed path, in this order:
+the host-owned prepare-retirement for the UID-exact target with the operation id
+`managedRetirementOpId(lifecycleUid)`; closure of the child's runtime resource through the handle
+known for that lifecycle; then the auth-owned terminal barrier with the same operation id. After the
+enrolling manager is gone, the host runs the same three steps itself, ending at the managed
+retirement door. There is no participant stop kind and no second retirement protocol, and no runtime
+close or adopt may be keyed on the agent name alone. A runtime MAY host a handed-off child only where
+the host can close its resource by lifecycle without the enrolling manager. A failed or uncertain
+step keeps the alias held.
+
+**Owner form.** A handoff serves whatever owner the enrollment returned. It neither requires nor
+excludes any owner form.
+
 ---
 
 ## 14. Workflow runs (v0.5)
@@ -4780,6 +4836,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-04 | **Managed lifecycle handoff (§13.17), additive, not yet implemented.** A managed agent already enrolled through §13.1 may run where the enrolling manager's filesystem is not visible. The manager releases one closed `cotal-managed-handoff/v1` document by value into that one child, carrying the issued owner, actor, lifecycle UID, sentinel, pinned exchange base, and the raw actor token, which the host never receives. The child refuses a mismatched owner, actor, or lifecycle UID before any plane opens, never enrolls or mints, and uses the existing agent-bearer exchange unchanged. Readiness stays presence-observed, a lost create acknowledgement stays held as uncertain and is never retried, and retirement reuses prepare-retirement, then the known runtime handle's closure, then the terminal barrier, including after the manager is gone. |
 | 2026-10-04 | **Platform control authority (§13.1, §13.6, §13.9), additive.** A closed server-authored `platform-control` view, beside the unchanged human `manager-service` view, lets a host run one pooled control manager per assigned account. Its holder's owner is a host-derived `p_` platform owner token, disjoint from every `u_` owner. The host's fresh platform-control assignment authorizes it in place of a ledger `supervise` scope. One closed envelope carries the existing typed manager requests through an in-process door of the host's authority context, served on no listener. The unchanged registration proof, process epoch, and all-duty renewal renew and fence it. Its host-owned maintenance reaches only the assigned instance under its own gate. An account has one assignment and so one control instance, which keeps its instance id and lifecycle UID across restarts and enters a deployment only after the assignment's named predecessor manager has left through its own path, read and never written by the host. It refuses human tokens, takeover of another owner's instance, local or custodial runtime, generic signing, exchange issuance, and cross-owner descendants. The reference host is `startAuthService` in `@cotal-ai/auth`. |
 | 2026-10-02 | **Plane liveness (§6.1), additive.** A credentialed peer can ask whether the manager or delivery plane has a bound responder, on `live.<plane>.<owner>.<actor>` with the reply under `<request>.reply.<nonce>`. The reply is `LivenessAnswer`: `plane`, a `ResponderState` verdict, and an optional opaque per-bind `instance` token that distinguishes responders without identifying them. Only the broker's no-responders answer grades `unbound`; every other failure to get a readable reply grades `unknown`. Agents gain the per-plane request and reply rows; the `delivery`, `supervisor` and remote-manager supervisor credentials gain their plane's serve filter and bounded reply grant. A responder binds again on every connection that replaces the one it bound on, and the manager is not `bound` while its service connection is closed or disconnected. |
 | 2026-09-28 | **The `auth` endpoint becomes a conforming registered endpoint (Cotal #399), closing the two gaps the prior two rounds named.** The plane's boot registers `svc.auth.<instanceId>` through the standard `registerServiceInstance` path and publishes its `retire-lifecycle` contract artifacts to the content-addressed contract store, so the endpoint now serves the reserved `describe` and answers the v1 envelope (`ep.v1`) instead of the legacy `{op,args}`/`{ok,data,error}` body this document states are deleted; a legacy body is refused `unsupported-version` as envelope validation, never an ACL denial. The requester side moves from a hand-built subject to the generic client (`resolveService` + `invokeCommand`), still minted in `exact` mode target-pinned to one incarnation at mint time, and gains the baseline `describe` row plus a bounded contract-store direct-get row so it can resolve the endpoint's registered digests before it calls; a body target that disagrees with the exact subject triple is refused `target-mismatch`. Two new §13.9 rows record the registered instance and the requester's describe/store-read grants. |
