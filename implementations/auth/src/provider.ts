@@ -268,7 +268,7 @@ export const cotalAuthProvider: AuthProvider = {
     }
     const body = await res.json().catch(() => ({}));
     if (!res.ok)
-      throw new Error(`signed in, but manager-service authority was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}`);
+      throw managerAuthorityRefusal("manager-service authority", request, body, res.status);
     return body as RemoteManagerAuthorityMaterial;
   },
 
@@ -305,7 +305,7 @@ export const cotalAuthProvider: AuthProvider = {
     if (response.status >= 300 && response.status < 400)
       throw new Error(`the manager maintenance endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`signed in, but manager maintenance was refused: ${(body as { error?: string }).error ?? `HTTP ${response.status}`}`);
+    if (!response.ok) throw managerAuthorityRefusal("manager maintenance", request, body, response.status);
     return body as RemoteManagerMaintenanceResult;
   },
 
@@ -342,7 +342,7 @@ export const cotalAuthProvider: AuthProvider = {
     if (response.status >= 300 && response.status < 400)
       throw new Error(`the manager goal-index endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`signed in, but manager goal-index scan was refused: ${(body as { error?: string }).error ?? `HTTP ${response.status}`}`);
+    if (!response.ok) throw managerAuthorityRefusal("manager goal-index scan", request, body, response.status);
     return body as RemoteManagerGoalIndexScanResult;
   },
 
@@ -379,7 +379,7 @@ export const cotalAuthProvider: AuthProvider = {
     if (response.status >= 300 && response.status < 400)
       throw new Error(`the manager admin authorization endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`signed in, but manager admin authorization was refused: ${(body as { error?: string }).error ?? `HTTP ${response.status}`}`);
+    if (!response.ok) throw managerAuthorityRefusal("manager admin authorization", request, body, response.status);
     return body as RemoteManagerAdminAuthorizationResult;
   },
 
@@ -422,7 +422,7 @@ export const cotalAuthProvider: AuthProvider = {
       throw new Error(`the manager retained-agent validation endpoint answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so retained secrets cannot be walked onto another host`);
     const body = await res.json().catch(() => ({}));
     if (!res.ok)
-      throw new Error(`signed in, but manager retained-agent validation was refused: ${(body as { error?: string }).error ?? `HTTP ${res.status}`}`);
+      throw managerAuthorityRefusal("manager retained-agent validation", request, body, res.status);
     return body as RemoteRetainedAgentValidationResult;
   },
 
@@ -766,8 +766,29 @@ async function postManagerAuthority(
   if (response.status >= 300 && response.status < 400)
     throw new Error(`the ${what} endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`signed in, but ${what} was refused: ${(body as { error?: string }).error ?? `HTTP ${response.status}`}`);
+  if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status);
   return body;
+}
+
+/** This build's version. The release group versions every package in lockstep, so it is also the
+ *  version of the manager whose requests this client sends. */
+const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
+/** A manager-authority refusal, with the host's reason verbatim. The protocol is closed, so a host
+ *  that names a field this request carries as unknown predates that field: say it is version skew
+ *  and which side has to move. The field is never dropped to fit the older host. */
+function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): Error {
+  const reason = (body as { error?: string }).error ?? `HTTP ${status}`;
+  const field = /unknown field "?([A-Za-z_$][\w$]*)"?/.exec(reason)?.[1];
+  const skew = field !== undefined && carriesField(request, field)
+    ? ` - version skew: this manager runs Cotal ${COTAL_VERSION} and the host's auth service predates the field "${field}" it sends; it needs a host at Cotal ${COTAL_VERSION} or later`
+    : "";
+  return new Error(`signed in, but ${what} was refused: ${reason}${skew}`);
+}
+
+function carriesField(value: unknown, field: string): boolean {
+  return value !== null && typeof value === "object" &&
+    (Object.hasOwn(value, field) || Object.values(value).some((v) => carriesField(v, field)));
 }
 
 /** The registry entry's user-auth position for a REMOTE space, bound to the CALLER'S state dir the
