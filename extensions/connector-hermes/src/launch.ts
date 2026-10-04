@@ -24,7 +24,7 @@ import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMa
 import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
-import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
+import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
 
 /** Hermes API range this connector is written against (keep in sync with pyproject.toml).
  *
@@ -319,6 +319,8 @@ async function main(): Promise<void> {
   // which only this connector's plugin directory is written, and which is never removed.
   const managed = adopt ? undefined : hermesSeatHome(config.space, config.name);
   const home = adopt ?? managed!.home;
+  const moved = managed && moveLegacyHermesFork(config.space, config.name);
+  if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
   if (adopt) setupAdoptedProfile(home, { persona });
   else setupProfile(home, { model: process.env.HERMES_MODEL, persona });
 

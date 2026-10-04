@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+
+const ILLEGAL = /[^A-Za-z0-9_-]/g;
+const tok = (s: string): string => s.trim().replace(ILLEGAL, "_").slice(0, 40) || "_";
+const seatId = (space: string, name: string): string =>
+  createHash("sha256").update(`${space}\0${name}`).digest("hex").slice(0, 12);
 
 /**
  * The managed seat's disposable HERMES_HOME: a Hermes named profile, `<root>/profiles/cotal-<id>`,
@@ -22,9 +28,25 @@ import { join } from "node:path";
  * record, because the seat's next launch under the same name continues that fork.
  */
 export function hermesSeatHome(space: string, name: string): { root: string; home: string } {
-  const id = createHash("sha256").update(`${space}\0${name}`).digest("hex").slice(0, 12);
+  const id = seatId(space, name);
   const root = join(tmpdir(), `cotal-hermes-${id}`);
   return { root, home: join(root, "profiles", `cotal-${id}`) };
+}
+
+/**
+ * Move a `--resume` fork left under the earlier layout, `<tmp>/cotal-hermes-<space>-<name>/profiles/cotal-<id>`,
+ * to the seat's {@link hermesSeatHome}, so a relaunch under the same name continues that fork and still
+ * refuses a different session. Only the seat's own profile moves, because two seats could share that
+ * earlier root, and only one holding a fork record, the one profile a stop keeps. Returns the path it
+ * moved, or undefined when there was nothing to move or the seat already has a profile.
+ */
+export function moveLegacyHermesFork(space: string, name: string): string | undefined {
+  const { home } = hermesSeatHome(space, name);
+  const legacy = join(tmpdir(), `cotal-hermes-${tok(space)}-${tok(name)}`, "profiles", `cotal-${seatId(space, name)}`);
+  if (existsSync(home) || !existsSync(join(legacy, HERMES_FORK_RECORD))) return undefined;
+  mkdirSync(dirname(home), { recursive: true });
+  renameSync(legacy, home);
+  return legacy;
 }
 
 /** The seat's record of a `--resume` fork, written by plugin/cotal/resume.py. */
