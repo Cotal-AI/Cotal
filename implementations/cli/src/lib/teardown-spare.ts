@@ -20,11 +20,12 @@ export type SpareSeatRow = {
 
 /** Best-effort inventory for the operator-facing spare report. Detach safety is independently
  *  established by the exact-process capability marker, so a down broker cannot make the local
- *  manager unstoppable. */
+ *  manager unstoppable. A failure here is reported before that marker is read, so it promises
+ *  nothing about the seats: a `stop` manager stops its in-process seats either way. */
 export async function listManagerSeatsForSpare(context: LocalProcessContext): Promise<SpareSeatRow[] | undefined> {
   const mesh = loadMeshes().find((candidate) => candidate.root === context.root && candidate.space === context.space);
   if (!mesh) {
-    console.error(c.dim("could not list managed agents (this root has no recorded mesh); agents will still be spared"));
+    console.error(c.dim("could not list managed agents (this root has no recorded mesh)"));
     return undefined;
   }
   let target;
@@ -36,12 +37,12 @@ export async function listManagerSeatsForSpare(context: LocalProcessContext): Pr
       { onRefusal: "throw" },
     );
   } catch (e) {
-    console.error(c.dim(`could not list managed agents (${(e as Error).message}); agents will still be spared`));
+    console.error(c.dim(`could not list managed agents (${(e as Error).message})`));
     return undefined;
   }
   const reply = await askManager(target.space, target.server, "ps", undefined, target.auth, "any");
   if (!reply.ok || !Array.isArray(reply.data)) {
-    console.error(c.dim(`could not list managed agents (${reply.error ?? "invalid ps reply"}); agents will still be spared`));
+    console.error(c.dim(`could not list managed agents (${reply.error ?? "invalid ps reply"})`));
     return undefined;
   }
   return reply.data as SpareSeatRow[];

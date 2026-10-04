@@ -368,7 +368,7 @@
     {
       "path": "implementations/cli/src/lib/teardown-spare.ts",
       "kind": "derived-output",
-      "anchor": "`could not list managed agents (${reply.error ?? \"invalid ps reply\"}); agents will still be spared`",
+      "anchor": "`could not list managed agents (${reply.error ?? \"invalid ps reply\"})`",
       "class": "non-render/control",
       "rationale": "Manager control-path failure while gathering the best-effort pre-stop inventory, not a rendered agent presence status."
     },
