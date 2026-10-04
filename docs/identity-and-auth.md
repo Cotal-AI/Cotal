@@ -462,6 +462,12 @@ degraded state and refuses new agents, restarts, or replacement credentials rath
 substituting local/static authority. Existing live agents remain running only while their own
 valid authority permits it; recovery requires the host service and a fresh successful renewal.
 
+The manager-authority protocol is closed, so a host whose auth service predates a field the
+manager sends refuses the whole request. The manager reports that refusal as version skew after the
+host's reason: it names its own Cotal version and the refused field, and says it needs a host at
+that version or later. It never drops the field to fit the older host. Upgrade the host first;
+[Upgrading](UPGRADING.md) promises no rolling upgrade between versions.
+
 A manager on remote authority mints from that authority alone; it consults the local root's
 records only to refuse a conflict, and only the supervised space's own trust records count as
 one. A workspace that hosts an unrelated static space beside the participant sign-in is a
