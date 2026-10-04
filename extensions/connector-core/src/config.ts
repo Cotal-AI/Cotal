@@ -77,6 +77,12 @@ export interface AgentConfig {
    *  connector itself, never from user config — it rides the {@link AgentCard.meta}.connector on
    *  the wire as display-only discovery metadata (which harness an agent uses). */
   connector?: string;
+  /** Buffer a live channel message that replies to another message (it carries `replyTo`) as
+   *  pull-only unless it `@mention`s this seat. Set by the connector itself, for a host that posts
+   *  every turn's output back to the channel the turn came from as a reply to the message that
+   *  started it (Hermes): without it, two such seats on one channel start a turn on each other's
+   *  output and never stop. */
+  channelRepliesPullOnly?: boolean;
   /** Model the host runs this agent on (e.g. `claude-opus-4`), from the agent file's `model:` or
    *  `COTAL_MODEL`. Rides {@link AgentCard.meta}.model as display-only discovery metadata; omitted
    *  when the operator didn't pin one (the harness default isn't knowable from here). */

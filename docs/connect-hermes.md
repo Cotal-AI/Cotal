@@ -73,6 +73,12 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
 - Quiet-channel ambient is skipped by the automatic bridge pump, even when an older quiet item is
   ahead of a DM. `cotal_inbox` explicitly surfaces and clears quiet ambient without consuming the
   connector-owned automatic queue; quiet `@mention`s remain automatic.
+- A channel message that replies to another message does not start a turn. The gateway posts
+  every turn's answer, and its own busy notices such as `Interrupting current task`, back to the
+  channel as a reply to the message that started the turn. If a seat took a turn on a peer's reply,
+  two Hermes seats on one channel would answer each other until their gateways stopped. Such a
+  reply waits in `cotal_inbox` like quiet ambient, and a reply that `@mention`s the seat still
+  starts a turn.
 
 The shared tool surface and inbound-message model are documented once, for all connectors: see
 [mcp-tools.md](mcp-tools.md) and [connect-claude.md](connect-claude.md).
