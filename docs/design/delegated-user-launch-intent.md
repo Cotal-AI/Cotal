@@ -122,6 +122,7 @@ export interface DelegatedUserIntentAdmission {
   kind: "delegated-user-intent";
   space: string;
   owner: string;
+  /** The user's own actor that admitted the intent. It is never the target's actor. */
   actor: string;
   requestId: string;
   /** Host-generated, 26 base32-lower characters of fresh entropy. Never caller-selected. */
@@ -203,15 +204,31 @@ export function parseRemoteDelegatedUserIntentExecutionResult(
 
 ```ts
 /** The host's record of one admitted intent. The host is its only writer: create-only at admission,
- * then one revision-pinned CAS from `admitted` to `consumed` before any effect. */
+ * then one revision-pinned CAS from `admitted` to `consumed` that writes `execution` before any
+ * effect, then one write that sets `outcome`. */
 export interface DelegatedUserIntentRecord extends Omit<DelegatedUserIntentAdmission, "v" | "kind" | "requestId"> {
   v: 1;
   /** `<owner>.<actor>`: the launched agent's ledger parent, and the principal the envelope walk starts from. */
   parent: string;
   state: "admitted" | "consumed";
-  /** Launch only, set by the host's enrollment writer after consumption. A later retire intent may
-   * name only a lifecycle a consumed launch record carries. */
-  lifecycleUid?: string;
+  /** Written by the consuming CAS and never changed after. Absent while `admitted`. */
+  execution?: DelegatedUserIntentExecutionPin;
+  /** Set once, when the pinned execution ends. Absent while it runs or while the host recovers it. */
+  outcome?: "enrolled" | "retired" | "aborted";
+}
+
+/** What the consuming CAS fixes before any effect, so that a retry, a lost answer or a host restart
+ * resumes the same execution at the same lifecycle. */
+export interface DelegatedUserIntentExecutionPin {
+  /** The holder request that consumed the record. Null when the host consumed a holder-gone retirement itself. */
+  requestId: string | null;
+  serveEpoch: number | null;
+  /** Launch: selected by the host before the CAS, and the only UID its writer enrolls. Retire: the target's. */
+  lifecycleUid: string;
+  /** Launch only: the holder's token digest. */
+  tokenHash?: string;
+  /** Retire only: managedRetirementOpId(lifecycleUid). */
+  opId?: string;
 }
 
 /** The platform-control record's assignment observer, unchanged. */
@@ -227,8 +244,8 @@ export interface AuthorizeDelegatedUserIntentAdmissionArgs {
   dir: string;
   observeAssignment: ObservePlatformControlAssignment;
   observeManagerGate: ObserveManagerGate;
-  /** The host's consumed launch record for (owner, target.actor, target.lifecycleUid), read fresh. Retire only. */
-  observeLaunchRecord(owner: string, actor: string, lifecycleUid: string): Promise<DelegatedUserIntentRecord | null>;
+  /** The host's launch record of this owner whose `execution.lifecycleUid` is `lifecycleUid`, read fresh. Retire only. */
+  observeLaunchRecord(owner: string, lifecycleUid: string): Promise<DelegatedUserIntentRecord | null>;
   /** platformControlOwner(...) for this space and account, from the platform-control record. */
   platformOwner: string;
   now: number;
@@ -255,9 +272,14 @@ export interface AuthorizeDelegatedUserIntentExecutionArgs {
 /** The only facts an execution decision carries, all checked for the current request. */
 export interface DelegatedUserIntentDecision {
   intentId: string;
+  requestId: string;
+  serveEpoch: number;
   owner: string;
   parent: string;
   instanceId: string;
+  /** True when the request equals the record's `execution` pin: the host resumes that execution and
+   * writes no second CAS. */
+  resume: boolean;
   operation: "launch" | "retire";
   target: DelegatedUserLaunchTarget | RemoteManagedAgentPrepareRetirementRequest["target"];
   /** Launch only. */
@@ -266,7 +288,8 @@ export interface DelegatedUserIntentDecision {
   opId?: string;
 }
 
-/** Decides one execution. Writes nothing; the host consumes the record before acting on the decision. */
+/** Decides one execution. Writes nothing; the host consumes the record, pinning the execution, before
+ * acting on the decision. */
 export function authorizeDelegatedUserIntentExecution(
   args: AuthorizeDelegatedUserIntentExecutionArgs,
 ): Promise<DelegatedUserIntentDecision>;
@@ -287,8 +310,9 @@ executeDelegatedUserIntent?: (
 delegatedIntent?: { intentId: string; owner: string; parent: string };
 
 // Manager gains one method:
-/** Retire one agent this manager launched under a delegated intent, through the host. Frees the
- * slot only on `retired: true`; any other answer keeps the alias held. */
+/** Retire one agent this manager launched under a delegated intent, through the host. It sends the
+ * request whether or not `name` still holds a slot, frees a slot only on `retired: true`, and keeps
+ * the alias held on any other answer. */
 retireDelegatedAgent(name: string, intentId: string): Promise<ControlReply>;
 ```
 
@@ -298,7 +322,11 @@ With `delegatedIntent` set, `provisionUserAgent` takes the hosted arm with
 existing checks: `material.actor` must equal `name`, and the spawning owner is
 `delegatedIntent.owner`, so the existing `the host enrolled the agent under owner <owner>, not the
 spawning owner <owner>` sentence refuses any other owner. The spawn record stores
-`userOwner: material.owner` and `spawner: delegatedIntent.parent`.
+`userOwner: material.owner` and `spawner: delegatedIntent.parent`. A lost answer is retried with the
+same request, the same `requestId` and digest, while the manager still holds the staged token, and
+the host answers it from the pinned execution (section 6). If the manager gives up and shreds the
+token, the host still holds the enrolled lifecycle, and the user retires it with a retirement intent
+(section 7).
 
 ## 5. Admission
 
@@ -325,10 +353,14 @@ own route. One admission runs in this order, and every refusal writes nothing:
    against the parent `<owner>.<actor>`, refused with the walk's own sentence. The authoritative
    walk and the writer's other refusals, such as an interactive row of the same name, run again at
    the write (section 6).
-6. Retire: `target.owner` must equal the owner (`permission-denied`). `observeLaunchRecord` must return a consumed launch
-   record of this owner whose `lifecycleUid` equals `target.lifecycleUid`, whose actor equals
-   `target.actor` and whose `instanceId` equals the request's. A lifecycle the user's own manager
-   launched is retired through that manager's path and is refused here as `failed-precondition`.
+6. Retire: `target.owner` must equal the owner (`permission-denied`).
+   `observeLaunchRecord(owner, target.lifecycleUid)` must return a record of this owner with
+   `intent.operation: "launch"`, `outcome: "enrolled"`, `execution.lifecycleUid` equal to
+   `target.lifecycleUid`, `intent.target.actor` equal to `target.actor`, and `instanceId` equal to
+   the request's. The record's own `actor` is the user actor that admitted the launch and is never
+   compared with the target. A lifecycle the user's own manager launched has no such record. It is
+   retired through that manager's path and is refused here as `failed-precondition`, as is a launch
+   whose execution has not ended or ended `aborted`.
    The host then reads the assignment and gate as in step 4. When the launching holder is present
    (section 7.2 defines gone), the record binds its current coordinates. When it is gone, the record
    binds the launch record's `managerLifecycleUid` and `assignmentRevision` with `serveEpoch: null`.
@@ -340,28 +372,56 @@ own route. One admission runs in this order, and every refusal writes nothing:
 
 The holder posts `RemoteDelegatedUserIntentExecutionRequest` on the platform's route for the holder.
 The platform-control door refuses this kind as an unknown kind (`bad-request`), so its closed union
-stays as written. One execution runs in this order, and every refusal writes nothing:
+stays as written. One execution runs in this order, and every refusal before the CAS writes nothing:
 
 1. The request is closed and its `actor` is the literal `"cli"`. `space` and `accountPublicKey` must
    equal the context's.
-2. The record for `intentId` is read fresh. Absent, `consumed` or past `expiresAt` is
-   `failed-precondition`.
+2. The record for `intentId` is read fresh. An absent record, or an `admitted` one past
+   `expiresAt`, is `failed-precondition`. A `consumed` record is `failed-precondition` unless the
+   request is a retry of the execution that consumed it: its `requestId` and `serveEpoch`, and a
+   launch's token digest, equal the record's `execution`. A retry runs steps 3 to 5
+   again and is then answered from the pinned execution with no second CAS (`resume: true`). When
+   the record has no `outcome` yet, a launch resumes at step 7 and a retirement resumes the section
+   7 order.
 3. `instanceId`, `managerLifecycleUid`, `assignmentRevision` and the operation must equal the
    record's. Any difference is `permission-denied`.
-4. The assignment is read fresh as in admission step 4. The gate must be open with principal
-   `<platformOwner>.manager_serve_<instanceId>`. A gate epoch different from the request's
-   `serveEpoch` is `conflict`. A request epoch different from the record's `serveEpoch` is
-   `permission-denied`. The registration proof must match
+4. `observeAssignment(space, instanceId)` is read fresh. It must exist and be `assigned`. Its space,
+   account, instance id and `assignmentRevision` must equal the record's, and its `lifecycleUid`
+   must equal the record's `managerLifecycleUid`; step 3 made both equal to the request's. A null,
+   `revoked` or moved assignment is `permission-denied`, as the platform-control door's own
+   assignment check refuses it (that record's section 3.2 step 2 and H4). An observer error is `unavailable`. The gate must be open
+   with principal `<platformOwner>.manager_serve_<instanceId>`. A gate epoch different from the
+   request's `serveEpoch` is `conflict`. A request epoch different from the record's `serveEpoch`
+   is `permission-denied`. The registration proof must match
    `remoteManagerCurrentRegistrationProof(proofSecret, platformOwner, request, gate)`.
 5. `execute.target.actor` must equal the record's target actor. A different target is
    `permission-denied`.
-6. The host CASes the record from `admitted` to `consumed` at the revision step 2 read. A lost CAS
-   is `conflict` and nothing is enrolled.
-7. The host runs the enrollment writer it already runs for `manager-managed-agent-enrollment`, with
-   the decision's values. It selects the lifecycle UID, writes the ledger row through
-   `grantManagedActor`, provisions the lifecycle-keyed durables and returns the hosted enrollment
-   material. It records the UID on the consumed record. The host MUST use that one writer for both
-   doors, so a delegated row and a row from the user's own remote manager cannot diverge.
+6. The host selects the lifecycle UID as its enrollment writer does, then CASes the record from
+   `admitted` to `consumed` at the revision step 2 read. The same write sets `execution` to the
+   request's `requestId` and `serveEpoch`, that UID and the token digest. A lost CAS is `conflict`
+   and nothing is enrolled.
+7. The CAS is the execution's commit. The reads in steps 2 and 4 are not fences (SPEC §13.1: a read
+   is never a fence), so the host runs step 4 again after the CAS and before any effect. A refusal
+   there sets `outcome: "aborted"`, writes nothing else and answers with that refusal's code. A
+   reassignment, a revocation or a gate move that lands before this second read aborts the
+   execution. One that lands after it is ordered after the commit and refuses only later
+   executions, as the platform-control record's revocation refuses only the next door call. The
+   agent such an execution leaves is the user's, and its holder counts as gone (section 7.2).
+8. The host runs the enrollment writer it already runs for `manager-managed-agent-enrollment`, with
+   the decision's values and the pinned UID and digest. It writes the ledger row through
+   `grantManagedActor`, provisions the lifecycle-keyed durables, sets `outcome: "enrolled"` and
+   returns the hosted enrollment material. The host MUST use that one writer for both doors, so a
+   delegated row and a row from the user's own remote manager cannot diverge.
+
+From the CAS on, the host owns the execution, whoever presented it. After a restart or a lost
+answer, the host finds every `consumed` record with no `outcome` and drives it to one at the pinned
+UID. A launch resumes at step 7. When the re-check passes, the host re-runs step 8 with the pinned
+UID and digest. `grantManagedActor` is an upsert keyed by owner and actor, and the durables are keyed
+by the UID, so a second run writes the same row and durables. When the re-check or the writer now
+refuses, for example because the holder is gone or the user narrowed `cli`, the host runs the
+section 7 order at the pinned UID, which revokes any row written there and runs the terminal
+barrier for it, and sets `outcome: "aborted"`. A holder retry (step 2) gets the same material once
+the outcome is `enrolled`, and `failed-precondition` once it is `aborted`.
 
 The row the writer produces, compared with the row the user's own manager writes for the same
 requested target from the same spawning principal:
@@ -395,16 +455,23 @@ presents the intent:
    alias held until the provider resolves it;
 3. terminal barrier: run the auth-owned barrier with `managedRetirementOpId(target.lifecycleUid)`
    through the same in-process flight `POST /managed-lifecycle/retire` uses;
-4. free the alias and the hosted survivor record only after terminal confirmation.
+4. free the alias and the hosted survivor record only after terminal confirmation, then set the
+   intent record's `outcome: "retired"`.
 
 A failed or uncertain step keeps the alias held. A retry is the same operation on the same UID,
-because the operation id is derived and the flight is shared.
+because the operation id is derived and the flight is shared. The consuming CAS pins that UID and
+op id in `execution`, so a consumed retirement never refuses its own retry: a request equal to the
+pin is answered from the shared flight (section 6, step 2), and after a restart the host resumes the
+order from the pin, as it recovers a launch.
 
 ### 7.1 Holder present
 
 The holder sends the execution request with `execute: { operation: "retire", target }`. Steps 1 to 6
-of section 6 apply, with step 5 comparing the full `{ owner, actor, lifecycleUid }`. After the CAS
-the host runs the order above and answers `retired`. `Manager.retireDelegatedAgent` frees the slot
+of section 6 apply, with step 5 comparing the full `{ owner, actor, lifecycleUid }` and step 6
+pinning `target.lifecycleUid` and its op id. Step 7 does not apply: a retirement only removes
+authority, so a holder that moves after the CAS does not abort it, and the host finishes the order
+whether or not the holder remains. After the CAS the host runs the order above and answers
+`retired`. `Manager.retireDelegatedAgent` frees the slot
 only on `retired: true`. It never calls `prepareAgentRetirement` or `mintRetirementRequester` for a
 delegated agent: those bind to the holder's `p_` owner and would be refused for a `u_` target.
 
@@ -414,8 +481,9 @@ The launching holder is gone when its assignment is absent, `revoked` or at anot
 gate is not open, or the gate's epoch differs from the launch record's. A retirement admitted then is
 bound to the launching instance with `serveEpoch: null`. No holder can present it, because execution
 step 4 requires a current epoch equal to the record's. The host consumes it itself, with the
-admission decision as its only authorization and no execution request, and runs the same
-order to the same barrier. A retirement bound to a holder that is gone before it executes expires
+admission decision as its only authorization and no execution request, pinning
+`{ requestId: null, serveEpoch: null }` with the target's UID and op id, and runs the same order to
+the same barrier. A retirement bound to a holder that is gone before it executes expires
 unexecuted; the user admits it again and it takes this branch. A holder that disappears after its execution consumed a record does not
 stop the sequence: the host's writer owns it from the CAS on, as #1972 has the host finish a
 retirement whose participant disappeared after prepare.
@@ -452,11 +520,12 @@ payload. `authorizeAdmin` is unchanged.
 | D1 | Real user authorization only | admission derives the owner from a verified IdP subject on the host's human route and reads the user's own row fresh, requiring `spawn` | no or invalid IdP token, an `owner` field, a `p_` or service caller, a row without `spawn`: refused, nothing written | §13.16 admission |
 | D2 | No held login, copied token, synthesized `supervise` or signing RPC | the IdP token is verified and dropped; the record and both requests are closed and carry no token, scope, profile, subject, lifetime or claim; execution returns only the hosted enrollment material | an extra field is `bad-request`; neither door reads or writes `supervise` | §13.16 admission, execution |
 | D3 | The agent is the user's | the host's writer uses the record's owner and parent; `grantManagedActor` runs the envelope walk from the user's principal; the manager refuses any other `material.owner` | `the host enrolled the agent under owner <owner>, not the spawning owner <owner>` | §13.16 execution |
-| D4 | Bound to account, instance, epoch and lifecycle | admission records the assignment's account, instance, lifecycle and revision and the gate's epoch; execution re-reads all of them and the registration proof | another account, instance, lifecycle or revision: `permission-denied`; a stale gate epoch: `conflict` | §13.16 execution |
-| D5 | One target | the record names one target; execution must name the same one | a different target: `permission-denied`, before the CAS | §13.16 execution |
-| D6 | No replay, no standing right | single CAS from `admitted` to `consumed`; `expiresAt` at most 300 s; the holder gains no ledger row, scope or grant | consumed or expired: `failed-precondition`; a lost CAS: `conflict` | §13.16 execution |
-| D7 | Retirement keeps #1972 | uid-exact prepare, known-handle provider closure, terminal barrier with the derived op id; host-run when the holder is gone | a non-delegated lifecycle or a foreign owner: refused at admission; an uncertain step keeps the alias held | §13.16 retirement |
+| D4 | Bound to account, instance, epoch and lifecycle | admission records the assignment's account, instance, lifecycle and revision and the gate's epoch; execution compares the request with the record, then requires the fresh assignment and gate to equal the record, before the CAS and again after it for a launch | another account, instance, lifecycle or revision, in the request or in the fresh assignment: `permission-denied`; a stale gate epoch: `conflict`; a move after the CAS: `outcome: "aborted"`, no effect | §13.16 execution |
+| D5 | One target | the record names one target; execution must name the same one; a retirement admission compares the launch record's target actor, never its admitting actor | a different target: `permission-denied`, before the CAS | §13.16 admission, execution |
+| D6 | No replay, no standing right | single CAS from `admitted` to `consumed`; `expiresAt` at most 300 s; the holder gains no ledger row, scope or grant | consumed by another request, or expired: `failed-precondition`; a lost CAS: `conflict` | §13.16 execution |
+| D7 | Retirement keeps #1972 | uid-exact prepare, known-handle provider closure, terminal barrier with the derived op id; host-run when the holder is gone | a non-delegated lifecycle, a launch with no `enrolled` outcome, or a foreign owner: refused at admission; an uncertain step keeps the alias held | §13.16 retirement |
 | D8 | R8 and H13 unchanged | section 8 | H13's spawn and `authorizeAdmin` answers unchanged | §13.16 last paragraph |
+| D9 | A crash or a lost answer strands nothing | the consuming CAS pins request id, epoch, lifecycle UID and digest or op id before any effect; the host drives every consumed record to one outcome at that UID; a request equal to the pin is a retry | none for the pinned retry, which gets the execution's answer; the alias stays held until an outcome | §13.16 execution |
 
 ## 10. Where it fails closed
 
@@ -468,6 +537,7 @@ payload. `authorizeAdmin` is unchanged.
 | a host without an assignment observer or intent store | both requests `unimplemented` |
 | an observer, ledger or record read error | `unavailable`, never a cached answer |
 | a manager with `delegatedIntent` and no `executeDelegatedUserIntent` | the spawn is refused before any request and writes nothing |
+| a consumed record with no `outcome` | the alias stays held, no new request is admitted on the record, and the host resumes or compensates at the pinned UID |
 | a design reviewers reject | nothing lands: the declarations stay in this record (section 11) |
 
 ## 11. Why the declarations wait
@@ -476,7 +546,7 @@ payload. `authorizeAdmin` is unchanged.
 |---|---|---|
 | `DelegatedUserLaunchTarget`, `DelegatedUserIntentOperation`, `DelegatedUserIntentRequest`, `DelegatedUserIntentAdmission`, `DELEGATED_USER_INTENT_MAX_TTL_SECONDS` | `@cotal-ai/core` | proposed, absent |
 | `RemoteDelegatedUserIntentExecutionRequest`, `RemoteDelegatedUserIntentExecutionResult` and the three parsers | `@cotal-ai/core` | proposed, absent |
-| `DelegatedUserIntentRecord`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | proposed, absent |
+| `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | proposed, absent |
 | `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | proposed, absent |
 | `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar | `@cotal-ai/auth`, `@cotal-ai/core` | proposed by the platform-control record, absent |
 | `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged |
@@ -505,6 +575,10 @@ platform-control door, the platform's own route for the holder, its Runtime, and
 | A10 | Launch `w3`, stop the holder and revoke its assignment, then admit a retirement of `w3` | the host runs it with no holder; the same end state as A9; a `POST /managed-lifecycle/retire` for that UID afterwards answers `alreadyRetired: true` |
 | A11 | Admit a retirement of an agent `U`'s own manager launched, and of another owner's agent | `failed-precondition` and `permission-denied`; nothing revoked |
 | A12 | Send either request with an extra field (`owner`, `idpToken`, `scope`, `supervise`) and send the execution kind inside a platform-control envelope | `bad-request` for all; no effect |
+| A13 | Admit a launch, have the backend advance the instance's assignment revision with its gate left open, then have the holder present the intent | `permission-denied`; the record stays `admitted`; no row |
+| A14 | Admit a launch, hold the host between the CAS and step 7's second read (a debugger breakpoint), advance the assignment revision, then release it | `permission-denied`; the record is `consumed` with `outcome: "aborted"`; no row |
+| A15 | Admit a launch and stop the host after the ledger write and before `outcome` is set (a breakpoint, then kill). Restart it, have the holder resend the same request, then admit a retirement of `w1` and have the holder execute it | after the restart the record is `enrolled` at its pinned UID with the one row; the resend answers the same material; the retirement is admitted and ends as A9 |
+| A16 | Execute an admitted retirement, drop its answer before the holder reads it, and resend the same request | the resend answers from the same flight with the same op id; one terminal barrier; `retired: true` |
 
 ## 13. Residual risk
 

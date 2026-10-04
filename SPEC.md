@@ -4090,7 +4090,9 @@ manager gate fresh and refuse unless the assignment is `assigned` for this accou
 open under the platform serve principal, and the requested scope and channel lists MUST lie within
 the user's actor row under the managed-agent envelope rule. For a retirement, the target owner MUST
 equal the derived owner, and the target lifecycle MUST be one that the host's own record shows a
-delegated launch on that instance produced; any other lifecycle MUST be refused. The host generates
+delegated launch on that instance produced and enrolled, for a launch target whose actor equals the
+retirement target's actor; the host MUST compare the launch's target actor, never the user actor
+that admitted the launch. Any other lifecycle MUST be refused. The host generates
 the intent id from at least 128 bits of entropy, never from caller input. It binds the account, the
 instance id, the assignment's lifecycle UID and revision, the gate's process epoch (null for a
 retirement whose launching holder is gone), the one target, the user's principal `<owner>.<actor>`
@@ -4103,15 +4105,31 @@ request names the intent id, the space, the fixed `cli` actor constant that keys
 proof, the account, the assignment revision, the instance id, the manager lifecycle UID, the serve
 epoch, the registration proof, the identities, and one target: the launch target's actor with the
 SHA-256 digest of an actor token the holder generated, or the retirement's `{ owner, actor,
-lifecycleUid }`. The host MUST read the record fresh and refuse an absent, consumed or expired
-record as `failed-precondition`. It MUST refuse as `permission-denied` any difference from the
-record in account, instance id, manager lifecycle UID, assignment revision, operation, serve epoch
-or target. It MUST re-read the assignment and the gate, refuse a gate whose principal is not the
-platform serve principal, refuse a gate epoch other than the request's as `conflict`, and require
-the host-keyed current registration proof. Every check completes before any effect. The host then
-MUST CAS the record from `admitted` to `consumed` at the revision it read; a lost CAS is `conflict`
-and nothing is enrolled or retired. An intent executes at most once and confers nothing after it
-executes.
+lifecycleUid }`. The host MUST read the record fresh and refuse as `failed-precondition` an absent
+record, an admitted record past its expiry, and a consumed record unless the request is a retry of
+the execution that consumed it (below). It MUST refuse as `permission-denied` any difference from
+the record in account, instance id, manager lifecycle UID, assignment revision, operation, serve
+epoch or target. It MUST re-read the assignment and refuse as `permission-denied` one that is
+absent, revoked, or differs from the record in space, account, instance id, manager lifecycle UID or
+assignment revision. It MUST re-read the gate, refuse a gate whose principal is not the platform
+serve principal, refuse a gate epoch other than the request's as `conflict`, and require the
+host-keyed current registration proof. Every check completes before any effect. The host then MUST
+CAS the record from `admitted` to `consumed` at the revision it read, and that same write MUST pin
+the execution: the request id, the serve epoch, the lifecycle UID (host-selected before the CAS for
+a launch, the target's for a retirement), and the launch's token digest or the retirement's
+operation id. A lost CAS is `conflict` and nothing is enrolled or retired. Because the reads are not
+fences (§13.1), the host MUST repeat the assignment and gate checks for a launch after the CAS and
+before any effect, and on a refusal MUST end the record `aborted` with no effect; a change that
+lands after that second read is ordered after the execution. An intent executes at most once and
+confers nothing after it executes.
+
+**Recovery.** From the CAS on, the host owns the pinned execution, whoever presented it. It MUST
+drive every consumed record to one outcome, `enrolled`, `retired` or `aborted`, at the pinned
+lifecycle UID, including after a restart or a lost answer. A launch it cannot complete MUST be
+compensated by the retirement sequence below at that UID before it is marked `aborted`. A request
+whose request id and serve epoch, and a launch's token digest, equal the pin is a retry of that
+execution: it passes the same checks except the consumed state, writes no second CAS, and MUST
+receive that execution's answer. The alias stays held until the record has an outcome.
 
 **Ownership.** A delegated launch MUST be enrolled under the record's owner with the record's
 parent, through the same writer, managed-agent envelope walk, lifecycle-keyed durables and
