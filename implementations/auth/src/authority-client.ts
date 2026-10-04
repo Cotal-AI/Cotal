@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, admissionBucket, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, AUTH_ENDPOINT, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, admissionBucket, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, AUTH_ENDPOINT, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -114,6 +114,20 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
       `$JS.API.STREAM.MSG.GET.KV_${sessionsBucket(space)}`,
     ],
     subscribe: base.subscribe,
+  };
+}
+
+/** The PLATFORM READINESS reader (SPEC 13.9): `describe` and `status` of one manager instance on
+ * its `inst` rail only, the contract-store read `resolveService` verifies the describe answer with,
+ * and its own reply rail and inbox. No other command, instance, class route or store. */
+export function platformReadinessGrants(space: string, connId: string, caller: EpCaller, instanceId: string): { publish: string[]; subscribe: string[] } {
+  const rows = epCallerGrantRows(space, instanceOnlyManagerCapabilities(
+    ["describe", "status"].map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
+    instanceId,
+  ), caller);
+  return {
+    publish: [`$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`, ...rows.pub],
+    subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`, ...rows.sub],
   };
 }
 

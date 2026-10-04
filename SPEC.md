@@ -3375,6 +3375,17 @@ the platform owner token. Serve-time admin authorization answers `authorized: tr
 caller whose owner equals that token; a human `admin` scope never authorizes against it. It is
 never a raw provisioner, stream, KV, consumer, signer, launch, or cross-owner control grant.
 
+**Platform readiness read.** A platform composition learns whether its assigned control manager
+instance is serving through the auth context's readiness read. The trusted auth process answers over
+its own self-minted reader connection and hands out neither that connection nor its credential. The
+reader's grant is the `describe` and `status` request rows on `ep.inst.manager.<instanceId>` for the
+one assigned instance under the reader's own caller triple, the subject-scoped contract-store Direct
+Get, its own reply rail, and its own `_INBOX_<connId>.>`. It holds no other command, instance, class
+or scatter route, no other store read, no KV write, and no signer. The read observes the current
+assignment on every call, refuses any other instance, and refuses an instance whose gate names
+another principal. The reader renews as the other self-minted authority connections do: a
+short-lived user JWT re-minted in process at half-life and presented on reconnect.
+
 **The ownership matrix (normative).** Every profile × resource × transition is classified
 **mediated** or **direct**, in an independently reviewed matrix from which grants are
 generated (never the reverse). Each row names the writer PROFILE, the exact subject/API

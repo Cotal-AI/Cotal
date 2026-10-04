@@ -471,6 +471,7 @@ Each refusal maps to the SPEC clause that states it. A security reviewer can che
 | the `allowPlatform` opt-in at the eviction and liveness executors | `@cotal-ai/delivery` | landed |
 | `platformControlOwner`, `PlatformControlInput`, `parsePlatformControlAuthorityRequest`, `ManagerAuthorityHolder` | `@cotal-ai/auth` | landed |
 | `startAuthService` input `platformControl`, `AuthServiceHandle.platformControlAuthority` | `@cotal-ai/auth` | landed; the member exists only when the input is supplied |
+| `AuthServiceHandle.platformControlReadiness` | `@cotal-ai/auth` | landed with the same input; reads the assigned instance's `status` over the context's own connection, pinned to that instance's `describe` and `status` |
 | the read-only predecessor check and the assigned-instance gate check (section 3.2, step 2) | `@cotal-ai/auth` | landed |
 | `startAuthService` input `standingRenewableTtlSeconds` | `@cotal-ai/auth` | landed as a pass-through; the plane's 5..86400 bound applies |
 | the `holder` authorization union and the maintenance guard (section 3.2, steps 5 and 6) | `@cotal-ai/auth` | landed |
