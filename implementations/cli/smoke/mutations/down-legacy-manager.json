@@ -15,8 +15,8 @@
     {
       "name": "M1 restore the unconditional legacy-manager refusal before SIGTERM",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "                if (!values[\"with-agents\"])\n                  console.error(c.dim(\"could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility\"));\n              }\n              if (values[\"with-agents\"]) armManagerShutdownIntent(context, attempt);\n              else if (attempt.target.token !== undefined) assertManagerCanSpare(context, undefined, attempt.target);",
-      "replace": "                throw new Error(\"refusing manager stop: the exact manager process identity is not pinned\");\n              }\n              if (values[\"with-agents\"]) armManagerShutdownIntent(context, attempt);\n              else if (attempt.target.token !== undefined) assertManagerCanSpare(context, undefined, attempt.target);",
+      "find": "                if (!values[\"with-agents\"])\n                  console.error(c.dim(\"could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility\"));\n              }\n              if (values[\"with-agents\"]) armManagerShutdownIntent(context, attempt);\n              else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);",
+      "replace": "                throw new Error(\"refusing manager stop: the exact manager process identity is not pinned\");\n              }\n              if (values[\"with-agents\"]) armManagerShutdownIntent(context, attempt);\n              else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);",
       "expectRed": "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
       "cell": "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
       "note": "Restores the blocked-head behavior exactly: both live legacy records stop before SIGTERM, remain alive, and keep their pidfiles. The suite executes bare and --with-agents first, then the named bare cell is the first red.",
@@ -35,8 +35,8 @@
     {
       "name": "M3 report a tokenless manager's pre-signal inventory as confirmed spared",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "  if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();\n  else if (spared) printSparedAgents(spared);",
-      "replace": "  if (legacyManagerSpareUnverified) printSparedAgents(spared ?? []);\n  else if (spared) printSparedAgents(spared);",
+      "find": "  if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();\n  else if (spared) printSparedAgents(spared, spareSeats);",
+      "replace": "  if (legacyManagerSpareUnverified) printSparedAgents(spared ?? []);\n  else if (spared) printSparedAgents(spared, spareSeats);",
       "expectRed": "bare down never reports a historical destructive manager's reaped agent as spared",
       "cell": "bare down never reports a historical destructive manager's reaped agent as spared",
       "note": "Restores the false affirmative output from the blocked head. The fixture's historical SIGTERM handler actually kills its agent, so rendering even an empty confirmed-spared inventory is a named red rather than a prose-only check.",
@@ -56,7 +56,7 @@
     {
       "name": "M5 signal a pinned manager without spare-capability evidence",
       "file": "implementations/cli/src/commands/down.ts",
-      "find": "              else if (attempt.target.token !== undefined) assertManagerCanSpare(context, undefined, attempt.target);",
+      "find": "              else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);",
       "replace": "              else if (attempt.target.token !== undefined) { /* mutant: signal without spare-capability evidence */ }",
       "expectRed": "a pinned manager without a capability prints the legacy-safe route and is not signalled",
       "cell": "a pinned manager without a capability prints the legacy-safe route and is not signalled",
