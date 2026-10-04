@@ -14,6 +14,7 @@ import {
   unansweredRail,
   registryReadFailed,
   renderLifecycleBlocked,
+  replyRefusedBeforeEffect,
   submitAndFollowGoal,
   scatterCommand,
   mintLifecycleUid,
@@ -22,11 +23,13 @@ import {
   resolveService,
   standaloneConnectOpts,
   type ControlReply,
+  type EpAttributedReply,
   type EpCaller,
   type EpInstanceLiveness,
   type EpVerbTarget,
   type FlagSpec,
   type Profile,
+  type ResolvedService,
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -79,6 +82,47 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
  *  any-mode). Replaces the deleted manager ctl tiers as the CLI's mode selector (1d). */
 export type ControlReach = "owner" | "any";
 
+/** How many times {@link invokeRepairingSplit} re-issues one call after a `not-executed` bind
+ *  refusal. Every re-issue is a first attempt, so this is a loop guard and not a duplication guard.
+ *  Each attempt splits with probability (m-1)/m in a space of m managers, so seventeen attempts
+ *  leave a three-manager space about 1 in 1000 where the unrepaired call failed 2 in 3 (#398). An
+ *  attempt costs an answered describe and invoke, never an elapsed deadline. */
+const BIND_SPLIT_REISSUES = 16;
+
+/**
+ * One invoke on a resolved handle, with a SPEC 13.2 bind refusal repaired rather than surfaced.
+ *
+ * An unpinned handle binds the instance that answered its describe, and the invoke is a second,
+ * independent trip through the same class queue, so in a multi-manager space another member
+ * routinely receives it and refuses before dispatching. That refusal states the command did not
+ * run, so re-describing and re-issuing is a first attempt and is safe for any command, mutations
+ * included. The re-issue repeats until the describe and the invoke agree or the bound runs out, and
+ * then the last refusal surfaces unchanged. A pinned handle is never repaired: it names its
+ * instance, so a refusal from it is that instance answering about itself.
+ */
+export async function invokeRepairingSplit(
+  nc: NatsConnection,
+  space: string,
+  service: ResolvedService,
+  command: string,
+  args: Record<string, unknown> | undefined,
+  opts: Parameters<typeof invokeCommand>[5],
+): Promise<EpAttributedReply> {
+  let handle = service;
+  for (let reissues = 0; ; reissues += 1) {
+    const r = await invokeCommand(nc, space, handle, command, args, opts);
+    if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;
+    if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return r;
+    try {
+      handle = await resolveService(nc, space, handle.endpoint, handle.caller, { deadlineMs: opts.deadlineMs ?? 10_000, ...(opts.signal ? { signal: opts.signal } : {}) });
+    } catch {
+      // The repair could not be attempted. The refusal surfaces, because it states that nothing
+      // ran, which a describe timeout raised in its place would lose.
+      return r;
+    }
+  }
+}
+
 /** The ep-rail control call — since 1d {@link askManager}'s ONLY path: one short-lived raw
  *  connection, a fresh `resolveService` (describe → §13.7 store fetch → digest-verified recompile
  *  — the generic item-5 caller, no hand-imported manager schemas), then the mapped command.
@@ -124,7 +168,7 @@ async function askManagerEp(
       // rides the SPAWN capability arm as well as the instrument read set, so every caller class
       // that can despawn/attach can also resolve its target (a `ps` SCAN here broker-drops exactly
       // the spawn-scoped user bearers - the 1c.2b read narrowing - and hangs their stop/attach).
-      const info = await invokeCommand(nc, space, service, "inspect", { name }, { deadlineMs: 10_000 });
+      const info = await invokeRepairingSplit(nc, space, service, "inspect", { name }, { deadlineMs: 10_000 });
       if (info.reply.ok !== true)
         return {
           ok: false,
@@ -157,7 +201,7 @@ async function askManagerEp(
       sendArgs = Object.keys(rest).length ? rest : undefined;
     }
     const invokeOpts = { ...(target ? { target } : {}), deadlineMs: timeoutMs ?? 10_000 };
-    const submit = () => invokeCommand(nc, space, service, mapped.command, sendArgs, invokeOpts);
+    const submit = () => invokeRepairingSplit(nc, space, service, mapped.command, sendArgs, invokeOpts);
     // P2 item 2 (2b): a goal-bearing command (spawn/launch) FOLLOWS its acceptance to the goal
     // terminal, so `spawn --detach` still returns on the real outcome (join / exit / ~30s uncertain)
     // exactly like the pre-action blocking reply — UX unchanged, no --no-wait.

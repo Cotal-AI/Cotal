@@ -13,7 +13,6 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   dialerFor,
-  invokeCommand,
   parsePrincipalKey,
   resolveService,
   standaloneConnectOpts,
@@ -27,7 +26,7 @@ import {
 import { type NatsConnection } from "@nats-io/transport-node";
 import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { resolveControlTarget, onInstanceOrExit, onFlag, type ControlAuth } from "../lib/control.js";
+import { resolveControlTarget, onInstanceOrExit, onFlag, invokeRepairingSplit, type ControlAuth } from "../lib/control.js";
 
 export const describeFlags = [...targetFlags, onFlag] as const satisfies readonly FlagSpec[];
 
@@ -133,7 +132,7 @@ export async function invokeCmd(args: ParsedArgs): Promise<void> {
       console.error(c.red(`✗ --timeout must be a positive number of milliseconds (got "${v.timeout}")`));
       process.exit(1);
     }
-    const r = await invokeCommand(nc, space, service, command, parsedArgs, { ...(target ? { target } : {}), deadlineMs });
+    const r = await invokeRepairingSplit(nc, space, service, command, parsedArgs, { ...(target ? { target } : {}), deadlineMs });
     if (r.reply.ok !== true) {
       console.error(c.red(`✗ ${r.reply.error?.code ?? "error"}: ${r.reply.error?.message ?? "the command failed"}`));
       process.exit(1);
@@ -169,7 +168,7 @@ async function resolveTarget(
     console.error(c.red(`✗ --name resolves aliases through the manager's inspect; endpoint "${service.endpoint}" has no alias resolver yet`));
     process.exit(1);
   }
-  const inspected = await invokeCommand(nc, space, service, "inspect", { name: v.name }, { deadlineMs: 10_000 });
+  const inspected = await invokeRepairingSplit(nc, space, service, "inspect", { name: v.name }, { deadlineMs: 10_000 });
   if (inspected.reply.ok !== true) {
     console.error(c.red(`✗ could not resolve "${v.name}": ${inspected.reply.error?.message ?? "inspect failed"}`));
     process.exit(1);

@@ -236,7 +236,9 @@ between a split and a duplicated spawn. Against a manager older than this fence 
 still after the fact, and its message says so. The re-issue is automatic only when the refusal
 states `not-executed` in its `outcome` field; a refusal that omits the field, or states
 `unknown`, is surfaced to the caller instead of repaired, because neither proves the command did
-not run.
+not run. The CLI's manager commands, `cotal invoke` and the manager row of `cotal status` re-describe
+and re-issue an unpinned call after each such refusal, up to 16 times, so a split reaches the
+operator only when every attempt split. A pinned call is never re-issued.
 
 A manager whose boot inventory marked every declared connector unavailable does not subscribe
 `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this
