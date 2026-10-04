@@ -465,8 +465,9 @@ refuses both kinds as `unimplemented`. The holder's composition passes
 `remoteAuthority.executeDelegatedUserIntent`, which posts the execution request and binds the answer
 with `parseRemoteDelegatedUserIntentExecutionResult`. It then starts the agent with
 `startAgent({ ..., delegatedIntent: { intentId, owner, parent } })` and retires it with
-`retireDelegatedAgent(name, intentId)`. A delegated agent's stop or exit keeps its name held until
-that retirement confirms.
+`retireDelegatedAgent(name, intentId)`, which stops the agent only after the host confirms
+`retired: true` for its exact target. A delegated agent's stop, exit or failed launch keeps its name
+held until that retirement confirms.
 
 Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
 request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays

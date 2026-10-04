@@ -354,9 +354,10 @@ executeDelegatedUserIntent?: (
 delegatedIntent?: { intentId: string; owner: string; parent: string };
 
 // Manager gains one method:
-/** Retire one agent this manager launched under a delegated intent, through the host. It stops a
- * running slot into its retirement hold, sends the request while `name` holds that slot or hold,
- * frees the name only on `retired: true`, and keeps it held on any other answer. */
+/** Retire one agent this manager launched under a delegated intent, through the host. It sends the
+ * request for the UID of the slot or hold `name` names, and only on `retired: true` for that target
+ * and its op id stops the slot and frees the name. Any other answer leaves the slot running or the
+ * name held. */
 retireDelegatedAgent(name: string, intentId: string): Promise<ControlReply>;
 ```
 
@@ -376,7 +377,11 @@ A delegated launch with a `supervise` policy is refused, and a delegated slot ar
 recovery, because a delegated agent is never restarted (section 8). A delegated slot's stop, exit,
 reap or rollback runs none of the holder's own retirement callbacks.
 Its name stays held until `retireDelegatedAgent` receives `retired: true` for that UID, and a
-same-name spawn is refused meanwhile. A manager with neither a slot nor a hold for the name, such as
+same-name spawn is refused meanwhile. A launch that fails after the host's answer, such as a
+connector that cannot build the launch, holds its name at the enrolled UID the same way.
+`retireDelegatedAgent` stops a running slot only after `retired: true` for the target and op id it
+sent, because the host's order closes the provider handle (section 7), so a refused or unconfirmed
+retirement leaves the agent running. A manager with neither a slot nor a hold for the name, such as
 a restarted holder, refuses the call, and the user's retirement then takes the holder-gone branch
 (section 7.2), because a restart moved the gate's epoch.
 
@@ -639,8 +644,8 @@ of section 6 apply, with step 5 comparing the full `{ owner, actor, lifecycleUid
 pinning `target.lifecycleUid` and its op id. Step 7 does not apply: a retirement only removes
 authority, so a holder that moves after the CAS does not abort it, and the host finishes the order
 whether or not the holder remains. After the CAS the host runs the order above and answers
-`retired`. `Manager.retireDelegatedAgent` frees the slot
-only on `retired: true`. It never calls `prepareAgentRetirement` or `mintRetirementRequester` for a
+`retired`. `Manager.retireDelegatedAgent` stops and frees the slot only on `retired: true` for the
+target and op id it sent. It never calls `prepareAgentRetirement` or `mintRetirementRequester` for a
 delegated agent: those bind to the holder's `p_` owner and would be refused for a `u_` target.
 
 ### 7.2 Holder gone

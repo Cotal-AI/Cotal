@@ -5955,6 +5955,10 @@ export class Manager {
       // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
       if (provisioned) {
         const orphan = provisioned;
+        // The host enrolled this UID for the intent's user, so only that user's retirement intent
+        // retires it, and its name stays held for retireDelegatedAgent.
+        const p = orphan.delegated ? parsePrincipalKey(orphan.id) : null;
+        if (p) this.retiring.set(orphan.name, { opId: retireOpId(orphan.lifecycleUid), lifecycleUid: orphan.lifecycleUid, owner: p.owner, actor: p.actor, agentId: orphan.id, userOwner: orphan.userOwner, delegated: true, secretPaths: orphan.secretPaths, startedAt: Date.now() });
         this.trackDeprovision(orphan, "(orphaned spawn)");
       }
     }
@@ -6803,9 +6807,10 @@ export class Manager {
   }
 
   /** Retire one agent this manager launched under a delegated user intent, through the host
-   *  (SPEC 13.16). It stops a running slot into its retirement hold, sends the user's admitted
-   *  retirement intent for that UID, and frees the name only on `retired: true`; every other answer
-   *  keeps the name held. It never calls the holder's own prepare or requester. */
+   *  (SPEC 13.16). It sends the user's retirement intent for the UID of the running slot or its
+   *  retirement hold, and only on `retired: true` for that exact target stops the slot and frees the
+   *  name; every other answer leaves the slot running or the name held. It never calls the holder's
+   *  own prepare or requester. */
   async retireDelegatedAgent(name: string, intentId: string): Promise<ControlReply> {
     const execute = this.remoteAuthority?.executeDelegatedUserIntent;
     if (!execute) return { ok: false, error: `this manager has no host execution for a delegated user intent; "${name}" was not retired` };
@@ -6813,23 +6818,30 @@ export class Manager {
     if (!release) return { ok: false, error: this.maintenanceError() };
     try {
       const live = this.agents.get(name);
-      if (live?.delegated) this.despawnAuthorized(live, true, false, `delegated retirement ${intentId}`);
-      const held = this.retiring.get(name);
-      if (!held?.delegated) return { ok: false, error: `no agent named "${name}" was launched on this manager under a delegated user intent` };
-      const target = { owner: held.owner, actor: held.actor, lifecycleUid: held.lifecycleUid };
-      let retired = false;
+      const held = live ? undefined : this.retiring.get(name);
+      const principal = live?.delegated ? parsePrincipalKey(live.id) : held?.delegated ? held : null;
+      const lifecycleUid = live?.lifecycleUid ?? held?.lifecycleUid;
+      if (!principal || !lifecycleUid) return { ok: false, error: `no agent named "${name}" was launched on this manager under a delegated user intent` };
+      const target = { owner: principal.owner, actor: principal.actor, lifecycleUid };
       try {
         const result = await execute({ intentId, operation: "retire", target });
-        if (result.operation !== "retire" || result.intentId !== intentId)
+        if (result.operation !== "retire" || result.intentId !== intentId || result.opId !== retireOpId(target.lifecycleUid) ||
+            result.target.owner !== target.owner || result.target.actor !== target.actor || result.target.lifecycleUid !== target.lifecycleUid)
           throw new Error(`the host answered delegated intent ${intentId} with another execution`);
-        retired = result.retired;
+        if (result.retired !== true)
+          return { ok: false, error: `the host did not confirm the delegated retirement of "${name}" at ${target.lifecycleUid}; "${name}" is unchanged` };
       } catch (e) {
-        held.lastError = `the delegated retirement under intent ${intentId} did not complete (${(e as Error).message})`;
-        return { ok: false, error: `${held.lastError}; the name "${name}" stays held` };
+        const error = `the delegated retirement under intent ${intentId} did not complete (${(e as Error).message})`;
+        const hold = this.retiring.get(name);
+        if (hold?.lifecycleUid === target.lifecycleUid) hold.lastError = error;
+        return { ok: false, error: `${error}; "${name}" is unchanged` };
       }
-      if (!retired) return { ok: false, error: `the host did not confirm the delegated retirement of "${name}" at ${target.lifecycleUid}; the name stays held` };
-      this.confirmRetirement({ id: held.agentId, name, lifecycleUid: held.lifecycleUid });
-      return { ok: true, data: { name, lifecycleUid: held.lifecycleUid, retired: true } };
+      // The host's retirement closed this UID's provider handle before its barrier, so the stop only
+      // reaps the slot, and its hold clears with the confirmation.
+      const slot = this.agents.get(name);
+      if (slot?.lifecycleUid === target.lifecycleUid) this.despawnAuthorized(slot, true, false, `delegated retirement ${intentId}`);
+      this.confirmRetirement({ id: principalKey(target.owner, target.actor).key, name, lifecycleUid: target.lifecycleUid });
+      return { ok: true, data: { name, lifecycleUid: target.lifecycleUid, retired: true } };
     } finally {
       release();
     }
