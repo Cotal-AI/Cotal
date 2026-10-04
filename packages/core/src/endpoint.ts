@@ -56,6 +56,7 @@ import {
   JetStreamApiError,
   type JetStreamClient,
   type JetStreamManager,
+  type Consumer,
   type ConsumerMessages,
   type ConsumerInfo,
   type JsMsg,
@@ -3073,17 +3074,18 @@ export class CotalEndpoint extends EventEmitter {
     watch.rejectStop = undefined;
   }
 
-  /** Delete one membership-watch consumer, swallowing ONLY already-gone. */
+  /** Delete one membership-watch consumer, swallowing ONLY already-gone and a refused delete. */
   private async deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string): Promise<boolean> {
     try { return await jsm.consumers.delete(stream, name); }
     catch (err) {
-      if ((err as { code?: number }).code === 404 || /(consumer|stream) not found/i.test((err as Error).message)) return true;
+      if (membershipConsumerReleased(err)) return true;
       throw err;
     }
   }
 
-  /** Stop the local iterator AND delete its ordered consumer. The admin/observer grant already holds
-   *  the bucket-scoped consumer-delete row, so a reconnect leaves no five-minute predecessor. */
+  /** Stop the local iterator AND delete its ordered consumer. The admin/observer profile holds no
+   *  consumer delete on this bucket (#691), so its refused delete leaves the consumer to the broker's
+   *  five-minute inactive threshold. */
   private async disarmMembershipWatch(watch: MembershipFeedWatch): Promise<void> {
     const iter = watch.iter;
     const consumer = watch.consumer;
@@ -3095,7 +3097,7 @@ export class CotalEndpoint extends EventEmitter {
         const deleted = await consumer.delete();
         if (deleted) { watch.consumerStream = undefined; watch.consumerName = undefined; }
       } catch (err) {
-        if ((err as { code?: number }).code === 404 || /(consumer|stream) not found/i.test((err as Error).message)) {
+        if (membershipConsumerReleased(err)) {
           watch.consumerStream = undefined;
           watch.consumerName = undefined;
         } else {
@@ -3484,10 +3486,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      try { await consumer.delete(); }
-      catch (e) {
-        if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw e;
-      }
+      await deleteReaderConsumer(consumer);
     }
   }
 
@@ -3529,10 +3528,7 @@ export class CotalEndpoint extends EventEmitter {
       // exists to stop.
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      try { await consumer.delete(); }
-      catch (e) {
-        if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw e;
-      }
+      await deleteReaderConsumer(consumer);
     }
   }
 
@@ -3606,10 +3602,9 @@ export class CotalEndpoint extends EventEmitter {
       // DMs, and the single-channel routes still make one each.
       // Left alone that accumulates consumers on the broker until the thresholds expire, and the
       // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
-      try { await consumer.delete(); }
-      catch (e) {
-        if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw e;
-      }
+      // The observer and admin profiles may not delete (#691), so the dashboard's readers do live out
+      // that threshold; only a profile holding the delete row reclaims them here.
+      await deleteReaderConsumer(consumer);
     }
   }
 
@@ -6916,6 +6911,23 @@ export function isPermissionDenied(e: unknown): boolean {
  * result, so a permission denial, timeout, or protocol failure must never pass as "not found". */
 function isJetStreamMissing(e: unknown, ...codes: number[]): boolean {
   return e instanceof JetStreamApiError && codes.includes(e.code);
+}
+
+/** Delete a history reader's own ephemeral consumer. A refused delete is the designed outcome for
+ *  the elevated profile, which holds no stream-wide CONSUMER.DELETE (#691): the broker reaps the
+ *  consumer at its inactive threshold. */
+async function deleteReaderConsumer(consumer: Consumer): Promise<void> {
+  try { await consumer.delete(); }
+  catch (e) {
+    if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound) && !isPublishPermissionDenied(e)) throw e;
+  }
+}
+
+/** A membership-watch delete that leaves nothing to retry: the consumer is already gone, or the broker
+ *  refused the delete because the reading profile holds no stream-wide CONSUMER.DELETE (#691) and
+ *  reaps the consumer at its inactive threshold. */
+function membershipConsumerReleased(err: unknown): boolean {
+  return (err as { code?: number }).code === 404 || /(consumer|stream) not found/i.test((err as Error).message) || isPublishPermissionDenied(err);
 }
 
 /** The signal's exact abort reason, or the platform-standard AbortError when none was supplied. */
