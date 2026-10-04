@@ -49,19 +49,19 @@ export async function listManagerSeatsForSpare(context: LocalProcessContext): Pr
 
 /** Report the pre-signal inventory after the manager stopped. A manager whose capability says its
  *  default stop also stops in-process seats (`stop`) has those seats reported as stopped when their
- *  recorded pid is gone; every other row is reported as left running. */
+ *  recorded pid is gone, without their pre-signal status; every other row is reported as left running. */
 export function printSparedAgents(rows: SpareSeatRow[], seats: ManagerSpareSeats = "release"): void {
-  const line = (row: SpareSeatRow) =>
-    `  ${[row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, row.status].filter(Boolean).join("  ·  ")}`;
+  const line = (row: SpareSeatRow, status: string | undefined) =>
+    `  ${[row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, status].filter(Boolean).join("  ·  ")}`;
   const stopped = seats === "stop" ? rows.filter((row) => row.pid !== undefined && probeLiveness(row.pid) === "dead") : [];
   const left = rows.filter((row) => !stopped.includes(row));
   if (stopped.length) {
     console.log(c.dim(`stopped ${stopped.length} managed agent${stopped.length === 1 ? "" : "s"} that ran inside the manager process:`));
-    for (const row of stopped) console.log(line(row));
+    for (const row of stopped) console.log(line(row, undefined));
     if (!left.length) return;
   }
   console.log(c.dim(`left ${left.length} managed agent${left.length === 1 ? "" : "s"} running (no longer managed):`));
-  for (const row of left) console.log(line(row));
+  for (const row of left) console.log(line(row, row.status));
   console.log(c.dim("to stop managed agents with the stack: cotal down --with-agents"));
 }
 
