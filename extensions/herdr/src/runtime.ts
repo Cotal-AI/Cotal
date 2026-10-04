@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import {
   hardenPrivate,
   registry,
+  SpawnRefused,
   writeSecretFile,
   type AgentHandle,
   type LaunchSpec,
@@ -65,7 +66,7 @@ export function privateLauncher(spec: LaunchSpec, cwd: string): PrivateLauncher 
 function layoutFromEnv(): "tab" | "split" {
   const raw = process.env.COTAL_HERDR_LAYOUT ?? "tab";
   if (raw === "tab" || raw === "split") return raw;
-  throw new Error(
+  throw new SpawnRefused(
     `herdr runtime: unknown COTAL_HERDR_LAYOUT ${JSON.stringify(raw)} (expected "tab" or "split")`,
   );
 }
@@ -102,10 +103,10 @@ export class HerdrRuntime implements Runtime {
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     if (!/^[A-Za-z0-9_.-]+$/.test(name))
-      throw new Error(`herdr runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
+      throw new SpawnRefused(`herdr runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
     if (!herdr.available()) {
       const found = herdr.versionText();
-      throw new Error(
+      throw new SpawnRefused(
         `herdr runtime: no usable herdr on PATH - needs >= ${herdr.MIN_HERDR.join(".")}` +
           (found ? ` (found "${found}")` : " (herdr not installed or not on PATH)"),
       );
@@ -113,14 +114,20 @@ export class HerdrRuntime implements Runtime {
     // herdr silently substitutes $HOME for a bad --cwd; validate here so a bad workspace
     // fails loud at spawn instead of the agent starting somewhere else entirely (a non-directory
     // would otherwise die later, invisibly, at the launcher's chdir).
-    if (!isDirectory(cwd)) throw new Error(`herdr runtime: cwd ${JSON.stringify(cwd)} is not a directory`);
+    if (!isDirectory(cwd)) throw new SpawnRefused(`herdr runtime: cwd ${JSON.stringify(cwd)} is not a directory`);
     const layout = layoutFromEnv(); // before any side effects, so a bad value spawns nothing
-    herdr.ensureServer(this.session);
-
-    // `split` shares a tab, so the tab set has to be sampled BEFORE this agent adds its own.
-    const tabsBefore = layout === "split" ? herdr.tabIds(this.session) : [];
-
-    const launcher = privateLauncher(spec, cwd);
+    // Nothing has the spec's command until agentStart, so a failure before it (a server that will
+    // not start, a launcher script that cannot be written) is a refusal.
+    let tabsBefore: string[];
+    let launcher: PrivateLauncher;
+    try {
+      herdr.ensureServer(this.session);
+      // `split` shares a tab, so the tab set has to be sampled BEFORE this agent adds its own.
+      tabsBefore = layout === "split" ? herdr.tabIds(this.session) : [];
+      launcher = privateLauncher(spec, cwd);
+    } catch (err) {
+      throw new SpawnRefused((err as Error).message);
+    }
     let agent: herdr.HerdrAgent | undefined;
     let startedTerminalId: string | undefined;
     try {

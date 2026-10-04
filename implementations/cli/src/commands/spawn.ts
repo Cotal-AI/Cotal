@@ -6,9 +6,11 @@ import {
   connectorServers,
   spawnEnvAllow,
   deprovisionAgent,
+  discardLaunchArtifacts,
   firstFreeName,
   isReachable,
   loadAgentFile,
+  reclaimWithChild,
   loadCotalConfig,
   mintCreds,
   newIdentity,
@@ -925,6 +927,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // cleanup is a no-op in the other's mode.
   let child: ReturnType<typeof spawnProcess>;
   let spec: LaunchSpec;
+  let artifacts: string[] | undefined;
   try {
     spec = connector.buildLaunch({
       space,
@@ -957,6 +960,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // construction because its write-ahead log had nowhere to live that a later start would look.
       workspaceRoot: target.root,
     });
+    artifacts = spec.artifacts;
     scrubEnrollmentEnv(spec.env);
 
     // What happens next belongs to the CONNECTOR: naming one harness's first-run gate for all of
@@ -975,7 +979,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         : "(actor granted; revoked automatically when this process exits)";
       console.error(c.dim(`  running as you: ${userAuth.owner}.${name} ${revokeNote}`));
     }
-    child = spawnProcess(spec.command, spec.args, {
+    // The child's watcher removes the launch's private files once it is gone, even if this process
+    // is killed first (core launch-artifacts).
+    const launched = reclaimWithChild(spec);
+    child = spawnProcess(launched.command, launched.args, {
       stdio: "inherit",
       // P3: only the connector-declared env (OS allow-list + identity + named model key) — never
       // `...process.env`, so the operator's unrelated secrets don't bleed into the foreground agent.
@@ -990,6 +997,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // before rethrowing, so no standing grant survives a spawn that never started.
     if (userCleanup) await userCleanup().catch((err) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(err as Error).message}`)));
     await retireProvision("launch build failed");
+    // The launch's private files (core launch-artifacts) go too: no child will read them.
+    discardLaunchArtifacts(artifacts);
     throw e;
   }
   await new Promise<void>((resolve) => {
@@ -1017,6 +1026,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // (a SIGKILLed CLI can't run this; the next same-name spawn's rotation is the backstop), loud
   // on failure, never blocking the exit code already set above.
   if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(e as Error).message}`)));
+  // The child has exited or never started, so nothing reads the launch's private files any more
+  // (core launch-artifacts). A SIGKILLed CLI cannot run this; the child's watcher removes those.
+  discardLaunchArtifacts(spec.artifacts);
 }
 
 /** What a remote mesh's agent-provisioning endpoint returns (U6 §2). The client validates every

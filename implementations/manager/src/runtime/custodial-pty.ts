@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { AgentHandle, AttachSession, LaunchSpec, RuntimeReference } from "@cotal-ai/core";
+import { discardLaunchArtifacts, type AgentHandle, type AttachSession, type LaunchSpec, type RuntimeReference } from "@cotal-ai/core";
 import type { CustodialRuntime, RuntimeReapEvidence } from "./index.js";
 import { adoptSeatSync, launchSeat, loadSeat, reapSeat, seatId, unsupportedTransport, type SeatRecord } from "@cotal-ai/seat";
 
@@ -42,13 +42,20 @@ export class CustodialPtyRuntime implements CustodialRuntime {
   }
 
   spawn(name: string, spec: LaunchSpec, cwd: string, reference?: RuntimeReference): AgentHandle {
-    if (process.platform !== "linux") throw unsupportedTransport();
-    if (reference !== undefined && reference.kind !== "pty")
-      throw new Error(`cannot spawn under runtime kind "${reference.kind}" with pty`);
+    try {
+      if (process.platform !== "linux") throw unsupportedTransport();
+      if (reference !== undefined && reference.kind !== "pty")
+        throw new Error(`cannot spawn under runtime kind "${reference.kind}" with pty`);
+    } catch (e) {
+      // Refused before any process exists, so no child will read the launch's files (core
+      // launch-artifacts). Every later refusal is launchSeat's, which removes them the same way.
+      discardLaunchArtifacts(spec.artifacts);
+      throw e;
+    }
     const rec = launchSeat({
       root: this.root,
       name,
-      spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: spec.confirm },
+      spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: spec.confirm, artifacts: spec.artifacts },
       cwd,
       ...(reference ? { id: reference.id } : {}),
     });
