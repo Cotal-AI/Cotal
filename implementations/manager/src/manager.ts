@@ -1002,7 +1002,7 @@ function foreignEventChannels(channels: readonly string[], owner: string, actor:
   });
 }
 
-type LeaseState = "held" | "held-unrenewed" | "gone" | "taken" | "unknown";
+type LeaseState = "held" | "held-unrenewed" | "gone" | "unknown";
 
 function injectedManagerStoreIdentity(store: SecretStore): SecretStoreIdentity {
   if (store.identity !== undefined) return parseSecretStoreIdentity(store.identity);
@@ -1661,8 +1661,8 @@ export class Manager {
     // second workspace root) has a distinct id ⇒ a distinct key ⇒ it coexists; the create THROWS only
     // when the SAME instance id is already live (a same-root double-start, or a restart racing the
     // crashed predecessor's not-yet-expired key), and we REFUSE loud. A crashed holder's key auto-expires
-    // (bucket TTL). Losing the key LATER never ends this process: the renew loop puts it back or keeps
-    // retrying ({@link renewLease}).
+    // (bucket TTL). Losing the key LATER ends this process only when another process holds it; otherwise
+    // the renew loop puts it back or keeps retrying ({@link renewLease}).
     this.leaseInfo = { holder: this.ep.ref().id, instanceId: this.managerInstanceId, runtime: this.runtime.kind, root: resolve(this.workspaceRoot), pid: process.pid };
     try {
       this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
@@ -2965,18 +2965,18 @@ export class Manager {
     try { await s.nc.drain(); } catch { try { s.nc.close(); } catch { /* best effort */ } }
   }
 
-  /** Keep this instance's liveness key fresh, and NEVER end the process over it.
+  /** Keep this instance's liveness key fresh, and end the process only when another process holds it.
    *
    *  A renew that throws is a question, not a verdict: the request may have timed out with the write
    *  landed and only its acknowledgement lost, the key may have expired during a stall, or a same-id
    *  process may hold it. The verdict comes from RE-READING the key ({@link reconcileLease}), and each
-   *  answer has one response, none of which is exiting:
+   *  answer has one response:
    *  - `held`: adopt the broker's revision and carry on.
    *  - `gone`: the key expired or was released while this process was still here, so put it back. The
    *    create is atomic, so a same-id process that got there first shows up as `taken` next tick.
-   *  - `taken`: a different process holds this instance's key. Say so, once, and keep serving. The
-   *    registration takeover is what fences a superseded serve family at the broker, and which of the
-   *    two processes goes is the operator's call, not this one's.
+   *  - `taken`: a different process holds this instance's key, so it took this instance over while
+   *    this one stalled. This process is the superseded one and stops serving by exiting (SPEC 13.1).
+   *    An open mesh has no barrier that would evict its serve connection, so nothing else stops it.
    *  - `unknown`: the broker could not be asked. Keep serving and ask again next tick, for as long as it
    *    takes. A manager that cannot reach its broker gains nothing by ending itself, and the seats it
    *    holds lose everything (a pty child dies with its parent).
@@ -3038,8 +3038,12 @@ export class Manager {
             return;
           }
           case "taken":
-            this.noteLease("taken", `finds its liveness lease key held by ${verdict.by}, not by this process (renew: ${why}); serving, retrying. Two processes claim manager instance ${this.managerInstanceId}: stop one of them`);
-            return;
+            // No `stop()` on the way out: its deregistration deletes the instance's current
+            // registration, which is the other process's now. That process took over on the premise
+            // that this one was gone, so this exit leaves what a crash would, and seats a custodian or
+            // multiplexer owns outlive it the same way.
+            console.error(`! manager instance ${this.managerInstanceId} finds its liveness lease key held by ${verdict.by}, not by this process (renew: ${why}); that process serves this instance now, so this one stops serving and exits (space "${this.space}")`);
+            process.exit(1);
           case "unknown":
             this.noteLease("unknown", `could not renew its liveness lease (${why}) or re-read it (${verdict.why}); serving, retrying until the broker answers`);
             return;

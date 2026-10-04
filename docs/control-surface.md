@@ -306,10 +306,10 @@ A manager that stops cleanly removes its own registration if it still owns the r
 so an ordinary shutdown leaves no stale row. It refuses that delete while this instance holds the
 endpoint governance slot at the live issuance-gate generation (a registration still completing
 its reopen). A leftover slot whose generation is behind that live generation is not in-flight and
-does not block the stop. Lease trouble is not an exit path. A manager that
-cannot renew or read its lease keeps serving, stays registered, and retries. If another process
-holds the same instance key, it logs the conflict and keeps serving until an operator stops one of
-them. The revision-pinned deregistration leaves a successor's registration alone.
+does not block the stop. A manager that cannot renew or read its lease keeps serving, stays
+registered, and retries. If another process holds the same instance key, that process has taken
+the instance over, so this one logs the conflict and exits without deregistering, leaving the
+successor's registration alone.
 
 A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under
 that op. The successor completes the dead registration on boot when the freeze-holder is
