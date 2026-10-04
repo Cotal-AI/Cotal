@@ -53,7 +53,7 @@
     {
       "name": "M3 the ps row reads provider from the launch request instead of the presence card",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      const providerMeta = roster.get(a.name)?.card.meta?.provider;",
+      "find": "      const providerMeta = seen?.card.meta?.provider;",
       "replace": "      const providerMeta = a.launch.model;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "ps carries the provider the seat's presence card reports",

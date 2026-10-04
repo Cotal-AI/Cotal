@@ -34,8 +34,8 @@
     {
       "name": "M3 notify exit only to output subscribers",
       "file": "packages/seat/src/custodian.ts",
-      "find": "    for (const sock of controllers) send(sock, { event: \"exit\" });",
-      "replace": "    for (const socks of dataSubs.values()) {\n      for (const sock of socks) send(sock, { event: \"exit\" });\n    }",
+      "find": "    for (const sock of controllers) send(sock, { event: \"exit\", exit });",
+      "replace": "    for (const socks of dataSubs.values()) {\n      for (const sock of socks) send(sock, { event: \"exit\", exit });\n    }",
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
       "expectRed": "onExit fires without an output subscription",
       "cell": "onExit fires without an output subscription",
