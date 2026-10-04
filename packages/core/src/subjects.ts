@@ -359,7 +359,7 @@ export function principalTags(owner: string, actor: string): string[] {
  *  (it drops the connection rather than fall back to the ephemeral nkey — a tagless connection is not a
  *  principal we can attribute). Validates via {@link parsePrincipalKey} so a forged/garbled tag can't
  *  smuggle a non-principal string into the feed. */
-export function principalFromTags(tags: readonly string[] | undefined): string | null {
+export function principalFromTags(tags: readonly string[] | undefined, opts: { allowPlatform?: boolean } = {}): string | null {
   if (!tags) return null;
   const tag = tags.find((t) => t.startsWith(PRINCIPAL_TAG_PREFIX));
   if (!tag) return null;
@@ -369,7 +369,7 @@ export function principalFromTags(tags: readonly string[] | undefined): string |
   // `principal:<nkey>.team` tag would key a live feed entry on an nkey-shaped owner the surfacing path
   // rejects. Fail closed on anything else.
   const p = parsePrincipalKey(key);
-  return p && isPrincipalOwnerToken(p.owner) ? key : null;
+  return p && isPrincipalOwnerToken(p.owner, { allowLocal: true, allowPlatform: opts.allowPlatform ?? false }) ? key : null;
 }
 
 /** Inverse of {@link principalKey}'s `name` form (`<owner>-<actor>`): recover the principal dot-form
@@ -377,13 +377,13 @@ export function principalFromTags(tags: readonly string[] | undefined): string |
  *  tokens too — `-` is reserved as the name-form separator — so the FIRST `-` splits owner from actor
  *  unambiguously, and both halves must be {@link parsePrincipalKey}-valid with a real principal owner.
  *  An nkey (no `-`) or any other non-name-form returns null. */
-export function principalFromName(name: string | undefined): string | null {
+export function principalFromName(name: string | undefined, opts: { allowPlatform?: boolean } = {}): string | null {
   if (typeof name !== "string") return null;
   const dash = name.indexOf("-");
   if (dash <= 0 || dash >= name.length - 1) return null;
   const key = `${name.slice(0, dash)}.${name.slice(dash + 1)}`;
   const p = parsePrincipalKey(key);
-  return p && isPrincipalOwnerToken(p.owner) ? key : null;
+  return p && isPrincipalOwnerToken(p.owner, { allowLocal: true, allowPlatform: opts.allowPlatform ?? false }) ? key : null;
 }
 
 /** Recover a connection's principal dot-form from a `$SYS` CONNZ record, across BOTH credential
@@ -394,9 +394,11 @@ export function principalFromName(name: string | undefined): string | null {
  *     and does NOT surface `tags` at all (proven live on nats-server 2.10.22 + 2.14.2).
  *  So attribution must try the tag first, then the `authorized_user` name-form; anything else (an
  *  un-tagged nkey, open mode, infra) is `null` — unattributable, dropped fail-closed by callers.
- *  The membership feed and live eviction both key on this, so it lives here as the single source. */
-export function principalFromConnz(conn: { tags?: readonly string[]; authorized_user?: string }): string | null {
-  return principalFromTags(conn.tags) ?? principalFromName(conn.authorized_user);
+ *  The membership feed and live eviction both key on this, so it lives here as the single source.
+ *  `allowPlatform` also attributes a platform `p_…` owner (SPEC 13.1). Only the eviction and liveness
+ *  sweeps opt in, so they can fence the platform control family; the membership feed does not. */
+export function principalFromConnz(conn: { tags?: readonly string[]; authorized_user?: string }, opts: { allowPlatform?: boolean } = {}): string | null {
+  return principalFromTags(conn.tags, opts) ?? principalFromName(conn.authorized_user, opts);
 }
 
 /** The reserved owner token for the **no-login local/dev path** — the static-creds default when there

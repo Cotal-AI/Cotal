@@ -149,6 +149,8 @@ export function assertPlatformOwnerToken(owner: string): string;
 /** Opt-in at a trust boundary; absent, a `p_` owner is refused as before. */
 export function assertPrincipalOwnerToken(owner: string, opts?: { allowLocal?: boolean; allowPlatform?: boolean }): string;
 export function isPrincipalOwnerToken(owner: string, opts?: { allowLocal?: boolean; allowPlatform?: boolean }): boolean;
+/** Opt-in in the eviction and liveness sweeps only (section 6); the membership feed stays default. */
+export function principalFromConnz(conn: { tags?: readonly string[]; authorized_user?: string }, opts?: { allowPlatform?: boolean }): string | null;
 ```
 
 The managed-agent kinds (`manager-managed-agent-enrollment`, `-prepare-retirement`,
@@ -359,14 +361,27 @@ The holder is a platform principal: owner `p_…`, actors fixed by the instance 
 disjoint from `u_` by prefix and from nkeys by case, length and `_`. Keying the HMAC with the
 space's owner secret keeps the token opaque per space, the same as derived owners.
 
-Every trust-boundary owner check (`assertPrincipalOwnerToken`, `isPrincipalOwnerToken`, the
-admin-authorization caller parser) still accepts only `u_…` or `local` by default. The two
-principal checks gain an `allowPlatform` option, and three boundaries opt in, all on the instance's
-own family: the issuance gate row parser, the credential-ledger holder principal, and the principal
-liveness probe the gate repair uses. Every other guard refuses a `p_` owner as before, including
-the presence and message drop guards, and `assertDerivedOwnerToken` never accepts one. A running
-platform Manager presents a roster card under its `p_` owner (H6), so the presence admission
-lands with the platform Runtime round, against that row. No test was committed for the negative
+Every trust-boundary owner check (`assertPrincipalOwnerToken`, `isPrincipalOwnerToken`, CONNZ
+attribution, the descendant request parsers) still accepts only `u_…` or `local` by default. The
+two principal checks and `principalFromConnz` gain an `allowPlatform` option. These boundaries opt
+in, each on the platform family or its same-owner descendants:
+
+| Boundary | Why it must see a `p_` owner |
+|---|---|
+| issuance gate row parser, credential-ledger holder principal | the gate and every `epcred` row name the platform serve principal |
+| CONNZ attribution in the eviction and liveness sweeps, and the delivery daemon's `evictPrincipal(s)` and `principalLiveness` executors | registration restart, gate repair and verified revocation must find the platform family's live connections; without it a still-live `p_` connection is dropped from the sweep and reads as gone |
+| the manager goal-index scanner | boot reconcile scans `goalidx.manager.<p_owner>.>` for the restarted instance's predecessor goals |
+| `runDriverCaller` and the run driver grants | a platform manager's hosted run is driven under `<p_owner>.wf_…` |
+| the retirement target, retained-validation target and admin caller parsers, for the platform holder only | the door answers these for its own `p_` descendants; the human route's parsers are unchanged |
+
+A `u_` target or caller still parses on the platform arm and is then refused on owner mismatch, so
+the door never acts on another owner (R8). The auth ledger holds rows only for derived owners, so a
+platform-owned agent's retained validation is the same "unknown agent" denial as any absent row, and
+its admin authorization is `authorized: false`. Every other guard refuses a `p_` owner as before,
+including the membership feed and the presence and message drop guards, and
+`assertDerivedOwnerToken` never accepts one. A running platform Manager presents a roster card
+under its `p_` owner (H6), so the presence admission lands with the platform Runtime round, against
+that row. No test was committed for the negative
 side. The hand test checks that the default guard and the derived-owner check refuse the issued
 `p_` owner. SPEC §13.1 scopes this extension of the §2 owner format to these principals; §2 itself
 is unchanged. The §13.2 mode-word discrimination still holds, because a `p_` token contains `_` and
@@ -445,7 +460,8 @@ Each refusal maps to the SPEC clause that states it. A security reviewer can che
 | Symbol | Package | Status |
 |---|---|---|
 | `PlatformControlInnerRequest`, `PlatformControlAuthorityRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` | `@cotal-ai/core` | landed, insertion-only; existing request types unchanged |
-| `PLATFORM_OWNER_PREFIX`, `assertPlatformOwnerToken`, the `allowPlatform` option | `@cotal-ai/core` | landed; opted in at the gate row, credential holder and liveness probe only (section 6) |
+| `PLATFORM_OWNER_PREFIX`, `assertPlatformOwnerToken`, the `allowPlatform` option on the owner checks and `principalFromConnz` | `@cotal-ai/core` | landed; opted in only at the boundaries section 6 lists |
+| the `allowPlatform` opt-in at the eviction and liveness executors | `@cotal-ai/delivery` | landed |
 | `platformControlOwner`, `PlatformControlInput`, `parsePlatformControlAuthorityRequest`, `ManagerAuthorityHolder` | `@cotal-ai/auth` | landed |
 | `startAuthService` input `platformControl`, `AuthServiceHandle.platformControlAuthority` | `@cotal-ai/auth` | landed; the member exists only when the input is supplied |
 | the read-only predecessor check and the assigned-instance gate check (section 3.2, step 2) | `@cotal-ai/auth` | landed |

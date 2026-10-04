@@ -170,15 +170,16 @@ export async function executeEviction(server: string, target: ScanTarget, princi
  *  same per-principal validation, one observer connection and one scan → KICK → verify for all. */
 export async function executeEvictions(server: string, target: ScanTarget, principals: readonly string[], verb = "evictPrincipals"): Promise<EvictionResult[]> {
   // Fail-closed principal validation — the KICK targets come from the observer's own CONNZ scan,
-  // but the FILTER must be a REAL principal: syntax alone is not enough, because CONNZ attribution
-  // only ever surfaces owners that pass isPrincipalOwnerToken (`local` / derived `u_…`), so a
-  // syntactically-valid non-principal like `foo.bar` could scan completely, match nothing, and
-  // return a HEALTHY verified no-op — false confidence for a typo'd or old-shape target (the
-  // critic's slice-6 catch). Same owner boundary as attribution, refused loudly instead.
+  // but the FILTER must be a REAL principal: syntax alone is not enough, because the eviction sweep's
+  // CONNZ attribution only ever surfaces owners that pass isPrincipalOwnerToken with allowPlatform
+  // (`local` / derived `u_…` / platform `p_…`), so a syntactically-valid non-principal like `foo.bar`
+  // could scan completely, match nothing, and return a HEALTHY verified no-op — false confidence for
+  // a typo'd or old-shape target (the critic's slice-6 catch). Same owner boundary as attribution,
+  // refused loudly instead.
   for (const principal of principals) {
     const parsed = parsePrincipalKey(principal);
-    if (!parsed || !isPrincipalOwnerToken(parsed.owner))
-      throw new Error(`${verb}: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
+    if (!parsed || !isPrincipalOwnerToken(parsed.owner, { allowLocal: true, allowPlatform: true }))
+      throw new Error(`${verb}: "${principal}" is not a real owner.actor principal (owner must be \`local\`, a derived \`u_…\` or a platform \`p_…\` token — the only shapes the eviction sweep's CONNZ attribution can surface)`);
   }
   const { accountId } = validateScanTarget(target, verb);
   // The observer is enough to answer a complete scan that matches nothing. The evictor is loaded
@@ -239,16 +240,17 @@ export async function executePlaneLiveness(server: string, target: ScanTarget, q
  * repairs over it (fail-closed).
  */
 export async function executePrincipalLiveness(server: string, target: ScanTarget, principal: unknown): Promise<PrincipalLivenessResult> {
-  // Same fail-closed principal boundary the eviction filter applies, for the same reason: CONNZ
-  // attribution only ever surfaces `local` / derived `u_…` owners, so a syntactically-valid
-  // non-principal would sweep completely, match nothing, and read as a healthy `gone` — false
-  // confidence for a typo'd or old-shape holder, on the exact verdict that authorizes the repair.
+  // Same fail-closed principal boundary the eviction filter applies, for the same reason: the
+  // liveness sweep's CONNZ attribution only ever surfaces `local` / derived `u_…` / platform `p_…`
+  // owners, so a syntactically-valid non-principal would sweep completely, match nothing, and read
+  // as a healthy `gone` — false confidence for a typo'd or old-shape holder, on the exact verdict
+  // that authorizes the repair.
   if (typeof principal !== "string" || principal.trim().length === 0)
     throw new Error("principalLiveness: a principal (owner.actor dot-form) is required");
   const wanted = principal.trim();
   const parsed = parsePrincipalKey(wanted);
-  if (!parsed || !isPrincipalOwnerToken(parsed.owner))
-    throw new Error(`principalLiveness: "${wanted}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface)`);
+  if (!parsed || !isPrincipalOwnerToken(parsed.owner, { allowLocal: true, allowPlatform: true }))
+    throw new Error(`principalLiveness: "${wanted}" is not a real owner.actor principal (owner must be \`local\`, a derived \`u_…\` or a platform \`p_…\` token — the only shapes the liveness sweep's CONNZ attribution can surface)`);
   const { accountId } = validateScanTarget(target, "principalLiveness");
   const sys = await loadCheckedSys(target, "principalLiveness", "observer");
   return observePrincipalLivenessWithCreds({

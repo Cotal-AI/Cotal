@@ -1,6 +1,7 @@
 import {
   EpEnvelopeError,
   assertDerivedOwnerToken,
+  assertPrincipalOwnerToken,
   assertLifecycleToken,
   assertValidOwnerToken,
   remoteManagerActors,
@@ -16,7 +17,9 @@ import { remoteManagerCurrentRegistrationProof } from "./retained-manager-valida
 const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
 const bad = (message: string): never => { throw new EpEnvelopeError("bad-request", `manager admin authorization request ${message}`); };
 
-export function parseRemoteManagerAdminAuthorizationRequest(raw: unknown): RemoteManagerAdminAuthorizationRequest {
+/** `allowPlatform` admits a platform `p_…` caller owner, for the platform control holder only
+ * (SPEC 13.1), so its admin check answers the same non-oracular decision as any other caller. */
+export function parseRemoteManagerAdminAuthorizationRequest(raw: unknown, opts: { allowPlatform?: boolean } = {}): RemoteManagerAdminAuthorizationRequest {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) bad("must be an object");
   const o = raw as Record<string, unknown>;
   const fields = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "caller"];
@@ -46,7 +49,8 @@ export function parseRemoteManagerAdminAuthorizationRequest(raw: unknown): Remot
   if (Object.keys(caller).sort().join(",") !== "actor,lifecycleUid,owner") bad("caller must contain exactly owner, actor, lifecycleUid");
   for (const key of ["owner", "actor", "lifecycleUid"] as const)
     if (typeof caller[key] !== "string" || caller[key].length === 0) bad(`requires non-empty caller.${key}`);
-  assertDerivedOwnerToken(caller.owner as string);
+  if (opts.allowPlatform) assertPrincipalOwnerToken(caller.owner as string, { allowPlatform: true });
+  else assertDerivedOwnerToken(caller.owner as string);
   assertValidOwnerToken(caller.actor as string);
   assertLifecycleToken(caller.lifecycleUid as string, "manager admin authorization caller lifecycleUid");
   return {
@@ -68,7 +72,7 @@ export async function authorizeRemoteManagerAdmin(args: {
     state: "open" | "frozen" | "retired"; principal: string; processEpoch: number; registrationRevision: number;
   } | null>;
 } & ({ managerScope: string[]; managerAssignment?: never } | { managerAssignment: PlatformControlAssignment; managerScope?: never })): Promise<RemoteManagerAdminAuthorizationResult> {
-  const request = parseRemoteManagerAdminAuthorizationRequest(args.request);
+  const request = parseRemoteManagerAdminAuthorizationRequest(args.request, { allowPlatform: args.managerAssignment !== undefined });
   if (request.space !== args.space) throw new EpEnvelopeError("permission-denied", `manager admin authorization names space ${request.space}, not this host space ${args.space}`);
   requireManagerAuthorityHolder(
     args.managerAssignment !== undefined
@@ -90,8 +94,9 @@ export async function authorizeRemoteManagerAdmin(args: {
   // A valid current-manager request gets one non-oracular decision. The authoritative unified row is
   // read fresh for every call. Absence, revocation, a narrowed scope, owner drift, and lifecycle drift
   // are all the same `false`; corrupt/unreadable state throws and therefore fails the operation closed.
+  // The ledger holds rows for derived owners only, so a platform owner's caller is that same absence.
   let authorized = false;
-  if (request.caller.owner === args.managerOwner) {
+  if (request.caller.owner === args.managerOwner && args.managerAssignment === undefined) {
     const row = findActorUnified(args.dir, request.caller.owner, request.caller.actor);
     authorized = row?.lifecycleUid === request.caller.lifecycleUid && row.scope.includes("admin");
   }

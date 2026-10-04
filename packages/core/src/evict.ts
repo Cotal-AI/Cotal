@@ -133,7 +133,7 @@ async function scanLive(
       for (const c of cs) {
         // Attribute across BOTH cred shapes — a callout user surfaces its principal as the
         // `authorized_user` name-form (no tags), a static user surfaces the `principal:` tag.
-        const principal = principalFromConnz(c);
+        const principal = principalFromConnz(c, { allowPlatform: true });
         if (!principal) continue; // un-attributable (infra/open/nkey) — not a target, safe to ignore
         if (typeof c.cid !== "number") {
           // An ATTRIBUTABLE connection with no usable cid can't be KICK-routed — same fail-closed
@@ -518,7 +518,7 @@ async function livenessSweep(
           malformed = true; // an id-less row could BE the claimed connection — fail safe
           continue;
         }
-        const principal = principalFromConnz(c);
+        const principal = principalFromConnz(c, { allowPlatform: true });
         conns.push({
           serverId, cid: c.cid,
           ...(typeof c.authorized_user === "string" ? { userNkey: c.authorized_user } : {}),

@@ -1,6 +1,7 @@
 import {
   EpEnvelopeError,
   assertDerivedOwnerToken,
+  assertPrincipalOwnerToken,
   assertLifecycleToken,
   assertValidOwnerToken,
   managedRetirementOpId,
@@ -89,8 +90,10 @@ function requestError(what: string): never {
   throw new EpEnvelopeError("bad-request", `manager-service authority request ${what}`);
 }
 
-/** Closed request parser: unknown fields and profile-like extensions are refused, never ignored. */
-export function parseRemoteManagerAuthorityRequest(raw: unknown): RemoteManagerAuthorityRequest {
+/** Closed request parser: unknown fields and profile-like extensions are refused, never ignored.
+ * `allowPlatform` admits a platform `p_…` retirement target owner, for the platform control holder
+ * only (SPEC 13.1); the retirement check still requires the target owner to equal the holder's. */
+export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPlatform?: boolean } = {}): RemoteManagerAuthorityRequest {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) requestError("must be an object");
   const o = raw as Record<string, unknown>;
   const allowed = new Set(["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "session", "retirement", "contractArtifacts", "identities", "accountPublicKey", "processEpoch", "run"]);
@@ -160,7 +163,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown): RemoteManagerA
     retirement = {
       id: r.id,
       target: {
-        owner: assertDerivedOwnerToken(target.owner),
+        owner: opts.allowPlatform ? assertPrincipalOwnerToken(target.owner, { allowPlatform: true }) : assertDerivedOwnerToken(target.owner),
         actor: assertValidOwnerToken(target.actor),
         lifecycleUid: target.lifecycleUid,
       },
@@ -203,7 +206,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown): RemoteManagerA
 
 /** Issue one lifecycle phase after the IdP proof and interactive row were fresh-read. */
 export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthorityArgs): Promise<RemoteManagerAuthorityMaterial> {
-  const r = parseRemoteManagerAuthorityRequest(args.request);
+  const r = parseRemoteManagerAuthorityRequest(args.request, { allowPlatform: args.holder === "platform" });
   requireManagerAuthorityHolder(args, r.instanceId, 'manager-service authority needs scope "supervise"; spawn/admin do not imply it');
   const actors = remoteManagerActors(r.instanceId);
   const ids = Object.values(r.identities).map((identity) => identity.id);
