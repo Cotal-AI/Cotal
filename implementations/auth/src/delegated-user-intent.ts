@@ -18,6 +18,7 @@ import {
   parseDelegatedUserIntentRequest,
   parseRemoteDelegatedUserIntentExecutionRequest,
   remoteManagerActors,
+  resolveReadAcl,
   type DelegatedUserIntentAdmission,
   type DelegatedUserIntentRequest,
   type DelegatedUserLaunchTarget,
@@ -106,9 +107,11 @@ export function joinOrStartDelegatedUserIntent(
 ): Promise<RemoteDelegatedUserIntentExecutionResult> | undefined {
   const existing = flights.get(intentId);
   if (existing !== undefined) return samePin(existing.pin, pin) ? existing.promise : undefined;
-  const flight = run();
-  void flight.catch(() => {}).finally(() => { if (flights.get(intentId)?.promise === flight) flights.delete(intentId); });
+  // Registered before `run` starts, so a call `run` makes back into this map joins this flight, and
+  // a synchronous throw rejects it.
+  const flight = Promise.resolve().then(run);
   flights.set(intentId, { pin, promise: flight });
+  void flight.catch(() => {}).finally(() => { if (flights.get(intentId)?.promise === flight) flights.delete(intentId); });
   return flight;
 }
 
@@ -184,13 +187,14 @@ export async function authorizeDelegatedUserIntentAdmission(
     if (!gate || gate.state !== "open")
       throw new EpEnvelopeError("failed-precondition", `delegated user intent found no current open manager gate for instance ${r.instanceId}`);
     const t = r.intent.target;
-    // A dry run of the walk the host's writer repeats at the write: refuse before any record exists.
+    // A dry run of the walk the host's writer repeats at the write, over the read ACL that writer
+    // provisions: refuse before any record exists.
     try {
       assertWithinSpawnerGrant(args.dir, {
         owner: args.owner,
         actor: t.actor,
         scope: t.capabilities ?? [],
-        allowSubscribe: t.allowSubscribe ?? [],
+        allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe),
         allowPublish: t.allowPublish ?? [],
         parent,
         ...(t.role !== undefined ? { role: t.role } : {}),

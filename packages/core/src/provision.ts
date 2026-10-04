@@ -830,6 +830,17 @@ export async function provisionAgent(
   return mintCreds(auth, identity, "agent", { ...opts, allowSubscribe });
 }
 
+/** The read ACL an agent's lists resolve to: an omitted or empty `allowSubscribe` reads exactly
+ *  `subscribe`. Throws when a subscription lies outside it. A delegated intent's admission resolves
+ *  here too, so its dry walk checks the list this writer provisions. */
+export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined): string[] {
+  const allow = allowSubscribe?.length ? allowSubscribe : subscribe;
+  for (const ch of subscribe)
+    if (!channelInAllow(allow, ch))
+      throw new Error(`subscribe "${ch}" is not within allowSubscribe [${allow.join(", ")}]`);
+  return allow;
+}
+
 /** The DURABLE half of agent onboarding, principal-keyed and credential-agnostic: pre-create the
  *  bind-only DM + DELIVER durables, record the read ACL, ensure the role TASK queue. The static
  *  path ({@link provisionAgent}) follows it with a mint; the USER-MODE spawn path runs it alone —
@@ -844,17 +855,12 @@ export async function provisionAgentDurables(
   // An omitted/empty read set means NO channels (it does not mean `general`): a caller that names
   // no channel gets a footprint with no channel membership and, below, a cred with no channel row.
   const subscribe = opts.subscribe ?? [];
-  const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : subscribe;
   // Reject channel names the wire layer would rewrite (the pre-created filter rides token() too).
-  for (const ch of [...subscribe, ...allowSubscribe]) assertValidChannel(ch);
+  for (const ch of [...subscribe, ...(opts.allowSubscribe ?? [])]) assertValidChannel(ch);
   // Re-assert the load-time invariant at the trust boundary (defense in depth): the pre-created
   // live filter (subscribe) must sit within the read ACL (allowSubscribe), or the provisioner
   // would hand the agent live delivery it isn't permitted to read.
-  for (const ch of subscribe)
-    if (!channelInAllow(allowSubscribe, ch))
-      throw new Error(
-        `provisionAgent: subscribe "${ch}" is not within allowSubscribe [${allowSubscribe.join(", ")}]`,
-      );
+  const allowSubscribe = resolveReadAcl(subscribe, opts.allowSubscribe);
   await provisioner.provisionDmInbox(pr.owner, pr.actor, uid);
   await provisioner.provisionDlvInbox(pr.owner, pr.actor, uid);
   // Record the agent's read ACL in the durable registry (the same act as baking it into the JWT) so the
