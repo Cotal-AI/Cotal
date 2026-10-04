@@ -62,26 +62,36 @@ not the full gate or a replacement name for a smaller testing tier.
 ## Suites that can fail
 
 A run cannot show that a suite swallowed a throw or lost a cell, so `pnpm smoke:gate-inventory`
-reads the entry file of every suite the gate reaches and refuses two shapes:
+reads the entry file of every suite the gate reaches and refuses two shapes. It accepts only the
+forms below, because a form it cannot follow to the exit status can hide either defect.
 
 - A `finally`, or a promise `.finally`, that calls `process.exit` with a status that can be 0, where
-  a throw in that `try` would exit 0. A catch arm prevents it only when it exits non-zero itself, or
-  sets a non-zero `process.exitCode` that the exit reads (`process.exit()` or
-  `process.exit(process.exitCode ?? 0)`). A rethrow does not count, because the exit in `finally`
-  runs first. A promise `.catch` counts only directly before `.finally`. A status variable that
-  starts non-zero counts when the only write that clears it is the last statement of the `try`.
-- A suite with no pinned cell count. Declare `const EXPECTED_CELLS = <n>` and compare the cells that
-  ran with it by equality, after reporting failures, so a deleted cell turns the suite red. The
-  comparison must be reached and a mismatch must fail the run: an `if` whose mismatch arm throws,
-  exits non-zero, sets `process.exitCode` or counts a failure the exit status reads; a `?:` exit
-  status; a check function in the file, or the smoke kit's `check` with `finish()` called; or a
-  variable the exit status reads. A comparison that is only logged, or that follows an exit, pins
-  nothing.
+  a throw in that `try` would exit 0. A catch arm prevents it only when a statement it always runs
+  exits non-zero, or sets `process.exitCode` to a non-zero literal that the exit reads
+  (`process.exit()`, `process.exit(process.exitCode)` or `process.exit(process.exitCode ?? 0)`)
+  while neither the arm nor the `finally` writes another code. A statement inside a branch of the
+  arm, a computed code and a rethrow do not count. A promise `.catch` counts only directly before
+  `.finally`. A status variable that starts non-zero counts when the only write that clears it is
+  the last statement of the `try`.
+- A suite with no pinned cell count. Declare `const EXPECTED_CELLS = <n>`, never reassign it, and
+  compare the cells that ran with it by equality, after reporting failures, so a deleted cell turns
+  the suite red. The comparison is the whole condition of a statement every run reaches, and a
+  mismatch fails the run in one of four forms: `if (ran !== EXPECTED_CELLS)` with an arm that always
+  runs `process.exit(1)`; the same arm setting `process.exitCode = 1`, when the file writes no other
+  code and every `process.exit` that can follow reads it; the same arm throwing, outside any
+  function or `try` with a catch; or `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`.
+
+Every run reaches a statement of the file, of a bare block, of a `try` or `finally` block, or of the
+body of a function that a reached statement calls (`main()`, `await main()`, `main().catch(...)`),
+when no earlier statement in its block exits, throws or returns. An async function called without
+`await` counts only when no later statement exits. A comparison in a branch, a loop, a callback, a
+check function, a failure tally or a variable pins nothing.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
-that existed when the rule landed. The census refuses an entry that pins a count now or is no
-longer a reached suite, and a list longer than `UNPINNED_CEILING` in the gate, which must fall with
-the list. A new or renamed suite pins its count.
+that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The
+census refuses an entry that pins a count now or is no longer a reached suite until it is marked
+`paid <path>`. A paid entry stays in the file and grandfathers nothing. A new or renamed suite pins
+its count.
 
 A reached suite whose script names no entry file the census can read, after quotes and
 `-F <pkg> smoke:*` delegation are resolved, is refused unless `CENSUS_UNREAD` in the gate lists it
