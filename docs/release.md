@@ -83,7 +83,9 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
    change. On a branch that has been open for a long time, check that `main` has not already
    shipped the change before you trust its changeset. Merge conflicts in the code the changeset
    describes are the usual sign that it has.
-3. Merge to `main`.
+3. Merge to `main`. The only status check `main` requires is `attribution`. The CI aggregate
+   jobs `ci-ok`, `windows-ok` and `installer-ok` are advisory: a red one reports and does not
+   block the merge, so read them before you merge.
 4. The `Changesets` workflow runs:
    - If there are pending changesets, it opens (or updates) a PR titled `chore(release):
      version packages` that bumps versions and updates `CHANGELOG.md` files.
