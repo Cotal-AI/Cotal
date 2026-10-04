@@ -36,7 +36,9 @@ concurrency:
 #             bin/smoke/shard.mjs (each smoke still runs in its own broker; shards are on separate
 #             runners, so no cross-smoke port contention).
 #   • live  — the Linux-only live/lifecycle e2es (real broker + real agents, tmux/cmux/opencode).
-# `ci-ok` fans them back in for a single required status.
+# `ci-ok` fans them back in to one status. That status is advisory: `attribution` is the only
+# required status context on main, so a red `ci-ok` reports and the merge can still proceed. See
+# docs/design/upgrade-section-gate.md for why it was not made required.
 jobs:
   unit:
     timeout-minutes: 20
@@ -395,7 +397,10 @@ jobs:
           EOF
 
   ci-ok:
-    # Single required status. It owns the explicit live diagnosis too: adding a separate
+    # One aggregate status, advisory on main: no ruleset requires it, and `attribution` is the only
+    # required context. A ruleset that did require it would have to name the check run
+    # `ci-ok (live outcome classified)`, since a context spelled `ci-ok` matches nothing.
+    # It owns the explicit live diagnosis too: adding a separate
     # always-running dependent job was measured on PR #1043 and left a superseded run queued
     # through TWO later runner jobs, which held the replacement run behind it. ARM validation
     # jobs may sit on ci-ok's needs as long as they are not always-running aggregates.

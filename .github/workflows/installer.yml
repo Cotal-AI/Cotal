@@ -121,7 +121,8 @@ jobs:
           "$HOME/.local/bin/cotal" --version
 
   installer-ok:
-    # One required status to gate on, the same shape ci.yml uses.
+    # One status that fans the lanes in, the same shape ci.yml uses. Like ci-ok it is advisory on
+    # main, where `attribution` is the only required context.
     if: always()
     needs: [lint, matrix, macos]
     runs-on: ubuntu-latest
