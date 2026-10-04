@@ -300,6 +300,16 @@ function retireOpId(lifecycleUid: string): string {
  *  principal fail-closes to an empty `ps` instead of an unbounded one. */
 const NO_OWNER_MATCHES = "-no-owner-";
 
+/** A caught value's text for a refusal. A host-supplied store or callback may reject with any value,
+ *  one whose `message` getter or `toString` throws included, and the refusal must still be returned. */
+function rejectionText(e: unknown): string {
+  try {
+    return (e as Error)?.message ?? String(e);
+  } catch {
+    return "an unreadable rejection";
+  }
+}
+
 /** Run the agent's bearer argv once, pre-launch — the end-to-end auth preflight (state dir, daemon,
  *  ledger row, secret). Its stderr is the provider command's operator-exact sentence; surface it
  *  verbatim as the spawn refusal. */
@@ -3814,8 +3824,11 @@ export class Manager {
        *  alone reads the retirement tombstones), and the returned `lifecycleUid` is that value. */
       lifecycleUid: string;
       delegatedIntent?: StartAgentOpts["delegatedIntent"];
+      /** Called once the host's enrollment answer passed the owner, actor and uid checks, before any
+       *  later step, so a caller that must hold the enrolled uid holds it whatever fails after. */
+      onEnrolled?: (enrolled: { owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string } }) => void;
     },
-  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string; enrolled?: { owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string } } }> {
+  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
     if (opts.delegatedIntent) {
       // startAgentActive refused a delegated launch on a manager without this callback.
       const execute = this.remoteAuthority!.executeDelegatedUserIntent!;
@@ -3956,9 +3969,10 @@ export class Manager {
       capabilities?: string[];
       label: string;
       lifecycleUid: string;
+      onEnrolled?: (enrolled: { owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string } }) => void;
     },
     enroll: NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>,
-  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string; enrolled?: { owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string } } }> {
+  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
     let provider;
     try {
       provider = resolveAuthProvider();
@@ -3977,9 +3991,6 @@ export class Manager {
     const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, opts.lifecycleUid);
     let files = staged;
     let material: Awaited<ReturnType<typeof enroll>> | undefined;
-    // Set once the host's answer passed the checks below: from then on the host holds a grant at
-    // that uid, and a later failure here reports it so the caller can keep the name.
-    let enrolled: { owner: string; lifecycleUid: string; files: typeof staged } | undefined;
     try {
       await secrets.put(agentSecretKeyForFile(staged.actorToken, this.space), actorToken);
       await materializeSecretToFile(secrets, agentSecretKeyForFile(staged.actorToken, this.space), staged.actorToken);
@@ -4004,7 +4015,8 @@ export class Manager {
       // Re-key the family onto the HOST's uid (SPEC 13.1 name-disjointness on the FS): the child's
       // credential paths must embed the uid its broker footprint carries, never the provisional one.
       files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, material.lifecycleUid);
-      enrolled = { owner: material.owner, lifecycleUid: material.lifecycleUid, files };
+      // From here the host holds a grant at that uid.
+      opts.onEnrolled?.({ owner: material.owner, lifecycleUid: material.lifecycleUid, files });
       if (files.actorToken !== staged.actorToken) {
         await secrets.put(agentSecretKeyForFile(files.actorToken, this.space), actorToken);
         await materializeSecretToFile(secrets, agentSecretKeyForFile(files.actorToken, this.space), files.actorToken);
@@ -4038,25 +4050,24 @@ export class Manager {
       // Shred every local secret this attempt materialized. The HOST's rows are the host's to
       // reconcile: a participant holds no writer, so it must not pretend to roll back a grant or a
       // durable it never authored. A retry with the same requestId re-enters the same enrollment.
-      // A failed removal joins the refusal instead of throwing: once the host enrolled a uid, the
-      // caller holds the name at it, and a throw here would lose that uid.
+      // A failed removal joins the refusal instead of throwing, so every removal is attempted and
+      // the refusal still reaches the caller.
       const unshredded: string[] = [];
-      const shred = async (remove: () => unknown) => {
+      const shred = async (what: string, remove: () => unknown) => {
         try {
           await remove();
         } catch (err) {
-          unshredded.push((err as Error).message);
+          unshredded.push(`${what}: ${rejectionText(err)}`);
         }
       };
       for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files]) {
-        await shred(() => secrets.delete(agentSecretKeyForFile(family.actorToken, this.space)));
-        await shred(() => secrets.delete(agentSecretKeyForFile(family.sentinelCreds, this.space)));
-        await shred(() => rmSync(family.actorToken, { force: true }));
-        await shred(() => rmSync(family.sentinelCreds, { force: true }));
-        await shred(() => rmSync(family.health, { force: true }));
+        for (const path of [family.actorToken, family.sentinelCreds])
+          await shred(`secret ${path}`, () => secrets.delete(agentSecretKeyForFile(path, this.space)));
+        for (const path of [family.actorToken, family.sentinelCreds, family.health])
+          await shred(`file ${path}`, () => rmSync(path, { force: true }));
       }
       const leftover = unshredded.length ? `; cleanup failed: ${unshredded.join("; ")}` : "";
-      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}${leftover}`, ...(enrolled ? { enrolled } : {}) };
+      return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}` };
     }
   }
 
@@ -5674,12 +5685,16 @@ export class Manager {
           label: ref,
           lifecycleUid,
           delegatedIntent: opts.delegatedIntent,
+          // Hold the name at the UID the host enrolled for the intent's user before any later local
+          // step runs, so no later failure, its refusal included, releases a lifecycle that only that
+          // user's retirement intent retires.
+          onEnrolled: opts.delegatedIntent
+            ? (enrolled) => {
+                provisioned = { id: principalKey(enrolled.owner, name).key, name, lifecycleUid: enrolled.lifecycleUid, userOwner: enrolled.owner, delegated: true, secretPaths: enrolled.files };
+              }
+            : undefined,
         });
         if ("error" in prep) {
-          // The host enrolled this UID for the intent's user before the local steps failed: hold the
-          // name there, as for a launch that fails later, so its user's retirement intent can retire it.
-          if (prep.enrolled && opts.delegatedIntent)
-            provisioned = { id: principalKey(prep.enrolled.owner, name).key, name, lifecycleUid: prep.enrolled.lifecycleUid, userOwner: prep.enrolled.owner, delegated: true, secretPaths: prep.enrolled.files };
           this.reserved.delete(name);
           return { ok: false, error: prep.error };
         }
@@ -6850,7 +6865,7 @@ export class Manager {
         if (result.retired !== true)
           return { ok: false, error: `the host did not confirm the delegated retirement of "${name}" at ${target.lifecycleUid}; "${name}" is unchanged` };
       } catch (e) {
-        const error = `the delegated retirement under intent ${intentId} did not complete (${(e as Error).message})`;
+        const error = `the delegated retirement under intent ${intentId} did not complete (${rejectionText(e)})`;
         const hold = this.retiring.get(name);
         if (hold?.lifecycleUid === target.lifecycleUid) hold.lastError = error;
         return { ok: false, error: `${error}; "${name}" is unchanged` };
