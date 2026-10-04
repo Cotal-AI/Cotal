@@ -152,7 +152,7 @@ export async function preflightConnectors(prepared: PreparedManifest): Promise<s
     if (promptUsers.length && !connector.supportsPrompt)
       problems.push(`${type} does not support a kickoff prompt (used by ${promptUsers.map((a) => a.name).join(", ")})`);
     const exactUsers = prepared.agents.filter((a) => a.agentType === type && a.continuity === "exact");
-    if (exactUsers.length && !connector.supportsSessionContinuation)
+    if (exactUsers.length && !(connector.supportsSessionReopen && connector.supportsSessionContinuation))
       problems.push(`${type} does not support exact session continuity (used by ${exactUsers.map((a) => a.name).join(", ")})`);
   }
   return problems.join("; ");

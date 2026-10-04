@@ -72,6 +72,9 @@ process exit reopens that session with the same Cotal identity, lifecycle UID, c
 inbox. Three restarts are allowed in a rolling two-minute window; a fourth is a crash loop and retires
 the seat loud. A deliberate stop/despawn/maintenance cut never restarts it.
 
+A manifest agent declared `continuity: exact` is reopened with `pi --session <id>`, which
+fails when Pi no longer has that session instead of creating an empty one under the same id.
+
 ## Event plane
 
 A managed Pi seat publishes AG-UI runs, completed assistant text messages, and tool start/end

@@ -85,7 +85,7 @@ import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js"
 import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
-import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment } from "./launch.js";
+import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment, type ContinuityAssignment } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting } from "./run-hosting.js";
@@ -753,6 +753,8 @@ interface ManagedLaunch {
 
 interface PreparedResume {
   spec: LaunchSpec;
+  /** The retained manifest declaration says `continuity: exact`. */
+  exact?: boolean;
   /** Set once the spec is handed to runtime.spawn, which owns its launch artifacts from then on. A
    *  spec never handed over is the batch's to discard. */
   spawned?: boolean;
@@ -806,6 +808,9 @@ interface ManagedAgent {
    *  kill that would deny the agent its clean mesh-leave. */
   control?: { path: string; token: string };
   launch: ManagedLaunch;
+  /** Set on a manifest `continuity: exact` seat once its first session was proven: the coordinates
+   *  its assignment is recorded under, kept current at every later proven rebind and at its stop. */
+  continuity?: Omit<ContinuityAssignment, "version" | "sessionId">;
   /** In-memory process-recovery input. It is never persisted with secret values: preservation
    * reconstructs it from the validated inventory and current config. Continuation-capable
    * connectors (pi) receive it by default; any connector receives it when spawn carries
@@ -2597,6 +2602,8 @@ export class Manager {
             return { mode: "static" as const, id: principal.actor, lifecycleUid: a.lifecycleUid, credential: { kind: "file" as const, path: files.creds, sha256: this.fileDigestOrEmpty(files.creds) }, ...(a.issued ? { issued: a.issued } : {}) };
           })()
         : { mode: "open", id: principal.actor, lifecycleUid: a.lifecycleUid };
+    // A preservation cut is a stop boundary too, so a manifest launch after it reopens what a resume would.
+    this.recordContinuityAtStop(a, "preservation");
     const dependencies = [a.launch.source.configPath];
     if (a.launch.source.kind === "manifest" && a.launch.source.runId)
       dependencies.unshift(join(this.workspaceRoot, ".cotal", "run", `${a.launch.source.runId}.json`));
@@ -2647,6 +2654,7 @@ export class Manager {
     for (const a of managed) {
       // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
       // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
+      this.recordContinuityAtStop(a, "shutdown");
       this.agents.delete(a.name);
       this.stopHandle(a, false);
     }
@@ -4029,6 +4037,7 @@ export class Manager {
     this.logSeatReaped(a, cause);
     a.terminalizing = true;
     this.agents.delete(a.name);
+    this.recordContinuityAtStop(a, "stop");
     if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
     // P2 item 6 (pin 4): end any live §13.6 attach session bound to THIS incarnation with the honest
     // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
@@ -4481,6 +4490,23 @@ export class Manager {
     return this.readManagedSessionState(a).sessionId;
   }
 
+  /** Re-record an exact seat's assignment at a proven session, so crash recovery, a preserved resume
+   *  and the next manifest launch never pick different sessions. */
+  private recordContinuity(a: ManagedAgent, sessionId: string): void {
+    if (a.continuity) writeContinuityAssignment(this.workspaceRoot, { ...a.continuity, sessionId });
+  }
+
+  /** At a stop boundary the connector's session record is the last proof of the session an exact
+   *  seat ran, including one it switched to itself. A failed write is logged; the stop goes on. */
+  private recordContinuityAtStop(a: ManagedAgent, boundary: string): void {
+    if (!a.continuity || !a.restart?.armed) return;
+    try {
+      this.recordContinuity(a, this.readManagedSession(a));
+    } catch (error) {
+      console.error(`! ${a.name}: continuity: exact assignment not updated at ${boundary}: ${(error as Error).message}`);
+    }
+  }
+
   private async awaitManagedSessionState(a: ManagedAgent): Promise<{ sessionId: string; status: "running" | "quit" }> {
     const deadline = Date.now() + 15_000;
     let last = "session state not written yet";
@@ -4562,8 +4588,8 @@ export class Manager {
         const connector = await this.resolveConnector(a.agent);
         const continueSession = connector.supportsSessionContinuation ? this.readManagedSession(a) : undefined;
         const opts: LaunchOpts = continueSession !== undefined
-          ? { ...restart.opts, resume: undefined, prompt: undefined, continueSession }
-          : { ...restart.opts, resume: undefined, prompt: undefined };
+          ? { ...restart.opts, resume: undefined, reopenSession: undefined, prompt: undefined, continueSession }
+          : { ...restart.opts, resume: undefined, reopenSession: undefined, prompt: undefined };
         const spec = connector.buildLaunch(opts);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
         const wanted = this.managedPrincipal(a);
@@ -4577,9 +4603,10 @@ export class Manager {
         const handle = await this.spawnCustodied(a.name, spec, a.launch.cwd, custody);
         replacement = handle;
         restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
-        if (continueSession !== undefined)
+        if (continueSession !== undefined) {
           await this.awaitRecoveredSession(a, continueSession, handle, spec.control);
-        else {
+          this.recordContinuity(a, continueSession);
+        } else {
           const previousHandle = a.handle;
           const previousControl = a.control;
           a.handle = handle;
@@ -5324,12 +5351,12 @@ export class Manager {
     // declared name. Refused before any reserve or mint when the connector cannot reopen an exact
     // session or the recorded assignment does not match this declaration.
     const exact = opts.resolved?.continuity === "exact";
-    let continueSession: string | undefined;
+    let reopenSession: string | undefined;
     if (exact) {
-      if (!connector.supportsSessionContinuation)
+      if (!connector.supportsSessionReopen || !connector.supportsSessionContinuation)
         return { ok: false, error: `${agent} connector does not support exact session continuity (continuity: exact)` };
       try {
-        continueSession = readContinuityAssignment(this.workspaceRoot, { space: this.space, name: identityName, connector: agent, cwd: resolvedCwd ?? this.workspaceRoot });
+        reopenSession = readContinuityAssignment(this.workspaceRoot, { space: this.space, name: identityName, connector: agent, cwd: resolvedCwd ?? this.workspaceRoot });
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
@@ -5613,10 +5640,10 @@ export class Manager {
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
         // construction. An unsupported connector throws here before any process is spawned.
         resume: opts.resume,
-        continueSession,
+        reopenSession,
         // Initial prompt: the `--prompt` flag, or the manifest entry's `prompt:` on a resolved launch.
         // A reopened session already had its kickoff turn, so it is not submitted again.
-        prompt: continueSession === undefined ? prompt : undefined,
+        prompt: reopenSession === undefined ? prompt : undefined,
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
         // (materialized persona has no access frontmatter) has no channel set to read and joins
@@ -5727,7 +5754,15 @@ export class Manager {
       // goal terminal. Return BEFORE the failed/uncertain arms so this emits no competing
       // outcome and does not re-arm an exit watcher on an agent already gone.
       if (!readiness.ok && readiness.deliberate) { hooks?.onTerminalDeferred?.(); return { ok: false, error: readiness.detail }; }
-      if (!readiness.ok && !readiness.uncertain) { await hooks?.onOutcome?.({ kind: "failed", data: { error: readiness.detail } }); return { ok: false, error: readiness.detail }; } // failed → already reaped
+      if (!readiness.ok && !readiness.uncertain) { // failed → already reaped
+        // A reopen fails before readiness when the host no longer has the recorded session, which
+        // is refused rather than replaced by an empty one; name the record that pins it.
+        const error = reopenSession === undefined ? readiness.detail
+          : `${readiness.detail} (continuity: exact was reopening recorded session ${reopenSession}; if the harness no longer has it, ` +
+            `remove ${join(this.workspaceRoot, ".cotal", "continuity", `${name}.json`)} to start a new session)`;
+        await hooks?.onOutcome?.({ kind: "failed", data: { error } });
+        return { ok: false, error };
+      }
       // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       if (!readiness.ok) {
@@ -5739,11 +5774,17 @@ export class Manager {
         if (connector.supportsSessionContinuation) {
           try {
             await this.armSessionRecovery(managed);
+            // The capability flags are only a claim. An exact seat is recorded once the connector
+            // has proved its session over its authenticated control endpoint, never before.
+            if (exact && !managed.restart.armed)
+              throw new Error("continuity: exact needs the connector to prove its session over an authenticated control endpoint, and it supplied none");
             managed.launch.sessionId = this.readManagedSession(managed);
-            if (continueSession !== undefined && managed.launch.sessionId !== continueSession)
-              throw new Error(`continuity: exact asked for session ${continueSession}, the connector bound ${managed.launch.sessionId}`);
-            if (exact)
-              writeContinuityAssignment(this.workspaceRoot, { space: this.space, name, connector: agent, cwd, sessionId: managed.launch.sessionId });
+            if (reopenSession !== undefined && managed.launch.sessionId !== reopenSession)
+              throw new Error(`continuity: exact asked for session ${reopenSession}, the connector bound ${managed.launch.sessionId}`);
+            if (exact) {
+              managed.continuity = { space: this.space, name, connector: agent, cwd };
+              this.recordContinuity(managed, managed.launch.sessionId);
+            }
           } catch (error) {
             const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
             this.stopHandle(managed, false);
@@ -6142,6 +6183,7 @@ export class Manager {
         return { ok: false, error: `${connector.name} connector does not support exact-session continuation` };
 
       let launchOptions: Record<string, unknown> | undefined;
+      let exact = false;
       if (entry.launch.source.kind === "manifest") {
         const launchSource = entry.launch.source;
         if (!launchSource.runId)
@@ -6158,6 +6200,7 @@ export class Manager {
         if (!spec || spec.hash !== launchSource.hash)
           return { ok: false, error: `retained manifest agent ${launchSource.requested} is missing or its hash changed; refusing same-principal resume` };
         launchOptions = spec.launchOptions;
+        exact = spec.continuity === "exact";
       } else {
         try {
           launchOptions = loadAgentFile(entry.launch.source.configPath).launchOptions;
@@ -6210,7 +6253,7 @@ export class Manager {
         };
         const spec = connector.buildLaunch(launchOpts);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
-        const value = { spec, launchOpts, ...authority } satisfies PreparedResume;
+        const value = { spec, launchOpts, ...authority, exact } satisfies PreparedResume;
         prepared?.set(entry.name, value);
         if (preflightOnly) return { ok: true, data: { name: entry.name, preflight: true } };
         return this.launchPreparedResume(entry, value, batchReserved);
@@ -6306,6 +6349,10 @@ export class Manager {
         try {
           await this.armSessionRecovery(managed);
           managed.launch.sessionId = this.readManagedSession(managed);
+          if (prepared.exact) {
+            managed.continuity = { space: this.space, name: managed.name, connector: managed.agent, cwd: managed.launch.cwd };
+            this.recordContinuity(managed, managed.launch.sessionId);
+          }
         } catch (error) {
           this.stopHandle(managed, false);
           this.freeSlot(managed, true, "resume-session-rebind-failed", true);
