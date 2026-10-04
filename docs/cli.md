@@ -477,6 +477,10 @@ A seat whose launch options could not be resolved is refused rather than checkpo
 manager's own wording: `imperative launch options have no non-secret durable source (<keys>)`. The
 refusal arrives at prepare time, so the cut stops before any child does.
 
+A delegated seat (SPEC §13.17) is refused at prepare time too, with
+`a delegated seat is not resumed by a later manager; stop it before preserving`. A manager stop
+after a refused cut retires that seat through its retirement path.
+
 ## clean
 
 ```bash

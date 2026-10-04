@@ -2460,6 +2460,10 @@ export class Manager {
         error,
       });
     }
+    // A later manager does not resume a delegated seat, and its close runs only inside its
+    // retirement, so a cut that holds one is refused before any child stops.
+    for (const a of this.agents.values())
+      if (a.handedOff) failures.push({ name: a.name, id: a.id, error: "a delegated seat is not resumed by a later manager; stop it before preserving" });
     const unverifiedStops = this.unverifiedStops.filter((stopped) => {
       try {
         if (!stopped.authoritative && stopped.handle.status() === "exited") return false;
@@ -2794,7 +2798,9 @@ export class Manager {
     const failures: string[] = [];
     await Promise.all(managed.map(async (a) => {
       try {
-        a.handle.stop({ graceful: false });
+        // No cut holds a delegated seat (runPreparation refuses one), so stopping it is its retirement.
+        if (a.handedOff) await this.deprovision({ ...a, delegatedHandle: a.handle });
+        else a.handle.stop({ graceful: false });
       } catch (e) {
         failures.push(`${a.name}: stop failed: ${(e as Error).message}`);
       }

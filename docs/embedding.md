@@ -554,7 +554,8 @@ binds an identifier to the key; one derived from the key or found by name or lis
 or adopted, and while the response is unknown the launch stays held. Every stop, the reap of a child
 whose parent exited and `Manager.stop({ withAgents: true })` included, runs `prepareAgentRetirement`
 for the UID-exact target, then `stop()` on the handle `spawnDelegated` returned, then the terminal
-barrier. After the manager is gone
+barrier. `preparePreservation` refuses a cut that holds a delegated seat, and a `Manager.stop()` after
+a refused cut retires the seat through the same steps. After the manager is gone
 the host runs the same steps, makes the same fenced close by `managedRuntimeKey`, and finishes at
 `MANAGED_RETIRE_PATH`. Supply `spawnDelegated` only from a runtime whose host can make that fenced
 close without the manager. The enrollment redeem
