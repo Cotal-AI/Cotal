@@ -38,8 +38,10 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager.
  *  `noManager` (#1417) is broker-only mode: ensure the delivery daemon and NOT the manager. The
  *  caller that sets it has already refused it against a live manager (a refresh under the flag
- *  exits non-zero before reaching here), so this side never silently KEEPS or STOPS one either. */
-type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number; noManager?: boolean };
+ *  exits non-zero before reaching here), so this side never silently KEEPS or STOPS one either.
+ *  `onDeliveryExit` hears the exit of a daemon this process launches; only a caller that outlives
+ *  the launch (foreground `up`) can act on it. */
+type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
 
 /** The recorded daemon's liveness, THREE-VALUED plus absent. See {@link managerLiveness} for why the
  *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp
@@ -75,6 +77,22 @@ export function deliveryLiveness(
  *  {@link deliveryLiveness} instead; this cannot express "cannot tell". */
 export function deliveryUp(space: string = folderSpace()): boolean {
   return deliveryLiveness(probeLiveness, space) === "alive";
+}
+
+/** Whether `cotal down` is stopping, or has stopped, the space's dead daemon: a live process holds the
+ *  `.stopping` reservation `down` takes before its first signal, or the record is gone. A missing record
+ *  proves a stop only for a daemon that cannot remove its own (one killed by a signal, or a launch that
+ *  never bound), which the caller establishes. The reservation is read first because `down` releases it
+ *  only after removing the record, so a stop that completes between the two reads is still seen. */
+export function deliveryStoppedByDown(space: string = folderSpace()): boolean {
+  const p = PID_PATH(space);
+  let stopper: number | undefined;
+  try {
+    stopper = parsePid(readFileSync(`${p}.stopping`, "utf8"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  return (stopper !== undefined && probeLiveness(stopper) !== "dead") || !existsSync(p);
 }
 
 
@@ -166,6 +184,7 @@ export function startDeliveryDetached(o: Opts = {}): number {
   // launch agents, so it skips the connector seed on boot (a direct `cotal deliver` still seeds).
   const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
   closeSync(fd);
+  if (o.onDeliveryExit) child.on("exit", o.onDeliveryExit);
   child.unref();
   const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx(space)); // canonical, never a pre-upgrade name
   if (!child.pid) throw new Error("delivery daemon spawned with no pid");

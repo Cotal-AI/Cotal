@@ -1,0 +1,5 @@
+---
+"@cotal-ai/cli": patch
+---
+
+A foreground `cotal up` now restarts the delivery daemon it started when that daemon dies while the broker is still running, and logs that it did. The daemon ends itself once it cannot reach the broker, and a starved host can make a running broker look unreachable: under heavy load the daemon logged `broker connection unavailable past backstop` and exited, nothing brought it back, and from then on every stopped seat's retirement failed on the `ctl.delivery-admin` rail and every spawn of that name was refused as reserved pending retirement until an operator re-ran `cotal up`. A failed restart is retried after the 30-second delivery lease TTL, the longest a dead holder's lease can block its replacement. Recovery is announced only once the replacement's responder is bound. A daemon that exits cleanly or on SIGTERM or SIGINT stays stopped, and so does one stopped with `cotal down delivery`, also when `down` has to kill a starved daemon or the stop lands between two restart attempts.
