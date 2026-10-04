@@ -63,6 +63,7 @@ import {
   serverFlag,
   spaceAccountPath,
   spaceFlag,
+  spaceKey,
   userAuthStateDir,
   workspaceSecretStore,
   refreshRegistrationPolicy,
@@ -186,9 +187,11 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
 }
 
 /** What a managed handoff's bootstrap refuses with at each phase that runs a check shared with the
- *  enrollment path. Those checks' diagnostics quote the server, the exchange URL or the actor, and a
- *  handoff refusal never echoes the document, so each sentence names only the field and the phase. */
+ *  enrollment path. Those checks' diagnostics quote the space, the server, the exchange URL or the
+ *  actor, and a handoff refusal never echoes the document, so each sentence names only the field
+ *  and the phase. */
 const HANDOFF_REFUSALS = {
+  space: "the managed handoff's space is malformed",
   bundle: "the managed handoff's mesh fields failed the user-auth bundle check",
   server: "the managed handoff's server is not a broker URL this machine may dial",
   exchange: "the managed handoff's exchangeUrl failed the exchange check",
@@ -550,6 +553,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       const handoff = parseManagedLifecycleHandoff(handoffText, {
         space: values.space!, owner: values["expect-owner"]!, actor: values.name!, lifecycleUid: values["expect-lifecycle-uid"]!,
       });
+      try {
+        spaceKey(handoff.space);
+      } catch {
+        throw new Error(HANDOFF_REFUSALS.space);
+      }
       const { bundle, stock } = handoffEnrollmentBundle(handoff);
       redeemedEnrollment = { bundle, stock };
       if (!findMesh(handoff.space)) await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."), HANDOFF_REFUSALS);
@@ -711,7 +719,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     def = loadAgentFile(path);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
+    // The not-found text names the mesh's space and server, which for a handoff are its values.
+    if (handoffText !== undefined) {
+      console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
+    } else if (code === "ENOENT") {
       // A refusal that names no root is why this bug cost an hour. The old text asserted an absence
       // ("no default persona yet") and prescribed a remedy (`cotal setup`) without saying WHERE it
       // had looked — so when setup seeded a cwd-derived root and spawn read the resolved mesh's,

@@ -960,7 +960,8 @@ path names the field and never a value from the handoff. The registration's serv
 enforcement checks, the policy refresh, the broker preflight and the agent auth preflight quote the
 server, the exchange URL or the actor in their own diagnostics, so for a handoff each prints one
 fixed sentence that names the field and the phase instead. The event-plane policy refusals name the
-handoff's space field, and an actor outside `[A-Za-z0-9_]` is refused as malformed. A handoff conflicts with
+handoff's space field. An actor outside `[A-Za-z0-9_]` and a space that cannot name local state,
+such as `..`, are refused as malformed before any plane. A handoff conflicts with
 the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
 there it runs the enrollment consumer above without redeeming anything. See
 [Delegated seats](embedding.md#delegated-seats-outside-the-managers-filesystem).
