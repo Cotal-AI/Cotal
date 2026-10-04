@@ -333,7 +333,8 @@ hosted renewal. The store declares the same identity on both processes, or both 
 `COTAL_SECRET_STORE` to the same coordinate. The manager
 remints no daemon credential when the daemon names a different store, including a daemon that binds
 after start; it keeps running and serving its own agents, so one space can carry a manager on more
-than one workspace root. Pointing several managers at one coordinate is safe: the store identity
+than one workspace root. That manager also stays off the space's renewal lease, so a manager or a
+`cotal doctor auth --fix` on the daemon's store can still take it. Pointing several managers at one coordinate is safe: the store identity
 alone cannot pick an owner (it carries no holder and no tiebreak, so every manager sharing the store
 matches), so the manager that also holds the space's renewal lease is the one that remints and the
 rest skip it. Without that lease two owners would remint on independent timers with no ordering

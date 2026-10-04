@@ -127,6 +127,9 @@ counting as the daemon's store. A rail that reports no responder is also settled
 lease row, so a live holder on record makes that outcome a refusal rather than an absent
 daemon. Keep delivery on the broker host under `up`, and share one store
 only when you are composing a hosted pair ([embedding](embedding.md#supervisor-signing-authority)).
+On the `--no-manager` split above, the manager host's manager stays off the daemon-credential
+renewal lease once its store check finds the daemon on another root. `cotal doctor auth --fix` on
+the broker host then renews the daemon credentials once they pass their renewal point.
 
 ### Split host bind
 
