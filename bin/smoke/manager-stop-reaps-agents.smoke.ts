@@ -30,6 +30,10 @@
  *   process and minted creds remain.
  *   REAP phase: a second manager on a separate root, `stop({ withAgents: true })`. That
  *   seat is dead and its creds are gone, while the independently spared seat remains.
+ *   A failed run then prints the delivery daemon's state before teardown kills it: exited (code and
+ *   signal) or still running, read again after the rail request so a death during it shows, what one
+ *   fresh request on its ctl.delivery-admin rail returns, and its output tail. A rail timeout alone
+ *   reads the same for a dead, a stalled and a slow daemon (#1226).
  *
  * NAMED GAPS (deliberate, not oversights):
  *   - The CLI `down` surface itself is not driven here: this host must never run `cotal down`
@@ -63,11 +67,11 @@ process.env.XDG_CONFIG_HOME = join(home, "xdg");
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 
 const { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
-const { createSpaceAuth, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, parseCommandArgs, probeConnect, registry, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
+const { CotalEndpoint, createSpaceAuth, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, parseCommandArgs, probeConnect, registry, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
 const { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, authDir, recordMesh, saveSpaceAuth, spaceSegment, workspaceSecretStore } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop) into the registry
 const { Manager } = await import("@cotal-ai/manager");
-import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
+import type { Command, Connector, LaunchOpts, SpaceAuth } from "@cotal-ai/core";
 const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 let pass = 0;
@@ -205,15 +209,52 @@ let releaseBroker: (() => void) | undefined;
 let brokerProc: ChildProcess | undefined;
 let brokerStore: string | undefined;
 let daemon: ChildProcess | undefined;
-const daemonSink = { out: "", exited: false };
+const daemonSink = { out: "", exited: false, exit: "" };
+let spaceAuth: SpaceAuth | undefined;
 let mgr1: InstanceType<typeof Manager> | undefined;
 let mgr2: InstanceType<typeof Manager> | undefined;
+/** The delivery daemon's state when a run fails (#1226). The process state separates dead from
+ *  alive, and it is read before and after the probe, so a daemon that dies while the probe waits
+ *  does not read as a live one that timed out. One fresh request on its rail, with the scoped
+ *  one-shot credential the shipped verify-evict path uses, separates a daemon that answers now (it
+ *  was slow) from one that still does not (it is stalled); "no responders" means nothing serves the rail. */
+const daemonState = async (): Promise<string> => {
+  const d = daemon;
+  if (!d) return "never started";
+  const procNow = () => daemonSink.exited ? `exited (${daemonSink.exit})` : `running (pid ${d.pid})`;
+  const asked = procNow();
+  let rail = "not asked (no space auth)";
+  if (spaceAuth) {
+    const id = newIdentity();
+    let probe: InstanceType<typeof CotalEndpoint> | undefined;
+    const t0 = Date.now();
+    try {
+      probe = new CotalEndpoint({
+        space: SPACE, servers: SERVER, creds: await mintCreds(spaceAuth, id, "endpoint-evictor", { expiresInSeconds: 60 }),
+        card: { id: id.id, name: "reap964-rail-probe", kind: "endpoint" },
+        channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
+      });
+      probe.on("error", () => {});
+      await probe.start();
+      const r = await probe.requestDeliveryAdmin("reloadStoreIdentity", {}, 15_000);
+      rail = `answered after ${Date.now() - t0}ms (${r.ok ? "ok" : `refused: ${r.error}`})`;
+    } catch (e) {
+      rail = `${e instanceof Error ? e.message : String(e)} after ${Date.now() - t0}ms`;
+    } finally {
+      await probe?.stop().catch(() => {});
+    }
+  }
+  const after = procNow();
+  const proc = after === asked ? after : `${asked} when asked, then ${after} during the ask`;
+  return `${proc}; ctl.delivery-admin rail asked again: ${rail}; output tail: ${JSON.stringify(daemonSink.out.slice(-600))}`;
+};
 
 console.log("\n── #964: default stop spares, explicit stop reaps ─────────────\n");
 try {
   console.log("manager-stop-reap: first-line");
   // ── the rig: one authed broker, one provisioned space ─────────────────────────────────────────
   const auth = await createSpaceAuth(SPACE);
+  spaceAuth = auth;
   saveSpaceAuth(authDir(root), auth);
   brokerStore = mkdtempSync(join(scratch, `${SMOKE_BROKER_TOKEN}964-js-`));
   const conf = join(base, "server.conf");
@@ -257,7 +298,7 @@ try {
   });
   daemon.stdout!.on("data", (b: Buffer) => { daemonSink.out += b.toString(); });
   daemon.stderr!.on("data", (b: Buffer) => { daemonSink.out += b.toString(); });
-  daemon.on("exit", () => { daemonSink.exited = true; });
+  daemon.on("exit", (code, signal) => { daemonSink.exited = true; daemonSink.exit = `code ${code}, signal ${signal}`; });
   // Both readiness signals, not just the first: the manager's start() runs a renewal pass whose
   // adoption needs the daemon's membership feed - a pass that beats the feed leaves the daemon on
   // its pre-renewal principal and the control phase then addresses a rail nobody serves.
@@ -331,6 +372,7 @@ try {
   fail++;
   console.log(`  ✗ scenario threw: ${e instanceof Error ? e.message : String(e)}`);
 } finally {
+  if (fail > 0) console.log(`  delivery daemon at failure: ${await daemonState()}`);
   for (const m of [mgr1, mgr2]) {
     try { if (m) await m.stop({ withAgents: true }); } catch { /* teardown only */ }
   }
