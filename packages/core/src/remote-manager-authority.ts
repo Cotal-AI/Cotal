@@ -808,3 +808,58 @@ export interface RemoteRunAttemptResult {
   operator?: RemoteRunAttemptRequest["operator"];
   credentials: { driver: RemoteManagerCredential; mediator: RemoteManagerCredential } | { operator: RemoteManagerCredential };
 }
+
+/** The closed set of typed manager requests the platform control door carries. Each inner request
+ * keeps its existing parser, fields and result. The envelope adds only the assignment the call
+ * rides on. The managed-agent kinds are not members: they mutate platform-owned storage. */
+export type PlatformControlInnerRequest =
+  | RemoteManagerAuthorityRequest
+  | RemoteManagerMaintenanceRequest
+  | RemoteRetainedAgentValidationRequest
+  | RemoteManagerGoalIndexScanRequest
+  | RemoteManagerAdminAuthorizationRequest
+  | RemoteRunAdmissionRequest
+  | RemoteRunAttemptRequest;
+
+/** Closed envelope for one platform control door call. It names no profile, permission, subject,
+ * TTL, claim or IdP token. The host derives the owner and every grant; nothing here is an identity
+ * assertion. The inner request keeps its own operation-specific coordinates. */
+export interface PlatformControlAuthorityRequest<R extends PlatformControlInnerRequest = PlatformControlInnerRequest> {
+  v: 1;
+  kind: "platform-control-authority";
+  space: string;
+  /** The assigned data account. It must equal the serving authority context's account and the
+   * assignment's account, and on a renewal the inner request's `accountPublicKey`. */
+  accountPublicKey: string;
+  /** The assignment revision this control process was started under. Any other value is refused. */
+  assignmentRevision: number;
+  request: R;
+}
+
+export type PlatformControlAuthorityResult<R extends PlatformControlInnerRequest> =
+  R extends RemoteManagerAuthorityRequest ? RemoteManagerAuthorityMaterial
+  : R extends RemoteManagerMaintenanceRequest ? RemoteManagerMaintenanceResult
+  : R extends RemoteRetainedAgentValidationRequest ? RemoteRetainedAgentValidationResult
+  : R extends RemoteManagerGoalIndexScanRequest ? RemoteManagerGoalIndexScanResult
+  : R extends RemoteManagerAdminAuthorizationRequest ? RemoteManagerAdminAuthorizationResult
+  : R extends RemoteRunAdmissionRequest ? RemoteRunAdmissionResult
+  : R extends RemoteRunAttemptRequest ? RemoteRunAttemptResult
+  : never;
+
+/** One platform-run control manager assigned to one account. The platform backend is its only
+ * writer, and an account has at most one current row. The authority context reads it fresh for
+ * every platform control door call and never caches it. */
+export interface PlatformControlAssignment {
+  v: 1;
+  space: string;
+  accountPublicKey: string;
+  /** The platform's protected, stable control instance id. Reused across every restart. */
+  instanceId: string;
+  /** The control instance's manager lifecycle UID. Reused across every restart. */
+  lifecycleUid: string;
+  /** The manager instance this control instance replaces, from the backend's protected mapping.
+   * The door only reads its registration and gate; it never writes them. */
+  predecessorInstanceId?: string;
+  assignmentRevision: number;
+  state: "assigned" | "revoked";
+}

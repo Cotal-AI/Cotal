@@ -195,11 +195,11 @@ export function assertCredentialIdTail(v: unknown, what: string): string {
   return v;
 }
 
-/** A holder principal `<owner>.<actor>` with a REAL owner (derived `u_…` or the dev owner) —
+/** A holder principal `<owner>.<actor>` with a REAL owner (derived `u_…`, platform `p_…` or the dev owner) —
  *  eviction is BY PRINCIPAL, so a row that cannot name an evictable principal never ledgers. */
 export function assertHolderPrincipal(v: unknown, what: string): string {
   const p = typeof v === "string" ? parsePrincipalKey(v) : null;
-  if (!p || !isPrincipalOwnerToken(p.owner))
+  if (!p || !isPrincipalOwnerToken(p.owner, { allowLocal: true, allowPlatform: true }))
     throw new EpEnvelopeError("failed-precondition", `${what} ${JSON.stringify(v)} is not a principal dot-form the barrier can evict (SPEC 13.1)`);
   return v as string;
 }
@@ -355,7 +355,7 @@ export function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow
   if (!["open", "frozen", "retired"].includes(o.state as string) || !uint(o.generation) || !uint(o.processEpoch) || !uint(o.registrationRevision) || !uint(o.nameAuthorityRevision))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not validate (SPEC 13.1)`);
   const principal = typeof o.principal === "string" ? parsePrincipalKey(o.principal) : null;
-  if (principal === null || !isPrincipalOwnerToken(principal.owner))
+  if (principal === null || !isPrincipalOwnerToken(principal.owner, { allowLocal: true, allowPlatform: true }))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not carry a CONNZ-attributable serving principal (owner-grammar owner.actor, SPEC 13.1)`);
   if ((o.state === "frozen" || o.state === "retired") && !isRec(o.op))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} is ${o.state} without its durable op intent (SPEC 13.1)`);

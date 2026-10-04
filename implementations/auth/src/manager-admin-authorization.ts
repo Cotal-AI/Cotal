@@ -6,9 +6,11 @@ import {
   remoteManagerActors,
   type RemoteManagerAdminAuthorizationRequest,
   type RemoteManagerAdminAuthorizationResult,
+  type PlatformControlAssignment,
 } from "@cotal-ai/core";
 import { timingSafeEqual } from "node:crypto";
 import { findActorUnified } from "./ledger.js";
+import { requireManagerAuthorityHolder } from "./platform-control.js";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 
 const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
@@ -60,16 +62,21 @@ export async function authorizeRemoteManagerAdmin(args: {
   request: RemoteManagerAdminAuthorizationRequest;
   space: string;
   managerOwner: string;
-  managerScope: string[];
   proofSecret: string | Uint8Array;
   dir: string;
   observeManagerGate: (instanceId: string) => Promise<{
     state: "open" | "frozen" | "retired"; principal: string; processEpoch: number; registrationRevision: number;
   } | null>;
-}): Promise<RemoteManagerAdminAuthorizationResult> {
+} & ({ managerScope: string[]; managerAssignment?: never } | { managerAssignment: PlatformControlAssignment; managerScope?: never })): Promise<RemoteManagerAdminAuthorizationResult> {
   const request = parseRemoteManagerAdminAuthorizationRequest(args.request);
   if (request.space !== args.space) throw new EpEnvelopeError("permission-denied", `manager admin authorization names space ${request.space}, not this host space ${args.space}`);
-  if (!args.managerScope.includes("supervise")) throw new EpEnvelopeError("permission-denied", 'manager admin authorization needs manager scope "supervise"');
+  requireManagerAuthorityHolder(
+    args.managerAssignment !== undefined
+      ? { holder: "platform", owner: args.managerOwner, assignment: args.managerAssignment }
+      : { owner: args.managerOwner, scope: args.managerScope ?? [] },
+    request.instanceId,
+    'manager admin authorization needs manager scope "supervise"',
+  );
   const actors = remoteManagerActors(request.instanceId);
   const gate = await args.observeManagerGate(request.instanceId);
   if (!gate || gate.state !== "open") throw new EpEnvelopeError("failed-precondition", `manager admin authorization found no current open manager gate for instance ${request.instanceId}`);

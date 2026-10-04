@@ -712,8 +712,8 @@ export async function observePrincipalLiveness(
   options: EvictOptions = {},
 ): Promise<PrincipalLivenessResult> {
   const parsed = parsePrincipalKey(principal);
-  if (!parsed || !isPrincipalOwnerToken(parsed.owner))
-    throw new Error(`principalLiveness: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface); a clean sweep for it would be false confidence, not a verdict`);
+  if (!parsed || !isPrincipalOwnerToken(parsed.owner, { allowLocal: true, allowPlatform: true }))
+    throw new Error(`principalLiveness: "${principal}" is not a real owner.actor principal (owner must be \`local\`, a derived \`u_…\` or a platform \`p_…\` token — the shapes CONNZ attribution can surface); a clean sweep for it would be false confidence, not a verdict`);
   const s = await livenessSweep(observerConn, accountId, options);
   const live = s.conns.some((c) => c.principal === principal);
   const note = sweepShortfallNote(s, "a freeze-holder repair");

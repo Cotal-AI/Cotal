@@ -431,6 +431,19 @@ export function assertDerivedOwnerToken(owner: string): string {
   return owner;
 }
 
+/** Prefix of every **platform owner token** — see {@link assertPlatformOwnerToken}. */
+export const PLATFORM_OWNER_PREFIX = "p_";
+
+/** Validate the format of a **platform owner token**: `p_` + 26 lowercase base32 chars. The auth
+ *  service derives it for the one platform control manager assigned to an account (SPEC 13.1). It is
+ *  disjoint from `u_…` derived owners by prefix, from {@link DEV_OWNER} and from nkeys. A trust
+ *  boundary admits it only where it opts in with `allowPlatform`. */
+export function assertPlatformOwnerToken(owner: string): string {
+  if (typeof owner !== "string" || !/^p_[a-z2-7]{26}$/.test(owner))
+    throw new Error(`invalid platform owner token "${owner}": expected "${PLATFORM_OWNER_PREFIX}" + 26 lowercase base32 chars ([a-z2-7])`);
+  return owner;
+}
+
 /** Validate an owner token at a READ / persisted-owner TRUST boundary — STRICTER than
  *  {@link assertValidOwnerToken}, which (by design) still accepts nkey-shaped uppercase tokens and so does
  *  NOT by itself satisfy the flip's acceptance criterion 2. A *real* owner is EITHER a derived owner
@@ -442,14 +455,15 @@ export function assertDerivedOwnerToken(owner: string): string {
  *  for keying, surfacing, or authorization (membership feed re-key, history surfacing). Actors stay on
  *  {@link assertValidOwnerToken} — they are server-derived from the ledger, not disjointness-constrained.
  *  User-mode MINT boundaries (callout/bridge) use {@link assertDerivedOwnerToken} directly (no `local`). */
-export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean } = {}): string {
+export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean; allowPlatform?: boolean } = {}): string {
   if (opts.allowLocal && owner === DEV_OWNER) return owner;
+  if (opts.allowPlatform && /^p_[a-z2-7]{26}$/.test(owner)) return owner;
   try {
     return assertDerivedOwnerToken(owner);
   } catch {
     throw new Error(
       `invalid principal owner "${owner}" at a trust boundary: expected a derived owner (u_…)` +
-        `${opts.allowLocal ? ` or the reserved dev owner "${DEV_OWNER}"` : ""} - an nkey-shaped or arbitrary ` +
+        `${opts.allowLocal ? ` or the reserved dev owner "${DEV_OWNER}"` : ""}${opts.allowPlatform ? " or a platform owner (p_…)" : ""} - an nkey-shaped or arbitrary ` +
         `token is not a real owner (flip criterion 2: owners are nkey-disjoint).`,
     );
   }
@@ -460,9 +474,9 @@ export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: bo
  *  this on `parsed.owner` alongside the `from.id === parsed.sender` check, so a structurally-valid old-shape
  *  alias (`chat.<nkey>.team.backend`, owner = an nkey) is DROPPED at read time — belt to cred death, not a
  *  dependency on it. `allowLocal` defaults true: the dev/static path is a legitimate live sender. */
-export function isPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean } = { allowLocal: true }): boolean {
+export function isPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean; allowPlatform?: boolean } = { allowLocal: true }): boolean {
   try {
-    assertPrincipalOwnerToken(owner, { allowLocal: opts.allowLocal ?? true });
+    assertPrincipalOwnerToken(owner, { allowLocal: opts.allowLocal ?? true, allowPlatform: opts.allowPlatform ?? false });
     return true;
   } catch {
     return false;

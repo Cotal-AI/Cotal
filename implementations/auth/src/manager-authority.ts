@@ -28,6 +28,7 @@ import {
 import type { KV } from "@nats-io/kv";
 import { timingSafeEqual } from "node:crypto";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 
 /** Host-only renewal authorization. The embedding host supplies a fresh gate and active run
  * observation from its authoritative stores, never coordinates asserted by the participant. */
@@ -67,11 +68,10 @@ export async function authorizeRemoteManagerRenewal(args: {
   }
 }
 
-/** Host-only typed request after the IdP proof and ledger row have been authenticated. */
-export interface IssueRemoteManagerAuthorityArgs {
+/** Host-only typed request after the IdP proof and ledger row (a human holder) or the platform
+ * control assignment (a platform holder) have been authenticated. */
+export type IssueRemoteManagerAuthorityArgs = ManagerAuthorityHolder & {
   request: RemoteManagerAuthorityRequest;
-  owner: string;
-  scope: string[];
   /** The host-side phase executor. It validates the live instance/gate state and signs only the
    * phase's fixed profile set for the caller-generated nkeys. */
   issue: (args: {
@@ -83,7 +83,7 @@ export interface IssueRemoteManagerAuthorityArgs {
    * journal attempt before signing. No callback means the renewal operation is unavailable. */
   authorizeRenewal?: (args: { owner: string; request: RemoteManagerAuthorityRequest }) => Promise<void>;
   now?: () => number;
-}
+};
 
 function requestError(what: string): never {
   throw new EpEnvelopeError("bad-request", `manager-service authority request ${what}`);
@@ -204,8 +204,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown): RemoteManagerA
 /** Issue one lifecycle phase after the IdP proof and interactive row were fresh-read. */
 export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthorityArgs): Promise<RemoteManagerAuthorityMaterial> {
   const r = parseRemoteManagerAuthorityRequest(args.request);
-  if (!args.scope.includes("supervise"))
-    throw new EpEnvelopeError("permission-denied", 'manager-service authority needs scope "supervise"; spawn/admin do not imply it');
+  requireManagerAuthorityHolder(args, r.instanceId, 'manager-service authority needs scope "supervise"; spawn/admin do not imply it');
   const actors = remoteManagerActors(r.instanceId);
   const ids = Object.values(r.identities).map((identity) => identity.id);
   if (r.retirement) ids.push(r.retirement.id);

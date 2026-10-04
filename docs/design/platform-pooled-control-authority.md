@@ -1,11 +1,9 @@
 # Platform-owned pooled control authority
 
-Status: proposed contract. Nothing here is implemented or released. This change adds the design and
-the normative SPEC §13 text only. It adds no runtime path, no issuer, no daemon and no exported type.
-None of the symbols in sections 3.1 and 3.2 exists in source or in a built declaration at this head,
-so a platform composition cannot import them or call the door yet. Section 9 lists each symbol's
-status and why it waits.
-The source inventory below was checked at `06f48f40473f809bcb31f2ba21b3ceb1d33ccc18` (v0.58.0).
+Status: the door is implemented in `@cotal-ai/core` and `@cotal-ai/auth` and not released. The
+platform's own Runtime and composition root are not part of Cotal. Section 9 lists what landed and
+what did not. The source inventory in section 1 was checked at
+`06f48f40473f809bcb31f2ba21b3ceb1d33ccc18` (v0.58.0), before the door existed.
 
 The question is how a platform runs one administrative control manager per account in `pooled`
 mode without holding any human's login session. The answer reuses everything the human remote
@@ -13,7 +11,7 @@ supervision path already proves (the closed request family, the five identities,
 proof, the process epoch and the all-duty renewal). It changes only who is authenticated and who
 the holder is.
 
-## 1. What the published contract does today
+## 1. What the published contract did at v0.58.0
 
 A private probe against the built packages at the head above showed the following. The probe is
 not a committed test.
@@ -30,11 +28,11 @@ not a committed test.
 
 The constructor's pooled checks are coherence checks (F4): they prove the material is shaped like
 host-issued material for one account, not that a host issued it. The authority boundary is the
-host's issuance door and the broker. The only such door is the human one, which authenticates an
-IdP subject, derives a `u_…` owner from it and requires `supervise` on that human's ledger row. A
-platform that wants this mode today has two options. It can hold a human's session, or it can sign
-material itself and skip the gate, ledger and proof protocol that make the material revocable. Both
-are refused here.
+host's issuance door and the broker. At v0.58.0 the only such door was the human one, which
+authenticates an IdP subject, derives a `u_…` owner from it and requires `supervise` on that human's
+ledger row. A platform that wanted this mode had two options. It could hold a human's session, or
+it could sign material itself and skip the gate, ledger and proof protocol that make the material
+revocable. Both are refused here.
 
 ## 2. Scope
 
@@ -48,9 +46,13 @@ Out of scope: any change to the human `manager-service` view, a generic host pro
 launcher or Runtime, a new daemon or listener, cross-owner control of human agents, moving an
 existing agent to the platform owner, release.
 
+The `p_` holder starts and renews only its own administrative control manager and its same-owner
+descendants; an agent owned by a `u_` user is provisioned and retired only on the existing
+user-bound path, a human's `supervise`-scoped manager with `enrollManagedAgent`.
+
 ## 3. The composition
 
-| Piece | Human path today | Platform service view |
+| Piece | Human path | Platform service view |
 |---|---|---|
 | Door | `AuthProvider.managerServiceAuthority` and its sibling remote-manager methods, which POST to `/manager-service-authority` | `AuthServiceHandle.platformControlAuthority` (one in-process method, new); no route |
 | Who is authenticated | a human, by IdP token, on the loopback or public face | nobody: the caller is the trusted composition that started the authority context; no IdP token, no capability |
@@ -93,14 +95,15 @@ view without handing the control worker the capability or the account signer. Bo
 Option B does not avoid a new protocol. The capability only authenticates; the closed operations
 still need a route, and the route is the new protocol. It also puts a standing secret in the
 control worker that authorizes more than its own assignment. Option A adds neither. So the method
-is the proposal, `AuthProvider` gains no method, and no new protocol is added. A platform that runs
+is the chosen shape, `AuthProvider` gains no method, and no new protocol is added. A platform that runs
 the control manager in another process or uid carries the closed envelope to the authority process
 over its own caller-bound channel. That channel is the platform's peer-uid-checked adapter from the
 hosted runtime contract. The authority process calls the method in-process. The control worker
 never holds the capability or the account signer.
 
-Declarations for `packages/core/src/remote-manager-authority.ts`, written here so a producer can
-adapt against them. They land in the implementation round (section 9).
+Declarations as they landed in `@cotal-ai/core`. The request types are in
+`packages/core/src/remote-manager-authority.ts` and the owner grammar is in
+`packages/core/src/subjects.ts`.
 
 ```ts
 /** The closed set of typed manager requests the service door carries. Each inner request keeps its
@@ -143,6 +146,9 @@ export type PlatformControlAuthorityResult<R extends PlatformControlInnerRequest
  * owners, from the `local` dev owner and from nkeys. */
 export const PLATFORM_OWNER_PREFIX = "p_";
 export function assertPlatformOwnerToken(owner: string): string;
+/** Opt-in at a trust boundary; absent, a `p_` owner is refused as before. */
+export function assertPrincipalOwnerToken(owner: string, opts?: { allowLocal?: boolean; allowPlatform?: boolean }): string;
+export function isPrincipalOwnerToken(owner: string, opts?: { allowLocal?: boolean; allowPlatform?: boolean }): boolean;
 ```
 
 The managed-agent kinds (`manager-managed-agent-enrollment`, `-prepare-retirement`,
@@ -152,7 +158,8 @@ decides them on its own route against the same assignment.
 
 ### 3.2 The host side
 
-Declarations for `@cotal-ai/auth`, implementation round:
+Declarations as they landed. `PlatformControlAssignment` is in `@cotal-ai/core` beside the request
+types, and `@cotal-ai/auth` re-exports it. The rest is in `@cotal-ai/auth`.
 
 ```ts
 /** One platform-run control manager assigned to one account. The platform backend is its only
@@ -173,13 +180,15 @@ export interface PlatformControlAssignment {
   state: "assigned" | "revoked";
 }
 
+export interface PlatformControlInput {
+  /** The one current assignment for this account, or null. Read fresh on every door call. */
+  observeAssignment(space: string, accountPublicKey: string): Promise<PlatformControlAssignment | null>;
+}
+
 export function startAuthService(inputs: HostedContextInputs & {
   port?: number;
   /** Present only in a platform composition. Absent: the handle has no service door. */
-  platformControl?: {
-    /** The one current assignment for this account, or null. */
-    observeAssignment(space: string, accountPublicKey: string): Promise<PlatformControlAssignment | null>;
-  };
+  platformControl?: PlatformControlInput;
   /** Trusted-host only. Forwarded unchanged to `openAuthAuthorityPlane`, which bounds it to
    * 5..86400 as today. Absent: the 24h default. No CLI flag and no request field sets it. */
   standingRenewableTtlSeconds?: number;
@@ -197,7 +206,7 @@ export interface AuthServiceHandle extends HostedServiceHandle {
 
 /** `p_` + the first 26 base32 chars of
  *  HMAC-SHA256(ownerSecret, "cotal/platform-control-owner/v1\0" + space + "\0" + accountPublicKey). */
-export function platformControlOwner(ownerSecret: Uint8Array, space: string, accountPublicKey: string): string;
+export function platformControlOwner(ownerSecret: string | Uint8Array, space: string, accountPublicKey: string): string;
 ```
 
 `runAuthService` (the CLI daemon) never constructs the door. No listener, loopback or public,
@@ -210,7 +219,9 @@ serves it. One call runs in this order, and every refusal writes nothing:
    account and revision must equal the envelope's, and its `instanceId` and `lifecycleUid` must
    equal the inner request's `instanceId` and `managerLifecycleUid`. A null or `revoked` row, or an
    instance the row does not name, is `permission-denied`. An observer error is `unavailable`,
-   never a cached answer. One row per account means one control instance per account.
+   never a cached answer. One row per account means one control instance per account. When the
+   assigned instance already has an issuance gate, its principal must be
+   `<p_owner>.manager_serve_<instanceId>`; a gate naming any other principal is `permission-denied`.
    For `prepare` and `activate` only, when the row names a `predecessorInstanceId`, the host reads
    that instance's `svc.manager` registration and its `epgate.manager` row. A current registration
    or a `frozen` gate is `failed-precondition`, and the host does not probe, freeze, evict, revoke
@@ -226,10 +237,11 @@ serves it. One call runs in this order, and every refusal writes nothing:
    Neither selects a signing subject, permission set or a lifetime past the host's bound.
 5. The call dispatches to the same functions the human route uses (`issueRemoteManagerAuthority`,
    `authorizeRemoteManagerRenewal`, maintenance, retained validation, goal-index scan, admin
-   authorization, run admission and attempt). Their authorization input becomes the closed union
-   `{ holder: "human"; owner; scope } | { holder: "platform"; owner; assignment }`. The platform
-   arm replaces the `supervise` check with the assignment check. It never passes a synthesized
-   `["supervise"]` scope.
+   authorization, run admission and attempt). Their authorization input is the closed union
+   `ManagerAuthorityHolder = { holder?: "human"; owner; scope } | { holder: "platform"; owner;
+   assignment }`. The human arm's tag is optional so every existing caller keeps its shape and its
+   refusal sentence. The platform arm replaces the `supervise` check with the assignment check
+   (`requireManagerAuthorityHolder`). It never passes a synthesized `["supervise"]` scope.
 6. Maintenance needs one more service-only guard. In the platform arm, `targetInstanceId` must
    equal the assignment's `instanceId` for both `evict-family-principal` and
    `reconcile-registration`, and the observed target gate's principal must equal
@@ -331,11 +343,11 @@ source at the head above:
 
 `openAuthAuthorityPlane` already accepts `standingRenewableTtlSeconds` (bounded 5..86400,
 trusted-host only), and the remote manager derives its timer from the issued credential's
-`exp - iat`. No shipped composition passes it: `startAuthContext` opens the plane without it,
-`startAuthService` has no input for it, and the CLI has no flag. This design proposes the
-one-field pass-through on the `startAuthService` inputs (section 3.2) over the full 24h wall clock.
-It changes only the lifetime the host signs, the host sets it, and the plane's existing bound
-applies. With a 300-second TTL every standing credential, the run-driver pair included, passes its
+`exp - iat`. At v0.58.0 no shipped composition passed it. The choice for the renewal proof is the
+one-field pass-through on the `startAuthService` inputs (section 3.2) over the full 24h wall clock,
+and it landed with the door: `startAuthService` forwards the value to the plane unchanged.
+`runAuthService` and the CLI still have no flag for it. It changes only the lifetime the host signs,
+the host sets it, and the plane's existing bound applies. With a 300-second TTL every standing credential, the run-driver pair included, passes its
 renewal point about 225 seconds after issue and renews on the next 75-second tick, on the same
 code a 24h host runs. A host that does not set it can still pass H7 by waiting out the 24h clock.
 A constructor test is not a renewal proof.
@@ -347,13 +359,18 @@ The holder is a platform principal: owner `p_…`, actors fixed by the instance 
 disjoint from `u_` by prefix and from nkeys by case, length and `_`. Keying the HMAC with the
 space's owner secret keeps the token opaque per space, the same as derived owners.
 
-Today every trust-boundary owner check (`assertPrincipalOwnerToken`, `isPrincipalOwnerToken`, the
-admin-authorization caller parser) accepts only `u_…` or `local`. The implementation round must
-admit `p_…` only where a service-view principal can legitimately appear: its presence card, its
-serve and gate rows, and its own same-owner descendants. It must also add a negative test that a
-`p_` owner is still refused everywhere else. SPEC §13.1 scopes this extension of the §2 owner
-format to these principals; §2 itself is unchanged. The §13.2 mode-word discrimination still holds,
-because a `p_` token contains `_` and no mode word does.
+Every trust-boundary owner check (`assertPrincipalOwnerToken`, `isPrincipalOwnerToken`, the
+admin-authorization caller parser) still accepts only `u_…` or `local` by default. The two
+principal checks gain an `allowPlatform` option, and three boundaries opt in, all on the instance's
+own family: the issuance gate row parser, the credential-ledger holder principal, and the principal
+liveness probe the gate repair uses. Every other guard refuses a `p_` owner as before, including
+the presence and message drop guards, and `assertDerivedOwnerToken` never accepts one. A running
+platform Manager presents a roster card under its `p_` owner (H6), so the presence admission
+lands with the platform Runtime round, against that row. No test was committed for the negative
+side. The hand test checks that the default guard and the derived-owner check refuse the issued
+`p_` owner. SPEC §13.1 scopes this extension of the §2 owner format to these principals; §2 itself
+is unchanged. The §13.2 mode-word discrimination still holds, because a `p_` token contains `_` and
+no mode word does.
 
 Admin authorization on a platform manager answers `authorized: true` only for a caller whose owner
 equals the service owner. This change issues no `p_` principal outside the manager's own family, so
@@ -423,37 +440,28 @@ Each refusal maps to the SPEC clause that states it. A security reviewer can che
 | R10 | No force-take of a live legacy manager | `prepare` and `activate` refuse `failed-precondition` while the assignment's `predecessorInstanceId` has a current `svc.manager` registration or a `frozen` gate; the door only reads the predecessor and never probes, freezes, evicts, revokes or deregisters it; no `reconcileForeignRegistration` callback; maintenance confined to the assigned instance (section 3.2, steps 2 and 6; section 7) | §13.1 Platform control authority, second and third paragraphs |
 | R11 | No rebinding of an existing instance to the platform owner, and no invented `u_` owner | core refuses a re-registration that changes an instance's owner; a gate's principal is fixed at provisioning and a gate is never deleted; the door refuses an instance whose gate names another principal; the platform's own instance id and lifecycle UID stay stable across restarts, which re-register at a later process epoch; the owner is always the derived `p_` token (section 7) | §13.1 Platform control authority, second and third paragraphs |
 
-## 9. Why the declarations wait for the implementation round
+## 9. What landed
 
-| Symbol | Package | Status at this head |
+| Symbol | Package | Status |
 |---|---|---|
-| `PlatformControlInnerRequest`, `PlatformControlAuthorityRequest`, `PlatformControlAuthorityResult` | `@cotal-ai/core` | proposed, absent from source and `dist` |
-| `PLATFORM_OWNER_PREFIX`, `assertPlatformOwnerToken` | `@cotal-ai/core` | proposed, absent |
-| `PlatformControlAssignment`, `platformControlOwner` | `@cotal-ai/auth` | proposed, absent |
-| `startAuthService` input `platformControl`, `AuthServiceHandle.platformControlAuthority` | `@cotal-ai/auth` | proposed, absent; both shipped signatures unchanged |
-| `PlatformControlAssignment.predecessorInstanceId` and the read-only predecessor check (section 3.2, step 2) | `@cotal-ai/auth` | proposed, absent |
-| `startAuthService` input `standingRenewableTtlSeconds`, forwarded to `openAuthAuthorityPlane` | `@cotal-ai/auth` | proposed, absent; the plane's option and its 5..86400 bound are shipped |
-| the `holder` authorization union and the maintenance guard (section 3.2, steps 5 and 6) | `@cotal-ai/auth` | proposed, absent |
+| `PlatformControlInnerRequest`, `PlatformControlAuthorityRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` | `@cotal-ai/core` | landed, insertion-only; existing request types unchanged |
+| `PLATFORM_OWNER_PREFIX`, `assertPlatformOwnerToken`, the `allowPlatform` option | `@cotal-ai/core` | landed; opted in at the gate row, credential holder and liveness probe only (section 6) |
+| `platformControlOwner`, `PlatformControlInput`, `parsePlatformControlAuthorityRequest`, `ManagerAuthorityHolder` | `@cotal-ai/auth` | landed |
+| `startAuthService` input `platformControl`, `AuthServiceHandle.platformControlAuthority` | `@cotal-ai/auth` | landed; the member exists only when the input is supplied |
+| the read-only predecessor check and the assigned-instance gate check (section 3.2, step 2) | `@cotal-ai/auth` | landed |
+| `startAuthService` input `standingRenewableTtlSeconds` | `@cotal-ai/auth` | landed as a pass-through; the plane's 5..86400 bound applies |
+| the `holder` authorization union and the maintenance guard (section 3.2, steps 5 and 6) | `@cotal-ai/auth` | landed |
 | `remoteStandingBundleRenewal`, both registration proofs, `authorizeRemoteManagerRenewal`, `ManagerOptions.pooled` | core, auth, manager | shipped, reused unchanged |
 
-This round is scoped to the contract, so the proposed rows stay in this record. They land together
-in the implementation round, for these reasons:
+`runAuthService` and the CLI construct no door. No listener, route, daemon or capability was added.
+The door needs no change in `@cotal-ai/manager`: a platform composition builds
+`ManagerOptions.remoteAuthority` with the shipped `remoteManagerClient` builders and the door as
+their `call` (section 3.3).
 
-- A door type in `@cotal-ai/core` with no producer advertises authority no host provides.
-  `docs/embedding.md` already has to warn that the renewal types' presence is not an operational
-  guarantee; another such gap would be worse.
-- The `p_` grammar widens trust-boundary validators across core. Landing it with no issuer would
-  let read guards accept owners no host mints, with no native test of the producer. The grammar,
-  the issuer and the negative tests have to land together.
-- The authorization input change in the auth dispatch functions is code, and this round adds none.
-- An optional `platformControl` input with no door behind it would be ignored when a host passes it.
-  That is a silent fallback. Refusing it would be a runtime path. Neither belongs in a contract
-  round, so the input lands with the door.
-
-A consumer that imports these symbols from the built packages fails to compile at this head
-(TS2305 for the core request type, TS2353 for the `platformControl` input, TS2339 for the handle
-method). That is the accurate availability at this head. H1 and H5 are the first rows an
-implementation must pass.
+Not in this change: the platform's own Runtime and composition root, the presence admission of a
+`p_` owner (section 6), and the managed-agent kinds, which the platform decides on its own route.
+Acceptance rows H6 to H9, H12 and H15 to H18 need one of those, a legacy deployment or the wall
+clock.
 
 ## 10. Native acceptance
 
@@ -484,6 +492,9 @@ row matches.
 | H18 | Write an assignment whose `instanceId` is the legacy manager's instance id, then call `prepare` and `activate` | refused before any material is issued; the legacy gate and record are unchanged |
 
 ## 11. Residual risk
+
+The door does not provision or retire an agent owned by a `u_` user; a platform that needs one
+uses the existing user-bound path, a human's `supervise`-scoped manager with `enrollManagedAgent`.
 
 The door trusts its in-process caller. In a split layout the platform's caller-bound channel is the
 boundary. It must bind each caller (peer uid) to one assignment, and the door still refuses any

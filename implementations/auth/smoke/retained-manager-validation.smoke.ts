@@ -84,7 +84,7 @@ const resultForClient = (
   authority: candidateAuthority,
 });
 const gate = { state: "open" as const, principal: `${owner}.${remoteManagerActors(instanceId).serve}`, ...current };
-const run = (overrides: Partial<Parameters<typeof authorizeRemoteRetainedAgentValidation>[0]> = {}) => authorizeRemoteRetainedAgentValidation({
+const run = (overrides: Partial<Extract<Parameters<typeof authorizeRemoteRetainedAgentValidation>[0], { scope: string[] }>> = {}) => authorizeRemoteRetainedAgentValidation({
   request,
   space,
   owner,

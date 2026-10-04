@@ -45,13 +45,14 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
-| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, `readiness`, `drain`, and idempotent `close`. `runAuthService` remains the CLI entry. |
+| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, `readiness`, `drain`, and idempotent `close`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door. `runAuthService` remains the CLI entry. |
+| `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` *(types)* | `@cotal-ai/core` | the closed envelope, its inner request union, its result and the backend's assignment row for `platformControlAuthority`. `platformControlOwner` in `@cotal-ai/auth` derives the `p_` owner the door issues under. |
 | `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
 | `retireManagerInstanceIdentity(root, space, expected)` | `@cotal-ai/workspace` | remove a persisted manager identity only if its complete instance id and serve identity still match `expected`. Returns `removed` or `absent`; refuses malformed, nonregular, and changed records. `absent` is not proof of ownership or successful teardown. The caller must separately prove stop and retirement ownership before using it. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
 | `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
-| `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and an explicit non-custodial runtime before local execution starts. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. Today the only source of that material is the human `managerServiceAuthority` door, so a platform-run control manager has no published door. The [platform control authority](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/platform-pooled-control-authority.md) design proposes one. |
+| `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and an explicit non-custodial runtime before local execution starts. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. A signed-in human's manager gets that material from `managerServiceAuthority`. A platform-run control manager gets it from `AuthServiceHandle.platformControlAuthority` with the shipped `remoteManagerClient` builders, as the [platform control authority](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/platform-pooled-control-authority.md) design describes. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 | `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumer; broker inactivity expiry remains the crash or deletion-failure backstop. |
 
@@ -138,7 +139,20 @@ under the explicit `stateDir`. The context never resolves a workspace root from 
 directory and has no local manager, so only remote manager gates can be selected. It returns after
 the authority plane, the callout subscription and the loopback listener are bound. A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
-The host writes no discovery file for it. The auth plane can renew a registered manager's
+The host writes no discovery file for it.
+
+Two optional inputs serve a platform composition. `platformControl: { observeAssignment }` adds
+`platformControlAuthority` to the handle. It is a typed in-process method, served on no listener,
+that issues the manager-service request family for the one control manager the backend assigned to
+this account, under a derived `p_` owner. It reads the assignment fresh on every call and refuses
+an IdP token, another account, a stale revision, another instance or lifecycle, and an instance
+another owner registered. It refuses `prepare` and `activate` while the assignment's named
+predecessor is still registered or frozen. Without the input the member is `undefined`.
+`standingRenewableTtlSeconds` is forwarded unchanged to the authority plane, which bounds it to 5
+to 86400 seconds. It is a trusted-host input for the renewal rehearsal, and no request or CLI flag
+sets it. SPEC §13.1 and §13.6 define the view.
+
+The auth plane can renew a registered manager's
 five standing credentials from the current service registration. Run-driver renewal still
 refuses without an authoritative activated-run reader, so these handles do not yet make a
 complete pooled auth and delivery host. A fresh auth plane can initialize without a

@@ -9,6 +9,7 @@ import {
   type RetainedAgentAuthority,
 } from "@cotal-ai/core";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 
 const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
 
@@ -108,11 +109,9 @@ export function parseRemoteRetainedAgentValidationRequest(raw: unknown): RemoteR
   };
 }
 
-export interface AuthorizeRemoteRetainedAgentValidationArgs {
+export type AuthorizeRemoteRetainedAgentValidationArgs = ManagerAuthorityHolder & {
   request: RemoteRetainedAgentValidationRequest;
   space: string;
-  owner: string;
-  scope: string[];
   proofSecret: string | Uint8Array;
   observeManagerGate: (instanceId: string) => Promise<{
     state: "open" | "frozen" | "retired";
@@ -120,7 +119,7 @@ export interface AuthorizeRemoteRetainedAgentValidationArgs {
     processEpoch: number;
     registrationRevision: number;
   } | null>;
-}
+};
 
 /** Host policy authorizing one fresh, non-minting retained-agent continuity validation. */
 export async function authorizeRemoteRetainedAgentValidation(
@@ -129,8 +128,7 @@ export async function authorizeRemoteRetainedAgentValidation(
   const r = parseRemoteRetainedAgentValidationRequest(args.request);
   if (r.space !== args.space)
     throw new EpEnvelopeError("permission-denied", `manager retained-agent validation request names space ${r.space}, not this host space ${args.space}`);
-  if (!args.scope.includes("supervise"))
-    throw new EpEnvelopeError("permission-denied", 'manager retained-agent validation needs scope "supervise"; spawn/admin do not imply it');
+  requireManagerAuthorityHolder(args, r.instanceId, 'manager retained-agent validation needs scope "supervise"; spawn/admin do not imply it');
   if (r.target.owner !== args.owner)
     throw new EpEnvelopeError("permission-denied", `manager retained-agent validation may target only its authenticated owner ${args.owner}, not ${r.target.owner}`);
   const actors = remoteManagerActors(r.instanceId);
