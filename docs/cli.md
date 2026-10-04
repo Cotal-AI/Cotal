@@ -947,7 +947,9 @@ COTAL_MANAGED_HANDOFF_FILE=/run/seat/handoff.json \
 ```
 
 The `cotal` entry reads the file, deletes it and drops the variable before it parses flags, prints
-help or loads extensions, so every outcome leaves no file. The spawn then refuses a handoff whose
+help or loads extensions, so every outcome leaves no file. The variable is read under any letter
+case; spellings that name different files are refused after every one of them was deleted. The
+spawn then refuses a handoff whose
 space, owner, actor or lifecycle UID differs from `--space`, `--expect-owner`, `--name` and
 `--expect-lifecycle-uid`, before any broker connection or exchange request. A handoff conflicts with
 the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
