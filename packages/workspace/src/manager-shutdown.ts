@@ -1,6 +1,5 @@
 import {
   closeSync,
-  existsSync,
   fsyncSync,
   lstatSync,
   openSync,
@@ -28,6 +27,11 @@ import {
  * exact manager pid plus the live stop reservation's inode, so another attempt cannot replay it. */
 export const MANAGER_SHUTDOWN_INTENT = "manager.{space}.shutdown-intent";
 export const MANAGER_SPARE_CAPABILITY = "manager.{space}.spare-capability";
+
+/** What a manager's default stop does with its seats, as its spare capability records it. `release`
+ * leaves every seat running. `stop` also stops the seats that run inside the manager process (the
+ * in-process pty runtime), because they cannot outlive it, and releases the rest. */
+export type ManagerSpareSeats = "release" | "stop";
 
 interface PinnedManagerShutdownIntent {
   version: 1;
@@ -139,45 +143,30 @@ function publishAtomic(path: string, value: unknown): void {
   }
 }
 
-/** Publish that this exact manager process can release its local runtime custody without reaping. */
+/** Publish what a default stop of this exact manager process does with its seats; `false` removes
+ * the record. A `release` record keeps the version 1 shape. A `stop` record is version 2, which an
+ * older CLI refuses instead of reporting the seats it stopped as spared. */
 export function publishManagerSpareCapability(
   context: LocalProcessContext,
-  capable: boolean,
+  seats: ManagerSpareSeats | false,
   tokenAt: ProcessStartTokenReader = defaultStartToken,
 ): void {
   const path = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, context);
-  if (!capable) {
+  if (!seats) {
     rmSync(path, { force: true });
     return;
   }
   const process = recordedManagerProcess(context, tokenAt);
-  publishAtomic(path, { version: 1, process });
+  publishAtomic(path, seats === "release" ? { version: 1, process } : { version: 2, process, seats });
 }
 
-/**
- * Withdraw this manager's spare capability before it starts an agent its runtime cannot release.
- * The record goes first and the stop reservation is read after it: `cotal down` and Ctrl-C on a
- * foreground `cotal up` take that reservation before they read the capability, so a stop that may
- * already have seen the capability is seen here. That spawn is refused and the capability
- * restored, because no agent started.
- */
-export function withdrawManagerSpareCapability(context: LocalProcessContext): void {
-  const path = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, context);
-  if (!existsSync(path)) return;
-  rmSync(path);
-  let stopper: number | undefined;
-  try { stopper = parsePid(readFileSync(`${canonicalLocalProcessPath(MANAGER_PIDFILE, context)}.stopping`, "utf8")); } catch { stopper = undefined; }
-  if (stopper === undefined || probeLiveness(stopper) === "dead") return;
-  publishManagerSpareCapability(context, true);
-  throw new Error(`refusing to start an agent while pid ${stopper} is stopping this manager: the runtime cannot release it, so that stop would end it too`);
-}
-
-/** Refuse a bare stop before SIGTERM when this exact manager cannot safely spare its PTY child. */
+/** Refuse a bare stop before SIGTERM unless this exact manager published a spare capability, and
+ * return what its default stop does with its seats. */
 export function assertManagerCanSpare(
   context: LocalProcessContext,
   tokenAt: ProcessStartTokenReader = defaultStartToken,
   target?: ProcessIdentityRecord,
-): void {
+): ManagerSpareSeats {
   const expected = recordedManagerProcess(context, tokenAt);
   if (target && (target.pid !== expected.pid || target.token !== expected.token))
     throw new Error("refusing bare manager stop: stop attempt target does not match the recorded manager process");
@@ -196,9 +185,14 @@ export function assertManagerCanSpare(
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`refusing bare manager stop: malformed spare capability at ${path}`);
   const row = value as Record<string, unknown>;
   const process = row.process && typeof row.process === "object" && !Array.isArray(row.process) ? row.process as Record<string, unknown> : undefined;
-  if (Object.keys(row).sort().join(",") !== "process,version" || row.version !== 1 || !process ||
+  const keys = Object.keys(row).sort().join(",");
+  const seats: ManagerSpareSeats | undefined = row.version === 1 && keys === "process,version" ? "release"
+    : row.version === 2 && keys === "process,seats,version" && row.seats === "stop" ? "stop"
+    : undefined;
+  if (!seats || !process ||
       Object.keys(process).sort().join(",") !== "pid,token" || process.pid !== expected.pid || process.token !== expected.token)
     throw new Error(`refusing bare manager stop: spare capability at ${path} is malformed, stale, or belongs to a different manager process`);
+  return seats;
 }
 
 /**

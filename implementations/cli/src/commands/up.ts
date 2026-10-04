@@ -116,6 +116,7 @@ import {
   localProcessPath,
   MANAGER_PIDFILE,
   assertManagerCanSpare,
+  type ManagerSpareSeats,
   verifyIdentityPin,
   isLoopbackHost,
   connectUserControlOrThrow,
@@ -1242,6 +1243,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     void (async () => {
       const managerContext = { root: cotalRoot(), space };
       let spared: SpareSeatRow[] | undefined;
+      let spareSeats: ManagerSpareSeats | undefined;
       let legacyManagerSpareUnverified = false;
       const managerPidPath = localProcessPath(MANAGER_PIDFILE, managerContext);
       const stopMarker = `${managerPidPath}.stopping`;
@@ -1253,11 +1255,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           spared = await listManagerSeatsForSpare(managerContext);
           try {
             // Taken before the capability read and held until the manager is gone, as bare `down`
-            // holds it: delivery teardown below takes time, and a first agent spawn in that window
-            // must see this stop and be refused rather than start an agent the signal would end.
+            // holds it, so a concurrent `cotal down` can neither stop this manager nor arm a reap
+            // while this stop is in flight.
             reserveStop("manager", stopMarker);
             reserved = true;
-            assertManagerCanSpare(managerContext, undefined, pin.record);
+            spareSeats = assertManagerCanSpare(managerContext, undefined, pin.record);
           } catch (e) {
             // THE CAPABILITY ASSERT IS THE SIGNAL GATE, the same rule bare `down` enforces inside
             // its beforeSignal hook: a throw there signals nothing. Signal NOTHING here either — no
@@ -1277,7 +1279,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       try {
         await stopManager(undefined, undefined, undefined, space);
         if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
-        else if (spared) printSparedAgents(spared);
+        else if (spared) printSparedAgents(spared, spareSeats);
       } catch (e) {
         console.error(`! manager teardown: ${(e as Error).message}`);
       } finally {

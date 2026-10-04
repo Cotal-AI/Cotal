@@ -12,8 +12,9 @@
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
  *  4. #1307: Ctrl-C on a FOREGROUND `up` follows the same sparing rule as bare `down`. One managed
  *     seat (a shim `claude` on PATH: a real core-dist endpoint that joins presence and stays alive)
- *     survives the SIGINT, the manager and broker are gone, the spared block is printed with the
- *     reap route, and the process exits within a bounded time.
+ *     runs on the in-process pty runtime, so it cannot outlive the manager: after the SIGINT the
+ *     manager, broker and seat are gone, the report names the seat as stopped with the manager,
+ *     and the process exits within a bounded time.
  *
  * Sandboxes COTAL_HOME + a temp project root; tears down via `cotal down` + own-pid SIGTERM only —
  * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH.
@@ -290,11 +291,13 @@ try {
   ok("broker-only down stops broker + delivery daemon", boDead, { boDeliveryPid });
   ok("broker-only down leaves no manager pidfile behind", !existsSync(record(MANAGER_PIDFILE)));
 
-  // 4) #1307: Ctrl-C on a FOREGROUND up spares and reports the managed seat, exactly like bare
-  //    down. The seat is a shim `claude` first on PATH (the manager resolves requires:["claude"]
-  //    at boot): a real core-dist endpoint that joins presence under the manager-minted creds, so
-  //    the detached spawn resolves readiness and ps lists it. Its env names ride the documented
-  //    spawn.env allow-list (the seat env is otherwise stripped to the fixed OS boundary).
+  // 4) #1307: Ctrl-C on a FOREGROUND up stops the stack and reports the managed seat, exactly like
+  //    bare down. The default pty runtime keeps the seat's PTY inside the manager process, so the
+  //    seat stops with the manager and is reported as stopped, never as spared (#2440). The seat is
+  //    a shim `claude` first on PATH (the manager resolves requires:["claude"] at boot): a real
+  //    core-dist endpoint that joins presence under the manager-minted creds, so the detached spawn
+  //    resolves readiness and ps lists it. Its env names ride the documented spawn.env allow-list
+  //    (the seat env is otherwise stripped to the fixed OS boundary).
   const fgPort = await freePort();
   const fgServer = `nats://127.0.0.1:${fgPort}`;
   const fgBin = mkdtempSync(join(tmpdir(), "cotal-upstack-fgbin-"));
@@ -369,11 +372,11 @@ try {
     for (let i = 0; i < 20 && alive(fgManagerPid); i++) await sleep(500);
     ok("the manager is gone after Ctrl-C", !alive(fgManagerPid), fgManagerPid);
     ok("the broker is gone after Ctrl-C", !(await portOpenAt(fgPort)));
-    ok("the seat SURVIVES the Ctrl-C teardown", fgSeatPid !== undefined && alive(fgSeatPid), fgSeatPid);
-    ok("the spared report names the seat and the reap route",
-      /left 1 managed agent running \(no longer managed\):/.test(plain(fgOutText)) &&
+    ok("the in-process seat stops with the manager on Ctrl-C", fgSeatPid !== undefined && !alive(fgSeatPid), fgSeatPid);
+    ok("the report names the seat as stopped with the manager and claims no spared agent",
+      /stopped 1 managed agent that ran inside the manager process:/.test(plain(fgOutText)) &&
       /bard/.test(plain(fgOutText)) &&
-      /to stop managed agents with the stack: cotal down --with-agents/.test(plain(fgOutText)),
+      !/left \d+ managed agents? running/.test(plain(fgOutText)),
       fgOutText);
   } finally {
     if (fgUp && alive(fgUp.pid ?? 0)) { try { fgUp.kill("SIGKILL"); } catch { /* gone */ } }

@@ -212,7 +212,7 @@ than keeping or stopping it: `cotal down manager` first. For a split topology wi
 host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
-only what actually started. Ctrl-C on a foreground `up` spares managed agents and reports them
+only what actually started. Ctrl-C on a foreground `up` stops the stack and reports managed agents
 under the same rule as bare `cotal down` (see [`down`](#down)): when the manager cannot prove it can
 spare, Ctrl-C refuses the teardown, prints the refusal with the reap route, and leaves the stack
 running. The `-f` form is a
@@ -324,11 +324,14 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
 
-Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents running.
-Before signalling the manager it verifies that the exact recorded manager supports releasing its
-local custody, and it reports the agents left behind plus `cotal down --with-agents` as the explicit
-reap. Ctrl-C on a foreground `cotal up` follows the same rule: it verifies the spare capability,
-spares the agents, and prints the same report. When the capability cannot be verified, Ctrl-C
+Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents running
+when their runtime lets them outlive the manager. Before signalling the manager it verifies the spare
+capability of the exact recorded manager, which records what that manager's stop does with its
+seats, and it reports the agents left behind plus `cotal down --with-agents` as the explicit reap.
+The built-in pty runtime keeps each PTY inside the manager process, so those seats cannot outlive
+it: every manager stop stops and deprovisions them, and `down` reports them as stopped. Ctrl-C on a
+foreground `cotal up` follows the same rule: it verifies the spare capability, stops the stack, and
+prints the same report. When the capability cannot be verified, Ctrl-C
 refuses the teardown and leaves the stack running; end it with `cotal down --with-agents`.
 `--with-agents` is a one-shot destructive policy bound to the exact verified manager process
 and the exact live `down` stop reservation; a stale, malformed, crashed, or different stop attempt
@@ -347,14 +350,11 @@ and cannot be combined with component names. Stopping `nats` alone is refused wh
 registered daemon is still live; include those components or use bare `cotal down`.
 
 A pinned manager with no spare-capability record is not signalled by bare `cotal down` or `cotal
-down manager`. The missing record can mean either that the manager predates capability reporting or
-that a current manager cannot detach its agents. Stop each managed agent explicitly, then run `cotal
-down --with-agents` from the mesh root to stop the whole stack. An older manager does not understand
-the reap request, which is why the agents must already be stopped. The built-in `pty` runtime keeps
-agents inside the manager process, so it cannot detach them. Its manager publishes the record until
-its first agent spawn and withdraws it before that spawn for the rest of its life, so a stack whose
-manager never started an agent stops with bare `cotal down`. An agent spawn that arrives while `cotal
-down` or Ctrl-C on a foreground `cotal up` is stopping that manager is refused.
+down manager`. A current manager always publishes the record, so a missing one means an older
+manager: one that predates capability reporting, or one whose pty runtime reported that it cannot
+detach its agents. Stop each managed agent explicitly, then run `cotal down --with-agents` from the
+mesh root to stop the whole stack. An older manager does not understand
+the reap request, which is why the agents must already be stopped.
 
 Bare `cotal down` inventories by pidfile. When this folder's registered broker answers and no
 `nats.pid` records it, the command does not say nothing is running. It names the space and the
