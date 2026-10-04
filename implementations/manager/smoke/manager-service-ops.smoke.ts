@@ -456,8 +456,11 @@ try {
 
     const sibling = await plantStrandedSlot("sibling-inspect", "sibling-manager");
     const siblingInspectReply = await A.call("inspect", { name: "sibling-inspect" });
-    check("inspect of a sibling manager's durable row (explicit foreign ownerInstanceId) is not-found, the same ownership filter `slots` uses",
-      siblingInspectReply.reply.ok === false && siblingInspectReply.reply.error?.code === "not-found",
+    const siblingDetail = siblingInspectReply.reply.error?.details?.find((d) => d.kind === "ai.cotal.manager.static-slot-observation") as Record<string, unknown> | undefined;
+    check("inspect of a sibling manager's nonretired durable row names the owning instance instead of answering not-found (#443)",
+      siblingInspectReply.reply.ok === false && siblingInspectReply.reply.error?.code === "failed-precondition" &&
+      siblingDetail?.ownerInstanceId === "sibling-manager" && siblingDetail.slotLifecycleUid === sibling.lifecycleUid &&
+      (siblingInspectReply.reply.error?.message ?? "").includes("belongs to manager instance sibling-manager"),
       siblingInspectReply.reply);
 
     const slotsReply = await A.call("slots");
@@ -484,7 +487,7 @@ try {
       activeRow);
     check("slots never lists the retired row",
       byName("retired-inspect") === undefined, slotRows.map((r) => r.name));
-    check("slots never lists a sibling manager's foreign-owned row (the same ownership filter inspect used above)",
+    check("slots never lists a sibling manager's foreign-owned row",
       byName("sibling-inspect") === undefined, slotRows.map((r) => r.name));
     const w1Row = byName("w1");
     check("slots lists the live spawned agent as active with live=true",

@@ -3371,6 +3371,13 @@ export class Manager {
             // A retired row affirms that no agent exists now, so it keeps the old `not-found`
             // result. The changed refusal is reserved for durable NONTERMINAL state that contradicts
             // the live-map miss and needs operator attention.
+            //
+            // A sibling's nonterminal row is not a contradiction: the name belongs to another
+            // manager instance in this space. In a multi-manager space the class queue hands this
+            // read to either instance, so a plain `not-found` here read the same as a name that
+            // exists nowhere and a caller had no way to tell the two apart (#443).
+            if (observed?.ownerInstanceId !== undefined)
+              throw new EpEnvelopeError("failed-precondition", `the durable slot for "${name}" belongs to manager instance ${observed.ownerInstanceId}, not ${this.managerInstanceId} which answered; only that instance can act on it ${renderStaticSlotObservation(observed)}`, [observed]);
             if (observed !== undefined && observed.slotPhase !== "retired")
               throw new EpEnvelopeError("failed-precondition", `no live agent "${name}"; durable state contradicts absence ${renderStaticSlotObservation(observed)}`, [observed]);
           }
