@@ -50,6 +50,7 @@ const groups = [
       'docs/define-a-team.md',
       'docs/watch-a-mesh.md',
       'docs/deploy.md',
+      'docs/UPGRADING.md',
       'docs/examples.md',
       'docs/connectors.md',
       'docs/connect-claude.md',
