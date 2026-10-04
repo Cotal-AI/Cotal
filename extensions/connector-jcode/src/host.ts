@@ -81,6 +81,12 @@ const RELAY_REBIND_POLL_MS = 1_000;
  *  released the moment the acknowledgement arrives, which is single-digit milliseconds on a healthy
  *  seat. A Harness that never acknowledges therefore costs one bounded wait, not a wedged gate. */
 const RUN_ACCEPT_WINDOW_MS = 10_000;
+/** One bridge recovery remains bounded, but it is bounded by time rather than one launch/attach
+ *  outcome. A loaded host can lose a transient replacement race without turning that into a
+ *  second provider close or an unbounded relaunch loop. The window opens at the close, so tearing
+ *  down the broken tree spends it too. Exported so a test waiting on a recovery step allows the
+ *  host the same window instead of a shorter guess. */
+export const BRIDGE_RECOVERY_WINDOW_MS = 60_000;
 
 function readinessTurnTimeoutMs(): number {
   const raw = process.env.COTAL_JCODE_READINESS_TIMEOUT_MS?.trim();
@@ -908,10 +914,6 @@ export async function runJcodeHost(): Promise<void> {
     turnConditionPublished = condition !== null;
     void agent.setCondition(condition).catch(() => {});
   };
-  /** One bridge recovery remains bounded, but it is bounded by time rather than one launch/attach
-   *  outcome. A loaded host can lose a transient replacement race without turning that into a
-   *  second provider close or an unbounded relaunch loop. */
-  const BRIDGE_RECOVERY_WINDOW_MS = 60_000;
   const BRIDGE_RECOVERY_RETRY_MS = 1_000;
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
   // pendingKickoff implies consecutiveFailures === 0: it is cleared before the only run() that can
