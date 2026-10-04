@@ -22,10 +22,10 @@ import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   admissionBucket, createEndpointStreams, createRunAdmission, createRunSpec, createSpaceAuth,
-  credsFromJwt, ensureAdmissionStore, ensureAuthorityStores, ensureIssuedStores, epAuthBucket,
+  credsFromJwt, ensureAdmissionStore, ensureAuthorityStores, ensureIssuedStores, epAuthBucket, epRequestSubject,
   epgateKey, mintCheckpoint, mintGeneration, mintLifecycleUid, newIdentity, openRecordsBucket,
   readRunAdmission, remoteManagerActors, revokeRunAdmission, standaloneConnectOpts, writeRunStatus,
-  type RemoteRunAttemptResult, type RemoteRunAttemptRequest,
+  type IssuedCaller, type RemoteRunAttemptResult, type RemoteRunAttemptRequest,
 } from "@cotal-ai/core";
 import { remoteRunAttemptCredentials } from "../../manager/src/remote-authority.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -75,7 +75,7 @@ try {
   const httpOwner = deriveOwnerForIdpSubject(ownerSecret, IDP_ISS, "human-attempt");
 
   // Ledger: cli has supervise; nosupervise lacks supervise
-  grantActor(authDir, { owner: httpOwner, actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [">"], allowPublish: [">"] });
+  const cliRow = grantActor(authDir, { owner: httpOwner, actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [">"], allowPublish: [">"] });
   grantActor(authDir, { owner: httpOwner, actor: "nosupervise", scope: ["spawn", "admin"], allowSubscribe: [">"], allowPublish: [">"] });
 
   const instanceId = mintLifecycleUid();
@@ -339,7 +339,8 @@ try {
     opCredsKeys === "operator" &&
     !JSON.stringify(opBody).includes("seed") && opConnected, opRes);
 
-  // 9. Answer operator for waiting checkpoint returns closed response with JWT, authenticating to broker
+  // 9. Answer operator for waiting checkpoint, serving a caller with a live issuance, returns closed
+  // response with JWT, authenticating to broker
   const cpToken = `cp-${mintGeneration()}`;
   await mintCheckpoint(records, jetstream(nc), SPACE, {
     ref: { endpoint: "manager", token: cpToken },
@@ -349,12 +350,22 @@ try {
     deadline: Date.now() + 60_000,
     now: Date.now(),
   });
+  let generation = "";
+  await plane.issueUserCaller({
+    t: { owner: httpOwner, act: { actor: "cli", lifecycleUid: cliRow.lifecycleUid } } as never,
+    connId: mintLifecycleUid(),
+    mint: (issued) => { generation = issued.generation; return { pub: { allow: [">"] }, sub: { allow: [">"] } }; },
+  });
+  const caller: IssuedCaller = { owner: httpOwner, actor: "cli", uid: cliRow.lifecycleUid!, generation };
+  const served = epRequestSubject(SPACE, {
+    route: { mode: "inst", instanceId }, endpoint: "manager", command: "run-answer", target: { mode: "self" }, caller, nonce: mintLifecycleUid(),
+  });
   const ansIdentity = newIdentity();
   const ansReq: RemoteRunAttemptRequest = {
     ...baseReq,
     requestId: `req-${mintLifecycleUid()}`,
     registrationProof: proof,
-    operator: { id: ansIdentity.id, takeoverId: "a".repeat(16), answers: { token: cpToken } },
+    operator: { id: ansIdentity.id, takeoverId: "a".repeat(16), answers: { token: cpToken }, served },
   };
   const ansRes = await postHttp(ansReq);
   const ansBody = ansRes.body as unknown as RemoteRunAttemptResult;

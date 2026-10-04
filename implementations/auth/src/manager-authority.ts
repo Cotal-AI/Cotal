@@ -495,7 +495,7 @@ export async function authorizeRemoteRunAttempt(args: {
   readRunStatus: (runId: string) => Promise<RunStatusValue | undefined>;
   checkpointWaiting: (token: string) => Promise<boolean>;
   /** Whether the pause settled `resumed` naming an accepted answer: what an amendment amends. */
-  checkpointSettled?: (token: string) => Promise<boolean>;
+  checkpointSettled: (token: string) => Promise<boolean>;
   /** The issued store and the source and ledger checks a request carrying `served` is checked with. */
   issued?: IssuedStore;
   sourceIsLive?: (source: IssuedSourceRef) => Promise<boolean>;
@@ -537,7 +537,7 @@ export async function authorizeRemoteRunAttempt(args: {
     // The pause is checked first, then the caller. An answer needs a waiting pause; an amendment
     // needs the pause whose answer was accepted, and nothing else.
     if (op.answers.amend === true
-      ? !(await args.checkpointSettled?.(op.answers.token))
+      ? !(await args.checkpointSettled(op.answers.token))
       : !(await args.checkpointWaiting(op.answers.token)))
       throw new EpEnvelopeError("failed-precondition", op.answers.amend === true
         ? "run operator amends only a checkpoint whose answer was accepted"

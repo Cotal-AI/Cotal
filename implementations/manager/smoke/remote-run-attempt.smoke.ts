@@ -60,6 +60,7 @@ try {
     readAdmission: (runId) => readRunAdmission(jsm, SPACE, "manager", runId),
     readRunStatus: async (runId) => (await readRunRecord(records, "manager", runId))?.status?.value,
     checkpointWaiting: async (token) => (await readCheckpointStatus(records, { endpoint: "manager", token }))?.value.state === "waiting",
+    checkpointSettled: async () => false,
   });
   const attempt = (runId: string, epoch = 1, fencingToken = 1) => ({ attempt: { runId, takeoverId: "t".repeat(16), epoch, fencingToken, driverId: newIdentity().id, mediatorId: newIdentity().id } });
 

@@ -446,7 +446,8 @@ No existing sentence is reworded.
   already relies on. The issuing host checks that the subject names a live issuance of the manager's
   own owner whose ceiling permits it, but it does not observe that this caller published it. A
   dishonest participant manager can therefore act for its own owner's live issuances only, never for
-  another owner. Binding each forwarded subject to a request the trusted service saw is not done.
+  another owner. Binding each forwarded subject to a request the trusted service saw is not done;
+  issue #2465 tracks it for every forwarded run subject.
 
 ## 9. Acceptance for the implementation round
 
