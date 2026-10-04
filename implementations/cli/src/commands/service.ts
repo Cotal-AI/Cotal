@@ -369,8 +369,12 @@ function install(values: { mesh?: string; linger?: boolean }): void {
       `# Restart=always/20s: measured for manager units in production - a manager exits`
       + ` for reasons that are not failures (broker restarts, host suspend), so on-failure/5s`
       + ` thrashes while always/20s converges.`,
+      `# StartLimit 20 starts per 30min: a manager that cannot start (a precondition only an operator`
+      + ` can fix) stops after 20 attempts, about seven minutes at 20s apart, instead of restarting forever.`,
       `[Unit]`,
       `Description=Cotal manager for mesh ${mesh}`,
+      `StartLimitIntervalSec=30min`,
+      `StartLimitBurst=20`,
       ``,
       `[Service]`,
       `Type=simple`,
