@@ -32,7 +32,7 @@
       "expectRed": "a spinning arm that cannot win is cut at its next yield and the run returns",
       "completionMarker": "ok so the timer is measuring the yield, not the runtime",
       "cell": "a spinning arm that cannot win is cut at its next yield and the run returns",
-      "note": "Reddens as HUNG after the 8 s watchdog, which is the honest signal: the run does not return inside its budget window."
+      "note": "Reddens as HUNG once the watchdog has counted twice the turns the step budget allows, which is the honest signal: the run does not return inside its budget window."
     },
     {
       "name": "the yield boundary ignores the cut",
