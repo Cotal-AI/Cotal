@@ -1,4 +1,4 @@
 ---
 ---
 
-Mutation reproof now ends inside its own run budget. When a shard's selected fixtures need more time than the step allows, the run stops at the budget, puts back any mutant in flight, names every selected fixture it cut short or never started, and fails as unmeasured. Before, the step was killed from outside with no tally and with the fixtures that never ran unnamed. This changes repository CI tooling only, so no published package is bumped.
+Mutation reproof now ends inside its own run budget. When a shard's selected fixtures need more time than the step allows, the run stops at the budget, puts back any mutant in flight, names every selected fixture it cut short or never started, and fails as unmeasured. Before, the step was killed from outside with no tally and with the fixtures that never ran unnamed. A timed-out run also kills the processes that left its process group, such as a detached child or a test seat, and an `afterRestore` rebuild that cannot finish before the proof would be killed is stopped and reported as a failed restore. This changes repository CI tooling only, so no published package is bumped.

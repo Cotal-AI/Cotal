@@ -25,7 +25,9 @@
  * A selection can hold more proof work than the job's step has time for. With `--budget-minutes` the
  * run ends itself instead of being killed from outside with no tally: every proof child gets the
  * deadline, stops grading at it and puts its mutant back, and the run names each selected fixture
- * the budget cut short or never started and exits 1. That is UNMEASURED, never a pass.
+ * the budget cut short or never started and exits 1. That is UNMEASURED, never a pass. Each child
+ * also gets a restore deadline a minute before its own kill: an `afterRestore` rebuild still running
+ * then is killed by the proof and reported as RESTORE FAILED, never left writing after both return.
  *
  * A fixture whose guarded source was deleted or renamed away is a DANGLING fixture: its anchor can
  * no longer resolve, so its proof is unrunnable. That is precisely the state this gate refuses, so a
@@ -51,9 +53,11 @@ const COMMAND_TIMEOUT_MS = 900_000;
 // 145-minute step still had ~130 minutes left. Bound the child under that step instead
 // so a hung proof cannot sit until the job times out, and a 20-mutation fixture can finish.
 const PROOF_TIMEOUT_MS = 140 * 60 * 1000;
-// Past the --budget-minutes deadline, a proof child still gets this long to cut its suite, put its
-// mutant back (an `afterRestore` rebuild included) and exit before it is killed.
+// Past the --budget-minutes deadline, a proof child still gets this long to cut its suite and put its
+// mutant back, an `afterRestore` rebuild included, and then PROOF_EXIT_MS to report and exit before
+// it is killed.
 const DEADLINE_GRACE_MS = 5 * 60 * 1000;
+const PROOF_EXIT_MS = 60 * 1000;
 
 function usage(message) {
   if (message) console.error(message);
@@ -237,9 +241,11 @@ const commandTimeoutMs = () => deadline === undefined
   : Math.max(1, Math.min(COMMAND_TIMEOUT_MS, deadline - Date.now()));
 const proofTimeoutMs = () => deadline === undefined
   ? PROOF_TIMEOUT_MS
-  : Math.max(1, Math.min(PROOF_TIMEOUT_MS, deadline - Date.now() + DEADLINE_GRACE_MS));
-const proofArgs = (configPath) =>
-  [PROOF, "--config", configPath, ...(deadline === undefined ? [] : ["--deadline", String(deadline)])];
+  : Math.max(1, Math.min(PROOF_TIMEOUT_MS, deadline - Date.now() + DEADLINE_GRACE_MS + PROOF_EXIT_MS));
+// The restore deadline is PROOF_EXIT_MS before the kill this child's timeout sends, so the proof
+// stops an `afterRestore` rebuild itself instead of leaving it writing behind a killed parent.
+const proofArgs = (configPath) => [PROOF, "--config", configPath, ...(deadline === undefined ? []
+  : ["--deadline", String(deadline), "--restore-deadline", String(Date.now() + proofTimeoutMs() - PROOF_EXIT_MS)])];
 // mutation-proof exits 5 when the deadline cut it; a kill by the grace timeout is the backstop.
 const cutByBudget = (run) => deadline !== undefined
   && (run.status === 5 || (run.error?.code === "ETIMEDOUT" && pastDeadline()));

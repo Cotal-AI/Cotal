@@ -45,6 +45,11 @@
  *                           its mutant put back, the mutations not reached are named, and the run
  *                           exits 5. mutation-reproof passes its run budget down this way so a
  *                           proof ends itself, with the tree restored, before the job is killed.
+ *   --restore-deadline <epoch-ms>
+ *                           an `afterRestore` still running at that instant is killed and its
+ *                           mutation reported as RESTORE FAILED. mutation-reproof passes the
+ *                           instant just before it would kill this proof, so the proof stops its
+ *                           own rebuild instead of leaving it running behind a dead parent.
  *
  * A killed proof cannot restore anything, so each mutation first writes a breadcrumb outside the
  * tree: the file, its pre-mutation hash and where the backup is. Every run reads those before it
@@ -65,7 +70,7 @@
  */
 import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync, unlinkSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
@@ -84,6 +89,14 @@ const EXCERPT_TAIL = 10;
 
 /** Every mutation currently written to disk: the restore that undoes it, by file. */
 const liveRestores = new Map();
+
+/** The mark every process this proof starts carries in its environment, for {@link sweepMarked}.
+ *  An enclosing proof's mark is kept in front of this one, so its sweep still reaches this proof's
+ *  descendants. `COTAL_RUN` is set too unless the caller already named a run: a seat custodian
+ *  scrubs its environment down to `PATH` and `COTAL_RUN`, and a leaked test seat is the descendant
+ *  that outlived a timed-out `attach-stdin` proof (#1380). */
+const RUN_TOKEN = `mutation-proof-${process.pid}-${randomUUID()}`;
+const RUN_MARK = [process.env.MUTATION_PROOF_RUN, RUN_TOKEN].filter(Boolean).join(" ");
 
 const BREADCRUMB_PREFIX = "mutation-proof-bc-";
 
@@ -380,24 +393,66 @@ function run(command, cwd, timeoutMs) {
     // A mutation may deliberately desynchronize dependency metadata from pnpm-lock.yaml. pnpm's
     // default pre-run check would install (or fail under CI's frozen lockfile) before the suite can
     // observe that mutant. Disable only that check, and only in this child process tree.
-    env: { ...process.env, pnpm_config_verify_deps_before_run: "false" },
+    env: { ...process.env, pnpm_config_verify_deps_before_run: "false", MUTATION_PROOF_RUN: RUN_MARK,
+      COTAL_RUN: process.env.COTAL_RUN ?? RUN_TOKEN },
     detached: process.platform !== "win32",
     killSignal: "SIGKILL",
   });
   if (r.error?.code === "ETIMEDOUT" && r.pid !== undefined && process.platform !== "win32") {
     try { process.kill(-r.pid, "SIGKILL"); } catch { /* the group is already gone */ }
+    sweepMarked();
   }
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   // A timeout kills the child and leaves status null; that is not a red, it is an unknown.
   return { status: r.status, signal: r.signal, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
 }
 
+/**
+ * Kill every process still carrying this proof's mark, and say what was killed and what survived.
+ * The group kill in {@link run} cannot reach a descendant that left the group: anything spawned
+ * `detached` calls setsid, and a seat custodian always is. Measured on a mutant that started a
+ * detached `node` and was cut by `--deadline`: the group kill returned with that child still alive.
+ * Runs only after a timed-out run, when none of this proof's children is legitimately running.
+ * Linux reads the marks from `/proc`; elsewhere it says it could not look, never that nothing was left.
+ */
+function sweepMarked() {
+  if (!existsSync("/proc/self/environ")) {
+    say(`${C.yellow}  no /proc on ${process.platform}: processes that left the timed-out run's group were not looked for${C.off}`);
+    return;
+  }
+  const marked = () => readdirSync("/proc").map(Number).filter((pid) => {
+    if (!Number.isInteger(pid) || pid === process.pid) return false;
+    let environ;
+    try { environ = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0"); } catch { return false; }
+    return environ.includes(`COTAL_RUN=${RUN_TOKEN}`) || environ.some((entry) =>
+      entry.startsWith("MUTATION_PROOF_RUN=") && entry.slice("MUTATION_PROOF_RUN=".length).split(" ").includes(RUN_TOKEN));
+  });
+  const killed = new Set();
+  let left = marked();
+  // A marked process can fork between the scan and the kill, so scan again until none is left.
+  for (let round = 0; left.length > 0 && round < 40; round++) {
+    for (const pid of left) {
+      try { process.kill(pid, "SIGKILL"); killed.add(pid); } catch { /* already gone */ }
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    left = marked();
+  }
+  if (killed.size) say(`${C.yellow}  swept ${killed.size} process(es) that had left the timed-out run's group: ${[...killed].join(", ")}${C.off}`);
+  if (left.length) say(`${C.red}  ${left.length} marked process(es) survived SIGKILL: ${left.join(", ")}${C.off}`);
+}
+
 /** The suite budget: the per-command timeout, cut to what is left before `--deadline`. Only suite
- *  runs take it; an `afterRestore` rebuild keeps its full timeout, or a deadline would leave a
+ *  runs take it; an `afterRestore` rebuild runs on past the deadline, or a deadline would leave a
  *  `dist/` compiled from the mutant. */
 const suiteTimeoutMs = (opts) => opts.deadline === undefined
   ? opts.timeoutMs
   : Math.max(1, Math.min(opts.timeoutMs, opts.deadline - Date.now()));
+/** The `afterRestore` budget: the per-command timeout, cut to what is left before
+ *  `--restore-deadline`. Past that instant the caller kills this proof, and a rebuild it started
+ *  would keep writing `dist/` after both had returned. */
+const restoreTimeoutMs = (opts) => opts.restoreDeadline === undefined
+  ? opts.timeoutMs
+  : Math.max(1, Math.min(opts.timeoutMs, opts.restoreDeadline - Date.now()));
 const pastDeadline = (opts) => opts.deadline !== undefined && Date.now() >= opts.deadline;
 
 // A line-initial pass mark: optional leading whitespace, optional ANSI colour escapes, then the
@@ -533,10 +588,11 @@ function proveOne(m, opts) {
       // restore no longer depends on the backup surviving, so its own absence here is not a failure.
       rmSync(backup, { force: true });
       if (ok && m.afterRestore) {
-        const rr = run(m.afterRestore, cwd, opts.timeoutMs);
+        const rr = run(m.afterRestore, cwd, restoreTimeoutMs(opts));
         if (rr.status !== 0) {
-          say(`${C.red}  afterRestore FAILED (exit ${rr.status}): derived artefacts may still be built from the mutant${C.off}`);
-          restoreError = new Error(`afterRestore exited ${rr.status}`);
+          const how = rr.timedOut ? "was killed at its timeout or --restore-deadline" : `exited ${rr.status}`;
+          say(`${C.red}  afterRestore FAILED (${how}): derived artefacts may still be built from the mutant${C.off}`);
+          restoreError = new Error(`afterRestore ${how}`);
           return false;
         }
       }
@@ -578,7 +634,8 @@ function proveOne(m, opts) {
     const restored = restore();
     if (!restored) {
       return { label, transcript, verdict: "ERROR",
-        why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"}`, ticks };
+        why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"}`, ticks,
+        deadlineCut: r.timedOut && pastDeadline(opts) };
     }
 
     if (r.timedOut && pastDeadline(opts)) return { label, transcript, verdict: "INCONCLUSIVE",
@@ -762,9 +819,12 @@ let opts = {
   progressPattern: a["progress-pattern"],
   minTicks: a["min-ticks"] === undefined ? undefined : Number(a["min-ticks"]),
   deadline: a.deadline === undefined ? undefined : Number(a.deadline),
+  restoreDeadline: a["restore-deadline"] === undefined ? undefined : Number(a["restore-deadline"]),
 };
-if (opts.deadline !== undefined && !(typeof a.deadline === "string" && Number.isFinite(opts.deadline) && opts.deadline > 0))
-  usage(`invalid --deadline ${a.deadline}; use an epoch time in milliseconds`);
+for (const [flag, value] of [["deadline", opts.deadline], ["restore-deadline", opts.restoreDeadline]]) {
+  if (value !== undefined && !(typeof a[flag] === "string" && Number.isFinite(value) && value > 0))
+    usage(`invalid --${flag} ${a[flag]}; use an epoch time in milliseconds`);
+}
 
 if (a.config) {
   // `resolve`, not `join`: an ABSOLUTE --config path joined to cwd becomes a nonexistent path under
