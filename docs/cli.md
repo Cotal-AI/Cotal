@@ -955,8 +955,11 @@ help or loads extensions, so every outcome leaves no file. The variable is read 
 case; spellings that name different files are refused after every one of them was deleted. The
 spawn then refuses a malformed handoff, or one whose
 space, owner, actor or lifecycle UID differs from `--space`, `--expect-owner`, `--name` and
-`--expect-lifecycle-uid`, before any broker connection or exchange request. The refusal names the
-field and never its value. A handoff conflicts with
+`--expect-lifecycle-uid`, before any broker connection or exchange request. Every refusal on this
+path names the field and never a value from the handoff. The registration's server, exchange and
+enforcement checks, the policy refresh, the broker preflight and the bearer exchange quote the
+server or the exchange URL in their own diagnostics, so for a handoff each prints one fixed sentence
+that names the field and the phase instead. A handoff conflicts with
 the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
 there it runs the enrollment consumer above without redeeming anything. See
 [Delegated seats](embedding.md#delegated-seats-outside-the-managers-filesystem).

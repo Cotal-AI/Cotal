@@ -51,8 +51,7 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
   }
   if (doc === null || typeof doc !== "object" || Array.isArray(doc) || doc.kind !== MANAGED_HANDOFF_KIND)
     throw new Error(`the managed handoff is not a ${MANAGED_HANDOFF_KIND} document`);
-  const extra = Object.keys(doc).find((k) => !FIELDS.has(k));
-  if (extra !== undefined) throw new Error(`the managed handoff carries an unknown field "${extra}"`);
+  if (Object.keys(doc).some((k) => !FIELDS.has(k))) throw new Error("the managed handoff carries an unknown field");
   for (const k of STRING_FIELDS)
     if (typeof doc[k] !== "string" || !doc[k]) throw new Error(`the managed handoff's ${k} is not a non-empty string`);
   const idp = doc.idp as Record<string, unknown> | null;

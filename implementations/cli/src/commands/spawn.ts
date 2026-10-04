@@ -57,6 +57,7 @@ import {
   materializeSecretToFile,
   mergeLaunchOptions,
   parseLaunchOptions,
+  preflightOrThrow,
   provenance,
   resolveMeshTarget,
   serverFlag,
@@ -184,30 +185,48 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
   return { bundle: { ...o, ...material.material, idp } as EnrollmentBundle, ...(stock ? { stock } : {}) };
 }
 
+/** What a managed handoff's bootstrap refuses with at each phase that runs a check shared with the
+ *  enrollment path. Those checks' diagnostics quote the server or the exchange URL, and a handoff
+ *  refusal never echoes the document, so each sentence names only the field and the phase. */
+const HANDOFF_REFUSALS = {
+  bundle: "the managed handoff's mesh fields failed the user-auth bundle check",
+  server: "the managed handoff's server is not a broker URL this machine may dial",
+  exchange: "the managed handoff's exchangeUrl failed the exchange check",
+  enforcement: "the managed handoff's server failed the enforcement check",
+  policy: "the managed handoff's exchangeUrl failed the policy refresh",
+  preflight: "the managed handoff's server failed the broker preflight",
+  bearer: "the managed handoff's actorToken failed the bearer exchange",
+} as const;
+
 /** Map a parsed handoff onto the redeem consumer's shapes. Pure. */
 export function handoffEnrollmentBundle(h: ManagedLifecycleHandoff): { bundle: EnrollmentBundle; stock: UserBundle } {
   const userAuth = { provider: h.authProvider, idp: h.idp, endpoints: { url: h.exchangeUrl }, remote: true };
-  const { bundle, stock } = checkEnrollmentBundle({
-    space: h.space, actor: h.actor, owner: h.owner, lifecycleUid: h.lifecycleUid, actorToken: h.actorToken, sentinelCreds: h.sentinelCreds,
-    subscribe: h.subscribe, allowSubscribe: h.allowSubscribe, allowPublish: h.allowPublish,
-    brokerAccess: { kind: "direct", url: h.server }, authServiceUrl: h.exchangeUrl, idp: h.idp,
-    server: h.server, tlsRequired: h.tlsRequired, userAuth, ...(h.policy ? { policy: h.policy } : {}),
-  }, h.actor);
-  return { bundle, stock: stock! };
+  try {
+    const { bundle, stock } = checkEnrollmentBundle({
+      space: h.space, actor: h.actor, owner: h.owner, lifecycleUid: h.lifecycleUid, actorToken: h.actorToken, sentinelCreds: h.sentinelCreds,
+      subscribe: h.subscribe, allowSubscribe: h.allowSubscribe, allowPublish: h.allowPublish,
+      brokerAccess: { kind: "direct", url: h.server }, authServiceUrl: h.exchangeUrl, idp: h.idp,
+      server: h.server, tlsRequired: h.tlsRequired, userAuth, ...(h.policy ? { policy: h.policy } : {}),
+    }, h.actor);
+    return { bundle, stock: stock! };
+  } catch {
+    throw new Error(HANDOFF_REFUSALS.bundle);
+  }
 }
 
-/** `serverRefusal` replaces the server checks' diagnostics, which quote the URL, for a caller whose
- *  refusals never echo a value. */
-async function registerEnrollmentMesh(stock: UserBundle, root: string, serverRefusal?: string): Promise<void> {
+/** With `refusals`, a failed check refuses with its phase's sentence instead of its diagnostic. */
+async function registerEnrollmentMesh(stock: UserBundle, root: string, refusals?: typeof HANDOFF_REFUSALS): Promise<void> {
+  const refuse = (phase: "server" | "exchange" | "enforcement", check: { message: string }) =>
+    new Error(refusals?.[phase] ?? check.message.replace(/^✗\s*/, ""));
   const serverCheck = checkServer(stock.server);
-  if (!serverCheck.ok) throw new Error(serverRefusal ?? serverCheck.message.replace(/^✗\s*/, ""));
+  if (!serverCheck.ok) throw refuse("server", serverCheck);
   const tlsRequired = stock.tlsRequired || tlsIntent(stock.server, false);
   const dial = checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false });
-  if (!dial.ok) throw new Error(serverRefusal ?? dial.message.replace(/^✗\s*/, ""));
+  if (!dial.ok) throw refuse("server", dial);
   const exchange = await verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space));
-  if (!exchange.ok) throw new Error(exchange.message.replace(/^✗\s*/, ""));
+  if (!exchange.ok) throw refuse("exchange", exchange);
   const enforcement = checkEnforcement("user", await probeEnforcement(stock.server), stock.server, stock.space, root);
-  if (!enforcement.ok) throw new Error(enforcement.message.replace(/^✗\s*/, ""));
+  if (!enforcement.ok) throw refuse("enforcement", enforcement);
   persistRemoteUserEntry(stock.space, stock.server, root, stock, tlsRequired, Boolean(dial.value.residual));
 }
 
@@ -533,8 +552,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       });
       const { bundle, stock } = handoffEnrollmentBundle(handoff);
       redeemedEnrollment = { bundle, stock };
-      if (!findMesh(handoff.space))
-        await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."), "the managed handoff's server is not a broker URL this machine may dial");
+      if (!findMesh(handoff.space)) await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."), HANDOFF_REFUSALS);
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
@@ -665,7 +683,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   try {
     policy = await refreshRegistrationPolicy(target);
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${handoffText === undefined ? (e as Error).message : HANDOFF_REFUSALS.policy}`));
     process.exit(1);
   }
   const eventsRequired = policy?.events === "required";
@@ -754,7 +772,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
 
   // Preflight: fail with one sentence if the mesh is down or won't take our creds, instead of
   // crashing mid-connect with a raw NATS Authorization Violation.
-  await preflightOrExit(target);
+  if (handoffText === undefined) await preflightOrExit(target);
+  else
+    await preflightOrThrow(target).catch(() => {
+      console.error(c.red(`✗ ${HANDOFF_REFUSALS.preflight}`));
+      process.exit(1);
+    });
 
   // A second `cotal spawn` of the same agent would otherwise join under a duplicate mesh identity:
   // auto-number the name past anyone already present (best-effort — this path bypasses the manager's
@@ -882,7 +905,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       console.error(c.red("✗ the enrollment's authServiceUrl does not match the registered mesh exchange"));
       process.exit(1);
     }
-    const remote = await provisionRemoteUserForeground(target, name, { body: enrolled, exchangeUrl: enrolled.authServiceUrl });
+    const remote = await provisionRemoteUserForeground(target, name, { body: enrolled, exchangeUrl: enrolled.authServiceUrl },
+      handoffText === undefined ? undefined : HANDOFF_REFUSALS.bearer);
     userAuth = remote.userAuth;
     userCleanup = remote.cleanup;
     remoteUserAuth = true;
@@ -1171,11 +1195,13 @@ function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; materi
  *  Deliberately NOT reusing the local path's cleanup: nothing here created broker state locally, so
  *  teardown is the mesh's business (its lifecycle owns the row and the durables). The spawned
  *  agent's material is shredded on exit; the row is not revoked from here, because this machine
- *  holds no authority to revoke it. */
+ *  holds no authority to revoke it. `bearerRefusal` replaces a failed bearer preflight's diagnostic,
+ *  which quotes the exchange URL, for a managed handoff. */
 async function provisionRemoteUserForeground(
   target: MeshTarget,
   name: string,
   source: { provisioningUrl: string } | { body: unknown; exchangeUrl: string },
+  bearerRefusal?: string,
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; material: RemoteAgentMaterial }> {
   const { space } = target;
   const dir = userAuthStateDir(target.root, space);
@@ -1238,7 +1264,9 @@ async function provisionRemoteUserForeground(
       "--token-file", tokenPath,
       "--health-file", healthPath,
     ];
-    await runBearerPreflight(bearerCmd);
+    await runBearerPreflight(bearerCmd).catch((e: Error) => {
+      throw bearerRefusal ? new Error(bearerRefusal) : e;
+    });
     return {
       userAuth: { owner: material.owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
       material,
