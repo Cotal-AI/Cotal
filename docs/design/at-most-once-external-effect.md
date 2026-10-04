@@ -154,11 +154,11 @@ At a step whose scope path contains a `once` frame:
 
 `once` admits one effect kind, `ask`. An `ask` is where a program's write happens: in the
 program's own handler behind it, or in the agent that answers it. It calls its handler method once
-per activation through `performEffect`, its result is a record a settler can supply, and nothing
-its first dispatch leaves behind can settle the step once the hold opens: the open attempt's pause
-is ended (§6.1), and the attempt's relay to its agent answers only under that pause (§4.3). Every
-other effect kind is refused under `once` with L4028 (an effect `once` does not admit) before its
-entry begins, for one of three reasons.
+per activation through `performEffect`, its result is a record a settler can supply, and once the
+hold opens nothing its first dispatch left behind settles the step except through the hold: the
+open attempt's pause is ended (§6.1), and the agent its attempt was relayed to answers by step key,
+which then reads the hold (§4.3). Every other effect kind is refused under `once` with L4028 (an
+effect `once` does not admit) before its entry begins, for one of three reasons.
 
 It calls a handler method more than once at one key, so a hold cannot bound it:
 
@@ -246,14 +246,15 @@ hosted runtime claims the open attempt's pause (§6.1). `SimHandler` arms nothin
 
 The hosted `ask` also relays each attempt to its seat as a `turn` goal under the attempt's token
 (`relayAsk` in `mesh-handler.ts`), and nothing withdraws a relay goal today: the manager serves no
-`cancel` for one, and a discharged `ask` leaves its relay as well (#2596). The hold leaves it too.
-The seat may still be shown that turn until it yields or the ask's recorded `deadlineAt`, the
-relay's own deadline, passes. Its answer is presented under the attempt's token, whose pause the
-hold claimed, so it is refused and never reaches the step, and the relay's terminal is never read.
-The relay is one goal per attempt and is never submitted again, so a write the seat makes in that
-turn is the first dispatch's one write. It can land after the hold opens when the crash came before
-the seat wrote, so a settler who answers before that deadline reads the far side for the recorded
-request id first.
+`cancel` for one, and a discharged `ask` leaves its relay as well (#2596). The hold leaves it too,
+so the seat may still be shown that turn until it yields or the relay's deadline, the ask's
+recorded `deadlineAt`, passes. The relay is one goal per attempt and is never submitted again, so a
+write the seat makes in that turn is the first dispatch's one write. The seat answers it with the
+command the relay renders, `cotal run answer <run> <step-key>` (`renderAskRequest` in
+`extensions/connector-core/src/agent.ts`), so its answer reads the step's pause as every answer
+does (§6.1): before the hold's first bind that is the claimed attempt pause, which refuses it, and
+after it the hold, which takes it as the settle of the agent that made the write, unchecked against
+the ask's schema like any settle (item 3 above).
 
 **`holdRequestId(requestId)`** is a new export of `packages/lang/src/keys.ts`, beside `requestId`:
 the sha256 of `canonicalize([requestId, "hold"])` in base64url, 43 characters in the endpoint id
@@ -282,9 +283,9 @@ reads it from the same places.
   its own `once`, which is refused at validation.
 
 The pause a held `ask`'s first dispatch armed does not outlive the hold: the hosted handler claims
-it before the hold's first bind (§6.1). Its relay to the seat can outlive the hold, and can no
-longer settle the step (§4.3). An answer addressed to the step lands on the hold, and an amendment
-and the journal row of a held step read the hold's pause (§6.1).
+it before the hold's first bind (§6.1). Its relay to the seat can outlive the hold, and the seat's
+answer to it then lands on the hold (§4.3). An answer addressed to the step lands on the hold, and
+an amendment and the journal row of a held step read the hold's pause (§6.1).
 
 ## 5. The step journal
 
@@ -499,9 +500,8 @@ though nothing runs beside it, because a settled `once` is replayed without ente
 > the sha256 of the canonical form of `[<recorded request id>, "hold"]` in base64url, whose
 > binding is written to the entry's `hold` field and never to `external`. Before the hold's first
 > bind the host MUST end the pause the step's first dispatch armed, so the hold is the step's only
-> open pause, and an answer to a relay that dispatch left with an agent MUST NOT settle the step;
-> an answer, an amendment or a journal view addressed to a step whose entry carries `hold` MUST
-> read the hold id's pause, never the one the first dispatch armed. A
+> open pause; an answer, an amendment or a journal view addressed to a step whose entry carries
+> `hold` MUST read the hold id's pause, never the one the first dispatch armed. A
 > resolved hold settles the step `ok` with the answered value (`null` when none). An expired hold
 > settles it `failed` with L4027, kind `outcome-unknown`, which a program may catch and a resume
 > replays. A hold the host refuses MUST leave the step `pending`,
@@ -678,8 +678,8 @@ On a local mesh with a manager:
    hold's question naming the recorded request id; the seat receives no second `publish` turn; the
    file still has one line. The first attempt's pause, read with `readCheckpointStatus` at the
    `askToken` on the step's pending entry, is no longer waiting: here it holds no answer, because
-   the hold claimed it. The seat still holds its first `publish` turn, and `cotal run answer`
-   presenting that `askToken`, as the seat would, is refused; the step stays held.
+   the hold claimed it. The seat's first `publish` goal is still accepted (§4.3); the seat would
+   answer it with the step-key command step 6 runs, so step 6 covers its answer too.
 5. Kill and restart the manager again while the hold is open. Expected: the hold's timer is
    re-armed under the hold id, and `cotal run journal` still shows the same question.
 6. `cotal run answer <run> "/once:publish-360#0/b:in/ask:publish#0" --value '{"commentId":1000}'`.
