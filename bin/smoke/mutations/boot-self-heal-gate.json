@@ -35,7 +35,7 @@
     {
       "name": "assume-dead: boot treats every freeze-holder as gone, so a live holder is no longer refused by name",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log }),\n",
+      "find": "      probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log, unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }),\n",
       "replace": "      probeHolder: async () => ({ state: \"gone\", detail: \"assumed gone; sweepComplete not consulted\" }),\n",
       "expectRed": "LIVE HOLDER: the refusal is named `holder-alive`",
       "cell": "LIVE HOLDER: the refusal is named `holder-alive`",

@@ -82,7 +82,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
+import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment, type ContinuityAssignment } from "./launch.js";
@@ -995,6 +995,15 @@ function isAbsentDeliveryAdmin(msg: string): boolean {
   return /no responders|\b503\b/i.test(msg);
 }
 
+/** The store challenge went UNANSWERED while a delivery daemon exists: the rail timed out, or it had
+ *  no responder while the lease row names a holder. Both are what a daemon that is starting or
+ *  re-acquiring its lease looks like, so manager boot waits them out (#871); a renewal pass still
+ *  refuses on the first one. A reply that does not decode was answered and is never this. */
+class DeliveryAdminUnanswered extends Error {}
+
+/** How long one store challenge waits for the delivery daemon's answer. */
+const STORE_CHALLENGE_TIMEOUT_MS = 5_000;
+
 /**
  * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
  * It serves control requests on the "manager" service and spawns/kills agents
@@ -1679,8 +1688,10 @@ export class Manager {
     // `reloadCreds` adoption on the delivery-admin rail, and persist the audit record doctor renders.
     if (this.auth) {
       // #1634: a space may be served by several managers, so ownership of the daemon's credential
-      // renewal is decided here rather than by being the only manager able to start.
-      await this.claimDaemonRenewalOwnership();
+      // renewal is decided here rather than by being the only manager able to start. #871: a daemon
+      // that is still binding or re-acquiring its lease leaves this challenge unanswered for a few
+      // seconds, so boot waits that out instead of exiting over a daemon about to answer.
+      await this.claimDaemonRenewalOwnership(DELIVERY_ADMIN_BOOT_WAIT_MS);
       // ARMED BEFORE the first remint, not after. That first `renewDaemonCreds()` re-signs through
       // the SecretStore, and a slow or contended store makes the one pass outlast the lease's
       // MANAGER_LEASE_TTL_MS. Arming afterwards leaves the whole first remint unprotected: the lease
@@ -1805,14 +1816,15 @@ export class Manager {
    *  daemon"), and only a row that is absent or holderless settles "absent", the state start()
    *  treats as not-yet-bound. An unreadable row (a failed read, or a key that exists but does not
    *  parse) is a genuine unknown and refuses fail-closed, like a hung rail. */
-  private async daemonStoreRelation(): Promise<"shared" | "absent" | "divergent"> {
+  private async daemonStoreRelation(timeoutMs: number): Promise<"shared" | "absent" | "divergent"> {
     let reply: ControlReply;
     try {
-      reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
+      reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, timeoutMs);
     } catch (e) {
       const msg = (e as Error).message;
-      if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow();
-      throw new Error(`could not challenge the delivery daemon's SecretStore: ${msg}`);
+      if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow(isUnansweredDeliveryAdmin(e));
+      const failure = `could not challenge the delivery daemon's SecretStore: ${msg}`;
+      throw isUnansweredDeliveryAdmin(e) ? new DeliveryAdminUnanswered(failure) : new Error(failure);
     }
     if (!reply.ok)
       throw new Error(
@@ -1877,7 +1889,7 @@ export class Manager {
    *
    *  `deliveryLeaseHolder` swallows its read failures into `undefined`, which would fold case 2
    *  into case 3 — so this reads the entry directly and lets the read's own failure refuse. */
-  private async absentByLeaseRow(): Promise<"absent"> {
+  private async absentByLeaseRow(unanswered: boolean): Promise<"absent"> {
     let entry: { info: DeliveryLeaseInfo } | undefined;
     try {
       entry = await this.ep.readDeliveryLeaseEntry(Manager.DELIVERY_SHARD);
@@ -1888,11 +1900,12 @@ export class Manager {
       );
     }
     const holder = entry?.info.holder;
-    if (holder !== undefined && holder !== "")
-      throw new Error(
+    if (holder !== undefined && holder !== "") {
+      const refusal =
         `the delivery-admin rail reported no responder while the delivery lease names a holder ` +
-          `(${holder}) - absence cannot be read off the rail alone, and nothing reminted`,
-      );
+        `(${holder}) - absence cannot be read off the rail alone, and nothing reminted`;
+      throw unanswered ? new DeliveryAdminUnanswered(refusal) : new Error(refusal);
+    }
     return "absent";
   }
 
@@ -1926,7 +1939,7 @@ export class Manager {
    *     request, which is the #773 refusal the challenge exists to prevent.
    *
    *  A manager failing either test serves the space normally and skips only the daemon remint. */
-  private async claimDaemonRenewalOwnership(): Promise<void> {
+  private async claimDaemonRenewalOwnership(waitMs = 0): Promise<void> {
     // EVERY refusal outcome drops a held lease, not only "divergent". The refusal paths THROW
     // (#1694: a non-holder answer, an unbindable answerer, an unreadable or holder-naming row on a
     // no-responder rail), and a thrown refusal caught by renewDaemonCreds would otherwise leave a
@@ -1935,7 +1948,14 @@ export class Manager {
     // Deciding here, inside the claim, is what keeps the release on the refusal path itself.
     let relation: "shared" | "absent" | "divergent";
     try {
-      relation = await this.daemonStoreRelation();
+      // Only the read-only challenge is retried, so a wait that ends mid-attempt abandons a read,
+      // never the lease work below.
+      relation = await untilDeliveryAdminAnswers(
+        waitMs,
+        (requestMs) => this.daemonStoreRelation(requestMs(STORE_CHALLENGE_TIMEOUT_MS)),
+        (reason, delayMs) => console.error(`! delivery-admin rail did not answer the store challenge (${reason}); retrying in ${delayMs / 1000}s`),
+        (e) => e instanceof DeliveryAdminUnanswered,
+      );
     } catch (e) {
       if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease().catch(() => {});
       this.daemonRenewalOwner = false;
@@ -6865,7 +6885,7 @@ export class Manager {
     try {
       report = await reconcileEndpointGate({
         kv: authKv, space: this.space, endpoint: MANAGER_ENDPOINT, instanceId,
-        probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log }),
+        probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log, unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }),
         evictHolders: makeManagerEndpointHolderEvictor({ space: this.space, servers, auth, log }),
         log,
         recordsKv,
@@ -7139,7 +7159,7 @@ export class Manager {
       // error text — a crash-restart never silently skips eviction (no-fallbacks).
       const barrier = endpointRegistrationBarrier(authKv, this.space, {
         endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: registrationOpId,
-        ...(auth ? { evict: makeManagerEndpointEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line) }) } : {}),
+        ...(auth ? { evict: makeManagerEndpointEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) } : {}),
       });
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
       const { registrationRevision } = await registerServiceInstance(recordsKv, {

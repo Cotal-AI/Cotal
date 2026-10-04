@@ -16,7 +16,69 @@
  * contradictory answer throws too; the barrier treats all of these as fail-closed. Verified-gone is
  * conclusive only as (scan complete, none remain).
  */
-import { CotalEndpoint, EVICT_PRINCIPALS_MAX, mintCreds, newIdentity, type ControlReply, type EvictionResult, type SpaceAuth } from "@cotal-ai/core";
+import { CotalEndpoint, EVICT_PRINCIPALS_MAX, LEASE_TTL_MS, mintCreds, newIdentity, type ControlReply, type EvictionResult, type SpaceAuth } from "@cotal-ai/core";
+import { RequestError, TimeoutError } from "@nats-io/transport-node";
+
+/** How long a manager BOOT waits out a `ctl.delivery-admin` rail that does not answer (#871): two
+ *  delivery lease TTLs. `cotal up` starts the daemon before the manager, but a daemon that binds
+ *  after the CLI's readiness wait, or one that quiesced to re-check its lease and re-acquires it once
+ *  the stale row lapses, leaves the rail silent for up to about one TTL. Giving up on the first miss
+ *  turned that window into a dead manager and, at re-registration, a frozen gate. */
+export const DELIVERY_ADMIN_BOOT_WAIT_MS = 2 * LEASE_TTL_MS;
+
+/** True only for a delivery-admin request that went UNANSWERED: it timed out, or the broker reported
+ *  no responder. A reply that does not decode was answered, and an auth or local failure is not the
+ *  daemon's silence, so boot never waits either out (#871). */
+export function isUnansweredDeliveryAdmin(e: unknown): boolean {
+  return e instanceof TimeoutError || (e instanceof RequestError && e.isNoResponders());
+}
+
+/** Run `attempt` until it resolves, retrying with capped backoff while `retryable` accepts the
+ *  failure, and settle within `waitMs` on the monotonic clock (#871). The wait ends on time even
+ *  inside an attempt that is still minting, connecting or reading, so an attempt must be safe to
+ *  abandon: it sizes its request with `requestMs(capMs)`, which cuts the cap to what is left and
+ *  throws once nothing is, so an abandoned attempt sends nothing. No retry sleeps longer than half of
+ *  what is left, because a no-responder failure is immediate and a daemon that binds in the last
+ *  stretch must still be asked. When the wait ends, the last failure is rethrown unchanged, so the
+ *  caller's fail-closed refusal reads the same with or without the wait. `waitMs` 0 is one attempt at
+ *  the cap. */
+export async function untilDeliveryAdminAnswers<T>(
+  waitMs: number,
+  attempt: (requestMs: (capMs: number) => number) => Promise<T>,
+  onRetry: (reason: string, delayMs: number) => void,
+  retryable: (e: unknown) => boolean = isUnansweredDeliveryAdmin,
+): Promise<T> {
+  if (waitMs <= 0) return attempt((capMs) => capMs);
+  const deadline = performance.now() + waitMs;
+  const leftMs = () => deadline - performance.now();
+  const requestMs = (capMs: number) => {
+    const left = leftMs();
+    if (left <= 0) throw new TimeoutError();
+    return Math.min(capMs, Math.ceil(left));
+  };
+  const ended = new TimeoutError();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waitEnds = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(ended), waitMs)));
+  let failure: unknown = ended;
+  try {
+    for (let delayMs = 1_000; leftMs() > 0; delayMs = Math.min(2 * delayMs, 5_000)) {
+      try {
+        return await Promise.race([attempt(requestMs), waitEnds]);
+      } catch (e) {
+        if (e === ended) break;
+        if (!retryable(e)) throw e;
+        failure = e;
+      }
+      const sleepMs = Math.ceil(Math.min(delayMs, leftMs() / 2));
+      if (sleepMs <= 0) break;
+      onRetry(failure instanceof Error ? failure.message : String(failure), sleepMs);
+      await new Promise((r) => setTimeout(r, sleepMs));
+    }
+    throw failure;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Accept one daemon eviction result only when it verifiably describes `principal`. A garbled,
  *  foreign or internally contradictory result throws, so it never authorizes. */
@@ -47,30 +109,41 @@ export function makeManagerEndpointEvictionEvidence(opts: {
   servers: string;
   auth: SpaceAuth;
   log: (line: string) => void;
+  /** How long an UNREACHABLE rail is retried before the evictor throws (#871). A refusal or an
+   *  unusable answer is never retried: the daemon answered. Absent means one attempt. */
+  unreachableWaitMs?: number;
 }): (holderPrincipal: string) => Promise<EvictionResult> {
   return async (principal: string): Promise<EvictionResult> => {
-    const id = newIdentity();
-    let ep: CotalEndpoint | undefined;
+    const ask = async (requestMs: (capMs: number) => number): Promise<ControlReply> => {
+      const id = newIdentity();
+      let ep: CotalEndpoint | undefined;
+      try {
+        // A per-eviction SCOPED cred for ONE ~15s delivery-admin call (60s TTL bounds a copied cred to
+        // a minute). endpoint-evictor holds EXACTLY its own delivery-admin request+reply rail — no
+        // lease, presence, store, consumer, KV, or executing right.
+        const creds = await mintCreds(opts.auth, id, "endpoint-evictor", { expiresInSeconds: 60 });
+        ep = new CotalEndpoint({
+          space: opts.space,
+          servers: opts.servers,
+          creds,
+          card: { id: id.id, name: "manager-endpoint-evict", kind: "endpoint" },
+          channels: [],
+          consume: false,
+          watchChannels: false,
+          watchPresence: false,
+          registerPresence: false,
+        });
+        ep.on("error", () => {});
+        await ep.start();
+        return await ep.requestDeliveryAdmin("evictPrincipal", { principal }, requestMs(15_000));
+      } finally {
+        await ep?.stop().catch(() => {});
+      }
+    };
     let r: ControlReply;
     try {
-      // A per-eviction SCOPED cred for ONE ~15s delivery-admin call (60s TTL bounds a copied cred to
-      // a minute). endpoint-evictor holds EXACTLY its own delivery-admin request+reply rail — no
-      // lease, presence, store, consumer, KV, or executing right.
-      const creds = await mintCreds(opts.auth, id, "endpoint-evictor", { expiresInSeconds: 60 });
-      ep = new CotalEndpoint({
-        space: opts.space,
-        servers: opts.servers,
-        creds,
-        card: { id: id.id, name: "manager-endpoint-evict", kind: "endpoint" },
-        channels: [],
-        consume: false,
-        watchChannels: false,
-        watchPresence: false,
-        registerPresence: false,
-      });
-      ep.on("error", () => {});
-      await ep.start();
-      r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
+      r = await untilDeliveryAdminAnswers(opts.unreachableWaitMs ?? 0, ask, (reason, delayMs) =>
+        opts.log(`manager-endpoint-evict: ${principal}: the ctl.delivery-admin rail did not answer (${reason}); retrying in ${delayMs / 1000}s`));
     } catch (e) {
       // NO-ORACLE = LOUD (pin 3, SPEC 13.1, no-fallbacks): the delivery-admin rail is unreachable, so
       // eviction is UNKNOWN. THROW naming the cure so the barrier's PHASE-2 error carries it and the
@@ -80,8 +153,6 @@ export function makeManagerEndpointEvictionEvidence(opts: {
         `a restart on an auth mesh cannot verify-evict the superseded serve family principal "${principal}" without the liveness oracle. ` +
         `Start the delivery daemon (\`cotal up\` runs it) and retry — eviction is never skipped (SPEC 13.1)`,
       );
-    } finally {
-      await ep?.stop().catch(() => {});
     }
     // The daemon ANSWERED from here on, so nothing below is relabelled as unreachable: a refusal
     // carries the daemon's own reason (e.g. a missing $SYS cred and how to re-mint it).

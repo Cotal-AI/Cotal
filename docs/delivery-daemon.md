@@ -67,6 +67,16 @@ credential** co-located with the broker: never an allow-all cred, and it never h
 signing key. One daemon serves a space (a single-flight lease guards against a second binding the
 same durables).
 
+The manager needs this daemon while it starts. Its SecretStore challenge, its boot repair of a frozen
+registration gate, and the verified eviction a restart performs all go over the daemon's
+`ctl.delivery-admin` rail. A manager that starts while the daemon is still binding, or while the
+daemon re-checks who owns its lease, waits up to 60 seconds for the rail to answer. Only a request
+that times out or finds no responder is retried. Retries come closer together as the wait runs out,
+so a daemon that binds in its last seconds is still asked. The wait ends on time even while a retry
+is still connecting, and nothing is sent after it. A daemon that answers fails the start at once if
+it refuses or its reply cannot be read. One that stays silent for the whole wait fails it, and the
+manager log names the rail.
+
 An agent binds its per-member delivery durable even when the plane reached by its connection has no
 ready delivery lease, so a daemon that starts later can deliver through it. A missing or not-ready
 lease emits a warning that names the durable, space, and condition. It tells the agent to reconnect
