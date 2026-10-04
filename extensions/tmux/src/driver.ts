@@ -90,6 +90,27 @@ export function serverPid(): string | undefined {
   }
 }
 
+/** Sessions holding window `windowId` (a window can be linked into more than one), or none once its
+ *  server no longer lists it. Like {@link paneState}, a failed listing throws instead of reading as
+ *  gone. */
+export function windowSessions(windowId: string): string[] {
+  try {
+    return execFileSync("tmux", ["list-windows", "-a", "-F", "#{window_id} #{session_name}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: EXIT_PROBE_MS,
+    })
+      .split("\n")
+      .filter((l) => l.startsWith(`${windowId} `))
+      .map((l) => l.slice(windowId.length + 1));
+  } catch (err) {
+    const e = err as { stderr?: unknown; message?: unknown };
+    const message = `${String(e.stderr ?? "")} ${String(e.message ?? "")}`;
+    if (/no server running/i.test(message)) return [];
+    throw new Error(`tmux: couldn't list the sessions holding window ${windowId}: ${message.trim()}`, { cause: err });
+  }
+}
+
 /** True if pane `paneId` sits in window `windowId` of `session`. */
 export function paneInWindow(session: string, windowId: string, paneId: string): boolean {
   try {

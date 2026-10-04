@@ -91,8 +91,8 @@ check(
   { renderings },
 );
 check(
-  "CONTROL: the census can still see the reap callsites it is scoped to (expected 2)",
-  callsites === 2,
+  "CONTROL: the census can still see the reap callsites it is scoped to (expected 3)",
+  callsites === 3,
   { callsites },
 );
 

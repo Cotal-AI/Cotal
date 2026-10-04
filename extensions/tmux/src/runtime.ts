@@ -112,10 +112,12 @@ export class TmuxRuntime implements Runtime {
     };
   }
 
-  /** Close a window an earlier manager opened, by the reference its handle carried, and prove its
-   *  pane exited. A pane its server no longer lists, or a server that is gone, means the seat is
-   *  gone. A live pane that is not in that window of this runtime's session is `absent`: nothing
-   *  here touches it or proves anything about it. */
+  /** Close a window an earlier manager opened, by the reference its handle carried, and prove the
+   *  window and its pane gone. The window decides, not the pane: a pane that exited can leave its
+   *  window open (`remain-on-exit`, or another pane split into it), so a window this runtime's
+   *  session still holds is closed whatever its pane's state. A server that is gone, or a window and
+   *  pane it no longer lists, means the seat is gone. A live pane outside that window, or a window
+   *  only other sessions hold, is `absent`: nothing here touches it or proves anything about it. */
   async reap(reference: RuntimeReference): Promise<{ outcome: "absent" } | { outcome: "reaped"; detail: string }> {
     if (reference.kind !== "tmux") throw new Error(`cannot reap runtime kind "${reference.kind}" with tmux`);
     const [serverPid, windowId, paneId] = reference.id.split(".");
@@ -130,9 +132,12 @@ export class TmuxRuntime implements Runtime {
       }
       return { outcome: "absent" };
     }
-    if (tmux.paneState(paneId) === "exited") return { outcome: "reaped", detail: `tmux pane ${paneId} had already exited` };
-    if (!tmux.paneInWindow(this.session, windowId, paneId)) return { outcome: "absent" };
+    if (tmux.paneState(paneId) === "running" && !tmux.paneInWindow(this.session, windowId, paneId)) return { outcome: "absent" };
+    const sessions = tmux.windowSessions(windowId);
+    if (sessions.length === 0) return { outcome: "reaped", detail: `tmux window ${windowId} and pane ${paneId} were already gone` };
+    if (!sessions.includes(this.session)) return { outcome: "absent" };
     tmux.closeWindow(windowId);
+    if (tmux.windowSessions(windowId).length > 0) throw new Error(`tmux: window ${windowId} is still listed after kill-window`);
     await tmux.waitForPaneExit(paneId);
     return { outcome: "reaped", detail: `closed tmux window ${windowId}; pane ${paneId} exited` };
   }
