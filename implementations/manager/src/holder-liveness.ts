@@ -165,7 +165,7 @@ export function makeManagerHolderLivenessProbe(opts: {
   return async (principal: string): Promise<HolderLiveness> => {
     // Read before each query so a failed query can be pinned to the holder it could have reached.
     let leaseBefore = { state: "absent" } as DeliveryLeaseReading;
-    const ask = async (): Promise<ControlReply> => {
+    const ask = async (requestMs: (capMs: number) => number): Promise<ControlReply> => {
       leaseBefore = await readDeliveryLeaseForDiagnosis(opts);
       const id = newIdentity();
       let ep: CotalEndpoint | undefined;
@@ -184,7 +184,7 @@ export function makeManagerHolderLivenessProbe(opts: {
         });
         ep.on("error", () => {});
         await ep.start();
-        return await ep.requestDeliveryAdmin("principalLiveness", { principal }, 15_000);
+        return await ep.requestDeliveryAdmin("principalLiveness", { principal }, requestMs(15_000));
       } finally {
         await ep?.stop().catch(() => {});
       }

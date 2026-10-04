@@ -186,7 +186,7 @@
     {
       "name": "a no-responder rail reads absent again (the row read dropped)",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow();",
+      "find": "      if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow(isUnansweredDeliveryAdmin(e));",
       "replace": "      if (isAbsentDeliveryAdmin(msg)) return \"absent\";",
       "expectRed": "a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",
       "cell": "a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",

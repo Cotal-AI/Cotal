@@ -17,6 +17,7 @@
  * conclusive only as (scan complete, none remain).
  */
 import { CotalEndpoint, EVICT_PRINCIPALS_MAX, LEASE_TTL_MS, mintCreds, newIdentity, type ControlReply, type EvictionResult, type SpaceAuth } from "@cotal-ai/core";
+import { RequestError, TimeoutError } from "@nats-io/transport-node";
 
 /** How long a manager BOOT waits out a `ctl.delivery-admin` rail that does not answer (#871): two
  *  delivery lease TTLs. `cotal up` starts the daemon before the manager, but a daemon that binds
@@ -25,24 +26,41 @@ import { CotalEndpoint, EVICT_PRINCIPALS_MAX, LEASE_TTL_MS, mintCreds, newIdenti
  *  turned that window into a dead manager and, at re-registration, a frozen gate. */
 export const DELIVERY_ADMIN_BOOT_WAIT_MS = 2 * LEASE_TTL_MS;
 
+/** The last attempt starts at least this long before the wait ends, so its request still has a
+ *  window to be answered inside the wait. */
+const LAST_ATTEMPT_WINDOW_MS = 1_000;
+
+/** True only for a delivery-admin request that went UNANSWERED: it timed out, or the broker reported
+ *  no responder. A reply that does not decode was answered, and an auth or local failure is not the
+ *  daemon's silence, so boot never waits either out (#871). */
+export function isUnansweredDeliveryAdmin(e: unknown): boolean {
+  return e instanceof TimeoutError || (e instanceof RequestError && e.isNoResponders());
+}
+
 /** Run `attempt` until it resolves, retrying with capped backoff while `retryable` accepts the
- *  failure and `waitMs` has not elapsed (#871). The last failure is rethrown unchanged, so the
- *  caller's fail-closed refusal reads the same with or without the wait. `waitMs` 0 is one attempt. */
+ *  failure, for at most `waitMs` on the monotonic clock (#871). `attempt` sizes its request with
+ *  `requestMs(capMs)`, which cuts the cap to what is left of the wait, and the backoff is cut the same
+ *  way, so no request outlives the wait. The last failure is rethrown unchanged, so the caller's
+ *  fail-closed refusal reads the same with or without the wait. `waitMs` 0 is one attempt at the cap. */
 export async function untilDeliveryAdminAnswers<T>(
   waitMs: number,
-  attempt: () => Promise<T>,
+  attempt: (requestMs: (capMs: number) => number) => Promise<T>,
   onRetry: (reason: string, delayMs: number) => void,
-  retryable: (e: unknown) => boolean = () => true,
+  retryable: (e: unknown) => boolean = isUnansweredDeliveryAdmin,
 ): Promise<T> {
-  const deadline = Date.now() + waitMs;
+  if (waitMs <= 0) return attempt((capMs) => capMs);
+  const deadline = performance.now() + waitMs;
+  const requestMs = (capMs: number) => Math.max(1, Math.min(capMs, Math.floor(deadline - performance.now())));
   for (let delayMs = 1_000; ; delayMs = Math.min(2 * delayMs, 5_000)) {
     try {
-      return await attempt();
+      return await attempt(requestMs);
     } catch (e) {
-      if (!retryable(e) || Date.now() + delayMs >= deadline) throw e;
-      onRetry(e instanceof Error ? e.message : String(e), delayMs);
+      const leftMs = Math.floor(deadline - performance.now());
+      if (!retryable(e) || leftMs <= LAST_ATTEMPT_WINDOW_MS) throw e;
+      const sleepMs = Math.min(delayMs, leftMs - LAST_ATTEMPT_WINDOW_MS);
+      onRetry(e instanceof Error ? e.message : String(e), sleepMs);
+      await new Promise((r) => setTimeout(r, sleepMs));
     }
-    await new Promise((r) => setTimeout(r, delayMs));
   }
 }
 
@@ -80,7 +98,7 @@ export function makeManagerEndpointEvictionEvidence(opts: {
   unreachableWaitMs?: number;
 }): (holderPrincipal: string) => Promise<EvictionResult> {
   return async (principal: string): Promise<EvictionResult> => {
-    const ask = async (): Promise<ControlReply> => {
+    const ask = async (requestMs: (capMs: number) => number): Promise<ControlReply> => {
       const id = newIdentity();
       let ep: CotalEndpoint | undefined;
       try {
@@ -101,7 +119,7 @@ export function makeManagerEndpointEvictionEvidence(opts: {
         });
         ep.on("error", () => {});
         await ep.start();
-        return await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
+        return await ep.requestDeliveryAdmin("evictPrincipal", { principal }, requestMs(15_000));
       } finally {
         await ep?.stop().catch(() => {});
       }

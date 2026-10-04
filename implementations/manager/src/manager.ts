@@ -82,7 +82,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers } from "./endpoint-evict.js";
+import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndpointEvictionEvidence, makeManagerEndpointEvictor, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment, type ContinuityAssignment } from "./launch.js";
@@ -998,8 +998,11 @@ function isAbsentDeliveryAdmin(msg: string): boolean {
 /** The store challenge went UNANSWERED while a delivery daemon exists: the rail timed out, or it had
  *  no responder while the lease row names a holder. Both are what a daemon that is starting or
  *  re-acquiring its lease looks like, so manager boot waits them out (#871); a renewal pass still
- *  refuses on the first one. */
+ *  refuses on the first one. A reply that does not decode was answered and is never this. */
 class DeliveryAdminUnanswered extends Error {}
+
+/** How long one store challenge waits for the delivery daemon's answer. */
+const STORE_CHALLENGE_TIMEOUT_MS = 5_000;
 
 /**
  * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
@@ -1690,7 +1693,7 @@ export class Manager {
       // seconds, so boot waits that out instead of exiting over a daemon about to answer.
       await untilDeliveryAdminAnswers(
         DELIVERY_ADMIN_BOOT_WAIT_MS,
-        () => this.claimDaemonRenewalOwnership(),
+        (requestMs) => this.claimDaemonRenewalOwnership(requestMs(STORE_CHALLENGE_TIMEOUT_MS)),
         (reason, delayMs) => console.error(`! delivery-admin rail did not answer the store challenge (${reason}); retrying in ${delayMs / 1000}s`),
         (e) => e instanceof DeliveryAdminUnanswered,
       );
@@ -1818,15 +1821,15 @@ export class Manager {
    *  daemon"), and only a row that is absent or holderless settles "absent", the state start()
    *  treats as not-yet-bound. An unreadable row (a failed read, or a key that exists but does not
    *  parse) is a genuine unknown and refuses fail-closed, like a hung rail. */
-  private async daemonStoreRelation(): Promise<"shared" | "absent" | "divergent"> {
+  private async daemonStoreRelation(timeoutMs = STORE_CHALLENGE_TIMEOUT_MS): Promise<"shared" | "absent" | "divergent"> {
     let reply: ControlReply;
     try {
-      reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, 5_000);
+      reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, timeoutMs);
     } catch (e) {
       const msg = (e as Error).message;
-      if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow();
+      if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow(isUnansweredDeliveryAdmin(e));
       const failure = `could not challenge the delivery daemon's SecretStore: ${msg}`;
-      throw /timeout/i.test(msg) ? new DeliveryAdminUnanswered(failure) : new Error(failure);
+      throw isUnansweredDeliveryAdmin(e) ? new DeliveryAdminUnanswered(failure) : new Error(failure);
     }
     if (!reply.ok)
       throw new Error(
@@ -1891,7 +1894,7 @@ export class Manager {
    *
    *  `deliveryLeaseHolder` swallows its read failures into `undefined`, which would fold case 2
    *  into case 3 — so this reads the entry directly and lets the read's own failure refuse. */
-  private async absentByLeaseRow(): Promise<"absent"> {
+  private async absentByLeaseRow(unanswered: boolean): Promise<"absent"> {
     let entry: { info: DeliveryLeaseInfo } | undefined;
     try {
       entry = await this.ep.readDeliveryLeaseEntry(Manager.DELIVERY_SHARD);
@@ -1902,11 +1905,12 @@ export class Manager {
       );
     }
     const holder = entry?.info.holder;
-    if (holder !== undefined && holder !== "")
-      throw new DeliveryAdminUnanswered(
+    if (holder !== undefined && holder !== "") {
+      const refusal =
         `the delivery-admin rail reported no responder while the delivery lease names a holder ` +
-          `(${holder}) - absence cannot be read off the rail alone, and nothing reminted`,
-      );
+        `(${holder}) - absence cannot be read off the rail alone, and nothing reminted`;
+      throw unanswered ? new DeliveryAdminUnanswered(refusal) : new Error(refusal);
+    }
     return "absent";
   }
 
@@ -1940,7 +1944,7 @@ export class Manager {
    *     request, which is the #773 refusal the challenge exists to prevent.
    *
    *  A manager failing either test serves the space normally and skips only the daemon remint. */
-  private async claimDaemonRenewalOwnership(): Promise<void> {
+  private async claimDaemonRenewalOwnership(challengeTimeoutMs?: number): Promise<void> {
     // EVERY refusal outcome drops a held lease, not only "divergent". The refusal paths THROW
     // (#1694: a non-holder answer, an unbindable answerer, an unreadable or holder-naming row on a
     // no-responder rail), and a thrown refusal caught by renewDaemonCreds would otherwise leave a
@@ -1949,7 +1953,7 @@ export class Manager {
     // Deciding here, inside the claim, is what keeps the release on the refusal path itself.
     let relation: "shared" | "absent" | "divergent";
     try {
-      relation = await this.daemonStoreRelation();
+      relation = await this.daemonStoreRelation(challengeTimeoutMs);
     } catch (e) {
       if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease().catch(() => {});
       this.daemonRenewalOwner = false;
