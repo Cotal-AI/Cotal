@@ -94,7 +94,7 @@ once: {
   hashesSubject: false,
   opensScope: true,
   signature: "once(fn, { name }) -> value",
-  doc: "Run fn so that each step inside it is dispatched at most once. A resume that finds a step begun and never settled does not dispatch it again: it opens a hold, a checkpoint under a token derived from the step's recorded request id, and the settler's answer becomes the step's result.",
+  doc: "Run fn so that each step inside it is dispatched at most once. A resume that finds a step begun and never settled does not dispatch it again: it opens a hold, a checkpoint under a token derived from the step's recorded request id, and the settler's answer becomes the step's result. fn returns what the program reads; a write from it to a binding outside it is refused (L2032), and so is an escalating checkpoint, a waitUntil or a conclave inside it (L4028).",
   example: 'const r = await once(async () => await ask(publisher, { name: "publish", schema: { commentId: "number" } }), { name: "publish-360" })',
 },
 ```
@@ -120,8 +120,13 @@ hash their own inputs as they do anywhere else.
   `conclave`, which also settles one body's own value: a body that returns nothing settles with
   `value` absent, and a returned value is otherwise crossable whole, so a record with an
   `undefined` field is refused at the settle (L4000) and in a loaded seed (L5024).
-- Like `conclave`, it has one branch and does not raise the branch-write depth (§7.7), so code inside
-  `fn` reads and writes the enclosing bindings as if the wrapper were not there.
+- It raises the branch-write depth as a branch of `parallel` does (§7.7), though nothing runs beside
+  it. A settled `once` is delivered without entering `fn`, so a write from `fn` to a binding declared
+  outside it, or into a record or array born outside it, would happen on the live run and not on a
+  resume, and the resumed run would read the old value and take a path it never recorded, with no
+  divergence to catch it. Such a write is refused (L2032), statically where the validator can follow
+  `fn` and at run time otherwise. `fn` reads the enclosing bindings freely and returns what the
+  program needs from it.
 - A body that throws fails the scope with that error, as `conclave` does. A cancellation, a host
   release (L5012), a held run (L5025), a refused append (L5010, L5006) and a divergence (L5001)
   travel through it unchanged.
@@ -141,15 +146,25 @@ At a step whose scope path contains a `once` frame:
 | `diverged` | L5001 | unchanged |
 | `pending` | dispatch again under the recorded id | **hold**, never dispatch |
 
-Inside one activation every kind calls its handler method once, except a `checkpoint` with
-`onExpiry: "escalate"`. Its arm in `dispatchPrimitive` calls `handler.checkpoint` a second time at
-the same key after the first expires, as attempt 1 under a new id it records with
-`Journal.reissueAs`. That second call is a second dispatch, so under `once` the arm refuses
-`onExpiry: "escalate"` before it calls `performEffect`, with L4028 (an escalating checkpoint inside
-`once`). No entry begins, the handler is never called, and a resume reaches the same refusal. A
-program that wants a second approver inside `once` writes a second `checkpoint`, which is a step
-of its own. Every other live dispatch is unchanged, and so is an escalating checkpoint outside
-`once`.
+Three constructs call a handler method more than once at one key by their own definition, and each
+further call would be a second dispatch:
+
+- A `checkpoint` with `onExpiry: "escalate"`. Its arm in `dispatchPrimitive` calls
+  `handler.checkpoint` a second time at the same key after the first expires, as attempt 1 under a
+  new id it records with `Journal.reissueAs`.
+- A `waitUntil`. `performWaitUntil` calls `handler.observe` once per observation at one key, and
+  its entry stays `pending` between observations, so a resume observes again.
+- A `conclave`. `runScope` calls `handler.openConclave` and `handler.closeConclave` outside
+  `performEffect`, and a resume of its `pending` entry calls both again.
+
+Under `once` each is refused with L4028 (a step inside `once` that dispatches more than once)
+before its entry begins: the `checkpoint` and `waitUntil` arms of `dispatchPrimitive` refuse before
+they call `performEffect` and `performWaitUntil`, and `performScope` refuses a `conclave` before its
+lookup. No entry begins, no handler method is called, and a resume reaches the same refusal. A
+program that wants a second approver inside `once` writes a second `checkpoint`, which is a step of
+its own, and one that polls or convenes does so outside the `once` that wraps its write. Every
+other kind calls its handler method once per activation through `performEffect`. Outside `once`
+all three constructs are unchanged.
 
 ### 4.3 The hold
 
@@ -183,6 +198,16 @@ On a `pending` verdict under `once`, after the existing cancellation check and h
    `onExpiry` decides an expired hold as it decides an expired checkpoint, live and on
    replay. It never fails with L4027. No held checkpoint escalates, because an escalating one never
    begins under `once` (§4.2).
+6. A hold that does not answer never makes the held step look unattempted. The hold has
+   `performEffect`'s two failure domains with one change: an `EffectRefused` from the hold's
+   `handler.checkpoint` (a host that cannot open a checkpoint, L5016 on the mesh) does **not**
+   settle the entry `refused`. `refused` records that the step was never attempted, and that verdict
+   dispatches (§4.2), so recording it would turn a refused hold into the second write. The entry
+   stays `pending` with the `hold` it had, the run halts with L5025 as any refusal halts it, and the
+   next host that can open a checkpoint opens the same hold. A refused append (L5010, L5006) leaves
+   the entry as it was, a cancellation settles it `cancelled`, and any other throw settles it
+   `failed` under the handler-fault rule (L4000, or the handler's own code). None of these
+   dispatches the step again.
 
 A crash while the hold is open leaves the entry `pending` with `hold` set. The next resume takes the
 same path, re-derives the same hold id, and the handler re-attaches through `ctx.resume`, as it
@@ -209,9 +234,8 @@ reads it from the same places.
 
 - spawn, turn, ask, checkpoint, sleep, wait, waitUntil, notify, monitor, parallel, race, fanOut and
   conclave keep their signatures, projections and recovery outside a `once` scope.
-- `waitUntil`'s own entry keeps re-observing on resume inside `once` (an observation is not a
-  write). The steps its probe performs are each at-most-once.
-- `conclave`'s open and close keep their own recovery: they run in `runScope`, not `performEffect`.
+- A `once` inside a `waitUntil` probe or a `conclave` body is admitted: the wait and the conclave
+  are not under its frame, and the steps inside it are at-most-once.
 - A hold is an ordinary checkpoint. It is not L5025: the run is parked at a pause, not unwound.
 - The language version does not change. No existing program changes meaning except one that binds
   its own `once`, which is refused at validation.
@@ -262,31 +286,35 @@ change.
 - **`packages/lang/src/keys.ts`**: `ScopeKind` adds `once`; `holdRequestId` (§4.3), exported from
   the package index.
 - **`packages/lang/src/grammar.ts`**: the validator reads the table, so the name, literal and
-  closed-bag checks come from it. The captured-write check (L2032) skips `once` as it skips
-  `conclave`. At run time a first argument that is not a function is refused before the scope entry
-  begins, with L4011, the code for calling a value that is not a function.
+  closed-bag checks come from it. The captured-write check (L2032) walks `once`'s body, the thunk at
+  index 0, as it walks the branches of `parallel`, `race` and `fanOut`. At run time a first
+  argument that is not a function is refused before the scope entry begins, with L4011, the code
+  for calling a value that is not a function.
 - **`packages/lang/src/perform.ts`**:
-  - `dispatchPrimitive` routes `once` to `runScope` with the `{ kind, name }` projection.
+  - `performScope` hashes `once` with the `{ kind, name }` projection it uses for `parallel` (no
+    subject). The walker's `callScope` and the engine's scope seam reach it as they reach the other
+    scopes; `dispatchPrimitive` never sees a scope.
   - `runScope` gains a `once` arm: one branch `in`, `fn` called with no arguments in that branch's
     frame, the clock joined, `{ branches: ["in"], value }` returned. It shares `conclave`'s body
     handling minus the open and the close.
   - `performEffect`: the `pending` case under a `once` frame calls the new `performHold` instead of
     `perform`. `performHold` does §4.3 and nothing else; the `kind` it already has selects the
     checkpoint rule (§4.3, 5), so the `applyCheckpointPolicy` call in `dispatchPrimitive`'s
-    `checkpoint` arm is untouched.
-  - `dispatchPrimitive`'s `checkpoint` arm refuses `onExpiry: "escalate"` under a `once` frame
-    with L4028 before it calls `performEffect` (§4.2), testing the frame's path
-    (`frame.keys.path`). Its live and recovery bodies are otherwise untouched.
+    `checkpoint` arm is untouched. Its catch is `performEffect`'s minus the `refused` settle
+    (§4.3, 6).
+  - The L4028 refusals (§4.2): `dispatchPrimitive`'s `checkpoint` arm for
+    `onExpiry: "escalate"` and its `waitUntil` arm, each testing the frame's path
+    (`frame.keys.path`) before it calls `performEffect` or `performWaitUntil`, and `performScope`
+    for kind `conclave`, testing `scopeKey.scope` before its lookup. Their live and recovery bodies
+    are otherwise untouched.
   - The "inside once" test is one exported predicate over a key's scope path,
-    `atMostOnce(scope)`, true when any frame has kind `once`. `performEffect` and the runtime's
-    authority call it with `key.scope` and the checkpoint arm with the frame's path, so neither
-    engine carries a flag of its own.
-- **`packages/lang/src/interpret.ts`** (walker, version 1): the depth rule treats `once` as it
-  treats `conclave`. Everything else arrives through `perform.ts`.
-- **`packages/lang/src/engine/frame.ts`** (compiled engine, version 2): `EngineFrame.branch` keeps
-  the depth for `once` as it does for `conclave`. This is the compiled engine's half of the depth
-  rule; `createCtx`'s write check compares a value's birth depth against it, so without the change
-  a captured write inside `once` is refused (L2032) on version 2 and admitted on version 1.
+    `atMostOnce(scope)`, true when any frame has kind `once`. `performEffect`, `performScope` and
+    the runtime's authority call it with a key's `scope`, and the two arms with the frame's path,
+    so neither engine carries a flag of its own.
+- **`packages/lang/src/interpret.ts`** (walker, version 1) and **`packages/lang/src/engine/frame.ts`**
+  (compiled engine, version 2): no change. `Frame.branch` and `EngineFrame.branch` raise the depth
+  for every kind but `conclave`, which is the rule `once` takes (§4.1), so the runtime half of L2032
+  refuses a captured write inside `once` on both engines.
 - **`packages/lang/src/engine/ctx.ts`** (compiled engine, version 2): admits `once` where it admits
   the other scopes, its body at index 0 being a function value as `parallel`'s branches are, so the
   emitter's deferral rule (`transform/emit.ts`, bodies at index 1) is untouched.
@@ -342,7 +370,8 @@ word, and the run's existing ownership, lease and cleanup checks apply unchanged
   carry the child's run id, so its dispatch of the cut step is the fork the operator asked for.
 - **`classify`** in `migrate.ts`, the orphan table, lists `once` beside `parallel`, `race` and
   `fanOut`: a scope that outlives nothing of its own. Its default refuses an unlisted kind (L5015),
-  so without the row every migration of a run that entered `once` is refused.
+  so without the row every migration of a run that entered `once` is refused. spec/cotal-lang.md
+  §11.2 gains the same row (§7).
 - Who may answer does not change. Answering a hold goes through `resolveCheckpoint` and the run's
   own ACL, the path every checkpoint and `ask` answer takes, so whoever may answer a pause of the
   run may settle a hold, and nobody else. The request id in the prompt is the identity already on
@@ -350,9 +379,14 @@ word, and the run's existing ownership, lease and cleanup checks apply unchanged
 
 ## 7. Normative text, insertion-only
 
-Each block below is inserted verbatim; no existing sentence is edited or removed.
+Each block below is inserted verbatim; no existing sentence is edited or removed. Every closed list
+of scopes or entry kinds in spec/cotal-lang.md gains `once` here, because a list that omits it
+states a refusal the implementation no longer makes.
 
-**spec/cotal-lang.md §6.1**, a row after `conclave`:
+**spec/cotal-lang.md §2**, after the L2013 bullet: the concise body of an arrow passed to `once`
+(§7.8) is admitted the same way, since `once` owns its body as the other scopes own their branches.
+
+**§6.1**, a row after `conclave`:
 
 ```
 | `once` | `once(fn, { name }) -> value` | scope `once` | required |
@@ -364,24 +398,40 @@ Each block below is inserted verbatim; no existing sentence is edited or removed
 | `once` | `{ kind, name }` |
 ```
 
+**§6.5**, after "The four scopes are §7.": `once` is the fifth (§7.8).
+
+**§7**, after its first paragraph: `once` (§7.8) is a fifth scope. It opens a scope frame and
+writes one entry like the other four, and runs its one branch with nothing beside it.
+
+**§7.7**, at the end of its first paragraph: `once` raises the depth like a branch of `parallel`,
+though nothing runs beside it, because a settled `once` is replayed without entering its body
+(§7.8), so a write from the body would happen live and never on resume.
+
 **§7.8 `once`**, a new subsection after §7.7:
 
 > `once(fn, { name })` runs `fn` as the single branch `in` and settles with its value. Every step
 > whose scope path contains a `once` frame is **at-most-once**: an implementation MUST NOT dispatch
 > it twice, where a dispatch is one call of the step's handler method; retries a handler performs
-> inside one call are not dispatches. A `checkpoint` with `onExpiry: "escalate"` under a `once`
-> frame dispatches twice by its own definition, so it MUST be refused before its entry begins, with
-> L4028. A resume that finds such a step `pending` MUST NOT call its handler method; it opens a
-> **hold** instead, a checkpoint whose request carries only a prompt, dispatched at attempt 0 under
-> the **hold id**, the sha256 of the canonical form of `[<recorded request id>, "hold"]` in
-> base64url, whose binding is written to the entry's `hold` field and never to `external`. A
+> inside one call are not dispatches. A `checkpoint` with `onExpiry: "escalate"`, a `waitUntil` and
+> a `conclave` call a handler method more than once at one key by their own definition (a second
+> attempt, one observation per look, an open and a close that a resume calls again), so under a
+> `once` frame each MUST be refused before its entry begins, with L4028. A resume that finds an
+> at-most-once step `pending` MUST NOT call its handler method; it opens a **hold** instead, a
+> checkpoint whose request carries only a prompt, dispatched at attempt 0 under the **hold id**,
+> the sha256 of the canonical form of `[<recorded request id>, "hold"]` in base64url, whose
+> binding is written to the entry's `hold` field and never to `external`. A
 > resolved hold settles the step `ok` with the answered value (`null` when none). An expired hold
 > settles it `failed` with L4027, kind `outcome-unknown`, which a program may catch and a resume
 > replays. A held `checkpoint` instead settles `ok` with the hold's raw outcome, resolved or
-> expired, so its own `onExpiry` applies. A `miss` and a `refused` verdict dispatch as they do
-> anywhere, because a step with no `pending` entry was never started. Like `conclave`, `once` has
-> one branch and does not raise the depth. `once` bounds the number of dispatches; it does not make
-> a far side's write exactly-once.
+> expired, so its own `onExpiry` applies. A hold the host refuses MUST leave the step `pending`,
+> never `refused`, and halts the run (L5025), so the next capable host opens the same hold; a
+> cancelled hold settles the step `cancelled`, a failed one settles it `failed`, and neither is
+> dispatched again. A `miss` and a `refused` verdict dispatch as they do anywhere, because a step
+> with no `pending` entry was never started. `once` raises the depth like a branch of `parallel`
+> (§7.7): a settled `once` is replayed without entering `fn`, so `fn` MUST NOT write to a binding
+> declared outside it or into a record or array born outside it (L2032), and returns what the
+> program reads instead. `once` bounds the number of dispatches; it does not make a far side's
+> write exactly-once.
 >
 > ```js
 > const publisher = await spawn("publisher")
@@ -391,19 +441,29 @@ Each block below is inserted verbatim; no existing sentence is edited or removed
 > log("comment", res.commentId)
 > ```
 
-**§10.1**, after the description of `external`: an entry MAY carry `hold`, the binding of the hold
-opened for an at-most-once step (§7.8); it answers to the crossing rule like `external`, and a resume
-refuses a loaded `hold` that fails it (L5024).
+**§10.1**, in the entry's `kind` comment, `| once` after `conclave`. After the description of
+`external`: an entry MAY carry `hold`, the binding of the hold opened for an at-most-once step
+(§7.8); it answers to the crossing rule like `external`, and a resume refuses a loaded `hold` that
+fails it (L5024).
 
 **§10.4**, at the end: a hold (§7.8) is dispatched under the hold id derived from the recorded id of
 the step it holds, never under that id itself, because the step may already have armed and settled
 a pause there; the step's own id and attempt do not change.
 
+**§10.6**, after the sentence on what a `conclave` settles: a `once` settles its body's own value
+the same way, so only a body that produced no value at all is absence; it records no `closed`.
+
 **§10.7**, after the verdict list: under a `once` frame (§7.8) the **pending** verdict opens a hold
 instead of re-binding.
 
+**§11.2**, a row after the `parallel`, `race`, `fanOut` row:
+
+```
+| `once` | ignored: a scope outlives nothing of its own |
+```
+
 **Appendix A**, two rows: `| L4027 | At-most-once step's outcome was never settled |` and
-`| L4028 | Escalating checkpoint inside \`once\` |`.
+`| L4028 | Step inside \`once\` that dispatches more than once |`.
 
 **Appendix B**, a row for the date the implementation lands, naming §7.8, the `hold` field, L4027
 and L4028.
@@ -476,23 +536,39 @@ Run each case under language version 1 (`run`) and version 2 (`runInWorker`).
    `c.value` is `{ approved: true }`. Resume scripted `{ status: "expired" }`: `c.status` is
    `expired`, and the same program with no `onExpiry` throws L4007. A further resume replays each
    result with no dispatch.
-8. **An escalating checkpoint is refused inside `once`.** The program
+8. **A step that dispatches more than once is refused inside `once`.** The program
    `await once(async () => await checkpoint("publish", "write it", { onExpiry: "escalate", to: "operator" }), { name: "publish-360" })`,
    with a `checkpoint` that appends to `external.jsonl` and answers `expired`. Expected: L4028, no
    `checkpoint` call, no entry at `/once:publish-360#0/b:in/checkpoint:publish#0`, nothing in
    `external.jsonl`. With `onExpiry: "proceed"`, one call and one line. The escalating checkpoint
-   outside `once`: two calls at one key, attempts 0 and 1, as today.
-9. **Captured writes behave the same in both engines.** The program
+   outside `once`: two calls at one key, attempts 0 and 1, as today. The same refusal for
+   `await once(async () => await waitUntil(probe, { name: "read", every: "1s", deadline: "1m", terminal: (o) => o === 2 }), { name: "observe" })`,
+   whose probe answers 1 then 2: L4028, no `observe` call, no entry under `/once:observe#0`; outside
+   `once`, two `observe` calls at `/waitUntil:read#0`, attempts 0 and 1. And for a `conclave` inside
+   `once`: L4028, no `openConclave` call, no entry under the `once`.
+9. **A captured write is refused, and the returned value has live and resume parity.** The program
    `const state = { count: 0 }; let n = 0; await once(async () => { state.count = 1; n = 2 }, { name: "write" }); log(state.count, n)`
-   logs `1 2` on version 1 and on version 2. Inside a parallel branch,
-   `await parallel({ a: async () => await once(async () => { state.count = 2 }, { name: "inner" }) }, { name: "p" })`
-   is refused with L2032 on both, because `once` keeps the branch's depth and does not lower it.
+   is refused with L2032 at validation on both engines, and the same writes made through a helper
+   the validator cannot follow are refused with L2032 at run time on both. The program
+   `const r = await once(async () => ({ count: 1, n: 2 }), { name: "write" }); log(r.count, r.n); await notify([a], { decision: "d", outcome: "o" }, { name: r.n === 2 ? "after" : "other" })`,
+   with `a` spawned before it, logs `1 2` live. Crashed after the `once` settles and before the
+   `notify` begins, then resumed: it logs `1 2` again, the `once` body is not entered, and `notify`
+   `after` is dispatched once. A `once` nested in a `parallel` branch keeps L2032 for that branch's
+   outer bindings on both engines.
 10. **A body that returns nothing resumes from its seed.** The program
     `await once(async () => {}, { name: "noop" })`, run to completion, then resumed twice: once with
     the settled run's `Journal.entries()` as the next `Journal`'s seed in the same process, so
     `value: undefined` survives, and once over the JSONL store. Expected: both resumes replay the
     scope without entering the body. A seed whose settled `once` value is a record with an
     `undefined` field is refused with L5024, as `conclave`'s is.
+11. **A refused hold does not become a second write.** Case 1's crash, then a resume whose
+    handler's `checkpoint` throws `new EffectRefused("L5016", "checkpoint substrate unavailable")`.
+    Expected: L5025, the `ask` entry still `pending` and not `refused`, `ask` not called, one line
+    in `external.jsonl`. Then a resume with case 1's capable handler: `checkpoint` called once
+    under the hold id, `ask` not called, one line, the step settled `ok`, the run completes.
+12. **A migration ignores an orphaned `once`.** Case 10's program run to completion, then
+    `migrateRun` onto the source `log("hi")`: the `once` entry is an orphan with verdict `ignored`,
+    as a `parallel` entry is, and the migration is admissible.
 
 ### 8.2 One hosted run
 
