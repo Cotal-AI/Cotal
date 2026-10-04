@@ -532,18 +532,32 @@ export function parseRemoteManagedAgentEnrollmentRequest(raw: unknown): RemoteMa
   for (const key of Object.keys(o))
     if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   const envelope = parseManagedAgentEnvelope(o, what, "manager-managed-agent-enrollment");
-  const target = o.target;
+  const target = parseLaunchTarget(o.target, what, true);
+  return {
+    v: 1,
+    kind: "manager-managed-agent-enrollment",
+    ...envelope,
+    target: { ...target, tokenHash: parseTokenHash((o.target as Record<string, unknown>).tokenHash, what) },
+  };
+}
+
+/** The digest, never the secret: a request that carried the plaintext standing token would put an
+ *  agent's whole exchange authority on the wire and in the host's logs. */
+function parseTokenHash(value: unknown, what: string): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value))
+    enrollmentError(what, "target.tokenHash must be a lowercase hex sha256 digest of the locally held actorToken");
+  return value;
+}
+
+/** The enrollment target without its token digest. `withTokenHash` admits the digest key, which the caller parses. */
+function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean): DelegatedUserLaunchTarget {
   if (target === null || typeof target !== "object" || Array.isArray(target)) enrollmentError(what, "requires a target");
   const t = target as Record<string, unknown>;
-  const targetAllowed = new Set(["actor", "tokenHash", "role", "label", "capabilities", "subscribe", "allowSubscribe", "allowPublish"]);
+  const targetAllowed = new Set(["actor", "role", "label", "capabilities", "subscribe", "allowSubscribe", "allowPublish", ...(withTokenHash ? ["tokenHash"] : [])]);
   for (const key of Object.keys(t))
     if (!targetAllowed.has(key)) enrollmentError(what, `target carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   if (typeof t.actor !== "string" || t.actor.length === 0) enrollmentError(what, "target requires a non-empty actor");
   assertValidOwnerToken(t.actor);
-  // The digest, never the secret: a request that carried the plaintext standing token would put an
-  // agent's whole exchange authority on the wire and in the host's logs.
-  if (typeof t.tokenHash !== "string" || !/^[0-9a-f]{64}$/.test(t.tokenHash))
-    enrollmentError(what, "target.tokenHash must be a lowercase hex sha256 digest of the locally held actorToken");
   if (t.role !== undefined && (typeof t.role !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(t.role)))
     enrollmentError(what, "target.role must be a 1-64 character role token when present");
   if (t.label !== undefined && (typeof t.label !== "string" || t.label.length === 0 || t.label.length > 256))
@@ -560,19 +574,13 @@ export function parseRemoteManagedAgentEnrollmentRequest(raw: unknown): RemoteMa
   const allowSubscribe = parseEnrollmentList(t.allowSubscribe, what, "allowSubscribe");
   const allowPublish = parseEnrollmentList(t.allowPublish, what, "allowPublish");
   return {
-    v: 1,
-    kind: "manager-managed-agent-enrollment",
-    ...envelope,
-    target: {
-      actor: t.actor,
-      tokenHash: t.tokenHash,
-      ...(t.role !== undefined ? { role: t.role as string } : {}),
-      ...(t.label !== undefined ? { label: t.label as string } : {}),
-      ...(t.capabilities !== undefined ? { capabilities: [...(t.capabilities as string[])] } : {}),
-      ...(subscribe !== undefined ? { subscribe } : {}),
-      ...(allowSubscribe !== undefined ? { allowSubscribe } : {}),
-      ...(allowPublish !== undefined ? { allowPublish } : {}),
-    },
+    actor: t.actor,
+    ...(t.role !== undefined ? { role: t.role as string } : {}),
+    ...(t.label !== undefined ? { label: t.label as string } : {}),
+    ...(t.capabilities !== undefined ? { capabilities: [...(t.capabilities as string[])] } : {}),
+    ...(subscribe !== undefined ? { subscribe } : {}),
+    ...(allowSubscribe !== undefined ? { allowSubscribe } : {}),
+    ...(allowPublish !== undefined ? { allowPublish } : {}),
   };
 }
 
@@ -592,18 +600,7 @@ export function parseRemoteManagedAgentPrepareRetirementRequest(raw: unknown): R
   for (const key of Object.keys(o))
     if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   const envelope = parseManagedAgentEnvelope(o, what, "manager-managed-agent-prepare-retirement");
-  const target = o.target;
-  if (target === null || typeof target !== "object" || Array.isArray(target) ||
-      Object.keys(target as object).sort().join(",") !== "actor,lifecycleUid,owner")
-    enrollmentError(what, "target must be exactly { owner, actor, lifecycleUid }");
-  const t = target as Record<string, unknown>;
-  if (typeof t.owner !== "string" || typeof t.actor !== "string" || typeof t.lifecycleUid !== "string")
-    enrollmentError(what, "target must contain string owner, actor, and lifecycleUid");
-  const parsedTarget = {
-    owner: assertDerivedOwnerToken(t.owner),
-    actor: assertValidOwnerToken(t.actor),
-    lifecycleUid: assertLifecycleToken(t.lifecycleUid, `${what} target lifecycleUid`),
-  };
+  const parsedTarget = parseRetirementTarget(o.target, what);
   if (typeof o.opId !== "string" || o.opId.length === 0) enrollmentError(what, "requires a non-empty opId");
   assertLifecycleToken(o.opId, `${what} opId`);
   if (o.opId !== managedRetirementOpId(parsedTarget.lifecycleUid))
@@ -614,6 +611,20 @@ export function parseRemoteManagedAgentPrepareRetirementRequest(raw: unknown): R
     ...envelope,
     target: parsedTarget,
     opId: o.opId,
+  };
+}
+
+function parseRetirementTarget(target: unknown, what: string): RemoteManagedAgentPrepareRetirementRequest["target"] {
+  if (target === null || typeof target !== "object" || Array.isArray(target) ||
+      Object.keys(target as object).sort().join(",") !== "actor,lifecycleUid,owner")
+    enrollmentError(what, "target must be exactly { owner, actor, lifecycleUid }");
+  const t = target as Record<string, unknown>;
+  if (typeof t.owner !== "string" || typeof t.actor !== "string" || typeof t.lifecycleUid !== "string")
+    enrollmentError(what, "target must contain string owner, actor, and lifecycleUid");
+  return {
+    owner: assertDerivedOwnerToken(t.owner),
+    actor: assertValidOwnerToken(t.actor),
+    lifecycleUid: assertLifecycleToken(t.lifecycleUid, `${what} target lifecycleUid`),
   };
 }
 
@@ -862,4 +873,250 @@ export interface PlatformControlAssignment {
   predecessorInstanceId?: string;
   assignmentRevision: number;
   state: "assigned" | "revoked";
+}
+
+/** The launch a user asks for. It is the enrollment target without the token digest: the user
+ * never sees the agent's token, and the holder that generates it adds only the digest. */
+export type DelegatedUserLaunchTarget = Omit<RemoteManagedAgentEnrollmentRequest["target"], "tokenHash">;
+
+/** One operation on one target. There is no list form and no wildcard. */
+export type DelegatedUserIntentOperation =
+  | { operation: "launch"; target: DelegatedUserLaunchTarget }
+  | { operation: "retire"; target: RemoteManagedAgentPrepareRetirementRequest["target"] };
+
+/** Upper bound on an intent's life, enforced by the host at admission and at execution. */
+export const DELEGATED_USER_INTENT_MAX_TTL_SECONDS = 300;
+
+/** Closed request a signed-in user sends on the host's authenticated human route. It carries no
+ * owner, scope, IdP field, lifecycle UID of the holder, serve epoch, profile or lifetime. The host
+ * derives the owner from the verified IdP subject and binds every holder coordinate itself. */
+export interface DelegatedUserIntentRequest {
+  v: 1;
+  kind: "delegated-user-intent";
+  space: string;
+  /** The user's own actor. Its fresh ledger row admits the intent, and its principal becomes the
+   * launched agent's ledger `parent`, as the spawner principal does on a user's own spawn. */
+  actor: string;
+  /** The account the user means. It must equal the serving authority context's account. */
+  accountPublicKey: string;
+  /** The platform control instance the user asks to execute it. */
+  instanceId: string;
+  requestId: string;
+  intent: DelegatedUserIntentOperation;
+}
+
+/** The host's answer to the user. Every coordinate is host-observed at admission. */
+export interface DelegatedUserIntentAdmission {
+  v: 1;
+  kind: "delegated-user-intent";
+  space: string;
+  owner: string;
+  /** The user's own actor that admitted the intent. It is never the target's actor. */
+  actor: string;
+  requestId: string;
+  /** Host-generated with `mintLifecycleUid`. Never caller-selected. */
+  intentId: string;
+  accountPublicKey: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  assignmentRevision: number;
+  /** The holder's gate process epoch at admission. Null only for a retirement admitted while the
+   * launching holder is gone. */
+  serveEpoch: number | null;
+  intent: DelegatedUserIntentOperation;
+  /** ISO time, at most DELEGATED_USER_INTENT_MAX_TTL_SECONDS after admission. */
+  expiresAt: string;
+}
+
+/** Closed request the holder sends to execute one admitted intent. It names the intent and the one
+ * target it expects, and nothing the user did not already fix. */
+export interface RemoteDelegatedUserIntentExecutionRequest {
+  v: 1;
+  kind: "manager-delegated-user-intent-execution";
+  space: string;
+  /** The shipped request builders' envelope constant. It keys the registration proof and is never
+   * read as a ledger principal. */
+  actor: "cli";
+  accountPublicKey: string;
+  assignmentRevision: number;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  intentId: string;
+  execute:
+    | { operation: "launch"; target: { actor: string; tokenHash: string } }
+    | { operation: "retire"; target: RemoteManagedAgentPrepareRetirementRequest["target"] };
+}
+
+export type RemoteDelegatedUserIntentExecutionResult =
+  | {
+      v: 1;
+      kind: "manager-delegated-user-intent-execution";
+      operation: "launch";
+      space: string;
+      instanceId: string;
+      managerLifecycleUid: string;
+      requestId: string;
+      serveEpoch: number;
+      intentId: string;
+      /** The hosted enrollment's material, unchanged. `material.owner` is the intent's `u_` owner. */
+      material: RemoteManagedAgentEnrollmentResult["material"];
+      runtimeIntent?: { state: "reserved" };
+    }
+  | {
+      v: 1;
+      kind: "manager-delegated-user-intent-execution";
+      operation: "retire";
+      space: string;
+      instanceId: string;
+      managerLifecycleUid: string;
+      requestId: string;
+      intentId: string;
+      target: RemoteManagedAgentPrepareRetirementRequest["target"];
+      /** managedRetirementOpId(target.lifecycleUid), recomputed by the host. */
+      opId: string;
+      retired: boolean;
+    };
+
+function parseOperation(raw: unknown, what: string, field: string): { operation: "launch" | "retire"; target: unknown } {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).sort().join(",") !== "operation,target")
+    enrollmentError(what, `${field} must be exactly { operation, target }`);
+  const { operation, target } = raw as { operation: unknown; target: unknown };
+  if (operation !== "launch" && operation !== "retire") enrollmentError(what, `${field}.operation must be "launch" or "retire"`);
+  return { operation, target };
+}
+
+function parseAccountPublicKey(value: unknown, what: string): string {
+  if (typeof value !== "string" || !/^A[A-Z2-7]{55}$/.test(value)) enrollmentError(what, "requires an account public key");
+  return value;
+}
+
+/** Parse the user's intent request without retaining unknown input fields. An `owner`, `idpToken`,
+ *  `scope`, `serveEpoch` or `tokenHash` field is refused, never ignored. */
+export function parseDelegatedUserIntentRequest(raw: unknown): DelegatedUserIntentRequest {
+  const what = "delegated user intent";
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) enrollmentError(what, "must be an object");
+  const o = raw as Record<string, unknown>;
+  const allowed = new Set(["v", "kind", "space", "actor", "accountPublicKey", "instanceId", "requestId", "intent"]);
+  for (const key of Object.keys(o))
+    if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  if (o.v !== 1 || o.kind !== "delegated-user-intent") enrollmentError(what, 'must carry { v: 1, kind: "delegated-user-intent" }');
+  for (const key of ["space", "actor", "instanceId", "requestId"] as const)
+    if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
+  assertValidOwnerToken(o.actor as string);
+  assertLifecycleToken(o.instanceId as string, `${what} instanceId`);
+  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
+    enrollmentError(what, "requestId must be a 22-64 character idempotency token");
+  const intent = parseOperation(o.intent, what, "intent");
+  return {
+    v: 1,
+    kind: "delegated-user-intent",
+    space: o.space as string,
+    actor: o.actor as string,
+    accountPublicKey: parseAccountPublicKey(o.accountPublicKey, what),
+    instanceId: o.instanceId as string,
+    requestId: o.requestId as string,
+    intent: intent.operation === "launch"
+      ? { operation: "launch", target: parseLaunchTarget(intent.target, what, false) }
+      : { operation: "retire", target: parseRetirementTarget(intent.target, what) },
+  };
+}
+
+/** Parse the holder's execution request without retaining unknown input fields. Its envelope is the
+ *  managed-agent envelope with the `"cli"` actor constant, plus the account, revision and intent. */
+export function parseRemoteDelegatedUserIntentExecutionRequest(raw: unknown): RemoteDelegatedUserIntentExecutionRequest {
+  const what = "delegated user intent execution";
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) enrollmentError(what, "must be an object");
+  const o = raw as Record<string, unknown>;
+  const allowed = new Set([
+    "v", "kind", "space", "actor", "accountPublicKey", "assignmentRevision", "instanceId", "managerLifecycleUid",
+    "requestId", "registrationProof", "serveEpoch", "identities", "intentId", "execute",
+  ]);
+  for (const key of Object.keys(o))
+    if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  const envelope = parseManagedAgentEnvelope(o, what, "manager-delegated-user-intent-execution");
+  if (envelope.actor !== "cli") enrollmentError(what, 'actor must be the envelope constant "cli"');
+  if (typeof o.assignmentRevision !== "number" || !Number.isSafeInteger(o.assignmentRevision) || o.assignmentRevision < 0)
+    enrollmentError(what, "assignmentRevision must be a non-negative safe integer");
+  if (typeof o.intentId !== "string") enrollmentError(what, "requires an intentId");
+  assertLifecycleToken(o.intentId, `${what} intentId`);
+  const execute = parseOperation(o.execute, what, "execute");
+  let parsed: RemoteDelegatedUserIntentExecutionRequest["execute"];
+  if (execute.operation === "launch") {
+    const t = execute.target;
+    if (t === null || typeof t !== "object" || Array.isArray(t) || Object.keys(t).sort().join(",") !== "actor,tokenHash")
+      enrollmentError(what, "execute.target must be exactly { actor, tokenHash } for a launch");
+    const { actor, tokenHash } = t as { actor: unknown; tokenHash: unknown };
+    if (typeof actor !== "string") enrollmentError(what, "execute.target requires an actor");
+    parsed = { operation: "launch", target: { actor: assertValidOwnerToken(actor), tokenHash: parseTokenHash(tokenHash, what) } };
+  } else {
+    parsed = { operation: "retire", target: parseRetirementTarget(execute.target, what) };
+  }
+  return {
+    v: 1,
+    kind: "manager-delegated-user-intent-execution",
+    ...envelope,
+    actor: "cli",
+    accountPublicKey: parseAccountPublicKey(o.accountPublicKey, what),
+    assignmentRevision: o.assignmentRevision,
+    intentId: o.intentId,
+    execute: parsed,
+  };
+}
+
+/** Bind the host's untrusted execution answer to the request that produced it. The result is closed,
+ *  echoes every request coordinate, and names the requested operation's own target. */
+export function parseRemoteDelegatedUserIntentExecutionResult(
+  raw: unknown,
+  request: RemoteDelegatedUserIntentExecutionRequest,
+): RemoteDelegatedUserIntentExecutionResult {
+  const what = "delegated user intent execution result";
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${what} must be an object`);
+  const r = raw as Record<string, unknown>;
+  const common = ["v", "kind", "operation", "space", "instanceId", "managerLifecycleUid", "requestId", "intentId"];
+  const allowed = new Set(request.execute.operation === "launch"
+    ? [...common, "serveEpoch", "material", "runtimeIntent"]
+    : [...common, "target", "opId", "retired"]);
+  for (const key of Object.keys(r))
+    if (!allowed.has(key)) throw new Error(`${what} carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  if (r.v !== 1 || r.kind !== request.kind || r.operation !== request.execute.operation || r.space !== request.space ||
+      r.instanceId !== request.instanceId || r.managerLifecycleUid !== request.managerLifecycleUid ||
+      r.requestId !== request.requestId || r.intentId !== request.intentId)
+    throw new Error(`${what} returned different operation, lifecycle, request or intent coordinates`);
+  if (request.execute.operation === "retire") {
+    const want = request.execute.target;
+    const t = r.target as Record<string, unknown> | null | undefined;
+    if (t === null || typeof t !== "object" || Array.isArray(t) || Object.keys(t).sort().join(",") !== "actor,lifecycleUid,owner" ||
+        t.owner !== want.owner || t.actor !== want.actor || t.lifecycleUid !== want.lifecycleUid ||
+        r.opId !== managedRetirementOpId(want.lifecycleUid))
+      throw new Error(`${what} returned another retirement target or operation id`);
+    if (typeof r.retired !== "boolean") throw new Error(`${what} requires a boolean retired`);
+    return r as unknown as RemoteDelegatedUserIntentExecutionResult;
+  }
+  if (r.serveEpoch !== request.serveEpoch) throw new Error(`${what} returned another serve epoch`);
+  if (r.runtimeIntent !== undefined && JSON.stringify(r.runtimeIntent) !== '{"state":"reserved"}')
+    throw new Error(`${what} returned a runtimeIntent other than { state: "reserved" }`);
+  const m = r.material as Record<string, unknown> | null | undefined;
+  if (m === null || typeof m !== "object" || Array.isArray(m) ||
+      Object.keys(m).sort().join(",") !== "actor,agentBearerExchangeUrl,allowPublish,allowSubscribe,lifecycleUid,owner,sentinelCreds,subscribe")
+    throw new Error(`${what} returned non-closed material`);
+  if (m.actor !== request.execute.target.actor)
+    throw new Error(`${what} returned actor "${String(m.actor)}", not the requested "${request.execute.target.actor}"`);
+  if (typeof m.owner !== "string") throw new Error(`${what} material requires an owner`);
+  assertDerivedOwnerToken(m.owner);
+  if (typeof m.lifecycleUid !== "string") throw new Error(`${what} material requires a lifecycleUid`);
+  assertLifecycleToken(m.lifecycleUid, `${what} material lifecycleUid`);
+  for (const key of ["sentinelCreds", "agentBearerExchangeUrl"]) {
+    const value = m[key];
+    if (typeof value !== "string" || value.length === 0) throw new Error(`${what} material requires a non-empty ${key}`);
+  }
+  for (const key of ["subscribe", "allowSubscribe", "allowPublish"]) {
+    const list = m[key];
+    if (!Array.isArray(list) || !list.every((value) => typeof value === "string" && value.length > 0))
+      throw new Error(`${what} material carries an invalid ${key} list`);
+  }
+  return r as unknown as RemoteDelegatedUserIntentExecutionResult;
 }

@@ -72,7 +72,7 @@ import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions } from "./permissions.js";
 import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
-import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
+import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
@@ -81,7 +81,7 @@ import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster 
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, authRegistrationExecutorGrants, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
-import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
@@ -171,6 +171,9 @@ export interface AuthAuthorityPlane {
     alreadyRetired?: boolean;
   }>;
   retireManagedLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
+  /** Activate a managed agent's lifecycle at the uid its grant carries, under the same minting
+   *  authority its first bearer exchange names, and mint nothing (SPEC 13.16). */
+  activateManagedLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<void>;
   issueManagerServiceAuthority: (args: ManagerAuthorityHolder & { request: RemoteManagerAuthorityRequest }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
   maintainRemoteManager: (args: ManagerAuthorityHolder & { request: RemoteManagerMaintenanceRequest }) => Promise<import("@cotal-ai/core").RemoteManagerMaintenanceResult>;
   validateRetainedAgent: (args: ManagerAuthorityHolder & {
@@ -732,6 +735,15 @@ export async function openAuthAuthorityPlane(opts: {
         throw new EpEnvelopeError("conflict", `managed retirement operation ${opId} is already in flight for different coordinates`);
       await flight;
       return { retired: true, lifecycleUid };
+    },
+    activateManagedLifecycle: async (args) => {
+      refuseIfFenced();
+      await activateLifecycleAtUid(registry, {
+        owner: assertDerivedOwnerToken(args.owner),
+        actor: assertValidOwnerToken(args.actor),
+        lifecycleUid: assertLifecycleToken(args.lifecycleUid),
+        managerInstance: `auth-service:${space}`,
+      });
     },
     issueManagerServiceAuthority: async (holder) => {
       refuseIfFenced();
@@ -1436,6 +1448,14 @@ export interface AuthServiceHandle extends HostedServiceHandle {
    *  over this context's own connection, whose grant is that instance's `describe` and `status`;
    *  neither the connection nor its credential leaves the process. */
   platformControlReadiness?(instanceId: string): Promise<EpAttributedReply>;
+  /** The manager gate the delegated user intent decisions read (SPEC 13.16). Present only with
+   *  `platformControl`. It reads over the context's own authority connection, so a host opens no
+   *  second data-account connection, and it returns the gate alone. */
+  observeManagerGate?: ObserveManagerGate;
+  /** The activation a delegated launch runs at its pinned uid before any row or durable, and its
+   *  compensation runs before the terminal barrier (SPEC 13.16). Present only with
+   *  `platformControl`. It refuses every state in which a retirement at that uid has begun. */
+  activateManagedLifecycle?: AuthAuthorityPlane["activateManagedLifecycle"];
 }
 
 /** The optional public exchange face: the CLI's `--exchange-public-*`, `--advertised-server` and
@@ -1717,6 +1737,10 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
       });
       return completeRemoteRetainedAgentValidation(retained, holder.owner, authority);
     };
+    const refuseUnlessReady = () => {
+      if (state !== "ready" || closePromise !== undefined)
+        throw new EpEnvelopeError("unavailable", "auth-service context is not ready");
+    };
     const platformDeps = platformControl === undefined ? undefined : {
       space,
       accountPublicKey: keys.dataAccount.pub,
@@ -1725,8 +1749,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
       observeManagerInstance: plane.observeManagerInstance,
     };
     const readStatus = (owner: string) => async (instanceId: string): Promise<EpAttributedReply> => {
-      if (state !== "ready" || closePromise !== undefined)
-        throw new EpEnvelopeError("unavailable", "auth-service context is not ready");
+      refuseUnlessReady();
       if (reader?.instanceId !== instanceId) {
         void reader?.client.then((c) => c.close(), () => {});
         const caller = { owner, actor: `manager_ready_${instanceId}`, uid: mintLifecycleUid() };
@@ -1754,8 +1777,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
         platformControlAuthority: makePlatformControlAuthority({
           ...platformDeps,
           dispatch: (holder, request) => {
-            if (state !== "ready" || closePromise !== undefined)
-              throw new EpEnvelopeError("unavailable", "auth-service context is not ready");
+            refuseUnlessReady();
             switch (request.kind) {
               case "manager-service-authority": return plane.issueManagerServiceAuthority({ ...holder, request });
               case "manager-service-maintenance": return plane.maintainRemoteManager({ ...holder, request });
@@ -1768,6 +1790,14 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
           },
         }),
         platformControlReadiness: makePlatformControlReadiness({ ...platformDeps, readStatus: readStatus(platformDeps.owner) }),
+        observeManagerGate: async (instanceId: string) => {
+          refuseUnlessReady();
+          return (await plane.observeManagerInstance(instanceId)).gate;
+        },
+        activateManagedLifecycle: async (target) => {
+          refuseUnlessReady();
+          await plane.activateManagedLifecycle(target);
+        },
       } : {}),
       readiness(): HostedServiceState {
         if (state === "unavailable") return { state, context, cause: cause ?? "auth-service context is unavailable" };
@@ -1842,6 +1872,9 @@ export async function dispatchManagerAuthorityRequest(
   // The hosted runtime kinds read and drive host-owned intent state that stock does not hold.
   if (request.kind === "manager-managed-agent-runtime-create" || request.kind === "manager-managed-agent-runtime-status")
     throw new EpEnvelopeError("unimplemented", "managed agent runtime create and status must be handled by host platform interception");
+  // A delegated user intent creates and consumes a record in the host's intent store, which stock does not hold.
+  if (request.kind === "delegated-user-intent" || request.kind === "manager-delegated-user-intent-execution")
+    throw new EpEnvelopeError("unimplemented", "delegated user intent admission and execution must be handled by host platform interception");
   if (request.kind === "manager-retained-agent-validation") {
     const retained = await ctx.validateRetainedAgent({
       owner,

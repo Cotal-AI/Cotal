@@ -45,7 +45,7 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
-| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, and `platformControlReadiness`, its read-only readiness read. `runAuthService` remains the CLI entry. |
+| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, `platformControlReadiness`, its read-only readiness read, `observeManagerGate`, the manager gate read a host composing the delegated user intent decisions passes them, and `activateManagedLifecycle`, the activation that host runs at a delegated launch's pinned lifecycle UID. `runAuthService` remains the CLI entry. |
 | `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` *(types)* | `@cotal-ai/core` | the closed envelope, its inner request union, its result and the backend's assignment row for `platformControlAuthority`. `platformControlOwner` in `@cotal-ai/auth` derives the `p_` owner the door issues under. |
 | `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
@@ -445,6 +445,38 @@ with `remoteManagerClient.remoteManagedAgentRuntimeRequest` and binds the answer
 An enrollment result may also carry `runtimeIntent: { state: "reserved" }` when the host reserved a
 hosted runtime for the agent. It is display-only. Older hosts omit it, the manager binds both shapes
 to the same material, and nothing reads it as authority.
+
+No stock door lets a platform control holder launch or retire an agent for a signed-in user. The
+managed-agent kinds above act only under the authenticated owner and refuse a caller that is not
+that user, so a platform could only run a user's agent by holding the user's login or by enrolling
+the agent under its own owner. Both are refused. The
+[delegated user launch intent](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/delegated-user-launch-intent.md)
+design and SPEC §13.16 define the smallest addition. The user admits one launch or one retirement
+on the host's authenticated route. The holder consumes that intent once, from its current
+registration, epoch and lifecycle. The host then enrolls the agent under the user's `u_` owner with
+the user's own actor as its ledger parent, so the envelope walk, membership and channel lists match
+what the user's own manager would produce. Retirement keeps the prepare, provider closure and
+terminal barrier order, and the host finishes it when the holder is gone. A launch the host had to
+undo keeps its agent name held until the host process that ran it confirms it has stopped, and
+while the name is held the host also refuses it to the user's own manager. `@cotal-ai/auth` ships the
+two decisions, `authorizeDelegatedUserIntentAdmission` and `authorizeDelegatedUserIntentExecution`,
+for a host that owns an intent store and those writers to compose on its own routes. Both read the
+holder's gate through the handle's `observeManagerGate`, present with `platformControl`, which reads
+over the context's own connection, so the host opens no second data-account connection. It is an
+observation for the decision: the consuming CAS and the writers still apply their own checks. The
+host's launch writer first activates the agent's lifecycle at the pinned UID through the handle's
+`activateManagedLifecycle`, before any ledger row or durable, and its compensation runs the same
+call before the terminal barrier, so a launch whose agent never exchanged its bearer still reaches
+the terminal barrier at that UID. The launched agent exchanges its bearer on the context's public
+face, so the host starts it with `publicFace`, and its retirement writer ends at
+`POST /managed-lifecycle/retire` with the handle's `cap`. Stock dispatch refuses both kinds as
+`unimplemented`. The holder's composition passes
+`remoteAuthority.executeDelegatedUserIntent`, which posts the execution request and binds the answer
+with `parseRemoteDelegatedUserIntentExecutionResult`. It then starts the agent with
+`startAgent({ ..., delegatedIntent: { intentId, owner, parent } })` and retires it with
+`retireDelegatedAgent(name, intentId)`, which stops the agent only after the host confirms
+`retired: true` for its exact target. A delegated agent's stop, exit or failed launch keeps its name
+held until that retirement confirms.
 
 Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
 request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays

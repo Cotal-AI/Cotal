@@ -4067,6 +4067,135 @@ a generation-pinned subject was published by the grant holder) is a property of 
 not of this section: no peer-held profile pairs a write with a raw stream read on one stream, and
 mediated reads remain the remedy.
 
+### 13.16 Delegated user intent
+
+A host platform that runs a `platform-control` service view MAY let that view's manager (the
+holder) execute one launch or one retirement that a signed-in user asked for, while the intent and
+the resulting agent stay the user's. This subsection adds no exchange view, profile, holder grant or
+standing delegation, and changes no other clause. A host that does not implement the
+`platform-control` service view, or holds no intent store, MUST refuse both requests below as
+`unimplemented`, and stock dispatch MUST refuse both kinds as `unimplemented`.
+
+**Admission.** A user admits an intent with one closed `delegated-user-intent` request on the host's
+authenticated human route, the transport the `manager-service` typed requests use. The host MUST
+verify the user's IdP token, derive the owner from the verified subject as it does for a signed-in
+human, and read the named actor's ledger row fresh; the row MUST carry `spawn`. The host MUST NOT
+store, forward or record the token, and MUST NOT read, require, synthesize or write `supervise`. The
+request carries the space, the assigned account public key, the user's actor, one platform control
+instance id, a request id, and one operation: `launch` with one managed-agent enrollment target
+minus its token digest, or `retire` with one `{ owner, actor, lifecycleUid }`. An unknown field,
+including an owner, IdP token, scope, serve epoch or token digest, MUST be refused as `bad-request`
+with no effect. For a launch, the host MUST read the account's platform-control assignment and that
+instance's manager gate fresh and refuse unless the assignment is `assigned` for this account and
+names that instance and the gate is open under the platform serve principal, and the requested scope and channel lists MUST lie within
+the user's actor row under the managed-agent envelope rule. For a retirement, the target owner MUST
+equal the derived owner, and the target lifecycle MUST be one that the host's own record shows a
+delegated launch on that instance produced and enrolled, for a launch target whose actor equals the
+retirement target's actor; the host MUST compare the launch's target actor, never the user actor
+that admitted the launch. Any other lifecycle MUST be refused. The host generates
+the intent id from at least 128 bits of entropy, never from caller input. It binds the account, the
+instance id, the assignment's lifecycle UID and revision, the gate's process epoch (null for a
+retirement whose launching holder is gone), the one target, the user's principal `<owner>.<actor>`
+as parent, and an expiry at most 300 seconds ahead, and creates the record create-only.
+
+**Execution.** The holder executes an intent with one closed
+`manager-delegated-user-intent-execution` request on the host platform's own route for that holder;
+the `platform-control` envelope does not carry this kind and refuses it as an unknown kind. The
+request names the intent id, the space, the fixed `cli` actor constant that keys the registration
+proof, the account, the assignment revision, the instance id, the manager lifecycle UID, the serve
+epoch, the registration proof, the identities, and one target: the launch target's actor with the
+SHA-256 digest of an actor token the holder generated, or the retirement's `{ owner, actor,
+lifecycleUid }`. The host MUST read the record fresh and refuse as `failed-precondition` an absent
+record, an admitted record past its expiry, and a consumed record unless the request is a retry of
+the execution that consumed it (below). It MUST refuse as `permission-denied` any difference from
+the record in account, instance id, manager lifecycle UID, assignment revision, operation, serve
+epoch or target. It MUST re-read the assignment and refuse as `permission-denied` one that is
+absent, revoked, or differs from the record in space, account, instance id, manager lifecycle UID or
+assignment revision. It MUST re-read the gate, refuse a gate whose principal is not the platform
+serve principal, refuse a gate epoch other than the request's as `conflict`, and require the
+host-keyed current registration proof. Every check completes before any effect. The host then MUST
+CAS the record from `admitted` to `consumed` at the revision it read, and that same write MUST pin
+the execution: the request id, the serve epoch, the lifecycle UID (host-selected before the CAS for
+a launch, the target's for a retirement), the launch's token digest or the retirement's
+operation id, and the host incarnation `{ instanceId, processEpoch }` that executes it. A lost CAS is `conflict` and nothing is enrolled or retired. Because the reads are not
+fences (§13.1), the host MUST repeat the assignment and gate checks for a launch after the CAS and
+before any effect, and on a refusal MUST compensate the launch (below) before it ends the record
+`aborted`; a change that lands after that second read is ordered after the execution. An intent
+executes at most once and confers nothing after it executes.
+
+**Recovery.** From the CAS on, the host owns the pinned execution, whoever presented it. It MUST
+drive every consumed record to one outcome, `enrolled`, `retired` or `aborted`, at the pinned
+lifecycle UID, including after a restart or a lost answer. For a launch, the host's first effect
+after the post-CAS checks MUST be the issuance activation of the alias at the pinned lifecycle UID
+(§13.1), before any ledger row or durable, so that UID has an active head and an open issuance gate
+before anything is granted under it. Every launch that ends without `enrolled` after its consuming
+CAS MUST be compensated before it is marked `aborted`, whichever flight observed the refusal,
+because a flight that resumes the execution cannot tell whether an earlier flight began the
+activation: the retirement sequence below at that UID, with that UID's activation completed or
+adopted immediately before the terminal barrier. Before that activation the compensator MUST read
+the head and the issuance gate at that UID. Once a retirement there has begun, because the head is
+retiring or retired at that UID or the gate is frozen or retired by `managedRetirementOpId` of that
+UID, the compensator MUST NOT run or adopt an activation and MUST go to the terminal barrier, which
+resumes that operation from its durable intent.
+Only the barrier's answer that the lifecycle is retired at that UID is terminal confirmation; a
+not-started answer MUST NOT be read as one. When that activation is refused because the alias is
+active or retiring at another UID, the record MUST keep no outcome and the compensation MUST be
+retried. A request
+whose request id and serve epoch, and a launch's token digest, equal the pin is a retry of that
+execution: it passes the same checks except the consumed state, writes no second CAS, and MUST
+receive that execution's answer. The alias stays held until the record has an outcome, and after a
+sweeper's claim until the release below.
+The host MUST run each execution in one in-process flight keyed by the intent id, and a retry MUST
+join that flight or read the record's outcome; a retry MUST NOT run the post-CAS checks, the
+enrollment writer or the retirement sequence itself. Every record write after the consuming CAS
+MUST be a revision-pinned CAS, and a flight MUST answer only from an outcome its own write set or
+from the outcome it reads after that write lost, never with material it did not commit. Recovery
+follows the executor and sweeper roles of §13.7. Only the pinned incarnation is the executor, and
+only the executor MAY run the enrollment writer for the record. Any other incarnation, including
+the same instance after a restart advanced its process epoch, is a sweeper. A sweeper MAY act only
+on a consumed record with no outcome whose executor it believes gone, because that instance's
+serving issuance gate is absent, not open or at another process epoch. It MUST first claim the
+record with a revision-pinned CAS that names its own incarnation and changes nothing else, and
+MAY then take only the terminal edge that removes authority: the compensation above, then
+`aborted`, for a launch, or the retirement sequence below, then `retired`, for a retirement. The
+sequence's terminal barrier freezes the issuance gate at that UID before it retires the lifecycle
+(§13.1), so an executor that a wrong belief left running can mint nothing there and cannot set the
+outcome. A consumed record holds its target alias `(owner, actor)` from the consuming CAS, and an
+outcome its executor writes releases it. After a sweeper's claim the alias MUST stay held after the
+outcome until the executor's own flight, having stopped before any further effect and revoked any
+grant at the pinned UID, records the release, or until an operator releases it by hand; no door
+releases it. Before each effect and before its outcome write, the executor MUST re-read the record
+and stop on a claim it did not write. While an alias is held, the host MUST refuse a launch
+admission for it and MUST refuse, from either enrollment door, any enrollment of it other than the
+holding execution's own, as `failed-precondition` with no write.
+
+**Ownership.** A delegated launch MUST be enrolled under the record's owner with the record's
+parent, through the same writer, managed-agent envelope walk, lifecycle-keyed durables and
+membership the host uses for that user's own managed-agent enrollment, with the host selecting the
+lifecycle UID. It MUST NOT be enrolled under a platform owner token or any owner other than the
+record's, and the manager MUST refuse material naming another owner. The holder is not on the
+agent's delegation chain and gains no ledger row, scope or grant from the launch.
+
+**Retirement.** A delegated retirement runs in order: revoke the managed grant at the target
+lifecycle UID only and complete the resumable release with that UID unchanged; close the provider
+handle the host's runtime record holds for that UID, holding the alias while that record is
+`create-unknown`; run the auth-owned terminal barrier with `managedRetirementOpId(lifecycleUid)`
+through the same operation the host's managed retirement door runs; free the alias only after
+terminal confirmation. The launching holder is gone when its assignment is absent, revoked or at
+another revision, its gate is not open, or its gate epoch is not the launch's. A retirement admitted
+while the launching holder is gone is bound to no live epoch, and the host MUST execute it itself
+through the same sequence; a retirement bound to a holder that is gone before it executes expires
+unexecuted. Once a holder's execution has consumed a record, the host MUST finish the sequence
+whether or not the holder remains. A failed or uncertain step keeps the alias held, and a retry is
+the same operation.
+
+**What stays.** Under the `platform-control` view itself the holder still enrolls, retires,
+validates and authorizes only same-owner descendants, and a `u_` principal's spawn request or admin
+authorization against a platform manager is refused as before. A spawn the holder starts without a
+consumed intent is not delegated and gains nothing from this subsection. A delegated agent is not
+preserved across a holder restart and is never restarted, because a restart would re-present a
+consumed intent.
+
 ---
 
 ## 14. Workflow runs (v0.5)

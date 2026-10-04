@@ -149,6 +149,20 @@ export {
   type RemoteManagedAgentRuntimeDecision,
   type ObserveManagerGate,
 } from "./managed-agent-enrollment.js";
+export {
+  authorizeDelegatedUserIntentAdmission,
+  authorizeDelegatedUserIntentExecution,
+  delegatedUserIntentHoldsAlias,
+  joinOrStartDelegatedUserIntent,
+  type AuthorizeDelegatedUserIntentAdmissionArgs,
+  type AuthorizeDelegatedUserIntentExecutionArgs,
+  type DelegatedUserIntentDecision,
+  type DelegatedUserIntentExecutionPin,
+  type DelegatedUserIntentFlights,
+  type DelegatedUserIntentIncarnation,
+  type DelegatedUserIntentRecord,
+  type ObservePlatformControlAssignment,
+} from "./delegated-user-intent.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT
