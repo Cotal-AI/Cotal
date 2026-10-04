@@ -2763,7 +2763,7 @@ export class Manager {
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
       managed.filter((a) => !a.suppressCleanup).map((a) =>
-        this.deprovision(a).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
+        this.deprovision({ ...a, ...(a.handedOff ? { delegatedHandle: a.handle } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
       ),
     );
     if (failures.length)
@@ -3774,8 +3774,11 @@ export class Manager {
     a.terminalizing = true;
     try {
       if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
-      // A delegated seat closes in retirement, after the host revoked its grant, never from here.
-      if (!a.handedOff) a.handle.stop({ graceful });
+      // A delegated seat's close runs only inside its retirement, after the host revoked its grant,
+      // so stopping it starts that retirement. Every exit wait on a stop path then settles on that
+      // close; the free path's own teardown joins the same flight.
+      if (a.handedOff) this.trackDeprovision({ ...a, delegatedHandle: a.handle });
+      else a.handle.stop({ graceful });
     } catch (e) {
       console.error(`stop ${a.name} (${a.id}): ${(e as Error).message}`);
     }
