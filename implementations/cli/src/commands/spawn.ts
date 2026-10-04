@@ -659,6 +659,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // --name / --role override the file (name defaults from the file's frontmatter).
   const requested = values.name ?? def.name;
   const role = values.role ?? def.role;
+  // Flags win over the file, resolved once: the model policy below judges these values and the
+  // connector launches on them. Left to the connector, the model is re-read from the persona at
+  // launch, after the check, so an edit in between would launch a model the policy never saw.
+  const model = values.model ?? def.model;
+  const variant = values.variant ?? def.variant;
+  // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
+  const launchOptions = mergeLaunchOptions(def.launchOptions, cliLaunchOptions);
   if (redeemedEnrollment && redeemedEnrollment.bundle.actor !== requested) {
     console.error(c.red(`✗ the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`));
     process.exit(1);
@@ -671,10 +678,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   try {
     const refusal = modelPolicyRefusal(loadCotalConfig(target.root), {
       persona: `persona "${ref}" (${path})`,
-      role, model: values.model ?? def.model, variant: values.variant ?? def.variant,
+      role, model, variant,
       modelFlag: values.model !== undefined,
       variantFlag: values.variant !== undefined,
-      launchOptions: mergeLaunchOptions(def.launchOptions, cliLaunchOptions),
+      launchOptions,
     });
     if (refusal) {
       console.error(c.red(`✗ ${refusal}`));
@@ -727,7 +734,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
-  const variant = values.variant ?? def.variant;
   if (variant && !connector.supportsModelVariant) {
     console.error(c.red(`✗ ${agentType} connector does not support model variants (variant)`));
     process.exit(1);
@@ -958,11 +964,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       lifecycleUid,
       servers: server,
       configPath: path,
-      // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
-      model: values.model,
+      model,
       variant,
-      // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
-      launchOptions: mergeLaunchOptions(def.launchOptions, cliLaunchOptions),
+      launchOptions,
       subscribe,
       allowSubscribe,
       allowPublish,

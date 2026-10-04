@@ -94,6 +94,8 @@ when the role has an entry and:
 
 The refusal names the persona, whether the value came from its own field or from the flag, the
 value, and the allowed ids. Roles with no entry, and personas with no role, are not constrained.
+A seat launches on the model and variant that were checked, even if its persona file changes after
+the check.
 
 A space-local entry for a role replaces the operator-level entry for that role, and a role named in
 only one file keeps its entry. A policy that cannot be read as written (a `models` list that is
