@@ -44,13 +44,10 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
   // path here lets the line read as the machine-wide action it is. Only on a real materialization: the
   // idempotent early return above (an intact prior copy) writes nothing and stays silent.
   //
-  // THE BOUND, stated where the claim is made: this announce is AFTER the commit and rides the
-  // provenance channel, which is a plain stderr write with no failure policy. If stderr is closed or
-  // erroring, the payload is still written and the line is lost, so the guarantee is "a materialization
-  // that reaches a working stderr is named", not "no materialization is ever unannounced". Announcing
-  // BEFORE the rename would trade that for a worse lie (a named write that then failed), and throwing
-  // on a lost line would fail a seed for a disclosure fault. The channel-wide fix belongs to the
-  // provenance layer rather than to this call site.
+  // THE BOUND, stated where the claim is made: this announce is AFTER the commit, so it names what
+  // happened. Announcing BEFORE the rename would trade that for a worse lie (a named write that then
+  // failed). A stderr fault neither fails the seed nor drops the line: the provenance channel's failure
+  // policy moves the line to stdout. Only a stderr closed or redirected away at launch loses it.
   provenance.wrote(`operator-global seed store payload (${name})`, dest);
   return dest;
 }

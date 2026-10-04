@@ -309,8 +309,9 @@ released install or an `npx` unpack still seeds as before. The in-tree seed smok
 from a checkout-shaped `bin/` set `COTAL_ALLOW_CHECKOUT_SEED=1` against an isolated config; an
 opt-in write still records that checkout path in `seed/stamp.json` as `writtenBy`. The reconcile
 names on stderr both the store payloads it writes and any old generation it removes, so a
-machine-wide re-seed or cleanup is visible when it happens. Those lines are provenance output: a
-run whose stderr is closed or redirected away keeps the write and loses the line.
+machine-wide re-seed or cleanup is visible when it happens. Those lines are provenance output. When a
+stderr write fails, the line is printed on stdout with the error and the reconcile still completes. A
+run whose stderr is closed or redirected away at launch keeps the write and loses the line.
 
 For how `cotal setup` populates the machine state and the plugin, and how the built-in connectors are
 seeded as removable extensions, see [setup internals](setup-internals.md).
