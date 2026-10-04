@@ -86,8 +86,9 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
 3. Merge to `main`. The only status check `main` requires is `attribution`. The CI aggregate
    jobs `ci-ok`, `windows-ok` and `installer-ok` are advisory: a red one reports and does not
    block the merge, so read them before you merge. `attribution` also refuses the PR until a
-   line `Approved-at: <sha>` in its body names the PR's current head by its full sha. Add the line
-   after you review that head. A push moves the head, so review the new head and update the line.
+   paragraph `Approved-at: <sha>` in its body names the PR's current head by its full sha. Add it
+   after you review that head, with a blank line before and after. A line in a code block or an
+   HTML comment does not count. A push moves the head, so review the new head and update the line.
    Editing the body re-runs the check. Re-running the job does not, because it replays the old event.
 4. The `Changesets` workflow runs:
    - If there are pending changesets, it opens (or updates) a PR titled `chore(release):
