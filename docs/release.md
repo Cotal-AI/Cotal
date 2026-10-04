@@ -144,6 +144,17 @@ commit. A publishing run whose closure gate ends `UNSETTLED` skips the Release, 
 that passes both gates cuts it with that same target. The step fails if it cannot read that history
 or cannot find that commit.
 
+After the `version` job, the `install-probe` job packs `cotal-ai` and each runtime sibling (every
+`workspace:` dependency of `cotal-ai`) and checks that each tarball contains its declared `main` and
+string `exports` targets. It then extracts the `cotal-ai` tarball and runs `cotal --version` and
+`cotal --help`. The binary runs against the workspace copies of its siblings, so the probe checks
+package shape only. It does not cover registry propagation or native assets. Nothing depends on the
+job, so a failure reds the workflow without gating the Release:
+
+```bash
+node scripts/post-publish-install-probe.mjs
+```
+
 Re-check a version that already shipped without publishing, tagging, or changing git:
 
 ```bash
