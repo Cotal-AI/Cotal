@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
+import { parseShareSelection } from "@cotal-ai/core";
 import { parse } from "yaml";
 import type { StartAgentOpts } from "./manager.js";
 
@@ -39,10 +41,12 @@ export function loadRoster(path: string): StartAgentOpts[] {
     const agent = str("agent")?.trim();
     if (!agent) throw new Error(`${at} (${name}) missing "agent" (e.g. claude / opencode)`);
     const share = e["share-tools"];
-    if (share !== undefined && !(Array.isArray(share) && share.every((s) => typeof s === "string")))
-      throw new Error(`${at}.share-tools must be a list of MCP server names`);
     // StartAgentOpts carries the `--share-tools` flag grammar, where an empty selection is `none`.
-    const shareTools = share === undefined ? undefined : share.join(",") || "none";
+    // The list must read back unchanged, or a name the grammar splits, trims, drops or takes for
+    // `none` would launch the agent with a selection the entry never wrote.
+    const shareTools = Array.isArray(share) ? share.join(",") || "none" : undefined;
+    if (share !== undefined && !isDeepStrictEqual(parseShareSelection(shareTools), share))
+      throw new Error(`${at}.share-tools must be a list of MCP server names that --share-tools can carry`);
     return { name, agent, role: str("role"), config: str("config"), cwd: str("cwd"), shareTools };
   });
 }
