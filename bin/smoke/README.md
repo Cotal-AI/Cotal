@@ -66,12 +66,13 @@ reads the entry file of every suite the gate reaches and refuses two shapes. It 
 forms below, because a form it cannot follow to the exit status can hide either defect.
 
 - A `finally`, or a promise `.finally`, that calls `process.exit` with a status that can be 0, where
-  a throw in that `try` would exit 0. A catch arm prevents it only when a statement it always runs
-  exits non-zero, or sets `process.exitCode` to a non-zero literal that the exit reads
-  (`process.exit()`, `process.exit(process.exitCode)` or `process.exit(process.exitCode ?? 0)`)
-  while neither the arm nor the `finally` writes another code. A statement inside a branch of the
-  arm, a computed code and a rethrow do not count. A promise `.catch` counts only directly before
-  `.finally`. A status variable that starts non-zero counts when the only write that clears it is
+  a throw in that `try` would exit 0. A catch arm prevents it only when its first statement exits
+  with a failing status, or sets `process.exitCode` to one that the exit reads (`process.exit()`,
+  `process.exit(process.exitCode)` or `process.exit(process.exitCode ?? 0)`) while nothing in the
+  arm or the `finally` writes another code, including `++`, `--` and destructuring. A statement
+  before it can throw past it, so log after failing. A statement inside a branch of the arm, a
+  computed code and a rethrow do not count. A promise `.catch` counts only directly before
+  `.finally`. A status variable that starts failing counts when the only write that clears it is
   the last statement of the `try`.
 - A suite with no pinned cell count. Declare `const EXPECTED_CELLS = <n>`, never reassign it, and
   compare the cells that ran with it by equality, after reporting failures, so a deleted cell turns
@@ -79,7 +80,16 @@ forms below, because a form it cannot follow to the exit status can hide either 
   mismatch fails the run in one of four forms: `if (ran !== EXPECTED_CELLS)` with an arm that always
   runs `process.exit(1)`; the same arm setting `process.exitCode = 1`, when the file writes no other
   code and every `process.exit` that can follow reads it; the same arm throwing, outside any
-  function or `try` with a catch; or `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`.
+  function or `try` with a catch; or `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`. A statement
+  before the failing one in the arm counts only where a throw would also escape.
+
+A failing status is an integer from 1 to 255, written as a literal or a sum of literals. The process
+keeps only the low eight bits of its status, so `process.exit(256)` exits 0. The `finally` exit's own
+status may also add a lookup into an object literal of them, such as
+`128 + { SIGINT: 2, SIGTERM: 15 }[signal]`, because a lookup that misses makes `process.exit` throw
+rather than exit 0. Names resolve to the declaration they bind, so a parameter or inner function
+that shadows the pin or `main` does not count, and neither does a generator, whose call runs none of
+its body.
 
 Every run reaches a statement of the file, of a bare block, of a `try` or `finally` block, or of the
 body of a function that a reached statement calls (`main()`, `await main()`, `main().catch(...)`),

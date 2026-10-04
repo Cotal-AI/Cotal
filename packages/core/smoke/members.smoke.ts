@@ -204,8 +204,8 @@ async function main() {
 
 main()
   .catch((e) => {
-    console.error(e);
     process.exitCode = 1;
+    console.error(e);
   })
   .finally(async () => {
     srv.kill("SIGKILL");

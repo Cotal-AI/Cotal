@@ -1029,8 +1029,8 @@ try {
   console.log(`\nENDPOINT BINDING SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
   if (fail > 0) process.exitCode = 1;
 } catch (e) {
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
+  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
 } finally {
   if (broker.pid) { try { process.kill(broker.pid, "SIGKILL"); } catch { /* gone */ } }
   await wait(200);

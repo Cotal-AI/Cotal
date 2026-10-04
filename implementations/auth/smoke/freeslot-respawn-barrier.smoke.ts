@@ -1063,8 +1063,8 @@ try {
 
   if (fail) process.exitCode = 1;
 } catch (e) {
-  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
+  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
 } finally {
   try { await manager?.stop({ withAgents: true }); } catch { /* already stopped */ }
   try { await delivery?.stop(); } catch { /* already stopped */ }

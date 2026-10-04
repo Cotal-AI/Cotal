@@ -413,52 +413,88 @@ function findIn<T extends ts.Node>(root: ts.Node, pred: (n: ts.Node) => n is T, 
   visit(root);
   return found;
 }
-const unparen = (n: ts.Node): ts.Node => (ts.isParenthesizedExpression(n) ? unparen(n.expression) : n);
-const isExitCall = (n: ts.Node): n is ts.CallExpression =>
-  ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.getText() === "process.exit";
+/** `n` without the parentheses and type assertions around it, which change nothing at run time. */
+const unwrap = (n: ts.Node): ts.Node =>
+  ts.isParenthesizedExpression(n) || ts.isNonNullExpression(n) || ts.isAsExpression(n) || ts.isSatisfiesExpression(n) || ts.isTypeAssertionExpression(n) ? unwrap(n.expression) : n;
+const isProcessMember = (n: ts.Node, name: string) => ts.isPropertyAccessExpression(n) && n.name.text === name && unwrap(n.expression).getText() === "process";
+const isExitCall = (n: ts.Node): n is ts.CallExpression => ts.isCallExpression(n) && isProcessMember(unwrap(n.expression), "exit");
 const nonZeroLiteral = (n: ts.Node | undefined): boolean => !!n && ts.isNumericLiteral(n) && Number(n.text) !== 0;
-const isExitCode = (n: ts.Node) => n.getText() === "process.exitCode";
-const isExitCodeWrite = (n: ts.Node): n is ts.BinaryExpression =>
-  ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && isExitCode(n.left);
-const failingCode = (w: ts.BinaryExpression) => w.operatorToken.kind === ts.SyntaxKind.EqualsToken && nonZeroLiteral(unparen(w.right));
+const isExitCode = (n: ts.Node) => isProcessMember(n, "exitCode");
+/** The values `n` can take when it is a numeric literal, a lookup into an object literal of them, or a sum
+ *  of those. A lookup can miss, which gives NaN. */
+function numericValues(n: ts.Node): number[] | undefined {
+  const e = unwrap(n);
+  if (ts.isNumericLiteral(e)) return [Number(e.text)];
+  if (ts.isElementAccessExpression(e)) {
+    const table = unwrap(e.expression);
+    const values = ts.isObjectLiteralExpression(table) ? table.properties.map((p) => (ts.isPropertyAssignment(p) ? numericValues(p.initializer) : undefined)) : [undefined];
+    return values.every(Boolean) ? [...values.flatMap((v) => v!), NaN] : undefined;
+  }
+  if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.PlusToken) return undefined;
+  const [left, right] = [numericValues(e.left), numericValues(e.right)];
+  return left && right && left.flatMap((l) => right.map((r) => l + r));
+}
+/** Whether `status` fails the run: every value it can take is an integer from 1 to 255. The OS keeps only
+ *  the low eight bits, so `process.exit(256)` exits 0. With `orThrows`, a value that is not an integer
+ *  also counts, since `process.exit` throws on it rather than exiting. */
+const failingStatus = (status: ts.Node | undefined, orThrows = false): boolean => {
+  const values = status && numericValues(status);
+  return !!values?.length && values.every((v) => (Number.isInteger(v) ? v >= 1 && v <= 255 : orThrows));
+};
+const isAssignment = (k: ts.SyntaxKind) => k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment;
+/** The node that writes `ref`: an assignment, `++`, `--`, `delete`, a `for in`/`for of` head, or the
+ *  destructuring assignment `ref` is a target of. Undefined when `ref` is only read. */
+function writeOf(ref: ts.Node): ts.Node | undefined {
+  const p = ref.parent;
+  if (unwrap(p) !== p || ts.isArrayLiteralExpression(p) || ts.isSpreadElement(p)) return writeOf(p);
+  if ((ts.isShorthandPropertyAssignment(p) && p.name === ref) || (ts.isPropertyAssignment(p) && p.initializer === ref) || ts.isSpreadAssignment(p)) return writeOf(p.parent);
+  // A `=` inside a destructuring target is a default value; the destructuring assignment is the write.
+  if (ts.isBinaryExpression(p) && p.left === ref && isAssignment(p.operatorToken.kind)) return (p.operatorToken.kind === ts.SyntaxKind.EqualsToken && writeOf(p)) || p;
+  if ((ts.isPrefixUnaryExpression(p) || ts.isPostfixUnaryExpression(p)) && (p.operator === ts.SyntaxKind.PlusPlusToken || p.operator === ts.SyntaxKind.MinusMinusToken)) return p;
+  if (ts.isDeleteExpression(p) || ((ts.isForInStatement(p) || ts.isForOfStatement(p)) && p.initializer === ref)) return p;
+  return undefined;
+}
+const failingCode = (w: ts.Node) => ts.isBinaryExpression(w) && w.operatorToken.kind === ts.SyntaxKind.EqualsToken && isExitCode(unwrap(w.left)) && failingStatus(w.right);
 /** An exit status that keeps a non-zero `process.exitCode`: none, `process.exitCode`, or `process.exitCode ?? <n>`. */
 const honorsExitCode = (status: ts.Expression | undefined): boolean => {
   if (!status) return true;
-  const s = unparen(status);
-  return isExitCode(s) || (ts.isBinaryExpression(s) && s.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken && isExitCode(unparen(s.left)) && ts.isNumericLiteral(unparen(s.right)));
+  const s = unwrap(status);
+  return isExitCode(s) || (ts.isBinaryExpression(s) && s.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken && isExitCode(unwrap(s.left)) && ts.isNumericLiteral(unwrap(s.right)));
 };
-const statementExpr = (s: ts.Node): ts.Node => unparen(ts.isExpressionStatement(s) ? s.expression : s);
+const statementExpr = (s: ts.Node): ts.Node => unwrap(ts.isExpressionStatement(s) ? s.expression : s);
 const exitsWith = (s: ts.Node, status: (arg: ts.Expression | undefined) => boolean) => {
   const e = statementExpr(s);
   return isExitCall(e) && status(e.arguments[0]);
 };
-const setsFailingCode = (s: ts.Node) => {
-  const e = statementExpr(s);
-  return isExitCodeWrite(e) && failingCode(e);
-};
+const setsFailingCode = (s: ts.Node) => failingCode(statementExpr(s));
 const endsRun = (s: ts.Node) => ts.isThrowStatement(s) || ts.isReturnStatement(s) || exitsWith(s, () => true);
-/** The statements that run whenever `arm` runs: its own statements up to the first that ends it, or an
- *  arrow body expression. A statement nested in a branch, loop or callback is not one of them. */
+/** The statements `arm` runs in order, up to the first that ends it, or an arrow body expression. Each runs
+ *  only when none before it throws. A statement nested in a branch, loop or callback is not one of them. */
 const runs = (arm: ts.Node): ts.Node[] => {
   const list = ts.isBlock(arm) ? [...arm.statements] : [arm];
   const end = list.findIndex(endsRun);
   return end < 0 ? list : list.slice(0, end + 1);
 };
 const enclosingFunction = (n: ts.Node): ts.Node | undefined => (ts.isSourceFile(n.parent) ? undefined : ts.isFunctionLike(n.parent) ? n.parent : enclosingFunction(n.parent));
+const within = (n: ts.Node, outer: ts.Node) => outer.pos <= n.pos && n.end <= outer.end;
 
-/** One pass over a suite, by name: its variable declarations and the writes to each variable (assignments,
- *  compound assignments, `++` and `--`). */
-type SuiteIndex = { decls: Map<string, ts.VariableDeclaration[]>; writes: Map<string, ts.Node[]> };
+/** One pass over a suite: a checker that resolves a name to the declaration it binds, the way the
+ *  language scopes it, and the writes to each variable and to `process.exitCode`. */
+type SuiteIndex = { checker: ts.TypeChecker; writes: Map<ts.Symbol, ts.Node[]>; exitCodeWrites: ts.Node[] };
 const suiteIndexes = new WeakMap<ts.SourceFile, SuiteIndex>();
 function indexSuite(sf: ts.SourceFile): SuiteIndex {
   const cached = suiteIndexes.get(sf);
   if (cached) return cached;
-  const ix: SuiteIndex = { decls: new Map(), writes: new Map() };
-  const add = <T>(m: Map<string, T[]>, k: string, v: T) => (m.get(k) ?? m.set(k, []).get(k)!).push(v);
+  const host = ts.createCompilerHost({});
+  host.getSourceFile = (f) => (f === sf.fileName ? sf : undefined);
+  const checker = ts.createProgram([sf.fileName], { noLib: true, noResolve: true, allowJs: true, types: [] }, host).getTypeChecker();
+  const ix: SuiteIndex = { checker, writes: new Map(), exitCodeWrites: [] };
   const visit = (n: ts.Node) => {
-    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) add(ix.decls, n.name.text, n);
-    if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && ts.isIdentifier(n.left)) add(ix.writes, n.left.text, n);
-    if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken) && ts.isIdentifier(n.operand)) add(ix.writes, n.operand.text, n);
+    const w = ts.isIdentifier(n) || isExitCode(n) ? writeOf(n) : undefined;
+    if (w && isExitCode(n)) ix.exitCodeWrites.push(w);
+    // The name in `({ x } = o)` resolves to the property; the variable it writes is the value symbol.
+    const sym = !w || !ts.isIdentifier(n) ? undefined : ts.isShorthandPropertyAssignment(n.parent) ? checker.getShorthandAssignmentValueSymbol(n.parent) : checker.getSymbolAtLocation(n);
+    if (sym) (ix.writes.get(sym) ?? ix.writes.set(sym, []).get(sym)!).push(w!);
     ts.forEachChild(n, visit);
   };
   visit(sf);
@@ -466,16 +502,15 @@ function indexSuite(sf: ts.SourceFile): SuiteIndex {
   return ix;
 }
 
-/** An exit status that cannot be 0: a non-zero literal, `128 + n` signal arithmetic, or a variable
- *  initialized to a non-zero literal whose only other writes are non-zero literals or the last
- *  statement of the guarded `try`, which runs only once every risky line succeeded (a fail-closed default). */
+/** An exit status that cannot be 0: a failing status, or a variable whose every declaration initializes
+ *  it to one and whose every write assigns one or is the last statement of the guarded `try`, which runs
+ *  only once every risky line succeeded (a fail-closed default). */
 function cannotBeZero(sf: ts.SourceFile, arg: ts.Expression | undefined, guarded?: ts.Block): boolean {
-  if (!arg) return false;
-  if (nonZeroLiteral(arg)) return true;
-  if (ts.isBinaryExpression(arg) && arg.operatorToken.kind === ts.SyntaxKind.PlusToken)
-    return nonZeroLiteral(arg.left) || nonZeroLiteral(arg.right);
-  if (!ts.isIdentifier(arg)) return false;
-  const { decls, writes } = indexSuite(sf);
+  if (failingStatus(arg)) return true;
+  const id = arg && unwrap(arg);
+  if (!id || !ts.isIdentifier(id)) return false;
+  const { checker, writes } = indexSuite(sf);
+  const sym = checker.getSymbolAtLocation(id);
   const last = guarded?.statements[guarded.statements.length - 1];
   // The zeroing statement runs last in the try: it is the try's last statement, or ends a block or an `if` arm that is.
   const runsLast = (w: ts.Node): boolean => {
@@ -485,19 +520,20 @@ function cannotBeZero(sf: ts.SourceFile, arg: ts.Expression | undefined, guarded
       if (!(ts.isBlock(p) && p.statements[p.statements.length - 1] === n) && !(ts.isIfStatement(p) && p.expression !== n)) return false;
     return n === last;
   };
-  return (decls.get(arg.text) ?? []).length > 0 && decls.get(arg.text)!.every((d) => nonZeroLiteral(d.initializer)) && (writes.get(arg.text) ?? []).every(
-    (w) => (ts.isBinaryExpression(w) && w.operatorToken.kind === ts.SyntaxKind.EqualsToken && nonZeroLiteral(w.right)) || runsLast(w),
+  return !!sym?.declarations?.length && sym.declarations.every((d) => ts.isVariableDeclaration(d) && failingStatus(d.initializer)) && (writes.get(sym) ?? []).every(
+    (w) => (ts.isBinaryExpression(w) && w.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(w.left)) && failingStatus(w.right)) || runsLast(w),
   );
 }
 
-/** A catch arm keeps a throw from leaving through this `finally` exit with status 0 when a statement it
- *  always runs exits with a status that cannot be 0, or sets `process.exitCode` to a non-zero literal
- *  that the exit honors while neither the arm nor the `finally` writes any other code. A rethrow does
- *  not count: the `finally` exit ends the process first. */
+/** A catch arm keeps a throw from leaving through this `finally` exit with status 0 when its first
+ *  statement exits with a status that cannot be 0, or sets `process.exitCode` to a failing status that
+ *  the exit honors while nothing in the arm or the `finally` writes any other code. A statement before it
+ *  can throw past it into the `finally`, and a rethrow does not count: the `finally` exit ends the process first. */
 function catchFails(sf: ts.SourceFile, arm: ts.Node | undefined, exit: ts.CallExpression, block: ts.Node, guarded?: ts.Block): boolean {
   if (!arm) return false;
-  const keepsCode = honorsExitCode(exit.arguments[0]) && [arm, block].every((n) => findIn(n, isExitCodeWrite).every(failingCode));
-  return runs(arm).some((s) => exitsWith(s, (status) => cannotBeZero(sf, status, guarded)) || (keepsCode && setsFailingCode(s)));
+  const first = ts.isBlock(arm) ? arm.statements[0] : arm;
+  const keepsCode = honorsExitCode(exit.arguments[0]) && indexSuite(sf).exitCodeWrites.filter((w) => within(w, arm) || within(w, block)).every(failingCode);
+  return !!first && (exitsWith(first, (status) => cannotBeZero(sf, status, guarded)) || (keepsCode && setsFailingCode(first)));
 }
 
 /** Lines of `process.exit` calls in a `finally` that can turn a throw into exit 0: a try/finally or a
@@ -506,7 +542,7 @@ function swallowedThrows(sf: ts.SourceFile): number[] {
   const lines: number[] = [];
   const flag = (block: ts.Node, catchArm: ts.Node | undefined, guarded?: ts.Block) => {
     for (const exit of findIn(block, isExitCall))
-      if (!cannotBeZero(sf, exit.arguments[0], guarded) && !catchFails(sf, catchArm, exit, block, guarded))
+      if (!failingStatus(exit.arguments[0], true) && !cannotBeZero(sf, exit.arguments[0], guarded) && !catchFails(sf, catchArm, exit, block, guarded))
         lines.push(sf.getLineAndCharacterOfPosition(exit.getStart(sf)).line + 1);
   };
   const visit = (n: ts.Node) => {
@@ -529,13 +565,17 @@ function swallowedThrows(sf: ts.SourceFile): number[] {
 function callersOf(sf: ts.SourceFile, fn: ts.SignatureDeclaration): ts.ExpressionStatement[] {
   let decl = fn.parent;
   while (ts.isParenthesizedExpression(decl)) decl = decl.parent;
-  const name = ts.isFunctionDeclaration(fn) ? fn.name?.text : ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) ? decl.name.text : undefined;
+  const { checker, writes } = indexSuite(sf);
+  const name = ts.isFunctionDeclaration(fn) ? fn.name : ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) ? decl.name : undefined;
+  // A call by name reaches `fn` only through a binding that is declared once and never written.
+  const sym = name && checker.getSymbolAtLocation(name);
+  const binding = sym && sym.declarations?.length === 1 && !writes.has(sym) ? sym : undefined;
   const calls = (e: ts.Node): boolean => {
-    e = unparen(e);
+    e = unwrap(e);
     if (ts.isAwaitExpression(e) || ts.isVoidExpression(e)) return calls(e.expression);
     if (!ts.isCallExpression(e)) return false;
-    const callee = unparen(e.expression);
-    if (callee === fn || (name !== undefined && ts.isIdentifier(callee) && callee.text === name)) return true;
+    const callee = unwrap(e.expression);
+    if (callee === fn || (binding && ts.isIdentifier(callee) && checker.getSymbolAtLocation(callee) === binding)) return true;
     return ts.isPropertyAccessExpression(callee) && ["then", "catch", "finally"].includes(callee.name.text) && calls(callee.expression);
   };
   return findIn(sf, ts.isExpressionStatement, true).filter((s) => calls(s.expression));
@@ -554,38 +594,41 @@ function runsTo(sf: ts.SourceFile, stmt: ts.Statement, seen = new Set<ts.Node>()
   if (ts.isSourceFile(list)) return true;
   const owner = list.parent;
   if (ts.isSourceFile(owner) || ts.isBlock(owner) || ts.isTryStatement(owner)) return runsTo(sf, ts.isTryStatement(owner) ? owner : list, seen);
-  if (!(ts.isFunctionDeclaration(owner) || ts.isFunctionExpression(owner) || ts.isArrowFunction(owner)) || seen.has(owner)) return false;
+  // Calling a generator runs none of its body.
+  if (!(ts.isFunctionDeclaration(owner) || ts.isFunctionExpression(owner) || ts.isArrowFunction(owner)) || owner.asteriskToken || seen.has(owner)) return false;
   seen.add(owner);
   // An async body can stop at an await while the statements after an unawaited call run on, so none of them may exit.
   const preempts = (s: ts.ExpressionStatement) =>
-    !!(ts.getCombinedModifierFlags(owner) & ts.ModifierFlags.Async) && !ts.isAwaitExpression(unparen(s.expression)) &&
+    !!(ts.getCombinedModifierFlags(owner) & ts.ModifierFlags.Async) && !ts.isAwaitExpression(unwrap(s.expression)) &&
     findIn(sf, isExitCall, true).some((c) => c.pos >= s.end && enclosingFunction(c) === enclosingFunction(s));
   return callersOf(sf, owner).some((s) => runsTo(sf, s, seen) && !preempts(s));
 }
 
-/** A suite pins its count when an `EXPECTED*` constant, initialized to a positive literal and never
- *  reassigned, is compared by equality with a tally as the whole condition of a statement every run
- *  reaches, and the mismatch side fails the run: an `if` whose mismatch arm always runs
- *  `process.exit(<n>)`, sets `process.exitCode = <n>` when no other code is written and every exit that
- *  can follow honors it, or throws outside any function or `try` with a catch; or
- *  `process.exit(<cmp> ? 0 : <n>)`. Equality catches a lost cell and an added one; `<` lets the total
+/** A suite pins its count when an `EXPECTED*` constant, declared once, initialized to a positive literal
+ *  and never written, is compared by equality with a tally as the whole condition of a statement every
+ *  run reaches, and the mismatch side fails the run with a status `<n>` from 1 to 255: an `if` whose
+ *  mismatch arm always runs `process.exit(<n>)`, sets `process.exitCode = <n>` when no other code is
+ *  written and every exit that can follow honors it, or throws outside any function or `try` with a
+ *  catch; or `process.exit(<cmp> ? 0 : <n>)`. Equality catches a lost cell and an added one; `<` lets the total
  *  drift up. Any other shape pins nothing. */
 function pinsCellCount(sf: ts.SourceFile): boolean {
-  const { decls, writes } = indexSuite(sf);
-  const pins = [...decls].filter(([name]) => PIN_NAME.test(name) && !writes.has(name)).flatMap(([, ds]) => ds.filter((d) => nonZeroLiteral(d.initializer)));
-  const isPin = (o: ts.Node, at: ts.Node) =>
-    ts.isIdentifier(o) && pins.some((d) => (d.name as ts.Identifier).text === o.text && d.parent.parent.parent.pos <= at.pos && at.end <= d.parent.parent.parent.end);
+  const { checker, writes, exitCodeWrites } = indexSuite(sf);
+  const isPin = (o: ts.Node) => {
+    const sym = ts.isIdentifier(o) && PIN_NAME.test(o.text) ? checker.getSymbolAtLocation(o) : undefined;
+    const decl = sym?.declarations?.length === 1 ? sym.declarations[0] : undefined;
+    return !!decl && ts.isVariableDeclaration(decl) && nonZeroLiteral(decl.initializer) && !writes.has(sym!);
+  };
   // True when `cond` is true on a mismatch, false when it is true on a match, undefined when it is not a pin comparison.
   const onMismatch = (cond: ts.Node): boolean | undefined => {
-    const b = unparen(cond);
+    const b = unwrap(cond);
     if (!ts.isBinaryExpression(b) || !EQUALITY.includes(b.operatorToken.kind)) return undefined;
-    const [pin, tally] = isPin(b.left, b) ? [b.left, b.right] : [b.right, b.left];
-    if (!isPin(pin, b) || isPin(tally, b) || ts.isLiteralExpression(tally)) return undefined;
+    const [pin, tally] = isPin(b.left) ? [b.left, b.right] : [b.right, b.left];
+    if (!isPin(pin) || isPin(tally) || ts.isLiteralExpression(tally)) return undefined;
     return b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
   };
   const codeHolds = (guard: ts.Node) =>
-    findIn(sf, isExitCodeWrite, true).every(failingCode) &&
-    findIn(sf, isExitCall, true).every((c) => (c.end <= guard.pos && !enclosingFunction(c) && !enclosingFunction(guard)) || nonZeroLiteral(c.arguments[0]) || honorsExitCode(c.arguments[0]));
+    exitCodeWrites.every(failingCode) &&
+    findIn(sf, isExitCall, true).every((c) => (c.end <= guard.pos && !enclosingFunction(c) && !enclosingFunction(guard)) || failingStatus(c.arguments[0]) || honorsExitCode(c.arguments[0]));
   const throwEscapes = (guard: ts.Node) => {
     for (let n = guard; !ts.isSourceFile(n); n = n.parent)
       if (ts.isFunctionLike(n.parent) || (ts.isTryStatement(n.parent) && n.parent.tryBlock === n && n.parent.catchClause)) return false;
@@ -595,13 +638,14 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
     if (ts.isIfStatement(s)) {
       const mismatch = onMismatch(s.expression);
       const arm = mismatch === undefined ? undefined : mismatch ? s.thenStatement : s.elseStatement;
-      return !!arm && runs(arm).some((r) => exitsWith(r, nonZeroLiteral) || (setsFailingCode(r) && codeHolds(s)) || (ts.isThrowStatement(r) && throwEscapes(s)));
+      // A statement before the failing one can throw past it, which fails the run only when the throw escapes.
+      return !!arm && runs(arm).some((r, i) => (i === 0 || throwEscapes(s)) && (exitsWith(r, failingStatus) || (setsFailingCode(r) && codeHolds(s)) || (ts.isThrowStatement(r) && throwEscapes(s))));
     }
     const e = statementExpr(s);
-    const status = isExitCall(e) && e.arguments[0] ? unparen(e.arguments[0]) : undefined;
+    const status = isExitCall(e) && e.arguments[0] ? unwrap(e.arguments[0]) : undefined;
     if (!status || !ts.isConditionalExpression(status)) return false;
     const mismatch = onMismatch(status.condition);
-    return mismatch !== undefined && nonZeroLiteral(unparen(mismatch ? status.whenTrue : status.whenFalse));
+    return mismatch !== undefined && failingStatus(mismatch ? status.whenTrue : status.whenFalse);
   };
   return findIn(sf, (n): n is ts.Statement => ts.isIfStatement(n) || ts.isExpressionStatement(n), true).some((s) => failsOnMismatch(s) && runsTo(sf, s));
 }
@@ -625,6 +669,12 @@ const censusControls: Array<[string, boolean]> = [
   ["an exitCode set only in a branch of the catch arm still swallows", swallows(`try { f(); } catch (e) { if (x) process.exitCode = 1; } finally { process.exit(process.exitCode ?? 0); }`)],
   ["a computed exitCode in the catch arm still swallows", swallows(`try { f(); } catch (e) { process.exitCode = Number(x); } finally { process.exit(process.exitCode ?? 0); }`)],
   ["a fail-closed default cleared before the risky line swallows", swallows(`let code = 1; try { code = 0; f(); } finally { process.exit(code); }`)],
+  ["a catch arm that calls anything before failing swallows", swallows(`try { f(); } catch (e) { cleanup(); process.exitCode = 1; } finally { process.exit(process.exitCode ?? 0); }`)],
+  ["a catch arm exiting 256 swallows, since the status keeps eight bits", swallows(`try { f(); } catch (e) { process.exit(256); } finally { process.exit(0); }`)],
+  ["an exitCode decremented in the finally swallows", swallows(`try { f(); } catch (e) { process.exitCode = 1; } finally { process.exitCode--; process.exit(process.exitCode ?? 0); }`)],
+  ["a sum that can be 0 is not a failing status", swallows(`let code = -1; try { f(); } finally { process.exit(1 + code); }`)],
+  ["a status looked up in a catch arm can miss and throw past it", swallows(`try { f(); } catch (e) { process.exit(128 + ({ SIGINT: 2 })[sig]); } finally { process.exit(0); }`)],
+  ["a signal status looked up in a table of failing sums fails the run", fails(`try { f(); } finally { process.exit(128 + ({ SIGINT: 2, SIGTERM: 15 } as Record<string, number>)[sig]!); }`)],
   ["a .catch before a later .then misses its throw", swallows(`main().catch(() => { process.exitCode = 1; }).then(g).finally(() => process.exit(process.exitCode ?? 0));`)],
   ["a suite with no pinned count is unpinned", !pinsCellCount(control(`let ran = 0; ran++; console.log(ran);`))],
   ["a one-sided pin is unpinned", !pinsWith(`if (ran < EXPECTED_CELLS) process.exit(1);`)],
@@ -644,6 +694,10 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin held in a variable is unpinned", !pinsWith(`const complete = ran === EXPECTED_CELLS; process.exit(complete ? 1 : 0);`)],
   ["a pin passed to a check function is unpinned", !pinsWith(`const check = (ok) => { if (ran < 0) process.exit(1); }; check(ran === EXPECTED_CELLS);`)],
   ["a pin in a function called only from a dead branch is unpinned", !pinsWith(`function main() { if (ran !== EXPECTED_CELLS) process.exit(1); } if (false) main();`)],
+  ["a mismatch exitCode of 256 is unpinned", !pinsWith(`if (ran !== EXPECTED_CELLS) process.exitCode = 256;`)],
+  ["a pin in a generator nothing iterates is unpinned", !pinsWith(`function* main() { if (ran !== EXPECTED_CELLS) process.exit(1); } main();`)],
+  ["a pin shadowed by a parameter is unpinned", !pinsWith(`function main(EXPECTED_CELLS) { if (ran !== EXPECTED_CELLS) process.exit(1); } main(1);`)],
+  ["a call to a function that shadows main reaches no pin", !pinsWith(`function main() { if (ran !== EXPECTED_CELLS) process.exit(1); } { const main = () => {}; main(); }`)],
   ["a pin in an async main the file exits before is unpinned", !pinsWith(`async function main() { await f(); if (ran !== EXPECTED_CELLS) process.exit(1); } main(); process.exit(0);`)],
 ];
 const brokenControls = censusControls.filter(([, ok]) => !ok).map(([name]) => name);
@@ -704,7 +758,7 @@ if (swallowing.length) {
   fail++;
   console.log(`  ✗ FAIL: ${swallowing.length} finally exit(s) can turn a throw into exit 0:`);
   for (const s of swallowing) console.log(`      ${s}`);
-  console.log(`    Add a catch arm that sets process.exitCode = 1, or exit with a status computed to fail by default.`);
+  console.log(`    Start the catch arm with process.exitCode = 1, or exit with a status computed to fail by default.`);
 } else {
   console.log(`  ✓ no reached suite exits from a finally in a way that can swallow a throw`);
 }

@@ -327,9 +327,9 @@ try {
   console.log(`\nRETIREMENT-WEDGE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
+  process.exitCode = 1;
   fail++;
   console.error("  ✗ smoke crashed:", e instanceof Error ? (e.stack ?? e.message) : e);
-  process.exitCode = 1;
 } finally {
   await plane?.close().catch(() => {});
   await writer?.close().catch(() => {});
