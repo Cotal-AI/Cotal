@@ -46,8 +46,9 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
   //
   // THE BOUND, stated where the claim is made: this announce is AFTER the commit, so it names what
   // happened. Announcing BEFORE the rename would trade that for a worse lie (a named write that then
-  // failed). A stderr fault neither fails the seed nor drops the line: the provenance channel's failure
-  // policy moves the line to stdout. Only a stderr closed or redirected away at launch loses it.
+  // failed). A stderr fault neither fails the seed nor drops the line silently: the provenance
+  // channel's failure policy moves the line to stdout, and a run whose stdout fails too exits 1. Only
+  // a stderr closed or redirected away at launch loses it silently.
   provenance.wrote(`operator-global seed store payload (${name})`, dest);
   return dest;
 }
