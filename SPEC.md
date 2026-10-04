@@ -1379,6 +1379,43 @@ same-owner validation seam, not delegated signer authority. Revocation freezes t
 rejects fresh material and new connections, and proceeds through the bounded renewal/verified
 revocation policy below. It MUST NOT silently substitute static or local authority.
 
+**Platform control authority (service view).** `platform-control` is a second CLOSED,
+server-authored manager authority view, beside and separate from `manager-service`. It lets a host
+platform run one control manager per assigned data account without any human's session. It is not a
+profile name, not an exchange view, and not a generic host profile: the public exchange, the
+loopback exchange, and every managed-agent secret exchange MUST refuse it as a view. Its holder is a
+platform principal. The holder's owner is a platform owner token, `p_` followed by 26 base32-lower
+characters, which the host derives from the space's owner secret, the space, and the assigned
+data-account public key. This extends the §2 owner-token format for this view's principals and
+their same-owner descendants only; everywhere else §2 stands. A platform owner token is disjoint
+from every `u_` derived owner, from `local`, from nkeys, and from the §13.2 mode words. The host
+MUST NOT derive it from, or bind it to, an IdP subject, and MUST NOT name a `u_` owner on this path.
+No human is authenticated, and no ledger `supervise` scope is read or synthesized.
+
+The view exists only while the host's current platform-control assignment names it. An assignment
+is one row `{ space, accountPublicKey, instanceId, lifecycleUid, assignmentRevision, state }` that
+the platform backend alone writes. The host MUST read it fresh for every request under this view
+and MUST refuse, writing nothing, when it is absent or `revoked`, or when it disagrees with the
+request's account, instance id, lifecycle UID, or assignment revision. A failed read MUST refuse
+rather than reuse an earlier answer. The instance id and lifecycle UID are the assignment's, not
+the caller's choice, and the actors are the same fixed functions of the instance id. Apart from the
+holder's owner and this authorization source, the view is the `manager-service` family: the same
+`svc.manager.<instanceId>`, `epgate.manager.<instanceId>`, and
+`epcred.manager.<instanceId>.<credentialId>` rows, ledgered and gated as this section requires, with
+`holderPrincipal` the platform owner plus the fixed actor.
+
+The view MUST NOT reach an instance whose issuance gate names another principal, including an
+instance a signed-in human registered under `manager-service`. There is no force or takeover path
+between the two views. Such an instance retires through its own owner's path before a platform
+instance may register. Both registration proofs bind the owner, so a `manager-service` proof never
+validates under this view and a `platform-control` proof never validates under `manager-service`.
+
+A manager holding this view MUST run with no local signing trust and no local or custodial runtime
+(pooled control). The view confers no space signer, callout signer, owner secret, provisioner
+credential, or launch authority. It provisions, enrolls, retires, validates, and authorizes only
+same-owner descendants, whose owner is its own platform owner token, and grants nothing over a
+human owner's agents.
+
 **A read is never a fence; only a CAS write is.** JetStream `DIRECT.GET` may be served by a
 follower or mirror and gives NO read-your-writes guarantee (a mint that *reads* the gate can
 observe a stale `open` after a barrier froze it on the leader), so the auth bucket sets
@@ -2409,6 +2446,33 @@ family expires or is revoked, the host's verified revocation path closes it; a l
 requires a new successful prepare/activate operation. Same-owner descendant provisioning is
 host-validated at every request, and loss of that validation also refuses a new start or restart.
 
+**Platform control registration.** A platform-run control manager registers, activates, renews,
+and retires through the same typed `prepare → activate → renew` protocol and operations as the
+remote manager service above: `session`, `retire`, `renewStandingBundle`, `renewRunDriver`, the
+host-owned maintenance operations, retained-agent validation, the goal-index scan, admin
+authorization, and run admission and attempt. Each request rides inside one closed
+`platform-control-authority` envelope that adds only the space, the assigned account, and the
+assignment revision. The envelope and every inner request are closed schemas. Neither carries a
+profile name, permission set, subject, lifetime, or claim, and an unknown kind or field MUST be
+refused as `bad-request` with no effect. The managed-agent enrollment, retirement-preparation, and
+runtime kinds are not carried; a host without its own storage for them MUST refuse them as
+`unimplemented`. The door is a typed in-process operation of the host's authority context. It
+exists only where the host supplies its assignment source, and no listener serves it. It needs no
+exchange capability: the host MUST NOT hand its loopback capability or account signer to a control
+manager, and a host that runs the control manager in another process carries the closed envelope
+over its own caller-bound channel. A request carrying a human IdP token MUST be refused. It is not a
+generic credential-mint surface and adds no daemon, listener, or protocol.
+
+Renewal and fencing are the remote manager service's, unchanged. `renewStandingBundle` returns the
+closed five-credential family for the same caller-held nkeys and the assigned account only when the
+current gate is open, its principal is the platform owner plus the fixed serve actor, its process
+epoch equals the request's, and the host-keyed current registration proof matches. A stale epoch
+is `conflict`. A revoked or advanced assignment refuses the next request, renewal included, so
+revocation never waits on a person and renewal never authenticates one. The remote manager
+service's degraded-state and fail-closed renewal rules apply with the assignment in place of the
+login and ledger scope. A start after revocation or expiry requires a fresh `prepare` and
+`activate` under a current assignment.
+
 **Virtual endpoints.** An endpoint MAY be virtual: registered (`spec.activation = on-demand`)
 with no live instance. A virtual endpoint's commands MUST be journal-class: the buffered
 ingress path is the ordinary submission plane (`epj` is durable and needs no live
@@ -3272,6 +3336,17 @@ minting any child material. It is never a raw provisioner, stream, KV, consumer,
 cross-owner control grant. The registration and renewal operations are typed/idempotent as §13.6
 requires, and their stage records remain inaccessible to every ordinary agent, observer, admin,
 or managed-agent exchange.
+
+**Platform control grant.** The `platform-control` view's generated grant is the remote
+manager-service grant above with the platform owner token as owner: the union of the one assigned
+instance's serve rows, its one service registration/status mediator, its staged
+contract-publication row, `epgate.manager.<instanceId>`, and
+`epcred.manager.<instanceId>.<credentialId>`, with no wildcard spanning an instance, manager actor,
+owner, account, endpoint, record kind, contract digest, or credential id. Descendant provisioning
+MUST re-derive the requested agent's owner from the authenticated caller and require it to equal
+the platform owner token. Serve-time admin authorization answers `authorized: true` only for a
+caller whose owner equals that token; a human `admin` scope never authorizes against it. It is
+never a raw provisioner, stream, KV, consumer, signer, launch, or cross-owner control grant.
 
 **The ownership matrix (normative).** Every profile × resource × transition is classified
 **mediated** or **direct**, in an independently reviewed matrix from which grants are
@@ -4486,6 +4561,11 @@ single-function profiles, each granting only the verbs its function needs and no
   staged manager registration, contract, status, gate, credential, and same-owner descendant
   provisioning family; public exchange, managed-agent secret exchange, plain user bearers, and all
   other instances are refused.
+- `platform-control` is NOT a generic host profile either. It is the §13.1 service view a host
+  issues, through its authority context's in-process door only, to one platform-run control
+  manager per assigned account, under a `p_` platform owner and the host's current assignment. It
+  reaches the same one-instance family as `manager-service` and same-owner descendants only. It
+  never carries a human identity, never reads or implies `supervise`, and every exchange refuses it.
 
 Standing host credentials are **bounded and renewed**: one-shot profiles carry minutes-scale
 expiry; `supervisor`/`delivery`/`membership-rw` carry a 24h expiry with the manager as the named
@@ -4530,6 +4610,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-04 | **Platform control authority (§13.1, §13.6, §13.9), additive, not yet implemented.** A closed server-authored `platform-control` view, beside the unchanged human `manager-service` view, lets a host run one pooled control manager per assigned account. Its holder's owner is a host-derived `p_` platform owner token, disjoint from every `u_` owner. The host's fresh platform-control assignment authorizes it in place of a ledger `supervise` scope. One closed envelope carries the existing typed manager requests through an in-process door of the host's authority context, served on no listener. The unchanged registration proof, process epoch, and all-duty renewal renew and fence it. It refuses human tokens, takeover of another owner's instance, local or custodial runtime, generic signing, exchange issuance, and cross-owner descendants. |
 | 2026-10-02 | **Plane liveness (§6.1), additive.** A credentialed peer can ask whether the manager or delivery plane has a bound responder, on `live.<plane>.<owner>.<actor>` with the reply under `<request>.reply.<nonce>`. The reply is `LivenessAnswer`: `plane`, a `ResponderState` verdict, and an optional opaque per-bind `instance` token that distinguishes responders without identifying them. Only the broker's no-responders answer grades `unbound`; every other failure to get a readable reply grades `unknown`. Agents gain the per-plane request and reply rows; the `delivery`, `supervisor` and remote-manager supervisor credentials gain their plane's serve filter and bounded reply grant. A responder binds again on every connection that replaces the one it bound on, and the manager is not `bound` while its service connection is closed or disconnected. |
 | 2026-09-28 | **The `auth` endpoint becomes a conforming registered endpoint (Cotal #399), closing the two gaps the prior two rounds named.** The plane's boot registers `svc.auth.<instanceId>` through the standard `registerServiceInstance` path and publishes its `retire-lifecycle` contract artifacts to the content-addressed contract store, so the endpoint now serves the reserved `describe` and answers the v1 envelope (`ep.v1`) instead of the legacy `{op,args}`/`{ok,data,error}` body this document states are deleted; a legacy body is refused `unsupported-version` as envelope validation, never an ACL denial. The requester side moves from a hand-built subject to the generic client (`resolveService` + `invokeCommand`), still minted in `exact` mode target-pinned to one incarnation at mint time, and gains the baseline `describe` row plus a bounded contract-store direct-get row so it can resolve the endpoint's registered digests before it calls; a body target that disagrees with the exact subject triple is refused `target-mismatch`. Two new §13.9 rows record the registered instance and the requester's describe/store-read grants. |
 | 2026-09-27 | **Id-less messages are not publish-deduplicated on the durable plane (§8).** The reference Plane-3 fan-out writer and membership-transfer frame publish carry no `Nats-Msg-Id` for a message whose `id` is `""`, so two distinct id-less posts on a durable channel both reach a member and a redelivery of one id-less post may surface twice; a message with a real id keeps its idempotent publish key unchanged. Classification: reference-binding behaviour, no wire-envelope or schema change, protocolVersion unchanged. |
