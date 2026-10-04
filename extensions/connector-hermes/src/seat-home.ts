@@ -18,7 +18,8 @@ import { join } from "node:path";
  *
  * The root is what a stop removes, so it holds everything the gateway writes: Hermes keeps state
  * beside `profiles/` (its kanban database), and the gateway's TMPDIR is `<root>/tmp`. It is named by
- * the digest alone so that no two seats share one.
+ * the digest alone so that no two seats share one. A stop keeps a root whose profile holds the fork
+ * record, because the seat's next launch under the same name continues that fork.
  */
 export function hermesSeatHome(space: string, name: string): { root: string; home: string } {
   const id = createHash("sha256").update(`${space}\0${name}`).digest("hex").slice(0, 12);

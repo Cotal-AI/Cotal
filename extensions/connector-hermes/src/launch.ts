@@ -315,8 +315,8 @@ async function main(): Promise<void> {
     ? loadAgentFile(process.env.COTAL_AGENT_FILE).persona
     : undefined;
   // Managed (default): a disposable profile under tmp, regenerated every launch and removed when the
-  // seat stops. Adopted (opt-in): the operator's own profile, into which only this connector's
-  // plugin directory is written, and which is never removed.
+  // seat stops, unless it holds a `--resume` fork. Adopted (opt-in): the operator's own profile, into
+  // which only this connector's plugin directory is written, and which is never removed.
   const managed = adopt ? undefined : hermesSeatHome(config.space, config.name);
   const home = adopt ?? managed!.home;
   if (adopt) setupAdoptedProfile(home, { persona });
@@ -438,9 +438,14 @@ async function main(): Promise<void> {
     } catch {
       /* ignore */
     }
-    const [, removed] = await Promise.allSettled([sidecar.stop(), managed && removeManaged(managed.root)]);
+    // A profile that holds a `--resume` fork is kept: a seat relaunched under the same name continues
+    // that fork, and the record is what refuses a different session under that name.
+    const forked = managed && existsSync(join(home, HERMES_FORK_RECORD)) ? managed : undefined;
+    if (forked) log(`keeping the managed profile ${forked.root}: it holds this seat's --resume fork`);
+    const disposable = forked ? undefined : managed;
+    const [, removed] = await Promise.allSettled([sidecar.stop(), disposable && removeManaged(disposable.root)]);
     if (removed.status === "rejected")
-      log(`could not remove the managed profile ${managed!.root}, so it is left on disk: ${(removed.reason as Error).message}`);
+      log(`could not remove the managed profile ${disposable!.root}, so it is left on disk: ${(removed.reason as Error).message}`);
     process.exit(code);
   };
 

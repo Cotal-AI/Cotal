@@ -71,7 +71,8 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   state Hermes keeps beside its profiles. When the seat stops, the launcher sends the gateway
   SIGTERM, kills its process tree if it is still running 1.5 seconds later, waits for it to exit,
   and then removes that root, so a seat stopped mid-turn leaves nothing behind either. A hard stop
-  that kills the launcher before it can do this leaves the root in place for you to delete.
+  that kills the launcher before it can do this leaves the root in place for you to delete. The one
+  profile a stop keeps is a `--resume` seat's, which holds its fork (see [Resume a session](#resume-a-session)).
   To put your own Hermes on the mesh instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).
 - The persona is written as Hermes' `SOUL.md` (its system-prompt file), the one place a system
   prompt can be set.
@@ -134,7 +135,8 @@ from an earlier seat of the same name moves to its branch too, and that history 
 Your session is never appended to; SQLite still creates its usual `state.db-wal` and `state.db-shm` files next to a database it
 reads. A session that is missing or has no messages is refused before the seat joins. A seat
 relaunched under the same name keeps its fork and does not read your profile again, and resuming a
-different session under that name is refused. The launcher records the source session id, its
+different session under that name is refused. That is why stopping the seat keeps its managed root,
+`$TMPDIR/cotal-hermes-<id>`: delete it yourself once you no longer need the fork. The launcher records the source session id, its
 title, and a SHA-256 of the transcript it copied next to the fork, prints them when it forks, and the
 manager reads that record into the seat's resume document, so `cotal ps --wide` shows them. Resume does not combine with
 `COTAL_HERMES_ADOPT_HOME`, because that profile already holds the session: continue it there with
