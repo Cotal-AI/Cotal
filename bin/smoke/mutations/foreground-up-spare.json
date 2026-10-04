@@ -10,9 +10,9 @@
     "`claude` on PATH resolving to a real core-dist mesh endpoint), so a mutant that arms the destructive",
     "intent is observed as a DEAD SEAT PROCESS and one that ignores the refusal gate is observed as a",
     "DEAD MANAGER AND BROKER, not inferred from a source string.",
-    "M1 (arm the intent) is the destructive regression this guard exists for. A bare arm is refused by",
-    "the shipped reservation gate, so the mutant writes the stop reservation itself before arming (and",
-    "carries its own dynamic import); the manager consumes a valid intent and reaps every managed seat.",
+    "M1 (arm the intent) is the destructive regression this guard exists for. The handler already holds",
+    "the manager's stop reservation, so the mutant arms against it (and carries its own dynamic import);",
+    "the manager consumes a valid intent and reaps every managed seat.",
     "The seat-survives cell is the named assertion.",
     "M2 (remove the spared report) restores the pre-fix silence: the stack still tears down and the seat",
     "still survives, but the operator is told nothing. Only the spared-report cell can notice.",
@@ -26,13 +26,13 @@
     {
       "name": "M1 the handler arms the destructive shutdown intent with its own reservation, so the manager reaps every managed seat on Ctrl-C",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "          try {\n            assertManagerCanSpare(managerContext, undefined, pin.record);\n          } catch (e) {",
-      "replace": "          try {\n            writeFileSync(`${localProcessPath(MANAGER_PIDFILE, managerContext)}.stopping`, String(process.pid));\n            const { armManagerShutdownIntent } = await import(\"@cotal-ai/workspace\");\n            armManagerShutdownIntent(managerContext, {\n              target: pin.record,\n              stopper: { pid: process.pid, marker: `${localProcessPath(MANAGER_PIDFILE, managerContext)}.stopping` },\n            });\n          } catch (e) {",
+      "find": "            reserveStop(\"manager\", stopMarker);\n            reserved = true;\n            assertManagerCanSpare(managerContext, undefined, pin.record);",
+      "replace": "            reserveStop(\"manager\", stopMarker);\n            reserved = true;\n            const { armManagerShutdownIntent } = await import(\"@cotal-ai/workspace\");\n            armManagerShutdownIntent(managerContext, { target: pin.record, stopper: { pid: process.pid, marker: stopMarker } });",
       "expectRed": "the seat SURVIVES the Ctrl-C teardown",
       "cell": "the seat SURVIVES the Ctrl-C teardown",
       "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "note": "The destructive shape #1307 guards against: the foreground handler publishing the one-shot with-agents intent before signalling the manager. A bare arm is refused by the shipped gate (it requires the stop reservation only cotal down's stopLocalProcess holds) and grades WRONG-RED on the refusal, so the mutant creates the reservation itself first, exactly as the destructive regression would have to; it carries its own dynamic import so the healthy tree needs no unused carrier. The manager's signal handler then consumes a valid v1 intent and mgr.stop({ withAgents: true }) reaps the seat, so the first cell that can notice is the seat-survives cell. Deterministic: the reservation write, the arm and the consume all succeed on every run."
+      "note": "The destructive shape #1307 guards against: the foreground handler publishing the one-shot with-agents intent before signalling the manager. The arm requires the stop reservation, which the handler takes before its capability check, so the mutant arms against that reservation exactly as the destructive regression would; it carries its own dynamic import so the healthy tree needs no unused carrier. The manager's signal handler then consumes a valid v1 intent and mgr.stop({ withAgents: true }) reaps the seat, so the first cell that can notice is the seat-survives cell. Deterministic: the reservation write, the arm and the consume all succeed on every run."
     },
     {
       "name": "M2 the handler stops reporting the seats it left behind",

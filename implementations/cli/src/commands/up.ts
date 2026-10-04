@@ -138,6 +138,7 @@ import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
 import { failManifest } from "./topology.js";
+import { reserveStop } from "./down.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { askManager, type ControlAuth } from "../lib/control.js";
@@ -1243,12 +1244,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       let spared: SpareSeatRow[] | undefined;
       let legacyManagerSpareUnverified = false;
       const managerPidPath = localProcessPath(MANAGER_PIDFILE, managerContext);
+      const stopMarker = `${managerPidPath}.stopping`;
+      let reserved = false;
       if (existsSync(managerPidPath)) {
         const pin = verifyIdentityPin(managerPidPath);
         if (pin.kind === "legacy") legacyManagerSpareUnverified = true;
         else if (pin.kind === "match") {
           spared = await listManagerSeatsForSpare(managerContext);
           try {
+            // Taken before the capability read and held until the manager is gone, as bare `down`
+            // holds it: delivery teardown below takes time, and a first agent spawn in that window
+            // must see this stop and be refused rather than start an agent the signal would end.
+            reserveStop("manager", stopMarker);
+            reserved = true;
             assertManagerCanSpare(managerContext, undefined, pin.record);
           } catch (e) {
             // THE CAPABILITY ASSERT IS THE SIGNAL GATE, the same rule bare `down` enforces inside
@@ -1257,6 +1265,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             // release the latch so the stack keeps running in the foreground; the operator ends it
             // with `cotal down --with-agents` from another terminal, and the broker-exit handler
             // below already ends `up` when the broker goes.
+            if (reserved) rmSync(stopMarker, { force: true });
             console.error(c.red(`! teardown: ${(e as Error).message}`));
             console.error(c.red(`the stack is still running; to take managed agents with it, run: cotal down --with-agents`));
             stopping = false;
@@ -1271,6 +1280,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         else if (spared) printSparedAgents(spared);
       } catch (e) {
         console.error(`! manager teardown: ${(e as Error).message}`);
+      } finally {
+        if (reserved) rmSync(stopMarker, { force: true });
       }
       await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
       child.kill("SIGTERM");
