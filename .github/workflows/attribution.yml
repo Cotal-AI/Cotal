@@ -156,3 +156,7 @@ jobs:
           git fetch --no-tags origin "$BASE" "$HEAD"
           echo "range $BASE..$HEAD"
           node scripts/check-attribution.mjs --range "$BASE..$HEAD" --event "$GITHUB_EVENT_PATH"
+      # Last, so a PR still waiting for its approval gets every other grade first. It lives in this
+      # job for the reason the upgrade-section step does: `attribution` is the only required check.
+      - name: Approval names the head
+        run: node scripts/review-verdict-gate.mjs --event "$GITHUB_EVENT_PATH"
