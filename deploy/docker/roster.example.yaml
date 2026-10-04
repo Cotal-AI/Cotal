@@ -5,6 +5,8 @@
 #   agent  - the connector type (claude / opencode); required, there is no default
 #   role   - optional; scopes the agent's task queue (otherwise read from the agent file)
 #   config - optional; explicit agent-file name-or-path (else .cotal/agents/<name>.md)
+#   share-tools - optional list of the operator's declared MCP servers to share, e.g. [tavily];
+#                 absent shares every declared server, [] shares none
 #
 # Persona + model come from the agent file (.cotal/agents/<name>.md), mounted read-only.
 # Auth is per connector type, supplied as env on the container (see compose.yaml):
