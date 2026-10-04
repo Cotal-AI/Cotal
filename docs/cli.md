@@ -2088,7 +2088,8 @@ resurrects deliberately-removed connectors.
 
 A source-checkout CLI (`pnpm cotal`, `tsx bin/cotal.ts`, `node bin/cotal.ts`, or a suite child of
 those) refuses to write or garbage-collect that store. The refusal names the path, the generation
-it declined, and `$XDG_CONFIG_HOME` as the isolation remedy. `COTAL_HOME` does not relocate this
+it declined, and `COTAL_SKIP_CONNECTOR_SEED=1` as the way to run other commands from a checkout,
+because pointing `$XDG_CONFIG_HOME` at a scratch dir alone does not lift it. `COTAL_HOME` does not relocate this
 store. An entry that cannot be proven as a released install is refused the same way. Isolated
 release tests that must seed from a checkout-shaped `bin/` set `COTAL_ALLOW_CHECKOUT_SEED=1` after
 pointing `$XDG_CONFIG_HOME` at a scratch dir; that override is documented here, not on the refusal

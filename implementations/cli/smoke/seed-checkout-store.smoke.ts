@@ -161,6 +161,13 @@ try {
       result.ok && !result.message.includes("COTAL_ALLOW_CHECKOUT_SEED"),
       result.message,
     );
+    // The sandboxed XDG_CONFIG_HOME above did not lift the refusal, so a remedy that names only
+    // that variable cannot be followed. COTAL_SKIP_CONNECTOR_SEED=1 is what lets a checkout run.
+    check(
+      "checkout: the refusal names COTAL_SKIP_CONNECTOR_SEED as the way to run a checkout",
+      result.ok && result.message.includes("COTAL_SKIP_CONNECTOR_SEED=1"),
+      result.message,
+    );
     check(
       "checkout: staging writes no payload under the sandboxed store",
       !existsSync(dest),

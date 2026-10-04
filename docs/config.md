@@ -303,8 +303,10 @@ not these). `COTAL_HOME` does not relocate them. A CLI running from a source che
 `tsx bin/cotal.ts`, `node bin/cotal.ts`, or a suite child of those, identified by a `bin/` package
 root next to `implementations/` or `pnpm-workspace.yaml`) refuses to write, stamp, or
 garbage-collect that store: the refusal names the store path, the generation it declined, and
-`$XDG_CONFIG_HOME` as the isolation remedy. An entry that cannot be proven as a released `cotal-ai`
-install is refused the same way. Isolate with `$XDG_CONFIG_HOME` (on Windows, `%APPDATA%`). A
+`COTAL_SKIP_CONNECTOR_SEED=1` as the way to run other commands from a checkout. An entry that
+cannot be proven as a released `cotal-ai` install is refused the same way. Isolating
+`$XDG_CONFIG_HOME` (on Windows, `%APPDATA%`) keeps a checkout off the installed config but does not
+lift the refusal by itself. A
 released install or an `npx` unpack still seeds as before. The in-tree seed smokes that must seed
 from a checkout-shaped `bin/` set `COTAL_ALLOW_CHECKOUT_SEED=1` against an isolated config; an
 opt-in write still records that checkout path in `seed/stamp.json` as `writtenBy`. The reconcile

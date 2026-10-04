@@ -69,10 +69,18 @@
     {
       "name": "the checkout refusal advertises COTAL_ALLOW_CHECKOUT_SEED as the way out",
       "file": "implementations/cli/src/seed/paths.ts",
-      "find": "    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Isolate with XDG_CONFIG_HOME. COTAL_HOME does not relocate this store.`,",
-      "replace": "    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Isolate with XDG_CONFIG_HOME. COTAL_HOME does not relocate this store. Set COTAL_ALLOW_CHECKOUT_SEED=1 to write deliberately.`,",
+      "find": "    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Run other commands from a checkout with COTAL_SKIP_CONNECTOR_SEED=1; isolating XDG_CONFIG_HOME alone does not lift this refusal. COTAL_HOME does not relocate this store.`,",
+      "replace": "    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Run other commands from a checkout with COTAL_SKIP_CONNECTOR_SEED=1; isolating XDG_CONFIG_HOME alone does not lift this refusal. COTAL_HOME does not relocate this store. Set COTAL_ALLOW_CHECKOUT_SEED=1 to write deliberately.`,",
       "expectRed": "✗ FAIL: checkout: the refusal does not advertise COTAL_ALLOW_CHECKOUT_SEED",
       "cell": "✗ FAIL: checkout: the refusal does not advertise COTAL_ALLOW_CHECKOUT_SEED"
+    },
+    {
+      "name": "the checkout refusal stops naming COTAL_SKIP_CONNECTOR_SEED",
+      "file": "implementations/cli/src/seed/paths.ts",
+      "find": "    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Run other commands from a checkout with COTAL_SKIP_CONNECTOR_SEED=1; isolating XDG_CONFIG_HOME alone does not lift this refusal. COTAL_HOME does not relocate this store.`,",
+      "replace": "    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Isolate with XDG_CONFIG_HOME. COTAL_HOME does not relocate this store.`,",
+      "expectRed": "✗ FAIL: checkout: the refusal names COTAL_SKIP_CONNECTOR_SEED as the way to run a checkout",
+      "cell": "✗ FAIL: checkout: the refusal names COTAL_SKIP_CONNECTOR_SEED as the way to run a checkout"
     }
   ]
 }
