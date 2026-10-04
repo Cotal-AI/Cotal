@@ -57,11 +57,20 @@ export interface SpawnConfig {
   env?: string[];
 }
 
+/** The models one role may launch on, declared under `modelPolicy.<role>`. Ids compare whole, so
+ *  `vendor/model-B-fast` is not `vendor/model-B`. When `variants` is set the variant must be one of
+ *  those too. */
+export interface RoleModelPolicy {
+  models: string[];
+  variants?: string[];
+}
+
 /** The parsed cotal config file: a section per connector, keyed by connector name ("claude", …),
- *  plus machine-local spawn policy. */
+ *  plus machine-local spawn policy and the per-role model allowlist. */
 export interface CotalConfig {
   connectors?: Record<string, ConnectorConfig>;
   spawn?: SpawnConfig;
+  modelPolicy?: Record<string, RoleModelPolicy>;
 }
 
 /** Operator-level config dir: `$XDG_CONFIG_HOME/cotal`; else `%APPDATA%\Cotal` on Windows (the
@@ -97,7 +106,29 @@ function readConfigFile(path: string): CotalConfig {
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     throw new Error(`cotal config ${path}: top level must be a JSON object`);
+  const policy = (parsed as { modelPolicy?: unknown }).modelPolicy;
+  if (policy !== undefined) checkModelPolicy(path, policy);
   return parsed as CotalConfig;
+}
+
+/** A model policy that cannot be read as written is refused, never skipped: skipping it would launch
+ *  every seat it was written to constrain. */
+function checkModelPolicy(path: string, policy: unknown): void {
+  const bad = (what: string) => new Error(`cotal config ${path}: ${what}`);
+  if (typeof policy !== "object" || policy === null || Array.isArray(policy))
+    throw bad("modelPolicy must be an object keyed by role");
+  for (const [role, entry] of Object.entries(policy)) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry))
+      throw bad(`modelPolicy.${role} must be an object with a models list`);
+    const extra = Object.keys(entry).find((key) => key !== "models" && key !== "variants");
+    if (extra) throw bad(`modelPolicy.${role} has unsupported field "${extra}" (expected models, variants)`);
+    for (const field of ["models", "variants"] as const) {
+      const list = (entry as Record<string, unknown>)[field];
+      if (list === undefined && field === "variants") continue;
+      if (!Array.isArray(list) || list.length === 0 || list.some((id) => typeof id !== "string" || id.trim() === ""))
+        throw bad(`modelPolicy.${role}.${field} must be a non-empty list of ${field === "models" ? "model" : "variant"} ids`);
+    }
+  }
 }
 
 /** Layer `over` onto `base`: per connector, a server in `over` replaces the same-named server in
@@ -116,7 +147,11 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
   // three plus whatever the operator-level file happened to list. Silently unioning two allow-lists
   // would widen the narrower one, which is the wrong direction for a containment setting.
   const spawn = over.spawn ?? base.spawn;
-  return spawn === undefined ? { connectors } : { connectors, spawn };
+  // `modelPolicy` merges per role: a space-local entry replaces the operator-level entry for that
+  // role, and a role named in only one file keeps its entry. Replacing the whole map instead would
+  // let a space-local file that constrains one role silently unconstrain every other.
+  const modelPolicy = base.modelPolicy || over.modelPolicy ? { ...base.modelPolicy, ...over.modelPolicy } : undefined;
+  return { connectors, ...(spawn === undefined ? {} : { spawn }), ...(modelPolicy === undefined ? {} : { modelPolicy }) };
 }
 
 /** Load the merged cotal config: the operator-level file as the base, the space-local file layered
@@ -165,4 +200,37 @@ export function parseShareSelection(value: string | undefined): readonly string[
 /** Extra spawned-agent environment names the operator declared. Undefined means no extras. */
 export function spawnEnvAllow(config: CotalConfig): readonly string[] | undefined {
   return config.spawn?.env;
+}
+
+/** One spawn's effective launch, as the model policy judges it. `persona` names the definition for
+ *  the refusal; `modelFlag` / `variantFlag` say the value came from `--model` / `--variant` rather
+ *  than the definition's own field. */
+export interface ModelPolicyLaunch {
+  persona: string;
+  role?: string;
+  model?: string;
+  variant?: string;
+  modelFlag: boolean;
+  variantFlag: boolean;
+}
+
+/** The operator-facing refusal for a launch whose role `modelPolicy` constrains and whose model or
+ *  variant is absent or not on the role's list, or undefined when it may launch. A role with no
+ *  entry, and a launch with no role, are unconstrained. An absent model is refused rather than
+ *  defaulted: the harness would pick one, and nothing would record which. */
+export function modelPolicyRefusal(config: CotalConfig, launch: ModelPolicyLaunch): string | undefined {
+  const role = launch.role;
+  if (role === undefined || !config.modelPolicy || !Object.hasOwn(config.modelPolicy, role)) return undefined;
+  const policy = config.modelPolicy[role];
+  const rule = `modelPolicy.${role} in the cotal config`;
+  const check = (field: "model" | "variant", value: string | undefined, allowed: readonly string[], flag: boolean) => {
+    const v = value?.trim() ? value : undefined;
+    if (v === undefined)
+      return `${launch.persona} has role "${role}" but resolves no ${field}, so the harness would choose one. ${rule} allows only: ${allowed.join(", ")}; declare one with \`${field}:\` or pass --${field}. The seat was not launched.`;
+    if (!allowed.includes(v))
+      return `${launch.persona} has role "${role}" and ${flag ? `the --${field} flag` : `its \`${field}:\` field`} names ${field} "${v}", which ${rule} does not allow (allowed: ${allowed.join(", ")}; ids must match whole). The seat was not launched.`;
+    return undefined;
+  };
+  return check("model", launch.model, policy.models, launch.modelFlag)
+    ?? (policy.variants ? check("variant", launch.variant, policy.variants, launch.variantFlag) : undefined);
 }
