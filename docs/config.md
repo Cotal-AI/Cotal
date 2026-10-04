@@ -21,9 +21,10 @@ They merge per connector and per server name: a server in the space-local file r
 same-named server in the operator-level file; connectors or servers present in only one side are
 kept. A missing file is empty (valid); malformed JSON or a non-object top level is a loud error.
 
-It carries two things: which of your personal MCP servers a connector should **share** with the
-agents it spawns, and optional `spawn.env` names that deliberately add environment capability to a
-spawned agent (see [Environment variables](#environment-variables) below).
+It carries three things: which of your personal MCP servers a connector should **share** with the
+agents it spawns, optional `spawn.env` names that deliberately add environment capability to a
+spawned agent (see [Environment variables](#environment-variables) below), and an optional
+`modelPolicy` that limits which models a role may launch on (see [Model policy](#model-policy)).
 
 The sharing half: By default a spawned agent gets none: the Claude connector launches with
 `--strict-mcp-config`, dropping every ambient MCP server (they are heavy and useless to a meshed
@@ -62,6 +63,46 @@ your own Claude / VS Code / Cursor config. Secrets ride as **`${VAR}` references
 Today only the `claude` connector consumes shared MCP servers; OpenCode inherits config through its
 own merge layer and Hermes has no MCP. See [Connect Claude Code](connect-claude.md) for the full
 sharing model.
+
+### Model policy
+
+`modelPolicy` names, per role, the models a seat in that role may launch on. Each key is a role.
+Its `models` list holds the allowed model ids, and an optional `variants` list holds the allowed
+variants.
+
+```json
+{
+  "modelPolicy": {
+    "reviewer": { "models": ["vendor/model-B"], "variants": ["high"] }
+  }
+}
+```
+
+`cotal spawn` and the manager behind `cotal spawn --detach` check it before anything is minted or
+launched. They judge the effective role (a `--role` override counts) and the effective model and
+variant (`--model` and `--variant` win over the persona's fields, as always). The spawn is refused
+when the role has an entry and:
+
+- no model resolves at all, since the harness would then pick one and nothing would record which;
+- the model is not in `models`. Ids compare whole, so `vendor/model-B-fast` does not match
+  `vendor/model-B`;
+- `variants` is set and the variant is absent or not in it;
+- the launch carries any launch option (`launchOptions:` in the persona or manifest, or `--opt`).
+  The connector applies launch options unread, after the model and variant, and one can select
+  another model (an OpenCode `model`, a Claude `--model`), so a role under the policy launches
+  without them.
+
+The refusal names the persona, whether the value came from its own field or from the flag, the
+value, and the allowed ids. Roles with no entry, and personas with no role, are not constrained.
+A seat launches on the model and variant that were checked, even if its persona file changes after
+the check.
+
+A space-local entry for a role replaces the operator-level entry for that role, and a role named in
+only one file keeps its entry. A policy that cannot be read as written (a `models` list that is
+empty or holds a non-string, or an unknown field) fails every spawn with an error naming the file.
+The policy is read at each spawn, so an edit applies to the next spawn without a restart. Seats that
+are already running are not re-checked, including a supervised restart or a preserved seat resumed
+after maintenance.
 
 ## Environment variables
 

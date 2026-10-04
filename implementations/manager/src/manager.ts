@@ -39,6 +39,7 @@ import {
   personaCatalogDescription,
   personaCatalogReadable,
   loadCotalConfig,
+  modelPolicyRefusal,
   mintCreds,
   mintGeneration,
   mintAcceptedToken,
@@ -5373,6 +5374,25 @@ export class Manager {
           `An operator adds \`capabilities: [spawn]\` to ${configPath}; a peer-defined persona ` +
           `(cotal_persona) cannot declare capabilities by design — ask an operator to grant it.`,
       };
+    // #581: the operator's per-role model allowlist, judged on the EFFECTIVE role and model resolved
+    // above, before any reserve or mint. This is where the launch is performed, so no caller can
+    // skip it, and a definition pinned to a stale model (or to none) is refused here instead of
+    // serving on it. Read per spawn, so a policy edit reaches the next spawn without a restart.
+    let policyRefusal: string | undefined;
+    try {
+      policyRefusal = modelPolicyRefusal(loadCotalConfig(this.workspaceRoot), {
+        persona: opts.resolved ? `manifest agent "${ref}"` : `persona "${ref}" (${configPath})`,
+        role, model, variant,
+        // A manifest launch carries its own declared model/variant in these options
+        // (launchAgentToStartOpts), so there they are the definition's field, never a flag.
+        modelFlag: !opts.resolved && opts.model !== undefined,
+        variantFlag: !opts.resolved && opts.variant !== undefined,
+        launchOptions,
+      });
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    if (policyRefusal) return { ok: false, error: policyRefusal };
     // The alias-reuse gate (#29 piece 3): a name whose previous agent is still retiring REFUSES
     // legibly (never a silent suffix), and the refusal re-drives the FULL durable teardown so
     // "retry the spawn" is also the nudge. It routes through `deprovision` (not `requestRetirement`

@@ -12,6 +12,7 @@ import {
   loadAgentFile,
   reclaimWithChild,
   loadCotalConfig,
+  modelPolicyRefusal,
   mintCreds,
   newIdentity,
   DEV_OWNER,
@@ -660,6 +661,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // --name / --role override the file (name defaults from the file's frontmatter).
   const requested = values.name ?? def.name;
   const role = values.role ?? def.role;
+  // Flags win over the file, resolved once: the model policy below judges these values and the
+  // connector launches on them. Left to the connector, the model is re-read from the persona at
+  // launch, after the check, so an edit in between would launch a model the policy never saw.
+  const model = values.model ?? def.model;
+  const variant = values.variant ?? def.variant;
+  // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
+  const launchOptions = mergeLaunchOptions(def.launchOptions, cliLaunchOptions);
   if (redeemedEnrollment && redeemedEnrollment.bundle.actor !== requested) {
     console.error(c.red(`✗ the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`));
     process.exit(1);
@@ -667,6 +675,24 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // #867: same door as the detached path — the effective identity (flag or file) must be mintable
   //  before any provision work; core's own refusal names the offender and the `_` remedy.
   refuseUnmintableNameOrExit(requested, target.mode === "user");
+  // #581: the same per-role model allowlist the manager enforces on a detached spawn, judged on the
+  // effective role, model (flag over file) and launch options before anything is provisioned or launched.
+  try {
+    const refusal = modelPolicyRefusal(loadCotalConfig(target.root), {
+      persona: `persona "${ref}" (${path})`,
+      role, model, variant,
+      modelFlag: values.model !== undefined,
+      variantFlag: values.variant !== undefined,
+      launchOptions,
+    });
+    if (refusal) {
+      console.error(c.red(`✗ ${refusal}`));
+      process.exit(1);
+    }
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
 
   // Preflight: fail with one sentence if the mesh is down or won't take our creds, instead of
   // crashing mid-connect with a raw NATS Authorization Violation.
@@ -710,7 +736,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`✗ ${(e as Error).message}`));
     process.exit(1);
   }
-  const variant = values.variant ?? def.variant;
   if (variant && !connector.supportsModelVariant) {
     console.error(c.red(`✗ ${agentType} connector does not support model variants (variant)`));
     process.exit(1);
@@ -941,11 +966,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       lifecycleUid,
       servers: server,
       configPath: path,
-      // Model override (wins over the agent file's `model:`) — launch-grammar parity with --detach.
-      model: values.model,
+      model,
       variant,
-      // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
-      launchOptions: mergeLaunchOptions(def.launchOptions, cliLaunchOptions),
+      launchOptions,
       subscribe,
       allowSubscribe,
       allowPublish,
