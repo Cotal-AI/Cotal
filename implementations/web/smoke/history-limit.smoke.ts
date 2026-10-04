@@ -40,7 +40,7 @@ import { join } from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { AGGREGATION_DEADLINE_MS } from "../src/web.js";
 
 let cells = 0, failed = 0;
@@ -97,7 +97,7 @@ const len = (a: Answer): number => {
   catch { return -1; }
 };
 
-const PORT = await freePort(), PROXY = await freePort(), FAST = await freePort(), SLOW = await freePort();
+const PORT = await freePort(), PROXY = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "historylimit";
 const CHANNELS = 6, PER = 60, BODY = "x".repeat(300);
@@ -123,25 +123,27 @@ try {
   await seed.stop();
 
   const runWeb = fileURLToPath(new URL("./run-web.mts", import.meta.url));
-  const bootWeb = async (port: number, broker: string): Promise<{ child: ReturnType<typeof spawn>; cookie: string }> => {
+  const bootWeb = (broker: string): Promise<{ child: ReturnType<typeof spawn>; cookie: string; port: number }> => onFreePort(async (port) => {
     const ch = spawn(process.execPath, ["--import", "tsx", runWeb, "--space", SPACE, "--server", broker,
       "--port", String(port), "--no-open"], { stdio: ["ignore", "pipe", "pipe"] });
     let log = "";
     ch.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
     ch.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
+    const taken = `Port ${port} is in use`;
     let launchUrl: string | undefined;
-    for (let i = 0; i < 200 && launchUrl === undefined; i++) {
+    for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
       launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
       await wait(250);
     }
+    if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
     const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
     const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
     if (exchange?.status !== 302 || session === undefined) throw new Error(`web launch failed: ${log.slice(-300)}`);
-    return { child: ch, cookie: `cotal_web_session=${session}` };
-  };
-  const fast = await bootWeb(FAST, SERVER);
+    return { child: ch, cookie: `cotal_web_session=${session}`, port };
+  });
+  const fast = await bootWeb(SERVER);
   fastWeb = fast.child;
-  const F = `http://127.0.0.1:${FAST}`;
+  const F = `http://127.0.0.1:${fast.port}`;
 
   // ── 1. ONE PARSE, AND ALL THREE ROUTES OBEY IT ───────────────────────────────────────────────
   console.log("1. the limit is parsed once, and a value that is not a whole number is refused");
@@ -199,9 +201,9 @@ try {
   // the refusal to be the correct ending. Slowing it further costs no wall clock: once the deadline
   // fires the arm returns at the deadline whatever the link does, so the margin is free.
   link = slowLink({ listen: PROXY, target: PORT, oneWayMs: 80, bytesPerSec: 6 * 1024 });
-  const slow = await bootWeb(SLOW, `nats://127.0.0.1:${PROXY}`);
+  const slow = await bootWeb(`nats://127.0.0.1:${PROXY}`);
   slowWeb = slow.child;
-  const S = `http://127.0.0.1:${SLOW}`;
+  const S = `http://127.0.0.1:${slow.port}`;
   const slowRead = await get(`${S}/api/channels/ch0/history?limit=${PER}`, CEILING_MS, slow.cookie);
   console.log(`   the slow arm answered ${slowRead?.status ?? "not at all"} in ${slowRead?.ms ?? CEILING_MS}ms`);
   ok("3.1 it ANSWERS on a link where it used to run past the deadline unbounded", slowRead !== null,

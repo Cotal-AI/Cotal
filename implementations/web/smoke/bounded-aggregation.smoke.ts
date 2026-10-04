@@ -34,7 +34,7 @@ import { join } from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams, type CotalMessage } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   activityBackfill, AGGREGATION_DEADLINE_MS, type ActivitySource,
 } from "../src/web.js";
@@ -380,7 +380,6 @@ try {
   // without timing or load: the shipped entry point still owns the HTTP response, while its endpoint
   // methods reject immediately with the exact bare reason that previously escaped as a 500.
   {
-    const WEB_PORT = await freePort();
     let log = "";
     // STRIP `COTAL_` BEFORE THE SPREAD. Whatever runs this suite may be a managed agent session, so
     // an unfiltered `...process.env` hands the child a live credential and a live broker URL — the
@@ -390,18 +389,22 @@ try {
     const childEnv: NodeJS.ProcessEnv = { ...process.env };
     for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
     childEnv.COTAL_WEB_SMOKE_REJECT_HISTORY = "1";
-    rejectingWebChild = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", SERVER, "--space", SPACE, "--port", String(WEB_PORT), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
-    rejectingWebChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-    rejectingWebChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-
     let launchUrl: string | undefined;
-    for (let i = 0; i < 200 && launchUrl === undefined; i++) {
-      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-      await wait(50);
-    }
+    const WEB_PORT = await onFreePort(async (port) => {
+      rejectingWebChild = spawn(process.execPath, [
+        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+        "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
+      ], { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
+      rejectingWebChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
+      rejectingWebChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
+      const taken = `Port ${port} is in use`;
+      for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
+        launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+        await wait(50);
+      }
+      if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
+      return port;
+    });
     const exchange = launchUrl === undefined
       ? undefined
       : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
@@ -425,29 +428,32 @@ try {
       hRes.status === 503 && /#team00: the read failed: timeout/.test(String(hBody?.error)),
       { status: hRes.status, body: hBody });
 
-    rejectingWebChild.kill("SIGKILL");
+    rejectingWebChild?.kill("SIGKILL");
     rejectingWebChild = undefined;
 
     // The outer route deadline is independent of any timeout inside one history window. A sparse
     // subject can complete many windows successfully while walking toward sequence 1, so this arm
     // gives dmHistory no ending at all and proves the HTTP route still owns a finite refusal.
-    const HANG_PORT = await freePort();
     let hangLog = "";
     const hangEnv: NodeJS.ProcessEnv = { ...process.env };
     for (const key of Object.keys(hangEnv)) if (key.startsWith("COTAL_")) delete hangEnv[key];
     hangEnv.COTAL_WEB_SMOKE_HANG_DMS = "1";
-    hangingWebChild = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", SERVER, "--space", SPACE, "--port", String(HANG_PORT), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"], env: hangEnv });
-    hangingWebChild.stdout?.on("data", (d: Buffer) => { hangLog += d.toString(); });
-    hangingWebChild.stderr?.on("data", (d: Buffer) => { hangLog += d.toString(); });
-
     let hangLaunch: string | undefined;
-    for (let i = 0; i < 200 && hangLaunch === undefined; i++) {
-      hangLaunch = hangLog.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-      await wait(50);
-    }
+    const HANG_PORT = await onFreePort(async (port) => {
+      hangingWebChild = spawn(process.execPath, [
+        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+        "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
+      ], { stdio: ["ignore", "pipe", "pipe"], env: hangEnv });
+      hangingWebChild.stdout?.on("data", (d: Buffer) => { hangLog += d.toString(); });
+      hangingWebChild.stderr?.on("data", (d: Buffer) => { hangLog += d.toString(); });
+      const taken = `Port ${port} is in use`;
+      for (let i = 0; i < 200 && hangLaunch === undefined && !hangLog.includes(taken); i++) {
+        hangLaunch = hangLog.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+        await wait(50);
+      }
+      if (hangLaunch === undefined && hangLog.includes(taken)) throw new PortInUseError(port, hangLog);
+      return port;
+    });
     const hangExchange = hangLaunch === undefined
       ? undefined
       : await fetch(hangLaunch, { redirect: "manual" }).catch(() => undefined);
@@ -472,7 +478,7 @@ try {
       /did not finish within 8000ms/.test(String(hangBody?.error)), hangBody);
     ok("5.6 the never-ending read is bounded in wall time, not only in prose",
       hangMs < AGGREGATION_DEADLINE_MS + 5000, hangMs);
-    hangingWebChild.kill("SIGKILL");
+    hangingWebChild?.kill("SIGKILL");
     hangingWebChild = undefined;
   }
 
@@ -490,25 +496,29 @@ try {
   // when a read does not finish, not the speed at which it stops finishing: on the link in the issue
   // the same route took 16.59s against a real backlog, which is a 200 nobody is still waiting for.
   {
-    const WEB_PORT = await freePort();
     const SLOWER = await freePort();
     link2 = slowLink({ listen: SLOWER, target: PORT, oneWayMs: ONE_WAY_MS, bytesPerSec: 48 * 1024 });
     await wait(200);
     let log = "";
-    webChild = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", `nats://127.0.0.1:${SLOWER}`, "--space", SPACE, "--port", String(WEB_PORT), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-    webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
 
     // Wait for the launch link, spend it ONCE, then carry the session it mints through every route
     // assertion. Re-presenting the single-use link would test its refusal instead of aggregation.
     let launchUrl: string | undefined;
-    for (let i = 0; i < 200 && launchUrl === undefined; i++) {
-      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-      await wait(250);
-    }
+    const WEB_PORT = await onFreePort(async (port) => {
+      webChild = spawn(process.execPath, [
+        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+        "--server", `nats://127.0.0.1:${SLOWER}`, "--space", SPACE, "--port", String(port), "--no-open",
+      ], { stdio: ["ignore", "pipe", "pipe"] });
+      webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
+      webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
+      const taken = `Port ${port} is in use`;
+      for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
+        launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+        await wait(250);
+      }
+      if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
+      return port;
+    });
     const exchange = launchUrl === undefined
       ? undefined
       : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);

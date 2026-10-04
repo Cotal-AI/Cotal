@@ -63,7 +63,7 @@ import { join } from "node:path";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { quoteForOperator } from "../src/web.js";
 
 let cells = 0, failed = 0;
@@ -341,20 +341,23 @@ try {
   if (!up) throw new Error("nats-server did not start");
   await setupSpaceStreams({ servers: SERVER, space: SPACE });
 
-  const WEB_PORT = await freePort();
   let log = "";
-  webChild = spawn(process.execPath, [
-    "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-    "--server", SERVER, "--space", SPACE, "--port", String(WEB_PORT), "--no-open",
-  ], { stdio: ["ignore", "pipe", "pipe"] });
-  webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-  webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-
   let launchUrl: string | undefined;
-  for (let i = 0; i < 200 && launchUrl === undefined; i++) {
-    launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-    await wait(250);
-  }
+  const WEB_PORT = await onFreePort(async (port) => {
+    webChild = spawn(process.execPath, [
+      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+      "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
+    webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
+    const taken = `Port ${port} is in use`;
+    for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
+      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+      await wait(250);
+    }
+    if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
+    return port;
+  });
   const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
   const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
   const authed = { cookie: `cotal_web_session=${session}` };

@@ -29,7 +29,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
 import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, UNAUTHENTICATED, makeAuthGate, openDetachedLog, webProcess } from "../src/web.js";
@@ -754,7 +754,6 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
 // satisfy the cell.
 {
   const brokerPort = await freePort();
-  const webPort = await freePort();
   const server = `nats://127.0.0.1:${brokerPort}`;
   const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
   const broker = spawn("nats-server", ["-p", String(brokerPort), "-js", "-sd", store, "-a", "127.0.0.1"], { stdio: "ignore" });
@@ -770,19 +769,23 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     await setupSpaceStreams({ servers: server, space: "consoleauthlog" });
 
     let output = "";
-    child = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", server, "--space", "consoleauthlog", "--port", String(webPort), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
-    child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
-
     let token = "";
-    for (let i = 0; i < 200; i++) {
-      token = output.match(/\?k=([A-Za-z0-9_-]{32,})/)?.[1] ?? "";
-      if (token) break;
-      await wait(50);
-    }
+    const webPort = await onFreePort(async (port) => {
+      child = spawn(process.execPath, [
+        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+        "--server", server, "--space", "consoleauthlog", "--port", String(port), "--no-open",
+      ], { stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
+      child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
+      const taken = `Port ${port} is in use`;
+      for (let i = 0; i < 200 && !output.includes(taken); i++) {
+        token = output.match(/\?k=([A-Za-z0-9_-]{32,})/)?.[1] ?? "";
+        if (token) break;
+        await wait(50);
+      }
+      if (!token && output.includes(taken)) throw new PortInUseError(port, output);
+      return port;
+    });
     check("LOG-LEAK FIXTURE: the real process printed a real launch token", token.length >= 32, output.slice(-300));
 
     const exchanged = await fetch(`http://127.0.0.1:${webPort}/?k=${token}`, { redirect: "manual" });
@@ -848,7 +851,6 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
   rmSync(dir, { recursive: true, force: true });
 
   const brokerPort = await freePort();
-  const webPort = await freePort();
   const server = `nats://127.0.0.1:${brokerPort}`;
   const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
   const broker = spawn("nats-server", ["-p", String(brokerPort), "-js", "-sd", store, "-a", "127.0.0.1"], { stdio: "ignore" });
@@ -865,18 +867,22 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     let output = "";
     const childEnv = { ...process.env };
     for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
-    child = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", server, "--space", "consoleauthdetached", "--port", String(webPort), "--no-open",
-    ], { env: { ...childEnv, COTAL_WEB_DETACHED_LOG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
-    child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
     let served = false;
-    for (let i = 0; i < 200; i++) {
-      const response = await fetch(`http://127.0.0.1:${webPort}/api/meta`).catch(() => undefined);
-      if (response?.status === 401) { served = true; break; }
-      await wait(50);
-    }
+    await onFreePort(async (port) => {
+      child = spawn(process.execPath, [
+        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+        "--server", server, "--space", "consoleauthdetached", "--port", String(port), "--no-open",
+      ], { env: { ...childEnv, COTAL_WEB_DETACHED_LOG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
+      child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
+      const taken = `Port ${port} is in use`;
+      for (let i = 0; i < 200 && !output.includes(taken); i++) {
+        const response = await fetch(`http://127.0.0.1:${port}/api/meta`).catch(() => undefined);
+        if (response?.status === 401) { served = true; break; }
+        await wait(50);
+      }
+      if (!served && output.includes(taken)) throw new PortInUseError(port, output);
+    });
     await wait(100);
     check("the real detached child writes startup diagnostics but no live launch URL to its persisted stream",
       served && output.includes("Cotal web") && !/\?k=[A-Za-z0-9_-]{32,}/.test(output), output);
