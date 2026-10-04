@@ -1,10 +1,18 @@
 {
   "name": "cotal-skills",
-  "version": "0.1.0",
+  "version": "0.58.0",
   "description": "Cotal-authored Claude Code skills for coordinating agent teams on the mesh.",
-  "author": { "name": "Cotal", "url": "https://cotal.ai" },
+  "author": {
+    "name": "Cotal",
+    "url": "https://cotal.ai"
+  },
   "homepage": "https://cotal.ai",
   "repository": "https://github.com/Cotal-AI/Cotal",
   "license": "Apache-2.0",
-  "keywords": ["cotal", "multi-agent", "skills", "team-topology"]
+  "keywords": [
+    "cotal",
+    "multi-agent",
+    "skills",
+    "team-topology"
+  ]
 }
