@@ -109,7 +109,8 @@ How it crosses:
   through the provider's own file or secret channel, and passes only its path in
   `COTAL_MANAGED_HANDOFF_FILE`. It does not put the token in argv, in the environment, in provider
   options, in logs or in any record it keeps.
-- The child reads the file once and unlinks it before it does anything else, refused or not.
+- The child's `cotal` entry reads the file once and unlinks it before it does anything else,
+  refused or not, including before it parses its flags or prints help.
 - There is no second enrollment. The child never calls `enrollManagedAgent`, the agent-provisioning
   endpoint or a redeem URL, and never mints a token or a UID. It presents the host's `lifecycleUid`.
 
@@ -168,8 +169,8 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
 /** Take the handoff file into memory and remove it: open the path without following a link,
  *  unlink it, then read it. Refuses a missing path, a non-regular file, a mode other than 0600 on
  *  POSIX, or an empty file, after unlinking whatever is not a directory. A refusal names the
- *  check, never the contents. The caller runs it before any other check, so no refusal can leave
- *  the file behind. */
+ *  check, never the contents. Its one caller is the CLI's custody, which runs before anything else
+ *  the CLI does, so no outcome can leave the file behind. */
 export function takeManagedHandoffFile(path: string): string;
 
 /** The provider key a delegated seat's runtime resource is created under. A pure function of the
@@ -250,31 +251,63 @@ or `--no-events` appended when set, and `env` equal to `{ COTAL_MANAGED_HANDOFF_
 It never emits `--cwd`, `--resume`, `--share-tools` or an access-list flag: the child's working
 directory is the provider resource's own, and its channel lists come from the handoff.
 
-### `@cotal-ai/cli`, the child bootstrap in `cotal spawn`
+### `@cotal-ai/cli`, custody at the CLI entry and the child bootstrap in `cotal spawn`
+
+Custody of the handoff starts at the CLI's entry, before anything that can exit. `runCli`
+(`implementations/cli/src/command.ts:156`) prints the version (`:161`), seeds extensions (`:177`),
+prints help (`:195`, `:209`), materializes an extension command (`:216`), parses flags strictly
+(`:223`, refused at `:236`) and prepares the mesh target (`:227`) before it calls the handler
+(`:229`), and each of those can end the process. So the handler cannot be where the file is taken.
+
+```ts
+// implementations/cli/src/managed-handoff.ts (new; not re-exported from the package index)
+
+/** The first statement of `runCli`. When `MANAGED_HANDOFF_FILE_ENV` is set under any letter case,
+ *  delete every such key from `env`, then run `takeManagedHandoffFile` on the named path and hold
+ *  the text in this module. A refusal prints one line naming the check and exits 1; the file is
+ *  already unlinked by then. With the variable absent it does nothing. */
+export function takeManagedHandoffCustody(env: Record<string, string | undefined>): void;
+
+/** The text custody holds, handed over once. A later call returns undefined. Only the spawn
+ *  handler calls it. */
+export function claimManagedHandoff(): string | undefined;
+```
+
+```ts
+// implementations/cli/src/command.ts
+export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
+  takeManagedHandoffCustody(process.env);
+  // ...the existing body, unchanged, starting with the `--version` short-circuit...
+}
+```
 
 ```ts
 // implementations/cli/src/commands/spawn.ts
-const MANAGED_HANDOFF_FILE_ENV: typeof import("@cotal-ai/core").MANAGED_HANDOFF_FILE_ENV;
-
-/** The handoff file path, or undefined. Never throws, so the caller holds the path before any
- *  refusal. */
-export function managedHandoffInput(env: Record<string, string | undefined>): string | undefined;
 
 /** Map a parsed handoff onto the redeem consumer's shapes. Pure. */
 export function handoffEnrollmentBundle(h: ManagedLifecycleHandoff): { bundle: EnrollmentBundle; stock: UserBundle };
 ```
 
+So the file and the variable are gone before the version print, extension seeding, the manifest
+overlay, help, command lookup, extension materialization, strict flag parsing, target preparation
+and the handler. Every outcome of `cotal`, refused or not, leaves no file, and no extension, seed or
+harness child inherits the variable. A run that holds a handoff and never reaches the spawn handler
+(help, a flag error, another command) ends as it does today and drops the text unused at exit.
+
+Before `runCli`, the published entry runs only its Node-version check (`bin/cotal.ts:18-43`) and
+the composition root's self-registering imports (`bin/run.ts`). Neither reads the variable or starts a process. When the check refuses an
+older Node, it first unlinks the path the variable names, using `node:fs` by dynamic import and
+without reading it, then exits 1 as today. An unlink failure other than a missing file is printed
+with the refusal.
+
 Two flags join `spawnFlags`: `--expect-owner <u_…>` and `--expect-lifecycle-uid <uid>`. Both are
-required with `COTAL_MANAGED_HANDOFF_FILE` and refused without it.
+required when custody holds a handoff and refused when it holds none.
 
 The handoff path through `spawn(args)`:
 
-1. Take custody, first. `managedHandoffInput` runs before `enrollmentInput` and before any flag
-   check. When it returns a path, `takeManagedHandoffFile(path)` runs at once and the text stays in
-   memory only. `scrubEnrollmentEnv` also removes `COTAL_MANAGED_HANDOFF_FILE`, case-insensitively,
-   before any extension, preflight or harness child starts. From here no refusal can leave the
-   file behind, because it is already gone. This ordering matters because the refusals below exit
-   the process directly, and an exit skips any `finally`.
+1. Claim the text, first. `claimManagedHandoff()` runs before `enrollmentInput` and before any flag
+   check, and the text stays in memory only. The file and the variable are already gone, so no
+   refusal below can leave either behind. `scrubEnrollmentEnv` is unchanged.
 2. Refuse the conflicts and the shapes the redeem input refuses: `COTAL_ENROLLMENT_URL` or
    `COTAL_ENROLLMENT_FILE` also set, `--detach`, `-f`, `--creds`, a missing `--space`,
    `--expect-owner` or `--expect-lifecycle-uid`, and a missing or unloadable `--config` file.
@@ -423,6 +456,8 @@ the child and hands it the material; a later change may join the two.
   `docs/embedding.md:370-372`, as above.
 - A manager-served redeem URL. It adds a listener for one read.
 - Passing material through `LaunchSpec.env` or argv. Both are inherited or visible.
+- Custody inside the spawn handler. `runCli` parses flags strictly, prints help and seeds
+  extensions before it calls a handler, and each can exit with the file still on disk.
 - A general delegation framework (sealed relays, attested keys, a delegation token). Larger than the
   one consumer this issue needs.
 
@@ -451,6 +486,7 @@ root, `COTAL_HOME` and tmpdir are absent; a real connector with a pinned model.
 | A11 | start the child by hand with a valid handoff file and, in turn, `--detach`, `COTAL_ENROLLMENT_FILE` also set, no `--expect-owner`, and a `--config` that does not load | each exits non-zero naming the problem and no file content; the handoff file is gone every time |
 | A12 | on the manager, `cotal spawn <persona> --detach` with, in turn, `--resume <id>`, `--cwd <dir>`, `--share-tools <server>`, and no flag while the config shares a server with that connector | each refused naming the choice; the host shows no enrollment and the provider no create; `--share-tools none` spawns |
 | A13 | hold the provider's create behind a proxy that drops its answer and delays it, read status while the provider still reports no resource for the key, then release the create and run `cotal stop <name>` | `cotal ps` keeps the seat held and not exited throughout; the stop's close does not complete until the create has landed or the key is fenced; afterwards no resource exists under the key and the alias is free |
+| A14 | start the child's command by hand with a valid handoff file and, in turn, `--space` given twice, `--space` with no value, `--help`, `cotal --version`, an unknown command, and a Node older than 22 | each ends as the same command does without a handoff; the handoff file is gone every time |
 
 ## Evidence behind this record
 
