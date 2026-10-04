@@ -34,8 +34,8 @@ waitUntil, notify, monitor and conclave, and none of them changes that recovery 
 
 A new scope primitive, `once`, under which every step is dispatched at most once per step key: a
 resume that finds such a step begun and unsettled does not dispatch it again; it reports the outcome
-as unknown by opening a **hold**, an ordinary checkpoint minted under the step's recorded request id,
-which a human or the far side settles with the step's result.
+as unknown by opening a **hold**, an ordinary checkpoint minted under a token derived from the step's
+recorded request id, which a human or the far side settles with the step's result.
 
 Nothing becomes exactly-once. The trade is liveness for the bound: a crash inside the window now
 costs a settle, not a second write. A host restart while a wrapped step is in flight costs the same
@@ -88,7 +88,7 @@ once: {
   hashesSubject: false,
   opensScope: true,
   signature: "once(fn, { name }) -> value",
-  doc: "Run fn so that each step inside it is dispatched at most once. A resume that finds a step begun and never settled does not dispatch it again: it opens a hold, a checkpoint under the step's recorded request id, and the settler's value becomes the step's result.",
+  doc: "Run fn so that each step inside it is dispatched at most once. A resume that finds a step begun and never settled does not dispatch it again: it opens a hold, a checkpoint under a token derived from the step's recorded request id, and the settler's answer becomes the step's result.",
   example: 'const r = await once(async () => await ask(publisher, { name: "publish", schema: { commentId: "number" } }), { name: "publish-360" })',
 },
 ```
@@ -146,9 +146,10 @@ On a `pending` verdict under `once`, after the existing cancellation check and h
    - `req = { prompt }`, where `prompt` is fixed text naming the step key and the recorded request
      id, and saying the outcome is unknown and the answer becomes the step's result. No `schema`,
      `timeout`, `onExpiry` or `to`: the host's default checkpoint timeout applies.
-   - `ctx.key` = the held step's key, `ctx.requestId` = the entry's **recorded** `requestId`,
-     `ctx.attempt` = the entry's recorded `attempt` (0 when absent). An entry written before
-     request ids were recorded falls back to the re-derived id, as recovery does today.
+   - `ctx.key` = the held step's key, `ctx.requestId` = the **hold id**,
+     `holdRequestId(recorded)`, and `ctx.attempt` = 0. `recorded` is the entry's recorded
+     `requestId`; an entry written before request ids were recorded uses the re-derived id, as
+     recovery does today.
    - `ctx.resume` = the hold's own earlier binding (`entry.hold`, §5), absent on the first hold.
    - `ctx.bind(x)` writes `x` to `entry.hold`, never to `entry.external`.
 3. On `{ outcome: "resolved", value }` the held entry settles `ok` with `result = value ?? null`,
@@ -160,14 +161,34 @@ On a `pending` verdict under `once`, after the existing cancellation check and h
    `{ code: "L4027", kind: "outcome-unknown", message }`, a new catchable code (an at-most-once
    step's outcome was never settled). A program may catch it; a resume replays the failure and
    dispatches nothing.
+5. A held **`checkpoint`** is the one exception to 3 and 4. A checkpoint's recorded result is its
+   raw outcome, and its policy is applied after the journal (`applyCheckpointPolicy`, called by the
+   `checkpoint` arm of `dispatchPrimitive`). So a held checkpoint settles `ok` with the hold's raw
+   outcome as `handler.checkpoint` returned it, resolved or expired, and the program's own
+   `onExpiry` decides an expired hold as it decides an expired checkpoint, live and on
+   replay. It never fails with L4027, and `escalate` performs no hop: the hold is the step's last
+   attempt.
 
 A crash while the hold is open leaves the entry `pending` with `hold` set. The next resume takes the
-same path and the handler re-attaches through `ctx.resume`, as it re-attaches to any checkpoint
-today.
+same path, re-derives the same hold id, and the handler re-attaches through `ctx.resume`, as it
+re-attaches to any checkpoint today.
 
-Why the recorded id: it is the identity the far side saw, if it saw anything. A far side that
-records it (a marker in the comment body, a header it logs) can settle the hold itself, by key, with
-no human; a human answering by hand reads it off `cotal run journal`.
+**`holdRequestId(requestId)`** is a new export of `packages/lang/src/keys.ts`, beside `requestId`:
+the sha256 of `canonicalize([requestId, "hold"])` in base64url, 43 characters in the endpoint id
+alphabet. It is the only definition: the runtime imports it and never re-derives the token itself.
+
+Why a derived id and not the recorded one: every pause kind already armed a one-use pause under the
+recorded id (`checkpoint`, `sleep`, `turn`, `wait`, and an `ask`'s first attempt), and that pause
+may already be settled. Minting the hold there would re-attach to that settle: an `ask` with
+`attempts: 2` whose first answer was refused would read the refused answer back as the hold's, and
+a pause that already expired would expire the hold at once. The derived id is fresh for every kind,
+and because it is a pure function of the recorded id a resume finds the same hold without anything
+recorded before the mint.
+
+The recorded id stays the identity of the write. It is on the entry, the hold's prompt names it,
+and `cotal run journal` prints it, so a far side that recorded it (a marker in the comment body, a
+header it logs) can settle the hold itself by step key with no human, and a human answering by hand
+reads it from the same places.
 
 ### 4.4 What does not change
 
@@ -182,8 +203,8 @@ no human; a human answering by hand reads it off `cotal run journal`.
 
 Placing a `sleep`, `wait` or `turn` inside `once` is legal and holds like anything else, which is
 almost never wanted. The guide says to wrap only the step whose handler writes to a far side. A
-`checkpoint` inside `once` holds under its own recorded id, which is the token its first attempt
-armed, so in the hosted runtime the hold re-attaches to that pause.
+pause that a held step's first dispatch armed is left as it is: nothing waits on it once the hold
+opens, and an answer addressed to the step lands on the hold (§6.1).
 
 ## 5. The step journal
 
@@ -208,6 +229,8 @@ Added:
 - The seed check (`Journal` constructor) refuses an entry whose `hold` is not crossable (L5024),
   as it does for `external`; `RecordedField` gains `hold`.
 - An entry with `hold` set is a held step. `state` and `status` keep their vocabulary.
+- The hold id is not recorded. Both the interpreter and the runtime compute it from the entry's
+  `requestId` with `holdRequestId`, which is what makes the hosted authority below journal-derived.
 
 On the wire (SPEC.md §14.4) the step record carries the entry verbatim, so the envelope does not
 change.
@@ -215,7 +238,8 @@ change.
 ## 6. The interpreter, the engines, the simulator, the dry run
 
 - **`packages/lang/src/primitives.ts`**: the table entry above. `RESERVED_NAMES` picks it up.
-- **`packages/lang/src/keys.ts`**: `ScopeKind` adds `once`.
+- **`packages/lang/src/keys.ts`**: `ScopeKind` adds `once`; `holdRequestId` (§4.3), exported from
+  the package index.
 - **`packages/lang/src/grammar.ts`**: the validator reads the table, so the name, literal and
   closed-bag checks come from it. The captured-write check (L2032) skips `once` as it skips
   `conclave`. At run time a first argument that is not a function is refused before the scope entry
@@ -226,8 +250,11 @@ change.
     frame, the clock joined, `{ branches: ["in"], value }` returned. It shares `conclave`'s body
     handling minus the open and the close.
   - `performEffect`: the `pending` case under a `once` frame calls the new `performHold` instead of
-    `perform`. `performHold` does §4.3 and nothing else. The "inside once" test is one predicate over
-    `key.scope`, so neither engine carries a flag of its own.
+    `perform`. `performHold` does §4.3 and nothing else; the `kind` it already has selects the
+    checkpoint rule (§4.3, 5), so `dispatchPrimitive`'s `checkpoint` arm and its
+    `applyCheckpointPolicy` call are untouched. The "inside once" test is one exported predicate
+    over `key.scope`, `atMostOnce(key)`, which the runtime's authority also calls, so neither
+    engine carries a flag of its own.
 - **`packages/lang/src/interpret.ts`** (walker, version 1): the depth rule treats `once` as it
   treats `conclave`. Everything else arrives through `perform.ts`.
 - **`packages/lang/src/engine/ctx.ts`** (compiled engine, version 2): admits `once` where it admits
@@ -247,16 +274,40 @@ change.
 
 ### 6.1 The hosted runtime (`@cotal-ai/runtime`)
 
-- `MeshHandler.checkpoint` needs no change: it mints under `ctx.requestId` and binds through
-  `ctx.bind`, which the hold routes to `entry.hold`.
-- `openCheckpointToken` in `implementations/runtime/src/resolve-checkpoint.ts` accepts an entry with
-  `hold` set whatever its kind, and returns the entry's `requestId`, never an `askToken`, so
-  `cotal run answer <run> <step-key> --value <json>` settles a held step.
-- `cotal run journal` prints a held step's question from `hold.asks` when `hold` is set.
-- Authority does not change. Answering a hold goes through `resolveCheckpoint` and the run's own
-  ACL, the path every checkpoint and `ask` answer takes, so whoever may answer a pause of the run may
-  settle a hold, and nobody else. The request id in the prompt is the identity already on the pending
-  entry and in `cotal run journal`; it is not a credential.
+A hold reaches the hosted handler as a `checkpoint` call whose `ctx.requestId` is the hold id. Every
+check below derives the hold from the run's journal: the entry at `ctx.key` is pending, its key is
+`atMostOnce`, and the hold id is `holdRequestId(entry.requestId)`. The pause checks also require
+`hold` to be set, which the hold's bind does before its mint. Nothing is taken from the caller's
+word, and the run's existing ownership, lease and cleanup checks apply unchanged.
+
+- **`MeshHandler.checkpoint`** does not change. It mints under `ctx.requestId`, which is the hold
+  id, and binds through `ctx.bind`, which the hold routes to `entry.hold`.
+- **`RunScopeAuthority.effect`** (`run-scope-authority.ts`) also accepts the hold: kind
+  `checkpoint`, a pending entry of any kind at `ctx.key` that is `atMostOnce`, not owed to a
+  cleanup, `ctx.requestId === holdRequestId(entry.requestId)` and `ctx.attempt === 0`. Today it
+  requires the entry's own kind, id and attempt, so a hold on an `ask`, `notify` or `spawn` is
+  refused before it opens.
+- **`createRunEffectHost`'s `dispatch`** (`run-effect-host.ts`) resumes a hold from `entry.hold`
+  and verifies a hold's bind against `entry.hold`; today it resumes and verifies every call against
+  `entry.external`. It knows a hold by the same id comparison.
+- **`pauseTokens`** (`run-scope-authority.ts`), which authorizes every pause operation and feeds
+  `rearmTokens`: an entry with `hold` set also owns `holdRequestId(entry.requestId)`, whatever its
+  kind, beside the tokens its kind owns today. The `wait` rule that a mint or heartbeat names a
+  recorded wait timer applies to the wait's own tokens, not to its hold id.
+- **`outstandingPauseTokens`** (`mesh-handler.ts`), the adoption re-arm: adds the hold id of every
+  pending entry with `hold` set.
+- **`MeshHandler.discharge`**: a cancelled loser with `hold` set has its hold id's timer cancelled,
+  before the per-kind release it gets today (which still despawns a held `spawn`'s seat and
+  withdraws a held `notify`'s notices).
+- **`openCheckpointToken`** (`resolve-checkpoint.ts`): an entry with `hold` set answers with its
+  hold id whatever its kind, checked before the kind test, so `cotal run answer <run> <step-key>
+  --value <json>` settles a held step and never reaches the pause its first dispatch armed.
+- **`cotal run journal`** (`journalStepRow` in `run-host.ts`) reads `asks`, `deadlineAt` and
+  `onExpiry` from `hold` when it is set, so it prints the hold's question.
+- Who may answer does not change. Answering a hold goes through `resolveCheckpoint` and the run's
+  own ACL, the path every checkpoint and `ask` answer takes, so whoever may answer a pause of the
+  run may settle a hold, and nobody else. The request id in the prompt is the identity already on
+  the pending entry and in `cotal run journal`; it is not a credential.
 
 ## 7. Normative text, insertion-only
 
@@ -279,14 +330,16 @@ Each block below is inserted verbatim; no existing sentence is edited or removed
 > `once(fn, { name })` runs `fn` as the single branch `in` and settles with its value. Every step
 > whose scope path contains a `once` frame is **at-most-once**: an implementation MUST NOT dispatch
 > it twice. A resume that finds such a step `pending` MUST NOT call its handler method; it opens a
-> **hold** instead, a checkpoint whose request carries only a prompt, dispatched under the entry's
-> recorded request id and attempt, whose binding is written to the entry's `hold` field and never to
-> `external`. A resolved hold settles the step `ok` with the answered value (`null` when none). An
-> expired hold settles it `failed` with L4027, kind `outcome-unknown`, which a program may catch and
-> a resume replays. A `miss` and a `refused` verdict dispatch as they do anywhere, because a step
-> with no `pending` entry was never started. Like `conclave`, `once` has one branch and does not
-> raise the depth. `once` bounds the number of dispatches; it does not make a far side's write
-> exactly-once.
+> **hold** instead, a checkpoint whose request carries only a prompt, dispatched at attempt 0 under
+> the **hold id**, the sha256 of the canonical form of `[<recorded request id>, "hold"]` in
+> base64url, whose binding is written to the entry's `hold` field and never to `external`. A
+> resolved hold settles the step `ok` with the answered value (`null` when none). An expired hold
+> settles it `failed` with L4027, kind `outcome-unknown`, which a program may catch and a resume
+> replays. A held `checkpoint` instead settles `ok` with the hold's raw outcome, resolved or
+> expired, so its own `onExpiry` applies. A `miss` and a `refused` verdict dispatch as they do
+> anywhere, because a step with no `pending` entry was never started. Like `conclave`, `once` has
+> one branch and does not raise the depth. `once` bounds the number of dispatches; it does not make
+> a far side's write exactly-once.
 >
 > ```js
 > const publisher = await spawn("publisher")
@@ -300,8 +353,9 @@ Each block below is inserted verbatim; no existing sentence is edited or removed
 opened for an at-most-once step (§7.8); it answers to the crossing rule like `external`, and a resume
 refuses a loaded `hold` that fails it (L5024).
 
-**§10.4**, at the end: a hold (§7.8) is dispatched under the recorded id and attempt of the step it
-holds; it is never re-derived and never advances the attempt.
+**§10.4**, at the end: a hold (§7.8) is dispatched under the hold id derived from the recorded id of
+the step it holds, never under that id itself, because the step may already have armed and settled
+a pause there; the step's own id and attempt do not change.
 
 **§10.7**, after the verdict list: under a `once` frame (§7.8) the **pending** verdict opens a hold
 instead of re-binding.
@@ -314,13 +368,15 @@ instead of re-binding.
 
 > A workflow step inside a `once` scope (`spec/cotal-lang.md` §7.8) is dispatched at most once per
 > step key whatever the far side honors: a resume that finds it begun and unsettled opens a hold
-> under its recorded request id instead of dispatching it again, trading the run's liveness for the
-> bound.
+> under a token derived from its recorded request id instead of dispatching it again, trading the
+> run's liveness for the bound.
 
 **SPEC.md §14.5**, after the `answer` bullet:
 
 > A held `once` step (`spec/cotal-lang.md` §7.8) is answered like a checkpoint, addressed by its step
-> key; the driver presents the step's recorded request id as the token, whatever kind the step is.
+> key; the driver presents the hold id (`spec/cotal-lang.md` §7.8) as the token, whatever kind the
+> step is, and the run's pause authority covers that id only while the step is pending with its
+> hold bound.
 
 Guide pages updated in the same change: `docs/workflows.md` (when to wrap a step in `once`, and
 answering a held step with `cotal run answer`) and `packages/lang/README.md` (one line beside
@@ -352,9 +408,9 @@ Run each case under language version 1 (`run`) and version 2 (`runInWorker`).
    activation exits after the write. Resume with
    `checkpoints: { publish: { status: "resolved", value: { commentId: 1000 } } }`. Expected:
    `ask` called 0 times on resume, `checkpoint` called once with `ctx.key` =
-   `/once:publish-360#0/b:in/ask:publish#0` and `ctx.requestId` equal to the id on the pending entry,
-   one line in `external.jsonl`, the step settled `ok` with `{ commentId: 1000 }`, the run completes.
-   A second resume dispatches nothing.
+   `/once:publish-360#0/b:in/ask:publish#0`, `ctx.requestId` equal to `holdRequestId` of the id on
+   the pending entry and `ctx.attempt` 0, one line in `external.jsonl`, the step settled `ok` with
+   `{ commentId: 1000 }`, the run completes. A second resume dispatches nothing.
 2. **The hold expires.** Same crash, resume scripted `{ status: "expired" }`. Expected: the step
    settles `failed` L4027, a program that catches it continues, one line in `external.jsonl`, and a
    further resume replays the failure with no dispatch.
@@ -368,6 +424,13 @@ Run each case under language version 1 (`run`) and version 2 (`runInWorker`).
    resume calls `ask` again under the same `ctx.requestId`, two lines in `external.jsonl`, as
    §10.7 specifies today. Plus `pnpm smoke:lang-surface` and the lang package's existing smoke suites
    green with no edits to them.
+7. **A held checkpoint keeps its own contract.** The program
+   `const c = await once(async () => await checkpoint("approve", "post it?", { onExpiry: "proceed" }), { name: "approve-360" })`,
+   with a `checkpoint` that appends to `external.jsonl` and exits on the first activation. Resume
+   scripted `{ status: "resolved", value: { approved: true } }`: `c.status` is `resolved` and
+   `c.value` is `{ approved: true }`. Resume scripted `{ status: "expired" }`: `c.status` is
+   `expired`, and the same program with no `onExpiry` throws L4007. A further resume replays each
+   result with no dispatch.
 
 ### 8.2 One hosted run
 
@@ -380,8 +443,14 @@ On a local mesh with a manager:
 4. Expected: `cotal run journal <run>` shows `/once:publish-360#0/b:in/ask:publish#0` open with the
    hold's question naming the recorded request id; the seat receives no second `publish` turn; the
    file still has one line.
-5. `cotal run answer <run> "/once:publish-360#0/b:in/ask:publish#0" --value '{"commentId":1000}'`.
-   Expected: the step settles with that value and the run completes.
+5. Kill and restart the manager again while the hold is open. Expected: the hold's timer is
+   re-armed under the hold id, and `cotal run journal` still shows the same question.
+6. `cotal run answer <run> "/once:publish-360#0/b:in/ask:publish#0" --value '{"commentId":1000}'`.
+   Expected: the answer is presented under the hold id, the step settles with that value and the
+   run completes.
+7. Repeat steps 1 to 4 with `attempts: 2`, where the seat's first answer does not conform and its
+   second appends the line before the kill. Expected: the hold waits for its own answer; it does not
+   settle with the refused first answer.
 
 ## 9. Out of scope
 
