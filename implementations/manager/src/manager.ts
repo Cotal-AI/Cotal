@@ -4739,10 +4739,12 @@ export class Manager {
    *  name stays reusable. A row this manager itself confirmed retired (its alias, principal, and
    *  lifecycleUid all matching a {@link confirmedRetiredPredecessors} entry) does not occupy
    *  either, even while its advisory presence record ages out. A numbered name is never reissued
-   *  ({@link issuedNumberedNames}), even after its holder retired. */
+   *  ({@link issuedNumberedNames}), even after its holder retired. The requested base is exempt
+   *  from that history: it is the persona's own name, which stays reusable even when it once came
+   *  out of another persona's numbering. */
   private uniqueName(base: string): string {
     const live = this.liveRosterNames();
-    const name = firstFreeName(base, (n) => this.nameInUse(n, live) || this.issuedNumberedNames.has(n));
+    const name = firstFreeName(base, (n) => this.nameInUse(n, live) || (n !== base && this.issuedNumberedNames.has(n)));
     if (name !== base) this.issuedNumberedNames.add(name);
     return name;
   }
