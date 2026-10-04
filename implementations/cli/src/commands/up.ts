@@ -40,6 +40,7 @@ import {
   presenceBucket,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
+  LEASE_TTL_MS,
   mkSecretDir,
   writeSecretFile,
   type AuthPrepared,
@@ -129,7 +130,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
 import { detachedSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
-import { deliveryUp, ensureControlPlane, stopDelivery } from "../lib/delivery-proc.js";
+import { deliveryUp, ensureControlPlane, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
@@ -1377,11 +1378,44 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       storeDir,
       ts: new Date().toISOString(),
     }, "started");
+    // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
+    // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
+    // end while this broker serves on. Nothing else brings it back, and every static retirement then
+    // fails on the ctl.delivery-admin rail and holds its name until an operator re-runs `cotal up`. A
+    // clean exit or SIGTERM/SIGINT is a deliberate stop (`cotal down delivery`) and stays stopped. A
+    // failed attempt waits out the lease TTL, the longest a dead holder's lease blocks its replacement.
+    const meshServing = () => !stopping && child.exitCode === null && child.signalCode === null;
+    let restartingDelivery = false;
+    const onDeliveryExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (restartingDelivery || !meshServing() || code === 0 || signal === "SIGTERM" || signal === "SIGINT") return;
+      restartingDelivery = true;
+      console.error(c.yellow(`! delivery daemon exited (${signal ? `signal ${signal}` : `code ${code}`}) while nats-server is running - restarting it`));
+      void (async () => {
+        while (meshServing()) {
+          let failure: string;
+          try {
+            const ensured = await ensureDelivery({ space, server, tls: transport.kind === "tls-required", onDeliveryExit });
+            // An exit that landed while this attempt was in flight was dropped above, so the record decides.
+            if (deliveryUp(space)) {
+              console.error(c.green(`✓ delivery daemon running again${ensured.pid !== undefined ? ` (pid ${ensured.pid})` : ""}`));
+              break;
+            }
+            failure = "no delivery daemon is running after the attempt";
+          } catch (e) {
+            failure = (e as Error).message;
+          }
+          console.error(c.yellow(`! delivery restart failed, retrying in ${LEASE_TTL_MS / 1000}s: ${failure}`));
+          await new Promise((r) => setTimeout(r, LEASE_TTL_MS));
+        }
+        restartingDelivery = false;
+      })();
+    };
     // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
     // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
     // Class-2 credential renewal is NOT wired here: the MANAGER is the renewal owner (it is resident
     // in every mesh mode — foreground, --detach, refresh — where this foreground process is not).
     const controlPlane = await startDeliveryWithBroker(space, server, transport.kind === "tls-required", {
+      onDeliveryExit,
       runtime: values.runtime,
       // The address the broker was bound to. This is what lets `cotal attach` reach this manager
       // from another machine; without it the attach face stays loopback-only, so exposing terminals
@@ -2339,6 +2373,8 @@ async function startDeliveryWithBroker(
     maxSessions?: number;
     /** #1417 broker-only mode: ensure the delivery daemon and not the manager. */
     noManager?: boolean;
+    /** #2469: the foreground owner's restart hook for a daemon this launch starts. */
+    onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   },
 ): Promise<boolean> {
   try {

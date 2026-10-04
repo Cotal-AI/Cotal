@@ -108,6 +108,16 @@ SIGINT, which is what `cotal down`, a service stop and Ctrl-C send, writes `rece
 exiting` to that log before it releases its lease. A SIGKILL, including one from the kernel OOM
 killer, ends the daemon with no line.
 
+A foreground `cotal up` restarts a daemon it started when that daemon dies while the broker that
+`up` started is still running. It logs
+`delivery daemon exited (<cause>) while nats-server is running - restarting it`, then
+`delivery daemon running again` once one is back. The daemon ends itself when it cannot reach the
+broker, and a starved host can make a running broker look unreachable. Without the restart, every
+retirement that needs the daemon would fail until someone ran `cotal up` again. A failed restart is
+logged and retried after the 30-second lease TTL. A daemon that exits cleanly or on SIGTERM or
+SIGINT stays stopped, so `cotal down delivery` still stops it. Detached `up` exits after launching
+and restarts nothing; a bare `cotal up` relaunches a missing daemon there.
+
 The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
 removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a
 container entrypoint, a systemd unit, or `cotal deliver --space <space>` typed by hand all reach one

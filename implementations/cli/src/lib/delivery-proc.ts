@@ -38,8 +38,10 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  `wsPort` is the broker's loopback websocket listener (P2 item 6), forwarded to the manager.
  *  `noManager` (#1417) is broker-only mode: ensure the delivery daemon and NOT the manager. The
  *  caller that sets it has already refused it against a live manager (a refresh under the flag
- *  exits non-zero before reaching here), so this side never silently KEEPS or STOPS one either. */
-type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number; noManager?: boolean };
+ *  exits non-zero before reaching here), so this side never silently KEEPS or STOPS one either.
+ *  `onDeliveryExit` hears the exit of a daemon this process launches; only a caller that outlives
+ *  the launch (foreground `up`) can act on it. */
+type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
 
 /** The recorded daemon's liveness, THREE-VALUED plus absent. See {@link managerLiveness} for why the
  *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp
@@ -166,6 +168,7 @@ export function startDeliveryDetached(o: Opts = {}): number {
   // launch agents, so it skips the connector seed on boot (a direct `cotal deliver` still seeds).
   const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
   closeSync(fd);
+  if (o.onDeliveryExit) child.on("exit", o.onDeliveryExit);
   child.unref();
   const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx(space)); // canonical, never a pre-upgrade name
   if (!child.pid) throw new Error("delivery daemon spawned with no pid");
