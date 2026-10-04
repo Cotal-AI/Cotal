@@ -589,8 +589,8 @@ export class CotalEndpoint extends EventEmitter {
   /** Delete subjects of this endpoint's own consumers whose refusal watchStatus has not consumed yet
    *  (see {@link deleteOwnConsumer}). */
   private readonly ownConsumerDeletes = new Set<string>();
-  /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches and
-   *  running membership scans (see {@link recordOwnWatchConsumer}). */
+  /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches,
+   *  running membership scans and running history reads (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
   /** True until the first successful connect completes its boot backfill — distinguishes first-connect
    *  (backfill the boot channels' history) from a reconnect (reopen the core-subs, no re-backfill).
@@ -3106,12 +3106,14 @@ export class CotalEndpoint extends EventEmitter {
     finally { if (!refused) this.ownConsumerDeletes.delete(subject); }
   }
 
-  /** Record the consumer behind one of this connection's own KV watches or membership scans, and
-   *  return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
+  /** Record the consumer behind one of this connection's own KV watches, membership scans or history
+   *  reads, and return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
    *  rebuilding it after a stall or a sequence gap, deletes the predecessor itself with no hook before
    *  the send, so a profile without the delete row (#691) has that delete refused. A watch's prefix
    *  stays recorded for the connection because a retired watch's last rebuild can be refused after
-   *  the watch has stopped; {@link readMembership} retires its scan's prefix itself. */
+   *  the watch has stopped; {@link readMembership} and {@link drainWindow} retire theirs after their own
+   *  last delete, which goes out once nats.js has stopped the consumer and so is answered after every
+   *  predecessor delete. */
   private recordOwnWatchConsumer({ stream_name, name }: ConsumerInfo): string {
     const prefix = `$JS.API.CONSUMER.DELETE.${stream_name}.${name.slice(0, name.lastIndexOf("_") + 1)}`;
     this.ownWatchDeletePrefixes.add(prefix);
@@ -3610,6 +3612,8 @@ export class CotalEndpoint extends EventEmitter {
     signal?.throwIfAborted();
     const out: { seq: number; subject: string; msg: HistoryMessage }[] = [];
     const consumer = await js.consumers.get(stream, { filter_subjects: subjects, opt_start_seq: start });
+    // A delivery-sequence gap makes nats.js rebuild this consumer and delete the predecessor itself.
+    const readerPrefix = this.recordOwnWatchConsumer(await consumer.info(true));
     try {
       // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
       // explicit uncached `info()` this used to call was a round trip for data we already had.
@@ -3666,7 +3670,7 @@ export class CotalEndpoint extends EventEmitter {
       // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
       // The observer and admin profiles may not delete (#691), so the dashboard's readers do live out
       // that threshold; only a profile holding the delete row reclaims them here.
-      await this.deleteReaderConsumer(consumer);
+      await this.deleteReaderConsumer(consumer).finally(() => { this.ownWatchDeletePrefixes.delete(readerPrefix); });
     }
   }
 
@@ -3710,7 +3714,8 @@ export class CotalEndpoint extends EventEmitter {
         if (s.error instanceof PermissionViolationError && this.confirmingChatSubs.has(s.error.subject))
           continue;
         // The echo of a refused delete of this endpoint's own consumer: one its caller already handled,
-        // or the predecessor nats.js deleted while rebuilding one of this connection's watches or scans.
+        // or the predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
+        // history reads.
         if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
           && (this.ownConsumerDeletes.delete(s.error.subject) || this.isOwnWatchDelete(s.error.subject)))
           continue;
