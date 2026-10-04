@@ -6,10 +6,11 @@
  *   <root>/.cotal/config.json     (space-local override)          ← higher precedence
  *
  * Today it carries one thing: which of the operator's personal MCP servers a connector should
- * SHARE with the agents it spawns. By default a spawned agent gets none — the Claude connector
- * launches with `--strict-mcp-config`, dropping every operator server, because they're heavy
- * (a headless Chromium server alone can climb past a gigabyte) and useless to a meshed teammate.
- * This file is the explicit opt-in to pass named ones through.
+ * SHARE with the agents it spawns. With no list a spawned agent gets none — the Claude connector
+ * launches with `--strict-mcp-config`, dropping every operator server. First-run setup seeds the
+ * list from the servers the user's own harness sessions load, so a spawned session keeps their
+ * tools; removing entries makes a lighter seat, since each spawn boots its own copy of every shared
+ * server (a headless Chromium server alone can climb past a gigabyte).
  *
  * Each server is written in the de-facto `.mcp.json` shape, so an operator can copy an entry
  * straight out of their own Claude / VS Code / Cursor config. Secrets ride as `${VAR}` references
@@ -22,9 +23,9 @@
  * The caller (both spawn paths) resolves this once and hands the chosen servers to the connector,
  * which renders them into its own host format.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /** One MCP server, in the de-facto `.mcp.json` shape. Secrets belong in `env` (or `headers`) as
  *  `${VAR}` references, resolved from the operator's environment at launch. Remote-transport fields
@@ -158,6 +159,19 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
  *  on top (more specific wins, per connector + server name). */
 export function loadCotalConfig(root: string): CotalConfig {
   return mergeConfig(readConfigFile(globalConfigPath()), readConfigFile(spaceConfigPath(root)));
+}
+
+/** Record `servers` as what `connector` shares, in the operator-level file, unless that file already
+ *  declares a list for it: an existing list, even an empty one, is the operator's choice and is
+ *  kept. Every other key in the file is preserved. Returns whether it wrote. */
+export function seedConnectorServers(connector: string, servers: Record<string, McpServerSpec>): boolean {
+  const path = globalConfigPath();
+  const config = readConfigFile(path);
+  if (config.connectors?.[connector]?.mcpServers !== undefined) return false;
+  const connectors = { ...config.connectors, [connector]: { ...config.connectors?.[connector], mcpServers: servers } };
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ ...config, connectors }, null, 2) + "\n");
+  return true;
 }
 
 /** The MCP servers a connector should share with an agent it spawns, after applying an optional

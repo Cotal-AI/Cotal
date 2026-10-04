@@ -56,6 +56,9 @@ export interface ConnectorSetupProvider extends Extension {
   readonly requires?: readonly string[];
   readonly connector?: ConnectorSetupAction;
   readonly skills?: ConnectorSetupAction<ConnectorSkillsSetupInput>;
+  /** Shares the MCP servers the user's own harness sessions load with the agents this connector
+   * spawns. First-run setup runs it; a share list the cotal config already declares is kept. */
+  readonly mcpServers?: ConnectorSetupAction;
   readonly assist?: ConnectorAssist;
   /** Read-only health of what this provider installs, for `cotal status` and the setup card. */
   status?(input: ConnectorStatusInput): readonly ConnectorStatusRow[];

@@ -26,9 +26,11 @@ agents it spawns, optional `spawn.env` names that deliberately add environment c
 spawned agent (see [Environment variables](#environment-variables) below), and an optional
 `modelPolicy` that limits which models a role may launch on (see [Model policy](#model-policy)).
 
-The sharing half: By default a spawned agent gets none: the Claude connector launches with
-`--strict-mcp-config`, dropping every ambient MCP server (they are heavy and useless to a meshed
-teammate). This file is the explicit opt-in.
+The sharing half: the Claude connector launches with `--strict-mcp-config`, dropping every ambient
+MCP server, so a spawned agent gets only the servers this file lists, and none with no list. On its
+first run `cotal setup` writes the `claude` list from your own Claude Code user-scope servers, leaving
+out any whose `env` or `headers` hold a literal value, and keeps a list the file already declares.
+Every shared server boots once per spawn, so remove the heavy ones for a lighter seat.
 
 ```json
 {

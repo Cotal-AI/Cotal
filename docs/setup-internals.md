@@ -21,7 +21,9 @@ ambiguous or broken target refuses rather than choosing a root.
 **First run** (no `~/.cotal/onboarded.json`, or `--full`, or `--yes`) runs `runFirstRun(yes)`:
 
 - splash → intro → core **checks** (Node >= 22; **locate** `nats-server`: located, never
-  started) → **connector picker** → resolve and announce the persona destination → seed the generic
+  started) → **connector picker** (each selected connector's install, then its `mcpServers` action,
+  which for Claude copies your user-scope MCP servers into the cotal config unless it already
+  declares a list) → resolve and announce the persona destination → seed the generic
   `default` and optional demo personas (david/sven/me) there → **offer a global install**
   (`offerGlobalInstall`) → onboarded marker → a finale that
   lists the commands to start things (`cotal up --detach`, `cotal web`, `cotal spawn …`,
@@ -76,7 +78,10 @@ still needs on PATH, `setup` says whether it owns setup actions at all, and `plu
 whether those actions install plugin assets. A selected candidate runs its connector-owned
 `connector` action through `connectorSetupStep`, which receives the `Connector` itself; a candidate
 that declares no provider is simply marked ready (OpenCode auto-wires at spawn, injecting its
-plugin via `buildLaunch` and never writing the user's config). The `skills` action runs for every
+plugin via `buildLaunch` and never writing the user's config). A selected candidate's `mcpServers` action runs next
+through the same seam: the Claude provider reads the user-scope servers from Claude Code's config and
+records them with core's `seedConnectorServers`, which writes the operator-level cotal config only
+when it declares no list for that connector. The `skills` action runs for every
 present connector that declares one, selected or not, because Cotal's authored skills are
 independent of mesh membership. Two experts (david, the engineer; sven, the guide) plus the
 operator's own driving session (`me`) are written by default, and `me` is the persona

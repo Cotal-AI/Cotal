@@ -165,7 +165,7 @@ export const claudeConnector: Connector = {
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
     if (opts.variant) throw new Error("claude connector: model variants are not supported");
-    // Operator MCP servers shared with this agent (default none — see the --mcp-config block).
+    // Operator MCP servers shared with this agent: the cotal config's list (see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
     // Auth is CLAUDE_PROVIDER_KEYS: CLAUDE_CODE_OAUTH_TOKEN (the deploy-doc promise, required in
     // a container with no Keychain), ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, and the cloud-provider
@@ -250,12 +250,13 @@ export const claudeConnector: Connector = {
     // mid-demo. Additive under the default permission mode — leaves other tools as-is.
     args.push("--allowedTools", "WebFetch(domain:github.com),WebFetch(domain:raw.githubusercontent.com)");
 
-    // Isolate the spawned session's MCP. --strict-mcp-config drops every ambient MCP source —
-    // including the operator's personal ~/.claude.json servers (e.g. a headless Chromium, a DB
-    // server) that a meshed teammate never needs and that, multiplied across several spawns on a
-    // busy machine, starve memory and kill the session before it registers presence — so the ONLY
-    // servers that load are the ones we name in --mcp-config: cotal (always, for its tools +
-    // presence) plus any the operator explicitly opted to share (`shared`, from the cotal config).
+    // Scope the spawned session's MCP. --strict-mcp-config drops every ambient MCP source, the
+    // plugin's own copy of the cotal server among them, so the ONLY servers that load are the ones we
+    // name in --mcp-config: cotal (always, for its tools + presence) plus the cotal config's share list
+    // (`shared`). First-run setup seeds that list with the operator's own ~/.claude.json servers so a
+    // seat keeps their tools; each boots once per spawn, and several spawns of a heavy one (a headless
+    // Chromium, a DB server) can starve memory before the session registers presence, which is why
+    // the list stays the operator's to trim.
     // The plugin itself stays enabled (its hooks + the dev-channels wake path are unaffected).
     // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
     const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: [MCP_CJS] } };

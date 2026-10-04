@@ -4,7 +4,16 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, r
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { registry, type ConnectorSetupProvider, type ConnectorStatusInput, type ConnectorStatusRow } from "@cotal-ai/core";
+import {
+  globalConfigPath,
+  registry,
+  seedConnectorServers,
+  type ConnectorSetupProvider,
+  type ConnectorStatusInput,
+  type ConnectorStatusRow,
+  type McpServerSpec,
+} from "@cotal-ai/core";
+import { ENV_REFERENCE } from "@cotal-ai/connector-core";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-claude.md";
@@ -183,6 +192,20 @@ function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }
   return row("warn", `${typeof match.version === "string" ? `v${match.version} ≠ v${version} · ` : ""}stale · ${skillsRemedy}`);
 }
 
+/** The user-scope MCP servers every Claude Code session of this user loads, from the config file
+ *  `claude mcp add` writes them to. `CLAUDE_CONFIG_DIR` moves that file, as it does for `claude`. */
+function userServers(): Record<string, McpServerSpec> {
+  const path = join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".claude.json");
+  if (!existsSync(path)) return {};
+  let config: { mcpServers?: Record<string, McpServerSpec> } | null;
+  try {
+    config = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    throw new Error(`${path}: invalid JSON - ${(e as Error).message}`);
+  }
+  return config?.mcpServers ?? {};
+}
+
 // All handoffs in one setup run share a single Claude session: the first spawn pins a generated UUID
 // (--session-id), later spawns --resume it, so Claude keeps the context of earlier failures. stdio is
 // inherited, so pinning our own id is the only way to find the session again.
@@ -225,6 +248,29 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
       } finally {
         rmSync(payload, { recursive: true, force: true });
       }
+    },
+  },
+  mcpServers: {
+    name: "claude-mcp-servers",
+    title: "Share your MCP servers with spawned sessions",
+    explain:
+      "A spawned Claude Code session gets the cotal tools plus the MCP servers your own sessions load. Each spawn starts its own copy of every shared server, so on a small machine remove the heavy ones from the cotal config or spawn with --share-tools none.",
+    context: [DOCS_URL],
+    run() {
+      const installed = userServers();
+      // The cotal config holds secrets only as `${VAR}` references, and a literal value cannot be
+      // told apart from a secret, so a server with one in `env` or `headers` is not copied.
+      const literal = Object.keys(installed).filter((name) =>
+        [installed[name].env, installed[name].headers].some((values) => Object.values(values ?? {}).some((v) => v.search(ENV_REFERENCE) < 0)),
+      );
+      const shared = Object.fromEntries(Object.entries(installed).filter(([name]) => !literal.includes(name)));
+      const names = Object.keys(shared);
+      const path = globalConfigPath();
+      if (names.length && !seedConnectorServers("claude", shared)) return `kept the list ${path} already declares`;
+      const parts: string[] = [];
+      if (names.length) parts.push(`${names.join(", ")} via ${path}`);
+      if (literal.length) parts.push(`not shared, a literal env or headers value: ${literal.join(", ")} (add it to ${path} with \${VAR} references to share it)`);
+      return parts.join("; ") || "your Claude Code config declares none";
     },
   },
   assist: {

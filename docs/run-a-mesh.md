@@ -357,8 +357,9 @@ How a spawn resolves:
   a full id; OpenCode: `provider/model`). Connectors that expose a catalog report it via
   `cotal models --agent opencode`: model ids plus available variants; pick one with
   `--model provider/model --variant high`.
-- **Tools.** A spawned agent gets only the cotal tools by default; share your own MCP
-  servers deliberately with `--share-tools` ([config](config.md)).
+- **Tools.** A spawned Claude Code agent gets the cotal tools plus the MCP servers the cotal
+  config shares, which first-run `cotal setup` fills with your own; narrow them per spawn with
+  `--share-tools` ([config](config.md)).
 - **Launch options.** `--opt key=value` (repeatable) passes a native harness flag straight
   through; a persona or manifest `launchOptions:` mapping does the same declaratively (a
   `--opt` wins per key). It is a **raw passthrough**, with no allow/deny list: Claude renders
