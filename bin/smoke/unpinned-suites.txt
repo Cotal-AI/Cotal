@@ -15,6 +15,7 @@ bin/smoke/ci-suites-freeze.smoke.ts
 bin/smoke/ci-suites.smoke.ts
 bin/smoke/control-transport-dial.smoke.ts
 bin/smoke/dep-pins.smoke.ts
+bin/smoke/discovery-bundle-consumable.smoke.ts
 bin/smoke/dist-freshness.smoke.ts
 bin/smoke/dogfood-live.smoke.ts
 bin/smoke/endpoint-warning-consumers.smoke.ts
@@ -146,9 +147,14 @@ extensions/connector-core/smoke/transport-liveness-broker.smoke.ts
 extensions/connector-core/smoke/transport-liveness.smoke.ts
 extensions/connector-core/smoke/turn-intake.smoke.ts
 extensions/connector-core/smoke/user-manager-transport.smoke.ts
+extensions/connector-hermes/smoke/adapter-contract.smoke.ts
 extensions/connector-hermes/smoke/boot-requirement.smoke.ts
 extensions/connector-hermes/smoke/empty-id-bridge.smoke.ts
 extensions/connector-hermes/smoke/hooks-control.smoke.ts
+extensions/connector-hermes/smoke/injection-framing.smoke.ts
+extensions/connector-hermes/smoke/launch-env.smoke.ts
+extensions/connector-hermes/smoke/probe-interrupt.smoke.ts
+extensions/connector-hermes/smoke/reconnect-effect.smoke.ts
 extensions/connector-hermes/smoke/tool-input-closed.smoke.ts
 extensions/connector-jcode/smoke/empty-sessions.smoke.ts
 extensions/connector-jcode/smoke/jcode-args.smoke.ts
@@ -228,6 +234,7 @@ implementations/auth/smoke/plane-claim.smoke.ts
 implementations/auth/smoke/ps-operator-path.smoke.ts
 implementations/auth/smoke/ps-user-mode.smoke.ts
 implementations/auth/smoke/remote-agent-bearer.smoke.ts
+implementations/auth/smoke/remote-exchange.smoke.ts
 implementations/auth/smoke/remote-run-admission.smoke.ts
 implementations/auth/smoke/remote-run-attempt-route.smoke.ts
 implementations/auth/smoke/retirement-barrier.smoke.ts
@@ -398,6 +405,9 @@ implementations/manager/smoke/manifest-launch.smoke.ts
 implementations/manager/smoke/max-agents-single-source.smoke.ts
 implementations/manager/smoke/mesh-attach-plane.smoke.ts
 implementations/manager/smoke/mesh-attach.smoke.ts
+implementations/manager/smoke/orphan-seat-reap.smoke.ts
+implementations/manager/smoke/orphan-seat-rollback.smoke.ts
+implementations/manager/smoke/orphan-seat-spawn-window.smoke.ts
 implementations/manager/smoke/own-agent-control.smoke.ts
 implementations/manager/smoke/persona-identity-acl.smoke.ts
 implementations/manager/smoke/persona-input-closed.smoke.ts

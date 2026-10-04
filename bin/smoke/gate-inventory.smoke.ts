@@ -394,7 +394,7 @@ if (staleAllowlist.length) {
 const UNPINNED_PATH = join(ROOT, "bin", "smoke", "unpinned-suites.txt");
 /** sha256 of the entries of `unpinned-suites.txt` with any `paid ` prefix removed. Paying an entry keeps
  *  this; adding or renaming one changes it, so the debt cannot take in a new suite without editing the gate. */
-const UNPINNED_DIGEST = "24d2af5981c09be047c313d0719917ebfd8df1095bd4639c4b007fdec29f1548";
+const UNPINNED_DIGEST = "8d7a911e3c2411715048ab2f4cfd196fbbf82bba1cae07a133288aa7e9cfd842";
 const SUITE_FILE = /(?:^|\s)["']?([\w./-]+\.(?:ts|tsx|mts|mjs|js|cjs))["']?(?=\s|$)/g;
 const PIN_NAME = /^EXPECTED(?:_[A-Z0-9]+)*$/;
 const EQUALITY = [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken];
@@ -416,30 +416,33 @@ function findIn<T extends ts.Node>(root: ts.Node, pred: (n: ts.Node) => n is T, 
 /** `n` without the parentheses and type assertions around it, which change nothing at run time. */
 const unwrap = (n: ts.Node): ts.Node =>
   ts.isParenthesizedExpression(n) || ts.isNonNullExpression(n) || ts.isAsExpression(n) || ts.isSatisfiesExpression(n) || ts.isTypeAssertionExpression(n) ? unwrap(n.expression) : n;
-const isProcessMember = (n: ts.Node, name: string) => ts.isPropertyAccessExpression(n) && n.name.text === name && unwrap(n.expression).getText() === "process";
+/** `process.<name>`, or `process["<name>"]`, which reads and writes the same property. */
+const isProcessMember = (n: ts.Node, name: string) =>
+  (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) && unwrap(n.expression).getText() === "process" &&
+  (ts.isPropertyAccessExpression(n) ? n.name.text === name : ts.isStringLiteralLike(n.argumentExpression) && n.argumentExpression.text === name);
 const isExitCall = (n: ts.Node): n is ts.CallExpression => ts.isCallExpression(n) && isProcessMember(unwrap(n.expression), "exit");
 const nonZeroLiteral = (n: ts.Node | undefined): boolean => !!n && ts.isNumericLiteral(n) && Number(n.text) !== 0;
 const isExitCode = (n: ts.Node) => isProcessMember(n, "exitCode");
 /** The values `n` can take when it is a numeric literal, a lookup into an object literal of them, or a sum
- *  of those. A lookup can miss, which gives NaN. */
-function numericValues(n: ts.Node): number[] | undefined {
+ *  of those. A lookup can miss, which gives undefined, and a sum with a miss gives NaN. */
+function numericValues(n: ts.Node): Array<number | undefined> | undefined {
   const e = unwrap(n);
   if (ts.isNumericLiteral(e)) return [Number(e.text)];
   if (ts.isElementAccessExpression(e)) {
     const table = unwrap(e.expression);
     const values = ts.isObjectLiteralExpression(table) ? table.properties.map((p) => (ts.isPropertyAssignment(p) ? numericValues(p.initializer) : undefined)) : [undefined];
-    return values.every(Boolean) ? [...values.flatMap((v) => v!), NaN] : undefined;
+    return values.every(Boolean) ? [...values.flatMap((v) => v!), undefined] : undefined;
   }
   if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.PlusToken) return undefined;
   const [left, right] = [numericValues(e.left), numericValues(e.right)];
-  return left && right && left.flatMap((l) => right.map((r) => l + r));
+  return left && right && left.flatMap((l) => right.map((r) => (l ?? NaN) + (r ?? NaN)));
 }
 /** Whether `status` fails the run: every value it can take is an integer from 1 to 255. The OS keeps only
- *  the low eight bits, so `process.exit(256)` exits 0. With `orThrows`, a value that is not an integer
- *  also counts, since `process.exit` throws on it rather than exiting. */
+ *  the low eight bits, so `process.exit(256)` exits 0. With `orThrows`, a number that is not an integer
+ *  also counts, since `process.exit` throws on it rather than exiting. `process.exit(undefined)` exits 0. */
 const failingStatus = (status: ts.Node | undefined, orThrows = false): boolean => {
   const values = status && numericValues(status);
-  return !!values?.length && values.every((v) => (Number.isInteger(v) ? v >= 1 && v <= 255 : orThrows));
+  return !!values?.length && values.every((v) => v !== undefined && (Number.isInteger(v) ? v >= 1 && v <= 255 : orThrows));
 };
 const isAssignment = (k: ts.SyntaxKind) => k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment;
 /** The node that writes `ref`: an assignment, `++`, `--`, `delete`, a `for in`/`for of` head, or the
@@ -468,6 +471,10 @@ const exitsWith = (s: ts.Node, status: (arg: ts.Expression | undefined) => boole
 };
 const setsFailingCode = (s: ts.Node) => failingCode(statementExpr(s));
 const endsRun = (s: ts.Node) => ts.isThrowStatement(s) || ts.isReturnStatement(s) || exitsWith(s, () => true);
+/** Whether a run can stop at `s` without failing, or never get past it: `s` ends its list, or a branch or
+ *  block in it returns or exits with a status that can be 0. A function declaration runs none of its body. */
+const canEndRun = (s: ts.Node) =>
+  endsRun(s) || (!ts.isFunctionLike(s) && findIn(s, (n): n is ts.Node => ts.isReturnStatement(n) || (isExitCall(n) && !failingStatus(n.arguments[0]))).length > 0);
 /** The statements `arm` runs in order, up to the first that ends it, or an arrow body expression. Each runs
  *  only when none before it throws. A statement nested in a branch, loop or callback is not one of them. */
 const runs = (arm: ts.Node): ts.Node[] => {
@@ -552,7 +559,8 @@ function swallowedThrows(sf: ts.SourceFile): number[] {
       // Only a `.catch` directly before `.finally` sees every rejection; an earlier one misses a later `.then`.
       const prev = n.expression.expression;
       const caught = ts.isCallExpression(prev) && ts.isPropertyAccessExpression(prev.expression) && prev.expression.name.text === "catch" ? prev.arguments[0] : undefined;
-      if (handler && ts.isFunctionLike(handler)) flag(handler, caught && (ts.isArrowFunction(caught) || ts.isFunctionExpression(caught)) ? caught.body : undefined);
+      // Calling a generator `.catch` handler runs none of its body.
+      if (handler && ts.isFunctionLike(handler)) flag(handler, caught && (ts.isArrowFunction(caught) || (ts.isFunctionExpression(caught) && !caught.asteriskToken)) ? caught.body : undefined);
     }
     ts.forEachChild(n, visit);
   };
@@ -581,7 +589,7 @@ function callersOf(sf: ts.SourceFile, fn: ts.SignatureDeclaration): ts.Expressio
   return findIn(sf, ts.isExpressionStatement, true).filter((s) => calls(s.expression));
 }
 
-/** Whether every run gets to `stmt`: no earlier statement of its list ends the run, and that list runs
+/** Whether every run gets to `stmt`: no earlier statement of its list can end the run, and that list runs
  *  whenever its own statement does. That holds for the file, a bare block, a `try` or `finally` block,
  *  and the body of a function that a reached statement calls; never for a branch, loop or catch arm. */
 function runsTo(sf: ts.SourceFile, stmt: ts.Statement, seen = new Set<ts.Node>()): boolean {
@@ -589,7 +597,7 @@ function runsTo(sf: ts.SourceFile, stmt: ts.Statement, seen = new Set<ts.Node>()
   if (!ts.isSourceFile(list) && !ts.isBlock(list)) return false;
   for (const s of list.statements) {
     if (s === stmt) break;
-    if (endsRun(s)) return false;
+    if (canEndRun(s)) return false;
   }
   if (ts.isSourceFile(list)) return true;
   const owner = list.parent;
@@ -613,7 +621,8 @@ function runsTo(sf: ts.SourceFile, stmt: ts.Statement, seen = new Set<ts.Node>()
  *  drift up. Any other shape pins nothing. */
 function pinsCellCount(sf: ts.SourceFile): boolean {
   const { checker, writes, exitCodeWrites } = indexSuite(sf);
-  const isPin = (o: ts.Node) => {
+  const isPin = (n: ts.Node) => {
+    const o = unwrap(n);
     const sym = ts.isIdentifier(o) && PIN_NAME.test(o.text) ? checker.getSymbolAtLocation(o) : undefined;
     const decl = sym?.declarations?.length === 1 ? sym.declarations[0] : undefined;
     return !!decl && ts.isVariableDeclaration(decl) && nonZeroLiteral(decl.initializer) && !writes.has(sym!);
@@ -623,7 +632,7 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
     const b = unwrap(cond);
     if (!ts.isBinaryExpression(b) || !EQUALITY.includes(b.operatorToken.kind)) return undefined;
     const [pin, tally] = isPin(b.left) ? [b.left, b.right] : [b.right, b.left];
-    if (!isPin(pin) || isPin(tally) || ts.isLiteralExpression(tally)) return undefined;
+    if (!isPin(pin) || isPin(tally) || ts.isLiteralExpression(unwrap(tally))) return undefined;
     return b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
   };
   const codeHolds = (guard: ts.Node) =>
@@ -675,6 +684,8 @@ const censusControls: Array<[string, boolean]> = [
   ["a sum that can be 0 is not a failing status", swallows(`let code = -1; try { f(); } finally { process.exit(1 + code); }`)],
   ["a status looked up in a catch arm can miss and throw past it", swallows(`try { f(); } catch (e) { process.exit(128 + ({ SIGINT: 2 })[sig]); } finally { process.exit(0); }`)],
   ["a signal status looked up in a table of failing sums fails the run", fails(`try { f(); } finally { process.exit(128 + ({ SIGINT: 2, SIGTERM: 15 } as Record<string, number>)[sig]!); }`)],
+  ["a generator .catch handler runs none of its body", swallows(`main().catch(function* () { process.exitCode = 1; }).finally(() => process.exit(process.exitCode ?? 0));`)],
+  ["a bare lookup that misses exits 0", swallows(`try { f(); } finally { process.exit(({ SIGTERM: 15 })[sig]); }`)],
   ["a .catch before a later .then misses its throw", swallows(`main().catch(() => { process.exitCode = 1; }).then(g).finally(() => process.exit(process.exitCode ?? 0));`)],
   ["a suite with no pinned count is unpinned", !pinsCellCount(control(`let ran = 0; ran++; console.log(ran);`))],
   ["a one-sided pin is unpinned", !pinsWith(`if (ran < EXPECTED_CELLS) process.exit(1);`)],
@@ -685,8 +696,13 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin that is only logged is unpinned", !pinsWith(`console.log(ran !== EXPECTED_CELLS);`)],
   ["a pin after an exit is unpinned", !pinsWith(`process.exit(0); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin compared with itself is unpinned", !pinsWith(`if (EXPECTED_CELLS !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a parenthesized pin compared with itself is unpinned", !pinsWith(`if ((EXPECTED_CELLS) !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a block that exits 0 is unpinned", !pinsWith(`{ process.exit(0); } if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a branch that returns is unpinned", !pinsWith(`function main() { if (ran < EXPECTED_CELLS) return; if (ran !== EXPECTED_CELLS) process.exit(1); } main();`)],
+  ["a pin after a branch that exits 1 is pinned", pinsWith(`if (failed) process.exit(1); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a reassigned pin is unpinned", !pinsWith(`EXPECTED_CELLS = ran; if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a mismatch exitCode a later exit overrides is unpinned", !pinsWith(`if (ran !== EXPECTED_CELLS) process.exitCode = 1; process.exit(0);`)],
+  ["a mismatch exitCode a bracket write clears is unpinned", !pinsWith(`if (ran !== EXPECTED_CELLS) process.exitCode = 1; process["exitCode"] = 0;`)],
   ["a mismatch throw a catch swallows is unpinned", !pinsWith(`try { if (ran !== EXPECTED_CELLS) throw new Error("x"); } catch (e) { console.error(e); }`)],
   ["a mismatch counted in a failure tally is unpinned", !pinsWith(`let fail = 0; if (ran !== EXPECTED_CELLS) fail++; fail = 0; process.exit(fail ? 1 : 0);`)],
   ["a pin inside a conjunction is unpinned", !pinsWith(`if (ran !== EXPECTED_CELLS && false) process.exit(1);`)],

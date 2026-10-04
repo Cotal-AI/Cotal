@@ -69,11 +69,11 @@ forms below, because a form it cannot follow to the exit status can hide either 
   a throw in that `try` would exit 0. A catch arm prevents it only when its first statement exits
   with a failing status, or sets `process.exitCode` to one that the exit reads (`process.exit()`,
   `process.exit(process.exitCode)` or `process.exit(process.exitCode ?? 0)`) while nothing in the
-  arm or the `finally` writes another code, including `++`, `--` and destructuring. A statement
-  before it can throw past it, so log after failing. A statement inside a branch of the arm, a
-  computed code and a rethrow do not count. A promise `.catch` counts only directly before
-  `.finally`. A status variable that starts failing counts when the only write that clears it is
-  the last statement of the `try`.
+  arm or the `finally` writes another code, including `++`, `--`, destructuring and
+  `process["exitCode"]`. A statement before it can throw past it, so log after failing. A statement
+  inside a branch of the arm, a computed code and a rethrow do not count. A promise `.catch` counts
+  only directly before `.finally`. A status variable that starts failing counts when the only write
+  that clears it is the last statement of the `try`.
 - A suite with no pinned cell count. Declare `const EXPECTED_CELLS = <n>`, never reassign it, and
   compare the cells that ran with it by equality, after reporting failures, so a deleted cell turns
   the suite red. The comparison is the whole condition of a statement every run reaches, and a
@@ -86,16 +86,19 @@ forms below, because a form it cannot follow to the exit status can hide either 
 A failing status is an integer from 1 to 255, written as a literal or a sum of literals. The process
 keeps only the low eight bits of its status, so `process.exit(256)` exits 0. The `finally` exit's own
 status may also add a lookup into an object literal of them, such as
-`128 + { SIGINT: 2, SIGTERM: 15 }[signal]`, because a lookup that misses makes `process.exit` throw
-rather than exit 0. Names resolve to the declaration they bind, so a parameter or inner function
-that shadows the pin or `main` does not count, and neither does a generator, whose call runs none of
-its body.
+`128 + { SIGINT: 2, SIGTERM: 15 }[signal]`, because a sum with a lookup that misses is NaN, on which
+`process.exit` throws rather than exits 0. A lookup alone that misses is undefined and exits 0. Names
+resolve to the declaration they bind, so a parameter or inner function that shadows the pin or
+`main` does not count, and neither does a generator, as a function or as a `.catch` handler, whose
+call runs none of its body.
 
 Every run reaches a statement of the file, of a bare block, of a `try` or `finally` block, or of the
 body of a function that a reached statement calls (`main()`, `await main()`, `main().catch(...)`),
-when no earlier statement in its block exits, throws or returns. An async function called without
-`await` counts only when no later statement exits. A comparison in a branch, a loop, a callback, a
-check function, a failure tally or a variable pins nothing.
+when no earlier statement in its block exits, throws or returns, or holds a `return` or a
+`process.exit` with a status that can be 0 in a branch or block. A platform skip that exits 0 before
+the comparison is such a branch. An async function called without `await` counts only when no later
+statement exits. A comparison in a branch, a loop, a callback, a check function, a failure tally or
+a variable pins nothing.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The
