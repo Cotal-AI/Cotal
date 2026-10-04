@@ -161,21 +161,30 @@ export interface ManagedLifecycleHandoff extends ManagedLifecycleTarget {
   readonly policy?: { readonly events: "required" };
 }
 
-/** Validate a decoded handoff against the coordinate the runtime passed beside it. Throws a
- *  sentence naming the first mismatched or malformed field. Opens nothing and reads nothing. */
-export function parseManagedLifecycleHandoff(raw: unknown, expected: ManagedLifecycleTarget): ManagedLifecycleHandoff;
+/** Validate the handoff text against the coordinate the runtime passed beside it. Throws a
+ *  sentence naming the first malformed or mismatched field, never a value. Opens nothing. */
+export function parseManagedLifecycleHandoff(text: string, expected: ManagedLifecycleTarget): ManagedLifecycleHandoff;
 
-/** Read the handoff file once: refuse a non-regular file or a mode other than 0600 on POSIX,
- *  read it, unlink it whatever the outcome, then {@link parseManagedLifecycleHandoff}. */
-export function readManagedLifecycleHandoffFile(path: string, expected: ManagedLifecycleTarget): ManagedLifecycleHandoff;
+/** Take the handoff file into memory and remove it: open the path without following a link,
+ *  unlink it, then read it. Refuses a missing path, a non-regular file, a mode other than 0600 on
+ *  POSIX, or an empty file, after unlinking whatever is not a directory. A refusal names the
+ *  check, never the contents. The caller runs it before any other check, so no refusal can leave
+ *  the file behind. */
+export function takeManagedHandoffFile(path: string): string;
 
 /** The provider key a delegated seat's runtime resource is created under. A pure function of the
  *  full target, so any party with provider authority closes the resource by lifecycle, never by
- *  name. Lowercase hex, 32 characters, prefixed `cotal-`. */
+ *  name: `cotal-` and the first 32 lowercase hex characters of the SHA-256 of the UTF-8 bytes of
+ *  `JSON.stringify([space, owner, actor, lifecycleUid])`. */
 export function managedRuntimeKey(target: ManagedLifecycleTarget): string;
 ```
 
-`parseManagedLifecycleHandoff` checks, in order: an object with `kind === MANAGED_HANDOFF_KIND`; no
+The key's bytes are fixed so a host in another language closes the same resource. For space `s2420`,
+owner `u_aaaaaaaaaaaaaaaaaaaaaaaaaa`, actor `probe` and lifecycle UID `aaaaaaaaaaaaaaaaaaaaaaaaaa`, the
+hashed text is `["s2420","u_aaaaaaaaaaaaaaaaaaaaaaaaaa","probe","aaaaaaaaaaaaaaaaaaaaaaaaaa"]` and the
+key is `cotal-ffa44aae523faeee4ab7689a699b392e`.
+
+`parseManagedLifecycleHandoff` checks, in order: JSON text; an object with `kind === MANAGED_HANDOFF_KIND`; no
 field outside the interface; every string non-empty; `space`, `owner`, `actor` and `lifecycleUid`
 equal to `expected`; `lifecycleUid` passing `assertLifecycleToken`; `exchangeUrl` passing the
 `agent-bearer --exchange-url` scheme rule; the three lists arrays of strings; `policy` absent or
@@ -185,12 +194,16 @@ equal to `expected`; `lifecycleUid` passing `assertLifecycleToken`; `exchangeUrl
 
 ```ts
 /** What a non-local runtime needs to start one delegated seat, besides the handoff. Every field
- *  is a value; none is a path on the manager's filesystem. */
+ *  is a value; none is a path on the manager's filesystem. A spawn choice with no field here is
+ *  refused by the manager before enrollment, never dropped. */
 export interface DelegatedSeatLaunch {
   /** The connector name the child resolves, for example `claude-code`. */
   readonly agent: string;
   /** The agent-definition file text the manager resolved for this spawn. */
   readonly persona: string;
+  /** The role the manager resolved (the `--role` override, else the persona's `role:`), the same
+   *  value the enrollment carried. */
+  readonly role?: string;
   readonly model?: string;
   readonly variant?: string;
   readonly prompt?: string;
@@ -207,10 +220,16 @@ export interface Runtime {
    * The runtime creates one provider resource under `managedRuntimeKey(handoff)`, writes the
    * handoff and the persona into it as private files, and runs `delegatedSeatCommand` there. It
    * calls the provider's create at most once per call and never retries a create whose answer was
-   * lost. The handle's `status()` is `"exited"` only after the provider observed the child exit or
-   * the resource close, or answered that no resource exists under the key. A lost, timed-out or
-   * ambiguous acknowledgement leaves it `"running"`. `stop()` closes the resource by that key. The
-   * handle carries no `reference` and no `release`.
+   * lost. The handle's `status()` is `"exited"` only after the provider observed the child exit, or
+   * after a fenced close by that key completed. A provider answer that no resource exists under the
+   * key is never exit evidence. A lost, timed-out or ambiguous acknowledgement leaves it
+   * `"running"`.
+   *
+   * `stop()` is the fenced close by that key. It completes only when no create for that key can
+   * still materialize: the create was answered before the close, or the provider's close fences the
+   * key so a create that arrives later is refused. Until one of those holds, `stop()` keeps the
+   * close pending, `status()` stays `"running"`, and `waitForExit()` does not settle. The handle
+   * carries no `reference` and no `release`.
    */
   spawnDelegated?(launch: DelegatedSeatLaunch, handoff: ManagedLifecycleHandoff): AgentHandle;
 }
@@ -226,8 +245,10 @@ export function delegatedSeatCommand(
 
 `delegatedSeatCommand` returns
 `["spawn", "--config", files.persona, "--space", target.space, "--name", target.actor, "--agent", launch.agent, "--expect-owner", target.owner, "--expect-lifecycle-uid", target.lifecycleUid, ...]`
-with `--model`, `--variant`, `--prompt`, one `--opt k=v` per launch option and `--events` or
-`--no-events` appended when set, and `env` equal to `{ COTAL_MANAGED_HANDOFF_FILE: files.handoff }`.
+with `--role`, `--model`, `--variant`, `--prompt`, one `--opt k=v` per launch option and `--events`
+or `--no-events` appended when set, and `env` equal to `{ COTAL_MANAGED_HANDOFF_FILE: files.handoff }`.
+It never emits `--cwd`, `--resume`, `--share-tools` or an access-list flag: the child's working
+directory is the provider resource's own, and its channel lists come from the handoff.
 
 ### `@cotal-ai/cli`, the child bootstrap in `cotal spawn`
 
@@ -235,7 +256,8 @@ with `--model`, `--variant`, `--prompt`, one `--opt k=v` per launch option and `
 // implementations/cli/src/commands/spawn.ts
 const MANAGED_HANDOFF_FILE_ENV: typeof import("@cotal-ai/core").MANAGED_HANDOFF_FILE_ENV;
 
-/** The handoff input, or undefined. Refuses together with either enrollment input. */
+/** The handoff file path, or undefined. Never throws, so the caller holds the path before any
+ *  refusal. */
 export function managedHandoffInput(env: Record<string, string | undefined>): string | undefined;
 
 /** Map a parsed handoff onto the redeem consumer's shapes. Pure. */
@@ -247,12 +269,16 @@ required with `COTAL_MANAGED_HANDOFF_FILE` and refused without it.
 
 The handoff path through `spawn(args)`:
 
-1. Read and scrub. `managedHandoffInput` runs beside `enrollmentInput`; `scrubEnrollmentEnv` also
-   removes `COTAL_MANAGED_HANDOFF_FILE`, case-insensitively, before any extension, preflight or
-   harness child starts. Both inputs together refuse.
-2. Refuse the shapes the redeem input refuses: `--detach`, `-f`, `--creds`, a missing `--space` and
-   a missing `--config` file.
-3. `readManagedLifecycleHandoffFile(path, { space: --space, owner: --expect-owner, actor: --name,
+1. Take custody, first. `managedHandoffInput` runs before `enrollmentInput` and before any flag
+   check. When it returns a path, `takeManagedHandoffFile(path)` runs at once and the text stays in
+   memory only. `scrubEnrollmentEnv` also removes `COTAL_MANAGED_HANDOFF_FILE`, case-insensitively,
+   before any extension, preflight or harness child starts. From here no refusal can leave the
+   file behind, because it is already gone. This ordering matters because the refusals below exit
+   the process directly, and an exit skips any `finally`.
+2. Refuse the conflicts and the shapes the redeem input refuses: `COTAL_ENROLLMENT_URL` or
+   `COTAL_ENROLLMENT_FILE` also set, `--detach`, `-f`, `--creds`, a missing `--space`,
+   `--expect-owner` or `--expect-lifecycle-uid`, and a missing or unloadable `--config` file.
+3. `parseManagedLifecycleHandoff(text, { space: --space, owner: --expect-owner, actor: --name,
    lifecycleUid: --expect-lifecycle-uid })`. Any mismatch exits non-zero here, before mesh
    registration, before any broker connection and before any exchange request.
 4. `handoffEnrollmentBundle` builds the bundle; `stock.userAuth` is
@@ -287,20 +313,34 @@ The delegated arm of the spawn path runs when `this.runtime.spawnDelegated` is d
    before any effect: a delegated seat has no local grant path.
 2. It refuses before enrollment when the manager's registry record for the space is missing, or its
    exchange URL differs from `remoteAuthority.agentBearerExchangeUrl`.
-3. `enrollUserAgent` keeps its behavior: one enrollment, digest only, the host's UID, the token in
+3. It refuses, before enrollment and before any runtime effect, every spawn choice that only the
+   manager's host can honour, naming the choice:
+   - `resume`: the session id names a session on the manager's host, and a delegated child starts
+     a fresh connector session. Portable resume is not part of this cut.
+   - `cwd`: the path is on the manager's filesystem. The child runs in the provider resource's own
+     working directory and never in the manager's workspace root.
+   - shared MCP servers: the set `connectorServers(loadCotalConfig(workspaceRoot), agent,
+     parseShareSelection(shareTools))` must be empty, because each server is a command on the
+     manager's host. A spawn that would share any, from `--share-tools` or from the config default,
+     refuses and names them; `--share-tools none` passes.
+   - `supervise`: already refused for every user-mode seat (`manager.ts:5196`).
+
+   The operator's `spawn.env` allow-list does not apply: it selects names from the manager's own
+   environment, and no value from that environment crosses.
+4. `enrollUserAgent` keeps its behavior: one enrollment, digest only, the host's UID, the token in
    the manager's own `SecretStore`, and the in-process bearer preflight that proves the chain before
    the handoff leaves.
-4. Its result additionally carries the enrollment result fields above and the token it generated,
+5. Its result additionally carries the enrollment result fields above and the token it generated,
    so `composeManagedHandoff` needs no second read. A host exchange URL that differs from the record
    fails the spawn after enrollment through the existing post-enrollment rollback, which retires that
    lifecycle.
-5. The manager resolves the persona as today and passes its text. It resolves the connector locally
-   only for its existing gates (readiness window, prompt support, event channel). It never calls
-   `connector.buildLaunch` for a delegated seat, so no launch-material file, control token or
-   manager path is produced.
-6. It adds the UID to `delegatedLaunched`, calls `spawnDelegated(launch, handoff)` once, and drops
+6. The manager resolves the persona and role as today and passes the persona's text and the role it
+   enrolled with. It resolves the connector locally only for its existing gates (readiness window,
+   prompt support, event channel). It never calls `connector.buildLaunch` for a delegated seat, so
+   no launch-material file, control token or manager path is produced.
+7. It adds the UID to `delegatedLaunched`, calls `spawnDelegated(launch, handoff)` once, and drops
    its reference to the handoff. A UID already in the set refuses a second call.
-7. Readiness is `awaitReadiness` unchanged: exact-principal and exact-incarnation presence.
+8. Readiness is `awaitReadiness` unchanged: exact-principal and exact-incarnation presence.
 
 ## Readiness and the lost acknowledgement
 
@@ -313,9 +353,17 @@ A create whose acknowledgement is lost, times out or answers ambiguously leaves 
 observed: no presence for that principal and incarnation, and no provider exit or close. The manager
 never reports it exited on that evidence, never calls `spawnDelegated` again for that UID, and never
 enrolls again for that name while the alias is held.
+
+A provider read that finds no resource under the key does not change this. After an ambiguous
+create, the create may still be in flight and materialize later, so absence is not an exit and the
+handle stays `"running"`. Only an observed child exit, or a fenced close that completed, makes it
+`"exited"`. This matters because the manager reaps any handle that reads `"exited"` through
+`onAgentExit` (`manager.ts:2450`, `:6463`, `:6498`), which would free the alias while a create could
+still start a child.
+
 A child that joins later is observed by presence as usual. An operator who decides it is gone stops
-it through the retirement path below, which closes the resource by key whether or not it ever
-started.
+it through the retirement path below. Its close by key is fenced, so it settles whether or not the
+child ever started and never completes ahead of a create that could still land.
 
 The labelled pooled fixture runtime in `implementations/manager/smoke/remote-manager-proc.ts` marks a
 non-200 create as exited. That is a test fixture, and a `spawnDelegated` runtime must not copy it.
@@ -330,8 +378,9 @@ With the enrolling manager present, a stop of a delegated seat runs, in order:
 1. `remoteAuthority.prepareAgentRetirement({ target: { owner, actor, lifecycleUid }, opId: managedRetirementOpId(lifecycleUid) })`.
    The host revokes the managed grant and finishes its resumable release while keeping the UID. From
    here the child can obtain no fresh bearer.
-2. The known-handle provider closure: `stop()` on the handle `spawnDelegated` returned, which closes
-   the resource at `managedRuntimeKey(target)`, then a bounded `waitForExit()`.
+2. The known-handle provider closure: `stop()` on the handle `spawnDelegated` returned, which is the
+   fenced close of the resource at `managedRuntimeKey(target)`, then a bounded `waitForExit()`. A
+   close that cannot yet prove no create for the key is pending leaves this step uncertain.
 3. The terminal barrier: `mintRetirementRequester` and the auth `retireLifecycle` rail with the same
    operation id, as `driveDeprovision` does today (`manager.ts:4100-4110`).
 
@@ -341,14 +390,17 @@ uncertain outcome at any step keeps the alias held, and a retry repeats the same
 operation id.
 
 After the enrolling manager is gone, the host runs the same three steps with its own authority: its
-own grant revocation and release (the host operation behind `prepareAgentRetirement`), the provider
-closure at `managedRuntimeKey(target)`, and `POST /managed-lifecycle/retire` (`MANAGED_RETIRE_PATH`)
+own grant revocation and release (the host operation behind `prepareAgentRetirement`), the fenced
+close at `managedRuntimeKey(target)`, and `POST /managed-lifecycle/retire` (`MANAGED_RETIRE_PATH`)
 with `{ owner, actor, lifecycleUid }`. That door and the rail share one flight and one operation id,
-so a late manager request and the host call converge on one barrier.
+so a late manager request and the host call converge on one barrier. The host does not know whether
+the manager's create was answered, so its close must fence the key itself.
 
-A composition supplies `spawnDelegated` only if its host can close the provider resource by
-`managedRuntimeKey` without the manager. A runtime that keeps the only provider handle inside the
-manager's process does not qualify, because its seats could not be closed after the manager is gone.
+A composition supplies `spawnDelegated` only if its host can perform the fenced close by
+`managedRuntimeKey` without the manager: the provider offers a close that refuses any later create
+under the key, or a way to prove that no create for the key is still pending. A runtime that keeps
+the only provider handle inside the manager's process does not qualify, because its seats could not
+be closed after the manager is gone.
 
 A delegated lifecycle is not resumed or re-handed by a later manager incarnation in this cut. It runs
 until a stop, and a stop always takes the path above.
@@ -396,6 +448,9 @@ root, `COTAL_HOME` and tmpdir are absent; a real connector with a pinned model.
 | A8 | rerun the child's command with the same handoff path | refused, the file no longer exists |
 | A9 | redeem a host-minted enrollment URL with `COTAL_ENROLLMENT_FILE` on the same build | unchanged behavior |
 | A10 | read a handoff with one extra field, a wrong `kind`, mode 0644, or a token in argv | each refused before any plane opens |
+| A11 | start the child by hand with a valid handoff file and, in turn, `--detach`, `COTAL_ENROLLMENT_FILE` also set, no `--expect-owner`, and a `--config` that does not load | each exits non-zero naming the problem and no file content; the handoff file is gone every time |
+| A12 | on the manager, `cotal spawn <persona> --detach` with, in turn, `--resume <id>`, `--cwd <dir>`, `--share-tools <server>`, and no flag while the config shares a server with that connector | each refused naming the choice; the host shows no enrollment and the provider no create; `--share-tools none` spawns |
+| A13 | hold the provider's create behind a proxy that drops its answer and delays it, read status while the provider still reports no resource for the key, then release the create and run `cotal stop <name>` | `cotal ps` keeps the seat held and not exited throughout; the stop's close does not complete until the create has landed or the key is fenced; afterwards no resource exists under the key and the alias is free |
 
 ## Evidence behind this record
 
