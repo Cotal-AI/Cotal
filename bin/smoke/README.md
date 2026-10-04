@@ -65,12 +65,12 @@ A run cannot show that a suite swallowed a throw or lost a cell, so `pnpm smoke:
 reads the entry file of every suite the gate reaches and refuses two shapes. It accepts only the
 forms below, because a form it cannot follow to the exit status can hide either defect.
 
-- A `finally`, or a promise `.finally`, that calls `process.exit` with a status that can be 0, where
-  a throw in that `try` would exit 0. A catch arm prevents it only when its first statement exits
-  with a failing status, or sets `process.exitCode` to one that the exit reads (`process.exit()`,
-  `process.exit(process.exitCode)` or `process.exit(process.exitCode ?? 0)`) while nothing in the
-  arm or the `finally` writes another code, including `++`, `--`, destructuring and
-  `process["exitCode"]`. A statement before it can throw past it, so log after failing. A statement
+- A `finally`, or a promise `.finally`, that calls `process.exit` with a status that can be 0, itself
+  or through a function it calls or names as the handler, where a throw in that `try` would exit 0.
+  A catch arm prevents it only when its first statement exits with a failing status, or sets
+  `process.exitCode` to one that the exit reads (`process.exit()`, `process.exit(process.exitCode)`
+  or `process.exit(process.exitCode ?? 0)`) while nothing in the arm, the `finally` or a function
+  either calls writes another code, including `++`, `--`, destructuring and `process["exitCode"]`. A statement before it can throw past it, so log after failing. A statement
   inside a branch of the arm, a computed code and a rethrow do not count. A promise `.catch` counts
   only directly before `.finally`. A status variable that starts failing counts when the only write
   that clears it is the last statement of the `try`.
@@ -82,7 +82,7 @@ forms below, because a form it cannot follow to the exit status can hide either 
   arm setting `process.exitCode = 1`, when the file writes no other code and every `process.exit`
   that can follow reads it; the same arm throwing, outside any function or `try` with a catch; or
   `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`. A statement before the failing one in the arm
-  counts only where a throw would also escape.
+  counts only where a throw would also escape, and only when it cannot end the run.
 
 A failing status is an integer from 1 to 255, written as a literal or a sum of literals. The process
 keeps only the low eight bits of its status, so `process.exit(256)` exits 0. The `finally` exit's own
@@ -97,10 +97,21 @@ Every run reaches a statement of the file, of a bare block, of a `try` or `final
 body of a function that a reached statement calls (`main()`, `await main()`, `main().catch(...)`),
 when no earlier statement in its block exits, throws or returns, or holds a `return` or a
 `process.exit` with a status that can be 0 in a branch or block, or calls a function of the file
-whose body can make such an exit, by name, as a method or in place. A platform skip that exits 0
-before the comparison is such a branch. An async function called without `await` counts only when
-no later statement exits or calls such a function. A comparison in a branch, a loop, a callback, a
-check function, a failure tally or a variable pins nothing.
+whose body can make such an exit. A platform skip that exits 0 before the comparison is such a
+branch. An async function called without `await` counts only when no later statement exits or calls
+such a function. A comparison in a branch, a loop, a callback, a check function, a failure tally or
+a variable pins nothing.
+
+A throw or a rejection before the comparison skips it. A statement in a `try` counts only when its
+catch arm fails the run as a mismatch arm would and its `finally` holds no `return`. A statement of a
+function called with `.catch(handler)` or `.then(f, handler)` counts only when the handler is a
+function written in place whose first statement fails the run.
+
+A call stands for every value the file gives its callee: the declarations of a name and every
+assignment to it, an alias such as `const stop = process.exit` or `const { exit } = process`, and,
+for `o.k()` or `o["k"]()`, every value the file binds to the key `k` on any object, since the gate
+does not track which object it is. A function passed as an argument, `.call`, `.apply`, `.bind`, a
+getter, a key computed at run time and an imported function are not followed.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The
