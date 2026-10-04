@@ -8,9 +8,10 @@
  * Failure policy: a line reports an act that already happened, so a fault on stderr must neither
  * fail that act nor drop the line unsaid. When the stderr write throws or fails (EPIPE, ENOSPC,
  * EIO), at once or after waiting in a full pipe, the line is written to stdout instead with the
- * error named, and the stream's deferred `error` event is absorbed so it cannot crash the command
- * after its write. If stdout fails too, no channel is left to carry the line: the command still
- * finishes its work, and a run that would exit 0 exits 1, so the loss is never silent. A line still
+ * error named. If stdout fails too, no channel is left to carry the line, and a run that would exit
+ * 0 exits 1, so the loss is never silent. The deferred `error` event of a stream that failed a line
+ * is absorbed, so it cannot crash the command after its write and the command finishes its work,
+ * unless the program's own listener ends it, as the CLI's does on any stdout error. A line still
  * waiting in a full pipe when the process exits, as when the CLI exits at once on a closed stdout,
  * is lost the same way and counts the same. Node does not say whose bytes a stream still holds, so
  * a line that had to wait and got through just before the exit also counts while later output
@@ -35,26 +36,34 @@ export const provenance = {
   },
 };
 
-let absorbing = false;
 let unsaid = false;
 let watching = false;
 /** Writes still waiting in a full pipe: neither finished nor failed. An exit drops them unwritten. */
 const waiting = new Set<{ stream: NodeJS.WriteStream }>();
+/** Streams whose `error` event is absorbed: without a listener Node exits 1 on it. */
+const absorbed = new Set<NodeJS.WriteStream>();
 
 /** Write one provenance line under the failure policy above: on stderr, else on stdout with the
- *  stderr error named, else counted as unsaid. A thrown value need not be an Error (`throw null`). */
+ *  stderr error named, else counted as unsaid. */
 function say(line: string): void {
   send(process.stderr, `${line}\n`, (failure) => {
-    if (!absorbing) {
-      absorbing = true;
-      process.stderr.on("error", () => {}); // reported below; without a listener Node exits 1 on it
-    }
-    const e = failure as Partial<NodeJS.ErrnoException> | null | undefined;
-    send(process.stdout, `${line} (stderr failed: ${e?.code ?? e?.message ?? String(failure)})\n`, lost);
+    send(process.stdout, `${line} (stderr failed: ${nameOf(failure)})\n`, lost);
   });
 }
 
-/** Write `text` to `stream`, calling `onFail` at most once if the write fails. A write can fail
+/** A thrown value need not be an Error (`throw null`), and naming one must not throw, since that
+ *  would interrupt the command this policy keeps running. */
+function nameOf(failure: unknown): string {
+  try {
+    const e = failure as Partial<NodeJS.ErrnoException> | null | undefined;
+    return String(e?.code ?? e?.message ?? failure);
+  } catch {
+    return `unprintable ${typeof failure}`;
+  }
+}
+
+/** Write `text` to `stream`, calling `onFail` at most once if the write fails and absorbing the
+ *  stream's `error` event from then on, since the policy above reports the failure. A write can fail
  *  before it returns: it throws, or the stream is already `errored` (one that failed earlier in the
  *  same tick buffers the text and then drops it). A write left pending in a full pipe fails later,
  *  through its callback, which Node runs before the stream emits `error`; until it settles it is
@@ -68,16 +77,25 @@ function send(stream: NodeJS.WriteStream, text: string, onFail: (failure: unknow
     waiting.delete(write);
     return true;
   };
+  const fail = (failure: unknown): void => {
+    if (!settle()) return;
+    if (!absorbed.has(stream)) {
+      absorbed.add(stream);
+      stream.on("error", () => {});
+    }
+    onFail(failure);
+  };
   try {
     stream.write(text, (e) => {
-      if (settle() && e) onFail(e);
+      if (e) fail(e);
+      else settle();
     });
   } catch (e) {
-    if (settle()) onFail(e);
+    fail(e);
     return;
   }
   if (stream.errored) {
-    if (settle()) onFail(stream.errored);
+    fail(stream.errored);
   } else if (stream.writableLength > 0) {
     waiting.add(write);
     watchExit();
