@@ -74,3 +74,16 @@ that entrypoint to a Node, tsx, or node-pty subprocess and the command builds ea
 reached through it. An `executes`-only config diff is coverage metadata, not a proof-definition
 change: mutation-reproof names it as a metadata-only exclusion instead of re-proving the live
 kill set.
+
+## Mutation reproof
+
+`node scripts/mutation-reproof.mjs --base <commit>` re-proves the mutation fixtures a diff selects.
+A fatal verdict or a pre-red command that the diff caused fails it. A command that was already red
+at the base, or a fixture whose run was inconclusive, is reported without failing, as long as at
+least one selected fixture produced a kill.
+
+`node scripts/mutation-reproof.mjs --all` is the scheduled full sweep, run in shards. It grades the
+health of the whole tree, so every proven fixture in the shard must produce a kill. A fixture that
+is pre-red, inconclusive, or graded nothing fails the sweep and is named on the
+`MUTATION REPROOF FLOOR ERODED` line, or on the `ZERO DISCRIMINATED, COULD NOT` line when no fixture
+killed. That failure opens or comments on the `ci:mutation-reproof` tracking issue.

@@ -19,6 +19,8 @@
  *     base-to-head transition instead of inferring causation from selection provenance.
  *   - an unstable failure signature (a suite printing per-run text) was reported as contamination
  *     or as a changed failure; it is now named as unstable and stays UNMEASURED.
+ *   - under --all, one killing fixture held the floor up for every other fixture that had gone
+ *     pre-red or inconclusive; a full sweep now requires every proven fixture to discriminate.
  *
  * A fixture whose guarded source was deleted or renamed away is a DANGLING fixture: its anchor can
  * no longer resolve, so its proof is unrunnable. That is precisely the state this gate refuses, so a
@@ -351,7 +353,8 @@ if (prove.length === 0) {
 //             while a per-mutation command runs suite B. In diff mode, re-run the exact command that
 //             refused against the base tree. GREEN -> RED is attributable and fatal; RED -> RED is
 //             inherited and non-fatal. An absent or unmeasurable base comparison fails loud. Under
-//             --all there is deliberately no base comparison, so PRE-RED remains non-fatal.
+//             --all there is deliberately no base comparison, so PRE-RED is never attributed, but
+//             it still counts against the full-sweep floor below.
 //   exit 1  — at least one mutation did not produce a clean, named red. That splits again:
 //               SURVIVED / UNGRADABLE / WRONG-RED / ERROR — fatal at head. In diff mode, re-run the
 //                                       same fixture proof against clean head and base snapshots.
@@ -366,9 +369,12 @@ if (prove.length === 0) {
 //                                       fails the discrimination floor: that is vacuity, not a
 //                                       kill. A mixed KILLED+INCONCLUSIVE fixture counts as
 //                                       discriminated because a kill was observed.
-// A proven set that discriminated zero fixtures is not an all-clear. The floor is 1 when any
-// fixture was proven, and 0 when none were (the "nothing applicable" path already printed above).
-// That required count follows from the selected configs, not from a corpus-size constant.
+// A proven set that discriminated zero fixtures is not an all-clear. In diff mode the floor is 1
+// when any fixture was proven, and 0 when none were (the "nothing applicable" path already printed
+// above). Under --all the floor is every proven fixture: a full sweep grades the health of the
+// tree rather than a diff, so one killing fixture cannot clear a corpus whose other members went
+// pre-red, inconclusive, or graded nothing. Either required count follows from the selected
+// configs, not from a corpus-size constant.
 // The classification reads mutation-proof's own verdict lines rather than re-deriving them, so the
 // two tools cannot drift on what a verdict means. mutation-proof colours each verdict, so a line is
 // `\x1b[32mKILLED      \x1b[0m <label>`: strip ANSI before matching, or every verdict reads as
@@ -762,7 +768,7 @@ for (const { path, command, mutations } of prove) {
 const fixtureCount = (findings) => new Set(findings.map(({ path }) => path)).size;
 if (preRed.length) {
   console.log(`\nPRE-RED (${fixtureCount(preRed)} fixture(s)) INHERITED — ${a.all
-    ? "--all supplied no base comparison; kept nonfatal"
+    ? "--all supplied no base comparison; not attributed, but counted against the full-sweep floor"
     : "the same command was already red at base; not caused by this diff"}:`);
   for (const { path, command, baseStatus, headStatus } of preRed) {
     console.log(baseStatus === undefined
@@ -802,9 +808,10 @@ if (attributablePreRed.length || unmeasuredPreRed.length || fatal.length || unme
   process.exit(1);
 }
 function discriminationFloor(provenCount, discriminatedCount) {
-  // Required kills follow the configs actually proven: none if the selector had nothing
-  // to prove, otherwise at least one. A constant such as "50" would pass today's corpus
-  // by accident and would fail a legitimate one-fixture synthetic.
+  // Required kills follow the configs actually proven: under --all every one of them, in diff
+  // mode none if the selector had nothing to prove, otherwise at least one. A constant such as
+  // "50" would pass today's corpus by accident and would fail a legitimate one-fixture synthetic.
+  if (a.all) return { pass: discriminatedCount === provenCount, required: provenCount };
   if (provenCount === 0) return { pass: true, required: 0 };
   return { pass: discriminatedCount > 0, required: 1 };
 }
@@ -833,6 +840,12 @@ if (!floor.pass) {
   ]);
   const expected = prove.map(({ path }) => path).filter((path) => !unableSet.has(path));
   const unable = prove.map(({ path }) => path).filter((path) => unableSet.has(path));
+  // Only a full sweep reaches here with a kill, because its floor is every proven fixture. The
+  // fixtures that killed are not the finding; the ones that could not are coverage the tree lost.
+  if (discriminated.length > 0) {
+    console.error(`\nMUTATION REPROOF FLOOR ERODED (${discriminated.length} of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs, every proven fixture under --all: ${fixtureCount(preRed)} pre-red, ${inconclusive.length} inconclusive, ${zeroGraded.length} graded nothing). A full sweep grades the tree, so these fixtures no longer prove their guard; repair them: ${unable.join(", ")}`);
+    process.exit(1);
+  }
   if (expected.length === 0) {
     console.error(`\nMUTATION REPROOF ZERO DISCRIMINATED, COULD NOT (0 of ${prove.length} proven fixture(s) discriminated; required ${floor.required} from the selected configs). No proven fixture here was in a position to kill: every one was pre-red, inconclusive, or graded nothing, so this unit obtained no verdict and cannot stand as an all-clear. Not attributable to any fixture below; re-shard or repair the already-red commands: ${unable.join(", ")}`);
   } else {
