@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import {
   globalConfigPath,
   registry,
-  seedConnectorServers,
   type ConnectorSetupProvider,
   type ConnectorStatusInput,
   type ConnectorStatusRow,
@@ -206,14 +205,17 @@ function userServers(): Record<string, unknown> {
   return config?.mcpServers ?? {};
 }
 
-/** Whether setup may copy a server entry into the cotal config. That config holds secrets only as
- *  `${VAR}` references, and literal text cannot be told apart from a secret, so every `env` and
- *  `headers` value must be references and nothing else. Claude Code skips a malformed entry, so a
- *  non-object one is not a server to copy. */
+/** Whether setup may copy a server entry into the cotal config. Each field must have the type
+ *  {@link McpServerSpec} gives it: Claude Code skips an entry that does not, and launch would throw on
+ *  it for every spawn. That config holds secrets only as `${VAR}` references, and literal text cannot
+ *  be told apart from a secret, so every `env` and `headers` value must be references and nothing else. */
 function copyable(spec: unknown): spec is McpServerSpec {
   const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const isOptionalString = (v: unknown) => v === undefined || typeof v === "string";
   return (
     isRecord(spec) &&
+    [spec.command, spec.type, spec.url].every(isOptionalString) &&
+    (spec.args === undefined || (Array.isArray(spec.args) && spec.args.every((arg) => typeof arg === "string"))) &&
     [spec.env, spec.headers].every(
       (values) => values === undefined || (isRecord(values) && Object.values(values).every((v) => typeof v === "string" && v.replace(ENV_REFERENCE, "") === "")),
     )
@@ -270,16 +272,16 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     explain:
       "A spawned Claude Code session gets the cotal tools plus the MCP servers your own sessions load. Each spawn starts its own copy of every shared server, so on a small machine remove the heavy ones from the cotal config or spawn with --share-tools none.",
     context: [DOCS_URL],
-    run() {
+    run({ seed }) {
       const installed = Object.entries(userServers());
       const shared = Object.fromEntries(installed.filter((entry): entry is [string, McpServerSpec] => copyable(entry[1])));
       const left = installed.filter(([, spec]) => !copyable(spec)).map(([name]) => name);
       const path = globalConfigPath();
       // An empty list is recorded too: a later setup keeps whatever list the first run wrote.
-      if (!seedConnectorServers("claude", shared)) return `kept the list ${path} already declares`;
+      if (!seed(shared)) return `kept the list ${path} already declares`;
       const parts = [`${Object.keys(shared).join(", ") || "none"} via ${path}`];
       if (left.length)
-        parts.push(`not shared: ${left.join(", ")} (setup copies a server only when its env and headers values are all \${VAR} references; add it to ${path} by hand to share it)`);
+        parts.push(`not shared: ${left.join(", ")} (setup copies a server only when it is well formed and its env and headers values are all \${VAR} references; add it to ${path} by hand to share it)`);
       return parts.join("; ");
     },
   },

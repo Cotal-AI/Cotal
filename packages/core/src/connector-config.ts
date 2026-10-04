@@ -23,9 +23,9 @@
  * The caller (both spawn paths) resolves this once and hands the chosen servers to the connector,
  * which renders them into its own host format.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 /** One MCP server, in the de-facto `.mcp.json` shape. Secrets belong in `env` (or `headers`) as
  *  `${VAR}` references, resolved from the operator's environment at launch. Remote-transport fields
@@ -97,7 +97,7 @@ export function spaceConfigPath(root: string): string {
 
 /** Parse one config file. A missing file is empty (no config is a valid state); malformed JSON or a
  *  non-object top level throws — a typo in your settings should be loud, not silently ignored. */
-function readConfigFile(path: string): CotalConfig {
+export function readCotalConfigFile(path: string): CotalConfig {
   if (!existsSync(path)) return {};
   let parsed: unknown;
   try {
@@ -158,20 +158,7 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
 /** Load the merged cotal config: the operator-level file as the base, the space-local file layered
  *  on top (more specific wins, per connector + server name). */
 export function loadCotalConfig(root: string): CotalConfig {
-  return mergeConfig(readConfigFile(globalConfigPath()), readConfigFile(spaceConfigPath(root)));
-}
-
-/** Record `servers` as what `connector` shares, in the operator-level file, unless that file already
- *  declares a list for it: an existing list, even an empty one, is the operator's choice and is
- *  kept. Every other key in the file is preserved. Returns whether it wrote. */
-export function seedConnectorServers(connector: string, servers: Record<string, McpServerSpec>): boolean {
-  const path = globalConfigPath();
-  const config = readConfigFile(path);
-  if (config.connectors?.[connector]?.mcpServers !== undefined) return false;
-  const connectors = { ...config.connectors, [connector]: { ...config.connectors?.[connector], mcpServers: servers } };
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({ ...config, connectors }, null, 2) + "\n");
-  return true;
+  return mergeConfig(readCotalConfigFile(globalConfigPath()), readCotalConfigFile(spaceConfigPath(root)));
 }
 
 /** The MCP servers a connector should share with an agent it spawns, after applying an optional

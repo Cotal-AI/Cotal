@@ -80,8 +80,9 @@ whether those actions install plugin assets. A selected candidate runs its conne
 that declares no provider is simply marked ready (OpenCode auto-wires at spawn, injecting its
 plugin via `buildLaunch` and never writing the user's config). A selected candidate's `mcpServers` action runs next
 through the same seam: the Claude provider reads the user-scope servers from Claude Code's config and
-records them with core's `seedConnectorServers`, which writes the operator-level cotal config only
-when it declares no list for that connector. The `skills` action runs for every
+records them through the `seed` input the CLI hands it. That is workspace's `seedConnectorServers`,
+which writes the operator-level cotal config under a lock and only when it declares no list for that
+connector, so two setups run at once record one list. The `skills` action runs for every
 present connector that declares one, selected or not, because Cotal's authored skills are
 independent of mesh membership. Two experts (david, the engineer; sven, the guide) plus the
 operator's own driving session (`me`) are written by default, and `me` is the persona

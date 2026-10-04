@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorSkillsSetupInput, type ConnectorStatusRow, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type ConnectorStatusRow, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   findCotalRoot,
   homeCotalDir,
@@ -13,6 +13,7 @@ import {
   personaDir,
   provenance,
   resolveMeshTarget,
+  seedConnectorServers,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
@@ -366,7 +367,7 @@ export async function connectorSetupStep(connector: Connector, action: "connecto
   const provider = await connectorSetupProvider(connector);
   const setup = provider?.[action] as ConnectorSetupAction | undefined;
   if (!provider || !setup || !setupProviderAvailable(provider)) return null;
-  const input = action === "skills" ? connectorSkillsInput() : undefined;
+  const input = action === "skills" ? connectorSkillsInput() : action === "mcpServers" ? connectorShareInput(connector) : undefined;
   return {
     name: setup.name,
     title: setup.title,
@@ -380,6 +381,11 @@ export async function connectorSetupStep(connector: Connector, action: "connecto
  * harness: the provider decides how its own harness consumes the cross-vendor skills. */
 function connectorSkillsInput(): ConnectorSkillsSetupInput {
   return { skillsDir: canonicalSkillsDir(), version: cliVersion(), stateDir: homeCotalDir() };
+}
+
+/** The cotal config write a connector's share action makes, bound to that connector's section. */
+function connectorShareInput(connector: Connector): ConnectorShareSetupInput {
+  return { seed: (servers) => seedConnectorServers(connector.name, servers) };
 }
 
 async function reconcileConnectorSkills(): Promise<void> {

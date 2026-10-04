@@ -29,8 +29,8 @@ spawned agent (see [Environment variables](#environment-variables) below), and a
 The sharing half: the Claude connector launches with `--strict-mcp-config`, dropping every ambient
 MCP server, so a spawned agent gets only the servers this file lists, and none with no list. On its
 first run `cotal setup` writes the `claude` list from your own Claude Code user-scope servers, leaving
-out any with an `env` or `headers` value that is anything but `${VAR}` references, and keeps a list
-the file already declares.
+out a malformed entry and any with an `env` or `headers` value that is anything but `${VAR}`
+references, and keeps a list the file already declares.
 Every shared server boots once per spawn, so remove the heavy ones for a lighter seat.
 
 ```json
