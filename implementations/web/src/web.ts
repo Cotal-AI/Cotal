@@ -26,6 +26,8 @@ import {
   progressSignal,
   userViewAuth,
   userViewAuthOrExit,
+  type ConnectFlags,
+  type Connection,
   type LocalProcess,
   type UserViewAuth,
 } from "@cotal-ai/workspace";
@@ -757,6 +759,18 @@ export async function activityBackfill(
   }
 }
 
+/** Connects the dashboard and spends the account seed on its one write cred, the channel-purger
+ *  for channel delete. The dashboard is a loopback HTTP process and the seed can mint ANY identity
+ *  or role, so the seed is bound only inside this function and a request handler in {@link web}
+ *  that reaches for it fails to compile. A narrowed copy made inside `web()` would leave the full
+ *  value in the handlers' scope beside it. `--creds` and open meshes have no seed and purge with the
+ *  connection's own creds; user mode mints a purger view per delete instead. */
+async function connectWithoutSeed(values: ConnectFlags): Promise<{ conn: Omit<Connection, "auth">; purgeCreds: string | undefined }> {
+  const { auth, ...conn } = await connectOrExit(values, "admin");
+  const purgeCreds = !conn.bearer && auth ? await mintCreds(auth, newIdentity(), "channel-purger") : conn.creds;
+  return { conn, purgeCreds };
+}
+
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
  *  observer endpoint (invisible to peers) feeds the page presence, channel history,
  *  and a live message stream — no manager required. Bound to loopback unless the operator opts in
@@ -767,19 +781,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // An invalid remote-exposure request must have no dashboard side effects.
   const host = normalizeWebHost(values.host);
   const port = values.port ? Number(values.port) : WEB_PORT;
-  // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast), then DROP the account
-  // seed. The dashboard is a loopback HTTP process; holding the space signing seed (`auth` — it can
-  // mint ANY identity/role) for the whole session would make a dashboard compromise = full account
-  // control. Instead pre-mint ONE scoped `channel-purger` cred for the only write path (channel delete
-  // = filtered CHAT purge + a channel-registry key delete), then EXPLICITLY narrow the `Connection`
-  // the request handlers close over so it no longer carries `auth` (see the drop below, just after
-  // the mint). `--creds` / open mode have no seed → the connection creds carry the purge rights.
-  //
-  // This paragraph used to say the seed "falls out of scope here". IT DID NOT: `conn` stayed in
-  // scope for the whole function and the delete path referenced it inside the handler, so the seed
-  // was reachable from the request handlers for as long as this comment claimed it was not. The
-  // mitigation is now performed rather than described — the correction is stated instead of quietly
-  // overwritten, because a comment that was wrong once is worth flagging to whoever reads it next.
+  // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast).
   //
   // USER MODE: the god view rides an exchange-gated "admin" VIEW bearer (ledger scope "admin",
   // fresh-checked at every mint and every connect) — standing via a bearer SOURCE so the tap
@@ -787,7 +789,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // "channel-purger" view per action, so each destructive click is a fresh ledger check, and
   // `cotal actor revoke` kills the dashboard live (eviction) while a scope edit bites at the next
   // refresh.
-  const conn = await connectOrExit(values, "admin");
+  const { conn, purgeCreds } = await connectWithoutSeed(values);
   const detachedRoot = process.env[DETACHED_ROOT_ENV];
   if (detachedRoot && conn.root !== detachedRoot)
     throw new Error(`detached web target lost its recorded mesh root (${detachedRoot}) before startup`);
@@ -805,27 +807,6 @@ export async function web(args: ParsedArgs): Promise<void> {
     claimPid(pidPath);
     process.once("exit", () => releasePid(pidPath));
   }
-  const purgeCreds = !user && conn.auth ? await mintCreds(conn.auth, newIdentity(), "channel-purger") : conn.creds;
-
-  // THE SEED IS DROPPED HERE, AND THIS IS THE LINE THAT MAKES THE CLAIM ABOVE TRUE.
-  //
-  // The header above has always said the account seed "isn't reachable from the request handlers".
-  // It was NOT true: `conn` is bound at the top of `web()` and was referenced INSIDE
-  // `handleRequest` (the `userViewAuth(conn, …)` call on the delete path), so the handler closed
-  // over the whole `Connection` — including `conn.auth`, the `SpaceAuth` carrying the broker
-  // operator seed and the account seed/signingSeed that can mint ANY identity or role. The
-  // mitigation was described in a comment and never implemented; that gap is what D3 recorded.
-  //
-  // The last use of `conn.auth` is the line above, so from this point the handler needs a
-  // Connection WITHOUT it. `userViewAuth` reads only `bearer`/`userAuth`/`root`/`space` and never
-  // touches `auth`, so nothing downstream loses anything. `auth` is optional on `Connection`, so
-  // the narrowed value is still a `Connection` and the compiler keeps it that way.
-  //
-  // HONEST LIMIT, so this is not read as more than it is: this is DEFENSE IN DEPTH, not a claim of
-  // unexploitability. An attacker with code execution in this process can reach the heap, where
-  // lexical scope means nothing. What it does buy is that the DOCUMENTED mitigation is now real,
-  // and that a future edit reaching for `conn` inside the handler has to notice this line first.
-  const { auth: _accountSeedIsNotForRequestHandlers, ...connForHandlers } = conn;
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
@@ -1133,7 +1114,7 @@ export async function web(args: ParsedArgs): Promise<void> {
         // User mode mints a one-shot channel-purger VIEW per delete — the ledger is re-checked at
         // this click, and a mid-session revoke becomes this handler's 400, never a dead dashboard.
         const result = user
-          ? await userViewAuth(connForHandlers, "channel-purger").then((p: UserViewAuth) =>
+          ? await userViewAuth(conn, "channel-purger").then((p: UserViewAuth) =>
               clearChannel({ servers: server, space, channel, bearer: p.bearer, sentinelCreds: p.sentinelCreds }),
             )
           : await clearChannel({ servers: server, space, channel, creds: purgeCreds });
