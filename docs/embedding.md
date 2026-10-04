@@ -547,8 +547,14 @@ Readiness is still mesh presence. A create whose answer is lost leaves the handl
 launch settles uncertain and stays held; the manager never retries it. A provider read that finds no
 resource under the key is not an exit, because the create may still land. Every close by
 `managedRuntimeKey` is fenced: it completes only once the create was answered or the provider refuses
-any later create under the key. A stop runs `prepareAgentRetirement` for the UID-exact target, then
-`stop()` on the handle `spawnDelegated` returned, then the terminal barrier. After the manager is gone
+any later create under the key. A provider that names its own resources may run the create as a
+durable operation keyed by `managedRuntimeKey` and close through the identifier its authenticated
+create response returned, kept where the host can read it without the manager. Only that response
+binds an identifier to the key; one derived from the key or found by name or listing is never closed
+or adopted, and while the response is unknown the launch stays held. Every stop, the reap of a child
+whose parent exited and `Manager.stop({ withAgents: true })` included, runs `prepareAgentRetirement`
+for the UID-exact target, then `stop()` on the handle `spawnDelegated` returned, then the terminal
+barrier. After the manager is gone
 the host runs the same steps, makes the same fenced close by `managedRuntimeKey`, and finishes at
 `MANAGED_RETIRE_PATH`. Supply `spawnDelegated` only from a runtime whose host can make that fenced
 close without the manager. The enrollment redeem

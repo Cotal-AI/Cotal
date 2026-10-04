@@ -143,6 +143,11 @@ export interface Runtime {
    * key so a create that arrives later is refused. Until one of those holds, `stop()` keeps the
    * close pending, `status()` stays `"running"`, and `waitForExit()` does not settle. The handle
    * carries no `reference` and no `release`.
+   *
+   * A provider that names its own resources may run the create as a durable operation keyed by
+   * that key and close through the identifier its authenticated create response returned, recorded
+   * where the host can read it without the manager. Only that response binds an identifier to the
+   * key; one derived from the key or found by name or listing is never closed or adopted.
    */
   spawnDelegated?(launch: DelegatedSeatLaunch, handoff: ManagedLifecycleHandoff): AgentHandle;
 }
