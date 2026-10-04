@@ -957,9 +957,10 @@ spawn then refuses a malformed handoff, or one whose
 space, owner, actor or lifecycle UID differs from `--space`, `--expect-owner`, `--name` and
 `--expect-lifecycle-uid`, before any broker connection or exchange request. Every refusal on this
 path names the field and never a value from the handoff. The registration's server, exchange and
-enforcement checks, the policy refresh, the broker preflight and the bearer exchange quote the
-server or the exchange URL in their own diagnostics, so for a handoff each prints one fixed sentence
-that names the field and the phase instead. A handoff conflicts with
+enforcement checks, the policy refresh, the broker preflight and the agent auth preflight quote the
+server, the exchange URL or the actor in their own diagnostics, so for a handoff each prints one
+fixed sentence that names the field and the phase instead. The event-plane policy refusals name the
+handoff's space field, and an actor outside `[A-Za-z0-9_]` is refused as malformed. A handoff conflicts with
 the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
 there it runs the enrollment consumer above without redeeming anything. See
 [Delegated seats](embedding.md#delegated-seats-outside-the-managers-filesystem).

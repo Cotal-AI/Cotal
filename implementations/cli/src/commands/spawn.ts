@@ -186,8 +186,8 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
 }
 
 /** What a managed handoff's bootstrap refuses with at each phase that runs a check shared with the
- *  enrollment path. Those checks' diagnostics quote the server or the exchange URL, and a handoff
- *  refusal never echoes the document, so each sentence names only the field and the phase. */
+ *  enrollment path. Those checks' diagnostics quote the server, the exchange URL or the actor, and a
+ *  handoff refusal never echoes the document, so each sentence names only the field and the phase. */
 const HANDOFF_REFUSALS = {
   bundle: "the managed handoff's mesh fields failed the user-auth bundle check",
   server: "the managed handoff's server is not a broker URL this machine may dial",
@@ -195,7 +195,7 @@ const HANDOFF_REFUSALS = {
   enforcement: "the managed handoff's server failed the enforcement check",
   policy: "the managed handoff's exchangeUrl failed the policy refresh",
   preflight: "the managed handoff's server failed the broker preflight",
-  bearer: "the managed handoff's actorToken failed the bearer exchange",
+  bearer: "the managed handoff's actorToken failed the agent auth preflight",
 } as const;
 
 /** Map a parsed handoff onto the redeem consumer's shapes. Pure. */
@@ -687,8 +687,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   const eventsRequired = policy?.events === "required";
+  // A handoff's space is a value from the document, so its policy refusals name the field instead.
+  const policySpace = handoffText === undefined ? `space "${target.space}"` : "the managed handoff's space";
   if (eventsRequired && values["no-events"]) {
-    console.error(c.red(`✗ space "${target.space}" requires the event plane by registration policy; --no-events is not allowed`));
+    console.error(c.red(`✗ ${policySpace} requires the event plane by registration policy; --no-events is not allowed`));
     process.exit(1);
   }
   // Foreground is the operator's own in-process launch (no typed door, no epAdminReach) and is
@@ -858,7 +860,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // mode the owner is resolved inside the provisioning call below.
   if (launchEvents && !connector.eventChannel) {
     console.error(c.red(eventsRequired
-      ? `✗ space "${space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
+      ? `✗ ${policySpace} requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
       : `✗ connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events to launch it without one`));
     process.exit(1);
   }
@@ -871,7 +873,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     ? target.userAuth.endpoints?.agentProvisioningUrl
     : undefined;
   if (handoffText !== undefined && !(target.mode === "user" && target.userAuth?.remote)) {
-    console.error(c.red(`✗ mesh "${target.space}" is registered here as a local mesh, so it cannot host a managed handoff`));
+    console.error(c.red("✗ the managed handoff's space is registered here as a local mesh, so it cannot host a managed handoff"));
     process.exit(1);
   }
   if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl && !enrollmentUrl && !redeemedEnrollment) {
@@ -1195,8 +1197,8 @@ function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; materi
  *  Deliberately NOT reusing the local path's cleanup: nothing here created broker state locally, so
  *  teardown is the mesh's business (its lifecycle owns the row and the durables). The spawned
  *  agent's material is shredded on exit; the row is not revoked from here, because this machine
- *  holds no authority to revoke it. `bearerRefusal` replaces a failed bearer preflight's diagnostic,
- *  which quotes the exchange URL, for a managed handoff. */
+ *  holds no authority to revoke it. `bearerRefusal` replaces the whole failure sentence for a managed
+ *  handoff, since it quotes the actor and the bearer preflight's diagnostic quotes the exchange URL. */
 async function provisionRemoteUserForeground(
   target: MeshTarget,
   name: string,
@@ -1264,9 +1266,7 @@ async function provisionRemoteUserForeground(
       "--token-file", tokenPath,
       "--health-file", healthPath,
     ];
-    await runBearerPreflight(bearerCmd).catch((e: Error) => {
-      throw bearerRefusal ? new Error(bearerRefusal) : e;
-    });
+    await runBearerPreflight(bearerCmd);
     return {
       userAuth: { owner: material.owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
       material,
@@ -1281,12 +1281,19 @@ async function provisionRemoteUserForeground(
       },
     };
   } catch (e) {
-    await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
-    await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
-    rmSync(tokenPath, { force: true });
-    rmSync(sentinelPath, { force: true });
-    rmSync(healthPath, { force: true });
-    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
+    let cause = e as Error;
+    try {
+      await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
+      await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
+      rmSync(tokenPath, { force: true });
+      rmSync(sentinelPath, { force: true });
+      rmSync(healthPath, { force: true });
+    } catch (shred) {
+      // Material may be left behind, which outranks the failure that started the shred, and an
+      // escaped error would bypass the refusal below.
+      cause = shred as Error;
+    }
+    return fail(bearerRefusal ?? `agent auth preflight failed for "${name}": ${cause.message}`);
   }
 }
 

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { isIPv4, isIPv6 } from "node:net";
-import { assertLifecycleToken } from "./subjects.js";
+import { assertLifecycleToken, assertValidOwnerToken } from "./subjects.js";
 
 /** The env var naming the handoff file inside the child. It carries a path, never a secret. */
 export const MANAGED_HANDOFF_FILE_ENV = "COTAL_MANAGED_HANDOFF_FILE";
@@ -61,6 +61,7 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
   if (typeof doc.tlsRequired !== "boolean") throw new Error("the managed handoff's tlsRequired is not a boolean");
   for (const k of TARGET_FIELDS)
     if (doc[k] !== expected[k]) throw new Error(`the managed handoff's ${k} does not match the expected ${k}`);
+  checkField("actor", () => assertValidOwnerToken(doc.actor as string));
   checkField("lifecycleUid", () => assertLifecycleToken(doc.lifecycleUid as string));
   let exchange: URL;
   try {

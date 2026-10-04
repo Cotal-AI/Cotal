@@ -186,7 +186,7 @@ key is `cotal-ffa44aae523faeee4ab7689a699b392e`.
 
 `parseManagedLifecycleHandoff` checks, in order: JSON text; an object with `kind === MANAGED_HANDOFF_KIND`; no
 field outside the interface; every string non-empty; `space`, `owner`, `actor` and `lifecycleUid`
-equal to `expected`; `lifecycleUid` passing `assertLifecycleToken`; `exchangeUrl` passing the
+equal to `expected`; `actor` passing `assertValidOwnerToken`; `lifecycleUid` passing `assertLifecycleToken`; `exchangeUrl` passing the
 `agent-bearer --exchange-url` scheme rule; the three lists arrays of strings; `policy` absent or
 `{ events: "required" }`.
 
