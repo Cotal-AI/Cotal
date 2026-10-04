@@ -18,8 +18,8 @@
  * both ways here: the drop arm is the control that proves the stall arm is doing the work.
  *
  * THE CLAIM. The stall rebuilds the watch, the rebuild's delete of its predecessor is refused by
- * the broker rather than reaching it, and the predecessor is still listed after the rebuild, left
- * to the inactive threshold.
+ * the broker rather than reaching it, the predecessor is still listed after the rebuild, left to
+ * the inactive threshold, and the endpoint raises no `error` for that refusal.
  *
  * Needs nats-server on PATH. Runs ~2 minutes: the heartbeat window is 30s and the client needs two.
  * Run: pnpm smoke:presence-watch-rebuild:auth
@@ -124,7 +124,12 @@ try {
     space, servers: SLOW, creds: webCreds, channels: [], consume: false,
     registerPresence: false, watchPresence: true, card: { name: "web", kind: "endpoint" },
   });
-  ep.on("error", () => { /* the stall raises connection errors by design */ });
+  const deleteErrors: string[] = [];
+  ep.on("error", (e: Error) => {
+    // The stall raises connection errors by design; 1.6 claims none of them names a presence consumer delete.
+    const subject = (e.cause as { subject?: string } | undefined)?.subject;
+    if (subject?.startsWith(`$JS.API.CONSUMER.DELETE.${stream}.`)) deleteErrors.push(subject);
+  });
   await ep.start();
   await wait(1200);
 
@@ -155,6 +160,8 @@ try {
     deleteViolations().length > 0, deleteViolations().slice(0, 2));
   ok("1.5 so the predecessor is still listed, left to the broker's inactive threshold",
     afterStall.includes(predecessor), { predecessor, afterStall });
+  ok("1.6 and the client treats that refusal as handled: no endpoint error names the delete",
+    deleteErrors.length === 0, deleteErrors.slice(0, 2));
 
   await ep.stop().catch(() => { /* the stall may have left it mid-rebuild */ });
 
@@ -164,7 +171,7 @@ try {
   nc.publish(`$JS.API.STREAM.DELETE.${stream}`, new TextEncoder().encode("{}"));
   await nc.flush().catch(() => { /* the violation IS the point */ });
   await wait(600);
-  ok("1.6 POSITIVE CONTROL: this fixture reads violations from this log the way 1.4 does",
+  ok("1.7 POSITIVE CONTROL: this fixture reads violations from this log the way 1.4 does",
     log.split("\n").some((l) => /Violation/i.test(l) && l.includes(`STREAM.DELETE.${stream}`)),
     log.split("\n").filter((l) => /Violation/i.test(l)).slice(-2));
   await nc.drain().catch(() => { /* already gone */ });
