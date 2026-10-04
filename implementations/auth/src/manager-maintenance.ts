@@ -9,6 +9,7 @@ import {
   type RemoteManagerMaintenanceResult,
 } from "@cotal-ai/core";
 import type { AuthLedgerScanner } from "./ledger-scanner.js";
+import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 
 const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
 
@@ -67,11 +68,9 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
   };
 }
 
-export async function authorizeRemoteManagerMaintenance(args: {
+export async function authorizeRemoteManagerMaintenance(args: ManagerAuthorityHolder & {
   request: RemoteManagerMaintenanceRequest;
   space: string;
-  owner: string;
-  scope: string[];
   observeManagerGate(instanceId: string): Promise<{
     state: "open" | "frozen" | "retired";
     principal: string;
@@ -83,13 +82,18 @@ export async function authorizeRemoteManagerMaintenance(args: {
   const r = parseRemoteManagerMaintenanceRequest(args.request);
   if (r.space !== args.space)
     throw new EpEnvelopeError("permission-denied", `manager maintenance request names space ${r.space}, not this host space ${args.space}`);
-  if (!args.scope.includes("supervise"))
-    throw new EpEnvelopeError("permission-denied", 'manager maintenance needs scope "supervise"; spawn/admin do not imply it');
+  requireManagerAuthorityHolder(args, r.instanceId, 'manager maintenance needs scope "supervise"; spawn/admin do not imply it');
+  // The platform arm reaches only its own assigned instance, for both operations. The human arm may
+  // still reconcile a foreign slot holder in its space.
+  if (args.holder === "platform" && r.targetInstanceId !== args.assignment.instanceId)
+    throw new EpEnvelopeError("permission-denied", `platform control maintenance may target only assigned instance ${args.assignment.instanceId}, not ${r.targetInstanceId}`);
   if (r.operation === "evict-family-principal" && r.targetInstanceId !== r.instanceId)
     throw new EpEnvelopeError("permission-denied", `manager maintenance eviction may target only caller instance ${r.instanceId}, not ${r.targetInstanceId}`);
   const gate = await args.observeManagerGate(r.targetInstanceId);
   if (!gate || gate.state === "retired")
     throw new EpEnvelopeError("failed-precondition", `manager maintenance found no live registration gate for instance ${r.targetInstanceId}`);
+  if (args.holder === "platform" && gate.principal !== `${args.owner}.${remoteManagerActors(r.targetInstanceId).serve}`)
+    throw new EpEnvelopeError("permission-denied", `platform control maintenance gate belongs to ${gate.principal}, not the platform serve principal`);
   if (r.operation === "evict-family-principal") {
     const servePrincipal = `${args.owner}.${remoteManagerActors(r.instanceId).serve}`;
     if (gate.principal !== servePrincipal)

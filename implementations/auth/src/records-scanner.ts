@@ -48,7 +48,7 @@
  */
 import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, RECORD_KINDS, assertDerivedOwnerToken, assertInboxConnId, parseGoalIndexEntry, parseRecordKey, recordsBucket, recordsKvStreamName, type GoalIndexEntry, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, RECORD_KINDS, assertInboxConnId, assertPrincipalOwnerToken, parseGoalIndexEntry, parseRecordKey, recordsBucket, recordsKvStreamName, type GoalIndexEntry, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import type { ScanGuard } from "./plane-claim.js";
 
@@ -340,7 +340,8 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   };
 
   const scanManagerGoalIndexOnce = async (owner: string): Promise<GoalIndexEntry[]> => {
-    const expectedOwner = assertDerivedOwnerToken(owner);
+    // A human manager's derived `u_…` owner, or the platform control manager's `p_…` owner (SPEC 13.1).
+    const expectedOwner = assertPrincipalOwnerToken(owner, { allowPlatform: true });
     const jsm = await jsmOf();
     const js = jsOf();
     const rawFilter = `goalidx.manager.${expectedOwner}.>`;

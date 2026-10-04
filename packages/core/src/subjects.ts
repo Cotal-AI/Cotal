@@ -359,7 +359,7 @@ export function principalTags(owner: string, actor: string): string[] {
  *  (it drops the connection rather than fall back to the ephemeral nkey — a tagless connection is not a
  *  principal we can attribute). Validates via {@link parsePrincipalKey} so a forged/garbled tag can't
  *  smuggle a non-principal string into the feed. */
-export function principalFromTags(tags: readonly string[] | undefined): string | null {
+export function principalFromTags(tags: readonly string[] | undefined, opts: { allowPlatform?: boolean } = {}): string | null {
   if (!tags) return null;
   const tag = tags.find((t) => t.startsWith(PRINCIPAL_TAG_PREFIX));
   if (!tag) return null;
@@ -369,7 +369,7 @@ export function principalFromTags(tags: readonly string[] | undefined): string |
   // `principal:<nkey>.team` tag would key a live feed entry on an nkey-shaped owner the surfacing path
   // rejects. Fail closed on anything else.
   const p = parsePrincipalKey(key);
-  return p && isPrincipalOwnerToken(p.owner) ? key : null;
+  return p && isPrincipalOwnerToken(p.owner, { allowLocal: true, allowPlatform: opts.allowPlatform ?? false }) ? key : null;
 }
 
 /** Inverse of {@link principalKey}'s `name` form (`<owner>-<actor>`): recover the principal dot-form
@@ -377,13 +377,13 @@ export function principalFromTags(tags: readonly string[] | undefined): string |
  *  tokens too — `-` is reserved as the name-form separator — so the FIRST `-` splits owner from actor
  *  unambiguously, and both halves must be {@link parsePrincipalKey}-valid with a real principal owner.
  *  An nkey (no `-`) or any other non-name-form returns null. */
-export function principalFromName(name: string | undefined): string | null {
+export function principalFromName(name: string | undefined, opts: { allowPlatform?: boolean } = {}): string | null {
   if (typeof name !== "string") return null;
   const dash = name.indexOf("-");
   if (dash <= 0 || dash >= name.length - 1) return null;
   const key = `${name.slice(0, dash)}.${name.slice(dash + 1)}`;
   const p = parsePrincipalKey(key);
-  return p && isPrincipalOwnerToken(p.owner) ? key : null;
+  return p && isPrincipalOwnerToken(p.owner, { allowLocal: true, allowPlatform: opts.allowPlatform ?? false }) ? key : null;
 }
 
 /** Recover a connection's principal dot-form from a `$SYS` CONNZ record, across BOTH credential
@@ -394,9 +394,11 @@ export function principalFromName(name: string | undefined): string | null {
  *     and does NOT surface `tags` at all (proven live on nats-server 2.10.22 + 2.14.2).
  *  So attribution must try the tag first, then the `authorized_user` name-form; anything else (an
  *  un-tagged nkey, open mode, infra) is `null` — unattributable, dropped fail-closed by callers.
- *  The membership feed and live eviction both key on this, so it lives here as the single source. */
-export function principalFromConnz(conn: { tags?: readonly string[]; authorized_user?: string }): string | null {
-  return principalFromTags(conn.tags) ?? principalFromName(conn.authorized_user);
+ *  The membership feed and live eviction both key on this, so it lives here as the single source.
+ *  `allowPlatform` also attributes a platform `p_…` owner (SPEC 13.1). Only the eviction and liveness
+ *  sweeps opt in, so they can fence the platform control family; the membership feed does not. */
+export function principalFromConnz(conn: { tags?: readonly string[]; authorized_user?: string }, opts: { allowPlatform?: boolean } = {}): string | null {
+  return principalFromTags(conn.tags, opts) ?? principalFromName(conn.authorized_user, opts);
 }
 
 /** The reserved owner token for the **no-login local/dev path** — the static-creds default when there
@@ -431,6 +433,19 @@ export function assertDerivedOwnerToken(owner: string): string {
   return owner;
 }
 
+/** Prefix of every **platform owner token** — see {@link assertPlatformOwnerToken}. */
+export const PLATFORM_OWNER_PREFIX = "p_";
+
+/** Validate the format of a **platform owner token**: `p_` + 26 lowercase base32 chars. The auth
+ *  service derives it for the one platform control manager assigned to an account (SPEC 13.1). It is
+ *  disjoint from `u_…` derived owners by prefix, from {@link DEV_OWNER} and from nkeys. A trust
+ *  boundary admits it only where it opts in with `allowPlatform`. */
+export function assertPlatformOwnerToken(owner: string): string {
+  if (typeof owner !== "string" || !/^p_[a-z2-7]{26}$/.test(owner))
+    throw new Error(`invalid platform owner token "${owner}": expected "${PLATFORM_OWNER_PREFIX}" + 26 lowercase base32 chars ([a-z2-7])`);
+  return owner;
+}
+
 /** Validate an owner token at a READ / persisted-owner TRUST boundary — STRICTER than
  *  {@link assertValidOwnerToken}, which (by design) still accepts nkey-shaped uppercase tokens and so does
  *  NOT by itself satisfy the flip's acceptance criterion 2. A *real* owner is EITHER a derived owner
@@ -442,14 +457,15 @@ export function assertDerivedOwnerToken(owner: string): string {
  *  for keying, surfacing, or authorization (membership feed re-key, history surfacing). Actors stay on
  *  {@link assertValidOwnerToken} — they are server-derived from the ledger, not disjointness-constrained.
  *  User-mode MINT boundaries (callout/bridge) use {@link assertDerivedOwnerToken} directly (no `local`). */
-export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean } = {}): string {
+export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean; allowPlatform?: boolean } = {}): string {
   if (opts.allowLocal && owner === DEV_OWNER) return owner;
+  if (opts.allowPlatform && /^p_[a-z2-7]{26}$/.test(owner)) return owner;
   try {
     return assertDerivedOwnerToken(owner);
   } catch {
     throw new Error(
       `invalid principal owner "${owner}" at a trust boundary: expected a derived owner (u_…)` +
-        `${opts.allowLocal ? ` or the reserved dev owner "${DEV_OWNER}"` : ""} - an nkey-shaped or arbitrary ` +
+        `${opts.allowLocal ? ` or the reserved dev owner "${DEV_OWNER}"` : ""}${opts.allowPlatform ? " or a platform owner (p_…)" : ""} - an nkey-shaped or arbitrary ` +
         `token is not a real owner (flip criterion 2: owners are nkey-disjoint).`,
     );
   }
@@ -460,9 +476,9 @@ export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: bo
  *  this on `parsed.owner` alongside the `from.id === parsed.sender` check, so a structurally-valid old-shape
  *  alias (`chat.<nkey>.team.backend`, owner = an nkey) is DROPPED at read time — belt to cred death, not a
  *  dependency on it. `allowLocal` defaults true: the dev/static path is a legitimate live sender. */
-export function isPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean } = { allowLocal: true }): boolean {
+export function isPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean; allowPlatform?: boolean } = { allowLocal: true }): boolean {
   try {
-    assertPrincipalOwnerToken(owner, { allowLocal: opts.allowLocal ?? true });
+    assertPrincipalOwnerToken(owner, { allowLocal: opts.allowLocal ?? true, allowPlatform: opts.allowPlatform ?? false });
     return true;
   } catch {
     return false;

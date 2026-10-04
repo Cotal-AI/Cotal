@@ -133,7 +133,7 @@ async function scanLive(
       for (const c of cs) {
         // Attribute across BOTH cred shapes — a callout user surfaces its principal as the
         // `authorized_user` name-form (no tags), a static user surfaces the `principal:` tag.
-        const principal = principalFromConnz(c);
+        const principal = principalFromConnz(c, { allowPlatform: true });
         if (!principal) continue; // un-attributable (infra/open/nkey) — not a target, safe to ignore
         if (typeof c.cid !== "number") {
           // An ATTRIBUTABLE connection with no usable cid can't be KICK-routed — same fail-closed
@@ -518,7 +518,7 @@ async function livenessSweep(
           malformed = true; // an id-less row could BE the claimed connection — fail safe
           continue;
         }
-        const principal = principalFromConnz(c);
+        const principal = principalFromConnz(c, { allowPlatform: true });
         conns.push({
           serverId, cid: c.cid,
           ...(typeof c.authorized_user === "string" ? { userNkey: c.authorized_user } : {}),
@@ -712,8 +712,8 @@ export async function observePrincipalLiveness(
   options: EvictOptions = {},
 ): Promise<PrincipalLivenessResult> {
   const parsed = parsePrincipalKey(principal);
-  if (!parsed || !isPrincipalOwnerToken(parsed.owner))
-    throw new Error(`principalLiveness: "${principal}" is not a real owner.actor principal (owner must be \`local\` or a derived \`u_…\` token — the only shapes CONNZ attribution can surface); a clean sweep for it would be false confidence, not a verdict`);
+  if (!parsed || !isPrincipalOwnerToken(parsed.owner, { allowLocal: true, allowPlatform: true }))
+    throw new Error(`principalLiveness: "${principal}" is not a real owner.actor principal (owner must be \`local\`, a derived \`u_…\` or a platform \`p_…\` token — the shapes CONNZ attribution can surface); a clean sweep for it would be false confidence, not a verdict`);
   const s = await livenessSweep(observerConn, accountId, options);
   const live = s.conns.some((c) => c.principal === principal);
   const note = sweepShortfallNote(s, "a freeze-holder repair");

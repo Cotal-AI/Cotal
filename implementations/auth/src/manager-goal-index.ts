@@ -9,6 +9,7 @@ import {
 } from "@cotal-ai/core";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { timingSafeEqual } from "node:crypto";
+import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 
 const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
 const bad = (message: string): never => { throw new EpEnvelopeError("bad-request", `manager goal-index scan request ${message}`); };
@@ -46,11 +47,9 @@ export function parseRemoteManagerGoalIndexScanRequest(raw: unknown): RemoteMana
   };
 }
 
-export async function authorizeRemoteManagerGoalIndexScan(args: {
+export async function authorizeRemoteManagerGoalIndexScan(args: ManagerAuthorityHolder & {
   request: RemoteManagerGoalIndexScanRequest;
   space: string;
-  owner: string;
-  scope: string[];
   proofSecret: string | Uint8Array;
   observeManagerGate: (instanceId: string) => Promise<{
     state: "open" | "frozen" | "retired"; principal: string; processEpoch: number; registrationRevision: number;
@@ -58,7 +57,7 @@ export async function authorizeRemoteManagerGoalIndexScan(args: {
 }): Promise<RemoteManagerGoalIndexScanRequest> {
   const request = parseRemoteManagerGoalIndexScanRequest(args.request);
   if (request.space !== args.space) throw new EpEnvelopeError("permission-denied", `manager goal-index scan names space ${request.space}, not this host space ${args.space}`);
-  if (!args.scope.includes("supervise")) throw new EpEnvelopeError("permission-denied", 'manager goal-index scan needs scope "supervise"');
+  requireManagerAuthorityHolder(args, request.instanceId, 'manager goal-index scan needs scope "supervise"');
   const actors = remoteManagerActors(request.instanceId);
   const gate = await args.observeManagerGate(request.instanceId);
   if (!gate || gate.state !== "open") throw new EpEnvelopeError("failed-precondition", `manager goal-index scan found no current open manager gate for instance ${request.instanceId}`);

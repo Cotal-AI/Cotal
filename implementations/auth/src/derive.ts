@@ -15,7 +15,7 @@
  *    flip's acceptance criterion 2, asserted on every return value.
  */
 import { createHmac } from "node:crypto";
-import { assertDerivedOwnerToken, DERIVED_OWNER_PREFIX } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertPlatformOwnerToken, DERIVED_OWNER_PREFIX, PLATFORM_OWNER_PREFIX } from "@cotal-ai/core";
 
 /** Domain-separation context — versioned so a future derivation change cannot silently collide
  *  with v1 tokens. Changing this re-keys every owner in the space; treat it as a migration. */
@@ -76,4 +76,19 @@ export function deriveOwnerForIdpSubject(
   if (!idpIssuer) throw new Error("deriveOwnerForIdpSubject: idpIssuer must be a non-empty string");
   if (!sub) throw new Error("deriveOwnerForIdpSubject: sub must be a non-empty string");
   return deriveOwnerToken(spaceSecret, JSON.stringify([idpIssuer, sub]));
+}
+
+const PLATFORM_CONTROL_CONTEXT = "cotal/platform-control-owner/v1\0";
+
+/** The owner of the one platform control manager assigned to an account (SPEC 13.1): `p_` + the
+ *  first 26 base32 chars of HMAC-SHA256(ownerSecret, context + space + NUL + accountPublicKey).
+ *  Keyed by the space's owner secret, so it is opaque per space like a derived `u_…` owner, stable
+ *  across instance replacement, and different for a recreated account under the same slug. */
+export function platformControlOwner(ownerSecret: string | Uint8Array, space: string, accountPublicKey: string): string {
+  const secret = typeof ownerSecret === "string" ? new TextEncoder().encode(ownerSecret) : ownerSecret;
+  if (secret.byteLength < MIN_SECRET_BYTES)
+    throw new Error(`platformControlOwner: ownerSecret must be at least ${MIN_SECRET_BYTES} bytes (got ${secret.byteLength})`);
+  if (!space || !accountPublicKey) throw new Error("platformControlOwner: space and accountPublicKey must be non-empty");
+  const mac = createHmac("sha256", secret).update(`${PLATFORM_CONTROL_CONTEXT}${space}\0${accountPublicKey}`).digest();
+  return assertPlatformOwnerToken(PLATFORM_OWNER_PREFIX + base32LowerNoPad(mac.subarray(0, 16)).slice(0, 26));
 }
