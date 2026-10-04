@@ -446,6 +446,19 @@ An enrollment result may also carry `runtimeIntent: { state: "reserved" }` when 
 hosted runtime for the agent. It is display-only. Older hosts omit it, the manager binds both shapes
 to the same material, and nothing reads it as authority.
 
+No stock door lets a platform control holder launch or retire an agent for a signed-in user. The
+managed-agent kinds above act only under the authenticated owner and refuse a caller that is not
+that user, so a platform could only run a user's agent by holding the user's login or by enrolling
+the agent under its own owner. Both are refused. The
+[delegated user launch intent](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/delegated-user-launch-intent.md)
+design and SPEC §13.16 propose the smallest addition. The user admits one launch or one retirement
+on the host's authenticated route. The holder consumes that intent once, from its current
+registration, epoch and lifecycle. The host then enrolls the agent under the user's `u_` owner with
+the user's own actor as its ledger parent, so the envelope walk, membership and channel lists match
+what the user's own manager would produce. Retirement keeps the prepare, provider closure and
+terminal barrier order, and the host finishes it when the holder is gone. None of this ships yet, so
+keep user agents on the user's own manager until it does.
+
 Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
 request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays
 that tuple over the current registered manager lifecycle. HTTPS does not separately authenticate the

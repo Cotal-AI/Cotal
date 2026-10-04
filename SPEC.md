@@ -4067,6 +4067,79 @@ a generation-pinned subject was published by the grant holder) is a property of 
 not of this section: no peer-held profile pairs a write with a raw stream read on one stream, and
 mediated reads remain the remedy.
 
+### 13.16 Delegated user intent
+
+A host platform that runs a `platform-control` service view MAY let that view's manager (the
+holder) execute one launch or one retirement that a signed-in user asked for, while the intent and
+the resulting agent stay the user's. This subsection adds no exchange view, profile, holder grant or
+standing delegation, and changes no other clause. A host that does not implement the
+`platform-control` service view, or holds no intent store, MUST refuse both requests below as
+`unimplemented`, and stock dispatch MUST refuse both kinds as `unimplemented`.
+
+**Admission.** A user admits an intent with one closed `delegated-user-intent` request on the host's
+authenticated human route, the transport the `manager-service` typed requests use. The host MUST
+verify the user's IdP token, derive the owner from the verified subject as it does for a signed-in
+human, and read the named actor's ledger row fresh; the row MUST carry `spawn`. The host MUST NOT
+store, forward or record the token, and MUST NOT read, require, synthesize or write `supervise`. The
+request carries the space, the assigned account public key, the user's actor, one platform control
+instance id, a request id, and one operation: `launch` with one managed-agent enrollment target
+minus its token digest, or `retire` with one `{ owner, actor, lifecycleUid }`. An unknown field,
+including an owner, IdP token, scope, serve epoch or token digest, MUST be refused as `bad-request`
+with no effect. For a launch, the host MUST read that instance's platform-control assignment and
+manager gate fresh and refuse unless the assignment is `assigned` for this account and the gate is
+open under the platform serve principal, and the requested scope and channel lists MUST lie within
+the user's actor row under the managed-agent envelope rule. For a retirement, the target owner MUST
+equal the derived owner, and the target lifecycle MUST be one that the host's own record shows a
+delegated launch on that instance produced; any other lifecycle MUST be refused. The host generates
+the intent id from at least 128 bits of entropy, never from caller input. It binds the account, the
+instance id, the assignment's lifecycle UID and revision, the gate's process epoch (null for a
+retirement whose launching holder is gone), the one target, the user's principal `<owner>.<actor>`
+as parent, and an expiry at most 300 seconds ahead, and creates the record create-only.
+
+**Execution.** The holder executes an intent with one closed
+`manager-delegated-user-intent-execution` request on the host platform's own route for that holder;
+the `platform-control` envelope does not carry this kind and refuses it as an unknown kind. The
+request names the intent id, the space, the fixed `cli` actor constant that keys the registration
+proof, the account, the assignment revision, the instance id, the manager lifecycle UID, the serve
+epoch, the registration proof, the identities, and one target: the launch target's actor with the
+SHA-256 digest of an actor token the holder generated, or the retirement's `{ owner, actor,
+lifecycleUid }`. The host MUST read the record fresh and refuse an absent, consumed or expired
+record as `failed-precondition`. It MUST refuse as `permission-denied` any difference from the
+record in account, instance id, manager lifecycle UID, assignment revision, operation, serve epoch
+or target. It MUST re-read the assignment and the gate, refuse a gate whose principal is not the
+platform serve principal, refuse a gate epoch other than the request's as `conflict`, and require
+the host-keyed current registration proof. Every check completes before any effect. The host then
+MUST CAS the record from `admitted` to `consumed` at the revision it read; a lost CAS is `conflict`
+and nothing is enrolled or retired. An intent executes at most once and confers nothing after it
+executes.
+
+**Ownership.** A delegated launch MUST be enrolled under the record's owner with the record's
+parent, through the same writer, managed-agent envelope walk, lifecycle-keyed durables and
+membership the host uses for that user's own managed-agent enrollment, with the host selecting the
+lifecycle UID. It MUST NOT be enrolled under a platform owner token or any owner other than the
+record's, and the manager MUST refuse material naming another owner. The holder is not on the
+agent's delegation chain and gains no ledger row, scope or grant from the launch.
+
+**Retirement.** A delegated retirement runs in order: revoke the managed grant at the target
+lifecycle UID only and complete the resumable release with that UID unchanged; close the provider
+handle the host's runtime record holds for that UID, holding the alias while that record is
+`create-unknown`; run the auth-owned terminal barrier with `managedRetirementOpId(lifecycleUid)`
+through the same operation the host's managed retirement door runs; free the alias only after
+terminal confirmation. The launching holder is gone when its assignment is absent, revoked or at
+another revision, its gate is not open, or its gate epoch is not the launch's. A retirement admitted
+while the launching holder is gone is bound to no live epoch, and the host MUST execute it itself
+through the same sequence; a retirement bound to a holder that is gone before it executes expires
+unexecuted. Once a holder's execution has consumed a record, the host MUST finish the sequence
+whether or not the holder remains. A failed or uncertain step keeps the alias held, and a retry is
+the same operation.
+
+**What stays.** Under the `platform-control` view itself the holder still enrolls, retires,
+validates and authorizes only same-owner descendants, and a `u_` principal's spawn request or admin
+authorization against a platform manager is refused as before. A spawn the holder starts without a
+consumed intent is not delegated and gains nothing from this subsection. A delegated agent is not
+preserved across a holder restart and is never restarted, because a restart would re-present a
+consumed intent.
+
 ---
 
 ## 14. Workflow runs (v0.5)

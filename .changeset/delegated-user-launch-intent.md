@@ -1,0 +1,5 @@
+---
+"@cotal-ai/connector-core": minor
+---
+
+Specify a delegated user intent in a new SPEC §13.16 and a design record. A signed-in user admits one launch or one retirement on the host's authenticated route, and a platform control holder consumes that intent once from its current registration, epoch and lifecycle. The host enrolls the agent under the user's `u_` owner with the user's own actor as its ledger parent, through the same envelope walk, durables and membership as the user's own managed-agent enrollment, and retires it through the uid-exact prepare, provider closure and terminal barrier order, finishing alone when the holder is gone. The holder gains no grant, the `platform-control` view's same-owner rule is unchanged, and stock dispatch refuses both new kinds as `unimplemented`. The embedding guide says no stock door does this yet. This is a contract change only. No door, record store or runtime path ships yet.
