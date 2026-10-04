@@ -77,7 +77,7 @@ import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
-import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster } from "./manager-contract.js";
+import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, authRegistrationExecutorGrants, servedRunRequestSubjects, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
@@ -571,20 +571,20 @@ export async function openAuthAuthorityPlane(opts: {
   const fileArm = ledgerAuthorizeConnect(opts.dir);
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
   const loadLocalManager = opts.localManager ?? (() => undefined);
-  // Standing renewal re-derives the serve surface from the REGISTERED service spec at the gate's
-  // registration revision: spec (leader read) -> closure manifest -> root document, each verified
-  // against its content digest. The request never selects the surface.
+  // Standing renewal and a served resume or answer read the manager surface from the REGISTERED
+  // service spec at the gate's registration revision: spec (leader read) -> closure manifest -> root
+  // document, each verified against its content digest. The request never selects the surface.
   const registeredManagerCluster = async (owner: string, instanceId: string, observed: { registrationRevision: number }): Promise<unknown> => {
     const rec = await readSvcRecordLeader(recordsJsm, space, recordSpecKey(RECORD_KINDS.svc, ["manager", instanceId]));
     if (!rec || "deleted" in rec || rec.revision !== observed.registrationRevision)
-      throw new EpEnvelopeError("failed-precondition", "manager-service renewal found no service spec at the gate's registration revision");
+      throw new EpEnvelopeError("failed-precondition", "found no manager service spec at the gate's registration revision");
     const spec = parseServiceSpec(rec.value, { endpoint: "manager" });
     if (spec.owner !== owner)
-      throw new EpEnvelopeError("permission-denied", "manager-service renewal spec belongs to another owner");
+      throw new EpEnvelopeError("permission-denied", "the manager service spec belongs to another owner");
     const store = await contractStoreContext(remoteIssuer.nc, space);
     const read = async (digest: string): Promise<unknown> => {
       const bytes = await fetchContractArtifact(store, contractRefToHex(digest));
-      if (!bytes) throw new EpEnvelopeError("failed-precondition", `manager-service renewal cannot read registered contract artifact ${digest}`);
+      if (!bytes) throw new EpEnvelopeError("failed-precondition", `cannot read registered manager contract artifact ${digest}`);
       return JSON.parse(new TextDecoder().decode(bytes));
     };
     for (const closure of spec.clusterDigests) {
@@ -592,7 +592,7 @@ export async function openAuthAuthorityPlane(opts: {
       const document = await read(root);
       if (verifyClusterRoot(root, document).urn === "ai.cotal.manager") return document;
     }
-    throw new EpEnvelopeError("failed-precondition", "manager-service renewal spec registers no manager cluster");
+    throw new EpEnvelopeError("failed-precondition", "the manager service spec registers no manager cluster");
   };
   const managerGate = async (owner: string, instanceId: string): Promise<"candidate" | "unknown" | "not open" | "not this owner's" | "not registered"> => {
     const localManager = loadLocalManager();
@@ -1246,6 +1246,11 @@ export async function openAuthAuthorityPlane(opts: {
           return row?.kind === "managed-agent" && row.lifecycleUid === lifecycleUid;
         },
         takeObserved: takeObservedRunRequest,
+        registeredCommand: async (instanceId, registrationRevision, command) => {
+          const registered = remoteManagerSurface(await registeredManagerCluster(owner, instanceId, { registrationRevision }))[command];
+          if (registered === undefined) throw new EpEnvelopeError("failed-precondition", `the registered manager cluster declares no ${command}`);
+          return registered;
+        },
         request,
         owner,
         space,
