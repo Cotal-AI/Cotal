@@ -18,7 +18,8 @@
  *
  * The exchange surface is LOCAL-V1, hardened: loopback bind only; `POST /exchange` requires the
  * per-start high-entropy capability (`Authorization: Bearer <cap>` — readable only from the 0600
- * discovery file, so same-user file ACL is the boundary); requests carrying an `Origin` header are
+ * discovery file, so same-user file ACL is the boundary, or from a hosted context's handle inside
+ * the host process); requests carrying an `Origin` header are
  * rejected (a browser page can reach loopback; it must not be able to drive the exchange); bodies
  * must be `application/json`; failed exchanges are rate-limited and logged. No CORS headers, ever.
  *
@@ -1333,25 +1334,18 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   if (publicPort !== undefined && (!Number.isInteger(publicPort) || publicPort < 0 || publicPort > 65535))
     throw new Error(`auth-service: --exchange-public-port must be a port number, got "${publicPortRaw}"`);
   const publicUrlFlag = v["exchange-public-url"];
-  if (publicUrlFlag !== undefined && !/^https:\/\//.test(publicUrlFlag))
-    throw new Error(`auth-service: --exchange-public-url must be an https:// URL (TLS terminates at the reverse proxy), got "${publicUrlFlag}"`);
   const trustedProxy = v["exchange-trusted-proxy"] !== undefined;
   if (publicPort === undefined && (publicUrlFlag !== undefined || trustedProxy))
     throw new Error("auth-service: --exchange-public-url/--exchange-trusted-proxy require --exchange-public-port");
   const advertisedServer = v["advertised-server"];
   if (advertisedServer !== undefined && publicPort === undefined)
     throw new Error("auth-service: --advertised-server rides the public bundle - it requires --exchange-public-port");
-  if (advertisedServer !== undefined) {
-    const badAdvertised = checkAdvertisedServer(advertisedServer);
-    if (badAdvertised) throw new Error(badAdvertised);
-  }
   const agentProvisioningUrl = v["agent-provisioning-url"];
   if (agentProvisioningUrl !== undefined && publicPort === undefined)
     throw new Error("auth-service: --agent-provisioning-url rides the public bundle - it requires --exchange-public-port");
-  if (agentProvisioningUrl !== undefined) {
-    const badProvisioning = checkAgentProvisioningUrl(agentProvisioningUrl);
-    if (badProvisioning) throw new Error(badProvisioning);
-  }
+  const publicFace = publicPort === undefined ? undefined : { port: publicPort, url: publicUrlFlag, trustedProxy, advertisedServer, agentProvisioningUrl };
+  const badFace = publicFace && checkPublicFace(publicFace);
+  if (badFace) throw new Error(badFace);
 
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
@@ -1382,16 +1376,17 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     dir,
     secrets,
     hostedStore: store !== undefined,
-    ...(publicPort !== undefined ? { publicFace: { port: publicPort, urlFlag: publicUrlFlag, trustedProxy, advertisedServer, agentProvisioningUrl } } : {}),
+    ...(publicFace !== undefined ? { publicFace } : {}),
     // The CLI composition's local manager is this workspace root's persisted instance, re-read per
     // selection exactly as before. A hosted context passes no local manager at all.
     localManager: () => loadManagerInstanceIdentity(root, space),
   });
 
   // All planes bound — NOW write the discovery file (its existence is the readiness signal).
-  saveAuthServiceInfo(dir, { url: started.url, pid: process.pid, cap: started.cap, ...(started.publicUrl !== undefined ? { publicUrl: started.publicUrl } : {}) });
+  const { url, publicUrl, cap } = started.handle;
+  saveAuthServiceInfo(dir, { url, pid: process.pid, cap, ...(publicUrl !== undefined ? { publicUrl } : {}) });
   console.log(
-    `✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${started.url}${started.publicUrl !== undefined ? `, public exchange at ${started.publicUrl}` : ""}`,
+    `✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${url}${publicUrl !== undefined ? `, public exchange at ${publicUrl}` : ""}`,
   );
 
   // The CLI wrapper, not the context, owns process signals and exit codes.
@@ -1421,16 +1416,31 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   process.exit(0);
 }
 
-/** An embedded auth-service context: the loopback exchange URL plus the hosted lifecycle handle. */
+/** An embedded auth-service context: what `runAuthService` writes to `auth-service.json` (the
+ *  loopback URL, the public URL and the capability) plus the hosted lifecycle handle. */
 export interface AuthServiceHandle extends HostedServiceHandle {
   readonly url: string;
   readonly publicUrl?: string;
+  /** The per-start loopback capability. It alone authorizes the loopback host actions (lifecycle
+   *  retirement, managed-agent enrollment verification), so it stays in the authority process and
+   *  never reaches a control worker. */
+  readonly cap: string;
   /** The platform control door (SPEC 13.1). Present only when `platformControl` was supplied to
    *  {@link startAuthService}. In-process and typed: no route, no capability, and no signer or
    *  capability in the result. */
   platformControlAuthority?<R extends PlatformControlInnerRequest>(
     request: PlatformControlAuthorityRequest<R>,
   ): Promise<PlatformControlAuthorityResult<R>>;
+}
+
+/** The optional public exchange face: the CLI's `--exchange-public-*`, `--advertised-server` and
+ *  `--agent-provisioning-url` flags, or the hosted `publicFace` input. */
+export interface PublicFaceInput {
+  port: number;
+  url?: string;
+  trustedProxy: boolean;
+  advertisedServer?: string;
+  agentProvisioningUrl?: string;
 }
 
 /** The platform composition's input for the platform control door. */
@@ -1447,6 +1457,8 @@ export interface PlatformControlInput {
  *  mid-life fence or broker loss makes only this context `unavailable` and closes its resources. */
 export async function startAuthService(inputs: HostedContextInputs & {
   port?: number;
+  /** Absent: the handle has no `publicUrl` and nothing serves the discovery bundle. */
+  publicFace?: PublicFaceInput;
   /** Present only in a platform composition. Absent: the handle has no platform control door. */
   platformControl?: PlatformControlInput;
   /** Trusted-host only. Forwarded unchanged to {@link openAuthAuthorityPlane}, which bounds it to
@@ -1464,6 +1476,8 @@ export async function startAuthService(inputs: HostedContextInputs & {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`auth-service: port must be a port number, got ${port}`);
   if (inputs.platformControl !== undefined && typeof inputs.platformControl?.observeAssignment !== "function")
     throw new Error("auth-service: platformControl requires an observeAssignment function");
+  const badFace = inputs.publicFace && checkPublicFace(inputs.publicFace);
+  if (badFace) throw new Error(badFace);
   const started = await startAuthContext({
     space: inputs.space,
     server: inputs.servers,
@@ -1473,6 +1487,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
     hostedStore: true,
     localManager: () => undefined,
     context: inputs.context,
+    ...(inputs.publicFace !== undefined ? { publicFace: inputs.publicFace } : {}),
     ...(inputs.platformControl !== undefined ? { platformControl: inputs.platformControl } : {}),
     ...(inputs.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: inputs.standingRenewableTtlSeconds } : {}),
   });
@@ -1488,7 +1503,7 @@ interface AuthContextOptions {
   dir: string;
   secrets: SecretStore;
   hostedStore: boolean;
-  publicFace?: { port: number; urlFlag?: string; trustedProxy: boolean; advertisedServer?: string; agentProvisioningUrl?: string };
+  publicFace?: PublicFaceInput;
   localManager: () => ManagerInstanceIdentity | undefined;
   /** Present only for a hosted context: the assigned account the loaded data account must match. */
   context?: HostedContextKey;
@@ -1497,7 +1512,7 @@ interface AuthContextOptions {
   standingRenewableTtlSeconds?: number;
 }
 
-async function startAuthContext(o: AuthContextOptions): Promise<{ url: string; publicUrl?: string; cap: string; handle: AuthServiceHandle; ended: Promise<AuthContextEnd> }> {
+async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthServiceHandle; ended: Promise<AuthContextEnd> }> {
   const { space, server, dir, secrets, port } = o;
   const keys = await loadServiceKeys(secrets, space);
   const callout = await loadCalloutAuth(secrets, space);
@@ -1647,7 +1662,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ url: string; p
       });
       const paddr = pub.address();
       const boundPublic = typeof paddr === "object" && paddr ? paddr.port : face.port;
-      publicUrl = face.urlFlag ?? `http://127.0.0.1:${boundPublic}`;
+      publicUrl = face.url ?? `http://127.0.0.1:${boundPublic}`;
       finalizeUserBundleEndpoint(bundle, publicUrl);
     }
 
@@ -1696,6 +1711,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ url: string; p
     const service: AuthServiceHandle = {
       url,
       ...(publicUrl !== undefined ? { publicUrl } : {}),
+      cap,
       ...(platformControl !== undefined ? {
         platformControlAuthority: makePlatformControlAuthority({
           space,
@@ -1725,7 +1741,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ url: string; p
       drain: close,
       close,
     };
-    return { url, ...(publicUrl !== undefined ? { publicUrl } : {}), cap, handle: service, ended };
+    return { handle: service, ended };
   } catch (e) {
     // A failed start releases only what THIS context acquired, in reverse order.
     await closeServer(publicHttp).catch(() => {});
@@ -2316,6 +2332,17 @@ export function checkAdvertisedServer(raw: string): string | undefined {
   if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
     return `auth-service: --advertised-server must be a broker URL (nats://, tls://, ws:// or wss://), got ${u.protocol}//`;
   return undefined;
+}
+
+/** The public face's value rules, one set for the CLI flags and the hosted input. A public face
+ *  without a port has no listener for the rest to apply to. */
+function checkPublicFace(face: PublicFaceInput): string | undefined {
+  if (!Number.isInteger(face.port) || face.port < 0 || face.port > 65535)
+    return `auth-service: a public face needs a port number, got ${face.port}`;
+  if (face.url !== undefined && !/^https:\/\//.test(face.url))
+    return `auth-service: --exchange-public-url must be an https:// URL (TLS terminates at the reverse proxy), got "${face.url}"`;
+  return (face.advertisedServer !== undefined ? checkAdvertisedServer(face.advertisedServer) : undefined)
+    ?? (face.agentProvisioningUrl !== undefined ? checkAgentProvisioningUrl(face.agentProvisioningUrl) : undefined);
 }
 
 /** Compose the user bundle the public face serves at /.well-known/cotal-mesh. ONE producer,

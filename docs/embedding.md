@@ -45,7 +45,7 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
-| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, `readiness`, `drain`, and idempotent `close`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door. `runAuthService` remains the CLI entry. |
+| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door. `runAuthService` remains the CLI entry. |
 | `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` *(types)* | `@cotal-ai/core` | the closed envelope, its inner request union, its result and the backend's assignment row for `platformControlAuthority`. `platformControlOwner` in `@cotal-ai/auth` derives the `p_` owner the door issues under. |
 | `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
@@ -139,7 +139,12 @@ under the explicit `stateDir`. The context never resolves a workspace root from 
 directory and has no local manager, so only remote manager gates can be selected. It returns after
 the authority plane, the callout subscription and the loopback listener are bound. A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
-The host writes no discovery file for it.
+The host writes no discovery file for it. The handle carries what `auth-service.json` holds for a
+CLI start: the loopback `url`, `publicUrl` when a public face runs, and the per-start `cap`. The cap
+alone authorizes the loopback host actions, lifecycle retirement and managed-agent enrollment
+verification, so keep it in the authority process. `publicFace` takes the CLI's public face inputs
+(`port`, `url`, `trustedProxy`, `advertisedServer`, `agentProvisioningUrl`) under the same rules,
+and a face without a port refuses to start.
 
 Two optional inputs serve a platform composition. `platformControl: { observeAssignment }` adds
 `platformControlAuthority` to the handle. It is a typed in-process method, served on no listener,
