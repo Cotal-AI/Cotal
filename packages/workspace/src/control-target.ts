@@ -172,7 +172,10 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
   const seatSpace = process.env.COTAL_SPACE?.trim();
   if (!name || !actor || !uid || !seatSpace) return undefined;
   if (flags.server && flags.space && !findMesh(flags.space)) return undefined;
-  const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server });
+  // Sweep first when no space is named, as the operator resolution does, so a kept dead record is
+  // not a live candidate here either and the seat picks the same mesh the operator path would.
+  const offline = flags.space ? [] : (await pruneStaleMeshes()).offline;
+  const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server, offline });
   if (mesh.space !== seatSpace) return undefined;
   const at = { space: mesh.space, server: mesh.server, root: mesh.root, mode: mesh.mode, ...(mesh.policy ? { policy: mesh.policy } : {}) };
   if (mesh.mode === "open") return { ...at, auth: { tls: mesh.tlsRequired, epCaller: { owner: DEV_OWNER, actor, uid } } };
