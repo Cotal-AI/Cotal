@@ -476,6 +476,11 @@ export interface ManagerOptions {
     /** The closed host run callbacks. Workflow runs are hosted only when ALL are supplied; a
      * partial set refuses at construction, and absent means run-start/resume stay unavailable. */
     runHosting?: Pick<import("./run-hosting.js").RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun">;
+    /** Host-owned execution of one admitted delegated user intent (SPEC 13.16). Absent: a delegated
+     * spawn and a delegated retirement are refused before any request. */
+    executeDelegatedUserIntent?: (
+      execute: import("@cotal-ai/core").RemoteDelegatedUserIntentExecutionRequest["execute"] & { intentId: string },
+    ) => Promise<import("@cotal-ai/core").RemoteDelegatedUserIntentExecutionResult>;
   };
 }
 
@@ -732,6 +737,10 @@ export interface StartAgentOpts {
   /** The §13.2 rail this spawn rode. Class-rail harness refusals name `--on`; instance-pinned
    *  refusals stay local. Direct `startAgent` (roster / `--spawn`) is not a class request. */
   route?: "one" | "all" | "inst";
+  /** Launch under an admitted delegated user intent (SPEC 13.16): the agent is `owner`'s, and
+   *  `parent` is its ledger parent and its recorded spawner. Set only by the composition root's
+   *  in-process call; the ctl spawn handler never maps a payload field into it. */
+  delegatedIntent?: { intentId: string; owner: string; parent: string };
 }
 
 interface ManagedLaunch {
@@ -790,6 +799,9 @@ interface ManagedAgent {
   /** Set for a USER-MODE agent: its derived owner. Marks the slot for user-mode teardown (ledger
    *  revoke + token/sentinel/health file removal) and the auth-health read in {@link list}. */
   userOwner?: string;
+  /** Launched under a delegated user intent (SPEC 13.16). Only {@link Manager.retireDelegatedAgent}
+   *  retires it: this holder's own prepare and requester bind to the holder's owner. */
+  delegated?: true;
   /** The FS materialization paths of THIS incarnation's secret family, recorded at spawn (the
    *  lifecycle-keyed derivation) or at adoption (the resume inventory's recorded paths — possibly a
    *  previous generation's name-keyed layout). Teardown, preservation, and health reads consume
@@ -1059,7 +1071,7 @@ export class Manager {
    *  refuses legibly AND re-fires the request. In-memory: across a manager restart the durable
    *  truth is the auth-side lifecycle head itself (an unretired head refuses issuance — the
    *  named residual this belt narrows, not replaces). */
-  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; startedAt: number; lastError?: string; standingAuthorityLive?: boolean; launch?: { allowSubscribe: readonly string[] }; lastResources?: DeprovisionResourceAccounting }>();
+  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; startedAt: number; lastError?: string; standingAuthorityLive?: boolean; launch?: { allowSubscribe: readonly string[] }; lastResources?: DeprovisionResourceAccounting }>();
   /** Exact predecessor incarnations whose full hosted retirement reached a terminal answer. Presence
    *  is advisory and can retain that old lifecycle briefly after its process exits. Resume may ignore
    *  only this exact (alias, principal, lifecycleUid) row when adopting a different lifecycle; every
@@ -2339,7 +2351,7 @@ export class Manager {
 
   /** A cleanup spawned by accepted active-mode work is part of that work for maintenance draining,
    * even where the ordinary control reply remains fire-and-forget. */
-  private trackDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; launch?: { allowSubscribe: readonly string[] } }, context = ""): void {
+  private trackDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; launch?: { allowSubscribe: readonly string[] } }, context = ""): void {
     this.lifecycleInFlight++;
     void this.deprovision(a)
       .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${(e as Error).message}`))
@@ -3801,8 +3813,22 @@ export class Manager {
        *  this is the participant's provisional uid only: the host picks the authoritative one (it
        *  alone reads the retirement tombstones), and the returned `lifecycleUid` is that value. */
       lifecycleUid: string;
+      delegatedIntent?: StartAgentOpts["delegatedIntent"];
     },
   ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
+    if (opts.delegatedIntent) {
+      // startAgentActive refused a delegated launch on a manager without this callback.
+      const execute = this.remoteAuthority!.executeDelegatedUserIntent!;
+      const { intentId, owner } = opts.delegatedIntent;
+      // The hosted arm with the intent's execution in place of the holder's own enrollment: the
+      // spawning owner is the intent's, so its existing owner check refuses any other.
+      return this.enrollUserAgent(name, { ...opts, specOwner: owner }, async ({ target }) => {
+        const result = await execute({ intentId, operation: "launch", target: { actor: target.actor, tokenHash: target.tokenHash } });
+        if (result.operation !== "launch" || result.intentId !== intentId)
+          throw new Error(`the host answered delegated intent ${intentId} with another execution`);
+        return result.material;
+      });
+    }
     if (this.remoteAuthority?.enrollManagedAgent) return this.enrollUserAgent(name, opts, this.remoteAuthority.enrollManagedAgent);
     const spawnerPr = opts.spawner ? parsePrincipalKey(opts.spawner) : null;
     const owner = opts.specOwner ?? (spawnerPr && spawnerPr.owner.startsWith("u_") ? spawnerPr.owner : undefined);
@@ -4121,7 +4147,7 @@ export class Manager {
     // this, but the intent is "user mode only", not "any principal-shaped id").
     if (this.userMode) {
       const p = parsePrincipalKey(a.id);
-      if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: p.owner, actor: p.actor, agentId: a.id, userOwner: a.userOwner, secretPaths: a.secretPaths, launch: { allowSubscribe: a.launch.allowSubscribe }, startedAt: Date.now() });
+      if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: p.owner, actor: p.actor, agentId: a.id, userOwner: a.userOwner, delegated: a.delegated, secretPaths: a.secretPaths, launch: { allowSubscribe: a.launch.allowSubscribe }, startedAt: Date.now() });
     } else if (this.auth) {
       // Unit B: a STATIC lifecycle now also holds its name pending its own terminal (the F1
       // static retirement the detached deprovision below drives) — the alias frees only when the
@@ -4152,7 +4178,7 @@ export class Manager {
    *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
-  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
+  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
     if (!this.auth && !this.remoteAuthority) return; // open mesh mints no creds/durables — nothing to tear down
     // SINGLE-FLIGHT per (name, lifecycleUid) (INT-2/C): join an in-flight teardown for this exact
     // lifecycle rather than launching a second concurrent one whose delayed name-keyed revoke could
@@ -4168,8 +4194,16 @@ export class Manager {
   }
 
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
-  private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
+  private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
     if (this.remoteAuthority) {
+      if (a.delegated) {
+        // The agent is its user's: only that user's retirement intent retires it, so the name stays
+        // held until retireDelegatedAgent confirms the host retired this UID.
+        const held = this.retiring.get(a.name);
+        if (held?.lifecycleUid === a.lifecycleUid)
+          held.lastError = `"${a.name}" was launched under a delegated user intent and retires only through its user's retirement intent`;
+        return;
+      }
       // A hosted composition owns grant revocation and resumable footprint release. It calls this
       // prerequisite before the terminal rail. The callback must preserve this UID and its pending
       // state until the host decides terminal retirement, never map deprovisioning to suspension.
@@ -5188,6 +5222,13 @@ export class Manager {
   }
 
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {
+    if (opts.delegatedIntent) {
+      if (!this.remoteAuthority?.executeDelegatedUserIntent)
+        return { ok: false, error: `"${opts.name}" names a delegated user intent, and this manager has no host execution for one` };
+      if (opts.supervise) return { ok: false, error: `"${opts.name}" names a delegated user intent, and a delegated agent is never restarted (SPEC 13.16)` };
+      // A delegated launch's spawner is the user's principal, never the composition root's call.
+      spawner = opts.delegatedIntent.parent;
+    }
     // The spawn argument is a persona REF — a filename in `.cotal/agents` (the unique spawn KEY), or
     // a path via `--config`. It is NOT the mesh identity: the identity comes from inside the file
     // (`name:`), so a persona can be filed descriptively (review-critic.md) yet present under a
@@ -5423,7 +5464,7 @@ export class Manager {
       return { ok: false, error: `the name "${identityName}" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };
     const held = this.retiring.get(identityName);
     if (held !== undefined) {
-      void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner, secretPaths: held.secretPaths, launch: held.launch }).catch(() => {});
+      void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner, delegated: held.delegated, secretPaths: held.secretPaths, launch: held.launch }).catch(() => {});
       const err = lifecycleBlocked("failed-precondition",
         `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
         { blockedOp: "retirement", headState: "retiring", opId: held.opId, remedy: "retry" });
@@ -5521,7 +5562,7 @@ export class Manager {
     // `finally` with the handle only in a local, so without this the terminal has nothing to reap
     // and retires over a live process. The slot row holds the same reference; this is the copy the
     // in-process rollback can actually read.
-    let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference } | undefined;
+    let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference } | undefined;
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -5617,6 +5658,7 @@ export class Manager {
           capabilities,
           label: ref,
           lifecycleUid,
+          delegatedIntent: opts.delegatedIntent,
         });
         if ("error" in prep) {
           this.reserved.delete(name);
@@ -5630,7 +5672,7 @@ export class Manager {
         lifecycleUid = prep.lifecycleUid;
         userLaunch = prep.launch;
         userOwner = prep.owner;
-        provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner, secretPaths: prep.files, ...(custody ? { runtime: custody } : {}) };
+        provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner, ...(opts.delegatedIntent ? { delegated: true as const } : {}), secretPaths: prep.files, ...(custody ? { runtime: custody } : {}) };
       } else if (this.auth) {
         // Unit B (§13.1): reserve + activate this incarnation's DURABLE identity BEFORE any
         // broker footprint — the F3 outer spawn intent first (slot row, phase `provisioning`),
@@ -5761,6 +5803,7 @@ export class Manager {
         // recorded truth teardown/preservation/health consume, never re-derived by name.
         secretPaths: provisioned?.secretPaths,
         ...(userLaunch ? { userOwner } : { seed: identity.seed }),
+        ...(opts.delegatedIntent ? { delegated: true as const } : {}),
         ...(issued ? { issued } : {}),
         spawner: spawner ?? this.ep.ref().id,
         authorityParent: userLaunch && spawner && parsePrincipalKey(spawner) ? spawner : undefined,
@@ -5800,7 +5843,8 @@ export class Manager {
               ? Object.keys(opts.launchOptions).sort()
               : undefined,
         },
-        ...(connector.supportsSessionContinuation || opts.supervise !== undefined
+        // A delegated agent is never restarted (SPEC 13.16), so its slot arms no recovery.
+        ...((connector.supportsSessionContinuation || opts.supervise !== undefined) && !opts.delegatedIntent
           ? {
               restart: {
                 opts: launchOpts,
@@ -5954,6 +5998,7 @@ export class Manager {
             name: entry.name,
             lifecycleUid: held.lifecycleUid,
             userOwner: held.userOwner,
+            delegated: held.delegated,
             secretPaths: held.secretPaths,
           }).catch(() => {});
           return {
@@ -6755,6 +6800,39 @@ export class Manager {
     this.trackStoppedHandle(a, trackNonAdmin, { kind: "stopped-requested", requester: caller });
     void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // M4: cancel a live spawn goal
     return { ok: true, data: { name: a.name, stopped: true, graceful } };
+  }
+
+  /** Retire one agent this manager launched under a delegated user intent, through the host
+   *  (SPEC 13.16). It stops a running slot into its retirement hold, sends the user's admitted
+   *  retirement intent for that UID, and frees the name only on `retired: true`; every other answer
+   *  keeps the name held. It never calls the holder's own prepare or requester. */
+  async retireDelegatedAgent(name: string, intentId: string): Promise<ControlReply> {
+    const execute = this.remoteAuthority?.executeDelegatedUserIntent;
+    if (!execute) return { ok: false, error: `this manager has no host execution for a delegated user intent; "${name}" was not retired` };
+    const release = this.beginLifecycle();
+    if (!release) return { ok: false, error: this.maintenanceError() };
+    try {
+      const live = this.agents.get(name);
+      if (live?.delegated) this.despawnAuthorized(live, true, false, `delegated retirement ${intentId}`);
+      const held = this.retiring.get(name);
+      if (!held?.delegated) return { ok: false, error: `no agent named "${name}" was launched on this manager under a delegated user intent` };
+      const target = { owner: held.owner, actor: held.actor, lifecycleUid: held.lifecycleUid };
+      let retired = false;
+      try {
+        const result = await execute({ intentId, operation: "retire", target });
+        if (result.operation !== "retire" || result.intentId !== intentId)
+          throw new Error(`the host answered delegated intent ${intentId} with another execution`);
+        retired = result.retired;
+      } catch (e) {
+        held.lastError = `the delegated retirement under intent ${intentId} did not complete (${(e as Error).message})`;
+        return { ok: false, error: `${held.lastError}; the name "${name}" stays held` };
+      }
+      if (!retired) return { ok: false, error: `the host did not confirm the delegated retirement of "${name}" at ${target.lifecycleUid}; the name stays held` };
+      this.confirmRetirement({ id: held.agentId, name, lifecycleUid: held.lifecycleUid });
+      return { ok: true, data: { name, lifecycleUid: held.lifecycleUid, retired: true } };
+    } finally {
+      release();
+    }
   }
 
   /** Resolve a v0.4 TARGET triple (owner, actor, lifecycleUid — broker-validated subject/body

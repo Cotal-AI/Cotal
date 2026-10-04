@@ -1066,3 +1066,57 @@ export function parseRemoteDelegatedUserIntentExecutionRequest(raw: unknown): Re
     execute: parsed,
   };
 }
+
+/** Bind the host's untrusted execution answer to the request that produced it. The result is closed,
+ *  echoes every request coordinate, and names the requested operation's own target. */
+export function parseRemoteDelegatedUserIntentExecutionResult(
+  raw: unknown,
+  request: RemoteDelegatedUserIntentExecutionRequest,
+): RemoteDelegatedUserIntentExecutionResult {
+  const what = "delegated user intent execution result";
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${what} must be an object`);
+  const r = raw as Record<string, unknown>;
+  const common = ["v", "kind", "operation", "space", "instanceId", "managerLifecycleUid", "requestId", "intentId"];
+  const allowed = new Set(request.execute.operation === "launch"
+    ? [...common, "serveEpoch", "material", "runtimeIntent"]
+    : [...common, "target", "opId", "retired"]);
+  for (const key of Object.keys(r))
+    if (!allowed.has(key)) throw new Error(`${what} carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  if (r.v !== 1 || r.kind !== request.kind || r.operation !== request.execute.operation || r.space !== request.space ||
+      r.instanceId !== request.instanceId || r.managerLifecycleUid !== request.managerLifecycleUid ||
+      r.requestId !== request.requestId || r.intentId !== request.intentId)
+    throw new Error(`${what} returned different operation, lifecycle, request or intent coordinates`);
+  if (request.execute.operation === "retire") {
+    const want = request.execute.target;
+    const t = r.target as Record<string, unknown> | null | undefined;
+    if (t === null || typeof t !== "object" || Array.isArray(t) || Object.keys(t).sort().join(",") !== "actor,lifecycleUid,owner" ||
+        t.owner !== want.owner || t.actor !== want.actor || t.lifecycleUid !== want.lifecycleUid ||
+        r.opId !== managedRetirementOpId(want.lifecycleUid))
+      throw new Error(`${what} returned another retirement target or operation id`);
+    if (typeof r.retired !== "boolean") throw new Error(`${what} requires a boolean retired`);
+    return r as unknown as RemoteDelegatedUserIntentExecutionResult;
+  }
+  if (r.serveEpoch !== request.serveEpoch) throw new Error(`${what} returned another serve epoch`);
+  if (r.runtimeIntent !== undefined && JSON.stringify(r.runtimeIntent) !== '{"state":"reserved"}')
+    throw new Error(`${what} returned a runtimeIntent other than { state: "reserved" }`);
+  const m = r.material as Record<string, unknown> | null | undefined;
+  if (m === null || typeof m !== "object" || Array.isArray(m) ||
+      Object.keys(m).sort().join(",") !== "actor,agentBearerExchangeUrl,allowPublish,allowSubscribe,lifecycleUid,owner,sentinelCreds,subscribe")
+    throw new Error(`${what} returned non-closed material`);
+  if (m.actor !== request.execute.target.actor)
+    throw new Error(`${what} returned actor "${String(m.actor)}", not the requested "${request.execute.target.actor}"`);
+  if (typeof m.owner !== "string") throw new Error(`${what} material requires an owner`);
+  assertDerivedOwnerToken(m.owner);
+  if (typeof m.lifecycleUid !== "string") throw new Error(`${what} material requires a lifecycleUid`);
+  assertLifecycleToken(m.lifecycleUid, `${what} material lifecycleUid`);
+  for (const key of ["sentinelCreds", "agentBearerExchangeUrl"]) {
+    const value = m[key];
+    if (typeof value !== "string" || value.length === 0) throw new Error(`${what} material requires a non-empty ${key}`);
+  }
+  for (const key of ["subscribe", "allowSubscribe", "allowPublish"]) {
+    const list = m[key];
+    if (!Array.isArray(list) || !list.every((value) => typeof value === "string" && value.length > 0))
+      throw new Error(`${what} material carries an invalid ${key} list`);
+  }
+  return r as unknown as RemoteDelegatedUserIntentExecutionResult;
+}

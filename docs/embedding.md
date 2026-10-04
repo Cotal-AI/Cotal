@@ -461,8 +461,12 @@ undo keeps its agent name held until the host process that ran it confirms it ha
 while the name is held the host also refuses it to the user's own manager. `@cotal-ai/auth` ships the
 two decisions, `authorizeDelegatedUserIntentAdmission` and `authorizeDelegatedUserIntentExecution`,
 for a host that owns an intent store and those writers to compose on its own routes. Stock dispatch
-refuses both kinds as `unimplemented`, and the manager's delegated launch and retirement paths do
-not ship yet, so keep user agents on the user's own manager until they do.
+refuses both kinds as `unimplemented`. The holder's composition passes
+`remoteAuthority.executeDelegatedUserIntent`, which posts the execution request and binds the answer
+with `parseRemoteDelegatedUserIntentExecutionResult`. It then starts the agent with
+`startAgent({ ..., delegatedIntent: { intentId, owner, parent } })` and retires it with
+`retireDelegatedAgent(name, intentId)`. A delegated agent's stop or exit keeps its name held until
+that retirement confirms.
 
 Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
 request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays

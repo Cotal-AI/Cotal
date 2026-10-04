@@ -1,11 +1,11 @@
 # Delegated user launch intent
 
-Status: partly implemented, not released. The `@cotal-ai/core` wire types and request parsers of
-section 4.1 and the `@cotal-ai/auth` decisions of section 4.2 ship. They are host policy, as the
-#1972 enrollment decisions are: a host that owns an intent store and the enrollment and retirement
-writers composes them on its own routes. Stock still has no such route, no record store and no
-writer. The manager members of section 4.3 and the result parser do not exist yet. Section 11 lists
-each symbol's status.
+Status: implemented, not released. The `@cotal-ai/core` wire types and parsers of section 4.1, the
+`@cotal-ai/auth` decisions of section 4.2 and the `@cotal-ai/manager` members of section 4.3 ship.
+The decisions are host policy, as the #1972 enrollment decisions are: a host that owns an intent
+store and the enrollment and retirement writers composes them on its own routes, and passes the
+holder's `executeDelegatedUserIntent`. Stock still has no such route, no record store and no
+writer. Section 11 lists each symbol's status.
 
 The source inventory below was checked at `d00f18cd62f5933c7dceb93b56559498b66656bc` (v0.58.0 plus
 later fixes on main). The platform holder this record extends is the `p_` holder of
@@ -354,9 +354,9 @@ executeDelegatedUserIntent?: (
 delegatedIntent?: { intentId: string; owner: string; parent: string };
 
 // Manager gains one method:
-/** Retire one agent this manager launched under a delegated intent, through the host. It sends the
- * request whether or not `name` still holds a slot, frees a slot only on `retired: true`, and keeps
- * the alias held on any other answer. */
+/** Retire one agent this manager launched under a delegated intent, through the host. It stops a
+ * running slot into its retirement hold, sends the request while `name` holds that slot or hold,
+ * frees the name only on `retired: true`, and keeps it held on any other answer. */
 retireDelegatedAgent(name: string, intentId: string): Promise<ControlReply>;
 ```
 
@@ -371,6 +371,14 @@ same request, the same `requestId` and digest, while the manager still holds the
 the host joins it to the execution's flight (section 6). If the manager gives up and shreds the
 token, the host still holds the enrolled lifecycle, and the user retires it with a retirement intent
 (section 7).
+
+A delegated launch with a `supervise` policy is refused, and a delegated slot arms no session
+recovery, because a delegated agent is never restarted (section 8). A delegated slot's stop, exit,
+reap or rollback runs none of the holder's own retirement callbacks.
+Its name stays held until `retireDelegatedAgent` receives `retired: true` for that UID, and a
+same-name spawn is refused meanwhile. A manager with neither a slot nor a hold for the name, such as
+a restarted holder, refuses the call, and the user's retirement then takes the holder-gone branch
+(section 7.2), because a restart moved the gate's epoch.
 
 ## 5. Admission
 
@@ -393,7 +401,10 @@ own route. One admission runs in this order, and every refusal writes nothing:
    and revision and the gate's process epoch. A missing, revoked or foreign assignment, or a gate
    that names another principal, is `permission-denied`. A gate that is not open is
    `failed-precondition`. An observer error is `unavailable`.
-5. Launch: the target's scope, lists and role must pass `assertWithinSpawnerGrant` as a dry check
+5. Launch: the target's read list is resolved with `resolveReadAcl` (`@cotal-ai/core`), the
+   function `provisionAgentDurables` resolves it with, so an empty `allowSubscribe` reads exactly
+   `subscribe`, and a subscription outside the resolved list is `permission-denied`. The target's
+   scope, resolved read list, post list and role must pass `assertWithinSpawnerGrant` as a dry check
    against the parent `<owner>.<actor>`, refused with the walk's own sentence. The authoritative
    walk and the writer's other refusals, such as an interactive row of the same name, run again at
    the write (section 6). No record from `observeAliasRecords(owner, target.actor)` may hold the
@@ -695,6 +706,7 @@ payload. `authorizeAdmin` is unchanged.
 | a host without an assignment observer or intent store | both requests `unimplemented` |
 | an observer, ledger or record read error | `unavailable`, never a cached answer |
 | a manager with `delegatedIntent` and no `executeDelegatedUserIntent` | the spawn is refused before any request and writes nothing |
+| a delegated slot's stop, exit, reap or rollback | the name stays held and the holder calls none of its own retirement callbacks; only `retireDelegatedAgent` with `retired: true` frees it |
 | a consumed record with no `outcome` | the alias stays held, no new request is admitted on the record, the executor resumes it, and any other incarnation only claims it and compensates at the pinned UID; a retry that finds neither is `unavailable` |
 | a compensation whose activation is refused because the alias is `active` or `retiring` at another UID | no `outcome`, the alias stays held, and the compensator retries at its next scan; nothing exists at the never-activated UID |
 | a managed retire door answering `notStarted` to a compensation | not terminal: the order starts again from the prepare |
@@ -708,9 +720,9 @@ payload. `authorizeAdmin` is unchanged.
 |---|---|---|
 | `DelegatedUserLaunchTarget`, `DelegatedUserIntentOperation`, `DelegatedUserIntentRequest`, `DelegatedUserIntentAdmission`, `DELEGATED_USER_INTENT_MAX_TTL_SECONDS` | `@cotal-ai/core` | shipped |
 | `RemoteDelegatedUserIntentExecutionRequest`, `RemoteDelegatedUserIntentExecutionResult`, `parseDelegatedUserIntentRequest`, `parseRemoteDelegatedUserIntentExecutionRequest` | `@cotal-ai/core` | shipped |
-| `parseRemoteDelegatedUserIntentExecutionResult` | `@cotal-ai/core` | absent; it lands with its only consumer, the manager's launch path |
+| `parseRemoteDelegatedUserIntentExecutionResult`, `resolveReadAcl` | `@cotal-ai/core` | shipped |
 | `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `DelegatedUserIntentIncarnation`, `DelegatedUserIntentFlights`, `joinOrStartDelegatedUserIntent`, `delegatedUserIntentHoldsAlias`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | shipped; stock dispatch refuses both kinds as `unimplemented` |
-| `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | absent |
+| `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | shipped |
 | `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar, the platform control door | `@cotal-ai/auth`, `@cotal-ai/core` | absent at this branch's base; shipped on main at `6ca4d8e0f` (#2408) |
 | `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `activateLifecycleAtUid`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged |
 
@@ -720,9 +732,9 @@ both step 4 reads follow the shipped signature and require the account's one cur
 name the intent's instance. `ObservePlatformControlAssignment` is that door's observer type, and the
 decisions read the holder's owner and gate as the door does. `assertWithinSpawnerGrant` is now a
 module export of `ledger.ts` so the admission decision can run its dry walk. It is not re-exported
-from the package. Both decisions ship before the manager members because they are the authority:
-a host can compose and test them on its own routes, and the manager's launch and retirement paths
-only carry their answers.
+from the package. The manager's launch and retirement paths only carry the host's answers: the
+decisions are the authority. `resolveReadAcl` is the read-list resolution `provisionAgentDurables`
+already ran inline, exported so the admission's dry walk and the writer resolve the same list.
 
 ## 12. Native acceptance
 
