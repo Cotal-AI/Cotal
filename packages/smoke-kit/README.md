@@ -6,8 +6,8 @@ Use `freePort()` when a suite or its child needs a loopback port. Ports come fro
 below the kernel's ephemeral range, so no bind of port 0 and no outgoing connection on the host can
 be given one. A lock listener held until the process exits keeps every other caller of the kit, in
 this process or another, from getting the same port, so an address a suite keeps as dead stays
-dead. On Linux the kit reads the ephemeral range and throws when it overlaps 20000-32767. macOS and
-Windows default to 49152-65535.
+dead. A call that throws closes its lock and leaves nothing listening. On Linux the kit reads the
+ephemeral range and throws when it overlaps 20000-32767. macOS and Windows default to 49152-65535.
 
 The probe listener is closed before the number is returned, so a process that binds the number
 itself, without asking the kit, can still take the port first. Start the listener with

@@ -54,12 +54,18 @@ export async function freePort(): Promise<number> {
     const port = FIRST + ((start + i) % SPAN);
     const lock = await tryListen(port + SPAN);
     if (!lock) continue;
-    const probe = await tryListen(port);
+    let probe: Server | undefined;
+    try {
+      probe = await tryListen(port);
+      if (probe) await close(probe);
+    } catch (error) {
+      lock.close();
+      throw error;
+    }
     if (!probe) {
       await close(lock);
       continue;
     }
-    await close(probe);
     lock.unref();
     return port;
   }
