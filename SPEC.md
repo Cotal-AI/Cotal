@@ -4116,8 +4116,8 @@ serve principal, refuse a gate epoch other than the request's as `conflict`, and
 host-keyed current registration proof. Every check completes before any effect. The host then MUST
 CAS the record from `admitted` to `consumed` at the revision it read, and that same write MUST pin
 the execution: the request id, the serve epoch, the lifecycle UID (host-selected before the CAS for
-a launch, the target's for a retirement), and the launch's token digest or the retirement's
-operation id. A lost CAS is `conflict` and nothing is enrolled or retired. Because the reads are not
+a launch, the target's for a retirement), the launch's token digest or the retirement's
+operation id, and the host incarnation `{ instanceId, processEpoch }` that executes it. A lost CAS is `conflict` and nothing is enrolled or retired. Because the reads are not
 fences (§13.1), the host MUST repeat the assignment and gate checks for a launch after the CAS and
 before any effect, and on a refusal MUST end the record `aborted` with no effect; a change that
 lands after that second read is ordered after the execution. An intent executes at most once and
@@ -4130,6 +4130,21 @@ compensated by the retirement sequence below at that UID before it is marked `ab
 whose request id and serve epoch, and a launch's token digest, equal the pin is a retry of that
 execution: it passes the same checks except the consumed state, writes no second CAS, and MUST
 receive that execution's answer. The alias stays held until the record has an outcome.
+The host MUST run each execution in one in-process flight keyed by the intent id, and a retry MUST
+join that flight or read the record's outcome; a retry MUST NOT run the post-CAS checks, the
+enrollment writer or the retirement sequence itself. Every record write after the consuming CAS
+MUST be a revision-pinned CAS, and a flight MUST answer only from an outcome its own write set or
+from the outcome it reads after that write lost, never with material it did not commit. Recovery
+follows the executor and sweeper roles of §13.7. Only the pinned incarnation is the executor, and
+only the executor MAY run the enrollment writer for the record. Any other incarnation, including
+the same instance after a restart advanced its process epoch, is a sweeper. A sweeper MAY act only
+on a consumed record with no outcome whose executor it believes gone, because that instance's
+serving issuance gate is absent, not open or at another process epoch. It MUST first claim the
+record with a revision-pinned CAS that names its own incarnation and changes nothing else, and
+MAY then take only the terminal edge that removes authority: the retirement sequence below at the
+pinned UID, then `aborted` for a launch or `retired` for a retirement. The sequence's terminal
+barrier freezes the issuance gate at that UID before it retires the lifecycle (§13.1), so an
+executor that a wrong belief left running can mint nothing there and cannot set the outcome.
 
 **Ownership.** A delegated launch MUST be enrolled under the record's owner with the record's
 parent, through the same writer, managed-agent envelope walk, lifecycle-keyed durables and
