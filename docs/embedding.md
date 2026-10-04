@@ -451,15 +451,18 @@ managed-agent kinds above act only under the authenticated owner and refuse a ca
 that user, so a platform could only run a user's agent by holding the user's login or by enrolling
 the agent under its own owner. Both are refused. The
 [delegated user launch intent](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/delegated-user-launch-intent.md)
-design and SPEC §13.16 propose the smallest addition. The user admits one launch or one retirement
+design and SPEC §13.16 define the smallest addition. The user admits one launch or one retirement
 on the host's authenticated route. The holder consumes that intent once, from its current
 registration, epoch and lifecycle. The host then enrolls the agent under the user's `u_` owner with
 the user's own actor as its ledger parent, so the envelope walk, membership and channel lists match
 what the user's own manager would produce. Retirement keeps the prepare, provider closure and
 terminal barrier order, and the host finishes it when the holder is gone. A launch the host had to
 undo keeps its agent name held until the host process that ran it confirms it has stopped, and
-while the name is held the host also refuses it to the user's own manager. None of this ships yet,
-so keep user agents on the user's own manager until it does.
+while the name is held the host also refuses it to the user's own manager. `@cotal-ai/auth` ships the
+two decisions, `authorizeDelegatedUserIntentAdmission` and `authorizeDelegatedUserIntentExecution`,
+for a host that owns an intent store and those writers to compose on its own routes. Stock dispatch
+refuses both kinds as `unimplemented`, and the manager's delegated launch and retirement paths do
+not ship yet, so keep user agents on the user's own manager until they do.
 
 Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
 request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays

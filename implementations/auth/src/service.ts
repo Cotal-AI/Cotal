@@ -1842,6 +1842,9 @@ export async function dispatchManagerAuthorityRequest(
   // The hosted runtime kinds read and drive host-owned intent state that stock does not hold.
   if (request.kind === "manager-managed-agent-runtime-create" || request.kind === "manager-managed-agent-runtime-status")
     throw new EpEnvelopeError("unimplemented", "managed agent runtime create and status must be handled by host platform interception");
+  // A delegated user intent creates and consumes a record in the host's intent store, which stock does not hold.
+  if (request.kind === "delegated-user-intent" || request.kind === "manager-delegated-user-intent-execution")
+    throw new EpEnvelopeError("unimplemented", "delegated user intent admission and execution must be handled by host platform interception");
   if (request.kind === "manager-retained-agent-validation") {
     const retained = await ctx.validateRetainedAgent({
       owner,

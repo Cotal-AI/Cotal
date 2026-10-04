@@ -1,9 +1,11 @@
 # Delegated user launch intent
 
-Status: proposed contract. Nothing here is implemented or released. This change adds the design, an
-insertion-only SPEC §13.16 and one paragraph of the embedding guide. It adds no runtime path, no
-route, no record store and no exported type. None of the symbols in section 4 exists in source or in
-a built declaration at this head. Section 11 lists each symbol's status and why it waits.
+Status: partly implemented, not released. The `@cotal-ai/core` wire types and request parsers of
+section 4.1 and the `@cotal-ai/auth` decisions of section 4.2 ship. They are host policy, as the
+#1972 enrollment decisions are: a host that owns an intent store and the enrollment and retirement
+writers composes them on its own routes. Stock still has no such route, no record store and no
+writer. The manager members of section 4.3 and the result parser do not exist yet. Section 11 lists
+each symbol's status.
 
 The source inventory below was checked at `d00f18cd62f5933c7dceb93b56559498b66656bc` (v0.58.0 plus
 later fixes on main). The platform holder this record extends is the `p_` holder of
@@ -22,7 +24,7 @@ contributes a runtime and a registration. It contributes no authority.
 ## 1. What a user-initiated launch does today
 
 Two arms in `Manager.provisionUserAgent` (`implementations/manager/src/manager.ts`) decide every
-user-mode spawn. The line numbers are this head's. The same statements stand at the v0.58.0 tag
+user-mode spawn. The line numbers are those of `d00f18cd6`. The same statements stand at the v0.58.0 tag
 (`ed9534a3135553c0a6c91a3305d13388d5b55c3e`) at `manager.ts:3642-3647` (routing, owner, refusal),
 `3673-3683` (the grant with its parent) and `3807-3809` (the hosted owner refusal).
 
@@ -52,7 +54,8 @@ So a `u_` agent comes up only under a principal of that user: the user's own ctl
 host's local manager, or the user's own `supervise`-scoped remote manager. Any other authenticated
 principal is refused on the user's instance by the gate principal check, and the only enrollment the
 doors admit for it is under its own owner, which would relabel the agent. The enrollment target is
-closed and has no owner or intent field. The `p_` holder does not exist at this head.
+closed and has no owner or intent field. The `p_` holder did not exist at `d00f18cd6`. It landed with
+its door at `6ca4d8e0f` and changes none of this: R8 binds it to its own owner (section 8).
 
 ## 2. Scope
 
@@ -81,8 +84,7 @@ The intent carries no permission, profile, subject, lifetime or claim.
 
 ## 4. Declarations
 
-Written here so a producer can adapt against them. They land in the implementation round
-(section 11).
+Written here so a producer can adapt against them. Section 11 says which of them ship.
 
 ### 4.1 `@cotal-ai/core` (`packages/core/src/remote-manager-authority.ts`)
 
@@ -126,7 +128,7 @@ export interface DelegatedUserIntentAdmission {
   /** The user's own actor that admitted the intent. It is never the target's actor. */
   actor: string;
   requestId: string;
-  /** Host-generated, 26 base32-lower characters of fresh entropy. Never caller-selected. */
+  /** Host-generated with `mintLifecycleUid`. Never caller-selected. */
   intentId: string;
   accountPublicKey: string;
   instanceId: string;
@@ -687,7 +689,7 @@ payload. `authorizeAdmin` is unchanged.
 
 | Site | Answer |
 |---|---|
-| Today, every site: none of these symbols exists | the shipped doors refuse any principal other than the user (section 1); no door accepts an owner or intent field |
+| a host that composes no intent route | the shipped doors refuse any principal other than the user (section 1); no door accepts an owner or intent field |
 | stock `dispatchManagerAuthorityRequest` | `unimplemented` for `delegated-user-intent` and `manager-delegated-user-intent-execution` |
 | the platform-control door | `bad-request` for the execution kind (unknown kind) |
 | a host without an assignment observer or intent store | both requests `unimplemented` |
@@ -699,26 +701,28 @@ payload. `authorizeAdmin` is unchanged.
 | a compensation that finds the head `retiring` or `retired`, or the gate `frozen` or `retired` by the derived op id, at the pinned UID | no activation; the managed retire door resumes that op from its durable intent |
 | a refusal after the consuming CAS on any flight, the first included | compensation at the pinned UID before `aborted`; the alias stays held until then |
 | a record a sweeper claimed and the executor has not `released` | the alias stays held after the outcome; launch admission and the enrollment writer refuse it; only the executor's flight or an operator by hand releases it |
-| a design reviewers reject | nothing lands: the declarations stay in this record (section 11) |
 
-## 11. Why the declarations wait
+## 11. Symbol status
 
 | Symbol | Package | Status at this head |
 |---|---|---|
-| `DelegatedUserLaunchTarget`, `DelegatedUserIntentOperation`, `DelegatedUserIntentRequest`, `DelegatedUserIntentAdmission`, `DELEGATED_USER_INTENT_MAX_TTL_SECONDS` | `@cotal-ai/core` | proposed, absent |
-| `RemoteDelegatedUserIntentExecutionRequest`, `RemoteDelegatedUserIntentExecutionResult` and the three parsers | `@cotal-ai/core` | proposed, absent |
-| `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `DelegatedUserIntentIncarnation`, `DelegatedUserIntentFlights`, `joinOrStartDelegatedUserIntent`, `delegatedUserIntentHoldsAlias`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | proposed, absent |
-| `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | proposed, absent |
+| `DelegatedUserLaunchTarget`, `DelegatedUserIntentOperation`, `DelegatedUserIntentRequest`, `DelegatedUserIntentAdmission`, `DELEGATED_USER_INTENT_MAX_TTL_SECONDS` | `@cotal-ai/core` | shipped |
+| `RemoteDelegatedUserIntentExecutionRequest`, `RemoteDelegatedUserIntentExecutionResult`, `parseDelegatedUserIntentRequest`, `parseRemoteDelegatedUserIntentExecutionRequest` | `@cotal-ai/core` | shipped |
+| `parseRemoteDelegatedUserIntentExecutionResult` | `@cotal-ai/core` | absent; it lands with its only consumer, the manager's launch path |
+| `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `DelegatedUserIntentIncarnation`, `DelegatedUserIntentFlights`, `joinOrStartDelegatedUserIntent`, `delegatedUserIntentHoldsAlias`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | shipped; stock dispatch refuses both kinds as `unimplemented` |
+| `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | absent |
 | `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar, the platform control door | `@cotal-ai/auth`, `@cotal-ai/core` | absent at this branch's base; shipped on main at `6ca4d8e0f` (#2408) |
 | `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `activateLifecycleAtUid`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged |
 
-The platform control door landed on main at `6ca4d8e0f`, after this branch's base. Its assignment
-observer is keyed by space and account, where the platform-control record at `2392055` keyed it by
-instance, so section 4.2 and both step 4 reads follow the shipped signature and require the account's
-one current assignment to name the intent's instance. The declarations land in the implementation
-round, built on that door, because the holder, its owner grammar and its assignment observer are
-inputs to both decisions, and a decision type with no producer would advertise authority no host
-provides.
+The platform control door landed on main at `6ca4d8e0f`. Its assignment observer is keyed by space
+and account, where the platform-control record at `2392055` keyed it by instance, so section 4.2 and
+both step 4 reads follow the shipped signature and require the account's one current assignment to
+name the intent's instance. `ObservePlatformControlAssignment` is that door's observer type, and the
+decisions read the holder's owner and gate as the door does. `assertWithinSpawnerGrant` is now a
+module export of `ledger.ts` so the admission decision can run its dry walk. It is not re-exported
+from the package. Both decisions ship before the manager members because they are the authority:
+a host can compose and test them on its own routes, and the manager's launch and retirement paths
+only carry their answers.
 
 ## 12. Native acceptance
 
