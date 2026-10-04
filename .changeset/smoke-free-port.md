@@ -1,0 +1,4 @@
+---
+---
+
+Smoke suites take their ports from one shared `freePort` in `@cotal-ai/smoke-kit`. It hands out ports below the kernel's ephemeral range and holds a lock for each one until the process exits, so no bind of port 0, no outgoing connection and no other caller of the kit, in the same process or another, can take a port between the helper's probe and the suite's own bind. A suite that asked for several ports could be given one of them twice, so an address it treated as dead could become its own broker's. `activity-read-cost` also asks the OS for the four ports it used to derive by adding to another port. The suites that launch the shipped `web` entry point, and the listeners `meshes-registry` opens in its own process, start through `onFreePort`, which starts them again on a new port when another process took the first one.

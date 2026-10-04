@@ -30,7 +30,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
-import { createServer, type AddressInfo } from "node:net";
 import type { ActionContext, EpAttributedReply, EpCaller, EpEnvelopeError as EpEnvelopeErrorType, ParsedEpRequest, Connector, LaunchSpec } from "@cotal-ai/core";
 import type { CotalEndpoint as SourceCotalEndpoint } from "../../../packages/core/src/index.js";
 // `CotalEndpoint` comes from SOURCE while everything else above comes from the built package, and
@@ -40,7 +39,7 @@ import type { CotalEndpoint as SourceCotalEndpoint } from "../../../packages/cor
 // about the test. Nothing is shared across the two copies — the client's only contact with the
 // manager (which reaches core through `dist`) is over NATS, and the goal helpers above operate on
 // the manager's own context, so no branded object crosses the boundary.
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-mrf-home-"));
 process.env.COTAL_HOME = home;
@@ -54,12 +53,6 @@ const { Manager } = await import("../src/manager.js");
 const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }

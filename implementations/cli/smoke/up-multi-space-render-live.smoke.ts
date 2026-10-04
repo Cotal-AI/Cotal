@@ -25,21 +25,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
-
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
+import { freePort } from "@cotal-ai/smoke-kit";
 
 const scratch = makeScratch("cotal-up-multispace-");
 const home = mkdtempSync(join(scratch, "home-"));

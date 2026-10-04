@@ -27,14 +27,13 @@ import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
-import { createServer } from "node:net";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey, type PresenceCondition } from "@cotal-ai/core";
 import { connect as rawConnect } from "@nats-io/transport-node";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
@@ -45,14 +44,6 @@ if (process.platform === "win32") {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function freePort(): Promise<number> {
-  const srv = createServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
 
 const PORT = await freePort();
 const servers = `nats://127.0.0.1:${PORT}`;

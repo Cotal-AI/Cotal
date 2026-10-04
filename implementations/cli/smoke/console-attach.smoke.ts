@@ -26,9 +26,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSpaceAuth, isReachable, mintCreds, newIdentity, registry, serverConfig, setupSpaceStreams, type Connector, type LaunchSpec, type SpaceAuth } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { spawn } from "node:child_process";
-import { createServer, type AddressInfo } from "node:net";
 import { ConsoleSession, clean, repoRoot, wait } from "./_console-pty.js";
 
 let pass = 0, fail = 0;
@@ -43,13 +42,6 @@ interface ManagerLike {
 const { Manager } = (await import(pathToFileURL(join(repoRoot, "implementations", "manager", "dist", "index.js")).href)) as {
   Manager: new (o: { space: string; servers: string; runtime: string; workspaceRoot: string }) => ManagerLike;
 };
-
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 
 /** A JWT-auth nats-server for `auth` on a free loopback port, owned until `stop`. */
 async function bootBroker(auth: SpaceAuth, dir: string): Promise<{ servers: string; stop: () => Promise<void> }> {

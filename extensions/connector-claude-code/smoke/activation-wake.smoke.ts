@@ -10,23 +10,14 @@ import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
-import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
 import { MeshAgent, type InboxItem } from "@cotal-ai/connector-core";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createWakePolicy } from "../src/hooks.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function freePort(): Promise<number> {
-  const server = createNetServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const port = (server.address() as { port: number }).port;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
-}
 const waitFor = async (what: string, condition: () => boolean, timeoutMs = 8_000): Promise<void> => {
   for (let elapsed = 0; elapsed < timeoutMs && !condition(); elapsed += 100) await sleep(100);
   if (!condition()) throw new Error(`timed out waiting for ${what}`);

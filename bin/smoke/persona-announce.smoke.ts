@@ -56,7 +56,6 @@ import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -76,17 +75,7 @@ import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { MeshAgent, cotalToolSpecs, type AgentConfig } from "@cotal-ai/connector-core";
 import { Manager } from "@cotal-ai/manager";
 import { PermissionViolationError } from "@nats-io/transport-node";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;

@@ -32,7 +32,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { connect, createServer as createNetServer } from "node:net";
+import { connect } from "node:net";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -43,21 +43,12 @@ import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parseP
 import { connect as rawConnect } from "@nats-io/transport-node";
 import { MeshAgent, startControlServer, type InboxItem } from "@cotal-ai/connector-core";
 import { createClaudeHandle, createWakePolicy } from "../src/hooks.js";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 /** The real per-event hook entry Claude Code runs, and the loader that can execute its TS. */
 const hookEntry = join(here, "..", "src", "hook.ts");
 const tsxCli = createRequire(import.meta.url).resolve("tsx/cli");
-
-async function freePort(): Promise<number> {
-  const srv = createNetServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PORT = await freePort();

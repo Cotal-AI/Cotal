@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { once } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { BRIDGE_RECOVERY_WINDOW_MS } from "../src/host.js";
 
 // #781: a provider stream can make Jcode close the Harness API connection while a seat is in an
@@ -17,14 +16,6 @@ import { BRIDGE_RECOVERY_WINDOW_MS } from "../src/host.js";
 // same session and can accept later mesh work.
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function freePort(): Promise<number> {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const port = (server.address() as { port: number }).port;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
-}
 // A wait on a step of a bridge recovery passes the host's own BRIDGE_RECOVERY_WINDOW_MS. On a loaded
 // runner, teardown, relaunch and attach can outlast the 20 s default while the host is still inside
 // its window, and a shorter budget reds a recovery the host is entitled to finish (#1219).

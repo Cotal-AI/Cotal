@@ -11,13 +11,12 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (!/^(1|true|yes|on)$/i.test(process.env.COTAL_E2E_CODEX ?? "")) {
   console.log("SKIP codex live E2E — set COTAL_E2E_CODEX=1 (needs an authenticated `codex` CLI) to run it");
@@ -25,14 +24,6 @@ if (!/^(1|true|yes|on)$/i.test(process.env.COTAL_E2E_CODEX ?? "")) {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function freePort(): Promise<number> {
-  const srv = createServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
 
 const PORT = await freePort();
 const servers = `nats://127.0.0.1:${PORT}`;

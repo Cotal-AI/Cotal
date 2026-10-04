@@ -53,7 +53,6 @@
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { makeScratch } from "./_scratch.js";
 
@@ -72,6 +71,7 @@ const { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, authDir, recordMesh, save
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { Command, Connector, LaunchOpts, SpaceAuth } from "@cotal-ai/core";
+import { freePort } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 let pass = 0;
@@ -102,15 +102,6 @@ const until = async (cond: () => boolean, ms: number): Promise<boolean> => {
   }
   return cond();
 };
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
 const alive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 };

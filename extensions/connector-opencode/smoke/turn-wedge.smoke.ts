@@ -24,7 +24,6 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -33,16 +32,7 @@ import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parseP
 import { configFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
 import { connect as rawConnect } from "@nats-io/transport-node";
 import { bootPlugin, bootPlugin2, fakeOpenCode2Context } from "./_boot-plugin.js";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
-
-async function freePort(): Promise<number> {
-  const srv = createNetServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await freePort();
 const servers = `nats://127.0.0.1:${PORT}`;

@@ -21,14 +21,13 @@
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import type { ActionContext, Connector, EpCaller, GoalRef, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { censusCustodians, reapSeat, runMarker } from "@cotal-ai/seat";
-import { SMOKE_BROKER_TOKEN, makeSeatRoot, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, makeSeatRoot, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-spawnact-ws-"));
 process.env.COTAL_HOME = join(workspaceRoot, "home");
@@ -43,12 +42,6 @@ const { launchEnv } = await import("@cotal-ai/connector-core"); // dev-only smok
 
 const dec = new TextDecoder();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
   new Promise((r) => { if (p.exitCode !== null || p.signalCode !== null) return r(); p.once("exit", () => r()); setTimeout(r, ms).unref?.(); });
 

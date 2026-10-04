@@ -4,7 +4,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createServer, type AddressInfo } from "node:net";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -17,17 +16,8 @@ import {
   mintLifecycleUid,
 } from "@cotal-ai/core";
 import { authDir, loadSoleSpaceAuth } from "@cotal-ai/workspace";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { BACKUP_MANIFEST_FORMAT, type BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
-
-const freePort = () => new Promise<number>((resolvePort, reject) => {
-  const server = createServer();
-  server.once("error", reject);
-  server.listen(0, "127.0.0.1", () => {
-    const port = (server.address() as AddressInfo).port;
-    server.close((error) => error ? reject(error) : resolvePort(port));
-  });
-});
 
 const worktree = resolve(import.meta.dirname, "..", "..");
 const cliPath = join(worktree, "bin", "cotal.ts");

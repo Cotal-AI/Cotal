@@ -32,7 +32,6 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { createServer as createNetServer } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -40,16 +39,7 @@ import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { MeshAgent, type InboxItem } from "@cotal-ai/connector-core";
 import { createWakePolicy } from "../src/hooks.js";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
-
-async function freePort(): Promise<number> {
-  const srv = createNetServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PORT = await freePort();

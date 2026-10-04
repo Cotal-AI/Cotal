@@ -22,11 +22,10 @@
  */import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CotalEndpoint as CotalEndpointType, EpCaller, EpEnvelopeError as EpEnvelopeErrorType } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 process.env.COTAL_HOME = join(dir, "home");
@@ -42,12 +41,6 @@ const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 // would make this probe refuse to load on the very tip it is the baseline for.
 const EP_BIND_REFUSED = "ai.cotal.ep.bind-refused";
 
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 

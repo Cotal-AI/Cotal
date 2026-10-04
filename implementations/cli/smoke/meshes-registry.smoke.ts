@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, listenOn, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
 // call, so the real ~/.cotal is never touched.
@@ -180,17 +180,6 @@ async function httpsDowngradeFixture(
   }
 }
 
-/** A free localhost port (the listener is closed before the port is handed back). */
-async function freePort(): Promise<number> {
-  const srv = createServer();
-  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
-  const addr = srv.address();
-  assert.ok(addr && typeof addr === "object");
-  const { port } = addr;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
-
 const roots: string[] = [];
 
 
@@ -202,7 +191,9 @@ function projectRoot(label: string): string {
   return root;
 }
 
-const DEAD = `nats://127.0.0.1:${await freePort()}`; // nothing listens there
+// Nothing listens there. Every listener this process opens takes its port through the smoke kit,
+// which never hands this one out again.
+const DEAD = `nats://127.0.0.1:${await freePort()}`;
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
 const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
@@ -376,8 +367,7 @@ try {
     res.statusCode = 404;
     res.end("{}");
   });
-  await new Promise<void>((r) => exchange.listen(0, "127.0.0.1", r));
-  const exchangeUrl = `http://127.0.0.1:${(exchange.address() as { port: number }).port}`;
+  const exchangeUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(exchange, port))}`;
   // VALID JWKS ON PURPOSE. With an empty key set this fixture refuses for TWO reasons at once, and
   // the issuer cell then passes even with the issuer comparison deleted — it was pinning the empty
   // JWKS, not the foreign issuer. A non-empty key set makes the foreign issuer the ONLY thing
@@ -389,8 +379,7 @@ try {
     res.statusCode = 404;
     res.end("{}");
   });
-  await new Promise<void>((r) => wrongExchange.listen(0, "127.0.0.1", r));
-  const wrongExchangeUrl = `http://127.0.0.1:${(wrongExchange.address() as { port: number }).port}`;
+  const wrongExchangeUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(wrongExchange, port))}`;
   const SENTINEL_BLOB = "-----BEGIN NATS USER JWT-----\nsentinel-secret-material-o7\n------END NATS USER JWT------";
   const bundleFor = (over: Record<string, unknown> = {}) => ({
     space: "hosted",
@@ -422,8 +411,7 @@ try {
   // rather than the deleted sequencing fence, while a plain-http discovery address remains inert.
   let discoHits = 0;
   const countingDisco = createHttpServer((_req, res) => { discoHits++; res.statusCode = 404; res.end("{}"); });
-  await new Promise<void>((r) => countingDisco.listen(0, "127.0.0.1", r));
-  const discoUrl = `http://127.0.0.1:${(countingDisco.address() as { port: number }).port}`;
+  const discoUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(countingDisco, port))}`;
   removeMesh("hosted");
   const fromHttpGate = await run(["add", "hosted"], { mode: "user", from: `${discoUrl}/.well-known/cotal-mesh`, root: hostedRoot });
   check("--from reaches its HTTPS trust gate, not an obsolete consumer fence",
@@ -553,15 +541,13 @@ try {
     if (req.url?.endsWith("/jwks")) return void res.end(JSON.stringify({ keys: [{ kid: "k" }] }));
     res.statusCode = 404; res.end("{}");
   });
-  await new Promise<void>((r) => downgrade.listen(0, "127.0.0.1", r));
-  const downgradeUrl = `http://127.0.0.1:${(downgrade.address() as { port: number }).port}`;
+  const downgradeUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(downgrade, port))}`;
   const redirector = createHttpServer((_req, res) => {
     res.statusCode = 302;
     res.setHeader("location", `${downgradeUrl}/health`);
     res.end();
   });
-  await new Promise<void>((r) => redirector.listen(0, "127.0.0.1", r));
-  const redirectorUrl = `http://127.0.0.1:${(redirector.address() as { port: number }).port}`;
+  const redirectorUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(redirector, port))}`;
 
   const { verifyUserExchange, assertPinnedFetchUrl, pinnedFetchProbe } = await import("../src/commands/meshes-add.js");
   // A non-loopback plain-http exchange base is refused outright: the pin cannot ride plaintext.
@@ -627,8 +613,7 @@ try {
   // I/O the gate exists to prevent.
   let fromConnects = 0;
   const fromSocket = createServer((s) => { fromConnects++; s.destroy(); });
-  await new Promise<void>((r) => fromSocket.listen(0, "127.0.0.1", () => r()));
-  const fromPort = (fromSocket.address() as { port: number }).port;
+  const fromPort = await onFreePort((port) => listenOn(fromSocket, port));
   const fromNoTty = await run(["add", "hosted"], { mode: "user", from: `https://127.0.0.1:${fromPort}/.well-known/cotal-mesh`, root: hostedRoot });
   check("--from performs NO network I/O before the consent gate",
     fromNoTty.code === 1 && fromConnects === 0 && findMesh("hosted") === undefined, { out: fromNoTty.out, fromConnects });
@@ -748,8 +733,7 @@ try {
 
   let catalogBrokerAttempts = 0;
   const catalogSink = createServer((socket) => { catalogBrokerAttempts++; socket.destroy(); });
-  await new Promise<void>((r) => catalogSink.listen(0, "127.0.0.1", r));
-  const catalogServer = `nats://127.0.0.1:${(catalogSink.address() as { port: number }).port}`;
+  const catalogServer = `nats://127.0.0.1:${await onFreePort((port) => listenOn(catalogSink, port))}`;
   for (let i = 0; i < 8; i++)
     recordMesh({ space: `catalog_${i}`, server: catalogServer, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-fanout", catalogSlug: `catalog_${i}`, catalogName: `Catalog ${i}`, ts: new Date(0).toISOString() });
   const discoveredList = await run([]);
