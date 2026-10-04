@@ -47,6 +47,7 @@ pnpm smoke:ci      # security/protocol smoke suite (the CI gate); needs nats-ser
 pnpm smoke:ci:offline # the gate minus the suites that start a stack or drive real processes; prints what it excluded, and is not the gate
 pnpm typecheck     # tsc --noEmit across all packages
 pnpm build         # tsc build across all packages
+pnpm check         # every local check, :live suites included; runs every step and lists each failure at the end
 ```
 
 ESM only (`"type": "module"`); run TS directly with `tsx`, no build step for dev. Node &gt;= 22.

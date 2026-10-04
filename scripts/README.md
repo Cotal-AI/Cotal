@@ -31,6 +31,17 @@ not understand is an error, not a silently ignored or literal filter.
 The guard is read-only. It does not drain GitHub's queue, retrigger a run, or diagnose or fix the
 external scheduler that creates workflow runs.
 
+## Full local check
+
+`pnpm check` runs the typecheck, the docs gate, `pnpm test`, `pnpm smoke:ci` and the `:live` suites
+in order through `scripts/check.mjs`. A failing step does not stop the run: every step runs, and the
+closing summary lists each step that failed with its exit status, so one red suite cannot hide the
+steps after it. The run exits 1 when any step failed. A step the root manifest does not define is
+refused before anything runs.
+
+No workflow runs `pnpm check`, and some of its `:live` steps are on no CI shard.
+`pnpm smoke:gate-inventory` lists those with the reason each one is left out.
+
 ## Docs checks
 
 `pnpm check:docsbundle` is the CI docs gate. It runs three checks, and each proves less than a
