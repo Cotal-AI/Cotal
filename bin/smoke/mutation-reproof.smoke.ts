@@ -2725,7 +2725,7 @@ const functionBody = (name: string): string => {
 const runProofBody = functionBody("runProof");
 const runCommandBody = functionBody("runCommand");
 const rootProofSpawn = (() => {
-  const at = source.indexOf('spawnSync(process.execPath, [PROOF, "--config", path], {');
+  const at = source.indexOf("spawnSync(process.execPath, proofArgs(path), {");
   if (at === -1) return "";
   const end = source.indexOf("});", at);
   return end === -1 ? source.slice(at) : source.slice(at, end + 3);
@@ -2738,10 +2738,10 @@ check(
   "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)",
   /const COMMAND_TIMEOUT_MS = 900_000;/.test(source)
     && /const PROOF_TIMEOUT_MS = 140 \* 60 \* 1000;/.test(source)
-    && spawnsWith(runProofBody, "PROOF_TIMEOUT_MS")
-    && spawnsWith(rootProofSpawn, "PROOF_TIMEOUT_MS")
-    && spawnsWith(runCommandBody, "COMMAND_TIMEOUT_MS"),
-  `runProof and the root PROOF spawn must pass timeout: PROOF_TIMEOUT_MS; runCommand keeps COMMAND_TIMEOUT_MS (runProof body ${runProofBody.length} chars, runCommand body ${runCommandBody.length} chars, root spawn ${rootProofSpawn.length} chars)`,
+    && spawnsWith(runProofBody, "proofTimeoutMs\\(\\)")
+    && spawnsWith(rootProofSpawn, "proofTimeoutMs\\(\\)")
+    && spawnsWith(runCommandBody, "commandTimeoutMs\\(\\)"),
+  `runProof and the root PROOF spawn must pass timeout: proofTimeoutMs(); runCommand keeps commandTimeoutMs(), each bounded by its constant and the run budget (runProof body ${runProofBody.length} chars, runCommand body ${runCommandBody.length} chars, root spawn ${rootProofSpawn.length} chars)`,
 );
 
 check(

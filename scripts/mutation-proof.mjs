@@ -41,6 +41,15 @@
  *   node scripts/mutation-proof.mjs --file <path> --find <str> --replace <str> \
  *        --command "pnpm smoke:x" --expect-red "<substring of the failing assertion>"
  *   node scripts/mutation-proof.mjs --recover     put back what a killed proof left, and exit
+ *   --deadline <epoch-ms>   stop grading at that instant: a suite run still going is cut short and
+ *                           its mutant put back, the mutations not reached are named, and the run
+ *                           exits 5. mutation-reproof passes its run budget down this way so a
+ *                           proof ends itself, with the tree restored, before the job is killed.
+ *   --restore-deadline <epoch-ms>
+ *                           an `afterRestore` still running at that instant is killed and its
+ *                           mutation reported as RESTORE FAILED. mutation-reproof passes the
+ *                           instant just before it would kill this proof, so the proof stops its
+ *                           own rebuild instead of leaving it running behind a dead parent.
  *
  * A killed proof cannot restore anything, so each mutation first writes a breadcrumb outside the
  * tree: the file, its pre-mutation hash and where the backup is. Every run reads those before it
@@ -65,6 +74,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
+import { runMark, sweepMarked } from "./mutation-run-mark.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
@@ -80,6 +90,9 @@ const EXCERPT_TAIL = 10;
 
 /** Every mutation currently written to disk: the restore that undoes it, by file. */
 const liveRestores = new Map();
+
+/** The mark every process this proof starts carries in its environment, for {@link sweepMarked}. */
+const RUN = runMark("mutation-proof");
 
 const BREADCRUMB_PREFIX = "mutation-proof-bc-";
 
@@ -376,17 +389,32 @@ function run(command, cwd, timeoutMs) {
     // A mutation may deliberately desynchronize dependency metadata from pnpm-lock.yaml. pnpm's
     // default pre-run check would install (or fail under CI's frozen lockfile) before the suite can
     // observe that mutant. Disable only that check, and only in this child process tree.
-    env: { ...process.env, pnpm_config_verify_deps_before_run: "false" },
+    env: { ...process.env, pnpm_config_verify_deps_before_run: "false", MUTATION_PROOF_RUN: RUN.mark },
     detached: process.platform !== "win32",
     killSignal: "SIGKILL",
   });
   if (r.error?.code === "ETIMEDOUT" && r.pid !== undefined && process.platform !== "win32") {
     try { process.kill(-r.pid, "SIGKILL"); } catch { /* the group is already gone */ }
+    sweepMarked(RUN.token, say);
   }
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   // A timeout kills the child and leaves status null; that is not a red, it is an unknown.
   return { status: r.status, signal: r.signal, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
 }
+
+/** The suite budget: the per-command timeout, cut to what is left before `--deadline`. Only suite
+ *  runs take it; an `afterRestore` rebuild runs on past the deadline, or a deadline would leave a
+ *  `dist/` compiled from the mutant. */
+const suiteTimeoutMs = (opts) => opts.deadline === undefined
+  ? opts.timeoutMs
+  : Math.max(1, Math.min(opts.timeoutMs, opts.deadline - Date.now()));
+/** The `afterRestore` budget: the per-command timeout, cut to what is left before
+ *  `--restore-deadline`. Past that instant the caller kills this proof, and a rebuild it started
+ *  would keep writing `dist/` after both had returned. */
+const restoreTimeoutMs = (opts) => opts.restoreDeadline === undefined
+  ? opts.timeoutMs
+  : Math.max(1, Math.min(opts.timeoutMs, opts.restoreDeadline - Date.now()));
+const pastDeadline = (opts) => opts.deadline !== undefined && Date.now() >= opts.deadline;
 
 // A line-initial pass mark: optional leading whitespace, optional ANSI colour escapes, then the
 // glyph. Not a bare glyph match — a suite can carry a `✓` inside an assertion LABEL (printed on
@@ -521,10 +549,11 @@ function proveOne(m, opts) {
       // restore no longer depends on the backup surviving, so its own absence here is not a failure.
       rmSync(backup, { force: true });
       if (ok && m.afterRestore) {
-        const rr = run(m.afterRestore, cwd, opts.timeoutMs);
+        const rr = run(m.afterRestore, cwd, restoreTimeoutMs(opts));
         if (rr.status !== 0) {
-          say(`${C.red}  afterRestore FAILED (exit ${rr.status}): derived artefacts may still be built from the mutant${C.off}`);
-          restoreError = new Error(`afterRestore exited ${rr.status}`);
+          const how = rr.timedOut ? "was killed at its timeout or --restore-deadline" : `exited ${rr.status}`;
+          say(`${C.red}  afterRestore FAILED (${how}): derived artefacts may still be built from the mutant${C.off}`);
+          restoreError = new Error(`afterRestore ${how}`);
           return false;
         }
       }
@@ -554,7 +583,7 @@ function proveOne(m, opts) {
     }
     say(`${C.dim}  mutated ${hits}× · running: ${m.command ?? opts.command}${C.off}`);
 
-    const r = run(m.command ?? opts.command, cwd, opts.timeoutMs);
+    const r = run(m.command ?? opts.command, cwd, suiteTimeoutMs(opts));
     // Keep the transcript for the report. Every verdict below is derived from `r.output` and none
     // of them printed it, so a WRONG-RED said the expected string was absent and never what was
     // there instead. `manager-runtime-deps` sat red on main and on a release PR for a day in
@@ -566,9 +595,12 @@ function proveOne(m, opts) {
     const restored = restore();
     if (!restored) {
       return { label, transcript, verdict: "ERROR",
-        why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"}`, ticks };
+        why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"}`, ticks,
+        deadlineCut: r.timedOut && pastDeadline(opts) };
     }
 
+    if (r.timedOut && pastDeadline(opts)) return { label, transcript, verdict: "INCONCLUSIVE",
+      why: "the --deadline cut this run short; it graded nothing", ticks, deadlineCut: true };
     if (r.timedOut) return { label, transcript, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
 
     // ---- FIRST QUESTION, ON EVERY PATH: did this run actually execute the check being graded? ---
@@ -747,7 +779,13 @@ let opts = {
   timeoutMs: Number(a.timeout ?? 900_000),
   progressPattern: a["progress-pattern"],
   minTicks: a["min-ticks"] === undefined ? undefined : Number(a["min-ticks"]),
+  deadline: a.deadline === undefined ? undefined : Number(a.deadline),
+  restoreDeadline: a["restore-deadline"] === undefined ? undefined : Number(a["restore-deadline"]),
 };
+for (const [flag, value] of [["deadline", opts.deadline], ["restore-deadline", opts.restoreDeadline]]) {
+  if (value !== undefined && !(typeof a[flag] === "string" && Number.isFinite(value) && value > 0))
+    usage(`invalid --${flag} ${a[flag]}; use an epoch time in milliseconds`);
+}
 
 if (a.config) {
   // `resolve`, not `join`: an ABSOLUTE --config path joined to cwd becomes a nonexistent path under
@@ -796,8 +834,14 @@ opts.baseOutputBy = new Map();
 opts.baseTicksBy = baseTicksBy;
 for (const cmd of commands) {
   say(`${C.dim}baseline: ${cmd}${C.off}`);
-  const base = run(cmd, cwd, opts.timeoutMs);
+  const base = run(cmd, cwd, suiteTimeoutMs(opts));
   const ticks = progressCount(base.output, opts.progressPattern);
+  if (base.timedOut && pastDeadline(opts)) {
+    // Out of time is not a red baseline: exit 4 would send mutation-reproof to compare a refusal
+    // that never happened.
+    say(`${C.yellow}DEADLINE: the --deadline passed during the baseline of \`${cmd}\`; no mutation was graded.${C.off}`);
+    process.exit(5);
+  }
   if (base.status !== 0) {
     // Bounded machine-readable provenance from the exact run that refused. Re-running after exit 4
     // could observe different root state, so mutation-reproof compares this hash instead. The raw
@@ -845,7 +889,9 @@ if (opts.minTicks === undefined && [...baseTicksBy.values()].some((t) => t > 0))
 }
 
 const results = [];
+const notReached = [];
 for (const m of mutations) {
+  if (pastDeadline(opts)) { notReached.push(m); continue; }
   // Report each verdict's marks against ITS OWN suite's baseline. Two suites count different
   // things, so "8 marks (baseline 24)" across a suite boundary reads as a run that died early
   // when it may have run to completion.
@@ -939,6 +985,14 @@ if (bad === 0) {
   say(`point reaches that code — if the test builds its inputs by hand, prove that separately.${C.off}`);
 } else {
   say(`${C.red}${bad} of ${results.length} mutation(s) did not produce a clean, named red.${C.off}`);
+}
+if (notReached.length || results.some((r) => r.deadlineCut)) {
+  // A run the deadline cut is incomplete, whatever it graded before the cut, so it gets its own
+  // exit code: a caller must not read it as a pass, and must not read it as a finding either.
+  say(`${C.yellow}DEADLINE: the --deadline passed with ${notReached.length} of ${mutations.length} mutation(s) not reached${notReached.length ? ":" : "."}${C.off}`);
+  for (const m of notReached) say(`  NOT REACHED ${m.name ?? `${m.file}: ${m.find.slice(0, 48).replace(/\n/g, "⏎")}`}`);
+  await settleSignals();
+  process.exit(5);
 }
 await settleSignals();
 process.exit(bad === 0 ? 0 : 1);

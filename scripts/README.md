@@ -98,3 +98,28 @@ health of the whole tree, so every proven fixture in the shard must produce a ki
 is pre-red, inconclusive, or graded nothing fails the sweep and is named on the
 `MUTATION REPROOF FLOOR ERODED` line, or on the `ZERO DISCRIMINATED, COULD NOT` line when no fixture
 killed. That failure opens or comments on the `ci:mutation-reproof` tracking issue.
+
+## Mutation reproof budget
+
+`mutation-reproof` takes `--budget-minutes <n>`, and the workflow passes one below each shard's step
+timeout. Selection does not estimate fixture cost, so one shard can draw more proof work than its
+step can finish. Without a budget the step was killed from outside: no tally, no word about the
+fixtures that never ran, and a mutant left in the tree. With one, each `mutation-proof` child gets
+the deadline as `--deadline <epoch-ms>`. At the deadline it cuts the running suite, kills that
+suite's process group, puts the mutant back, names the mutations it did not reach and exits 5. The
+reproof then prints `MUTATION REPROOF BUDGET EXHAUSTED`, names each selected fixture as cut short or
+not run, and exits 1. That result is UNMEASURED. It is never a pass. A fatal verdict whose base
+comparison cannot finish in the budget is reported as an unmeasured transition with the budget as
+its reason.
+
+A process that left the suite's group survives a group kill, and anything spawned `detached` does.
+Every process a proof starts carries the proof's mark in `MUTATION_PROOF_RUN`. After any timed-out
+run the proof kills every process still carrying its mark and prints what it killed and what
+survived. mutation-reproof does the same for the commands it runs itself: the snapshot install and
+build, and the head and base runs of a pre-red comparison. It reads the marks from `/proc`, so on
+other platforms it says it did not look. A process that rebuilt its environment without the mark is
+out of reach. A seat custodian is one: it keeps only `PATH` and `COTAL_RUN`.
+
+Each proof child also gets `--restore-deadline`, one minute before the reproof would kill it. An
+`afterRestore` rebuild still running at that instant is killed by the proof and its mutation is
+reported as RESTORE FAILED, because the derived artefacts may still be built from the mutant.
