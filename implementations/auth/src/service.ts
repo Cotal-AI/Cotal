@@ -59,11 +59,11 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, authorizeServeGrant, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, SERVICE_READY, writeServiceStatus, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
+import { contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, authorizeServeGrant, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, SERVICE_READY, writeServiceStatus, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
-import { makePlatformControlAuthority, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
+import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
@@ -78,7 +78,7 @@ import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster } from "./manager-contract.js";
-import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, remoteManagerRegistrationProof, authRegistrationExecutorGrants, type AuthorityClient } from "./authority-client.js";
+import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, authRegistrationExecutorGrants, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -1431,6 +1431,11 @@ export interface AuthServiceHandle extends HostedServiceHandle {
   platformControlAuthority?<R extends PlatformControlInnerRequest>(
     request: PlatformControlAuthorityRequest<R>,
   ): Promise<PlatformControlAuthorityResult<R>>;
+  /** The platform readiness read (SPEC 13.9). Present only with `platformControl`. Answers the
+   *  `status` of the currently assigned manager instance and refuses any other instance. It reads
+   *  over this context's own connection, whose grant is that instance's `describe` and `status`;
+   *  neither the connection nor its credential leaves the process. */
+  platformControlReadiness?(instanceId: string): Promise<EpAttributedReply>;
 }
 
 /** The optional public exchange face: the CLI's `--exchange-public-*`, `--advertised-server` and
@@ -1670,11 +1675,15 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
     let state: HostedServiceState["state"] = "ready";
     let cause: string | undefined;
     let closePromise: Promise<void> | undefined;
+    // The readiness reader: one standing connection pinned to the assigned instance, replaced when
+    // the assignment names another instance.
+    let reader: { instanceId: string; caller: EpCaller; client: Promise<AuthorityClient> } | undefined;
     const close = (): Promise<void> => {
       if (closePromise !== undefined) return closePromise;
       if (state === "ready") state = "draining";
       closePromise = (async () => {
         await Promise.all([closeServer(http), closeServer(publicHttp)]);
+        await reader?.client.then((c) => c.close(), () => {});
         await plane.close().catch(() => {});
         await callNc.close().catch(() => {});
       })();
@@ -1708,17 +1717,42 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
       });
       return completeRemoteRetainedAgentValidation(retained, holder.owner, authority);
     };
+    const platformDeps = platformControl === undefined ? undefined : {
+      space,
+      accountPublicKey: keys.dataAccount.pub,
+      owner: platformControlOwner(ownerSecret, space, keys.dataAccount.pub),
+      observeAssignment: (s: string, a: string) => platformControl.observeAssignment(s, a),
+      observeManagerInstance: plane.observeManagerInstance,
+    };
+    const readStatus = (owner: string) => async (instanceId: string): Promise<EpAttributedReply> => {
+      if (state !== "ready" || closePromise !== undefined)
+        throw new EpEnvelopeError("unavailable", "auth-service context is not ready");
+      if (reader?.instanceId !== instanceId) {
+        void reader?.client.then((c) => c.close(), () => {});
+        const caller = { owner, actor: `manager_ready_${instanceId}`, uid: mintLifecycleUid() };
+        const client = openAuthorityClient({
+          server,
+          space,
+          dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+          label: `cotal:platform-readiness:${space}`,
+          grants: (id) => platformReadinessGrants(space, id, caller, instanceId),
+          log: (l) => console.error(l),
+        });
+        // A failed open is not cached: the next read opens again.
+        client.catch(() => { if (reader?.client === client) reader = undefined; });
+        reader = { instanceId, caller, client };
+      }
+      const { caller, client } = reader;
+      const { nc: readerNc } = await client;
+      return await invokeCommand(readerNc, space, await resolveService(readerNc, space, "manager", caller, { instanceId }), "status", undefined, {});
+    };
     const service: AuthServiceHandle = {
       url,
       ...(publicUrl !== undefined ? { publicUrl } : {}),
       cap,
-      ...(platformControl !== undefined ? {
+      ...(platformDeps !== undefined ? {
         platformControlAuthority: makePlatformControlAuthority({
-          space,
-          accountPublicKey: keys.dataAccount.pub,
-          owner: platformControlOwner(ownerSecret, space, keys.dataAccount.pub),
-          observeAssignment: (s, a) => platformControl.observeAssignment(s, a),
-          observeManagerInstance: plane.observeManagerInstance,
+          ...platformDeps,
           dispatch: (holder, request) => {
             if (state !== "ready" || closePromise !== undefined)
               throw new EpEnvelopeError("unavailable", "auth-service context is not ready");
@@ -1733,6 +1767,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
             }
           },
         }),
+        platformControlReadiness: makePlatformControlReadiness({ ...platformDeps, readStatus: readStatus(platformDeps.owner) }),
       } : {}),
       readiness(): HostedServiceState {
         if (state === "unavailable") return { state, context, cause: cause ?? "auth-service context is unavailable" };

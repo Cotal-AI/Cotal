@@ -9,6 +9,7 @@ import {
   EpEnvelopeError,
   assertPlatformOwnerToken,
   remoteManagerActors,
+  type EpAttributedReply,
   type PlatformControlAssignment,
   type PlatformControlAuthorityRequest,
   type PlatformControlAuthorityResult,
@@ -94,21 +95,37 @@ export interface PlatformControlDeps {
   dispatch(holder: Extract<ManagerAuthorityHolder, { holder: "platform" }>, request: PlatformControlInnerRequest): Promise<unknown>;
 }
 
+type AssignmentDeps = Omit<PlatformControlDeps, "dispatch">;
+
+/** The account's current assignment, read fresh on every call. */
+async function observeCurrentAssignment(deps: AssignmentDeps): Promise<PlatformControlAssignment> {
+  let assignment: PlatformControlAssignment | null;
+  try {
+    assignment = await deps.observeAssignment(deps.space, deps.accountPublicKey);
+  } catch (e) {
+    throw new EpEnvelopeError("unavailable", `platform control assignment is unreadable: ${(e as Error)?.message ?? String(e)}`);
+  }
+  if (!assignment || assignment.state !== "assigned")
+    throw new EpEnvelopeError("permission-denied", "platform control has no current assignment for this account");
+  return assignment;
+}
+
+/** The assigned instance's gate, when it exists, must name this owner's serve principal: the door
+ * never acts for an instance another owner registered. */
+async function requireOwnInstance(deps: AssignmentDeps, instanceId: string): Promise<void> {
+  const own = await deps.observeManagerInstance(instanceId);
+  if (own.gate && own.gate.principal !== `${deps.owner}.${remoteManagerActors(instanceId).serve}`)
+    throw new EpEnvelopeError("permission-denied", `platform control instance ${instanceId} is registered to another principal`);
+}
+
 /** Build the door. Every refusal below runs before dispatch and writes nothing. */
 export function makePlatformControlAuthority(deps: PlatformControlDeps) {
   return async <R extends PlatformControlInnerRequest>(raw: PlatformControlAuthorityRequest<R>): Promise<PlatformControlAuthorityResult<R>> => {
     const envelope = parsePlatformControlAuthorityRequest(raw);
     if (envelope.space !== deps.space || envelope.accountPublicKey !== deps.accountPublicKey)
       throw new EpEnvelopeError("permission-denied", "platform control request names another space or account than this authority context");
-    let assignment: PlatformControlAssignment | null;
-    try {
-      assignment = await deps.observeAssignment(deps.space, deps.accountPublicKey);
-    } catch (e) {
-      throw new EpEnvelopeError("unavailable", `platform control assignment is unreadable: ${(e as Error)?.message ?? String(e)}`);
-    }
+    const assignment = await observeCurrentAssignment(deps);
     const inner = envelope.request as PlatformControlInnerRequest & { space: string; instanceId: string; managerLifecycleUid: string; operation?: string; accountPublicKey?: string };
-    if (!assignment || assignment.state !== "assigned")
-      throw new EpEnvelopeError("permission-denied", "platform control has no current assignment for this account");
     if (assignment.v !== 1 || assignment.space !== deps.space || assignment.accountPublicKey !== deps.accountPublicKey ||
         assignment.assignmentRevision !== envelope.assignmentRevision)
       throw new EpEnvelopeError("permission-denied", "platform control request does not match the current assignment's account or revision");
@@ -116,12 +133,7 @@ export function makePlatformControlAuthority(deps: PlatformControlDeps) {
       throw new EpEnvelopeError("permission-denied", "platform control request names an instance or lifecycle the current assignment does not");
     if (inner.space !== deps.space || (inner.accountPublicKey !== undefined && inner.accountPublicKey !== deps.accountPublicKey))
       throw new EpEnvelopeError("permission-denied", "platform control inner request names another space or account");
-    // The assigned instance's gate, when it exists, must name this owner's serve principal: the door
-    // never issues for an instance another owner registered.
-    const own = await deps.observeManagerInstance(assignment.instanceId);
-    const servePrincipal = `${deps.owner}.${remoteManagerActors(assignment.instanceId).serve}`;
-    if (own.gate && own.gate.principal !== servePrincipal)
-      throw new EpEnvelopeError("permission-denied", `platform control instance ${assignment.instanceId} is registered to another principal`);
+    await requireOwnInstance(deps, assignment.instanceId);
     if (inner.kind === "manager-service-authority" && (inner.operation === "prepare" || inner.operation === "activate") &&
         assignment.predecessorInstanceId !== undefined) {
       // Read-only: the door never probes, freezes, evicts, revokes or deregisters the predecessor.
@@ -130,5 +142,17 @@ export function makePlatformControlAuthority(deps: PlatformControlDeps) {
         throw new EpEnvelopeError("failed-precondition", `platform control predecessor ${assignment.predecessorInstanceId} is still registered or frozen; it must stop through its own path first`);
     }
     return await deps.dispatch({ holder: "platform", owner: deps.owner, assignment }, inner) as PlatformControlAuthorityResult<R>;
+  };
+}
+
+/** Build the readiness read: the `status` answer of the assigned instance, under the same fresh
+ * assignment and owner checks as the door. `readStatus` holds the only caller rights. */
+export function makePlatformControlReadiness(deps: AssignmentDeps & { readStatus(instanceId: string): Promise<EpAttributedReply> }) {
+  return async (instanceId: string): Promise<EpAttributedReply> => {
+    const assignment = await observeCurrentAssignment(deps);
+    if (assignment.v !== 1 || assignment.space !== deps.space || assignment.accountPublicKey !== deps.accountPublicKey || assignment.instanceId !== instanceId)
+      throw new EpEnvelopeError("permission-denied", `platform control instance ${instanceId} is not the current assignment's instance`);
+    await requireOwnInstance(deps, instanceId);
+    return await deps.readStatus(instanceId);
   };
 }

@@ -45,7 +45,7 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
-| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door. `runAuthService` remains the CLI entry. |
+| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, and `platformControlReadiness`, its read-only readiness read. `runAuthService` remains the CLI entry. |
 | `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` *(types)* | `@cotal-ai/core` | the closed envelope, its inner request union, its result and the backend's assignment row for `platformControlAuthority`. `platformControlOwner` in `@cotal-ai/auth` derives the `p_` owner the door issues under. |
 | `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
@@ -152,7 +152,14 @@ that issues the manager-service request family for the one control manager the b
 this account, under a derived `p_` owner. It reads the assignment fresh on every call and refuses
 an IdP token, another account, a stale revision, another instance or lifecycle, and an instance
 another owner registered. It refuses `prepare` and `activate` while the assignment's named
-predecessor is still registered or frozen. Without the input the member is `undefined`.
+predecessor is still registered or frozen. The same input adds `platformControlReadiness(instanceId)`,
+the route for a host that needs to know whether its assigned control manager is serving. It returns
+that instance's attributed `status` reply and refuses any instance the current assignment does not
+name, or one whose gate another owner holds. It reads over the context's own connection, whose
+grant is the assigned instance's `describe` and `status` and its own reply rail. That connection
+renews in process like the context's other connections and never leaves it, so the host lends no
+human or operator credential to a worker, mints no control instrument per read, and does not read
+liveness off the manager process. Without the input both members are `undefined`.
 `standingRenewableTtlSeconds` is forwarded unchanged to the authority plane, which bounds it to 5
 to 86400 seconds. It is a trusted-host input for the renewal rehearsal, and no request or CLI flag
 sets it. SPEC §13.1 and §13.6 define the view.
