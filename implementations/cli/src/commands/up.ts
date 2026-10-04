@@ -130,7 +130,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
 import { detachedSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
-import { deliveryUp, ensureControlPlane, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
+import { deliveryStoppedByDown, deliveryUp, ensureControlPlane, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
@@ -1382,15 +1382,17 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
     // end while this broker serves on. Nothing else brings it back, and every static retirement then
     // fails on the ctl.delivery-admin rail and holds its name until an operator re-runs `cotal up`. A
-    // clean exit or SIGTERM/SIGINT is a deliberate stop (`cotal down delivery`) and stays stopped, also
-    // when it ends a replacement this loop is still waiting on: that attempt then fails, and retrying it
-    // would undo the stop. A failed attempt waits out the lease TTL, the longest a dead holder's lease
-    // blocks its replacement.
+    // clean exit or SIGTERM/SIGINT is a deliberate stop (`cotal down delivery`) and stays stopped, and so
+    // is the SIGKILL `down` escalates to when a starved daemon outlives its grace, also when either ends a
+    // replacement this loop is still waiting on: that attempt then fails, and retrying it would undo the
+    // stop. A failed attempt waits out the lease TTL, the longest a dead holder's lease blocks its
+    // replacement. No daemon is alive during that wait for `down` to signal, so a stop there shows only as
+    // the dead daemon's record going away. Recovery is announced only once the responder is bound.
     const meshServing = () => !stopping && child.exitCode === null && child.signalCode === null;
     let restartingDelivery = false;
     let deliveryStopped = false;
     const onDeliveryExit = (code: number | null, signal: NodeJS.Signals | null): void => {
-      if (code === 0 || signal === "SIGTERM" || signal === "SIGINT") {
+      if (code === 0 || signal === "SIGTERM" || signal === "SIGINT" || (signal !== null && deliveryStoppedByDown(space))) {
         deliveryStopped = true;
         return;
       }
@@ -1404,7 +1406,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             const ensured = await ensureDelivery({ space, server, tls: transport.kind === "tls-required", onDeliveryExit });
             // An abnormal exit during this attempt was dropped above, so the record decides.
             if (deliveryUp(space)) {
-              console.error(c.green(`✓ delivery daemon running again${ensured.pid !== undefined ? ` (pid ${ensured.pid})` : ""}`));
+              // An unbound responder was reported by ensureDelivery, and this daemon's exit re-arms the restart.
+              if (ensured.responderBound) console.error(c.green(`✓ delivery daemon running again${ensured.pid !== undefined ? ` (pid ${ensured.pid})` : ""}`));
               break;
             }
             failure = "no delivery daemon is running after the attempt";
@@ -1413,7 +1416,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           }
           if (deliveryStopped) break;
           console.error(c.yellow(`! delivery restart failed, retrying in ${LEASE_TTL_MS / 1000}s: ${failure}`));
+          const recorded = !deliveryStoppedByDown(space);
           await new Promise((r) => setTimeout(r, LEASE_TTL_MS));
+          if (deliveryStopped || (recorded && deliveryStoppedByDown(space))) break;
         }
         restartingDelivery = false;
       })();

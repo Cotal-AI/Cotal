@@ -79,6 +79,22 @@ export function deliveryUp(space: string = folderSpace()): boolean {
   return deliveryLiveness(probeLiveness, space) === "alive";
 }
 
+/** Whether `cotal down` is stopping, or has stopped, the space's dead daemon: a live process holds the
+ *  `.stopping` reservation `down` takes before its first signal, or the record is gone. A missing record
+ *  proves a stop only for a daemon that cannot remove its own (one killed by a signal, or a launch that
+ *  never bound), which the caller establishes. The reservation is read first because `down` releases it
+ *  only after removing the record, so a stop that completes between the two reads is still seen. */
+export function deliveryStoppedByDown(space: string = folderSpace()): boolean {
+  const p = PID_PATH(space);
+  let stopper: number | undefined;
+  try {
+    stopper = parsePid(readFileSync(`${p}.stopping`, "utf8"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  return (stopper !== undefined && probeLiveness(stopper) !== "dead") || !existsSync(p);
+}
+
 
 
 /** True when this folder runs an authed mesh — the only mode with a delivery daemon (Plane-3 needs the
