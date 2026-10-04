@@ -1872,12 +1872,14 @@ for (const path of configs) {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     const pin = recordedPins.get(path);
-    if (pin?.sha256 === sha256 && pin.refusal === reason) {
+    // A config that was never read or parsed has no hash, so no pin can match it.
+    const pinnedContent = sha256 !== undefined && pin?.sha256 === sha256;
+    if (pinnedContent && pin.refusal === reason) {
       recorded.push(path);
       console.error(`RECORDED ${path}: ${reason}`);
       continue;
     }
-    if (pin) staleRecords.push([path, pin.sha256 === sha256 ? "is refused for a different reason than recorded" : "changed since its refusal was recorded"]);
+    if (pin) staleRecords.push([path, pinnedContent ? "is refused for a different reason than recorded" : "changed since its refusal was recorded"]);
     refusals.push([path, reason]);
     console.error(`REFUSED ${path}: ${reason}`);
     continue;
