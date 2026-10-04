@@ -1,44 +1,69 @@
-import { createServer, type AddressInfo, type Server } from "node:net";
+import { randomInt } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 
-/** Every port this process has handed out. */
-const issued = new Set<number>();
+/**
+ * Ports are handed out from `FIRST` to `FIRST + SPAN - 1`. Each one is held by a lock listener
+ * `SPAN` above it for as long as the process lives. Both bands sit below the default ephemeral
+ * range of Linux (32768-60999), macOS and Windows (49152-65535).
+ */
+const FIRST = 20_000;
+const SPAN = 6_384;
+const LAST = FIRST + 2 * SPAN - 1;
 
 const close = (server: Server): Promise<void> =>
   new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 
+/** Listen on loopback `port`, or resolve `undefined` when the port is taken or excluded. */
+const tryListen = (port: number): Promise<Server | undefined> =>
+  new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", (error: NodeJS.ErrnoException) =>
+      error.code === "EADDRINUSE" || error.code === "EACCES" ? resolve(undefined) : reject(error));
+    server.listen(port, "127.0.0.1", () => resolve(server));
+  });
+
+let rangeChecked = false;
+
+/** Throw when this host's kernel can give the kit's ports to other sockets. */
+function checkEphemeralRange(): void {
+  if (rangeChecked || process.platform !== "linux") return;
+  const [low, high] = readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/).map(Number);
+  if (low <= LAST && high >= FIRST) {
+    throw new Error(`the kernel's ephemeral port range ${low}-${high} overlaps the smoke kit's ports ${FIRST}-${LAST}`);
+  }
+  rangeChecked = true;
+}
+
 /**
- * A loopback port that nothing listens on now and that this process has not handed out before.
+ * A loopback port that nothing listens on now and that no process using this kit holds.
  *
  * The probe listener closes before the number is returned, because the caller usually passes the
- * port to a child process that binds it itself. The kernel may give a closed port to the next
- * bind of port 0, so a suite that asked for several ports could get the same one twice, and an
- * address it treats as dead could become its own broker's. When the kernel offers a port this
- * process already handed out, the probe stays open while the helper asks again, so the next
- * answer is a different port.
+ * port to a child process that binds it itself. The port comes from outside the kernel's ephemeral
+ * range, so no bind of port 0 and no outgoing connection on the host can be given it while the
+ * caller starts. A lock listener held until the process exits keeps every kit caller, in this
+ * process or another, from handing it out again, so an address a suite treats as dead stays dead.
  *
- * Another process can still bind the port between the return and the caller's own bind. Start
- * the listener through {@link onFreePort} so that loss starts it again on another port.
+ * A process that binds the number itself, without asking the kit, can still take it. Start the
+ * listener through {@link onFreePort} so that loss starts it again on another port.
  */
 export async function freePort(): Promise<number> {
-  const repeats: Server[] = [];
-  try {
-    for (;;) {
-      const server = createServer();
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(0, "127.0.0.1", resolve);
-      });
-      const { port } = server.address() as AddressInfo;
-      if (!issued.has(port)) {
-        issued.add(port);
-        await close(server);
-        return port;
-      }
-      repeats.push(server);
+  checkEphemeralRange();
+  const start = randomInt(SPAN);
+  for (let i = 0; i < SPAN; i++) {
+    const port = FIRST + ((start + i) % SPAN);
+    const lock = await tryListen(port + SPAN);
+    if (!lock) continue;
+    const probe = await tryListen(port);
+    if (!probe) {
+      await close(lock);
+      continue;
     }
-  } finally {
-    await Promise.all(repeats.map(close));
+    await close(probe);
+    lock.unref();
+    return port;
   }
+  throw new Error(`no free loopback port in ${FIRST}-${FIRST + SPAN - 1}`);
 }
 
 /** A listener start that found its port already taken. `code` matches a failed `listen()`. */
