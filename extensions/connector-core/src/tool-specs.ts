@@ -254,6 +254,9 @@ export function renderInbox(opts: {
   //
   // Stuck means "no response could carry this", so it is measured against the friendliest response
   // there is: this item alone, its head, and any rider, with no held-note at all.
+  // Every set in this walk is keyed by receive key. An id-less item's wire id is the empty string,
+  // so a set of wire ids makes every id-less item the same item: a held giant vanished from the
+  // note when a small id-less item went out, and recall moved its mark past an unread one (#613).
   const stuck = new Set(
     ordered
       .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget)
@@ -296,9 +299,9 @@ export function renderInbox(opts: {
     if (strict && strictGap) continue;
     const cost = itemCost(i);
     if (used + cost > budget) {
-      // A message nothing could ever carry is not a gap: it will never become deliverable, so the
-      // walk steps over it and the note says so. Anything else IS a gap, and the ordered lane waits.
-      if (strict && !stuck.has(i.recvKey)) strictGap = true;
+      // In the ordered lane even a message no response could carry whole is a gap: the mark would
+      // pass it if the walk stepped over it, so the lane waits for it to go out in parts (#613).
+      if (strict) strictGap = true;
       continue;
     }
     shown.push(i);
@@ -343,9 +346,9 @@ function itemCost(i: InboxItem): number {
  * The tail that keeps a windowed response honest: what is still there, and that it was not lost.
  *
  * TWO KINDS OF HELD, because they are not the same promise. Most held mail is waiting its turn and
- * a later call delivers it. A message larger than one whole response is not waiting for anything:
- * calling again will never produce it, and saying "call again for the next batch" over it would be
- * a queue that looks like it is moving when it is not.
+ * a later call delivers it whole. A message larger than one whole response never arrives whole: it
+ * goes out in parts through {@link renderPart}, after the smaller mail, so the note says that rather
+ * than promising it in the next batch.
  *
  * THE NOTE IS BOUNDED. It names at most {@link NAMED_STUCK} of the stuck messages and counts the
  * rest, and it truncates a sender's name, because a steady stream of oversized mail would otherwise
@@ -391,10 +394,131 @@ function heldNote(
       .join(", ");
     const rest = stuck.length - Math.min(NAMED_STUCK, stuck.length);
     parts.push(
-      `${stuck.length} message${stuck.length === 1 ? " is" : "s are"} larger than one response can carry and cannot be delivered by this tool at all: ${named}${rest ? `, and ${rest} more` : ""}. ${stuck.length === 1 ? "It stays" : "They stay"} buffered and uncleared, and calling again will not produce ${stuck.length === 1 ? "it" : "them"}.`,
+      `${stuck.length} message${stuck.length === 1 ? " is" : "s are"} larger than one response can carry: ${named}${rest ? `, and ${rest} more` : ""}. ${stuck.length === 1 ? "It stays" : "They stay"} buffered and uncleared, and once no smaller mail is waiting, each call delivers the next part of one of them; a message is cleared only after its last part goes out.`,
     );
   }
   return `\n\n… ${parts.join(" ")}`;
+}
+
+/**
+ * How far each oversized message has been read, by receive key, per agent (#613).
+ *
+ * It lives beside the agent rather than in the reply, so a reconnect, which keeps the agent and its
+ * buffer, resumes where the last part ended. A process restart loses it, and the redelivered message
+ * starts again from its first part: repeated, never skipped. An entry goes when its message is no
+ * longer offered, whether by its last part or by anything else that consumed it.
+ */
+const partOffsets = new WeakMap<MeshAgent, Map<string, number>>();
+
+/**
+ * One `cotal_inbox` read at a time per agent (#613). A read decides what to hide, render and clear from
+ * state it took before awaiting recall, so a second read that overlapped it decided from a snapshot the
+ * first had already moved past: it hid a recalled message the first had just read in part, and moved
+ * the recall mark past the rest of it. A read waits for the one before it to finish, failed or not.
+ */
+const inboxReads = new WeakMap<MeshAgent, Promise<unknown>>();
+
+function oneReadAtATime<A>(
+  read: (agent: MeshAgent, config: AgentConfig, args: A) => Promise<ToolResult>,
+): (agent: MeshAgent, config: AgentConfig, args: A) => Promise<ToolResult> {
+  return (agent, config, args) => {
+    const turn = (inboxReads.get(agent) ?? Promise.resolve()).then(() => read(agent, config, args));
+    inboxReads.set(agent, turn.catch(() => undefined));
+    return turn;
+  };
+}
+
+/** The read position for an oversized message, after dropping positions of messages no longer offered. */
+function partCursor(agent: MeshAgent, offered: readonly InboxItem[]): Map<string, number> {
+  let m = partOffsets.get(agent);
+  if (!m) partOffsets.set(agent, (m = new Map()));
+  const live = new Set(offered.map((i) => i.recvKey));
+  for (const k of m.keys()) if (!live.has(k)) m.delete(k);
+  return m;
+}
+
+/**
+ * One part of a message no single response can carry: the next slice of its rendered form, with a
+ * line saying which characters these are and whether more follow (#613).
+ *
+ * The slice is of the RENDERED item, so its indented continuations come with it, and it starts on
+ * its own indented line, so a cut that lands mid-line cannot put peer text at column zero. Its size
+ * is what the window has left once the line above it, the note and any rider are in, and the
+ * finished text is measured like {@link renderInbox}'s. `end` is where the next part starts; the
+ * caller clears the message only when `done`, and advances nothing on a peek.
+ */
+function renderPart(opts: {
+  item: InboxItem;
+  offset: number;
+  peek: boolean;
+  others: readonly InboxItem[];
+  stuck: ReadonlySet<string>;
+  warning?: string;
+  budget?: number;
+}): { text: string; end: number; done: boolean } {
+  const budget = opts.budget ?? INBOX_WINDOW_CHARS;
+  const full = fmtItem(opts.item);
+  const total = full.length;
+  const fmt = (n: number): string => n.toLocaleString("en-US");
+  const assemble = (end: number, tier: NoteTier): string => {
+    const done = end >= total;
+    const next = opts.peek
+      ? "A peek advances nothing, so read without peek to take this part."
+      : done
+        ? "This was its last part, so it is now cleared."
+        : "It stays buffered and uncleared until its last part goes out; call cotal_inbox again for the next part.";
+    const head = `Part of a message larger than one response, from ${fmtFrom(opts.item).slice(0, 40)}: characters ${fmt(opts.offset + 1)}-${fmt(end)} of ${fmt(total)}${opts.peek ? " (peek: nothing cleared)" : ""}. ${next}`;
+    const body = `${head}\n  ${full.slice(opts.offset, end)}${heldNote(opts.others, opts.peek, opts.stuck, tier)}`;
+    return opts.warning ? `${body}\n\n${opts.warning}` : body;
+  };
+  for (const tier of NOTE_TIERS) {
+    // Measure everything but the slice with the widest numbers the header can carry, then fill.
+    const room = budget - assemble(opts.offset, tier).length - 2 * fmt(total).length;
+    if (room <= 0) continue;
+    let end = Math.min(total, opts.offset + room);
+    // Never split a surrogate pair across two parts.
+    if (end < total && /[\uD800-\uDBFF]/.test(full[end - 1])) end--;
+    const text = assemble(end, tier);
+    if (text.length <= budget && end > opts.offset) return { text, end, done: end >= total };
+  }
+  throw new Error(`cotal_inbox: no room for a part of a ${fmt(total)}-character message in a ${fmt(budget)}-character window`);
+}
+
+/**
+ * The reply for a call that could carry no whole message: the next part of `item`, a message too
+ * large for any response, or `undefined` when there is none. The read position moves only when the
+ * part went out, and `last` records the message as handed over only with its last part, so nothing
+ * is cleared before it was handed over (#603). `last` is a buffered message's ack, or for focus
+ * recall the mark or the ahead record that a whole recalled item would have moved.
+ */
+function partReply(opts: {
+  agent: MeshAgent;
+  item: InboxItem | undefined;
+  /** Everything this call offered, so read positions of messages no longer offered are dropped. */
+  offered: readonly InboxItem[];
+  stuck: ReadonlySet<string>;
+  peek: boolean;
+  last: (item: InboxItem) => void;
+  warning?: string;
+}): string | undefined {
+  const { agent, item, peek } = opts;
+  if (!item) return undefined;
+  const cursor = partCursor(agent, opts.offered);
+  const part = renderPart({
+    item,
+    offset: cursor.get(item.recvKey) ?? 0,
+    peek,
+    others: opts.offered.filter((i) => i !== item),
+    stuck: opts.stuck,
+    warning: opts.warning,
+  });
+  if (!peek) {
+    if (part.done) {
+      opts.last(item);
+      cursor.delete(item.recvKey);
+    } else cursor.set(item.recvKey, part.end);
+  }
+  return part.text;
 }
 
 /**
@@ -736,11 +860,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_inbox",
       title: "Cotal: read incoming messages",
       description:
-        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is never consumed either: it is named with its sender and size and stays buffered, since delivering it is impossible and clearing it would lose it. In focus mode it also pulls back the channel chatter held since you entered focus.",
+        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
-      async run(agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }) {
+      run: oneReadAtATime(async (agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }) => {
         const inboxScope = scope ?? "all";
         // SELECT, RENDER, THEN CLEAR EXACTLY WHAT WENT OUT (#603). The old order drained the whole
         // scope up front, so a payload too large for the host to deliver had already been marked
@@ -752,7 +876,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
           const buffered = agent.peekInbox(inboxScope);
-          const { text, shown, held } = renderInbox({
+          const { text, shown, held, stuck } = renderInbox({
             items: buffered,
             peek,
             head: (s) =>
@@ -766,6 +890,17 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
                 : "Inbox empty, no new messages.",
             );
+          if (!shown.length) {
+            const part = partReply({
+              agent,
+              item: buffered.find((i) => stuck.has(i.recvKey)),
+              offered: buffered,
+              stuck,
+              peek: peek ?? false,
+              last: (i) => agent.drainInboxDeliveries([i.recvKey]),
+            });
+            if (part) return ok(part);
+          }
           // The response exists before anything is acked: an ack is a claim that these messages were
           // handed over, so nothing may be cleared while the handing-over is still hypothetical. And
           // it is the ASSEMBLED response that decides, so what is acked is what a caller was handed.
@@ -776,9 +911,13 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // Focus: the live buffer holds only DMs/anycast; the channel ambient + @mentions were
         // acked-and-dropped at ingest, so pull them back from the channel stream here (replay-gated,
         // "since you entered focus"). Recall acks nothing, so peek only affects the live buffer.
-        const recall = await agent.recallAmbient();
+        // A recalled message already part read stays offered until its last part goes out (#613).
+        const before = new Set(agent.peekInbox("all").map((i) => i.recvKey));
+        const underway = new Set([...(partOffsets.get(agent)?.keys() ?? [])].filter((k) => !before.has(k)));
+        const recall = await agent.recallAmbient(underway);
         // Read after recall, which can hand an id-less message back into the buffer (#662).
         const buffered = agent.peekInbox(inboxScope);
+        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
         // RECALL HAS TO ADVANCE, or windowing it starves it. Recall is re-derived from an unchanged
         // frontier on every call, so showing its first window and stopping there returned the same
         // prefix forever while the reply promised a next batch: measured as three identical replies
@@ -824,7 +963,6 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const warning = [droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
-        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
         const { text, shown: all, stuck } = renderInbox({
           items: [...buffered, ...fresh],
           peek,
@@ -841,6 +979,29 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
               : "Inbox empty, no new messages, and no channel chatter since you entered focus.",
           );
+        if (!all.length) {
+          // A recalled message goes out in parts too, and its last part moves what a whole one would
+          // have: the mark for the ordered lane, whose first item is the only one it may take, or the
+          // ahead record, so the mark never passes a message that has not been handed over.
+          const first = clocked[0];
+          const item =
+            buffered.find((i) => stuck.has(i.recvKey)) ??
+            (first && stuck.has(first.recvKey) ? first : aheadFresh.find((i) => stuck.has(i.recvKey)));
+          const part = partReply({
+            agent,
+            item,
+            offered: [...buffered, ...fresh],
+            stuck,
+            peek: peek ?? false,
+            warning,
+            last: (i) => {
+              if (bufferedIds.has(i.recvKey)) agent.drainInboxDeliveries([i.recvKey]);
+              else if (aheadIds.has(i.recvKey)) agent.noteRecalledAhead(i.recvKey);
+              else agent.noteRecalled({ ts: i.ts, id: i.recvKey });
+            },
+          });
+          if (part) return ok(part);
+        }
         // Render first, ack second, and only ever ids from the buffered lane: acking a recall id
         // would mark it handled, so a later live copy of that channel message would be dropped.
         if (!peek) {
@@ -864,7 +1025,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           void stuck;
         }
         return ok(text);
-      },
+      }),
     },
     {
       name: "cotal_send",

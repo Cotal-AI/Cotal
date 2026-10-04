@@ -20,12 +20,13 @@
     "guard together is total progress: every fresh item eventually delivered, and nothing delivered",
     "twice, on inputs including a same-millisecond pair too large to share one window.",
     "",
-    "K1, K8, K9 and K10 are the class guard and its edges. Three escapes were found here in sequence,",
+    "K1, K8 and K9 are the class guard and its edges. Three escapes were found here in sequence,",
     "each the same defect one level further out: an oversized item shown alone, then the head and note",
     "riding outside the budget, then the focus warning appended after the window was filled. Every one",
     "was a writer to the response body the arithmetic did not know about, so the arithmetic was replaced",
     "by assembling the reply and measuring it. K1 disables that measurement, K8 makes an undeliverable",
-    "item block the queue, K9 empties the stuck class, and K10 hides a buffer that could deliver nothing.",
+    "item block the queue, and K9 empties the stuck class. An oversized message now goes out in parts on",
+    "both lanes, so no cell can reach a reply that delivers nothing while mail is held, and no kill names it.",
     "",
     "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the agent and the tool specs",
     "by RELATIVE SOURCE PATH (../src/agent.js, ../src/tool-specs.js), so the bytes mutated are the",
@@ -166,8 +167,8 @@
     {
       "name": "K8 one message too large for any response blocks the queue behind it",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "      if (strict && !stuck.has(i.id)) strictGap = true;\n      continue;",
-      "replace": "      if (strict && !stuck.has(i.id)) strictGap = true;\n      break;",
+      "find": "      if (strict) strictGap = true;\n      continue;",
+      "replace": "      if (strict) strictGap = true;\n      break;",
       "cell": "ordinary mail is delivered past an item that can never fit",
       "expectRed": "ordinary mail is delivered past an item that can never fit",
       "note": "The fill stops at the first item too large instead of stepping over it, so one message nobody can deliver blocks every message behind it, on both lanes. That is the wedge the show-alone escape was invented to avoid, arriving through the other door."
@@ -177,18 +178,9 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "      .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget)",
       "replace": "      .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget * 10)",
-      "cell": "...and the reply names it rather than leaving it silently stuck",
-      "expectRed": "...and the reply names it rather than leaving it silently stuck",
+      "cell": "...and the reply is the first part of it, naming the sender",
+      "expectRed": "...and the reply is the first part of it, naming the sender",
       "note": "Stuck means no response could carry this message. Measure it against a budget nothing can exceed and the class becomes empty: the message is still held, correctly, but the reply calls it ordinary backlog and tells the caller to call again for it forever."
-    },
-    {
-      "name": "K10 nothing shown is reported as an empty inbox, whatever is held",
-      "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    else if (held.length) parts.push(`Nothing could be delivered in this response.${note}`);",
-      "replace": "    else if (false) parts.push(`Nothing could be delivered in this response.${note}`);",
-      "cell": "...and the reply names it rather than leaving it silently stuck",
-      "expectRed": "...and the reply names it rather than leaving it silently stuck",
-      "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. The cell that notices first is the oversized-item cell, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side. The cell that notices first is the oversized-item one, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side."
     },
     {
       "name": "K11 the note names every oversized message instead of a few",
@@ -202,10 +194,10 @@
     {
       "name": "K12 the stuck note borrows the waiting note's promise",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "buffered and uncleared, and calling again will not produce ${stuck.length === 1 ? \"it\" : \"them\"}.`,",
+      "find": "buffered and uncleared, and once no smaller mail is waiting, each call delivers the next part of one of them; a message is cleared only after its last part goes out.`,",
       "replace": "buffered and uncleared. Call cotal_inbox again for the next batch.`,",
-      "cell": "...and it does not promise that calling again will deliver them",
-      "expectRed": "...and it does not promise that calling again will deliver them",
+      "cell": "...and it says they come in parts rather than promising them in the next batch",
+      "expectRed": "...and it says they come in parts rather than promising them in the next batch",
       "note": "A queue that looks like it is moving when it is not. The caller keeps calling, the same messages keep not arriving, and nothing in the reply says why."
     },
     {
@@ -231,9 +223,9 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "            if (afterRecallMark({ ts: i.ts, id: i.recvKey }, agent.recallCursor)) clocked.push(i);",
       "replace": "            clocked.push(i);",
-      "cell": "successive calls walk the whole of focus recall instead of repeating its first window",
-      "expectRed": "successive calls walk the whole of focus recall instead of repeating its first window",
-      "note": "Reproduced by the second lens on a live broker: recall is re-derived from an unchanged frontier, so windowing its prefix returned the same fifteen of thirty messages three times while every reply promised a next batch. The window created that starvation, so the cursor is part of this change rather than a later one."
+      "cell": "an oversized recall item with nothing else to show is read in parts, then cleared",
+      "expectRed": "an oversized recall item with nothing else to show is read in parts, then cleared",
+      "note": "Reproduced by the second lens on a live broker: recall is re-derived from an unchanged frontier, so windowing its prefix returned the same fifteen of thirty messages three times while every reply promised a next batch. The window created that starvation, so the cursor is part of this change rather than a later one. The oversized recall cell reddens first: with the mark ignored, a recall item read through its last part is offered again from its first part, which is the same re-serving on one item. The walking cell asserts it across thirty."
     },
     {
       "name": "K17 the fresh filter compares timestamps only, so a tie is skipped",
@@ -263,13 +255,13 @@
       "note": "Stepping over a gap looks like better packing: the window is fuller and nothing is lost yet. But a lane walked by one mark cannot record a hole, so everything delivered past it is served again on the next call, forever. The free lane may step over its own gaps because each of its items is acked by id. It reddens on the stranding half of the invariant first: with the gap stepped over, the mark passes the hole and what was in it never comes back, which is the harm. The re-serving half is asserted in the same cell one line later."
     },
     {
-      "name": "K21 a message nothing can carry is treated as a gap the walk must wait behind",
+      "name": "K21 the ordered lane steps over a message nothing can carry whole",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "      if (strict && !stuck.has(i.id)) strictGap = true;",
-      "replace": "      if (strict) strictGap = true;",
+      "find": "      if (strict) strictGap = true;",
+      "replace": "      if (strict && !stuck.has(i.recvKey)) strictGap = true;",
       "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
-      "note": "The distinction the walk turns on: a message no response could ever carry will never become deliverable, so waiting behind it is waiting forever, while anything else is a real gap and waiting is correct. Collapse the two and one oversized recall message stops the walk for good. No instance cell in this suite puts an undeliverable message in the recall lane; the enumeration does it by construction."
+      "note": "A message no response could carry whole still goes out, in parts, and the walk is ordered by one mark. Step over it and the next item shown moves the mark past it, so its parts are never offered and it is lost under a reply that says nothing is left. No instance cell in this suite puts an oversized message in the recall lane beside later chatter; the enumeration does it by construction."
     },
     {
       "name": "K22 a sender's clock is allowed to order the walk again",
@@ -283,7 +275,7 @@
     {
       "name": "K23 an item stamped ahead of the clock moves the mark after all",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.id));",
+      "find": "          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.recvKey));",
       "replace": "          const shownClocked = shownRecall;",
       "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
@@ -414,6 +406,24 @@
       "cell": "...and leaving focus forgets where that walk had read",
       "expectRed": "...and leaving focus forgets where that walk had read",
       "note": "The mark describes a position in ONE walk over ONE frontier, and focus drops the frontier on the way out and captures a new one on the way in. Measured by the third lens on a single incarnation: a mark left from an earlier episode filtered a new episode's messages out of recall whenever they were stamped behind it, which a lagging or a chosen clock produces. The focus watermark was already cleared here; the mark that walks it was not."
+    },
+    {
+      "name": "K38 an oversized message is cleared with its first part",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (part.done) {\n      opts.last(item);",
+      "replace": "    if (true) {\n      opts.last(item);",
+      "cell": "...and is NOT consumed by its first part: still buffered, never acked",
+      "expectRed": "...and is NOT consumed by its first part: still buffered, never acked",
+      "note": "#613 delivers a message larger than one response in parts, and the #603 rule still holds across them: clearing it with the first part would mark read a message whose remainder was never handed over."
+    },
+    {
+      "name": "K39 the read position of an oversized message never moves",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    } else cursor.set(item.recvKey, part.end);",
+      "replace": "    } else void part.end;",
+      "cell": "...and the next call delivers the rest, inside the window, and only then clears it",
+      "expectRed": "...and the next call delivers the rest, inside the window, and only then clears it",
+      "note": "Without the position the same first part comes back on every call, which is the #613 dead end again with a different reply."
     }
   ]
 }

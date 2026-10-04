@@ -211,8 +211,9 @@ connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-
 A pull is bounded too, and clears only what it hands over. One `cotal_inbox` call carries at most a
 receivable window (direct messages and role requests first, then channel traffic, replayed history
 last); whatever does not fit stays buffered, is named in the reply, and comes back on the next call.
-A message too large for one whole response is never consumed at all: it is named with its sender and
-size and left buffered, because clearing what cannot be delivered is the loss this bound exists to stop.
+A message too large for one whole response is delivered in parts: once no smaller mail is waiting,
+each call carries its next part, and it is cleared only after its last part goes out, because clearing
+what was not handed over is the loss this bound exists to stop.
 That matters most on the path where it is easiest to lose mail: reconnecting brings a channel-history
 replay with it, so the largest payload and the least expendable message arrive in the same read.
 
@@ -245,6 +246,10 @@ or answers only after the connection dropped, recall skips that channel for the 
 period and reports it as incomplete. Recall cannot tell a late copy of a message it handed back from
 a new identical message, so every copy takes its own disposition: a new identical quiet mention is
 still delivered automatically, and a late copy can surface a second time.
+A recalled message that already went out in part is read to its last part, even if an exclusion
+lands after its first part. One session reads its inbox one call at a time: a `cotal_inbox` call
+that overlaps another waits for it to finish, so neither decides from a view the other has already
+moved past.
 If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
 session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
 unaffected.
