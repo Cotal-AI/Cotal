@@ -907,9 +907,14 @@ export async function runJcodeHost(): Promise<void> {
   let consecutiveFailures = 0;
   /** Whether this host published a failed-turn condition that the next turn has to clear. */
   let turnConditionPublished = false;
+  /** The Harness error the last failed turn reported, kept until a host turn succeeds. The manager's
+   *  `seat reaped:` line carries only the seat's last connector line, so a line that ends the seat
+   *  names this error rather than leave it on an earlier `turn failed` line alone (#785). */
+  let lastTurnError: string | undefined;
   /** Relay a failed turn's Harness error as the presence condition, or clear a relayed one. The next
    *  turn clears it when it starts, whether this host or the TUI owns that turn. */
   const relayTurnCondition = (condition: PresenceCondition | null): void => {
+    if (condition) lastTurnError = condition.message;
     if (!condition && !turnConditionPublished) return;
     turnConditionPublished = condition !== null;
     void agent.setCondition(condition).catch(() => {});
@@ -1132,6 +1137,7 @@ export async function runJcodeHost(): Promise<void> {
       // rather than inheriting a penalty the seat has already recovered from.
       errorRetryMs = ERROR_RETRY_INITIAL_MS;
       consecutiveFailures = 0;
+      lastTurnError = undefined;
     } catch (error) {
       closeEventRun(error as Error);
       await events?.settled();
@@ -1596,6 +1602,11 @@ export async function runJcodeHost(): Promise<void> {
     }
   };
 
+  /** A connector line that ends the seat, naming the last turn error while no host turn has
+   *  succeeded since it. */
+  const endingLine = (line: string): string =>
+    `[cotal-jcode] ${line}${lastTurnError === undefined ? "" : `; last turn error: ${lastTurnError}`}\n`;
+
   /**
    * A provider stall can take down Jcode's bridge while leaving the private session and its inbox
    * batch intact. Give that owned instance one clean replacement: the failed turn remains unacked,
@@ -1606,7 +1617,7 @@ export async function runJcodeHost(): Promise<void> {
   const recoverBridge = async (lost: JcodeClient): Promise<void> => {
     if (stopping || lost !== client || reconnecting) return;
     if (bridgeRecoveryUsed) {
-      writeJcodeDiagnostic("[cotal-jcode] private Harness connection closed after its one recovery attempt\n");
+      writeJcodeDiagnostic(endingLine("private Harness connection closed after its one recovery attempt"));
       await shutdown(1);
       return;
     }
@@ -1686,7 +1697,7 @@ export async function runJcodeHost(): Promise<void> {
       }
     } catch (error) {
       writeJcodeDiagnostic(
-        `[cotal-jcode] private Harness connection closed and recovery failed: ${((lastError ?? error) as Error).message}\n`,
+        endingLine(`private Harness connection closed and recovery failed: ${((lastError ?? error) as Error).message}`),
       );
       await shutdown(1);
     } finally {
