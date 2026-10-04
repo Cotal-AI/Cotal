@@ -220,8 +220,13 @@ what was not handed over is the loss this bound exists to stop.
 That matters most on the path where it is easiest to lose mail: reconnecting brings a channel-history
 replay with it, so the largest payload and the least expendable message arrive in the same read.
 
-The local inbox is bounded. On pathological overflow it evicts pull-only items before automatic
-traffic. If the bounded live/durable classification guard also fills, the connector fails closed:
+The local inbox is bounded. On pathological overflow it evicts pull-only items first, then other
+channel traffic, and a direct message or role request only when the whole buffer is directed mail.
+An evicted channel item is acknowledged. An evicted direct message or role request never is: it
+stays pending on the session's durable, where `cotal deliver pending <name>` counts it, and the
+broker redelivers it after the durable's ack wait until a redelivery finds room. A full inbox
+therefore delays directed mail until the session drains it.
+If the bounded live/durable classification guard also fills, the connector fails closed:
 otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
 still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall
 quiet/muted traffic; if that safety bound fills, recall skips the affected channel and reports it

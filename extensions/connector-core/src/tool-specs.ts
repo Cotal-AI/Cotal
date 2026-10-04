@@ -870,9 +870,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // scope up front, so a payload too large for the host to deliver had already been marked
         // read, and a reconnect replay is both the largest payload and the one most likely to have
         // a real DM inside it. This READ acks nothing outside the window it returned, on any path.
-        // It is not the only acker: the inbox's own overflow valve acks what it evicts, so an item
-        // that arrives while this call is awaiting recall can still be evicted and lost. That is the
-        // buffer's documented bounded local loss (see MeshAgent.buffer), unchanged by this path.
+        // It is not the only acker: the inbox's own overflow valve acks the channel traffic it
+        // evicts, so a channel item that arrives while this call is awaiting recall can still be
+        // evicted and lost. That is the buffer's documented bounded local loss (see
+        // MeshAgent.buffer), unchanged by this path; an evicted directed message is never acked.
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
           const buffered = agent.peekInbox(inboxScope);
