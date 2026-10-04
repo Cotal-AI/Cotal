@@ -70,10 +70,11 @@ forms below, because a form it cannot follow to the exit status can hide either 
   A catch arm prevents it only when its first statement exits with a failing status, or sets
   `process.exitCode` to one that the exit reads (`process.exit()`, `process.exit(process.exitCode)`
   or `process.exit(process.exitCode ?? 0)`) while nothing in the arm, the `finally` or a function
-  either calls writes another code, including `++`, `--`, destructuring and `process["exitCode"]`. A statement before it can throw past it, so log after failing. A statement
-  inside a branch of the arm, a computed code and a rethrow do not count. A promise `.catch` counts
-  only directly before `.finally`. A status variable that starts failing counts when the only write
-  that clears it is the last statement of the `try`.
+  either calls writes another code, including `++`, `--`, destructuring and `process["exitCode"]`.
+  A statement before it can throw past it, so log after failing. A statement inside a branch of
+  the arm, a computed code and a rethrow do not count. A promise `.catch` counts only directly
+  before `.finally`. A status variable that starts failing counts when the only write that clears
+  it is the last statement of the `try`.
 - A suite with no pinned cell count. Declare `const EXPECTED_CELLS = <n>`, never reassign it, and
   compare the cells that ran with it by `===` or `!==`, after reporting failures, so a deleted cell
   turns the suite red. `==` and `!=` coerce, so a tally of `"5"` would match. The comparison is the
@@ -108,10 +109,12 @@ function called with `.catch(handler)` or `.then(f, handler)` counts only when t
 function written in place whose first statement fails the run.
 
 A call stands for every value the file gives its callee: the declarations of a name and every
-assignment to it, an alias such as `const stop = process.exit` or `const { exit } = process`, and,
-for `o.k()` or `o["k"]()`, every value the file binds to the key `k` on any object, since the gate
-does not track which object it is. A function passed as an argument, `.call`, `.apply`, `.bind`, a
-getter, a key computed at run time and an imported function are not followed.
+assignment to it, `||=`, `&&=` and `??=` included, an alias such as `const stop = process.exit` or
+`const { exit } = process`, and, for `o.k()` or `o["k"]()`, every value the file binds to the key
+`k` on any object, since the gate does not track which object it is. A value written as `a ? b : c`,
+`b || c`, `b && c` or `b ?? c` stands for both `b` and `c`, and `(a, b)` for `b`. A function passed
+as an argument, `.call`, `.apply`, `.bind`, a getter, a key computed at run time and an imported
+function are not followed.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The

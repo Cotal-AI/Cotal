@@ -446,6 +446,10 @@ const failingStatus = (status: ts.Node | undefined, orThrows = false): boolean =
   return !!values?.length && values.every((v) => v !== undefined && (Number.isInteger(v) ? v >= 1 && v <= 255 : orThrows));
 };
 const isAssignment = (k: ts.SyntaxKind) => k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment;
+const LOGICAL = [
+  ts.SyntaxKind.BarBarToken, ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.QuestionQuestionToken,
+  ts.SyntaxKind.BarBarEqualsToken, ts.SyntaxKind.AmpersandAmpersandEqualsToken, ts.SyntaxKind.QuestionQuestionEqualsToken,
+];
 /** The node that writes `ref`: an assignment, `++`, `--`, `delete`, a `for in`/`for of` head, or the
  *  destructuring assignment `ref` is a target of. Undefined when `ref` is only read. */
 function writeOf(ref: ts.Node): ts.Node | undefined {
@@ -510,7 +514,7 @@ function indexSuite(sf: ts.SourceFile): SuiteIndex {
       ts.isMethodDeclaration(n) ? [nameKey(n.name), n]
       : ts.isPropertyAssignment(n) || ts.isPropertyDeclaration(n) ? [nameKey(n.name), n.initializer]
       : ts.isShorthandPropertyAssignment(n) ? [n.name.text, n.name]
-      : ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken ? [memberKey(unwrap(n.left)), n.right]
+      : ts.isBinaryExpression(n) && isAssignment(n.operatorToken.kind) ? [memberKey(unwrap(n.left)), n.right]
       : [];
     if (key !== undefined && value) (ix.keyed.get(key) ?? ix.keyed.set(key, []).get(key)!).push(value);
     ts.forEachChild(n, visit);
@@ -526,13 +530,21 @@ function valuesOf(sf: ts.SourceFile, target: ts.Node, out = new Set<ts.Node>()):
   const t = unwrap(target);
   if (out.has(t)) return out;
   out.add(t);
+  // `?:`, `||`, `&&`, `??` and `||=`, `&&=`, `??=` evaluate to one of their operands; a comma and any other assignment to the right side.
+  const operands =
+    ts.isConditionalExpression(t) ? [t.whenTrue, t.whenFalse]
+    : !ts.isBinaryExpression(t) ? []
+    : LOGICAL.includes(t.operatorToken.kind) ? [t.left, t.right]
+    : t.operatorToken.kind === ts.SyntaxKind.CommaToken || isAssignment(t.operatorToken.kind) ? [t.right]
+    : [];
+  for (const o of operands) valuesOf(sf, o, out);
   const { checker, writes, keyed } = indexSuite(sf);
   // `const { k } = o` reads `o.k`. `process.exit` is the exit itself, so no function of the file named `exit` stands for it.
   const key = isProcessMember(t, "exit") ? undefined : ts.isBindingElement(t) && ts.isObjectBindingPattern(t.parent) ? nameKey(t.propertyName ?? t.name) : memberKey(t);
   for (const v of (key !== undefined && keyed.get(key)) || []) valuesOf(sf, v, out);
   const sym = !ts.isIdentifier(t) ? undefined : ts.isShorthandPropertyAssignment(t.parent) && t.parent.name === t ? checker.getShorthandAssignmentValueSymbol(t.parent) : checker.getSymbolAtLocation(t);
   for (const d of sym ? [...(sym.declarations ?? []), ...(writes.get(sym) ?? [])] : []) {
-    const v = ts.isVariableDeclaration(d) ? d.initializer : ts.isBinaryExpression(d) ? d.right : d;
+    const v = ts.isVariableDeclaration(d) ? d.initializer : d;
     if (v) valuesOf(sf, v, out);
   }
   return out;
@@ -809,6 +821,8 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin after an alias of process.exit is unpinned", !pinsWith(`const stop = process.exit; stop(0); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin after a bracket call of a method that exits 0 is unpinned", !pinsWith(`const r = { stop() { process.exit(0); } }; r["stop"](); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin after a method of a replaced object that exits 0 is unpinned", !pinsWith(`let o = { skip() {} }; o = { skip() { process.exit(0); } }; o.skip(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a method bound with ||= that exits 0 is unpinned", !pinsWith(`const o = {}; o.skip ||= () => process.exit(0); o.skip(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a conditional callee that can exit 0 is unpinned", !pinsWith(`const stop = x ? () => process.exit(0) : () => {}; stop(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin a caught throw can skip is unpinned", !pinsWith(`try { f(); if (ran !== EXPECTED_CELLS) process.exit(1); } catch {}`)],
   ["a pin a caught rejection can skip is unpinned", !pinsWith(`async function main() { await f(); if (ran !== EXPECTED_CELLS) process.exit(1); } main().catch(() => {});`)],
   ["a pin a failing catch arm guards is pinned", pinsWith(`try { f(); if (ran !== EXPECTED_CELLS) process.exit(1); } catch { process.exit(1); }`)],
