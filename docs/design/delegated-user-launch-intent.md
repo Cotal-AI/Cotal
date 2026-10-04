@@ -205,7 +205,8 @@ export function parseRemoteDelegatedUserIntentExecutionResult(
 ```ts
 /** The host's record of one admitted intent. The host is its only writer: create-only at admission,
  * then one revision-pinned CAS from `admitted` to `consumed` that writes `execution` before any
- * effect, then revision-pinned CASes only: a sweeper's claim and the one write that sets `outcome`. */
+ * effect, then revision-pinned CASes only: a sweeper's claim, the one write that sets `outcome`,
+ * and the executor's `released`. */
 export interface DelegatedUserIntentRecord extends Omit<DelegatedUserIntentAdmission, "v" | "kind" | "requestId"> {
   v: 1;
   /** `<owner>.<actor>`: the launched agent's ledger parent, and the principal the envelope walk starts from. */
@@ -218,7 +219,14 @@ export interface DelegatedUserIntentRecord extends Omit<DelegatedUserIntentAdmis
   sweptBy?: DelegatedUserIntentIncarnation;
   /** Set once, when the pinned execution ends. Absent while it runs or while the host recovers it. */
   outcome?: "enrolled" | "retired" | "aborted";
+  /** Set once, only by the executor's own flight, after a sweeper's claim: the flight has stopped
+   * and revoked any grant at the pinned UID (section 6, Alias hold). Absent on every other record. */
+  released?: true;
 }
+
+/** True while `record` holds the alias `(record.owner, record.intent.target.actor)`: consumed with
+ * no `outcome`, or claimed by a sweeper (`sweptBy`) and not yet `released`. */
+export function delegatedUserIntentHoldsAlias(record: DelegatedUserIntentRecord): boolean;
 
 /** One run of one host process, as SPEC §13.7 names an executor. An instance id without its process
  * epoch names a process, never the run of it that holds a flight. */
@@ -275,6 +283,8 @@ export interface AuthorizeDelegatedUserIntentAdmissionArgs {
   observeManagerGate: ObserveManagerGate;
   /** The host's launch record of this owner whose `execution.lifecycleUid` is `lifecycleUid`, read fresh. Retire only. */
   observeLaunchRecord(owner: string, lifecycleUid: string): Promise<DelegatedUserIntentRecord | null>;
+  /** The host's records of this owner whose `intent.target.actor` is `actor`, read fresh. Launch only. */
+  observeAliasRecords(owner: string, actor: string): Promise<DelegatedUserIntentRecord[]>;
   /** platformControlOwner(...) for this space and account, from the platform-control record. */
   platformOwner: string;
   now: number;
@@ -381,7 +391,9 @@ own route. One admission runs in this order, and every refusal writes nothing:
 5. Launch: the target's scope, lists and role must pass `assertWithinSpawnerGrant` as a dry check
    against the parent `<owner>.<actor>`, refused with the walk's own sentence. The authoritative
    walk and the writer's other refusals, such as an interactive row of the same name, run again at
-   the write (section 6).
+   the write (section 6). No record from `observeAliasRecords(owner, target.actor)` may hold the
+   alias (`delegatedUserIntentHoldsAlias`, section 6, Alias hold); one that does is
+   `failed-precondition`.
 6. Retire: `target.owner` must equal the owner (`permission-denied`).
    `observeLaunchRecord(owner, target.lifecycleUid)` must return a record of this owner with
    `intent.operation: "launch"`, `outcome: "enrolled"`, `execution.lifecycleUid` equal to
@@ -438,17 +450,24 @@ stays as written. One execution runs in this order, and every refusal before the
    execution. One that lands after it is ordered after the commit and refuses only later
    executions, as the platform-control record's revocation refuses only the next door call. The
    agent such an execution leaves is the user's, and its holder counts as gone (section 7.2).
-8. The host runs the enrollment writer it already runs for `manager-managed-agent-enrollment`, with
-   the decision's values and the pinned UID and digest. It writes the ledger row through
-   `grantManagedActor`, provisions the lifecycle-keyed durables, sets `outcome: "enrolled"` and
-   returns the hosted enrollment material. The host MUST use that one writer for both doors, so a
-   delegated row and a row from the user's own remote manager cannot diverge.
+8. The host first activates the lifecycle at the pinned UID with the shipped
+   `activateLifecycleAtUid` (`implementations/auth/src/lifecycle-registry.ts:511`) and the
+   `managerInstance` its bearer exchange passes (`auth-service:<space>`, `service.ts:663`). The
+   alias head is then `active` at that UID and its issuance gate is open before any row or durable
+   exists. A refusal there, such as the alias being `active` or `retiring` at another UID, ends the
+   record `aborted` with nothing written. The host then runs the enrollment writer it already runs
+   for `manager-managed-agent-enrollment`, with the decision's values and the pinned UID and digest.
+   It writes the ledger row through `grantManagedActor`, provisions the lifecycle-keyed durables,
+   sets `outcome: "enrolled"` and returns the hosted enrollment material. The host MUST use that one
+   writer for both doors, so a delegated row and a row from the user's own remote manager cannot
+   diverge. The agent's first bearer exchange finds the head active at its UID, and
+   `ensureRootCredential` mints its root credential there as it does for any completed activation.
 
 **Flight.** From the CAS on, the host owns the execution, whoever presented it, and runs it in one
 flight: an in-process task keyed by `intentId` in a `DelegatedUserIntentFlights` map, joined by every
 request equal to the pin, as `joinOrStartRetirement` joins a managed retirement by its op id. Only
 the flight runs step 7, step 8 and the section 7 order for the record, and only the flight sets
-`outcome`. Every record write after the consuming CAS is a CAS pinned to the revision the writer
+`outcome` and `released`. Every record write after the consuming CAS is a CAS pinned to the revision the writer
 last observed, so a writer that lost the record to another write can neither set nor overwrite
 `outcome`. A flight answers only from the outcome its own CAS wrote. When that CAS loses, it re-reads
 the record and answers from the outcome found there, or `conflict` when there is none, and never
@@ -460,20 +479,46 @@ executor and sweeper roles of SPEC §13.7:
 - The executor, in the same process run, starts a new flight for the record when its earlier
   flight ended with no `outcome`, for example on an `unavailable` writer error, at its next scan of
   consumed records or on a retry. That flight resumes at step 7.
-  When the re-check passes, it re-runs step 8 with the pinned UID and digest. `grantManagedActor` is
-  an upsert keyed by owner and actor, and the durables are keyed by the UID, so a second run writes
-  the same row and durables. When the re-check or the writer now refuses, for example because the
-  holder is gone or the user narrowed `cli`, it runs the section 7 order at the pinned UID, which
-  revokes any row written there and runs the terminal barrier for it, and sets
-  `outcome: "aborted"`.
+  When the re-check passes, it re-runs step 8 from its activation with the pinned UID and digest.
+  `activateLifecycleAtUid` adopts the same alias's partial activation at that UID and returns at
+  once for a completed one, `grantManagedActor` is an upsert keyed by owner and actor, and the
+  durables are keyed by the UID, so a second run writes the same head, row and durables. When the
+  re-check or the writer now refuses, for example because the holder is gone or the user narrowed
+  `cli`, it runs the compensation below and sets `outcome: "aborted"`. A refusal in step 7, or a
+  refused activation in step 8, sets `aborted` directly, because no row or durable exists at a UID
+  that never activated and no flight runs that execution again. Before each effect of step 8 and
+  before its `outcome` CAS, the executor's flight re-reads the record, and a `sweptBy` it did not
+  write ends the flight as the Alias hold paragraph says.
 - Any other incarnation is a sweeper. A restarted host is one, because its restart advanced its
   process epoch. A sweeper acts only on a consumed record with no `outcome`, and only when it
   believes the executor gone: the executor instance's serving issuance gate is absent, not `open`,
   or at another process epoch. It first CASes `sweptBy` to its own incarnation and changes nothing
-  else; a lost claim starts nothing. It may then take only a terminal edge that removes authority: for a launch, the section 7 order at the
-  pinned UID and then `outcome: "aborted"`; for a retirement, the same section 7 order and then
-  `outcome: "retired"`. A sweeper never runs step 7 or step 8, because advancing a launch on a gone
-  executor's behalf is the split brain §13.7 forbids.
+  else; a lost claim starts nothing. It may then take only a terminal edge that removes authority:
+  for a launch, the compensation below and then `outcome: "aborted"`; for a retirement, the section 7
+  order and then `outcome: "retired"`. A sweeper never runs step 7 or step 8, because advancing a
+  launch on a gone executor's behalf is the split brain §13.7 forbids. It always compensates a
+  launch, because it cannot know how far step 8 got.
+
+**Compensation.** A launch is undone by the section 7 order at the pinned UID, with one step added
+before the terminal barrier: `activateLifecycleAtUid` at that UID. The uid-exact prepare runs first,
+so the gate the compensator opens has no row behind it. A bearer exchange at that UID needs a row
+there, so it can mint only from a row a late executor writes after the prepare, and the barrier
+retires whatever that mints. The activation adopts a partial activation of the same alias and UID (its won
+reservation or its frozen activation gate), returns at once for a completed one, and otherwise
+completes it. A head already `retiring` or `retired` at the pinned UID needs no activation: the
+compensator goes straight to the barrier, which resumes or confirms that UID's retirement by its
+derived op id. The barrier then finds the active head and the open gate it requires
+(`retirement-barrier.ts:603-610`), whatever point the executor reached: after the consuming CAS
+with nothing written, inside its activation, or after its ledger write and before any bearer
+exchange. Terminal confirmation is the managed retire door's `retired: true` or
+`alreadyRetired: true` at that UID. Its `notStarted` answer is never terminal confirmation, and a
+compensator that receives it starts the order again from the prepare. A door `conflict` because a
+row reappeared at that UID also repeats the order from the prepare. When the activation is refused
+because the alias is `active` or `retiring` at another UID, the pinned UID has never activated, and
+no row or durable exists there, because step 8 writes them only after its activation. The record
+then keeps no `outcome`, the alias stays held, and the compensator tries again at its next scan.
+The attempt completes once that other incarnation retires. A UID the barrier retired never
+activates again: `activateLifecycleAtUid` refuses its terminally retired gate (`lifecycle-saga.ts:442-447`).
 
 A sweeper whose belief is wrong is still safe. A claim is pinned to a revision with no `outcome`,
 so it loses to an executor that committed first, and the executor's later `outcome` CAS loses to
@@ -481,7 +526,32 @@ the claim. The sweeper's terminal barrier freezes the issuance gate at the pinne
 the lifecycle (§13.1), so a row or durable the executor writes there afterwards can mint nothing,
 and `retired` is terminal for that UID. An executor that is also compensating runs the same derived
 op id and joins the same barrier operation. Every launch interleaving ends at that UID either
-`enrolled` by the executor with no claim, or retired with `outcome: "aborted"`.
+`enrolled` by the executor with no claim, or retired with `outcome: "aborted"`. The alias hold
+below keeps that late executor from writing over any other incarnation of the alias.
+
+**Alias hold.** A consumed record holds its target alias `(owner, intent.target.actor)` on the host
+from its consuming CAS. A record whose executor set `outcome` releases the alias with that write,
+because the outcome is the executor flight's last effect and no flight starts again on a record
+with an outcome. A record a sweeper claimed stays held after its outcome. The executor a wrong
+belief left running may still be paused before an alias-keyed write, and `grantManagedActor` is an
+unconditional upsert by owner and actor (`ledger.ts:396-416`) that the retired gate at the old UID
+does not fence. Only two actors release such a record:
+
+- the executor's own flight: when its re-read finds `sweptBy` or its `outcome` CAS loses, it stops
+  before any further effect, runs the uid-exact prepare of section 7 step 1 at the pinned UID, which
+  revokes a row it wrote after the sweeper's prepare, and then, once the record has its outcome,
+  CASes `released: true`. The prepare cannot touch another
+  incarnation's row, because the hold keeps every other writer off the alias;
+- an operator, by hand, after confirming that the executor process has exited and running the same
+  prepare. §13.7 leaves `draining → released` to an operator for the same reason: no actor can
+  attest that another incarnation is gone. This record adds no door for it.
+
+While `delegatedUserIntentHoldsAlias` is true for any record of the alias, launch admission for it
+is `failed-precondition` (section 5, step 5), and the host's one enrollment writer refuses, for
+either door, any enrollment of that alias other than the holding record's own execution, with
+`failed-precondition` and no write. The writer reads the hold fresh before it writes. A hold stops
+nothing already enrolled, and the user can launch under another name at once. A retirement record
+holds its alias the same way, because its uid-exact prepare also writes by owner and actor.
 
 A retry that finds no flight for the record in this process starts one in the role this process
 holds: the executor's new flight, or a sweeper's when it believes the executor gone. Otherwise it is
@@ -502,7 +572,9 @@ requested target from the same spawning principal:
 | durables and membership | `provisionAgentDurables` keyed by owner, actor, UID, with `subscribe` | the same call with the record's values |
 | `lifecycleUid`, `tokenHash`, `grantedAt` | fresh per incarnation | fresh per incarnation |
 
-Every field except the last row is equal for equal inputs. The holder is not on the agent's
+Every field except the last row is equal for equal inputs. The delegated launch activates the
+lifecycle before its row, and the user's own spawn activates it at the agent's first bearer
+exchange. By that exchange both have the same head and gate, and neither is a ledger field. The holder is not on the agent's
 delegation chain, so no envelope walk ever reads a holder row. Model budget is not a Cotal field at
 this head: `ActorRow` and the enrollment types carry none. A host that meters model use per owner
 reads the agent's owner, which is the user's `u_`. This design adds no budget field and no
@@ -521,7 +593,10 @@ presents the intent:
 3. terminal barrier: run the auth-owned barrier with `managedRetirementOpId(target.lifecycleUid)`
    through the same in-process flight `POST /managed-lifecycle/retire` uses;
 4. free the alias and the hosted survivor record only after terminal confirmation, then set the
-   intent record's `outcome: "retired"`.
+   intent record's `outcome: "retired"`. Terminal confirmation is `retired: true` or
+   `alreadyRetired: true` at that UID, never `notStarted`. A delegated launch that reached
+   `enrolled` activated its UID before its row (section 6, step 8), so its barrier always finds an
+   active head there.
 
 A failed or uncertain step keeps the alias held. A retry is the same operation on the same UID,
 because the operation id is derived and the flight is shared. The consuming CAS pins that UID and
@@ -590,7 +665,8 @@ payload. `authorizeAdmin` is unchanged.
 | D6 | No replay, no standing right | single CAS from `admitted` to `consumed`; `expiresAt` at most 300 s; the holder gains no ledger row, scope or grant | consumed by another request, or expired: `failed-precondition`; a lost CAS: `conflict` | §13.16 execution |
 | D7 | Retirement keeps #1972 | uid-exact prepare, known-handle provider closure, terminal barrier with the derived op id; host-run when the holder is gone | a non-delegated lifecycle, a launch with no `enrolled` outcome, or a foreign owner: refused at admission; an uncertain step keeps the alias held | §13.16 retirement |
 | D8 | R8 and H13 unchanged | section 8 | H13's spawn and `authorizeAdmin` answers unchanged | §13.16 last paragraph |
-| D9 | A crash or a lost answer strands nothing | the consuming CAS pins request id, epoch, lifecycle UID, digest or op id and the executor incarnation before any effect; one flight per intent runs the execution and every request equal to the pin joins it; only the executor advances a launch, and a sweeper takes only the terminal edge that retires the pinned UID | none for the pinned retry, which gets the flight's answer; a flight whose `outcome` CAS lost answers no material; the alias stays held until an outcome | §13.16 execution, recovery |
+| D9 | A crash or a lost answer strands nothing | the consuming CAS pins request id, epoch, lifecycle UID, digest or op id and the executor incarnation before any effect; one flight per intent runs the execution and every request equal to the pin joins it; only the executor advances a launch, and a sweeper takes only the terminal edge that retires the pinned UID; a launch activates its UID before any row or durable, and every compensation completes that activation before the barrier | none for the pinned retry, which gets the flight's answer; a flight whose `outcome` CAS lost answers no material; `notStarted` is never terminal confirmation; the alias stays held until an outcome | §13.16 execution, recovery |
+| D10 | A late executor cannot touch a successor | a consumed record holds its alias; after a sweeper's claim the hold outlives the outcome until the executor's own flight stops, revokes any grant at the pinned UID and sets `released`, or an operator releases it by hand | launch admission and the host's enrollment writer, for either door, refuse a held alias as `failed-precondition` with no write | §13.16 recovery |
 
 ## 10. Where it fails closed
 
@@ -603,6 +679,9 @@ payload. `authorizeAdmin` is unchanged.
 | an observer, ledger or record read error | `unavailable`, never a cached answer |
 | a manager with `delegatedIntent` and no `executeDelegatedUserIntent` | the spawn is refused before any request and writes nothing |
 | a consumed record with no `outcome` | the alias stays held, no new request is admitted on the record, the executor resumes it, and any other incarnation only claims it and compensates at the pinned UID; a retry that finds neither is `unavailable` |
+| a compensation whose activation is refused because the alias is `active` or `retiring` at another UID | no `outcome`, the alias stays held, and the compensator retries at its next scan; nothing exists at the never-activated UID |
+| a managed retire door answering `notStarted` to a compensation | not terminal: the order starts again from the prepare |
+| a record a sweeper claimed and the executor has not `released` | the alias stays held after the outcome; launch admission and the enrollment writer refuse it; only the executor's flight or an operator by hand releases it |
 | a design reviewers reject | nothing lands: the declarations stay in this record (section 11) |
 
 ## 11. Why the declarations wait
@@ -611,10 +690,10 @@ payload. `authorizeAdmin` is unchanged.
 |---|---|---|
 | `DelegatedUserLaunchTarget`, `DelegatedUserIntentOperation`, `DelegatedUserIntentRequest`, `DelegatedUserIntentAdmission`, `DELEGATED_USER_INTENT_MAX_TTL_SECONDS` | `@cotal-ai/core` | proposed, absent |
 | `RemoteDelegatedUserIntentExecutionRequest`, `RemoteDelegatedUserIntentExecutionResult` and the three parsers | `@cotal-ai/core` | proposed, absent |
-| `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `DelegatedUserIntentIncarnation`, `DelegatedUserIntentFlights`, `joinOrStartDelegatedUserIntent`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | proposed, absent |
+| `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `DelegatedUserIntentIncarnation`, `DelegatedUserIntentFlights`, `joinOrStartDelegatedUserIntent`, `delegatedUserIntentHoldsAlias`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | proposed, absent |
 | `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | proposed, absent |
 | `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar | `@cotal-ai/auth`, `@cotal-ai/core` | proposed by the platform-control record, absent |
-| `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged |
+| `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `activateLifecycleAtUid`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged |
 
 They land after the platform-control implementation is on main, because the holder, its owner
 grammar and its assignment observer are inputs to both decisions. A decision type with no producer
@@ -642,11 +721,15 @@ platform-control door, the platform's own route for the holder, its Runtime, and
 | A12 | Send either request with an extra field (`owner`, `idpToken`, `scope`, `supervise`) and send the execution kind inside a platform-control envelope | `bad-request` for all; no effect |
 | A13 | Admit a launch, have the backend advance the instance's assignment revision with its gate left open, then have the holder present the intent | `permission-denied`; the record stays `admitted`; no row |
 | A14 | Admit a launch, hold the host between the CAS and step 7's second read (a debugger breakpoint), advance the assignment revision, then release it | `permission-denied`; the record is `consumed` with `outcome: "aborted"`; no row |
-| A15 | Admit a launch and stop the host after the ledger write and before `outcome` is set (a breakpoint, then kill). Restart it, have the holder resend the same request, then admit a retirement of `w1` | the restarted host is a sweeper: `sweptBy` is its incarnation, the grant at the pinned UID is revoked, that lifecycle head is `retired`, and the record is `aborted`; the resend answers `failed-precondition` and the manager frees the alias; the retirement admission is `failed-precondition` |
+| A15 | Admit a launch and stop the host after the ledger write, before `outcome` is set and before any bearer exchange for `w1` (a breakpoint, then kill). Before restarting, read the lifecycle head and issuance gate at the pinned UID. Restart it, have the holder resend the same request, then admit a retirement of `w1`, a new launch of `w1` and a launch of `w1b` | before the restart the head is `active` and the gate `open` at the pinned UID; the restarted host is a sweeper: `sweptBy` is its incarnation, the grant at the pinned UID is revoked, the managed retire door answers `retired: true` (never `notStarted`), that lifecycle head and its gate are `retired`, and the record is `aborted` with no `released`; the resend answers `failed-precondition` and the manager frees its slot; the retirement admission and the new `w1` launch admission are `failed-precondition`; `w1b` is admitted |
 | A16 | Execute an admitted retirement, drop its answer before the holder reads it, and resend the same request | the resend answers from the same flight with the same op id; one terminal barrier; `retired: true` |
 | A17 | Admit a launch, hold its flight after step 7's second read and before the ledger write, have the holder resend the same request, advance the assignment revision, then release the flight | the resend joins the flight and answers the same material as the first request; one row at the pinned UID; `outcome: "enrolled"`; no terminal barrier at that UID; a new admission on the old revision is refused |
 | A18 | Admit a launch, hold its flight after the ledger write and before the durables, have the holder resend the same request, narrow `U`'s `cli` row below `w1`'s lists, then release the flight | the resend joins and answers the same material; `outcome: "enrolled"`; no terminal barrier at the pinned UID; `w1`'s next bearer exchange is refused by the envelope walk |
-| A19 | Admit a launch, hold its flight after the ledger write, start a second host process on the same instance (its restart advances the process epoch) while the first stays held, send it the same request, then release the first | the second process claims `sweptBy`, retires the pinned UID and ends the record `aborted`; its answer is `failed-precondition`; the released flight's `outcome` CAS loses, and it answers `failed-precondition` from the record's `aborted` outcome; no credential mints at the pinned UID |
+| A19 | Admit a launch, hold its flight after the ledger write, start a second host process on the same instance (its restart advances the process epoch) while the first stays held, send it the same request, then release the first | the second process claims `sweptBy`, retires the pinned UID and ends the record `aborted`; its answer is `failed-precondition`; the released flight finds `sweptBy` or loses its `outcome` CAS, revokes any row it wrote at the pinned UID, sets `released`, and answers `failed-precondition` from the record's `aborted` outcome; no credential mints at the pinned UID |
+| A20 | Admit a launch and stop the host after the consuming CAS and before step 8's activation (a breakpoint, then kill). Read the head and gate at the pinned UID, then restart it | before the restart there is no gate at the pinned UID and no row; the sweeper activates that UID, the managed retire door answers `retired: true`, the head and gate are `retired` there, and the record is `aborted`; no row exists at any point |
+| A21 | Admit a launch and stop the host inside step 8's activation, after the gate at the pinned UID is created `frozen` and before the head CAS (a breakpoint, then kill). Restart it | the sweeper's activation adopts that frozen gate and completes it, then the end state of A20 |
+| A22 | Admit a launch of `w4` while `U`'s own manager has `w4` running, so the head is `active` at another UID, and stop the host after the consuming CAS (a breakpoint, then kill). Restart it, then retire `U`'s own `w4` | while that `w4` runs, the sweeper's activation is refused, the record keeps no `outcome`, no row or gate exists at the pinned UID, and a new `w4` launch admission is `failed-precondition`; after the retirement the next scan activates and retires the pinned UID and ends the record `aborted` |
+| A23 | Run A19, and while the first process is still held, as `U` admit a new launch of `w1`, and have `U`'s own remote manager enroll `w1`; then release the first process, and launch `w1` again | while the first process is held both are `failed-precondition` with no row written; after its release sets `released`, the new launch is admitted and `enrolled` at a fresh UID, the ledger row for `w1` is at that UID, and it stays there: the first process writes nothing more |
 
 ## 13. Residual risk
 
@@ -661,6 +744,20 @@ that skips the CAS would let one intent run twice. The acceptance rows A4 and A5
 A sweeper decides that an executor is gone from the executor instance's issuance gate. An executor
 process that dies while its gate stays `open` at the pinned epoch is not swept: the record keeps no
 `outcome` and the alias stays held until that instance restarts or its gate leaves `open`. A sweeper
-that is wrong costs the launch, never authority: the user admits the launch again. A row the
-executor writes at the pinned UID after a sweeper's prepare can remain in the ledger, but it mints
-nothing, because the issuance gate at that UID is retired.
+that is wrong costs the launch, never authority. A row the executor writes at the pinned UID after
+a sweeper's prepare mints nothing, because the issuance gate at that UID is retired, and the
+executor's own flight revokes it before it sets `released`.
+
+A swept alias stays held until the executor's flight releases it. An executor killed after the
+sweep never does, so its alias stays unusable until an operator confirms the process exited and
+releases it by hand. That is the cost of not inferring a dead incarnation from a restart, the same
+cost §13.7 accepts for a `draining` name. The user can launch under another name meanwhile.
+
+A compensation whose activation is refused because the alias is live at another UID waits for that
+incarnation to retire. Until then the record has no `outcome` and the alias stays held, which costs
+nothing new, because that live incarnation already occupies the alias.
+
+Two enrollments of one alias that run at once, each reading the hold before the other's consuming
+CAS, still race on the owner-and-actor upsert, as two enrollments of one alias race today, and the
+alias head admits one incarnation. The hold does not change that race. It keeps a swept executor
+off the alias after the sweep.

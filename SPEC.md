@@ -4125,11 +4125,21 @@ confers nothing after it executes.
 
 **Recovery.** From the CAS on, the host owns the pinned execution, whoever presented it. It MUST
 drive every consumed record to one outcome, `enrolled`, `retired` or `aborted`, at the pinned
-lifecycle UID, including after a restart or a lost answer. A launch it cannot complete MUST be
-compensated by the retirement sequence below at that UID before it is marked `aborted`. A request
+lifecycle UID, including after a restart or a lost answer. For a launch, the host's first effect
+after the post-CAS checks MUST be the issuance activation of the alias at the pinned lifecycle UID
+(§13.1), before any ledger row or durable, so that UID has an active head and an open issuance gate
+before anything is granted under it. A launch that ends without `enrolled` after that activation
+may have begun MUST be compensated before it is marked `aborted`: the retirement sequence below at
+that UID, with that UID's activation completed or adopted immediately before the terminal barrier
+unless its head is already retiring or retired there.
+Only the barrier's answer that the lifecycle is retired at that UID is terminal confirmation; a
+not-started answer MUST NOT be read as one. When that activation is refused because the alias is
+active or retiring at another UID, the record MUST keep no outcome and the compensation MUST be
+retried. A request
 whose request id and serve epoch, and a launch's token digest, equal the pin is a retry of that
 execution: it passes the same checks except the consumed state, writes no second CAS, and MUST
-receive that execution's answer. The alias stays held until the record has an outcome.
+receive that execution's answer. The alias stays held until the record has an outcome, and after a
+sweeper's claim until the release below.
 The host MUST run each execution in one in-process flight keyed by the intent id, and a retry MUST
 join that flight or read the record's outcome; a retry MUST NOT run the post-CAS checks, the
 enrollment writer or the retirement sequence itself. Every record write after the consuming CAS
@@ -4141,10 +4151,18 @@ the same instance after a restart advanced its process epoch, is a sweeper. A sw
 on a consumed record with no outcome whose executor it believes gone, because that instance's
 serving issuance gate is absent, not open or at another process epoch. It MUST first claim the
 record with a revision-pinned CAS that names its own incarnation and changes nothing else, and
-MAY then take only the terminal edge that removes authority: the retirement sequence below at the
-pinned UID, then `aborted` for a launch or `retired` for a retirement. The sequence's terminal
-barrier freezes the issuance gate at that UID before it retires the lifecycle (§13.1), so an
-executor that a wrong belief left running can mint nothing there and cannot set the outcome.
+MAY then take only the terminal edge that removes authority: the compensation above, then
+`aborted`, for a launch, or the retirement sequence below, then `retired`, for a retirement. The
+sequence's terminal barrier freezes the issuance gate at that UID before it retires the lifecycle
+(§13.1), so an executor that a wrong belief left running can mint nothing there and cannot set the
+outcome. A consumed record holds its target alias `(owner, actor)` from the consuming CAS, and an
+outcome its executor writes releases it. After a sweeper's claim the alias MUST stay held after the
+outcome until the executor's own flight, having stopped before any further effect and revoked any
+grant at the pinned UID, records the release, or until an operator releases it by hand; no door
+releases it. Before each effect and before its outcome write, the executor MUST re-read the record
+and stop on a claim it did not write. While an alias is held, the host MUST refuse a launch
+admission for it and MUST refuse, from either enrollment door, any enrollment of it other than the
+holding execution's own, as `failed-precondition` with no write.
 
 **Ownership.** A delegated launch MUST be enrolled under the record's owner with the record's
 parent, through the same writer, managed-agent envelope walk, lifecycle-keyed durables and
