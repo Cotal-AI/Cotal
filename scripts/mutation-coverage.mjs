@@ -9,6 +9,7 @@
  * enumerates and validates but does not execute unless --execute-discovered is passed. The final
  * summary names the checkout HEAD when git can resolve it, and exits non-zero if any config was
  * not graded. Live-shaped refusals and discovered fences are named skips, not grading failures.
+ * A discovered run also reports a refusal recorded in RECORDED_PATH as a named skip; see there.
  *
  *   node scripts/mutation-coverage.mjs <config.json> …              # just these (live still refused)
  *   node scripts/mutation-coverage.mjs --execute-discovered         # every config; live still refused
@@ -16,11 +17,14 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync, execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname, extname, relative, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import ts from "typescript";
 import { liveShapedCommandReason } from "./mutation-command-safety.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 import { gradeCellTarget } from "./mutation-cell-witness.mjs";
+import { emitSentinel } from "../bin/smoke/sentinel.mjs";
 
 const FLAG_EXECUTE_DISCOVERED = "--execute-discovered";
 const FLAG_GRADABLE_ONLY = "--gradable-only";
@@ -38,6 +42,33 @@ if (configs.length === 0) {
   process.exit(1);
 }
 
+/**
+ * Refusals already on main when the discovered `--gradable-only` run became a CI gate, each pinned
+ * to the sha256 of the parsed config and the refusal it drew. A discovered run reports a config
+ * that still draws its pinned refusal as RECORDED instead of failing on it, so every new or edited
+ * config is held to the whole contract. The record only shrinks: an entry that is not in the
+ * parent commit's record, or whose config is accepted, changed, refused for another reason, or no
+ * longer tracked, fails the run until it is removed. A named run never reads it, so naming a config
+ * reports its own verdict.
+ */
+const RECORDED_PATH = "scripts/mutation-coverage.recorded.json";
+const recordedPins = new Map();
+const staleRecords = [];
+if (discovered && existsSync(RECORDED_PATH)) {
+  // The checkout under test can rewrite its own record but not its parent, which on CI's merge
+  // snapshot is the base branch. The commit that adds the record has no parent record, so it may
+  // pin only configs its parent already had unchanged.
+  const git = (...args) => execFileSync("git", args, { encoding: "utf8" });
+  // CI's Windows smoke checks out at depth 1, which holds no parent.
+  if (git("rev-parse", "--is-shallow-repository").trim() === "true") git("fetch", "--quiet", "--no-tags", "--deepen=1", "origin", git("rev-parse", "HEAD").trim());
+  const parentRecord = git("ls-tree", "--name-only", "HEAD^1", "--", RECORDED_PATH) ? JSON.parse(git("show", `HEAD^1:${RECORDED_PATH}`)) : undefined;
+  const changed = parentRecord ? undefined : new Set(git("diff", "--name-only", "HEAD^1").split("\n"));
+  for (const [path, pin] of Object.entries(JSON.parse(readFileSync(RECORDED_PATH, "utf8")))) {
+    if (parentRecord ? isDeepStrictEqual(pin, parentRecord[path]) : !changed.has(path)) recordedPins.set(path, pin);
+    else staleRecords.push([path, parentRecord ? "is not in the parent commit's record" : "pins a config that is new or changed since the parent commit"]);
+  }
+}
+
 let checkoutHead = "unknown";
 try {
   checkoutHead = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -52,6 +83,7 @@ const probes = [];
 const tools = [];
 const refusals = [];
 const refused = [];
+const recorded = [];
 const REQUIRED = ["name", "file", "find", "expectRed", "cell"];
 const REQUIRED_MAY_BE_EMPTY = ["replace"];
 const packageRoot = (p) => p.split("/").slice(0, 2).join("/");
@@ -1832,15 +1864,25 @@ for (const path of configs) {
   let cfg;
   let gradesTool;
   let suites;
+  let sha256;
   try {
     cfg = JSON.parse(readFileSync(path, "utf8"));
+    sha256 = createHash("sha256").update(JSON.stringify(cfg)).digest("hex");
     ({ gradesTool, suites } = validate(path, cfg));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    const pin = recordedPins.get(path);
+    if (pin?.sha256 === sha256 && pin.refusal === reason) {
+      recorded.push(path);
+      console.error(`RECORDED ${path}: ${reason}`);
+      continue;
+    }
+    if (pin) staleRecords.push([path, pin.sha256 === sha256 ? "is refused for a different reason than recorded" : "changed since its refusal was recorded"]);
     refusals.push([path, reason]);
     console.error(`REFUSED ${path}: ${reason}`);
     continue;
   }
+  if (recordedPins.has(path)) staleRecords.push([path, "is accepted now"]);
 
   if (gradableOnly) {
     console.log(`ACCEPTED ${path}`);
@@ -1940,6 +1982,13 @@ if (refusals.length) {
   console.error("\nRefused configs:");
   for (const [path, reason] of refusals) console.error(`  ${path}: ${reason}`);
 }
+for (const path of recordedPins.keys()) {
+  if (!configs.includes(path)) staleRecords.push([path, "is not a tracked mutation config"]);
+}
+if (staleRecords.length) {
+  console.error(`\nStale entries in ${RECORDED_PATH}, each to be removed:`);
+  for (const [path, why] of staleRecords) console.error(`  ${path}: ${why}`);
+}
 if (refused.length) {
   console.log("\nLive-shaped configs — refused before execution, counted and named so the denominator stays honest.");
   for (const [path, command, reason] of refused) {
@@ -1950,6 +1999,8 @@ if (refused.length) {
 console.log(
   `MUTATION COVERAGE SUMMARY head=${checkoutHead} enumerated=${configs.length} examined=${examined} graded=${graded} ` +
   `refused-with-reason=${refusals.length} unparsed=${unparsed} command-failed=${failed} ` +
-  `fenced-live=${refused.length} fenced-discovered=${fencedDiscovered}`,
+  `fenced-live=${refused.length} fenced-discovered=${fencedDiscovered} recorded=${recorded.length} stale-records=${staleRecords.length}`,
 );
-if (refusals.length || unparsed || failed || examined !== configs.length || graded + refused.length + fencedDiscovered !== configs.length) process.exitCode = 1;
+// The CI shard grades this run by the cell count it prints: each config is a cell, and so is each stale entry.
+if (gradableOnly) emitSentinel({ passed: graded + recorded.length, failed: refusals.length + staleRecords.length });
+if (refusals.length || staleRecords.length || unparsed || failed || examined !== configs.length || graded + refused.length + fencedDiscovered + recorded.length !== configs.length) process.exitCode = 1;

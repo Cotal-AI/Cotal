@@ -37,6 +37,7 @@
     "smoke:mutation-proof": "node scripts/mutation-proof.selftest.mjs",
     "mutation-coverage:selftest": "node scripts/mutation-coverage.selftest.mjs",
     "smoke:mutation-coverage": "node scripts/mutation-coverage.selftest.mjs",
+    "smoke:mutation-metadata": "node scripts/mutation-coverage.mjs --gradable-only",
     "smoke:mutation-cell-witness": "node scripts/mutation-cell-witness.selftest.mjs",
     "smoke:mutation-command-safety": "tsx bin/smoke/mutation-command-safety.smoke.ts",
     "smoke:entrypoint-guard": "node scripts/entrypoint-guard.selftest.mjs",

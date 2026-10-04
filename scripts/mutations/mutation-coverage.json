@@ -135,8 +135,8 @@
     {
       "name": "incomplete aggregate grading exits successfully",
       "file": "scripts/mutation-coverage.mjs",
-      "find": "if (refusals.length || unparsed || failed || examined !== configs.length || graded + refused.length + fencedDiscovered !== configs.length) process.exitCode = 1;",
-      "replace": "void refusals; void unparsed; void failed; void examined; void graded; void refused; void fencedDiscovered;",
+      "find": "if (refusals.length || staleRecords.length || unparsed || failed || examined !== configs.length || graded + refused.length + fencedDiscovered + recorded.length !== configs.length) process.exitCode = 1;",
+      "replace": "void refusals; void staleRecords; void unparsed; void failed; void examined; void graded; void refused; void fencedDiscovered; void recorded;",
       "expectRed": "a by-name same-package import without ../src is refused",
       "cell": "a by-name same-package import without ../src is refused"
     },

@@ -71,7 +71,20 @@ pnpm mutation-coverage
 Pass config paths to grade only those files. The validator examines every selected config even when
 an earlier one is refused, its command fails, or its completed output has no trustworthy executed
 cell total. It exits non-zero after the full selection and reports the checkout HEAD with counts for
-enumerated, examined, graded, refused-with-reason, unparsed, and command-failed configs.
+enumerated, examined, graded, refused-with-reason, unparsed, command-failed, recorded, and
+stale-records configs.
+
+`pnpm smoke:mutation-metadata` runs that validation in CI. It passes `--gradable-only` with no
+paths, so every tracked config is validated, none is executed, and an unrecorded refusal fails the
+gate. The refusals already on main when the gate was added are listed in `scripts/mutation-coverage.recorded.json`,
+each pinned to the sha256 of its parsed config and the refusal it drew, and a discovered run reports
+them as `RECORDED`. A named run does not read that file. The list only shrinks. An entry fails the
+gate when it is not in the parent commit's copy of the file, or once its config is accepted, changes,
+is refused for another reason, or is no longer tracked: remove the entry, and fix the config if it is
+still refused. On a pull request the parent is the base branch. The commit that adds the file may pin
+only configs its parent already had unchanged. A shallow checkout fetches the parent from `origin`.
+The run ends with the cell-count sentinel the CI shard grades: one cell per config and per stale
+entry.
 
 `unparsed` means the suite command completed but did not prove how many cells it executed. A zero
 failure count without a total is not enough. The instrument grades only a number the suite printed:
