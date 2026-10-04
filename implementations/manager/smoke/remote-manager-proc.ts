@@ -210,20 +210,20 @@ const managerOpts = (runtime: string, pooled: boolean): ManagerOptions => ({
         const result = (await postHttp(request)) as never;
         return remoteRunAdmission(result, request);
       },
-      issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator }) => {
+      issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator, served }) => {
         const base = runBase();
         const request = remoteRunAttemptRequest(mgrIdentity, base.proof, base.account, base.epoch, {
-          attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id },
+          attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id, ...(served !== undefined ? { served } : {}) },
         });
         const result = (await postHttp(request)) as never;
         const pair = remoteRunAttemptCredentials(result, request, owner, { driver, mediator });
         if (!("driver" in pair)) throw new Error("host returned an operator instead of a run pair");
         return pair;
       },
-      issueOperator: async ({ identity, takeoverId, runId, answers }) => {
+      issueOperator: async ({ identity, takeoverId, runId, answers, served }) => {
         const { proof, account, epoch } = runBase();
         const request = remoteRunAttemptRequest(mgrIdentity, proof, account, epoch, {
-          operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}) },
+          operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}), ...(served !== undefined ? { served } : {}) },
         });
         const result = (await postHttp(request)) as never;
         const credential = remoteRunAttemptCredentials(result, request, owner, { operator: identity });
