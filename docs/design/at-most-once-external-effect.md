@@ -154,10 +154,11 @@ At a step whose scope path contains a `once` frame:
 
 `once` admits one effect kind, `ask`. An `ask` is where a program's write happens: in the
 program's own handler behind it, or in the agent that answers it. It calls its handler method once
-per activation through `performEffect`, its result is a record a settler can supply, and the one
-thing its first dispatch leaves armed, the open attempt's pause, is ended when the hold opens
-(§6.1). Every other effect kind is refused under `once` with L4028 (an effect `once` does not admit)
-before its entry begins, for one of three reasons.
+per activation through `performEffect`, its result is a record a settler can supply, and nothing
+its first dispatch leaves behind can settle the step once the hold opens: the open attempt's pause
+is ended (§6.1), and the attempt's relay to its agent answers only under that pause (§4.3). Every
+other effect kind is refused under `once` with L4028 (an effect `once` does not admit) before its
+entry begins, for one of three reasons.
 
 It calls a handler method more than once at one key, so a hold cannot bound it:
 
@@ -243,6 +244,17 @@ What the held step's first dispatch armed is the host's to end, inside the hold'
 `handler.checkpoint` call and before its first bind, so its failure takes the domains above. The
 hosted runtime claims the open attempt's pause (§6.1). `SimHandler` arms nothing.
 
+The hosted `ask` also relays each attempt to its seat as a `turn` goal under the attempt's token
+(`relayAsk` in `mesh-handler.ts`), and nothing withdraws a relay goal today: the manager serves no
+`cancel` for one, and a discharged `ask` leaves its relay as well (#2596). The hold leaves it too.
+The seat may still be shown that turn until it yields or the ask's recorded `deadlineAt`, the
+relay's own deadline, passes. Its answer is presented under the attempt's token, whose pause the
+hold claimed, so it is refused and never reaches the step, and the relay's terminal is never read.
+The relay is one goal per attempt and is never submitted again, so a write the seat makes in that
+turn is the first dispatch's one write. It can land after the hold opens when the crash came before
+the seat wrote, so a settler who answers before that deadline reads the far side for the recorded
+request id first.
+
 **`holdRequestId(requestId)`** is a new export of `packages/lang/src/keys.ts`, beside `requestId`:
 the sha256 of `canonicalize([requestId, "hold"])` in base64url, 43 characters in the endpoint id
 alphabet. It is the only definition: the runtime imports it and never re-derives the token itself.
@@ -270,8 +282,9 @@ reads it from the same places.
   its own `once`, which is refused at validation.
 
 The pause a held `ask`'s first dispatch armed does not outlive the hold: the hosted handler claims
-it before the hold's first bind (§6.1). An answer addressed to the step lands on the hold, and an
-amendment and the journal row of a held step read the hold's pause (§6.1).
+it before the hold's first bind (§6.1). Its relay to the seat can outlive the hold, and can no
+longer settle the step (§4.3). An answer addressed to the step lands on the hold, and an amendment
+and the journal row of a held step read the hold's pause (§6.1).
 
 ## 5. The step journal
 
@@ -372,7 +385,8 @@ word, and the run's existing ownership, lease and cleanup checks apply unchanged
 - **`MeshHandler.endPause(entry)`**, a new method holding the pause arm of `MeshHandler.discharge`
   (claim the kind's armed pauses; for a `wait`, also close its consumer), which `discharge` then
   calls for each loser instead of carrying the arm inline. For an `ask` it claims the current
-  attempt's pause: `askToken`, or the request id before the first bind.
+  attempt's pause: `askToken`, or the request id before the first bind. It leaves the attempt's
+  relay goal as the discharge does (§4.3).
 - **`RunScopeAuthority.effect`** (`run-scope-authority.ts`) also accepts the hold: kind
   `checkpoint`, a pending entry of any kind at `ctx.key` that is `atMostOnce`, not owed to a
   cleanup, `ctx.requestId === holdRequestId(entry.requestId)` and `ctx.attempt === 0`. Today it
@@ -403,15 +417,20 @@ word, and the run's existing ownership, lease and cleanup checks apply unchanged
   accepted answer and amendments) in `run-host.ts`. All three take it from one new function in
   `resolve-checkpoint.ts`, `stepPauseToken(records)`, over the step's records in append order: a
   step any of whose records carries `hold` reads at `holdRequestId(requestId)` whatever its kind, and
-  every other step reads where it does today. `openCheckpointToken` and `settledPauseToken` test for
-  a held step before their `not-a-checkpoint` refusal. So `cotal run answer <run> <step-key>
-  --value <json>` settles a held step, `cotal run journal` prints the hold's accepted answer (its
+  every other step reads where it does today. All three call it on a pending step as on a settled
+  one, and `openCheckpointToken` and `settledPauseToken` test for a held step before their
+  `not-a-checkpoint` refusal. Between the claim and the hold's first bind no record carries `hold`,
+  so the step still reads at the attempt's token, whose pause is no longer waiting, and an answer
+  presented there is refused, never applied. So `cotal run answer <run> <step-key> --value <json>`
+  settles a held step, `cotal run journal` prints the hold's accepted answer (its
   id, value, `by` and artifact) and the amendments filed under the hold id, and `cotal run amend`
   supersedes the hold's answer. An answer the first attempt's pause accepted before the crash,
   conforming or not, is never shown as the step's: it stays on that pause, and the entry keeps
   `external` as the write's evidence.
 - **`cotal run journal`** (`journalStepRow` in `run-host.ts`) reads `asks`, `deadlineAt` and
-  `onExpiry` from `hold` when it is set, so it prints the hold's question.
+  `onExpiry` from `hold` when it is set, so it prints the hold's question. `hold` carries them
+  because it is what `MeshHandler.checkpoint` binds; an `ask`'s own `external` carries none of
+  them.
 - **`planFork`** (`fork.ts`) admits a cut inside `once` as it admits one inside `parallel` or
   `fanOut`, at both of its gates: its one branch runs, so the parent decided nothing the child
   re-decides. `SCOPE_KINDS`, the kinds whose entry can enclose a cut, gains `once`, so the
@@ -480,8 +499,9 @@ though nothing runs beside it, because a settled `once` is replayed without ente
 > the sha256 of the canonical form of `[<recorded request id>, "hold"]` in base64url, whose
 > binding is written to the entry's `hold` field and never to `external`. Before the hold's first
 > bind the host MUST end the pause the step's first dispatch armed, so the hold is the step's only
-> open pause; an answer, an amendment or a journal view addressed to a step whose entry carries
-> `hold` MUST read the hold id's pause, never the one the first dispatch armed. A
+> open pause, and an answer to a relay that dispatch left with an agent MUST NOT settle the step;
+> an answer, an amendment or a journal view addressed to a step whose entry carries `hold` MUST
+> read the hold id's pause, never the one the first dispatch armed. A
 > resolved hold settles the step `ok` with the answered value (`null` when none). An expired hold
 > settles it `failed` with L4027, kind `outcome-unknown`, which a program may catch and a resume
 > replays. A hold the host refuses MUST leave the step `pending`,
@@ -558,8 +578,10 @@ committed test.
 
 A node script over the package's public exports: `run` and `resume`, `Journal` over a JSONL
 `JournalStore`, and a `SimHandler` subclass whose `ask` for step `publish` appends one line to an
-`external.jsonl` (the write) and records `ctx.requestId`. A crash is `process.exit` inside the
-handler or the store, in a child process, so it is a real process death. Program:
+`external.jsonl` (the write) and records `ctx.requestId`, and whose `spawn` binds the program's
+`onFork` beside `simAgent` when it gives one, as `MeshHandler.spawn` binds the policy `planFork`
+reads. A crash is `process.exit` inside the handler or the store, in a child process, so it is a
+real process death. Program:
 
 ```js
 const publisher = await spawn("publisher")
@@ -634,12 +656,14 @@ Run each case under language version 1 (`run`) and version 2 (`runInWorker`).
     `migrateRun` onto the source `log("hi")`: the `once` entry is an orphan with verdict `ignored`,
     as a `parallel` entry is, and the migration is admissible.
 13. **A fork inside `once` is admitted.** The program
-    `const p = await spawn("publisher"); await once(async () => { await ask(p, { name: "before", schema: {} }); return await ask(p, { name: "cut", schema: {} }) }, { name: "write" })`,
+    `const p = await spawn("publisher", { onFork: "adopt" }); await once(async () => { await ask(p, { name: "before", schema: {} }); return await ask(p, { name: "cut", schema: {} }) }, { name: "write" })`,
     run to completion, then `planFork` from `@cotal-ai/runtime` at
     `/once:write#0/b:in/ask:cut#0`. Expected: admissible with no L5020, and the cut holds the
     `spawn` and `/once:write#0/b:in/ask:before#0` and neither the `once` entry nor `cut`. The child
     resumed from the cut under its own run id replays `before`, calls `ask` for `cut` once with a
-    `ctx.requestId` that differs from the parent's, and settles a new `once` entry.
+    `ctx.requestId` that differs from the parent's, and settles a new `once` entry. The same program
+    with `spawn("publisher")` is refused L5019 at `/spawn:publisher#0`, the spawn gate `once` does
+    not change.
 
 ### 8.2 One hosted run
 
@@ -654,7 +678,8 @@ On a local mesh with a manager:
    hold's question naming the recorded request id; the seat receives no second `publish` turn; the
    file still has one line. The first attempt's pause, read with `readCheckpointStatus` at the
    `askToken` on the step's pending entry, is no longer waiting: here it holds no answer, because
-   the hold claimed it.
+   the hold claimed it. The seat still holds its first `publish` turn, and `cotal run answer`
+   presenting that `askToken`, as the seat would, is refused; the step stays held.
 5. Kill and restart the manager again while the hold is open. Expected: the hold's timer is
    re-armed under the hold id, and `cotal run journal` still shows the same question.
 6. `cotal run answer <run> "/once:publish-360#0/b:in/ask:publish#0" --value '{"commentId":1000}'`.
