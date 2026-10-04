@@ -32,7 +32,7 @@
       "expectRed": "a spinning arm that cannot win is cut at its next yield and the run returns",
       "completionMarker": "ok so the timer is measuring the yield, not the runtime",
       "cell": "a spinning arm that cannot win is cut at its next yield and the run returns",
-      "note": "Reddens as HUNG once the watchdog has counted twice the turns the step budget allows, which is the honest signal: the run does not return inside its budget window."
+      "note": "Reddens with L4013: the arm that lost is never cut, so it spins the run into its step budget instead of returning."
     },
     {
       "name": "the yield boundary ignores the cut",
@@ -51,7 +51,7 @@
       "expectRed": "a spinning arm that cannot win is cut at its next yield and the run returns",
       "completionMarker": "ok so the timer is measuring the yield, not the runtime",
       "cell": "a spinning arm that cannot win is cut at its next yield and the run returns",
-      "note": "Declaration order is half of the rule. Reversed, the spinner declared second could still win and is not cut, and the run spins into HUNG."
+      "note": "Declaration order is half of the rule. Reversed, the spinner declared second could still win and is not cut, and the run spins into its step budget (L4013)."
     }
   ]
 }
