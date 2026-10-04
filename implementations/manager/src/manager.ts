@@ -1259,7 +1259,8 @@ export class Manager {
    *  for release would otherwise move the row out from under a same-cached-revision CAS delete. */
   private leaseRenewTask?: Promise<void>;
   /** Set at the top of `stop()`. `renewLease` returns at once once this is set, and its `gone` arm
-   *  does not re-acquire: a manager that is stopping never puts its own key back. */
+   *  does not re-acquire: a manager that is stopping never puts its own key back. It also closes the
+   *  lifecycle fence ({@link beginLifecycle}), so no spawn can launch a seat the stop never sees. */
   private leaseStopping = false;
   /** The class-2 renewal owner's half-TTL schedule (D5 slice 5); armed only on auth meshes. */
   private credRenewTimer?: ReturnType<typeof setInterval>;
@@ -2312,9 +2313,9 @@ export class Manager {
   }
 
   /** Admit one lifecycle/control operation while active. The synchronous increment is the fence:
-   * preserveState flips state before its first await, so work is either counted or rejected. */
+   * preserveState and stop close it before their first await, so work is either counted or rejected. */
   private beginLifecycle(resumeOperation = false): (() => void) | undefined {
-    if (this.maintenanceState !== "active" || (this.resumeRequired && !resumeOperation)) return undefined;
+    if (this.leaseStopping || this.maintenanceState !== "active" || (this.resumeRequired && !resumeOperation)) return undefined;
     this.lifecycleInFlight++;
     let released = false;
     return () => {
@@ -2347,6 +2348,7 @@ export class Manager {
   }
 
   private maintenanceError(): string {
+    if (this.leaseStopping) return "manager is stopping; new lifecycle/control work is fenced";
     if (this.resumeRequired) return `manager is waiting for resume attempt ${this.resumeAttemptId}; ordinary lifecycle/control work is fenced`;
     return `manager is in ${this.maintenanceState} mode; new lifecycle/control work is fenced`;
   }
@@ -2779,6 +2781,9 @@ export class Manager {
     // still move the key's revision after we clear the timer, and releasing against a cached
     // revision it has since moved is a CAS the broker correctly refuses, silently, forever.
     await this.leaseRenewTask?.catch(() => {});
+    // A spawn admitted before the fence closed may still be launching. Its seat must be in the
+    // snapshot below, or it would outlive a stop that reported success.
+    await this.awaitLifecycleDrain();
     let releaseFailures: string[] = [];
     let seatFailure: Error | undefined;
     try {

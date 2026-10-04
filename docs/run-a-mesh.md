@@ -373,7 +373,8 @@ Detach from an attached PTY with **Ctrl-]** (the agent keeps running); rebind it
 
 **Runtimes.** The manager spawns into a **pty** by default. It spawns the PTY in-process on
 every platform, so replacing the manager worker closes its seats and the pty runtime gives no hot
-update. Any manager stop, bare `cotal down` included, stops and deprovisions those seats. On Linux
+update. Any manager stop, bare `cotal down` included, stops and deprovisions those seats. A stopping
+manager refuses new spawns and first waits for the ones it already accepted, so their seats stop too. On Linux
 it can still adopt and reap seats that an earlier manager launched under a detached per-seat
 custodian, so those seats drain under the new manager; it starts no new custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal seats`
 lists the custodians left on the machine, and `cotal seats --drain` retires the ones whose agent
