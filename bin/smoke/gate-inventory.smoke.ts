@@ -397,7 +397,8 @@ const UNPINNED_PATH = join(ROOT, "bin", "smoke", "unpinned-suites.txt");
 const UNPINNED_DIGEST = "8d7a911e3c2411715048ab2f4cfd196fbbf82bba1cae07a133288aa7e9cfd842";
 const SUITE_FILE = /(?:^|\s)["']?([\w./-]+\.(?:ts|tsx|mts|mjs|js|cjs))["']?(?=\s|$)/g;
 const PIN_NAME = /^EXPECTED(?:_[A-Z0-9]+)*$/;
-const EQUALITY = [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken];
+/** `==` and `!=` coerce, so a tally of "2" matches a pin of 2. */
+const EQUALITY = [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken];
 
 const parseSuite = (file: string, text: string): ts.SourceFile =>
   ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
@@ -471,10 +472,6 @@ const exitsWith = (s: ts.Node, status: (arg: ts.Expression | undefined) => boole
 };
 const setsFailingCode = (s: ts.Node) => failingCode(statementExpr(s));
 const endsRun = (s: ts.Node) => ts.isThrowStatement(s) || ts.isReturnStatement(s) || exitsWith(s, () => true);
-/** Whether a run can stop at `s` without failing, or never get past it: `s` ends its list, or a branch or
- *  block in it returns or exits with a status that can be 0. A function declaration runs none of its body. */
-const canEndRun = (s: ts.Node) =>
-  endsRun(s) || (!ts.isFunctionLike(s) && findIn(s, (n): n is ts.Node => ts.isReturnStatement(n) || (isExitCall(n) && !failingStatus(n.arguments[0]))).length > 0);
 /** The statements `arm` runs in order, up to the first that ends it, or an arrow body expression. Each runs
  *  only when none before it throws. A statement nested in a branch, loop or callback is not one of them. */
 const runs = (arm: ts.Node): ts.Node[] => {
@@ -508,6 +505,28 @@ function indexSuite(sf: ts.SourceFile): SuiteIndex {
   suiteIndexes.set(sf, ix);
   return ix;
 }
+
+/** Whether running `n` can exit with a status that can be 0: it calls `process.exit` with one, or calls a
+ *  function of the file, by name, as a method or in place, whose body can. A name stands for every
+ *  function it is declared or assigned as. */
+function canExitZero(sf: ts.SourceFile, n: ts.Node, seen = new Set<ts.Node>()): boolean {
+  const { checker, writes } = indexSuite(sf);
+  return findIn(n, ts.isCallExpression).some((c) => {
+    const callee = unwrap(c.expression);
+    if (isProcessMember(callee, "exit")) return !failingStatus(c.arguments[0]);
+    const sym = ts.isFunctionLike(callee) ? undefined : checker.getSymbolAtLocation(ts.isPropertyAccessExpression(callee) ? callee.name : callee);
+    const values = sym ? [...(sym.declarations ?? []), ...(writes.get(sym) ?? [])] : [callee];
+    return values.some((d) => {
+      const fn = (ts.isVariableDeclaration(d) || ts.isPropertyAssignment(d)) && d.initializer ? unwrap(d.initializer) : ts.isBinaryExpression(d) ? unwrap(d.right) : d;
+      if (!ts.isFunctionLike(fn) || seen.has(fn)) return false;
+      seen.add(fn);
+      return canExitZero(sf, fn, seen);
+    });
+  });
+}
+/** Whether a run can stop at `s` without failing, or never get past it: `s` ends its list, a branch or block
+ *  in it returns, or running it can exit 0. A function declaration runs none of its body. */
+const canEndRun = (sf: ts.SourceFile, s: ts.Node) => endsRun(s) || (!ts.isFunctionLike(s) && (findIn(s, ts.isReturnStatement).length > 0 || canExitZero(sf, s)));
 
 /** An exit status that cannot be 0: a failing status, or a variable whose every declaration initializes
  *  it to one and whose every write assigns one or is the last statement of the guarded `try`, which runs
@@ -597,7 +616,7 @@ function runsTo(sf: ts.SourceFile, stmt: ts.Statement, seen = new Set<ts.Node>()
   if (!ts.isSourceFile(list) && !ts.isBlock(list)) return false;
   for (const s of list.statements) {
     if (s === stmt) break;
-    if (canEndRun(s)) return false;
+    if (canEndRun(sf, s)) return false;
   }
   if (ts.isSourceFile(list)) return true;
   const owner = list.parent;
@@ -608,7 +627,7 @@ function runsTo(sf: ts.SourceFile, stmt: ts.Statement, seen = new Set<ts.Node>()
   // An async body can stop at an await while the statements after an unawaited call run on, so none of them may exit.
   const preempts = (s: ts.ExpressionStatement) =>
     !!(ts.getCombinedModifierFlags(owner) & ts.ModifierFlags.Async) && !ts.isAwaitExpression(unwrap(s.expression)) &&
-    findIn(sf, isExitCall, true).some((c) => c.pos >= s.end && enclosingFunction(c) === enclosingFunction(s));
+    findIn(sf, ts.isCallExpression, true).some((c) => c.pos >= s.end && enclosingFunction(c) === enclosingFunction(s) && (isExitCall(c) || canExitZero(sf, c)));
   return callersOf(sf, owner).some((s) => runsTo(sf, s, seen) && !preempts(s));
 }
 
@@ -633,7 +652,7 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
     if (!ts.isBinaryExpression(b) || !EQUALITY.includes(b.operatorToken.kind)) return undefined;
     const [pin, tally] = isPin(b.left) ? [b.left, b.right] : [b.right, b.left];
     if (!isPin(pin) || isPin(tally) || ts.isLiteralExpression(unwrap(tally))) return undefined;
-    return b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken || b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
+    return b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
   };
   const codeHolds = (guard: ts.Node) =>
     exitCodeWrites.every(failingCode) &&
@@ -700,6 +719,10 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin after a block that exits 0 is unpinned", !pinsWith(`{ process.exit(0); } if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin after a branch that returns is unpinned", !pinsWith(`function main() { if (ran < EXPECTED_CELLS) return; if (ran !== EXPECTED_CELLS) process.exit(1); } main();`)],
   ["a pin after a branch that exits 1 is pinned", pinsWith(`if (failed) process.exit(1); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a call to a function that exits 0 is unpinned", !pinsWith(`const skip = () => { process.exit(0); }; skip(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a call to a binding reassigned to exit 0 is unpinned", !pinsWith(`let skip = () => {}; skip = () => process.exit(0); skip(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a call to a function that exits 1 is pinned", pinsWith(`function bail() { process.exit(1); } if (failed) bail(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a loose != pin is unpinned, since it coerces", !pinsWith(`if (ran != EXPECTED_CELLS) process.exit(1);`)],
   ["a reassigned pin is unpinned", !pinsWith(`EXPECTED_CELLS = ran; if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a mismatch exitCode a later exit overrides is unpinned", !pinsWith(`if (ran !== EXPECTED_CELLS) process.exitCode = 1; process.exit(0);`)],
   ["a mismatch exitCode a bracket write clears is unpinned", !pinsWith(`if (ran !== EXPECTED_CELLS) process.exitCode = 1; process["exitCode"] = 0;`)],
@@ -715,6 +738,7 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin shadowed by a parameter is unpinned", !pinsWith(`function main(EXPECTED_CELLS) { if (ran !== EXPECTED_CELLS) process.exit(1); } main(1);`)],
   ["a call to a function that shadows main reaches no pin", !pinsWith(`function main() { if (ran !== EXPECTED_CELLS) process.exit(1); } { const main = () => {}; main(); }`)],
   ["a pin in an async main the file exits before is unpinned", !pinsWith(`async function main() { await f(); if (ran !== EXPECTED_CELLS) process.exit(1); } main(); process.exit(0);`)],
+  ["a pin in an async main a later call exits before is unpinned", !pinsWith(`async function main() { await f(); if (ran !== EXPECTED_CELLS) process.exit(1); } function skip() { process.exit(0); } main(); skip();`)],
 ];
 const brokenControls = censusControls.filter(([, ok]) => !ok).map(([name]) => name);
 

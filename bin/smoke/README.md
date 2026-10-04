@@ -75,13 +75,14 @@ forms below, because a form it cannot follow to the exit status can hide either 
   only directly before `.finally`. A status variable that starts failing counts when the only write
   that clears it is the last statement of the `try`.
 - A suite with no pinned cell count. Declare `const EXPECTED_CELLS = <n>`, never reassign it, and
-  compare the cells that ran with it by equality, after reporting failures, so a deleted cell turns
-  the suite red. The comparison is the whole condition of a statement every run reaches, and a
-  mismatch fails the run in one of four forms: `if (ran !== EXPECTED_CELLS)` with an arm that always
-  runs `process.exit(1)`; the same arm setting `process.exitCode = 1`, when the file writes no other
-  code and every `process.exit` that can follow reads it; the same arm throwing, outside any
-  function or `try` with a catch; or `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`. A statement
-  before the failing one in the arm counts only where a throw would also escape.
+  compare the cells that ran with it by `===` or `!==`, after reporting failures, so a deleted cell
+  turns the suite red. `==` and `!=` coerce, so a tally of `"5"` would match. The comparison is the
+  whole condition of a statement every run reaches, and a mismatch fails the run in one of four
+  forms: `if (ran !== EXPECTED_CELLS)` with an arm that always runs `process.exit(1)`; the same
+  arm setting `process.exitCode = 1`, when the file writes no other code and every `process.exit`
+  that can follow reads it; the same arm throwing, outside any function or `try` with a catch; or
+  `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`. A statement before the failing one in the arm
+  counts only where a throw would also escape.
 
 A failing status is an integer from 1 to 255, written as a literal or a sum of literals. The process
 keeps only the low eight bits of its status, so `process.exit(256)` exits 0. The `finally` exit's own
@@ -95,10 +96,11 @@ call runs none of its body.
 Every run reaches a statement of the file, of a bare block, of a `try` or `finally` block, or of the
 body of a function that a reached statement calls (`main()`, `await main()`, `main().catch(...)`),
 when no earlier statement in its block exits, throws or returns, or holds a `return` or a
-`process.exit` with a status that can be 0 in a branch or block. A platform skip that exits 0 before
-the comparison is such a branch. An async function called without `await` counts only when no later
-statement exits. A comparison in a branch, a loop, a callback, a check function, a failure tally or
-a variable pins nothing.
+`process.exit` with a status that can be 0 in a branch or block, or calls a function of the file
+whose body can make such an exit, by name, as a method or in place. A platform skip that exits 0
+before the comparison is such a branch. An async function called without `await` counts only when
+no later statement exits or calls such a function. A comparison in a branch, a loop, a callback, a
+check function, a failure tally or a variable pins nothing.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The
