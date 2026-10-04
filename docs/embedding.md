@@ -463,8 +463,10 @@ two decisions, `authorizeDelegatedUserIntentAdmission` and `authorizeDelegatedUs
 for a host that owns an intent store and those writers to compose on its own routes. Both read the
 holder's gate through the handle's `observeManagerGate`, present with `platformControl`, which reads
 over the context's own connection, so the host opens no second data-account connection. It is an
-observation for the decision: the consuming CAS and the writers still apply their own checks. Stock
-dispatch refuses both kinds as `unimplemented`. The holder's composition passes
+observation for the decision: the consuming CAS and the writers still apply their own checks. The
+launched agent exchanges its bearer on the context's public face, so the host starts it with
+`publicFace`, and its retirement writer ends at `POST /managed-lifecycle/retire` with the handle's
+`cap`. Stock dispatch refuses both kinds as `unimplemented`. The holder's composition passes
 `remoteAuthority.executeDelegatedUserIntent`, which posts the execution request and binds the answer
 with `parseRemoteDelegatedUserIntentExecutionResult`. It then starts the agent with
 `startAgent({ ..., delegatedIntent: { intentId, owner, parent } })` and retires it with

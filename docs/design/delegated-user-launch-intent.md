@@ -730,7 +730,8 @@ payload. `authorizeAdmin` is unchanged.
 | `AuthServiceHandle.observeManagerGate` | `@cotal-ai/auth` | shipped; present with `platformControl` |
 | `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | shipped |
 | `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar, the platform control door | `@cotal-ai/auth`, `@cotal-ai/core` | absent at this branch's base; shipped on main at `6ca4d8e0f` (#2408) |
-| `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `activateLifecycleAtUid`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged |
+| `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged; a hosted host reaches the flight at `POST /managed-lifecycle/retire` with the handle's `cap` |
+| `activateLifecycleAtUid` | `@cotal-ai/auth` | shipped and package-internal: no host can call it, so section 6 step 8's activation and the compensation's activation are not composable from stock exports at this head. An enrolled agent's UID activates at its first bearer exchange, which runs the same activation |
 
 The platform control door landed on main at `6ca4d8e0f`. Its assignment observer is keyed by space
 and account, where the platform-control record at `2392055` keyed it by instance, so section 4.2 and
