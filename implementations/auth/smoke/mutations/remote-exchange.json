@@ -1,0 +1,100 @@
+{
+  "suite": [
+    "implementations/auth/smoke/remote-exchange.smoke.ts"
+  ],
+  "guard": "the public exchange face keeps the loopback capability gate, throttles a refusal flood per peer without touching another peer or the loopback budget, still mints a valid credential from a throttled key while withholding a refusal's reason, and refuses an unknown agent and a wrong secret with one sentence",
+  "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
+  "completionMarker": "remote-exchange smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/remote-exchange.json",
+  "why": [
+    "#799: the public exchange face is unauthenticated and publicly reachable, and its suite had no",
+    "fixture for the cells that make it safe: the capless loopback 401 that pairs the public 200, the",
+    "per-peer throttle, and the shared refusal sentence that keeps the face from being an existence",
+    "oracle. A green run proves the face works, not that any of those cells would notice a regression.",
+    "",
+    "THE ISOLATION CELLS WERE VACUOUS. Since #802 a throttled peer key still mints when its credential",
+    "is valid, and the PER-SOURCE ISOLATION and BUDGET SEPARATION cells probed peer B and the loopback",
+    "face with a VALID credential. They stayed green with every trusted-proxy peer in one bucket and",
+    "with public refusals charging the loopback budget (I7 and I8 SURVIVED before the cells changed).",
+    "Both cells now probe with a refused exchange and require its own 401 sentence, not 429, because",
+    "only a refusal can tell whether the budget it lands in is already full.",
+    "",
+    "SPECIFIER BOUNDARY. The suite re-execs the registered auth-service command, which loads",
+    "`implementations/auth/dist`, so the command builds the package before running and every mutation's",
+    "`afterRestore` rebuilds it, or a restored source would sit behind a dist compiled from the mutant."
+  ],
+  "mutations": [
+    {
+      "name": "I1 the loopback face skips the capability gate",
+      "file": "implementations/auth/src/service.ts",
+      "find": "  if (policy.requireCapability) {",
+      "replace": "  if (policy.requireCapability && false) {",
+      "expectRed": "NEGATIVE CONTROL: the SAME capless request against LOOPBACK is still 401",
+      "cell": "NEGATIVE CONTROL: the SAME capless request against LOOPBACK is still 401",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "I2 the public per-peer refusal budget never trips",
+      "file": "implementations/auth/src/service.ts",
+      "find": "      return b.length >= PUBLIC_FAILED_PER_MIN;",
+      "replace": "      return false;",
+      "expectRed": "peer A's refusal flood throttles peer A (429)",
+      "cell": "peer A's refusal flood throttles peer A (429)",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "I3 a full bucket refuses before the body is read, valid credentials included (the shape before #802)",
+      "file": "implementations/auth/src/service.ts",
+      "find": "  const peerThrottled = policy.throttled(ctx, peer);\n  const body = await readJsonBody(req);",
+      "replace": "  const peerThrottled = policy.throttled(ctx, peer);\n  if (peerThrottled) return send(res, 429, { error: \"too many refused exchanges - wait a minute and retry\" });\n  const body = await readJsonBody(req);",
+      "expectRed": "A VALID TOKEN STILL MINTS (200) FROM A THROTTLED PEER KEY",
+      "cell": "A VALID TOKEN STILL MINTS (200) FROM A THROTTLED PEER KEY - a full bucket must not deny a request that would succeed",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "I4 a throttled agent refusal returns its specific 401 reason instead of 429",
+      "file": "implementations/auth/src/service.ts",
+      "find": "      if (peerThrottled)\n        return send(res, 429, { error: \"too many refused exchanges - wait a minute and retry\" });\n      return send(res, 401, { error: reason });",
+      "replace": "      return send(res, 401, { error: reason });",
+      "expectRed": "a FAILED exchange from a throttled key is answered 429, not the refusal reason",
+      "cell": "a FAILED exchange from a throttled key is answered 429, not the refusal reason",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "I5 an unknown agent is refused with a different sentence than a wrong secret",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "  if (!row?.tokenHash) throw deny();",
+      "replace": "  if (!row?.tokenHash) throw new Error(\"agent exchange refused: unknown agent\");",
+      "expectRed": "an unknown agent is refused with the SAME sentence (no existence oracle)",
+      "cell": "an unknown agent is refused with the SAME sentence (no existence oracle)",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "I6 a wrong secret is refused with a different sentence than an unknown agent",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "  if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) throw deny();",
+      "replace": "  if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) throw new Error(\"agent exchange refused: wrong secret\");",
+      "expectRed": "an unknown agent is refused with the SAME sentence (no existence oracle)",
+      "cell": "an unknown agent is refused with the SAME sentence (no existence oracle)",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "I7 every trusted-proxy peer shares one failure bucket",
+      "file": "implementations/auth/src/service.ts",
+      "find": "        if (last) return last;",
+      "replace": "        if (last) return \"one-shared-bucket\";",
+      "expectRed": "PER-SOURCE ISOLATION: a refused exchange from peer B still gets its own 401 sentence while peer A is throttled",
+      "cell": "PER-SOURCE ISOLATION: a refused exchange from peer B still gets its own 401 sentence while peer A is throttled",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "I8 public refusals also charge the loopback face's refused-exchange budget",
+      "file": "implementations/auth/src/service.ts",
+      "find": "    recordFailure: (_ctx, peer) => bucket(peer).push(Date.now()),",
+      "replace": "    recordFailure: (ctx, peer) => { bucket(peer).push(Date.now()); ctx.failures.push(Date.now()); },",
+      "expectRed": "BUDGET SEPARATION: a refused loopback exchange still gets its own 401 sentence after the public flood",
+      "cell": "BUDGET SEPARATION: a refused loopback exchange still gets its own 401 sentence after the public flood",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    }
+  ]
+}

@@ -34,8 +34,10 @@
  *   F. Origin rejection, JSON-only content-type and the 64 KB body bound hold VERBATIM on the
  *      public face (they are inherited by sharing handleExchange, and this proves the sharing).
  *   G. per-peer isolation, the throttling claim: peer A floods the public face with refusals until
- *      it is throttled (429), and in that same window peer B still exchanges successfully AND the
- *      loopback face's own budget is untouched. Public throttling never consumes loopback budgets.
+ *      it is throttled (429), and in that same window a refusal from peer B AND a refusal on the
+ *      loopback face still get their own 401 sentence, not 429. Public throttling never consumes
+ *      loopback budgets. Those probes are refusals because a valid credential mints even from a
+ *      full bucket (#802), so only a refusal shows which budget it landed in.
  *      Successful exchanges stay unthrottled (matching the existing stance): a long run of
  *      SUCCESSES never trips the limiter.
  *   H. refresh across expiry: an agent-bearer-style re-exchange with a short ttlSec yields a
@@ -632,12 +634,16 @@ try {
     if (r.status === 429) { aThrottled = true; break; }
   }
   check("peer A's refusal flood throttles peer A (429)", aThrottled);
-  // In that same window: peer B is untouched.
-  const bOk = await post(`${PUBLIC}/exchange`, agentBody2, asPeer("198.51.100.9"));
-  check("PER-SOURCE ISOLATION: peer B still exchanges while peer A is throttled", bOk.status === 200, bOk.body);
+  // In that same window: peer B is untouched. Both probes below are REFUSALS on purpose. Since #802 a
+  // valid credential mints even from a full bucket, so a valid probe stays green when every peer
+  // shares one bucket; only a refusal shows which budget it landed in (its own 401 sentence, or 429).
+  const bRefused = await post(`${PUBLIC}/exchange`, { ...agentBody2, actorToken: newActorToken().actorToken }, asPeer("198.51.100.9"));
+  check("PER-SOURCE ISOLATION: a refused exchange from peer B still gets its own 401 sentence while peer A is throttled",
+    bRefused.status === 401 && bRefused.body.error === wrongSecret.body.error, { status: bRefused.status, body: bRefused.body });
   // …and so is the loopback face of that same daemon (separate budgets entirely).
-  const loopbackBudgetOk = await post(`${LOOPBACK}/exchange`, agentBody2, { authorization: `Bearer ${info!.cap}` });
-  check("BUDGET SEPARATION: the loopback face is unaffected by the public flood", loopbackBudgetOk.status === 200, loopbackBudgetOk.body);
+  const loopbackRefused = await post(`${LOOPBACK}/exchange`, { ...agentBody2, actorToken: newActorToken().actorToken }, { authorization: `Bearer ${info!.cap}` });
+  check("BUDGET SEPARATION: a refused loopback exchange still gets its own 401 sentence after the public flood",
+    loopbackRefused.status === 401 && loopbackRefused.body.error === wrongSecret.body.error, { status: loopbackRefused.status, body: loopbackRefused.body });
   // Successes stay unthrottled — the existing stance, now on the public face.
   let successes = 0;
   for (let i = 0; i < 40; i++) {
