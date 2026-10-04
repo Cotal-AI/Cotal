@@ -944,14 +944,14 @@ try {
 
   // ---- AN EIGHTH SEAT: THE EXIT THAT IS NOT A RETURN.
   //
-  // Every cell above leaves `drive` through a guarded RETURN, where the input is put back by hand.
-  // A submission that FAILS leaves through the catch instead, and that path had no such line. The
-  // input is only in `pendingOverride` when it was already parked there; a wake nudge arrives as the
-  // PARAMETER, and `pendingOverride` is cleared only once a submission lands, so on this exit there
-  // was nothing holding it. `scheduleErrorRetry` then reads `workPending()`, which for a focus
-  // @mention is false on all three sources: no boot text, nothing parked, and no inbox entry because
-  // the body was acked-and-dropped at ingest. So the wake is not retried and not recallable, and the
-  // seat is never told to go and look. The comment on the submission claimed the opposite in words.
+  // Every cell above leaves `drive` through a guarded RETURN. A submission that FAILS leaves through
+  // the catch instead, and that path once lost the wake: the nudge was handed to `drive` as a
+  // parameter and the catch did not put it back. The wake now sits in `pendingWake`, written by the
+  // mention-wake handler and only read by `drive` (#719), so a failed submission must leave it
+  // pending. If it does not, `scheduleErrorRetry` reads `workPending()` as false for a focus
+  // @mention: no boot text, no pending wake, and no inbox entry because the body was
+  // acked-and-dropped at ingest. The wake is then not retried and not recallable, and the seat is
+  // never told to go and look.
   const thId = newIdentity();
   const thUid = mintLifecycleUid();
   const thCreds = await provisionAgent(mgr, auth, thId, { ...acl, role: "worker", lifecycleUid: thUid });
@@ -1033,13 +1033,12 @@ try {
   // ---- A NINTH SEAT: TWO CALLERS, ONE SLOT.
   //
   // Every seat above puts ONE input in flight, so each grades a call against itself and none of them
-  // can see the thing that makes this property about inputs PLURAL: `pendingOverride` is a single
-  // unkeyed string shared by every caller. A drive that is parked in session creation read its own
-  // input BEFORE the await; a second caller then parks a different nudge in that slot and returns
-  // through the guard; and when the first call finally submits, it clears the slot on the strength of
-  // ITS OWN carried value rather than on whether the slot still holds what it took. That is a lost
-  // update across an await, and it destroys an input that arrived through a guarded exit, which is
-  // exactly the case the property claims to cover. Found by review running this sequence live.
+  // can see the thing that makes this property about inputs PLURAL: `pendingWake` is a single
+  // unkeyed string. A drive that is parked in session creation read the wake BEFORE the await; a
+  // second @mention then writes its own wake into that slot; and if the first call, once it submits,
+  // clears the slot on the strength of what IT read rather than on whether the slot's generation is
+  // unchanged, it destroys a wake that was never submitted. That is a lost update across an await.
+  // Found by review running this sequence live.
   const coId = newIdentity();
   const coUid = mintLifecycleUid();
   const coCreds = await provisionAgent(mgr, auth, coId, {

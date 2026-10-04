@@ -274,45 +274,45 @@
     {
       "name": "C18 the phase recheck after session creation is dropped, so a drive that passed the guard and parked in the server round trip resumes after teardown and submits a turn the seat had already announced it would not start",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "      if (phaseClosed()) {\n        pendingOverride = carried;\n        overrideSeq += 1;\n        return;\n      }\n",
+      "find": "      if (phaseClosed()) return;\n",
       "replace": "",
       "expectRed": "resume-seat: a drive already past the guard submitted no turn after teardown began"
     },
     {
       "name": "C19 the phase refusal consumes the batch on its way out, so a message refused mid-cutover is acked and never driven: refused becomes dropped",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    if (phaseClosed() || driving || busy) {\n      if (override !== undefined) {\n        pendingOverride = override;\n        overrideSeq += 1;\n      }\n      return;\n    }\n",
-      "replace": "    if (driving || busy) {\n      if (override !== undefined) {\n        pendingOverride = override;\n        overrideSeq += 1;\n      }\n      return;\n    }\n    if (phaseClosed()) {\n      if (override !== undefined) {\n        pendingOverride = override;\n        overrideSeq += 1;\n      }\n      surfaced = agent.peekInbox(\"automatic\").map((i) => i.id);\n      ackSurfaced();\n      return;\n    }\n",
+      "find": "    if (phaseClosed() || driving || busy) return;\n",
+      "replace": "    if (driving || busy) return;\n    if (phaseClosed()) {\n      surfaced = agent.peekInbox(\"automatic\").map((i) => i.id);\n      ackSurfaced();\n      return;\n    }\n",
       "expectRed": "carry-seat: the batch refused mid-cutover was kept, and driven once the cutover closed"
     },
     {
-      "name": "C20 a drive that cannot run drops the wake nudge it was handed instead of putting it back, so a focus @mention arriving mid-cutover is never delivered and the seat is never told to look",
+      "name": "C20 a drive that cannot run discards the pending wake on its way out, so a focus @mention arriving mid-cutover is never delivered and the seat is never told to look",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    if (phaseClosed() || driving || busy) {\n      if (override !== undefined) {\n        pendingOverride = override;\n        overrideSeq += 1;\n      }\n      return;\n    }\n",
-      "replace": "    if (phaseClosed() || driving || busy) return;\n",
+      "find": "    if (phaseClosed() || driving || busy) return;\n",
+      "replace": "    if (phaseClosed() || driving || busy) {\n      pendingWake = undefined;\n      return;\n    }\n",
       "expectRed": "carry-seat: the wake nudge refused mid-cutover was held, and delivered once the cutover closed"
     },
     {
-      "name": "C21 a submission that fails leaves drive through the catch without putting back what the call was carrying, so a wake nudge held only in the parameter is destroyed by the failure and the error retry has nothing to carry",
+      "name": "C21 drive takes the wake out of its slot instead of reading it, so a submission that fails destroys the wake and the error retry has nothing to carry",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "      pendingOverride = carried;\n      overrideSeq += 1;\n      log(`drive failed: ${(e as Error).message}`);\n",
-      "replace": "      log(`drive failed: ${(e as Error).message}`);\n",
+      "find": "    const carried = pendingWake;\n",
+      "replace": "    const carried = pendingWake;\n    pendingWake = undefined;\n",
       "expectRed": "throw-seat: the wake nudge lost to a failed submission was held, and delivered once submissions worked"
     },
     {
-      "name": "C22 the clear after a successful submission stops checking ownership, so a call that carried its own nudge empties the shared slot and destroys the nudge a DIFFERENT caller parked there while this one was awaiting session creation",
+      "name": "C22 the clear after a successful submission stops checking the generation, so a call that carried a wake empties the slot and destroys the wake a second @mention wrote there while this one was awaiting session creation",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "      if (tookFromSlot && overrideSeq === carriedSeq) pendingOverride = undefined;",
-      "replace": "      if (carried !== undefined) pendingOverride = undefined;",
+      "find": "      if (carried !== undefined && wakeSeq === carriedSeq) pendingWake = undefined;",
+      "replace": "      if (carried !== undefined) pendingWake = undefined;",
       "expectRed": "collide-seat: the nudge parked by the second caller survived the first caller's clear and was driven"
     },
     {
-      "name": "C23 the mention-wake handler goes back to refusing to drive while a turn is open, which is the guard the incoming handler above it legitimately uses; there the body is buffered in the inbox so declining defers the work, but a focus mention's body was acked and dropped at ingest, so the nudge is the only copy and declining destroys it",
+      "name": "C23 the mention-wake handler goes back to returning while a turn is open, which is the guard the incoming handler above it legitimately uses; there the body is buffered in the inbox so declining defers the work, but a focus mention's body was acked and dropped at ingest, so the wake is the only copy and not recording it destroys it",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`);",
-      "replace": "    if (!busy) void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`);",
+      "find": "    pendingWake = `📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`;\n",
+      "replace": "    if (busy) return;\n    pendingWake = `📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`;\n",
       "expectRed": "busy-seat: the wake that arrived mid-turn was held and driven once the turn ended",
-      "note": "Re-anchored when the hint's channel label moved to the shared renderer: the mutation is unchanged in what it does, reinstating the busy guard, and only the line it attaches to was respelled."
+      "note": "Re-anchored when the hint's channel label moved to the shared renderer: the mutation is unchanged in what it does, reinstating the busy guard, and only the line it attaches to was respelled. Re-anchored again when the wake moved into a slot the handler writes (#719): the mutation still reinstates the busy guard, now ahead of the write that records the wake."
     }
   ]
 }

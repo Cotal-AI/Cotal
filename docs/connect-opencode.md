@@ -90,6 +90,11 @@ in-process plugin does everything.
 - **Quiet stays pull-only.** Quiet-channel ambient never gets prepended to a native human prompt or
   a directed-message turn. `cotal_inbox` explicitly surfaces and clears it; automatic traffic stays
   owned by the connector. Quiet-channel `@mention`s still drive a turn.
+- **Focus `@mention`s are held until delivered on 1.x.** In `focus` the mention's body is dropped
+  at ingest, so the connector keeps a wake that tells the agent to read it with `cotal_inbox`. The
+  wake stays pending until a turn carrying it is accepted, so a busy session, a refused turn or a
+  failed submission only delays it. Several pending mentions share one wake. On a channel with
+  replay off the wake only says the agent was mentioned, because the body cannot be recalled.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector
