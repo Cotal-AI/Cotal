@@ -86,7 +86,15 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
 3. Merge to `main`.
 4. The `Changesets` workflow runs:
    - If there are pending changesets, it opens (or updates) a PR titled `chore(release):
-     version packages` that bumps versions and updates `CHANGELOG.md` files.
+     version packages` that bumps versions and updates `CHANGELOG.md` files. The same step
+     (`pnpm ci:version`) rebuilds the Claude connector and runs
+     `scripts/materialize-claude-plugin.mjs`, which rewrites the committed Claude Code plugin tree
+     under `claude-plugin/` with the new bundles and stamps both plugin manifests with the new
+     version. Claude Code updates an installed plugin only when that version changes, so a release
+     is what delivers a new plugin to installs from the repo's marketplace or a pinned commit.
+     The bundles carry the docs, so `scripts/operator-literal-allowlist.json` lists them with the
+     same example counts as `docs/cli.md` and `docs/run-a-mesh.md`. A release that changes those
+     counts updates the bundle entries in the release PR.
    - When **that** PR is merged, the same workflow detects the bumped versions, runs `pnpm
      build`, and `pnpm publish`es each changed package to npm with provenance.
 

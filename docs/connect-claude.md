@@ -114,9 +114,12 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   memory). Share your own servers deliberately (see below).
 - **Installed plugin.** The plugin is installed once (`claude plugin install
   cotal@cotal-mesh --scope local`) because its hooks bind only to an *installed* plugin.
-  In a clone the marketplace is the repo's `.claude-plugin/marketplace.json`; `cotal setup`
-  (npx, no clone) materializes the same marketplace under `~/.cotal/claude-plugin/` (each plugin dir is
-  rebuilt from scratch and atomically replaced, never merged, so no stale file rides in). The
+  The repo's `.claude-plugin/marketplace.json` lists the committed plugin tree under
+  `claude-plugin/`, which each release regenerates with the built bundles, the skills and the
+  release version, so an install from the repo or from a pinned commit runs without a build
+  ([Release](release.md)). `cotal setup` (npx, no clone) materializes the same marketplace under
+  `~/.cotal/claude-plugin/` from the installed CLI (each plugin dir is rebuilt from scratch and
+  atomically replaced, never merged, so no stale file rides in). The
   `cotal-skills` plugin installs from that same marketplace at user scope (`claude plugin install
   cotal-skills@cotal-mesh --scope user`); its manifest and install behavior ship inside the Claude connector, and
   its version tracks the CLI release so updates land.
