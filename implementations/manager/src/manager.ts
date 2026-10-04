@@ -5452,6 +5452,8 @@ export class Manager {
       }
       if (opts.resume)
         return { ok: false, error: `${delegatedBy}, so it cannot resume a session held on this host (resume)` };
+      if (opts.resolved?.continuity === "exact")
+        return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
       if (typeof opts.cwd === "string" && opts.cwd !== "")
         return { ok: false, error: `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory` };
       const shared = Object.keys(connectorServers(loadCotalConfig(this.workspaceRoot), agent, parseShareSelection(opts.shareTools)));

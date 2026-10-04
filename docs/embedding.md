@@ -528,8 +528,8 @@ today, and builds the handoff from what it holds. It never sends the token to th
 a file from its workspace or secret store, and never builds a local launch for that seat. No signer,
 issuer or callout record, loopback capability, provisioner or manager credential, control token, or
 manager path crosses. A spawn choice that only the manager's host can honour is refused before
-enrollment: `--resume`, `--cwd`, and any shared MCP server, whether from `--share-tools` or the
-config default (`--share-tools none` passes).
+enrollment: `--resume`, a manifest agent's `continuity: exact`, `--cwd`, and any shared MCP server,
+whether from `--share-tools` or the config default (`--share-tools none` passes).
 
 The runtime creates one provider resource under `managedRuntimeKey(target)`, writes the handoff into
 it as one 0600 file and the persona beside it, and runs the stock bootstrap there:
