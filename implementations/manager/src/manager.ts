@@ -201,6 +201,8 @@ import {
  *  before living this long leaves a cooling stamp that still counts toward the ceiling until it
  *  expires — so churn (spawn↔despawn or spawn↔fast-exit) can't outrun the concurrency bound. */
 const MIN_LIFETIME = 10_000;
+/** What holds the spawn ceiling's slots, as {@link Manager.occupancy} counts it (#906). */
+type Occupancy = { managed: number; reserved: number; cooling: number; launching: number; used: number; nextCoolingMs?: number };
 /** Cadence of the turn-deadline sweep while turns are pending: the poll that turns an elapsed
  *  hold's fire into its expired settle and commits the deadline terminal. Deadlines are
  *  minutes-scale; a few seconds of lateness on the commit is invisible to the run. */
@@ -1019,8 +1021,13 @@ export class Manager {
   private readonly endpointServeExecutorExpiresInSeconds?: number;
   private readonly agents = new Map<string, ManagedAgent>();
   /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
-   *  toward the ceiling so two concurrent same-name spawns can't both pass the gate (P4a). */
+   *  toward the ceiling (once per name, see {@link Manager.occupancy}) so two concurrent same-name
+   *  spawns can't both pass the gate (P4a). */
   private readonly reserved = new Set<string>();
+  /** Reserved names whose launch already put its seat in `agents`. The name stays reserved until
+   *  the launch settles, so no other spawn can take it, but the ceiling counts that seat through
+   *  `agents` and, if it frees young, its cooling stamp, never through the reservation (#906). */
+  private readonly reservedLive = new Set<string>();
   /** Expiry stamps (`startedAt + MIN_LIFETIME`) for slots that freed while still young — a
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
@@ -5163,9 +5170,8 @@ export class Manager {
     // SYNCHRONOUS (existsSync / registry / accessSync / readFileSync — no await), so the gate stays
     // atomic: the capacity snapshot and the reserve land in one tick (P4a/P4c), and two concurrent
     // spawns can't overshoot the ceiling or pick the same name.
-    const cooling = this.coolingCount(); // prune expired stamps, then count live cooling slots
-    if (this.agents.size + this.reserved.size + cooling >= MAX_AGENTS)
-      return { ok: false, error: `at capacity (${MAX_AGENTS} agents incl. in-flight + cooling); despawn one or wait` };
+    const occupancy = this.occupancy(); // prunes expired cooling stamps; counts each name once
+    if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.capacityRefusal(occupancy) };
 
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
@@ -5699,6 +5705,7 @@ export class Manager {
         });
       }
       this.agents.set(name, managed);
+      this.reservedLive.add(name);
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
       // orphan-rollback in `finally` no longer applies to it.
       provisioned = undefined;
@@ -5758,6 +5765,7 @@ export class Manager {
       return { ok: false, error: (e as Error).message };
     } finally {
       this.reserved.delete(name);
+      this.reservedLive.delete(name);
       // Minted but never handed to a live slot (buildLaunch / runtime.spawn threw after mint) → tear the
       // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
       if (provisioned) {
@@ -5786,8 +5794,9 @@ export class Manager {
       const principals = new Set<string>();
       await this.ep.waitForPresenceSnapshot();
       const liveRoster = this.ep.getRoster().filter((presence) => presence.status !== "offline");
-      if (this.agents.size + this.reserved.size + this.coolingCount() + inventory.agents.length > MAX_AGENTS)
-        return { ok: false, agents: [], error: `resume inventory would exceed manager capacity (${MAX_AGENTS})` };
+      const occupancy = this.occupancy();
+      if (occupancy.used + inventory.agents.length > MAX_AGENTS)
+        return { ok: false, agents: [], error: `resume inventory of ${inventory.agents.length} would exceed manager capacity (${this.occupancyText(occupancy)})` };
       for (const entry of inventory.agents) {
         if (seen.has(entry.name))
           return { ok: false, agents: [], error: `resume inventory contains duplicate agent name "${entry.name}"` };
@@ -5867,7 +5876,10 @@ export class Manager {
       if (this.resumeAttemptId) this.resumeAwaitingCommit = true;
       return { ok: true, agents };
     } finally {
-      for (const name of batchReservations) this.reserved.delete(name);
+      for (const name of batchReservations) {
+        this.reserved.delete(name);
+        this.reservedLive.delete(name);
+      }
       // Preflight builds every launch before any child starts, so a refused batch, a failed launch,
       // or the agents skipped after it leave built specs no runtime ever received.
       for (const { spec, spawned } of prepared.values()) {
@@ -6070,8 +6082,9 @@ export class Manager {
       if (nameErr) return { ok: false, error: nameErr };
       if (this.agents.has(entry.name) || (!batchReserved && this.reserved.has(entry.name)))
         return { ok: false, error: `retained agent "${entry.name}" is already managed or reserved; same-principal resume never auto-numbers` };
-      if (!batchReserved && this.agents.size + this.reserved.size + this.coolingCount() >= MAX_AGENTS)
-        return { ok: false, error: `at capacity (${MAX_AGENTS} agents incl. in-flight + cooling); same-principal resume refused` };
+      const occupancy = batchReserved ? undefined : this.occupancy();
+      if (occupancy && occupancy.used >= MAX_AGENTS)
+        return { ok: false, error: `${this.capacityRefusal(occupancy)}; same-principal resume refused` };
       const cached = prepared?.get(entry.name);
       if (!preflightOnly && cached) {
         try {
@@ -6273,6 +6286,7 @@ export class Manager {
         suppressCleanup: true,
       };
       this.agents.set(entry.name, managed);
+      this.reservedLive.add(entry.name);
       if (this.resumeAttemptId) this.resumedAgentNames.add(entry.name);
       await this.recordSlotRuntime(managed);
       const readiness = await this.awaitReadiness(managed, readinessTimeoutMs);
@@ -6303,7 +6317,10 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     } finally {
-      if (!batchReserved) this.reserved.delete(entry.name);
+      if (!batchReserved) {
+        this.reserved.delete(entry.name);
+        this.reservedLive.delete(entry.name);
+      }
     }
   }
 
@@ -6507,6 +6524,49 @@ export class Manager {
     const now = Date.now();
     this.cooling = this.cooling.filter((stamp) => stamp > now);
     return this.cooling.length;
+  }
+
+  /** What holds the ceiling's slots, one count per seat (#906). A launching seat sits in `reserved`
+   *  from accept until its launch settles, in `agents` once its process exists, and in `cooling`
+   *  if it then frees young, so a reservation stops counting once it reaches `agents`. `managed` is
+   *  what this manager's `ps` lists, `reserved` is the accepted launches that have no process yet,
+   *  and `launching` is every unsettled launch that still holds a slot through `reserved` or
+   *  `agents`. A launch whose seat already freed holds no slot but its cooling stamp, so its
+   *  failure can free nothing. */
+  private occupancy(): Occupancy {
+    const cooling = this.coolingCount();
+    let reserved = 0;
+    let launching = 0;
+    for (const name of this.reserved) {
+      const placed = this.reservedLive.has(name);
+      if (!placed) reserved++;
+      if (!placed || this.agents.has(name)) launching++;
+    }
+    const managed = this.agents.size;
+    return {
+      managed,
+      reserved,
+      cooling,
+      launching,
+      used: managed + reserved + cooling,
+      nextCoolingMs: cooling ? Math.min(...this.cooling) - Date.now() : undefined,
+    };
+  }
+
+  private occupancyText(o: Occupancy): string {
+    return `${o.used} of ${MAX_AGENTS} slots: ${o.managed} managed, ${o.reserved} reserved, ${o.cooling} cooling`;
+  }
+
+  /** The capacity refusal states the split it enforces and whether waiting can free a slot: a
+   *  cooling slot frees at a known time, an unsettled launch frees one only if it fails, and a
+   *  managed seat frees one only when it is stopped. */
+  private capacityRefusal(o: Occupancy): string {
+    const remedy = o.nextCoolingMs !== undefined
+      ? `waiting frees a cooling slot in ${Math.ceil(o.nextCoolingMs / 1000)}s, or despawn one`
+      : o.launching
+        ? `waiting frees a slot only if an unsettled launch fails (${o.launching} pending); otherwise despawn one`
+        : "waiting frees no slot; despawn one";
+    return `at capacity (${this.occupancyText(o)}); ${remedy}`;
   }
 
   private async opStop(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
