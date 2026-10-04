@@ -25,8 +25,9 @@ packages from their built `dist/`. Run `pnpm build` after `pnpm install`, and ag
 package, or the command fails with `ERR_MODULE_NOT_FOUND` for `@cotal-ai/cli/dist/index.js` or runs
 the old code.
 
-Most commands then stop with `refusing to reconcile the operator-global seed store ... from a source
-checkout`. A checkout never writes the connector store an installed `cotal` uses. For day-to-day
+Most commands then refuse to touch the operator-global seed store from a source checkout, with an
+error that includes `this would migrate the machine-wide store and can take an installed cotal down`. A
+checkout never writes the connector store an installed `cotal` uses. For day-to-day
 work, set `COTAL_SKIP_CONNECTOR_SEED=1` to skip that seed step:
 
 ```bash
