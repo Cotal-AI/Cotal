@@ -3,9 +3,11 @@ import type { Writable } from "node:stream";
 
 /**
  * The walk repeats until a pass kills nothing, because a `cotal` call the suite left running can
- * start another daemon while the first pass is still walking. The kernel reports a removed working
- * directory with ` (deleted)` appended, which is stripped so a stack whose suite already deleted
- * its tree is still found.
+ * start another daemon while the first pass is still walking. Paths are compared exactly, and the
+ * filesystem settles the two readings the text cannot. The kernel appends ` (deleted)` to a removed
+ * working directory, and a live directory may carry that name too, so the suffix counts only when
+ * the directory has no links left. Command substitution strips trailing newlines, so a working
+ * directory that reads as the root itself must also be the root's directory.
  */
 const WATCHDOG = `
 while IFS= read -r root; do set -- "$@" "$root"; done
@@ -14,9 +16,14 @@ while [ "$killed" ]; do
   killed=
   for proc in /proc/[0-9]*; do
     cwd=$(readlink "$proc/cwd") || continue
-    cwd=\${cwd% (deleted)}
     for root; do
-      case $cwd in "$root" | "$root"/*) kill -KILL "\${proc#/proc/}" && killed=1 ;; esac
+      case $cwd in
+        "$root") [ "$proc/cwd" -ef "$root" ] || continue ;;
+        "$root"/*) ;;
+        "$root (deleted)") [ "$(stat -L -c %h "$proc/cwd")" = 0 ] || continue ;;
+        *) continue ;;
+      esac
+      kill -KILL "\${proc#/proc/}" && killed=1
     done
   done
 done`;
@@ -31,10 +38,13 @@ let watchdog: ChildProcessByStdio<Writable, null, null> | undefined;
  * its roots from a pipe only this process holds, which closes on any death, SIGKILL included. It
  * leads its own process group, so a runner that kills the suite's group leaves it to finish, and it
  * works from `/` so it is never inside a root it walks. It finds processes through procfs, so
- * nothing is watched off Linux.
+ * nothing is watched off Linux. The pipe carries one root per line, so a root whose path contains a
+ * newline is refused.
  */
 export function watchSandboxRoot(root: string): void {
   if (process.platform !== "linux") return;
+  if (root.includes("\n"))
+    throw new Error(`smoke sandbox root cannot be watched, its path contains a newline: ${JSON.stringify(root)}`);
   if (watchdog === undefined) {
     watchdog = spawn("sh", ["-c", WATCHDOG], { cwd: "/", detached: true, stdio: ["pipe", "ignore", "ignore"] });
     watchdog.unref();

@@ -27,7 +27,8 @@ broker, manager and delivery daemon that `cotal up --detach` starts detached. A 
 already stopped leaves nothing to kill. A hook inside the suite cannot do this: tsx turns a signal
 the suite does not acknowledge within a few tens of milliseconds into SIGKILL, and a suite waiting
 in `spawnSync` cannot acknowledge one. The watchdog finds processes through Linux procfs, so
-nothing is watched on other platforms.
+nothing is watched on other platforms. It reads one root per line, so on Linux a root whose path
+contains a newline is refused.
 
 The CI shard runner also assigns each suite a `SMOKE_BROKER_SCOPE`. This non-secret test marker
 is separate from `COTAL_*` connection settings, so their normal scrub leaves it intact. The token
