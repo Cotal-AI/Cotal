@@ -10,21 +10,18 @@
     "The endpoint's pre-connect refresh is deliberately best-effort after the first connection. If",
     "the source is down when the cached cred expires, removing this guard restores the reported",
     "behavior exactly: the endpoint presents credential material it has already decoded as expired.",
-    "The named cell asserts the refusal is raised, so it goes red on the deleted block itself.",
-    "The sibling cell counting broker denials cannot grade this mutation. It can read zero denials",
-    "while the guard is absent in two ways: a rebuild that dials before exp presents a cred the",
-    "broker still accepts, and a denial that does land can fall outside the slice the cell inspects,",
-    "because failedRebuildLogStart only records that the marker fired. Under the mutation that cell",
-    "was observed both red and green on the same machine, and green in CI.",
-    "RE-ANCHORED when the refusal moved off the pre-dial path. The block this used to quote lived in",
-    "bindConnection and was DELETED, not edited: keeping a copy there would have left the tree with",
-    "two expiry checks and let a later dial site miss the one that matters. The equivalent statement",
-    "is now the throw inside `presentableCreds`, the single checkpoint every presentation routes",
-    "through, so the anchor points at that instead. The named cell is unchanged and still grades the",
-    "same property from this suite's own angle: a REBUILD, after renewal has failed, must refuse",
-    "rather than dial. It reds under the mutation for the same reason it did before -- the refusal",
-    "text it matches exists only inside the removed statement -- so the re-anchor preserves what the",
-    "fixture proved and does not quietly re-point it at unrelated code."
+    "The guard is the throw inside `presentableCreds`, the single checkpoint every presentation routes",
+    "through, so deleting it reaches the failed rebuild's dial as well as the reconnects nats.js runs.",
+    "The named cell counts the broker's CONNECT denials of that credential after renewal has failed.",
+    "It used to red only sometimes under this mutation. The broker tests `exp` in whole seconds and",
+    "still admits a JWT during the second it names, then expires it at once, so a rebuild that dialed",
+    "inside that second presented the expired cred and drew no denial. The pattern's second branch,",
+    "`User Authentication Expired`, did not catch it either: the broker logged that rebuild's expiry",
+    "before it had recorded the client name, so the branch matched the original wire's own expiry and",
+    "missed the rebuild's. The suite now holds the failed rebuild read until that second has passed,",
+    "so the dial that follows is denied at CONNECT inside the window on every run, and the cell counts",
+    "only that denial. The pre-dial refusal cell reds too, since its text exists only inside the",
+    "removed statement, but it comes later in the suite and does not show what reached the broker."
   ],
   "mutations": [
     {
@@ -41,9 +38,9 @@
       "file": "packages/core/src/endpoint.ts",
       "find": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now())\n      throw new Error(\n        opts.renewable\n          ? \"this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff\"\n          : \"this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)\",\n      );\n",
       "replace": "",
-      "expectRed": "the pre-dial refusal is loud and names the failing renewal path",
-      "cell": "the pre-dial refusal is loud and names the failing renewal path",
-      "note": "Deleting the statement is the issue's pre-fix behavior and leaves the tree compiling -- presentableCreds still decodes the claims and still returns the cred, it just stops refusing an expired one. The refusal text the named cell matches exists only inside the removed statement, so removing it is what makes the cell red. The suite's own recovery path is unaffected: the source fails twice and then returns."
+      "expectRed": "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
+      "cell": "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",
+      "note": "Deleting the statement is the issue's pre-fix behavior and leaves the tree compiling -- presentableCreds still decodes the claims and still returns the cred, it just stops refusing an expired one. The failed rebuild then dials the expired cred after its `exp` second and the broker denies it, which is what the named cell counts. The suite's own recovery path is unaffected: the source fails twice and then returns."
     }
   ]
 }
