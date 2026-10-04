@@ -4494,14 +4494,13 @@ the run, program and journal state they authorize; a restore that lacks them rec
 and no run is taken back under authority the host cannot read.
 
 **User-auth runs.** A user-auth run is hosted by a signerless participant manager, and its issuing
-host writes the admission. The issuing host admits a run-start whose caller has a derived user owner,
-or any run-start on a manager whose registered owner is a derived user owner, only when the caller's
-owner is the manager's registered owner, the owner whose `supervise` grant registered the instance,
-so every run admitted on a participant manager belongs to that one owner. A
+host writes the admission. The issuing host admits a run-start whose caller has a derived user owner
+only when that owner is the manager's registered owner, the owner whose `supervise` grant registered
+the instance, so every user-admitted run on a participant manager belongs to that one owner. A
 caller-requested resume and every principal answer or amendment ride the versioned rail. The manager
 forwards the request subject it served with the attempt or operator issuance it asks for, and the
-issuing host re-parses that subject, requires the caller's owner to be the run's admitted owner for a
-resume and the registered owner for an answer, resolves the caller's own issuance as live, and
+issuing host re-parses that subject, requires a user caller's owner to be the run's admitted owner
+for a resume and the registered owner for an answer, resolves the caller's own issuance as live, and
 requires its publish ceiling to permit that subject. An answering operator issuance always carries
 the served subject. An amendment's issuance marks its pause with `amend: true`, and the issuing host
 then requires that pause settled `resumed` with an accepted answer instead of waiting. A legacy-rail

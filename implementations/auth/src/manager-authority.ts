@@ -358,8 +358,8 @@ export async function admitRemoteRun(args: {
       (parsed.route === "inst" && parsed.instanceId !== r.instanceId) || !isIssuedCaller(parsed.caller))
     throw new EpEnvelopeError("permission-denied", "manager run admission needs the served v1 run-start subject of this space, endpoint and instance with an issued caller");
   const caller = parsed.caller;
-  if ((isDerivedOwner(caller.owner) || isDerivedOwner(args.owner)) && caller.owner !== args.owner)
-    throw new EpEnvelopeError("permission-denied", "a participant manager admits runs only for its registered owner, and a user's run is admitted only on that user's manager");
+  if (isDerivedOwner(caller.owner) && caller.owner !== args.owner)
+    throw new EpEnvelopeError("permission-denied", "a user's run is admitted only on the participant manager that user registered");
   const ref = { space: r.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
   const resolved = await args.issued.resolve(ref, args.sourceIsLive);
   const e = resolved.evidence.ref;
@@ -457,8 +457,8 @@ async function authorizeServedRunCaller(args: {
       (parsed.route === "inst" && parsed.instanceId !== args.instanceId))
     throw new EpEnvelopeError("permission-denied", `a served ${args.command} must name this space, endpoint and instance, untargeted or self-targeted`);
   const caller = parsed.caller;
-  if ((isDerivedOwner(caller.owner) || isDerivedOwner(args.runOwner)) && caller.owner !== args.runOwner)
-    throw new EpEnvelopeError("permission-denied", "run-resume and run-answer on this manager are open only to the owner its runs were admitted for");
+  if (isDerivedOwner(caller.owner) && caller.owner !== args.runOwner)
+    throw new EpEnvelopeError("permission-denied", "a user resumes only a run admitted for that user and answers only on the participant manager that user registered");
   if (parsed.rail === EP_RAIL_V1 && isIssuedCaller(caller)) {
     const ref = { space: args.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
     const resolved = await args.issued.resolve(ref, args.sourceIsLive);

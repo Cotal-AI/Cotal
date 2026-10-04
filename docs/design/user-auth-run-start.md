@@ -12,8 +12,6 @@ Status: implemented for issue #1956. Section 4 names the shipped symbols, with t
   `served` as `permission-denied`, so the closed parser still accepts `operator.answers` alone.
 - An amendment's operator request carries `answers.amend: true`. The issuing host then requires the
   pause settled `resumed` naming an accepted answer, where an answer requires it waiting.
-- The registered-owner check also applies when only the manager's owner is a derived user owner, so a
-  participant manager admits, resumes and answers for no other owner of any kind.
 - Not delivered: section 9 item 3. A run that spawns and turns an owned agent and receives a typed
   answer from it on a user-auth space is not supported by this change, so issue #1956 stays open for
   that part.
@@ -251,7 +249,7 @@ them with the endpoint stores.
 
 ```ts
 if (isDerivedOwner(caller.owner) && caller.owner !== args.owner)
-  throw new EpEnvelopeError("permission-denied", "a participant manager admits runs only for its registered owner");
+  throw new EpEnvelopeError("permission-denied", "a user's run is admitted only on the participant manager that user registered");
 ```
 
 `isDerivedOwner` is a new predicate beside `assertDerivedOwnerToken` (`packages/core/src/subjects.ts:426`):
@@ -443,11 +441,12 @@ No existing sentence is reworded.
 - User-mode seats spawned by the run answer through the relay path on the legacy rail. Their
   attribution rests on the managed row and the manager-held relay, as it does on a static mesh.
 - A participant manager is trusted to forward the subject it served, the same delegation `admitRun`
-  already relies on. The issuing host checks that the subject names a live issuance of the manager's
-  own owner whose ceiling permits it, but it does not observe that this caller published it. A
-  dishonest participant manager can therefore act for its own owner's live issuances only, never for
-  another owner. Binding each forwarded subject to a request the trusted service saw is not done;
-  issue #2465 tracks it for every forwarded run subject.
+  already relies on. The issuing host checks that the subject names a live issuance whose ceiling
+  permits it and that a user caller is the manager's own owner, but it does not observe that this
+  caller published it. A dishonest participant manager can therefore act for its own owner's live
+  issuances and, as on main, for a static caller's, never for another user. Binding each forwarded
+  subject to a request the trusted service saw is not done; issue #2465 tracks it for every forwarded
+  run subject.
 
 ## 9. Acceptance for the implementation round
 
