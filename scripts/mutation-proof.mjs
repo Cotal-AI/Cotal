@@ -92,9 +92,7 @@ const liveRestores = new Map();
 
 /** The mark every process this proof starts carries in its environment, for {@link sweepMarked}.
  *  An enclosing proof's mark is kept in front of this one, so its sweep still reaches this proof's
- *  descendants. `COTAL_RUN` is set too unless the caller already named a run: a seat custodian
- *  scrubs its environment down to `PATH` and `COTAL_RUN`, and a leaked test seat is the descendant
- *  that outlived a timed-out `attach-stdin` proof (#1380). */
+ *  descendants. It is not a `COTAL_` key: mutation-reproof strips those from every fixture suite. */
 const RUN_TOKEN = `mutation-proof-${process.pid}-${randomUUID()}`;
 const RUN_MARK = [process.env.MUTATION_PROOF_RUN, RUN_TOKEN].filter(Boolean).join(" ");
 
@@ -393,8 +391,7 @@ function run(command, cwd, timeoutMs) {
     // A mutation may deliberately desynchronize dependency metadata from pnpm-lock.yaml. pnpm's
     // default pre-run check would install (or fail under CI's frozen lockfile) before the suite can
     // observe that mutant. Disable only that check, and only in this child process tree.
-    env: { ...process.env, pnpm_config_verify_deps_before_run: "false", MUTATION_PROOF_RUN: RUN_MARK,
-      COTAL_RUN: process.env.COTAL_RUN ?? RUN_TOKEN },
+    env: { ...process.env, pnpm_config_verify_deps_before_run: "false", MUTATION_PROOF_RUN: RUN_MARK },
     detached: process.platform !== "win32",
     killSignal: "SIGKILL",
   });
@@ -410,8 +407,9 @@ function run(command, cwd, timeoutMs) {
 /**
  * Kill every process still carrying this proof's mark, and say what was killed and what survived.
  * The group kill in {@link run} cannot reach a descendant that left the group: anything spawned
- * `detached` calls setsid, and a seat custodian always is. Measured on a mutant that started a
- * detached `node` and was cut by `--deadline`: the group kill returned with that child still alive.
+ * `detached` calls setsid. Measured on a mutant that started a detached `node` and was cut by
+ * `--deadline`: the group kill returned with that child still alive. A process that rebuilt its
+ * environment without the mark is out of reach; a seat custodian keeps only `PATH` and `COTAL_RUN`.
  * Runs only after a timed-out run, when none of this proof's children is legitimately running.
  * Linux reads the marks from `/proc`; elsewhere it says it could not look, never that nothing was left.
  */
@@ -424,7 +422,7 @@ function sweepMarked() {
     if (!Number.isInteger(pid) || pid === process.pid) return false;
     let environ;
     try { environ = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0"); } catch { return false; }
-    return environ.includes(`COTAL_RUN=${RUN_TOKEN}`) || environ.some((entry) =>
+    return environ.some((entry) =>
       entry.startsWith("MUTATION_PROOF_RUN=") && entry.slice("MUTATION_PROOF_RUN=".length).split(" ").includes(RUN_TOKEN));
   });
   const killed = new Set();
