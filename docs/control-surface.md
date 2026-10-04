@@ -127,7 +127,9 @@ up, the manager accepts the goal and returns the allocated identity at once:
 
 The name is the one actually allocated: a persona-derived collision is auto-numbered
 (`reviewer`, then `reviewer-2`), while a hard-pinned `--name` that collides with a live
-agent is refused at accept, before anything is minted. The triple plus `goalId` let the
+agent is refused at accept, before anything is minted. Each numbered name is issued once per
+manager process, even after the agent holding it is gone, so a numbered name seen in a roster
+or a channel post names one agent while that manager runs. The triple plus `goalId` let the
 caller follow progress (connector handoff, process launched, presence join) and reconcile
 later against the exact instance that accepted. Presence within the manager's default
 30-second readiness window, or a connector's declared bounded window, settles the goal

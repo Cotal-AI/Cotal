@@ -1033,6 +1033,11 @@ export class Manager {
    *  the launch settles, so no other spawn can take it, but the ceiling counts that seat through
    *  `agents` and, if it frees young, its cooling stamp, never through the reservation (#906). */
   private readonly reservedLive = new Set<string>();
+  /** Every numbered name {@link uniqueName} has issued. A suffix carries nothing but arrival order,
+   *  so reissuing a freed one would give a later principal the name an earlier one posted under, and
+   *  a reader of that name could not tell the two apart (#382). Never pruned in-process: one string
+   *  per numbered spawn. */
+  private readonly issuedNumberedNames = new Set<string>();
   /** Expiry stamps (`startedAt + MIN_LIFETIME`) for slots that freed while still young — a
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
@@ -4733,10 +4738,13 @@ export class Manager {
    *  still refused downstream exactly as before. Offline rows do NOT occupy — a properly retired
    *  name stays reusable. A row this manager itself confirmed retired (its alias, principal, and
    *  lifecycleUid all matching a {@link confirmedRetiredPredecessors} entry) does not occupy
-   *  either, even while its advisory presence record ages out. */
+   *  either, even while its advisory presence record ages out. A numbered name is never reissued
+   *  ({@link issuedNumberedNames}), even after its holder retired. */
   private uniqueName(base: string): string {
     const live = this.liveRosterNames();
-    return firstFreeName(base, (n) => this.nameInUse(n, live));
+    const name = firstFreeName(base, (n) => this.nameInUse(n, live) || this.issuedNumberedNames.has(n));
+    if (name !== base) this.issuedNumberedNames.add(name);
+    return name;
   }
 
   /** Spawn a teammate by persona ref (`name` loads `.cotal/agents/<name>.md`; the peer presents
