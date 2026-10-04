@@ -1882,7 +1882,9 @@ export class MeshAgent extends EventEmitter {
     if (name !== undefined) return { id: target, name };
     if (!byName) return undefined;
     const want = target.trim().toLowerCase();
-    const matches = [...this.senders].filter(([, n]) => n.toLowerCase() === want);
+    // A sender rostered again under a new name has a row now, so its old name must not collide here.
+    const rostered = new Set(this.ep.getRoster().map((p) => p.card.id));
+    const matches = [...this.senders].filter(([id, n]) => !rostered.has(id) && n.toLowerCase() === want);
     if (matches.length > 1)
       throw new Error(
         `"${target}" is ambiguous - ${matches.length} senders with no roster row share that name; ` +
@@ -1905,15 +1907,19 @@ export class MeshAgent extends EventEmitter {
     recipientStatusAtSend: Presence["status"] | "unrostered";
   }> {
     await this.requireConnected();
+    // #384: a sender's exact id is as unambiguous as a roster id, so it is never read as a roster
+    // display name; a peer that took that id as its name would otherwise receive the reply.
+    const resolve = () =>
+      this.senders.has(target) ? this.ep.getRoster().find((p) => p.card.id === target) : this.resolvePeer(target);
     // #1229: a miss is only a real "no peer" while the view is current. Under `unpopulated`
     // the roster may be a reconnect refill in progress, so wait once for the snapshot and
     // re-resolve; a still-unverifiable target refuses naming the observer's condition (never
     // "no peer"), and the DM does not go out.
     const view = this.ep.presenceView();
-    let peer = this.resolvePeer(target);
+    let peer = resolve();
     if (!peer && view.state === "unpopulated") {
       await this.ep.waitForPresenceSnapshot();
-      peer = this.resolvePeer(target);
+      peer = resolve();
     }
     // #384: a target with no roster row may still be a peer that messaged us (its id is
     // authenticated), which a one-shot `cotal send` always is. The DM goes to that identity and the
