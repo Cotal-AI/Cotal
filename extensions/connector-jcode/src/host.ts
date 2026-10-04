@@ -907,9 +907,10 @@ export async function runJcodeHost(): Promise<void> {
   let consecutiveFailures = 0;
   /** Whether this host published a failed-turn condition that the next turn has to clear. */
   let turnConditionPublished = false;
-  /** The Harness error the last failed turn reported, kept until a host turn succeeds. The manager's
-   *  `seat reaped:` line carries only the seat's last connector line, so a line that ends the seat
-   *  names this error rather than leave it on an earlier `turn failed` line alone (#785). */
+  /** The Harness error the last failed turn reported, kept until a turn succeeds, whether this host or
+   *  the TUI owns it. The manager's `seat reaped:` line carries only the seat's last connector line,
+   *  so a line that ends the seat names this error rather than leave it on an earlier `turn failed`
+   *  line alone (#785). */
   let lastTurnError: string | undefined;
   /** Relay a failed turn's Harness error as the presence condition, or clear a relayed one. The next
    *  turn clears it when it starts, whether this host or the TUI owns that turn. */
@@ -1602,10 +1603,14 @@ export async function runJcodeHost(): Promise<void> {
     }
   };
 
-  /** A connector line that ends the seat, naming the last turn error while no host turn has
-   *  succeeded since it. */
-  const endingLine = (line: string): string =>
-    `[cotal-jcode] ${line}${lastTurnError === undefined ? "" : `; last turn error: ${lastTurnError}`}\n`;
+  /** A connector line that ends the seat, naming the last turn error while no turn has succeeded
+   *  since it. The manager's `seat reaped:` line keeps only the first 240 characters of this line, so
+   *  that error goes ahead of the recovery error, whose length the Harness decides. */
+  const endingLine = (reason: string, recoveryError?: string): string =>
+    lastTurnError === undefined
+      ? `[cotal-jcode] ${reason}${recoveryError === undefined ? "" : `: ${recoveryError}`}\n`
+      : `[cotal-jcode] ${reason}; last turn error: ${lastTurnError}` +
+        `${recoveryError === undefined ? "" : `; recovery error: ${recoveryError}`}\n`;
 
   /**
    * A provider stall can take down Jcode's bridge while leaving the private session and its inbox
@@ -1697,7 +1702,7 @@ export async function runJcodeHost(): Promise<void> {
       }
     } catch (error) {
       writeJcodeDiagnostic(
-        endingLine(`private Harness connection closed and recovery failed: ${((lastError ?? error) as Error).message}`),
+        endingLine("private Harness connection closed and recovery failed", ((lastError ?? error) as Error).message),
       );
       await shutdown(1);
     } finally {
@@ -1750,6 +1755,9 @@ export async function runJcodeHost(): Promise<void> {
     });
     connected.on("turn_done", (event: ApiEvent) => {
       if ("session_id" in event && event.session_id === sessionId) {
+        // The SDK's run() takes turn_done as a turn's success. drive() clears the kept error for a
+        // host-owned turn; a TUI-owned turn clears it here unless it relayed an error of its own.
+        if (!driving && !turnConditionPublished) lastTurnError = undefined;
         closeEventRun();
         turnActive = false;
         void finishHostIdleTurn();
