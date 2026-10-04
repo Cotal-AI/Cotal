@@ -2967,7 +2967,7 @@ export class CotalEndpoint extends EventEmitter {
     // measured at 30-34s for 89 entries against a mesh at 534ms RTT. `liveKvEntries` is ~3 round
     // trips regardless of N, and (unlike the old loop) refuses to return a truncated view rather
     // than reporting a partial roster as the whole one.
-    for (const e of await liveKvEntries(kv)) {
+    for (const e of await liveKvEntries(kv, { deleteOwnConsumer: (stream, name, del) => this.deleteOwnConsumer(stream, name, del) })) {
       if (e.key === MEMBERSHIP_FEED_KEY) {
         try { asOf = e.json<{ observedAt: number }>().observedAt; } catch { /* heartbeat garbled; leave undefined */ }
         continue;
