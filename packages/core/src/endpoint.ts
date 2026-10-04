@@ -586,6 +586,9 @@ export class CotalEndpoint extends EventEmitter {
    *  EXPECTED async permission violation that joinChannel turns into a clean throw, so watchStatus
    *  suppresses it rather than surfacing a spurious connection error. */
   private readonly confirmingChatSubs = new Set<string>();
+  /** Delete subjects of this endpoint's own consumers whose refusal watchStatus has not consumed yet
+   *  (see {@link deleteOwnConsumer}). */
+  private readonly ownConsumerDeletes = new Set<string>();
   /** True until the first successful connect completes its boot backfill — distinguishes first-connect
    *  (backfill the boot channels' history) from a reconnect (reopen the core-subs, no re-backfill).
    *  Persists across reconnect (NOT connection-scoped). Replaces the legacy chat-durable consumed-cursor
@@ -1574,6 +1577,7 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubs.clear();
     this.chatSubDenied.clear();
     this.confirmingChatSubs.clear();
+    this.ownConsumerDeletes.clear();
     this.roster.clear();
     // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
     // It says "the broker on THIS connection refuses writes to this bucket", so it cannot outlive the
@@ -3074,9 +3078,34 @@ export class CotalEndpoint extends EventEmitter {
     watch.rejectStop = undefined;
   }
 
+  /** Run one delete of a consumer this endpoint created. A profile without the delete row is refused
+   *  by design (#691), and nats.js reports a refused request twice: as the request's rejection, which
+   *  the caller handles, and on the connection status, which watchStatus would emit as an `error`.
+   *  A refused subject stays recorded until watchStatus drops that echo, since the two settle in
+   *  either order. */
+  private async deleteOwnConsumer(stream: string, name: string, del: () => Promise<boolean>): Promise<boolean> {
+    const subject = `$JS.API.CONSUMER.DELETE.${stream}.${name}`;
+    this.ownConsumerDeletes.add(subject);
+    let refused = false;
+    try { return await del(); }
+    catch (err) { refused = isPublishPermissionDenied(err); throw err; }
+    finally { if (!refused) this.ownConsumerDeletes.delete(subject); }
+  }
+
+  /** Delete a history reader's own ephemeral consumer. A refused delete is the designed outcome for
+   *  the elevated profile, which holds no stream-wide CONSUMER.DELETE (#691): the broker reaps the
+   *  consumer at its inactive threshold. */
+  private async deleteReaderConsumer(consumer: Consumer): Promise<void> {
+    const { stream_name, name } = await consumer.info(true);
+    try { await this.deleteOwnConsumer(stream_name, name, () => consumer.delete()); }
+    catch (e) {
+      if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound) && !isPublishPermissionDenied(e)) throw e;
+    }
+  }
+
   /** Delete one membership-watch consumer, swallowing ONLY already-gone and a refused delete. */
   private async deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string): Promise<boolean> {
-    try { return await jsm.consumers.delete(stream, name); }
+    try { return await this.deleteOwnConsumer(stream, name, () => jsm.consumers.delete(stream, name)); }
     catch (err) {
       if (membershipConsumerReleased(err)) return true;
       throw err;
@@ -3094,7 +3123,8 @@ export class CotalEndpoint extends EventEmitter {
     try { iter?.stop(); } catch { /* already closed */ }
     if (consumer) {
       try {
-        const deleted = await consumer.delete();
+        const { stream_name, name } = await consumer.info(true);
+        const deleted = await this.deleteOwnConsumer(stream_name, name, () => consumer.delete());
         if (deleted) { watch.consumerStream = undefined; watch.consumerName = undefined; }
       } catch (err) {
         if (membershipConsumerReleased(err)) {
@@ -3486,7 +3516,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await deleteReaderConsumer(consumer);
+      await this.deleteReaderConsumer(consumer);
     }
   }
 
@@ -3528,7 +3558,7 @@ export class CotalEndpoint extends EventEmitter {
       // exists to stop.
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await deleteReaderConsumer(consumer);
+      await this.deleteReaderConsumer(consumer);
     }
   }
 
@@ -3604,7 +3634,7 @@ export class CotalEndpoint extends EventEmitter {
       // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
       // The observer and admin profiles may not delete (#691), so the dashboard's readers do live out
       // that threshold; only a profile holding the delete row reclaims them here.
-      await deleteReaderConsumer(consumer);
+      await this.deleteReaderConsumer(consumer);
     }
   }
 
@@ -3646,6 +3676,9 @@ export class CotalEndpoint extends EventEmitter {
         // out-of-ACL `nc.subscribe` is refused async on its chat subject, which joinChannel catches
         // and turns into a clean throw — it is not a connection error to surface.
         if (s.error instanceof PermissionViolationError && this.confirmingChatSubs.has(s.error.subject))
+          continue;
+        // The echo of a refused delete of this endpoint's own consumer, which its caller already handled.
+        if (s.error instanceof PermissionViolationError && s.error.operation === "publish" && this.ownConsumerDeletes.delete(s.error.subject))
           continue;
         this.emit("error", describeStatusError(s.error));
       }
@@ -6911,16 +6944,6 @@ export function isPermissionDenied(e: unknown): boolean {
  * result, so a permission denial, timeout, or protocol failure must never pass as "not found". */
 function isJetStreamMissing(e: unknown, ...codes: number[]): boolean {
   return e instanceof JetStreamApiError && codes.includes(e.code);
-}
-
-/** Delete a history reader's own ephemeral consumer. A refused delete is the designed outcome for
- *  the elevated profile, which holds no stream-wide CONSUMER.DELETE (#691): the broker reaps the
- *  consumer at its inactive threshold. */
-async function deleteReaderConsumer(consumer: Consumer): Promise<void> {
-  try { await consumer.delete(); }
-  catch (e) {
-    if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound) && !isPublishPermissionDenied(e)) throw e;
-  }
 }
 
 /** A membership-watch delete that leaves nothing to retry: the consumer is already gone, or the broker
