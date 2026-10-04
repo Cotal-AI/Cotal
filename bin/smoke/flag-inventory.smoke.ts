@@ -75,7 +75,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // warning was not a fence (stderr is unread by scripts, and it was not persisted).
   // Remote registration (2026-08): `--tls` records enforced TLS intent (a tls:// --server implies
   // it), and `--mode user` registers from supplied pinned trust via `--user-auth-file` or `--from`.
-  meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
+  // `--json` (2026-10, #2386): bare `meshes` / `meshes list` print one JSON object per mesh; add/rm refuse it.
+  meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "json:boolean", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
   // `--components` (2026-08): explicit fail-loud health across manager, delivery, web, and broker; bare status remains the recovery-oriented inventory.
   status: { flags: ["components:boolean", "server:string", "space:string"], positionals: false },
   // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
