@@ -1719,7 +1719,7 @@ export async function runScope(
     const refusedAppend = settled.find(
       (r): r is PromiseRejectedResult =>
         r.status === "rejected" &&
-        (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected || r.reason instanceof RunDivergence || isStackExhaustion(r.reason)),
+        (r.reason instanceof RunHeld || r.reason instanceof JournalAppendRejected || r.reason instanceof RunDivergence),
     );
     if (refusedAppend !== undefined) throw refusedAppend.reason as Error;
 
