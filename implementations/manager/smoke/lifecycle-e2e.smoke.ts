@@ -20,7 +20,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +35,7 @@ import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 import { registry } from "@cotal-ai/core";
 import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, renewalRecordPath, saveSpaceAuth } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../.."); // worktree root — the agent process runs here so `@cotal-ai/core` resolves
@@ -46,12 +45,6 @@ const seatRoot = mkdtempSync(join(tmpdir(), "s"));
 process.env.COTAL_SEAT_ROOT = seatRoot;
 // OS-assigned free port (collision-safe at allocation) — the old random port had no bind guard, so
 // a rare collision could attach isReachable() to a FOREIGN broker and fail auth downstream.
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));

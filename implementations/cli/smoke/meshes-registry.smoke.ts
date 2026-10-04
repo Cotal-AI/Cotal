@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
 // call, so the real ~/.cotal is never touched.
@@ -178,17 +178,6 @@ async function httpsDowngradeFixture(
   } catch {
     return { ok: false, why: `probe produced no verdict (${(run.stderr || "").trim().split("\n").pop() ?? "no stderr"})` };
   }
-}
-
-/** A free localhost port (the listener is closed before the port is handed back). */
-async function freePort(): Promise<number> {
-  const srv = createServer();
-  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
-  const addr = srv.address();
-  assert.ok(addr && typeof addr === "object");
-  const { port } = addr;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
 }
 
 const roots: string[] = [];

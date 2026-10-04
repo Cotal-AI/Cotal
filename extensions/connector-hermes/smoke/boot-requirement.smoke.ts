@@ -7,25 +7,16 @@
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isReachable } from "@cotal-ai/core";
 import { cacheConnector, extensionsDir, saveExtensionsManifest } from "../../../packages/workspace/src/index.js";
 import { Manager } from "../../../implementations/manager/src/manager.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 type HermesConnector = (typeof import("../src/extension.js"))["hermesConnector"];
 const { hermesConnector } = await import("../dist/index.js") as { hermesConnector: HermesConnector };
 
-const freePort = (): Promise<number> => new Promise((resolve, reject) => {
-  const server = createServer();
-  server.on("error", reject);
-  server.listen(0, "127.0.0.1", () => {
-    const port = (server.address() as AddressInfo).port;
-    server.close(() => resolve(port));
-  });
-});
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 let pass = 0;
 let fail = 0;

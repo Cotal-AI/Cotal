@@ -17,7 +17,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -40,7 +39,7 @@ import {
   standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { processStartToken } from "@cotal-ai/seat";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 
@@ -58,14 +57,6 @@ const until = async (condition: () => Promise<boolean> | boolean, ms: number): P
   }
   return false;
 };
-
-const freePort = async (): Promise<number> => new Promise((resolve) => {
-  const server = createServer();
-  server.listen(0, "127.0.0.1", () => {
-    const port = (server.address() as AddressInfo).port;
-    server.close(() => resolve(port));
-  });
-});
 
 const isProcessAlive = (pid: number): boolean => {
   try {

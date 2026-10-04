@@ -41,7 +41,7 @@ import { join } from "node:path";
 import { seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { bootPlugin } from "./_boot-plugin.js";
 import { SESSION_RETIRED, WAL_KEPT, WAL_REAPED } from "../src/plugin.js";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
@@ -71,15 +71,6 @@ const Q = "ses_rel_q";
  *  merely slow. That is the state the keep arm is about, and a hold under the bound would produce a
  *  settled drain and grade the reap arm twice. */
 const OVER_THE_BOUND_MS = 12_000;
-
-async function freePort(): Promise<number> {
-  const srv = createNetServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
 
 const PORT = await freePort();
 const servers = `nats://127.0.0.1:${PORT}`;

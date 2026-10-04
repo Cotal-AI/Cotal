@@ -24,7 +24,6 @@
  */
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -33,7 +32,7 @@ import { seedChannelRegistry, isReachable, CotalEndpoint } from "@cotal-ai/core"
 import { opencodeConnector } from "../src/extension.js";
 import { opencodeLine } from "../src/opencode-line.js";
 import { bootPlugin, bootPlugin2, fakeOpenCode2Context } from "./_boot-plugin.js";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
@@ -140,14 +139,6 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
 }
 
 // ── 2. the plugin: does a boot with a prompt actually drive a turn? ──────────────────────────────
-async function freePort(): Promise<number> {
-  const srv = createNetServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
 
 const PORT = await freePort();
 const servers = `nats://127.0.0.1:${PORT}`;

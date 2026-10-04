@@ -44,20 +44,12 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { bootPlugin } from "./_boot-plugin.js";
 // The tokens still come from the plugin itself: the retirement and abandonment cells key on the
 // exported constants, so rewording a log line cannot silently disarm them.
 import { SESSION_RETIRED, SETTLE_ABANDONED } from "../src/plugin.js";
 
-async function freePort(): Promise<number> {
-  const s = createNetServer();
-  s.listen(0, "127.0.0.1");
-  await once(s, "listening");
-  const port = (s.address() as { port: number }).port;
-  await new Promise<void>((r) => s.close(() => r()));
-  return port;
-}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PORT = await freePort();

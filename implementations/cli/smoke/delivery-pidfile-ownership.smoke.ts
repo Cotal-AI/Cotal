@@ -22,7 +22,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createSpaceAuth, isReachable, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
@@ -30,7 +29,7 @@ import {
   canonicalLocalProcessPath, DELIVERY_PIDFILE, identityPinPath, parsePid, probeLiveness,
   readProcessCommand, spaceMaterialDir, type LocalProcess,
 } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -39,15 +38,6 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number): boolean => probeLiveness(pid) === "alive";
-
-async function freePort(): Promise<number> {
-  const s = createServer();
-  await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
-  const addr = s.address();
-  if (!addr || typeof addr !== "object") throw new Error("no port");
-  await new Promise<void>((r) => s.close(() => r()));
-  return addr.port;
-}
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 const SPACE = `dlv-own-${randomUUID().slice(0, 8)}`;

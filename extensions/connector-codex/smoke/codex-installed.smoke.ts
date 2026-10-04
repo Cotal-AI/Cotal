@@ -27,12 +27,12 @@ import { strict as assert } from "node:assert";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
-import { createConnection, createServer } from "node:net";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable } from "@cotal-ai/core";
-import { assertSmokeSandboxDown, awaitBrokerReady, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, awaitBrokerReady, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
@@ -59,14 +59,6 @@ if (!existsSync(SEEDED)) {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function freePort(): Promise<number> {
-  const srv = createServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
 
 const PORT = await freePort();
 const servers = `nats://127.0.0.1:${PORT}`;

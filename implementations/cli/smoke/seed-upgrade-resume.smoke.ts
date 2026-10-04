@@ -10,10 +10,9 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const repo = join(import.meta.dirname, "..", "..", "..");
 const cli = join(repo, "bin", "dist", "cotal.js");
@@ -52,14 +51,6 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") && !["C
 const { probeConnect, setupSpaceStreams } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 
-const freePort = (): Promise<number> => new Promise((resolve, reject) => {
-  const socket = createServer();
-  socket.on("error", reject);
-  socket.listen(0, "127.0.0.1", () => {
-    const port = (socket.address() as AddressInfo).port;
-    socket.close(() => resolve(port));
-  });
-});
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const alive = (pid: number | undefined): boolean => {
   if (!pid) return false;

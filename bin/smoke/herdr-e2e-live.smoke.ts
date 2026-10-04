@@ -23,13 +23,12 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, isReachable } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import * as herdr from "../../extensions/herdr/src/driver.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = `he2e${randomUUID().slice(0, 6)}`;
 const HERDR_SESSION = `cotal-${SPACE}`;
@@ -80,13 +79,6 @@ function cleanup() {
 process.on("exit", cleanup);
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { cleanup(); process.exit(130); });
 process.on("uncaughtException", (err) => { console.error("\n✗ UNCAUGHT:", err); cleanup(); process.exit(1); });
-
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 
 console.log(`\n── herdr e2e: space ${SPACE} ─────────────\n`);
 

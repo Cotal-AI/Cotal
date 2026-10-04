@@ -27,10 +27,9 @@ import { spawn } from "node:child_process";
 import { closeSync, fchmodSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import net, { type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
 import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, UNAUTHENTICATED, makeAuthGate, openDetachedLog, webProcess } from "../src/web.js";
@@ -43,13 +42,6 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const freePort = (): Promise<number> => new Promise((resolve) => {
-  const server = net.createServer();
-  server.listen(0, "127.0.0.1", () => {
-    const port = (server.address() as AddressInfo).port;
-    server.close(() => resolve(port));
-  });
-});
 
 const PORT = 7799;
 const q = (s = "") => new URLSearchParams(s);

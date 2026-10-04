@@ -2,6 +2,12 @@
 
 Private helpers for the repository's smoke suites. Shipped code must not import this package.
 
+Use `freePort()` when a suite or its child needs a loopback port. It never returns the same port
+twice in one process, so a port a suite treats as dead cannot later become its own broker's port.
+The probe listener is closed before the number is returned, so another process can still take the
+port before the caller binds it. Ask for every port this way; a number derived from another port
+was never checked by the OS.
+
 Use `SMOKE_BROKER_TOKEN` as the prefix for a broker's temporary directory and register the child
 with `teardownOnSignal`. The token records its owning process. Normal-path cleanup still belongs
 to the suite.

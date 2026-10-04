@@ -19,11 +19,11 @@
  * Run: pnpm smoke:orca-e2e:live
  */
 import { spawnSync } from "node:child_process";
-import { createConnection, createServer, type AddressInfo } from "node:net";
+import { createConnection } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { canonicalLocalProcessPath, MANAGER_LOGFILE, MANAGER_PIDFILE } from "@cotal-ai/workspace";
 
 interface OrcaTerminal {
@@ -47,15 +47,6 @@ const SPACE = `orca-e2e-${runId}`;
 const BARE_SPACE = `orca-e2e-bare-${runId}`;
 const AGENT = `orcae2e-${runId}`;
 
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const server = createServer();
-    server.on("error", rej);
-    server.listen(0, "127.0.0.1", () => {
-      const port = (server.address() as AddressInfo).port;
-      server.close(() => res(port));
-    });
-  });
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 

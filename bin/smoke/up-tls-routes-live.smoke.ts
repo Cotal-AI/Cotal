@@ -56,7 +56,7 @@ import { canonicalLocalProcessPath, DELIVERY_PIDFILE } from "@cotal-ai/workspace
 import net from "node:net";
 import tls from "node:tls";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { assertSmokeSandboxDown, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 const CLI = join(import.meta.dirname, "..", "cotal.ts");
@@ -121,13 +121,6 @@ function mintPki(): { ca: string; cert: string; key: string; expiredCert: string
     expiredCert: join(pki, "expired.pem"), expiredKey: join(pki, "expired.key"),
     otherCert: join(pki, "other.pem"), otherKey: join(pki, "other.key"),
   };
-}
-
-function freePort(): Promise<number> {
-  return new Promise((res) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as { port: number }).port; s.close(() => res(p)); });
-  });
 }
 
 /** Set once `mintPki` has run. Handed to the CLI subprocess as `NODE_EXTRA_CA_CERTS`. */

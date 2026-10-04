@@ -43,7 +43,6 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { createServer as createNetServer } from "node:net";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -64,16 +63,8 @@ import {
 import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "../src/agui-map.js";
 import { createClaudeHandle } from "../src/hooks.js";
 import { createClaudeTranscriptSource } from "../src/agui-source.js";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
-async function freePort(): Promise<number> {
-  const s = createNetServer();
-  s.listen(0, "127.0.0.1");
-  await once(s, "listening");
-  const port = (s.address() as { port: number }).port;
-  await new Promise<void>((r) => s.close(() => r()));
-  return port;
-}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PORT = await freePort();

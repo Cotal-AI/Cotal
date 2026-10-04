@@ -48,7 +48,7 @@ import {
 } from "@cotal-ai/core";
 import { webProbeTarget } from "../src/commands/status.js";
 import { renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -86,15 +86,6 @@ check("the CLI status probe refuses a wildcard process host rather than probing 
 const wildcardAliasProbe = webProbeTarget("node cotal web --host 0");
 check("the CLI status probe refuses a canonical wildcard alias",
   "refused" in wildcardAliasProbe && wildcardAliasProbe.refused.includes("invalid process host"), wildcardAliasProbe);
-
-async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const addr = server.address();
-  assert.ok(addr && typeof addr === "object");
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return addr.port;
-}
 
 async function portOpen(port: number): Promise<boolean> {
   return new Promise((resolve) => {

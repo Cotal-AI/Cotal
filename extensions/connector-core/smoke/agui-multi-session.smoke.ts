@@ -49,7 +49,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, mintLifecycleUid, principalKey } from "@cotal-ai/core";
@@ -58,7 +57,7 @@ import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
 import { FileSubjectFrontier } from "../src/subject-frontier.js";
 import { eventWalLocation } from "../src/agui-wal-path.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0,
   fail = 0;
@@ -73,16 +72,6 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}agui-multi-`));
 const procs: ChildProcess[] = [];
 const releases: (() => void)[] = [];
-
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as { port: number }).port;
-      s.close(() => res(p));
-    });
-    s.on("error", rej);
-  });
 
 const OWNER = "local";
 const ACTOR = `A${randomUUID().replace(/-/g, "").toUpperCase().slice(0, 40)}`;

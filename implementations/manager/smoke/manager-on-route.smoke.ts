@@ -13,10 +13,9 @@ import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, type AddressInfo } from "node:net";
 import { connect } from "@nats-io/transport-node";
 import type { EpCaller } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-onroute-home-"));
 process.env.COTAL_HOME = home;
@@ -26,12 +25,6 @@ const { Manager } = await import("../src/manager.js");
 const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown): void => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }

@@ -1,9 +1,8 @@
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { countedAssert, emitSentinel, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -64,7 +63,6 @@ const fixtureCotal = join(fixtureBin, "cotal");
 writeFileSync(fixtureCotal, "#!/bin/sh\necho fixture cotal must not run >&2\nexit 97\n");
 chmodSync(fixtureCotal, 0o755);
 const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:${dirname(pnpm)}:/usr/bin:/bin`, NO_COLOR: "1" };
-const freePort = (): Promise<number> => new Promise((resolve, reject) => { const s = createServer(); s.on("error", reject); s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => resolve(p)); }); });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (predicate: () => boolean, timeout = 30_000) => { const end = Date.now() + timeout; while (!predicate() && Date.now() < end) await wait(50); return predicate(); };
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };

@@ -1,5 +1,5 @@
 import { strict as nodeAssert } from "node:assert";
-import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
+import { countedAssert, emitSentinel, freePort } from "@cotal-ai/smoke-kit";
 import { writeFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -128,21 +128,6 @@ async function waitForBroker(host: string, port: number, log: string, timeoutMs 
     }
   }
   throw new Error(`broker at ${host}:${port} never served INFO within ${timeoutMs}ms (last: ${last})\n${readFileSync(log, "utf8").split("\n").slice(-8).join("\n")}`);
-}
-
-/** Grab a port the OS says is free right now. Fixed ports are a standing hazard in this suite:
- *  a run that dies on an assertion can leave its broker holding the port, and the NEXT run then
- *  fails with "address already in use" — a cascading red that looks like a product bug and is not.
- *  This box also hosts other campaigns' brokers, so squatting on a guessed number is antisocial. */
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(port));
-    });
-  });
 }
 
 // Every broker this smoke starts, so the finally-block can reap them even when an assertion throws.

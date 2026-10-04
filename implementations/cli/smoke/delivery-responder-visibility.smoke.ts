@@ -27,10 +27,10 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createConnection, createServer } from "node:net";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { emitSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix } from "../src/lib/delivery-responder.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -57,14 +57,6 @@ env.COTAL_HOME = home;
 env.XDG_CONFIG_HOME = join(home, "xdg");
 env.COTAL_SKIP_CONNECTOR_SEED = "1";
 
-async function freePort(): Promise<number> {
-  const s = createServer();
-  await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
-  const addr = s.address();
-  assert.ok(addr && typeof addr === "object");
-  await new Promise<void>((r) => s.close(() => r()));
-  return addr.port;
-}
 async function portOpen(port: number): Promise<boolean> {
   return new Promise((res) => {
     const sock = createConnection({ host: "127.0.0.1", port });
