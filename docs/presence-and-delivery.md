@@ -191,6 +191,12 @@ before publish; retention (how long the durable holds it, whether a same-name re
 inherits it) is a third, separate fact, covered below and inspectable with
 [`cotal deliver pending`](cli.md#deliver).
 
+A recipient's connector acknowledges a DM only once it has handed it to the session. When the
+session is busy and its bounded local inbox fills with directed mail, the oldest DM is evicted
+from that buffer but left unacknowledged: it stays pending on the recipient's durable and the
+broker redelivers it after the durable's ack wait, so it lands once the session drains
+([Connect Claude](connect-claude.md#how-messages-reach-the-session)).
+
 ## Channel delivery
 
 Channel delivery has two wire-observable classes, fixed per channel
