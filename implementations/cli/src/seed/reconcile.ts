@@ -538,7 +538,10 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
     env: { ...process.env, COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
   });
   clearChildMarker(); // parent survived the child: the marker's job is done (child also clears its own)
-  if (r.stdout) process.stdout.write(r.stdout);
+  // The child's `✓ added …` line is seeding progress, not the invoking command's output: the boot gate
+  // runs this ahead of whatever command was typed, so on stdout it would land in front of that
+  // command's result (a first-boot `cotal meshes --json` printed seven non-JSON lines).
+  if (r.stdout) process.stderr.write(r.stdout);
   if (r.status !== 0) {
     const tail = `${r.stderr ?? ""}`.trim().split("\n").slice(-8).join("\n");
     throw new Error(`failed to seed connector "${name}" from ${storePath}:\n${tail}`);
