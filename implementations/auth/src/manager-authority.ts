@@ -358,8 +358,8 @@ export async function admitRemoteRun(args: {
       (parsed.route === "inst" && parsed.instanceId !== r.instanceId) || !isIssuedCaller(parsed.caller))
     throw new EpEnvelopeError("permission-denied", "manager run admission needs the served v1 run-start subject of this space, endpoint and instance with an issued caller");
   const caller = parsed.caller;
-  if (isDerivedOwner(caller.owner) && caller.owner !== args.owner)
-    throw new EpEnvelopeError("permission-denied", "a participant manager admits runs only for its registered owner");
+  if ((isDerivedOwner(caller.owner) || isDerivedOwner(args.owner)) && caller.owner !== args.owner)
+    throw new EpEnvelopeError("permission-denied", "a participant manager admits runs only for its registered owner, and a user's run is admitted only on that user's manager");
   const ref = { space: r.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
   const resolved = await args.issued.resolve(ref, args.sourceIsLive);
   const e = resolved.evidence.ref;
@@ -422,11 +422,12 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
   if (typeof op.id !== "string" || !NKEY_USER.test(op.id) || typeof op.takeoverId !== "string" || !ID_TOKEN.test(op.takeoverId) ||
       (op.runId !== undefined && !runIdOk(op.runId)))
     admissionError("operator requires an nkey id, a takeover id and an optional run id");
-  let answers: { token: string } | undefined;
+  let answers: { token: string; amend?: true } | undefined;
   if (op.answers !== undefined) {
-    const t = plain(op.answers, ["token"]);
-    if (typeof t.token !== "string" || !ID_TOKEN.test(t.token) || op.runId !== undefined) admissionError("operator answers carries exactly one checkpoint token and no run id");
-    answers = { token: t.token };
+    const t = plain(op.answers, ["token"], ["amend"]);
+    if (typeof t.token !== "string" || !ID_TOKEN.test(t.token) || op.runId !== undefined || (t.amend !== undefined && t.amend !== true))
+      admissionError("operator answers carries exactly one checkpoint token, an optional amend: true and no run id");
+    answers = { token: t.token, ...(t.amend === true ? { amend: true as const } : {}) };
   }
   if (!servedOk(op.served) || (op.served !== undefined && answers === undefined))
     admissionError("operator served is the run-answer subject, and only an answering operator carries one");
@@ -456,7 +457,7 @@ async function authorizeServedRunCaller(args: {
       (parsed.route === "inst" && parsed.instanceId !== args.instanceId))
     throw new EpEnvelopeError("permission-denied", `a served ${args.command} must name this space, endpoint and instance, untargeted or self-targeted`);
   const caller = parsed.caller;
-  if (isDerivedOwner(caller.owner) && caller.owner !== args.runOwner)
+  if ((isDerivedOwner(caller.owner) || isDerivedOwner(args.runOwner)) && caller.owner !== args.runOwner)
     throw new EpEnvelopeError("permission-denied", "run-resume and run-answer on this manager are open only to the owner its runs were admitted for");
   if (parsed.rail === EP_RAIL_V1 && isIssuedCaller(caller)) {
     const ref = { space: args.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
@@ -493,6 +494,8 @@ export async function authorizeRemoteRunAttempt(args: {
   readAdmission: (runId: string) => Promise<RunAdmissionView>;
   readRunStatus: (runId: string) => Promise<RunStatusValue | undefined>;
   checkpointWaiting: (token: string) => Promise<boolean>;
+  /** Whether the pause settled `resumed` naming an accepted answer: what an amendment amends. */
+  checkpointSettled?: (token: string) => Promise<boolean>;
   /** The issued store and the source and ledger checks a request carrying `served` is checked with. */
   issued?: IssuedStore;
   sourceIsLive?: (source: IssuedSourceRef) => Promise<boolean>;
@@ -530,9 +533,20 @@ export async function authorizeRemoteRunAttempt(args: {
   }
   const op = r.operator!;
   if (op.runId !== undefined) await admitted(op.runId);
-  if (op.served !== undefined) await served(op.served, "run-answer", args.owner);
-  if (op.answers !== undefined && !(await args.checkpointWaiting(op.answers.token)))
-    throw new EpEnvelopeError("failed-precondition", "run operator answers only a checkpoint that is still waiting");
-  const runOperator: RunOperatorGrantArgs = { endpoint: args.endpoint, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId } : {}), ...(op.answers ? { answers: op.answers } : {}) };
+  if (op.answers !== undefined) {
+    // The pause is checked first, then the caller. An answer needs a waiting pause; an amendment
+    // needs the pause whose answer was accepted, and nothing else.
+    if (op.answers.amend === true
+      ? !(await args.checkpointSettled?.(op.answers.token))
+      : !(await args.checkpointWaiting(op.answers.token)))
+      throw new EpEnvelopeError("failed-precondition", op.answers.amend === true
+        ? "run operator amends only a checkpoint whose answer was accepted"
+        : "run operator answers only a checkpoint that is still waiting");
+    // Every answer and amendment names the caller it serves; the host never answers for the manager.
+    if (op.served === undefined)
+      throw new EpEnvelopeError("permission-denied", "an answering run operator carries the served run-answer subject of the caller it answers for (SPEC 14.8)");
+    await served(op.served, "run-answer", args.owner);
+  }
+  const runOperator: RunOperatorGrantArgs = { endpoint: args.endpoint, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId } : {}), ...(op.answers ? { answers: { token: op.answers.token } } : {}) };
   return { kind: "operator", operator: { id: op.id, profile: "run-operator", runOperator } };
 }

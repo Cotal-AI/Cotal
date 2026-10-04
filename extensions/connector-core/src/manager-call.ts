@@ -4,6 +4,7 @@ import {
   assertLifecycleToken,
   dialerFor,
   invokeCommand,
+  isPermissionDenied,
   issuedUserCaller,
   replyRefusedBeforeEffect,
   resolveService,
@@ -12,7 +13,6 @@ import {
   type EpCaller,
   type EpVerbTarget,
 } from "@cotal-ai/core";
-import { PermissionViolationError } from "@nats-io/transport-node";
 import type { AgentConfig } from "./config.js";
 
 type ManagerConfig = Pick<AgentConfig, "space" | "servers" | "tls" | "lifecycleUid" | "userAuth" | "managerInstanceId">;
@@ -62,12 +62,13 @@ export async function invokeUserManager(
   });
   // An interactive row's view is issued at the callout (SPEC 13.15) and carries the read of its own
   // accepted row; a managed row's view carries no such grant, so the broker refuses the read and the
-  // connection keeps the legacy rail its rows name.
+  // connection keeps the legacy rail its rows name. The request surfaces that refusal as a
+  // RequestError whose cause is the permission violation.
   let caller: EpCaller = triple;
   try {
     caller = await issuedUserCaller(nc, config.space, String(connectOpts.name), triple);
   } catch (e) {
-    if (!(e instanceof PermissionViolationError)) {
+    if (!isPermissionDenied(e)) {
       await nc.close();
       throw e;
     }

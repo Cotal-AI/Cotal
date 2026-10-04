@@ -158,7 +158,8 @@ A completed timer records its sleep step as `ok`.
 4. Check `cotal_orientation` again, then call `cotal_run` with `verb: "ps"` before starting work.
 
 Tool visibility alone does not establish execution support. Hosted runs currently require
-a caller with issued authority, and only static authentication issues it. Open meshes can expose
+a caller with issued authority. Static authentication issues it to its credentials, and user
+authentication issues it to the connection a signed-in user's `cotal run` opens. Open meshes can expose
 the tool but refuse hosted runs. On a user-auth mesh the host's own manager refuses the family by
 name, and a participant manager started with `cotal supervise` hosts the runs of its registered
 owner. A legacy credential without issued authority must be replaced through the current issuance

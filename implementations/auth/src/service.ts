@@ -1229,6 +1229,10 @@ export async function openAuthAuthorityPlane(opts: {
         readAdmission: (runId) => readRunAdmission(recordsJsm, space, "manager", runId),
         readRunStatus: async (runId) => (await readRunRecord(recordsKv, "manager", runId))?.status?.value,
         checkpointWaiting: async (token) => (await readCheckpointStatus(recordsKv, { endpoint: "manager", token }))?.value.state === "waiting",
+        checkpointSettled: async (token) => {
+          const status = (await readCheckpointStatus(recordsKv, { endpoint: "manager", token }))?.value;
+          return status?.state === "resumed" && status.settledAnswerId !== undefined;
+        },
       });
       // A served resume or answer resolves its caller's issuance, which needs one issuer window.
       const grant = req.attempt?.served !== undefined || req.operator?.served !== undefined

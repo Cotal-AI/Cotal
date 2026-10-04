@@ -8,8 +8,15 @@ Status: implemented for issue #1956. Section 4 names the shipped symbols, with t
   call keeps the legacy rail.
 - The `issuer` profile gains the per-key `DIRECT.GET` read of the accepted store, so the callout can
   find the row a reconnect's nonce names.
-- The attempt parser accepts `operator.answers` without `served`. A stock participant manager always
-  sends it.
+- The issuing host checks an answering operator's pause before its caller, then refuses one with no
+  `served` as `permission-denied`, so the closed parser still accepts `operator.answers` alone.
+- An amendment's operator request carries `answers.amend: true`. The issuing host then requires the
+  pause settled `resumed` naming an accepted answer, where an answer requires it waiting.
+- The registered-owner check also applies when only the manager's owner is a derived user owner, so a
+  participant manager admits, resumes and answers for no other owner of any kind.
+- Not delivered: section 9 item 3. A run that spawns and turns an owned agent and receives a typed
+  answer from it on a user-auth space is not supported by this change, so issue #1956 stays open for
+  that part.
 - A participant manager forwards a legacy-rail answer, and the issuing host refuses it unless it
   comes from a live managed seat of the run's owner. A legacy-rail resume is refused on the manager.
 - `AclResolver`'s `kind` is optional, so a resolver that does not set it never issues.
@@ -163,9 +170,8 @@ export interface RemoteRunAttemptRequest {
     /** The served `run-resume` request subject, verbatim, when a caller asked for this attempt.
      *  Absent for a boot reconcile, which continues under the original admission. */
     served?: string };
-  operator?: { id: string; takeoverId: string; runId?: string; answers?: { token: string };
-    /** The served `run-answer` request subject, verbatim. Required with `answers` on a participant
-     *  manager. */
+  operator?: { id: string; takeoverId: string; runId?: string; answers?: { token: string; amend?: true };
+    /** The served `run-answer` request subject, verbatim. Required with `answers`. */
     served?: string };
 }
 ```
@@ -308,7 +314,7 @@ any run on that manager, so no user can answer another user's pause there.
 readonly issueAttempt?: (args: { runId: string; takeoverId: string; epoch: number; fencingToken: number;
   driver: Identity; mediator: Identity; served?: string }) => Promise<{ driver: string; mediator: string }>;
 readonly issueOperator?: (args: { identity: Identity; takeoverId: string; runId?: string;
-  answers?: { token: string }; served?: string }) => Promise<string>;
+  answers?: { token: string; amend?: true }; served?: string }) => Promise<string>;
 
 // RunHosting
 async resume(args: { runId: string; timeout?: string }, served?: EpServeContext): Promise<{ runId: string }>;
@@ -415,7 +421,8 @@ No existing sentence is reworded.
 | User A after `cotal actor revoke` or a re-grant | issuing host | `permission-denied`, source no longer live |
 | A legacy-rail principal `run-answer` or `run-resume` on a participant manager | participant manager | `permission-denied`, `ai.cotal.ep.unbound-caller-authority` |
 | A legacy-rail `run-answer` from a managed seat of another owner, or one whose row is gone | issuing host | `permission-denied` |
-| An `operator.answers` request with no `served` from a participant manager | issuing host | `bad-request` from the closed parser |
+| An `operator.answers` request with no `served` | issuing host | `permission-denied`, after the pause check |
+| An amendment for a pause that has no accepted answer | issuing host | `failed-precondition` |
 | A boot-reconcile attempt for a revoked run | issuing host | existing refusal, `run <runId> was revoked; a revoked run is issued nothing (SPEC 14.8)` |
 
 ## 8. Residual risk
@@ -436,7 +443,10 @@ No existing sentence is reworded.
 - User-mode seats spawned by the run answer through the relay path on the legacy rail. Their
   attribution rests on the managed row and the manager-held relay, as it does on a static mesh.
 - A participant manager is trusted to forward the subject it served, the same delegation `admitRun`
-  already relies on. Owner binding limits what a dishonest manager can do to its own owner's runs.
+  already relies on. The issuing host checks that the subject names a live issuance of the manager's
+  own owner whose ceiling permits it, but it does not observe that this caller published it. A
+  dishonest participant manager can therefore act for its own owner's live issuances only, never for
+  another owner. Binding each forwarded subject to a request the trusted service saw is not done.
 
 ## 9. Acceptance for the implementation round
 
