@@ -730,7 +730,7 @@ restore only when its details prove manager commit and its exact recorded listen
 ## Mesh registry
 
 ```bash
-cotal meshes
+cotal meshes [--json]
 cotal meshes add                      # guided, on a terminal
 cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [--tls] [--force]
 cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <https url>)
@@ -745,6 +745,14 @@ cotal status [--space <s>] [--server <url>] [--components]
 registration trust is stored under the account's private auth state, and the registry contains no
 session token or sentinel credential bytes. Commands resolve the catalog `slug`; a different human
 `name` is rendered only as a label.
+
+`meshes --json` prints one JSON object per recorded mesh per line: `space`, `server`, `mode`,
+`root`, `default` (the `*`), and `origin` (`up`, `manual`, or `catalog` for a discovered entry). A
+local or hand-registered entry also carries `offline`. A discovered entry is never probed, so it has
+no `offline` field. `tlsRequired`, `events: "required"` and a discovered entry's `catalogName` appear
+only when the record has them. An empty registry prints nothing and exits 0. The note about a default
+that matches no record goes to stderr, so stdout carries only rows. The table is presentation and is
+not a stable parsing target. `meshes add` and `meshes rm` refuse `--json`.
 
 A registry record this build cannot use is refused by name, never rendered and never skipped. One
 that does not parse, or is missing a field every consumer reads (`server`, `mode`, `root`, `ts`,
