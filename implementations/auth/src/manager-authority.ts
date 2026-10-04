@@ -18,6 +18,8 @@ import {
   type RunAdmission,
   type IssuedStore,
   type IssuedSourceRef,
+  type EpBindBlock,
+  type EndpointRequest,
   EP_RAIL_V1,
   EP_UNBOUND_CALLER_AUTHORITY,
   admissionKey,
@@ -442,31 +444,39 @@ export type RunRequestOperation =
   | { command: "run-resume"; runId: string }
   | { command: "run-answer"; endpoint: string; amend: boolean };
 
-/** The operation a resume or answer request asks for, read from the envelope its caller published
- *  on `subject`, or undefined for a request no manager serves. */
-export function observedRunRequest(subject: string, data: Uint8Array): RunRequestOperation | undefined {
+/** A served resume or answer as its caller published it: the operation, and the manager
+ *  incarnation its `bind` names, if any. Any other incarnation refuses it unrun (SPEC 13.2). */
+export interface ObservedRunRequest {
+  operation: RunRequestOperation;
+  bind?: EpBindBlock;
+}
+
+/** The resume or answer request its caller published on `subject`, or undefined for a request no
+ *  manager serves. */
+export function observedRunRequest(subject: string, data: Uint8Array): ObservedRunRequest | undefined {
   const parsed = parseEpSubject(subject);
   if (parsed === null || parsed.plane !== "request") return undefined;
-  let args: Record<string, unknown> | null | undefined;
+  let env: EndpointRequest;
   try {
-    const env = parseEndpointRequest(JSON.parse(new TextDecoder().decode(data)));
+    env = parseEndpointRequest(JSON.parse(new TextDecoder().decode(data)));
     checkRequestSubjectAgreement(env, parsed);
-    args = env.args;
   } catch {
     return undefined;
   }
+  const args = env.args;
   if (args === null || args === undefined || typeof args.runId !== "string") return undefined;
-  if (parsed.command === "run-resume") return { command: "run-resume", runId: args.runId };
+  if (parsed.command === "run-resume") return { operation: { command: "run-resume", runId: args.runId }, bind: env.bind };
   if (parsed.command !== "run-answer") return undefined;
   const endpoint = args.endpoint ?? parsed.endpoint;
   if (typeof endpoint !== "string" || (args.amend !== undefined && typeof args.amend !== "boolean")) return undefined;
-  return { command: "run-answer", endpoint, amend: args.amend === true };
+  return { operation: { command: "run-answer", endpoint, amend: args.amend === true }, bind: env.bind };
 }
 
 /** The served caller of a resume or an answer, checked against the run's owner (SPEC 14.8). The
  *  subject is re-parsed as {@link admitRemoteRun} parses a run-start, except that the `self` target
  *  a `run-answer` rides is accepted, and must be a request this host observed and has not yet
- *  accepted a forward of, asking for `operation`. A derived user owner must be
+ *  accepted a forward of, asking for `operation` and bound to no other manager incarnation than
+ *  `instanceId` at `processEpoch`. A derived user owner must be
  *  `runOwner`; a v1 caller's issuance must resolve live and permit the subject; a legacy caller is
  *  accepted only for `run-answer` from a live managed row of that owner, the seat relay path. */
 async function authorizeServedRunCaller(args: {
@@ -477,10 +487,12 @@ async function authorizeServedRunCaller(args: {
   space: string;
   endpoint: string;
   instanceId: string;
+  /** The registered manager's process epoch, the epoch it serves at. */
+  processEpoch: number;
   issued: IssuedStore;
   sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
   isLiveManagedActor: (owner: string, actor: string, lifecycleUid: string) => boolean;
-  takeObserved: (subject: string) => Promise<RunRequestOperation | undefined>;
+  takeObserved: (subject: string) => Promise<ObservedRunRequest | undefined>;
 }): Promise<void> {
   const command = args.operation.command;
   const parsed = parseEpSubject(args.served);
@@ -490,15 +502,20 @@ async function authorizeServedRunCaller(args: {
     throw new EpEnvelopeError("permission-denied", `a served ${command} must name this space, endpoint and instance, untargeted or self-targeted`);
   // The subject's caller is the broker's word only if the broker carried it: a manager can name any
   // live issuance in a subject it never received.
-  const observed = await args.takeObserved(args.served);
-  if (observed === undefined)
+  const observation = await args.takeObserved(args.served);
+  if (observation === undefined)
     throw new EpEnvelopeError("permission-denied", `the issuing host did not observe this ${command} request, or already accepted a forward of it (SPEC 14.8)`);
   // The forward's coordinates are the manager's word; the observed request's are the caller's.
-  const forwarded = args.operation;
+  const forwarded = args.operation, observed = observation.operation;
   if (observed.command === "run-resume"
     ? forwarded.command !== "run-resume" || forwarded.runId !== observed.runId
     : forwarded.command !== "run-answer" || forwarded.endpoint !== observed.endpoint || forwarded.amend !== observed.amend)
     throw new EpEnvelopeError("permission-denied", `the forwarded ${command} names another run, endpoint or amendment than the request the issuing host observed (SPEC 14.8)`);
+  // The manager serving at another incarnation than the bound one refuses the request unrun, so a
+  // forward of it must not turn into authority for the incarnation registered now.
+  const bind = observation.bind;
+  if (bind !== undefined && (bind.instanceId !== args.instanceId || bind.epoch !== args.processEpoch))
+    throw new EpEnvelopeError("permission-denied", `the observed ${command} request is bound to another manager instance or epoch than the registered one, which refuses it unrun (SPEC 13.2, 14.8)`);
   const caller = parsed.caller;
   if (isDerivedOwner(caller.owner) && caller.owner !== args.runOwner)
     throw new EpEnvelopeError("permission-denied", "a user resumes only a run admitted for that user and answers only on the participant manager that user registered");
@@ -545,7 +562,7 @@ export async function authorizeRemoteRunAttempt(args: {
   issued?: IssuedStore;
   sourceIsLive?: (source: IssuedSourceRef) => Promise<boolean>;
   isLiveManagedActor?: (owner: string, actor: string, lifecycleUid: string) => boolean;
-  takeObserved?: (subject: string) => Promise<RunRequestOperation | undefined>;
+  takeObserved?: (subject: string) => Promise<ObservedRunRequest | undefined>;
 }): Promise<RemoteRunAttemptGrant> {
   const r = parseRemoteRunAttemptRequest(args.request);
   await authenticateRegisteredManager(r, args, "run attempt");
@@ -561,7 +578,7 @@ export async function authorizeRemoteRunAttempt(args: {
     if (args.issued === undefined || args.sourceIsLive === undefined || args.isLiveManagedActor === undefined || args.takeObserved === undefined)
       throw new EpEnvelopeError("internal", "a served run request needs the issued store, the actor ledger and the observed requests on the issuing host");
     return authorizeServedRunCaller({
-      served: subject, operation, runOwner, space: r.space, endpoint: args.endpoint, instanceId: r.instanceId,
+      served: subject, operation, runOwner, space: r.space, endpoint: args.endpoint, instanceId: r.instanceId, processEpoch: r.processEpoch,
       issued: args.issued, sourceIsLive: args.sourceIsLive, isLiveManagedActor: args.isLiveManagedActor, takeObserved: args.takeObserved,
     });
   };
