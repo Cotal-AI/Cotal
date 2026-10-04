@@ -41,6 +41,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { comparableFailure, failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
 import { liveShapedCommandReason, liveShapedFixtureReason } from "./mutation-command-safety.mjs";
+import { runMark, sweepMarked } from "./mutation-run-mark.mjs";
 import { mutationShard } from "./mutation-shard.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
@@ -83,21 +84,26 @@ function git(root, argv) {
   return execFileSync("git", argv, { cwd: root, encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
 }
 
+/** The mark every command {@link runCommand} starts carries, for {@link sweepMarked}. */
+const RUN = runMark("mutation-reproof");
+
 function runCommand(command, cwd, env) {
   const liveReason = liveShapedCommandReason(command, { cwd });
   if (liveReason) {
     const output = `REFUSING live-shaped command \`${command}\` (${liveReason}) — mutation-reproof never executes a live suite\n`;
     return { status: 2, signal: null, error: undefined, stdout: "", stderr: output, output };
   }
-  // The shell leads its own group so a timeout can kill what it forked too, as mutation-proof does.
+  // The shell leads its own group so a timeout can kill what it forked too, and the mark reaches
+  // what left that group, as mutation-proof does.
   const run = spawnSync(command, {
     cwd, shell: true, encoding: "utf8", timeout: commandTimeoutMs(),
     maxBuffer: 64 * 1024 * 1024, killSignal: "SIGKILL",
     detached: process.platform !== "win32",
-    env,
+    env: { ...env, MUTATION_PROOF_RUN: RUN.mark },
   });
   if (run.error?.code === "ETIMEDOUT" && run.pid !== undefined && process.platform !== "win32") {
     try { process.kill(-run.pid, "SIGKILL"); } catch { /* the group is already gone */ }
+    sweepMarked(RUN.token, console.log);
   }
   return { ...run, output: `${run.stdout ?? ""}${run.stderr ?? ""}` };
 }

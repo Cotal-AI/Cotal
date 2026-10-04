@@ -70,10 +70,11 @@
  */
 import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync, unlinkSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { failureSignatureHash, unmeasurableFailure } from "./mutation-failure-signature.mjs";
+import { runMark, sweepMarked } from "./mutation-run-mark.mjs";
 import { parseSuiteSources } from "./mutation-suite-metadata.mjs";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
@@ -90,11 +91,8 @@ const EXCERPT_TAIL = 10;
 /** Every mutation currently written to disk: the restore that undoes it, by file. */
 const liveRestores = new Map();
 
-/** The mark every process this proof starts carries in its environment, for {@link sweepMarked}.
- *  An enclosing proof's mark is kept in front of this one, so its sweep still reaches this proof's
- *  descendants. It is not a `COTAL_` key: mutation-reproof strips those from every fixture suite. */
-const RUN_TOKEN = `mutation-proof-${process.pid}-${randomUUID()}`;
-const RUN_MARK = [process.env.MUTATION_PROOF_RUN, RUN_TOKEN].filter(Boolean).join(" ");
+/** The mark every process this proof starts carries in its environment, for {@link sweepMarked}. */
+const RUN = runMark("mutation-proof");
 
 const BREADCRUMB_PREFIX = "mutation-proof-bc-";
 
@@ -391,52 +389,17 @@ function run(command, cwd, timeoutMs) {
     // A mutation may deliberately desynchronize dependency metadata from pnpm-lock.yaml. pnpm's
     // default pre-run check would install (or fail under CI's frozen lockfile) before the suite can
     // observe that mutant. Disable only that check, and only in this child process tree.
-    env: { ...process.env, pnpm_config_verify_deps_before_run: "false", MUTATION_PROOF_RUN: RUN_MARK },
+    env: { ...process.env, pnpm_config_verify_deps_before_run: "false", MUTATION_PROOF_RUN: RUN.mark },
     detached: process.platform !== "win32",
     killSignal: "SIGKILL",
   });
   if (r.error?.code === "ETIMEDOUT" && r.pid !== undefined && process.platform !== "win32") {
     try { process.kill(-r.pid, "SIGKILL"); } catch { /* the group is already gone */ }
-    sweepMarked();
+    sweepMarked(RUN.token, say);
   }
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   // A timeout kills the child and leaves status null; that is not a red, it is an unknown.
   return { status: r.status, signal: r.signal, timedOut: r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL" || r.signal === "SIGTERM", output };
-}
-
-/**
- * Kill every process still carrying this proof's mark, and say what was killed and what survived.
- * The group kill in {@link run} cannot reach a descendant that left the group: anything spawned
- * `detached` calls setsid. Measured on a mutant that started a detached `node` and was cut by
- * `--deadline`: the group kill returned with that child still alive. A process that rebuilt its
- * environment without the mark is out of reach; a seat custodian keeps only `PATH` and `COTAL_RUN`.
- * Runs only after a timed-out run, when none of this proof's children is legitimately running.
- * Linux reads the marks from `/proc`; elsewhere it says it could not look, never that nothing was left.
- */
-function sweepMarked() {
-  if (!existsSync("/proc/self/environ")) {
-    say(`${C.yellow}  no /proc on ${process.platform}: processes that left the timed-out run's group were not looked for${C.off}`);
-    return;
-  }
-  const marked = () => readdirSync("/proc").map(Number).filter((pid) => {
-    if (!Number.isInteger(pid) || pid === process.pid) return false;
-    let environ;
-    try { environ = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0"); } catch { return false; }
-    return environ.some((entry) =>
-      entry.startsWith("MUTATION_PROOF_RUN=") && entry.slice("MUTATION_PROOF_RUN=".length).split(" ").includes(RUN_TOKEN));
-  });
-  const killed = new Set();
-  let left = marked();
-  // A marked process can fork between the scan and the kill, so scan again until none is left.
-  for (let round = 0; left.length > 0 && round < 40; round++) {
-    for (const pid of left) {
-      try { process.kill(pid, "SIGKILL"); killed.add(pid); } catch { /* already gone */ }
-    }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
-    left = marked();
-  }
-  if (killed.size) say(`${C.yellow}  swept ${killed.size} process(es) that had left the timed-out run's group: ${[...killed].join(", ")}${C.off}`);
-  if (left.length) say(`${C.red}  ${left.length} marked process(es) survived SIGKILL: ${left.join(", ")}${C.off}`);
 }
 
 /** The suite budget: the per-command timeout, cut to what is left before `--deadline`. Only suite
