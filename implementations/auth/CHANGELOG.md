@@ -1,5 +1,16 @@
 # @cotal-ai/auth
 
+## 0.61.0
+
+### Minor Changes
+
+- 1eca3e0: `startAuthService` takes an optional `publicFace` input with the CLI's public face settings (`port`, `url`, `trustedProxy`, `advertisedServer`, `agentProvisioningUrl`) and checks them by the CLI's rules. An embedded context can now serve the public exchange, JWKS and discovery bundle, and its handle carries `publicUrl`. The handle also carries the per-start `cap` that `runAuthService` writes to `auth-service.json`, so a host can call its own loopback host actions. A public face without a port refuses to start. The new `PublicFaceInput` type names the input.
+
+### Patch Changes
+
+- @cotal-ai/core@0.61.0
+- @cotal-ai/workspace@0.61.0
+
 ## 0.60.0
 
 ### Minor Changes
