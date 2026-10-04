@@ -214,7 +214,10 @@ stored them in, and chat comes before direct messages.
 
 The all-activity read is bounded, so on a slow link it can
 come back SHORT rather than late: the header then says `partial: activity`, and the page reports how
-many sources answered out of how many were asked and names the ones that did not. A short page and a
+many sources answered out of how many were asked and names the ones that did not. Each missing source
+also carries its reason in the response's `reasons` and in the line the server prints: `the read did
+not finish within 8000ms` when the deadline cut it, or `the read failed:` and the error when it was
+refused, such as a chat read whose filter list exceeds the broker's `max_payload`. A short page and a
 complete one are never the same bytes. On a link too slow to finish anything the honest answer is
 zero sources answered, and you keep looking at the last good data with the marker up. When the
 deadline wins, Cotal also cancels the unfinished history pulls and removes their ephemeral consumers;

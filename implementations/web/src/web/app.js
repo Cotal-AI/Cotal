@@ -1057,7 +1057,7 @@ async function refresh() {
       stale.push({
         kind: "partial",
         name: "activity",
-        reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.join(", ")}`,
+        reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.map((m) => `${m} (${activityPage.reasons[m]})`).join(", ")}`,
       });
     const rosterView = staleNow.find((s) => s.name === "roster");
     if (rosterView && !stale.some((s) => s.name === "roster")) stale.push(rosterView);

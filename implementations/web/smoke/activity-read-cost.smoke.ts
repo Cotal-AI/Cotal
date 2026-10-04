@@ -259,6 +259,8 @@ async function fanOutBackfill(
       read: sources.length - missing.length,
       of: sources.length,
       missing,
+      // The pre-#1210 shape kept no reason for a missing source; this baseline is read for cost only.
+      reasons: Object.fromEntries(missing.map((m) => [m, "not recorded by the pre-#1210 shape"])),
       deadlineMs,
     };
   } finally {

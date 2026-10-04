@@ -618,6 +618,10 @@ export interface ActivityPage {
    *  and "the space is empty". The names are those two sources rather than individual channels: one
    *  read either arrived or it did not, and {@link activityBackfill} says why at its source list. */
   missing: string[];
+  /** Why each source in `missing` did not answer, keyed by its name. A read that ran out of time and
+   *  a read that was refused (the client refusing a consumer create over `max_payload`, say) are
+   *  different things for an operator to act on, and a name alone made them the same bytes. */
+  reasons: Record<string, string>;
   deadlineMs: number;
 }
 
@@ -698,6 +702,7 @@ export async function activityBackfill(
     // start another read: the page is closed, and issuing broker work for it would be waste with a
     // guaranteed-discarded result.
     const settled: (ActivityPage["entries"] | typeof LATE)[] = new Array(sources.length).fill(LATE);
+    const failed: (string | undefined)[] = new Array(sources.length);
     let next = 0;
     let expired = false;
     void clock.until.then(() => { expired = true; });
@@ -708,9 +713,11 @@ export async function activityBackfill(
         try {
           const r = await within(sources[i].read(clock.signal), clock.until);
           if (r !== LATE) settled[i] = r;
-        } catch {
+        } catch (e) {
           // A source that FAILED is missing for the same reason a late one is: it has nothing to
           // contribute. It is named the same way, and it no longer takes the whole page with it.
+          // Its reason is kept, because a refusal and a timeout ask different things of an operator.
+          failed[i] = e instanceof Error ? e.message : String(e);
         }
       }
     };
@@ -718,10 +725,15 @@ export async function activityBackfill(
 
     const entries: ActivityPage["entries"] = [];
     const missing: string[] = [];
+    const reasons: Record<string, string> = {};
     for (let i = 0; i < settled.length; i++) {
       const r = settled[i];
-      if (r === LATE) missing.push(sources[i].name);
-      else entries.push(...r);
+      if (r === LATE) {
+        missing.push(sources[i].name);
+        reasons[sources[i].name] = failed[i] === undefined
+          ? `the read did not finish within ${deadlineMs}ms`
+          : `the read failed: ${failed[i]}`;
+      } else entries.push(...r);
     }
     // THE PAGE IS ORDERED BY `ts`, AND THE CHAT HALF WAS CHOSEN BY ARRIVAL. The chat rows are the
     // newest `limit` by CHAT stream sequence, the order the broker stored them in, and the DM rows
@@ -737,6 +749,7 @@ export async function activityBackfill(
       read: sources.length - missing.length,
       of: sources.length,
       missing,
+      reasons,
       deadlineMs,
     };
   } finally {
@@ -1035,9 +1048,9 @@ export async function web(args: ParsedArgs): Promise<void> {
       // A partial page is worth SAYING on the server too: the operator watching this log is the one
       // who can tell a slow link from a half of the feed that refused, and the browser's marker
       // never reaches them. What `missing` names is a source, `chat` or `direct messages`, so this
-      // line reports which half went unanswered and never an individual channel.
+      // line reports which half went unanswered and never an individual channel, each with its reason.
       if (page.partial)
-        console.error(c.yellow(`~ ${req.method ?? "GET"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.join(", ")}`));
+        console.error(c.yellow(`~ ${req.method ?? "GET"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.map((m) => `${m} (${page.reasons[m]})`).join(", ")}`));
       return json(res, page);
     }
     if (path === "/api/dms") {
