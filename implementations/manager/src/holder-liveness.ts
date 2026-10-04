@@ -164,7 +164,8 @@ export function makeManagerHolderLivenessProbe(opts: {
 }): (principal: string) => Promise<HolderLiveness> {
   return async (principal: string): Promise<HolderLiveness> => {
     // Read before each query so a failed query can be pinned to the holder it could have reached.
-    let leaseBefore = { state: "absent" } as DeliveryLeaseReading;
+    // Unknown until an attempt reads it: the wait can abandon an attempt before its read finishes.
+    let leaseBefore: DeliveryLeaseReading = { state: "unreadable", error: "the wait ended before it was read" };
     const ask = async (requestMs: (capMs: number) => number): Promise<ControlReply> => {
       leaseBefore = await readDeliveryLeaseForDiagnosis(opts);
       const id = newIdentity();
@@ -204,12 +205,14 @@ export function makeManagerHolderLivenessProbe(opts: {
       // The rail is unreachable, or the request TIMED OUT. Both are UNKNOWABILITY, and neither is
       // death: this is the branch a mutation would have to corrupt to turn verify-dead into
       // assume-dead-on-timeout, and it is the reason the reconciler refuses instead of proceeding.
+      // Taken now, so an abandoned attempt that finishes its read later cannot pass for "before".
+      const before = leaseBefore;
       const lease = await readDeliveryLeaseForDiagnosis(opts);
       return {
         state: "unestablishable",
         detail:
           `the delivery daemon is not reachable on the ctl.delivery-admin rail (${e instanceof Error ? e.message : String(e)}); ` +
-          `${deliveryLeaseFacts(lease, opts.auth.account.pub)}. ${unansweredRailBlocker(leaseBefore, lease)}. ` +
+          `${deliveryLeaseFacts(lease, opts.auth.account.pub)}. ${unansweredRailBlocker(before, lease)}. ` +
           `Without the liveness oracle the freeze-holder "${principal}" cannot be proven gone, and this repair never infers death from silence`,
       };
     }

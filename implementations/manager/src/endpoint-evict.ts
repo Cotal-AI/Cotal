@@ -26,10 +26,6 @@ import { RequestError, TimeoutError } from "@nats-io/transport-node";
  *  turned that window into a dead manager and, at re-registration, a frozen gate. */
 export const DELIVERY_ADMIN_BOOT_WAIT_MS = 2 * LEASE_TTL_MS;
 
-/** The last attempt starts at least this long before the wait ends, so its request still has a
- *  window to be answered inside the wait. */
-const LAST_ATTEMPT_WINDOW_MS = 1_000;
-
 /** True only for a delivery-admin request that went UNANSWERED: it timed out, or the broker reported
  *  no responder. A reply that does not decode was answered, and an auth or local failure is not the
  *  daemon's silence, so boot never waits either out (#871). */
@@ -38,10 +34,14 @@ export function isUnansweredDeliveryAdmin(e: unknown): boolean {
 }
 
 /** Run `attempt` until it resolves, retrying with capped backoff while `retryable` accepts the
- *  failure, for at most `waitMs` on the monotonic clock (#871). `attempt` sizes its request with
- *  `requestMs(capMs)`, which cuts the cap to what is left of the wait, and the backoff is cut the same
- *  way, so no request outlives the wait. The last failure is rethrown unchanged, so the caller's
- *  fail-closed refusal reads the same with or without the wait. `waitMs` 0 is one attempt at the cap. */
+ *  failure, and settle within `waitMs` on the monotonic clock (#871). The wait ends on time even
+ *  inside an attempt that is still minting, connecting or reading, so an attempt must be safe to
+ *  abandon: it sizes its request with `requestMs(capMs)`, which cuts the cap to what is left and
+ *  throws once nothing is, so an abandoned attempt sends nothing. No retry sleeps longer than half of
+ *  what is left, because a no-responder failure is immediate and a daemon that binds in the last
+ *  stretch must still be asked. When the wait ends, the last failure is rethrown unchanged, so the
+ *  caller's fail-closed refusal reads the same with or without the wait. `waitMs` 0 is one attempt at
+ *  the cap. */
 export async function untilDeliveryAdminAnswers<T>(
   waitMs: number,
   attempt: (requestMs: (capMs: number) => number) => Promise<T>,
@@ -50,17 +50,33 @@ export async function untilDeliveryAdminAnswers<T>(
 ): Promise<T> {
   if (waitMs <= 0) return attempt((capMs) => capMs);
   const deadline = performance.now() + waitMs;
-  const requestMs = (capMs: number) => Math.max(1, Math.min(capMs, Math.floor(deadline - performance.now())));
-  for (let delayMs = 1_000; ; delayMs = Math.min(2 * delayMs, 5_000)) {
-    try {
-      return await attempt(requestMs);
-    } catch (e) {
-      const leftMs = Math.floor(deadline - performance.now());
-      if (!retryable(e) || leftMs <= LAST_ATTEMPT_WINDOW_MS) throw e;
-      const sleepMs = Math.min(delayMs, leftMs - LAST_ATTEMPT_WINDOW_MS);
-      onRetry(e instanceof Error ? e.message : String(e), sleepMs);
+  const leftMs = () => deadline - performance.now();
+  const requestMs = (capMs: number) => {
+    const left = leftMs();
+    if (left <= 0) throw new TimeoutError();
+    return Math.min(capMs, Math.ceil(left));
+  };
+  const ended = new TimeoutError();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waitEnds = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(ended), waitMs)));
+  let failure: unknown = ended;
+  try {
+    for (let delayMs = 1_000; leftMs() > 0; delayMs = Math.min(2 * delayMs, 5_000)) {
+      try {
+        return await Promise.race([attempt(requestMs), waitEnds]);
+      } catch (e) {
+        if (e === ended) break;
+        if (!retryable(e)) throw e;
+        failure = e;
+      }
+      const sleepMs = Math.ceil(Math.min(delayMs, leftMs() / 2));
+      if (sleepMs <= 0) break;
+      onRetry(failure instanceof Error ? failure.message : String(failure), sleepMs);
       await new Promise((r) => setTimeout(r, sleepMs));
     }
+    throw failure;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
