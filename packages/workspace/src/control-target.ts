@@ -7,15 +7,21 @@
  * raw `--creds` path the space defaults to THIS FOLDER's `.cotal/auth` space rather than
  * `DEFAULT_SPACE`, because a control op addresses the manager of the folder's mesh.
  */
+import { existsSync, readFileSync } from "node:fs";
 import {
   DEFAULT_SPACE,
   DEV_OWNER,
+  dialerFor,
   mintLifecycleUid,
   newIdentity,
+  readAcceptedRow,
+  standaloneConnectOpts,
   type EpCaller,
+  type IssuedCaller,
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
+import { agentLifecycleSecretFilePaths } from "./agent-secrets.js";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
 import { connectOrExit, connectOrThrow, connectUserControlOrExit, endpointAuth, userViewAuth, type ConnectFlags } from "./connect.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
@@ -130,14 +136,63 @@ export async function resolveControlTarget(
   };
 }
 
+/**
+ * The managed seat this process runs in, as THAT seat's own control target, or `undefined` outside
+ * one. A seat that shells out to `cotal` must reach the manager as itself, not as a fresh operator
+ * instrument: the manager records the requesting principal (a detached spawn's spawner, a run
+ * answer's answerer), and a one-shot instrument is a principal nothing can present again, so the
+ * seat could never stop the child it asked for (#718). Connection material is intentionally not
+ * inherited by shell children; the non-secret launch identity (`COTAL_NAME`, `COTAL_ID`,
+ * `COTAL_LIFECYCLE_UID`, `COTAL_SPACE`) names the seat, and only a command aimed at the seat's own
+ * space acts as it:
+ *
+ * - static mesh: the manager-owned lifecycle credential, whose accepted row (`COTAL_ACCEPTED_TOKEN`)
+ *   resolves an issuer-bound generation that must name the same principal and lifecycle uid;
+ * - open mesh: no credential system, so the seat's declared triple is the caller;
+ * - user-auth mesh: `undefined`, because the CLI's bearer and the seat share an owner and the
+ *   manager's owner-domain rule already covers that pair.
+ */
+export async function resolveSeatControlTarget(flags: ConnectFlags): Promise<ControlTarget | undefined> {
+  const name = process.env.COTAL_NAME?.trim();
+  const actor = process.env.COTAL_ID?.trim();
+  const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
+  const seatSpace = process.env.COTAL_SPACE?.trim();
+  if (!name || !actor || !uid || !seatSpace) return undefined;
+  const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server });
+  if (mesh.space !== seatSpace) return undefined;
+  const at = { space: mesh.space, server: mesh.server, root: mesh.root, mode: mesh.mode, ...(mesh.policy ? { policy: mesh.policy } : {}) };
+  if (mesh.mode === "open") return { ...at, auth: { epCaller: { owner: DEV_OWNER, actor, uid } } };
+  const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim();
+  if (mesh.mode !== "auth" || !acceptedToken) return undefined;
+  const path = agentLifecycleSecretFilePaths(mesh.root, mesh.space, name, uid).creds;
+  if (!existsSync(path))
+    throw new Error(`managed seat credential is missing at ${path}; refusing to act as a different caller`);
+  const creds = readFileSync(path, "utf8");
+  const nc = await dialerFor(mesh.server)({
+    servers: mesh.server,
+    ...standaloneConnectOpts({ creds, tls: mesh.tlsRequired }),
+    maxReconnectAttempts: 0,
+  });
+  try {
+    const ref = await readAcceptedRow(nc, mesh.space, acceptedToken);
+    if (ref.owner !== DEV_OWNER || ref.actor !== actor || ref.uid !== uid)
+      throw new Error(`managed seat issuance resolves to ${ref.owner}.${ref.actor}/${ref.uid}, not ${DEV_OWNER}.${actor}/${uid}`);
+    return { ...at, auth: { creds, tls: mesh.tlsRequired, epCaller: { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation } as IssuedCaller } };
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+}
+
 /** The caller triple a control call rides, or a refusal naming why the credential cannot. A user
  *  bearer or a minted static instrument carries its own triple. An OPEN mesh has no credential
- *  system: the manager registered under DEV_OWNER and the broker enforces nothing, so a fresh
- *  DEV_OWNER triple is synthesized. A raw `--creds` file supplies no triple and that route cannot
- *  mint one, so it is refused rather than silently downgraded. */
+ *  system: the manager registered under DEV_OWNER and the broker enforces nothing, so the call rides
+ *  the triple its target declares ({@link resolveSeatControlTarget}) or a freshly synthesized
+ *  DEV_OWNER one. A raw `--creds` file supplies no triple and that route cannot mint one, so it is
+ *  refused rather than silently downgraded. */
 export function controlCaller(auth: ControlAuth): { caller: EpCaller } | { refusal: string } {
   if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds))) return { caller: auth.epCaller };
   if (auth.creds)
     return { refusal: "this control call has no endpoint-caller triple (owner, actor, lifecycle uid), and a raw --creds invocation cannot mint one; minting the file again changes nothing. Run the command from the mesh's project folder, or name the mesh with --space against its registry entry, so the CLI mints the one-shot instrument for you" };
+  if (auth.epCaller && !auth.bearer && !auth.sentinelCreds) return { caller: auth.epCaller };
   return { caller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
 }

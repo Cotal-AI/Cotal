@@ -991,6 +991,15 @@ fails, and a managed seat frees its slot only when it stops. The refusal counts 
 only while it holds a slot, so a launch whose seat already ended is not counted. The roster counts
 presence, which also includes peers no manager owns, so its total is a different number.
 
+Run from a managed seat's own shell on a static or open mesh, `cotal spawn --detach` launches as
+that seat when it targets the seat's own space. The CLI reads the seat's launch identity
+(`COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`, `COTAL_SPACE`, and on a static mesh the seat's own
+credential), so the manager records the seat as the spawner, the same as for the seat's
+`cotal_spawn` tool. The seat can then stop the
+child with `cotal_despawn`, and the manager stops the child when the seat exits. On a static mesh a
+seat whose agent file lacks `capabilities: [spawn]` is refused, because its credential holds no
+spawn subject. `--creds` and a user-auth mesh keep the operator path.
+
 ## models
 
 ```bash
