@@ -62,7 +62,7 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
   if (typeof doc.tlsRequired !== "boolean") throw new Error("the managed handoff's tlsRequired is not a boolean");
   for (const k of TARGET_FIELDS)
     if (doc[k] !== expected[k]) throw new Error(`the managed handoff's ${k} does not match the expected ${k}`);
-  assertLifecycleToken(doc.lifecycleUid as string, "the managed handoff's lifecycleUid");
+  checkField("lifecycleUid", () => assertLifecycleToken(doc.lifecycleUid as string));
   let exchange: URL;
   try {
     exchange = new URL(doc.exchangeUrl as string);
@@ -79,6 +79,16 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
       (policy === null || typeof policy !== "object" || Array.isArray(policy) || Object.keys(policy).length !== 1 || policy.events !== "required"))
     throw new Error('the managed handoff\'s policy is not exactly { events: "required" }');
   return doc as unknown as ManagedLifecycleHandoff;
+}
+
+/** Run a shared validator over one handoff field. Its diagnostic may quote the value, and a
+ *  handoff refusal never echoes one, so any failure becomes a sentence naming only the field. */
+function checkField(field: string, validate: () => unknown): void {
+  try {
+    validate();
+  } catch {
+    throw new Error(`the managed handoff's ${field} is malformed`);
+  }
 }
 
 /** The `agent-bearer --exchange-url` transport rule, so the child refuses at parse what its bearer

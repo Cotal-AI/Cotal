@@ -196,12 +196,14 @@ export function handoffEnrollmentBundle(h: ManagedLifecycleHandoff): { bundle: E
   return { bundle, stock: stock! };
 }
 
-async function registerEnrollmentMesh(stock: UserBundle, root: string): Promise<void> {
+/** `serverRefusal` replaces the server checks' diagnostics, which quote the URL, for a caller whose
+ *  refusals never echo a value. */
+async function registerEnrollmentMesh(stock: UserBundle, root: string, serverRefusal?: string): Promise<void> {
   const serverCheck = checkServer(stock.server);
-  if (!serverCheck.ok) throw new Error(serverCheck.message.replace(/^✗\s*/, ""));
+  if (!serverCheck.ok) throw new Error(serverRefusal ?? serverCheck.message.replace(/^✗\s*/, ""));
   const tlsRequired = stock.tlsRequired || tlsIntent(stock.server, false);
   const dial = checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false });
-  if (!dial.ok) throw new Error(dial.message.replace(/^✗\s*/, ""));
+  if (!dial.ok) throw new Error(serverRefusal ?? dial.message.replace(/^✗\s*/, ""));
   const exchange = await verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space));
   if (!exchange.ok) throw new Error(exchange.message.replace(/^✗\s*/, ""));
   const enforcement = checkEnforcement("user", await probeEnforcement(stock.server), stock.server, stock.space, root);
@@ -531,7 +533,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       });
       const { bundle, stock } = handoffEnrollmentBundle(handoff);
       redeemedEnrollment = { bundle, stock };
-      if (!findMesh(handoff.space)) await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."));
+      if (!findMesh(handoff.space))
+        await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."), "the managed handoff's server is not a broker URL this machine may dial");
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
