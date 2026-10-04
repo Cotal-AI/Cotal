@@ -25,7 +25,9 @@ Status: implemented for issue #1956. Section 4 names the shipped symbols, with t
   observation of the served subject through a new `takeObserved` input before it checks the caller.
   A forward the host did not observe, or already issued for, is refused. The observation keeps what
   the request's envelope asked for (`observedRunRequest` in `manager-authority.ts`), and a forward
-  naming another run for a resume, or another endpoint or amendment for an answer, is refused.
+  naming another run for a resume, or another endpoint or amendment for an answer, is refused. The
+  observation also keeps the request's `bind`, and a request bound to another instance or epoch than
+  the registered manager's is refused.
 
 The source inventory was checked at `6ca4d8e0f48d711769ea2e3710338e1e23dab82f`. Line numbers are that
 head's.

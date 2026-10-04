@@ -4507,7 +4507,9 @@ when it observed a caller publish that request and has not issued for it before,
 forward a request its caller never sent. It reads what that request's envelope asked for and issues
 only that: a resume attempt for the run its `runId` names, and an answering issuance for the
 endpoint the answer names, the manager's own when it names none, that amends when the request set
-`amend: true` and answers when it did not. An answering operator issuance always carries
+`amend: true` and answers when it did not. When the request carries a `bind` (§13.2) naming
+another instance or epoch than the manager's current registration, it issues nothing, since that
+manager refuses the request unrun. An answering operator issuance always carries
 the served subject. An amendment's issuance marks its pause with `amend: true`, and the issuing host
 then requires that pause settled `resumed` with an accepted answer instead of waiting. A legacy-rail
 answer is accepted only from a
