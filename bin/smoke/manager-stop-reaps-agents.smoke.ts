@@ -31,8 +31,9 @@
  *   REAP phase: a second manager on a separate root, `stop({ withAgents: true })`. That
  *   seat is dead and its creds are gone, while the independently spared seat remains.
  *   A failed run then prints the delivery daemon's state before teardown kills it: exited (code and
- *   signal) or still running, what one fresh request on its ctl.delivery-admin rail returns, and its
- *   output tail. A rail timeout alone reads the same for a dead, a stalled and a slow daemon (#1226).
+ *   signal) or still running, read again after the rail request so a death during it shows, what one
+ *   fresh request on its ctl.delivery-admin rail returns, and its output tail. A rail timeout alone
+ *   reads the same for a dead, a stalled and a slow daemon (#1226).
  *
  * NAMED GAPS (deliberate, not oversights):
  *   - The CLI `down` surface itself is not driven here: this host must never run `cotal down`
@@ -213,12 +214,15 @@ let spaceAuth: SpaceAuth | undefined;
 let mgr1: InstanceType<typeof Manager> | undefined;
 let mgr2: InstanceType<typeof Manager> | undefined;
 /** The delivery daemon's state when a run fails (#1226). The process state separates dead from
- *  alive. One fresh request on its rail, with the scoped one-shot credential the shipped
- *  verify-evict path uses, separates a daemon that answers now (it was slow) from one that still
- *  does not (it is stalled); "no responders" means nothing serves the rail. */
+ *  alive, and it is read before and after the probe, so a daemon that dies while the probe waits
+ *  does not read as a live one that timed out. One fresh request on its rail, with the scoped
+ *  one-shot credential the shipped verify-evict path uses, separates a daemon that answers now (it
+ *  was slow) from one that still does not (it is stalled); "no responders" means nothing serves the rail. */
 const daemonState = async (): Promise<string> => {
-  if (!daemon) return "never started";
-  const proc = daemonSink.exited ? `exited (${daemonSink.exit})` : `running (pid ${daemon.pid})`;
+  const d = daemon;
+  if (!d) return "never started";
+  const procNow = () => daemonSink.exited ? `exited (${daemonSink.exit})` : `running (pid ${d.pid})`;
+  const asked = procNow();
   let rail = "not asked (no space auth)";
   if (spaceAuth) {
     const id = newIdentity();
@@ -240,6 +244,8 @@ const daemonState = async (): Promise<string> => {
       await probe?.stop().catch(() => {});
     }
   }
+  const after = procNow();
+  const proc = after === asked ? after : `${asked} when asked, then ${after} during the ask`;
   return `${proc}; ctl.delivery-admin rail asked again: ${rail}; output tail: ${JSON.stringify(daemonSink.out.slice(-600))}`;
 };
 
