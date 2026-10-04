@@ -117,7 +117,8 @@ Every process a proof starts carries the proof's mark in `MUTATION_PROOF_RUN`. A
 run the proof kills every process still carrying its mark and prints what it killed and what
 survived. It reads the marks from `/proc`, so on other platforms it says it did not look. A process
 that rebuilt its environment without the mark is out of reach. A seat custodian is one: it keeps
-only `PATH` and `COTAL_RUN`. Each
-proof child also gets `--restore-deadline`, one minute before the reproof would kill it. An
+only `PATH` and `COTAL_RUN`.
+
+Each proof child also gets `--restore-deadline`, one minute before the reproof would kill it. An
 `afterRestore` rebuild still running at that instant is killed by the proof and its mutation is
 reported as RESTORE FAILED, because the derived artefacts may still be built from the mutant.
