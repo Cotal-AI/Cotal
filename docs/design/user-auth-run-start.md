@@ -23,7 +23,9 @@ Status: implemented for issue #1956. Section 4 names the shipped symbols, with t
 - The issuing host subscribes read-only to the resume and answer request subjects
   (`servedRunRequestSubjects` in `authority-client.ts`), and `authorizeServedRunCaller` takes the one
   observation of the served subject through a new `takeObserved` input before it checks the caller.
-  A forward the host did not observe, or already issued for, is refused.
+  A forward the host did not observe, or already issued for, is refused. The observation keeps what
+  the request's envelope asked for (`observedRunRequest` in `manager-authority.ts`), and a forward
+  naming another run for a resume, or another endpoint or amendment for an answer, is refused.
 
 The source inventory was checked at `6ca4d8e0f48d711769ea2e3710338e1e23dab82f`. Line numbers are that
 head's.
@@ -397,17 +399,26 @@ paragraphs. The first sits in §13.15 after **Resolution**:
 The second sits in §14.8 after **Resume, fork, local, restore**:
 
 > **User-auth runs.** A user-auth run is hosted by a signerless participant manager, and its issuing
-> host writes the admission. The issuing host admits a run-start whose caller has a derived user owner
-> only when that owner is the manager's registered owner, the owner whose `supervise` grant registered
-> the instance, so every user-admitted run on a participant manager belongs to that one owner. A
-> caller-requested resume and every principal answer or amendment ride the versioned rail. The manager
-> forwards the request subject it served with the attempt or operator issuance it asks for, and the
-> issuing host re-parses that subject, requires the caller's owner to be the run's admitted owner for a
-> resume and the registered owner for an answer, resolves the caller's own issuance as live, and
-> requires its publish ceiling to permit that subject. A legacy-rail answer is accepted only from a
-> managed seat of that owner whose actor-ledger row is live, on the relay path of §14.5. A boot
-> reconcile forwards no subject and continues under the original admission. This revision hosts no
-> user-auth run on the signer-holding host's own manager.
+> host writes the admission. The issuing host admits a run-start whose caller has a derived user
+> owner only when that owner is the manager's registered owner, the owner whose `supervise` grant
+> registered the instance, so every user-admitted run on a participant manager belongs to that one
+> owner. A caller-requested resume and every principal answer or amendment ride the versioned rail.
+> The manager forwards the request subject it served with the attempt or operator issuance it asks
+> for, and the issuing host re-parses that subject, requires a user caller's owner to be the run's
+> admitted owner for a resume and the registered owner for an answer, resolves the caller's own
+> issuance as live, and requires its publish ceiling to permit that subject. The issuing host
+> subscribes to those resume and answer request subjects itself and never replies on them, and it
+> issues for a forwarded subject only when it observed a caller publish that request and has not
+> issued for it before, so a manager cannot forward a request its caller never sent. It reads what
+> that request's envelope asked for and issues only that: a resume attempt for the run its `runId`
+> names, and an answering issuance for the endpoint the answer names, the manager's own when it
+> names none, that amends when the request set `amend: true` and answers when it did not. An
+> answering operator issuance always carries the served subject. An amendment's issuance marks its
+> pause with `amend: true`, and the issuing host then requires that pause settled `resumed` with an
+> accepted answer instead of waiting. A legacy-rail answer is accepted only from a managed seat of
+> that owner whose actor-ledger row is live, on the relay path of §14.5. A boot reconcile forwards
+> no subject and continues under the original admission. This revision hosts no user-auth run on the
+> signer-holding host's own manager.
 
 No existing sentence is reworded.
 
@@ -425,6 +436,7 @@ No existing sentence is reworded.
 | A legacy-rail `run-answer` from a managed seat of another owner, or one whose row is gone | issuing host | `permission-denied` |
 | An `operator.answers` request with no `served` | issuing host | `permission-denied`, after the pause check |
 | A served resume or answer the issuing host did not observe on the broker, or a second forward of one it did | issuing host | `permission-denied`, not observed |
+| A forwarded resume naming another run than the observed request, or an answer naming another endpoint or amendment | issuing host | `permission-denied`, another operation |
 | An amendment for a pause that has no accepted answer | issuing host | `failed-precondition` |
 | A boot-reconcile attempt for a revoked run | issuing host | existing refusal, `run <runId> was revoked; a revoked run is issued nothing (SPEC 14.8)` |
 
@@ -451,6 +463,11 @@ No existing sentence is reworded.
   can therefore start runs for its own owner's live issuances and, as on main, for a static caller's,
   never for another user. Resumes and answers are bound to a request the issuing host observed;
   issue #2465 tracks the same binding for `run-start`.
+- The pause token an answering issuance pins is still the manager's word. The issuing host checks the
+  observed answer's endpoint and amendment and that the pause is waiting, or settled for an
+  amendment, but a token is derived inside the run and only the run's journal maps it to a run and
+  step. A dishonest participant manager holding one observed answer can therefore ask for a different
+  pause on the `manager` endpoint than the one that answer named. Issue #2535 tracks it.
 
 ## 9. Acceptance for the implementation round
 

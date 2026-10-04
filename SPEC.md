@@ -4504,7 +4504,10 @@ for a resume and the registered owner for an answer, resolves the caller's own i
 requires its publish ceiling to permit that subject. The issuing host subscribes to those resume and
 answer request subjects itself and never replies on them, and it issues for a forwarded subject only
 when it observed a caller publish that request and has not issued for it before, so a manager cannot
-forward a request its caller never sent. An answering operator issuance always carries
+forward a request its caller never sent. It reads what that request's envelope asked for and issues
+only that: a resume attempt for the run its `runId` names, and an answering issuance for the
+endpoint the answer names, the manager's own when it names none, that amends when the request set
+`amend: true` and answers when it did not. An answering operator issuance always carries
 the served subject. An amendment's issuance marks its pause with `amend: true`, and the issuing host
 then requires that pause settled `resumed` with an accepted answer instead of waiting. A legacy-rail
 answer is accepted only from a
