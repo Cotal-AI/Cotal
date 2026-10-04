@@ -1393,21 +1393,32 @@ MUST NOT derive it from, or bind it to, an IdP subject, and MUST NOT name a `u_`
 No human is authenticated, and no ledger `supervise` scope is read or synthesized.
 
 The view exists only while the host's current platform-control assignment names it. An assignment
-is one row `{ space, accountPublicKey, instanceId, lifecycleUid, assignmentRevision, state }` that
-the platform backend alone writes. The host MUST read it fresh for every request under this view
+is one row `{ space, accountPublicKey, instanceId, lifecycleUid, predecessorInstanceId?,
+assignmentRevision, state }` that the platform backend alone writes. An account has at most one
+current row, so it has at most one platform control instance. The host MUST read it fresh for every
+request under this view
 and MUST refuse, writing nothing, when it is absent or `revoked`, or when it disagrees with the
 request's account, instance id, lifecycle UID, or assignment revision. A failed read MUST refuse
 rather than reuse an earlier answer. The instance id and lifecycle UID are the assignment's, not
-the caller's choice, and the actors are the same fixed functions of the instance id. Apart from the
+the caller's choice. They stay the same across the instance's restarts: a restart re-registers
+through the same-principal registration barrier at an advanced process epoch and is never a second
+instance. The actors are the same fixed functions of the instance id. When the assignment names a
+`predecessorInstanceId`, the host MUST refuse `prepare` and `activate` with `failed-precondition`,
+writing nothing, while that instance has a current `svc.manager` registration or a `frozen`
+issuance gate. The host only reads that instance's rows. It MUST NOT probe, freeze, evict, revoke,
+reopen, or deregister them. Apart from the
 holder's owner and this authorization source, the view is the `manager-service` family: the same
 `svc.manager.<instanceId>`, `epgate.manager.<instanceId>`, and
 `epcred.manager.<instanceId>.<credentialId>` rows, ledgered and gated as this section requires, with
 `holderPrincipal` the platform owner plus the fixed actor.
 
 The view MUST NOT reach an instance whose issuance gate names another principal, including an
-instance a signed-in human registered under `manager-service`. There is no force or takeover path
-between the two views. Such an instance retires through its own owner's path before a platform
-instance may register. Both registration proofs bind the owner, so a `manager-service` proof never
+instance a signed-in human registered under `manager-service` and a manager registered under the
+`local` owner. There is no force or takeover path between the two views. Such an instance retires
+through its own owner's path before a platform instance may register. A re-registration never
+changes an instance's owner, so the view never binds to an existing instance registered under
+another owner. It registers its own assigned instance once that instance's predecessor has left
+through the predecessor's own path. Both registration proofs bind the owner, so a `manager-service` proof never
 validates under this view and a `platform-control` proof never validates under `manager-service`.
 
 A manager holding this view MUST run with no local signing trust and no local or custodial runtime
@@ -4626,7 +4637,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
-| 2026-10-04 | **Platform control authority (§13.1, §13.6, §13.9), additive, not yet implemented.** A closed server-authored `platform-control` view, beside the unchanged human `manager-service` view, lets a host run one pooled control manager per assigned account. Its holder's owner is a host-derived `p_` platform owner token, disjoint from every `u_` owner. The host's fresh platform-control assignment authorizes it in place of a ledger `supervise` scope. One closed envelope carries the existing typed manager requests through an in-process door of the host's authority context, served on no listener. The unchanged registration proof, process epoch, and all-duty renewal renew and fence it. Its host-owned maintenance reaches only the assigned instance under its own gate. It refuses human tokens, takeover of another owner's instance, local or custodial runtime, generic signing, exchange issuance, and cross-owner descendants. |
+| 2026-10-04 | **Platform control authority (§13.1, §13.6, §13.9), additive, not yet implemented.** A closed server-authored `platform-control` view, beside the unchanged human `manager-service` view, lets a host run one pooled control manager per assigned account. Its holder's owner is a host-derived `p_` platform owner token, disjoint from every `u_` owner. The host's fresh platform-control assignment authorizes it in place of a ledger `supervise` scope. One closed envelope carries the existing typed manager requests through an in-process door of the host's authority context, served on no listener. The unchanged registration proof, process epoch, and all-duty renewal renew and fence it. Its host-owned maintenance reaches only the assigned instance under its own gate. An account has one assignment and so one control instance, which keeps its instance id and lifecycle UID across restarts and enters a deployment only after the assignment's named predecessor manager has left through its own path, read and never written by the host. It refuses human tokens, takeover of another owner's instance, local or custodial runtime, generic signing, exchange issuance, and cross-owner descendants. |
 | 2026-10-02 | **Plane liveness (§6.1), additive.** A credentialed peer can ask whether the manager or delivery plane has a bound responder, on `live.<plane>.<owner>.<actor>` with the reply under `<request>.reply.<nonce>`. The reply is `LivenessAnswer`: `plane`, a `ResponderState` verdict, and an optional opaque per-bind `instance` token that distinguishes responders without identifying them. Only the broker's no-responders answer grades `unbound`; every other failure to get a readable reply grades `unknown`. Agents gain the per-plane request and reply rows; the `delivery`, `supervisor` and remote-manager supervisor credentials gain their plane's serve filter and bounded reply grant. A responder binds again on every connection that replaces the one it bound on, and the manager is not `bound` while its service connection is closed or disconnected. |
 | 2026-09-28 | **The `auth` endpoint becomes a conforming registered endpoint (Cotal #399), closing the two gaps the prior two rounds named.** The plane's boot registers `svc.auth.<instanceId>` through the standard `registerServiceInstance` path and publishes its `retire-lifecycle` contract artifacts to the content-addressed contract store, so the endpoint now serves the reserved `describe` and answers the v1 envelope (`ep.v1`) instead of the legacy `{op,args}`/`{ok,data,error}` body this document states are deleted; a legacy body is refused `unsupported-version` as envelope validation, never an ACL denial. The requester side moves from a hand-built subject to the generic client (`resolveService` + `invokeCommand`), still minted in `exact` mode target-pinned to one incarnation at mint time, and gains the baseline `describe` row plus a bounded contract-store direct-get row so it can resolve the endpoint's registered digests before it calls; a body target that disagrees with the exact subject triple is refused `target-mismatch`. Two new §13.9 rows record the registered instance and the requester's describe/store-read grants. |
 | 2026-09-27 | **Id-less messages are not publish-deduplicated on the durable plane (§8).** The reference Plane-3 fan-out writer and membership-transfer frame publish carry no `Nats-Msg-Id` for a message whose `id` is `""`, so two distinct id-less posts on a durable channel both reach a member and a redelivery of one id-less post may surface twice; a message with a real id keeps its idempotent publish key unchanged. Classification: reference-binding behaviour, no wire-envelope or schema change, protocolVersion unchanged. |

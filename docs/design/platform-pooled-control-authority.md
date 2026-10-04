@@ -3,7 +3,7 @@
 Status: proposed contract. Nothing here is implemented or released. This change adds the design and
 the normative SPEC §13 text only. It adds no runtime path, no issuer, no daemon and no exported type.
 None of the symbols in sections 3.1 and 3.2 exists in source or in a built declaration at this head,
-so a platform composition cannot import them or call the door yet. Section 8 lists each symbol's
+so a platform composition cannot import them or call the door yet. Section 9 lists each symbol's
 status and why it waits.
 The source inventory below was checked at `06f48f40473f809bcb31f2ba21b3ceb1d33ccc18` (v0.58.0).
 
@@ -39,12 +39,14 @@ are refused here.
 ## 2. Scope
 
 In scope: one new optional door on the hosted authority handle, its request and result types, the
-host-side assignment observation it authorizes against, the holder principal, the refusals, and the hand
+host-side assignment observation it authorizes against, the holder principal, the transition into
+an existing deployment, the lifetime input the renewal proof needs, the refusals, and the hand
 acceptance a host must pass. SPEC §13.1, §13.6 and §13.9 gain clauses, and Appendix B gains a
 profile bullet.
 
 Out of scope: any change to the human `manager-service` view, a generic host profile, a hosted
-launcher or Runtime, a new daemon or listener, cross-owner control of human agents, release.
+launcher or Runtime, a new daemon or listener, cross-owner control of human agents, moving an
+existing agent to the platform owner, release.
 
 ## 3. The composition
 
@@ -77,16 +79,28 @@ method and not an HTTP route. Three facts about the shipped hosted path decide t
   Exposing it on the hosted inputs or handle so a control worker can call a route would give that
   worker authority beyond its assignment.
 
-So `AuthProvider` gains no method in this design. A protected capability on the hosted inputs was weighed against the typed in-process method. The
-method needs no listener route, no capability distribution and no discovery file. It gives the
-caller nothing but the closed request it makes. So the method is the proposal, and no new protocol
-is added. A platform that runs the control manager in another process or uid carries the closed
-envelope to the authority process over its own caller-bound channel. That channel is the platform's
-peer-uid-checked adapter from the hosted runtime contract. The authority process calls the method
-in-process. The control worker never holds the capability or the account signer.
+Two shapes can let the trusted authority side run the closed issuer operations for the service
+view without handing the control worker the capability or the account signer. Both were weighed:
+
+| | A. Typed in-process method on the hosted handle | B. Protected capability option on the hosted inputs |
+|---|---|---|
+| What the host adds | `platformControl` on the `startAuthService` inputs and one optional method on `AuthServiceHandle` | a host-supplied capability on `HostedContextInputs`, plus a route on the loopback listener that checks it |
+| New protocol | none; a typed call inside the authority process | a route and request body on a listener |
+| Secret handed out | none | the capability, to every caller that must reach the route |
+| What the caller can do | only the closed request it makes, for its own assignment | whatever the capability authorizes. Today's loopback capability also authorizes the lifecycle-retirement doors, so a platform-only capability would be a second standing secret for the account |
+| Control worker in another process | the platform's own peer-uid-checked channel carries the envelope to the authority process | the route is the channel, and the capability lives in the control worker |
+
+Option B does not avoid a new protocol. The capability only authenticates; the closed operations
+still need a route, and the route is the new protocol. It also puts a standing secret in the
+control worker that authorizes more than its own assignment. Option A adds neither. So the method
+is the proposal, `AuthProvider` gains no method, and no new protocol is added. A platform that runs
+the control manager in another process or uid carries the closed envelope to the authority process
+over its own caller-bound channel. That channel is the platform's peer-uid-checked adapter from the
+hosted runtime contract. The authority process calls the method in-process. The control worker
+never holds the capability or the account signer.
 
 Declarations for `packages/core/src/remote-manager-authority.ts`, written here so a producer can
-adapt against them. They land in the implementation round (section 8).
+adapt against them. They land in the implementation round (section 9).
 
 ```ts
 /** The closed set of typed manager requests the service door carries. Each inner request keeps its
@@ -142,13 +156,19 @@ Declarations for `@cotal-ai/auth`, implementation round:
 
 ```ts
 /** One platform-run control manager assigned to one account. The platform backend is its only
- * writer. The authority context reads it fresh for every service-door call and never caches it. */
+ * writer, and an account has at most one current row. The authority context reads it fresh for
+ * every service-door call and never caches it. */
 export interface PlatformControlAssignment {
   v: 1;
   space: string;
   accountPublicKey: string;
+  /** The platform's protected, stable control instance id. Reused across every restart. */
   instanceId: string;
+  /** The control instance's manager lifecycle UID. Reused across every restart. */
   lifecycleUid: string;
+  /** The manager instance this control instance replaces, from the backend's protected mapping.
+   * The door only reads its registration and gate; it never writes them (section 7). */
+  predecessorInstanceId?: string;
   assignmentRevision: number;
   state: "assigned" | "revoked";
 }
@@ -157,8 +177,12 @@ export function startAuthService(inputs: HostedContextInputs & {
   port?: number;
   /** Present only in a platform composition. Absent: the handle has no service door. */
   platformControl?: {
-    observeAssignment(space: string, instanceId: string): Promise<PlatformControlAssignment | null>;
+    /** The one current assignment for this account, or null. */
+    observeAssignment(space: string, accountPublicKey: string): Promise<PlatformControlAssignment | null>;
   };
+  /** Trusted-host only. Forwarded unchanged to `openAuthAuthorityPlane`, which bounds it to
+   * 5..86400 as today. Absent: the 24h default. No CLI flag and no request field sets it. */
+  standingRenewableTtlSeconds?: number;
 }): Promise<AuthServiceHandle>;
 
 export interface AuthServiceHandle extends HostedServiceHandle {
@@ -182,10 +206,15 @@ serves it. One call runs in this order, and every refusal writes nothing:
 1. The envelope is closed. An unknown field, including `idpToken`, is `bad-request`. `space` and
    `accountPublicKey` must equal the context's own `HostedContextInputs`, so one context never
    issues for another account.
-2. `observeAssignment(space, instanceId)` is read fresh, with the inner request's `instanceId`. It
-   must exist and be `assigned`, and its account, revision and `lifecycleUid` must equal the
-   envelope's and the inner request's `managerLifecycleUid`. A null or `revoked` row is
-   `permission-denied`. An observer error is `unavailable`, never a cached answer.
+2. `observeAssignment(space, accountPublicKey)` is read fresh. It must exist and be `assigned`. Its
+   account and revision must equal the envelope's, and its `instanceId` and `lifecycleUid` must
+   equal the inner request's `instanceId` and `managerLifecycleUid`. A null or `revoked` row, or an
+   instance the row does not name, is `permission-denied`. An observer error is `unavailable`,
+   never a cached answer. One row per account means one control instance per account.
+   For `prepare` and `activate` only, when the row names a `predecessorInstanceId`, the host reads
+   that instance's `svc.manager` registration and its `epgate.manager` row. A current registration
+   or a `frozen` gate is `failed-precondition`, and the host does not probe, freeze, evict, revoke
+   or deregister it (section 7).
 3. `owner = platformControlOwner(...)`. The owner is never read from the request.
 4. The inner request goes through its existing closed parser. Its `actor` field must be the literal
    `"cli"`. That literal is the shipped request builders' envelope constant. The service door never
@@ -255,8 +284,10 @@ which mints both locally. Stock `cotal supervise` is unchanged and gains no flag
 - The account comes from the assignment. It must equal the authority context's account, and the
   issued JWTs name it in `nats.issuer_account`. The Manager re-checks it on every renewal.
 - The instance id and lifecycle UID come from the assignment. A request carrying any other value is
-  refused before parsing reaches issuance. A retired lifecycle is never revived (§13.1). A new
-  incarnation needs a new lifecycle UID from the backend.
+  refused before parsing reaches issuance. The platform keeps both in its protected store and
+  reuses them on every restart, so a restart is the same instance at a later process epoch, never
+  a second instance. A retired lifecycle is never revived (§13.1). A new incarnation needs a new
+  lifecycle UID from the backend.
 - The owner is derived from the space and account, so it is stable across instance replacement and
   changes when a same-slug account is recreated.
 - The nkeys are caller-held. The registration proof binds them, and the host checks `sub` against
@@ -284,6 +315,31 @@ which mints both locally. Stock `cotal supervise` is unchanged and gains no flag
   `activate` under a current assignment.
 - Renewal never re-authenticates a person, because the door has no person in it.
 
+The renewal proof runs on the real paths with no fake clock. Two cadences matter, both read from
+source at the head above:
+
+- The all-duty bundle. `renewRemoteStandingBundleOnce` renews when any of the five held
+  credentials is past its renewal point (75% of its iat-to-exp lifetime). The executor in every
+  `prepare` and `renewStandingBundle` result has a fixed five-minute lifetime, and the timer ticks
+  every `min(credRenewIntervalMs(300), credRenewIntervalMs(ttl))`, which is 75 seconds for any TTL
+  of five minutes or more. So with the default 24h TTL the five-credential renewal already runs
+  about every four to five minutes.
+- Everything that moves only on the standing TTL. The run-driver and run-mediator pair renew past
+  their own renewal point (`RunHosting.renew`), and the expiry half of revocation (H9) waits for a
+  credential to reach `exp`. With the 24h default each of these takes 18 to 24 hours of wall clock
+  per attempt.
+
+`openAuthAuthorityPlane` already accepts `standingRenewableTtlSeconds` (bounded 5..86400,
+trusted-host only), and the remote manager derives its timer from the issued credential's
+`exp - iat`. No shipped composition passes it: `startAuthContext` opens the plane without it,
+`startAuthService` has no input for it, and the CLI has no flag. This design proposes the
+one-field pass-through on the `startAuthService` inputs (section 3.2) over the full 24h wall clock.
+It changes only the lifetime the host signs, the host sets it, and the plane's existing bound
+applies. With a 300-second TTL every standing credential, the run-driver pair included, passes its
+renewal point about 225 seconds after issue and renews on the next 75-second tick, on the same
+code a 24h host runs. A host that does not set it can still pass H7 by waiting out the 24h clock.
+A constructor test is not a renewal proof.
+
 ## 6. The holder principal
 
 The holder is a platform principal: owner `p_…`, actors fixed by the instance id. It is never a
@@ -304,7 +360,52 @@ equals the service owner. This change issues no `p_` principal outside the manag
 in practice no external caller is authorized for owner-domain admin. A human `admin` scope never
 reaches a platform manager. Human operator access to a platform manager would be a separate delta.
 
-## 7. Refusals
+## 7. Entering an existing deployment
+
+The production target is existing stock 0.55 deployments on Node 22 (broker, authority context and
+manager) that keep their account keys, issuer, agents and sessions. The service view enters one
+through a fenced transition.
+
+- **Authority side.** The deployment's authority context is upgraded in place to a release that
+  carries the door. The account key and issuer stay the deployment's own, and the door issues only
+  for that context's account (section 3.2, step 1). A 0.55 authority context has no door, so the
+  platform's control manager fails closed at its first door call. It never falls back to the human
+  door or to material it signs itself.
+- **Stable instance id and lifecycle UID.** The platform keeps one protected record per account:
+  the control instance id (a lifecycle token) and its manager lifecycle UID. The backend writes both
+  into the account's one assignment. The control worker reads them from the assignment and never
+  chooses or mints them. Every restart reuses both, and a restart is the existing same-principal
+  re-registration: the barrier freezes `epgate.manager.<instanceId>`, verify-evicts the superseded
+  family and advances `processEpoch`. The predecessor process's renewal at the old epoch is
+  `conflict` (H8).
+- **The legacy manager's registration stays its own.** At the head above, a stock local manager
+  registers `svc.manager.<legacyInstanceId>` under the `local` owner, with its persisted serve nkey
+  as the gate principal's actor. A human remote manager registers under its `u_` owner. Core
+  refuses a re-registration that changes an instance's owner (`registerServiceInstance`: "a
+  re-registration can never change ownership"), a gate's principal is fixed when the gate is
+  provisioned, and a gate is never deleted. So the platform principal never binds to the legacy instance's registration,
+  gate or lifecycle. An assignment that names the legacy instance id as its own `instanceId` is
+  refused at the gate principal check (R2).
+- **Closed predecessor first.** The backend's protected mapping names the legacy instance as the
+  assignment's `predecessorInstanceId`. `prepare` and `activate` proceed only when that instance has
+  no current `svc.manager` registration and its gate is not `frozen` (section 3.2, step 2). A stock
+  manager's clean stop deregisters its record, so the order is: the legacy manager stops through its
+  own path, then the control instance prepares and activates. A legacy manager that crashed keeps
+  its record and blocks the transition until its own operator path removes it. The door only reads
+  the predecessor. The platform composition passes no `reconcileForeignRegistration` callback, and
+  the door's maintenance cannot target another instance (step 6). So the platform never evicts,
+  freezes, reopens or deregisters a legacy manager, and never force-takes a live one.
+- **Agents and sessions.** Agents keep their own lifecycle credentials and their owner. The service
+  view provisions, retires and administers only agents whose owner is its `p_` token (R8). An agent
+  owned by `local` or a `u_` owner keeps running on its own authority, under its own owner. Moving
+  it under the platform owner would be a separate owner-transfer delta. Endpoint sessions the
+  legacy manager served end with its serving epoch (§13.6) and are established again against the
+  control instance.
+- **Runtime.** The platform embedding supplies its own non-custodial `Runtime` that implements
+  core's contract and constructs the Manager with `pooled: true`. This design adds no hosted
+  launcher, Runtime or daemon upstream (R3, R5).
+
+## 8. Refusals
 
 Each refusal maps to the SPEC clause that states it. A security reviewer can check the pair.
 
@@ -312,15 +413,17 @@ Each refusal maps to the SPEC clause that states it. A security reviewer can che
 |---|---|---|---|
 | R1 | No human impersonation | the closed envelope has no IdP field and refuses one; the owner is derived from the assignment in the `p_` grammar; issuance never reads or synthesizes `supervise`; proofs and gate principals are owner-bound, so neither door accepts the other's material | §13.1 Platform control authority, first and third paragraphs; §13.6 Platform control registration |
 | R2 | No takeover of another owner's instance | the service door refuses an instance whose gate principal names any other owner, including a human-owned instance; maintenance `targetInstanceId` must be the assigned instance and its gate principal the platform serve principal before any effect (section 3.2, step 6); no force path; that instance retires through its own owner's path first | §13.1 Platform control authority, third paragraph; §13.6 Platform control registration, maintenance paragraph |
-| R3 | No local or custodial runtime | the composition must construct `pooled: true`, and the existing constructor checks refuse PTY, `auto` and custodial runtimes; the host issues no signer, provisioner or launch authority, so the family cannot run local custody on the host's behalf | §13.1 fourth paragraph; Appendix B `platform-control` |
+| R3 | No local or custodial runtime | the composition must construct `pooled: true`, and the existing constructor checks refuse PTY, `auto` and custodial runtimes; the host issues no signer, provisioner or launch authority, so the family cannot run local custody on the host's behalf; the platform supplies its own non-custodial Runtime and this design adds no hosted launcher or Runtime upstream | §13.1 fourth paragraph; Appendix B `platform-control` |
 | R4 | No generic signing RPC | a closed union of seven existing kinds; the envelope has no profile, permission, subject, TTL or claim input; inner requests keep only their existing operation-specific coordinates, validated as on the human route (session `exp` capped at the host bound, run admission `run.subject` checked against the caller's issued ceiling); unknown fields `bad-request`; managed-agent kinds `unimplemented` | §13.6 Platform control registration |
 | R5 | No new daemon, listener or protocol | one in-process method on the hosted authority handle, present only when the host supplies `platformControl`; never constructed by `runAuthService`; no route on any listener; the loopback capability is never handed out; the platform supplies its own Runtime and its own caller-bound channel | §13.6 Platform control registration |
 | R6 | Not an exchange view | `platform-control` is never a `view` on `/exchange`; the public and managed-agent exchanges refuse it as an unknown view | §13.1 Platform control authority, first paragraph |
-| R7 | No assignment, no authority | absent observer: no door on the handle. Null, revoked or stale assignment: `permission-denied`. Observer failure: `unavailable` | §13.1 second paragraph; §13.6 |
+| R7 | No assignment, no authority | absent observer: no door on the handle. Null, revoked or stale assignment, or an instance id or lifecycle UID the account's one assignment does not name: `permission-denied`. Observer failure: `unavailable` | §13.1 second paragraph; §13.6 |
 | R8 | Same-owner descendants only | enrollment, retirement, retained validation and admin authorization all bind to the `p_` owner; a human-owned agent is never provisioned, retired or administered through this view | §13.9 Platform control grant |
 | R9 | Human view unchanged | every existing human remote-supervision clause is byte-identical; the SPEC diff for this change is insertion-only | §13.1, §13.6, §13.9 (existing text) |
+| R10 | No force-take of a live legacy manager | `prepare` and `activate` refuse `failed-precondition` while the assignment's `predecessorInstanceId` has a current `svc.manager` registration or a `frozen` gate; the door only reads the predecessor and never probes, freezes, evicts, revokes or deregisters it; no `reconcileForeignRegistration` callback; maintenance confined to the assigned instance (section 3.2, steps 2 and 6; section 7) | §13.1 Platform control authority, second and third paragraphs |
+| R11 | No rebinding of an existing instance to the platform owner, and no invented `u_` owner | core refuses a re-registration that changes an instance's owner; a gate's principal is fixed at provisioning and a gate is never deleted; the door refuses an instance whose gate names another principal; the platform's own instance id and lifecycle UID stay stable across restarts, which re-register at a later process epoch; the owner is always the derived `p_` token (section 7) | §13.1 Platform control authority, second and third paragraphs |
 
-## 8. Why the declarations wait for the implementation round
+## 9. Why the declarations wait for the implementation round
 
 | Symbol | Package | Status at this head |
 |---|---|---|
@@ -328,6 +431,8 @@ Each refusal maps to the SPEC clause that states it. A security reviewer can che
 | `PLATFORM_OWNER_PREFIX`, `assertPlatformOwnerToken` | `@cotal-ai/core` | proposed, absent |
 | `PlatformControlAssignment`, `platformControlOwner` | `@cotal-ai/auth` | proposed, absent |
 | `startAuthService` input `platformControl`, `AuthServiceHandle.platformControlAuthority` | `@cotal-ai/auth` | proposed, absent; both shipped signatures unchanged |
+| `PlatformControlAssignment.predecessorInstanceId` and the read-only predecessor check (section 3.2, step 2) | `@cotal-ai/auth` | proposed, absent |
+| `startAuthService` input `standingRenewableTtlSeconds`, forwarded to `openAuthAuthorityPlane` | `@cotal-ai/auth` | proposed, absent; the plane's option and its 5..86400 bound are shipped |
 | the `holder` authorization union and the maintenance guard (section 3.2, steps 5 and 6) | `@cotal-ai/auth` | proposed, absent |
 | `remoteStandingBundleRenewal`, both registration proofs, `authorizeRemoteManagerRenewal`, `ManagerOptions.pooled` | core, auth, manager | shipped, reused unchanged |
 
@@ -341,8 +446,16 @@ in the implementation round, for these reasons:
   let read guards accept owners no host mints, with no native test of the producer. The grammar,
   the issuer and the negative tests have to land together.
 - The authorization input change in the auth dispatch functions is code, and this round adds none.
+- An optional `platformControl` input with no door behind it would be ignored when a host passes it.
+  That is a silent fallback. Refusing it would be a runtime path. Neither belongs in a contract
+  round, so the input lands with the door.
 
-## 9. Native acceptance
+A consumer that imports these symbols from the built packages fails to compile at this head
+(TS2305 for the core request type, TS2353 for the `platformControl` input, TS2339 for the handle
+method). That is the accurate availability at this head. H1 and H5 are the first rows an
+implementation must pass.
+
+## 10. Native acceptance
 
 These are hand tests an operator runs against a real broker, a hosted authority context started
 with `startAuthService` and `platformControl`, and the platform's own composition and Runtime. They
@@ -354,11 +467,11 @@ row matches.
 | H1 | Start the context without `platformControl` | `handle.platformControlAuthority` is `undefined` |
 | H2 | With `platformControl`: POST any `/platform-control*` path to the loopback and public listeners, with and without the capability | 404 on both; no gate or ledger write (auth KV revisions unchanged) |
 | H3 | Call the door with an envelope that also carries `idpToken` | `bad-request`; no material |
-| H4 | Call the door with no assignment, a `revoked` one, a stale `assignmentRevision`, another account, another `lifecycleUid` | `permission-denied` for each; no write |
+| H4 | Call the door with no assignment, a `revoked` one, a stale `assignmentRevision`, another account, another `lifecycleUid`, and an `instanceId` the account's assignment does not name | `permission-denied` for each; no write |
 | H5 | `prepare` then `activate` on a fresh assignment | `material.owner` matches `^p_[a-z2-7]{26}$`; `material.actors` equals `remoteManagerActors(instanceId)`; every JWT names the assigned account in `nats.issuer_account` and a caller-held nkey in `sub`; the `epgate.manager.<instanceId>` principal is `<p_owner>.manager_serve_<instanceId>` |
 | H6 | Construct the platform Manager with `pooled: true` and `runtime: "pty"`, then with the platform Runtime | first refused with the pooled PTY sentence; second starts, and its roster card owner is the `p_` token |
-| H7 | Drive a standing renewal by waiting for the renewal point of the default 24h standing TTL. No shipped composition passes `openAuthAuthorityPlane`'s `standingRenewableTtlSeconds` (5 to 86400), so a shorter proof needs the implementation round to thread it through `startAuthService` as a trusted-host input | all five credentials replaced; same nkeys, same account, process epoch unchanged; no all-duty renewal refusal in the manager log |
-| H8 | Restart the platform manager, then replay the predecessor's `renewStandingBundle` with the old `processEpoch` | `conflict` (stale epoch); no JWT returned |
+| H7 | Start the context with `standingRenewableTtlSeconds: 300` (section 5), start the platform manager, admit one hosted run, and leave both running for 15 minutes with no clock change. A host without the pass-through runs the same row at the 24h default for 25 hours | at least two all-duty renewals in the manager log, each replacing all five credentials with new `iat` and `exp`, the same nkeys, the same account and an unchanged process epoch; the run-driver and run-mediator credentials replaced past their renewal point; no all-duty renewal refusal |
+| H8 | Restart the platform manager, then replay the predecessor's `renewStandingBundle` with the old `processEpoch` | the restarted manager keeps the assignment's instance id and lifecycle UID, and its gate's `processEpoch` is one higher; the replay is `conflict` (stale epoch); no JWT returned |
 | H9 | Backend marks the assignment `revoked` | the next renewal is `permission-denied`; the manager keeps last-good and logs debt; after expiry the broker refuses its connections; restart needs a new assignment |
 | H10 | Present a human `manager-service` registration proof to the door for that instance, a service-view request on `/manager-service-authority` with a human IdP token, and a door call for an instance whose gate principal is a `u_` owner | all refused; the human instance's gate is unchanged |
 | H11 | Send an inner request with an extra field (`profile`, `permissions`, `ttl`), a managed-agent enrollment kind, and an unknown kind. Then send a `session` request whose `exp` is 48h ahead | `bad-request`, `unimplemented`, `bad-request`; the session-serving JWT's `exp` is at most 24h after issue |
@@ -366,8 +479,11 @@ row matches.
 | H13 | A `u_` principal asks the platform manager to spawn, and asks `authorizeAdmin` | spawn refused on owner mismatch; `authorized: false` |
 | H14 | Check the host for new listeners and daemons, and the control worker for the capability and signer | no new listening socket in `ss -ltnp`; the control worker's environment, files and store hold neither the loopback capability nor the account signing seed |
 | H15 | Freeze a human `manager-service` registration on instance B in the same space (stop it mid-registration). Then call the door with a `reconcile-registration` maintenance request whose `targetInstanceId` is B, and with an `evict-family-principal` request that targets B. Then run the same reconciliation as B's human owner through `manager-service` | the two door calls are `permission-denied` before any probe; B's gate revision, its `epcred` family and its holders are unchanged (auth KV revisions unchanged); the human owner's reconciliation runs as before |
+| H16 | On a deployment running a stock legacy manager, write an assignment whose `predecessorInstanceId` names it, with the legacy manager still running. Call `prepare` | `failed-precondition` naming the predecessor; the legacy manager's `svc.manager` record, its gate revision and its credential family are unchanged; no eviction or freeze request reaches the delivery-admin rail |
+| H17 | Stop the legacy manager through its own clean stop, then `prepare`, `activate` and start the platform manager | the legacy record is absent and its gate still names its own principal; the platform gate names `<p_owner>.manager_serve_<instanceId>`; the account public key and issuer are the deployment's existing ones; agents of other owners keep running on their own credentials, and the platform manager refuses to spawn, retire or administer them |
+| H18 | Write an assignment whose `instanceId` is the legacy manager's instance id, then call `prepare` and `activate` | refused before any material is issued; the legacy gate and record are unchanged |
 
-## 10. Residual risk
+## 11. Residual risk
 
 The door trusts its in-process caller. In a split layout the platform's caller-bound channel is the
 boundary. It must bind each caller (peer uid) to one assignment, and the door still refuses any
@@ -380,3 +496,10 @@ adapter. The service door adds one closed request type to that adapter and no se
 The assignment observer is a host callback. A backend that writes a wrong assignment issues
 authority to the wrong instance. The door narrows that to one account per context, one instance and
 one lifecycle per row, and the gate's single principal. It cannot make a wrong backend write right.
+
+The predecessor check runs at `prepare` and `activate`. It cannot stop a legacy manager that its own
+operator starts again later, and it sees no legacy manager the assignment does not name. The
+platform's transition must name the predecessor and disable the legacy start path. A legacy
+manager started again registers its own instance under its own owner beside the control instance.
+That is a second manager in the space but not a takeover: the service view never reaches the legacy
+manager's gate, and the legacy restart re-registers only its own instance.
