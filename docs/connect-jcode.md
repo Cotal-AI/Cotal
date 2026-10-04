@@ -152,7 +152,12 @@ that unacknowledged batch only after the session attaches. Each failed replaceme
 stopped before another launch. A permanent Harness refusal, including an invalid request, missing
 session, protocol mismatch, missing binary, or socket permission denial, ends the seat immediately;
 another launch cannot change it. An unprovable teardown, the recovery window expiring, or a second
-disconnect after a successful replacement also ends the seat. An unrecognized Harness SDK error
+disconnect after a successful replacement also ends the seat. When a turn failed on a Harness error
+and no turn has succeeded since, whether the host or the TUI owned it, the connector line that ends
+the seat this way also names that error as `last turn error: <message>`, so the manager's
+`seat reaped:` line carries it without a read of the seat's private log. The reap line keeps only the
+first 240 characters, so that field comes before the error of a failed recovery, which then reads
+`recovery error: <message>`. An unrecognized Harness SDK error
 code remains transient by default and retries inside the same bounded window; new permanent codes
 must be added to the explicit classifier and its exact-count regression.
 
