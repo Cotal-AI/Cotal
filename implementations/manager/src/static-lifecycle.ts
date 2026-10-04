@@ -80,6 +80,9 @@ export interface StaticSlotObservationDetail extends EpErrorDetail {
   headRevision?: number;
   readOrder: ["slot", "head"];
   consistency: "ordered-not-atomic";
+  /** Present only when the slot row names a different manager instance as its owner: the name
+   *  belongs to that sibling, so the miss is neither absence nor this manager's contradiction. */
+  ownerInstanceId?: string;
 }
 
 /** Stable string projection for callers that render only `error.message`. The structured detail is
@@ -149,12 +152,15 @@ export async function observeStaticSlot(
   const t = staticLifecycleTransport(recordsKv, recordsKv);
   const slot = await boundedStaticRead("slot", readStaticSlot(t, owner, alias));
   if (slot === undefined) return undefined;
-  // `inspect` remains an instance-local reader. A sibling manager's durable row is not a miss on
-  // this manager becoming global by accident. Legacy rows predate multi-manager ownership and keep
-  // the existing single-manager interpretation used by boot reconciliation.
-  if (slot.row.ownerInstanceId !== undefined && slot.row.ownerInstanceId !== managerInstanceId) return undefined;
+  // `inspect` remains an instance-local reader: a sibling manager's durable row never becomes this
+  // manager's own contradiction. A nonretired one still says the name belongs elsewhere, so it is
+  // returned labelled with its owner instead of collapsing into a `not-found` that a caller cannot
+  // tell from absence (#443). Legacy rows predate multi-manager ownership and keep the existing
+  // single-manager interpretation used by boot reconciliation.
+  const sibling = slot.row.ownerInstanceId !== undefined && slot.row.ownerInstanceId !== managerInstanceId ? slot.row.ownerInstanceId : undefined;
+  if (sibling !== undefined && slot.row.phase === "retired") return undefined;
   const head = await boundedStaticRead("head", headCandidate(t, slot.row.owner, slot.row.actor));
-  return projectStaticSlotObservation(slot, head);
+  return { ...projectStaticSlotObservation(slot, head), ...(sibling !== undefined ? { ownerInstanceId: sibling } : {}) };
 }
 
 /** Enumerate every nonretired durable static slot this manager instance owns, projected the same

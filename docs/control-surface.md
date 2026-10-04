@@ -76,6 +76,13 @@ the lifecycle head yet.
 The error message carries the same diagnostic summary so string-only operator paths do not hide
 the structured detail.
 
+A slot row records the manager instance that owns it. In a space with more than one manager, the
+class queue can hand `inspect` to an instance that does not host the name. When the row names a
+different instance and is not `retired`, the miss returns `failed-precondition` with the same
+detail plus `ownerInstanceId`, which names the only manager that can act on it. The message names
+both instances, so a caller that reads only the string can tell it from `not-found`. A sibling's
+`retired` row remains `not-found`.
+
 The slot is read before the head. These records do not form one atomic snapshot, so the detail
 also carries `readOrder: ["slot", "head"]` and `consistency: "ordered-not-atomic"`. A head can
 advance between the reads. The issuance gate is not projected because the retirement operation
