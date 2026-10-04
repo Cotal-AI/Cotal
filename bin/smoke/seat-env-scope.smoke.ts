@@ -25,6 +25,7 @@
  *   A8  half a control pair throws in both directions, from the one place the pair is resolved
  *   A9  the discard removes its own file always, and its own directory only when it can prove it
  *       wrote it: never recursively, never outside the OS temp root
+ *   A10 every COTAL_ name a connector's launch emits is one the operator-env-keep census parses
  *
  * A2 is the one that could not have been faked by reading the same object the assertion was written
  * against: the seat is a real `node` process started with the connector's env, and the observer is a
@@ -49,13 +50,14 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { LAUNCH_MATERIAL_ENV, createSpaceAuth, discardLaunchMaterial, mintCreds, mintLifecycleUid, newIdentity, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
-import { configFromEnv, controlFromEnv, scrubLaunchMaterial } from "@cotal-ai/connector-core";
+import { configFromEnv, controlFromEnv, OPERATOR_ENV_KEEP, scrubLaunchMaterial } from "@cotal-ai/connector-core";
 import "@cotal-ai/connector-claude-code";
 import "@cotal-ai/connector-opencode";
 import "@cotal-ai/connector-codex";
 import "@cotal-ai/connector-hermes";
 import "@cotal-ai/connector-jcode";
 import "@cotal-ai/pi";
+import { perSpawnAssignments } from "../../extensions/connector-core/smoke/_per-spawn-census.js";
 
 /** The variables that carry material a descendant has no business holding. `COTAL_CONTROL_SOCKET` is
  *  deliberately NOT here: it is a path, the socket refuses an unauthenticated frame, and the
@@ -100,6 +102,9 @@ const opts: LaunchOpts = {
  *  registry: a sweep silently shrinks to zero if the imports above ever stop registering, and a
  *  zero-length loop is a green suite that checked nothing. */
 const CONNECTORS = ["claude", "opencode", "codex", "hermes", "jcode", "pi"] as const;
+
+/** What the operator-env-keep census parses as assigned per spawn, read from the same sources. */
+const parsed = perSpawnAssignments();
 
 console.log(`• broker: ${SERVERS} (suite constant; this suite opens no connection to it)`);
 
@@ -161,7 +166,23 @@ for (const name of CONNECTORS) {
     );
     assert.equal(controlFromEnv(env)?.path, spec.control.path, `A3: ${name} control socket path mismatch`);
   }
-  console.log(`✓ ${name}: no material in the seat env; identity + control recovered from the material file`);
+
+  // A10 - every COTAL_ name this launch emits is one the operator-env-keep census parses.
+  //
+  // That census reads assignments out of source, so it is silent about any spelling its patterns
+  // do not know, and its "0 conflicts" then holds for a name it never saw. This observes what the
+  // launch actually produced, which is silent about a different thing (paths nobody drives), so
+  // requiring observed to be a subset of parsed turns a missed spelling on a driven path from a
+  // quiet gap into a red. A keep-listed name that arrived unchanged from this process's environment
+  // was inherited, not assigned, and is the one thing excluded.
+  for (const key of Object.keys(env).filter((k) => k.startsWith("COTAL_")))
+    if (!((OPERATOR_ENV_KEEP as readonly string[]).includes(key) && env[key] === process.env[key]))
+      assert.ok(
+        parsed.has(key),
+        `A10: the ${name} connector's launch emits ${key}, but the operator-env-keep census parses no assignment ` +
+          `of it, so that census cannot see it on the keep list. Teach the census the spelling this connector uses.`,
+      );
+  console.log(`✓ ${name}: no material in the seat env; identity + control recovered from the material file; every COTAL_ name it emits is parsed by the census`);
 }
 
 // A4 - a material file other local users can read is refused, not read. Without this the carrier
