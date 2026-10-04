@@ -8,7 +8,7 @@
  * calls it directly. ONE function over ONE table: a second copy of a projection would be a
  * divergence the differential suite could only find program-by-program.
  */
-import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf, stackOf } from "./errors.js";
+import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, isStackExhaustion, messageOf, stackOf } from "./errors.js";
 import { digest, requestId, stepKeyString, type KeyScope, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
@@ -1401,6 +1401,10 @@ export async function performScope(
     // Settling nothing is the same shape `RunReleased` above takes: the scope stays pending, a
     // resume re-enters it, and the step that broke diverges again.
     if (reason instanceof RunDivergence) throw reason;
+    // A HOST STACK EXHAUSTION IS NOT AN OUTCOME EITHER (§9.2). How deep a branch got before the host
+    // ran out of stack is a fact about the host, so recording it would replay as a catchable
+    // `L4000` on a host with more stack, where the same branch succeeds.
+    if (isStackExhaustion(reason)) throw reason;
     // A CAPABILITY REFUSAL OF THE SCOPE'S OWN DISPATCH (a conclave's open): nothing was entered
     // and nothing was attempted, so the scope settles `refused` exactly as an effect does, and
     // the run is held for a host that can open it.
@@ -1490,6 +1494,15 @@ export async function performScope(
   return outcome.value;
 }
 
+/**
+ * A HOST STACK EXHAUSTION AMONG THE JOINED BRANCHES leaves the scope bare (§9.2), whichever branch
+ * raised it and whatever another branch did first: a failure or a winner that settled earlier would
+ * otherwise carry it into a recorded outcome the program can catch.
+ */
+function throwIfStackExhausted(settled: readonly PromiseSettledResult<unknown>[]): void {
+  const exhausted = settled.find((r): r is PromiseRejectedResult => r.status === "rejected" && isStackExhaustion(r.reason));
+  if (exhausted !== undefined) throw exhausted.reason as Error;
+}
 
 export async function runScope(
   host: EffectHost,
@@ -1580,7 +1593,7 @@ export async function runScope(
         // divergence is the same non-fact about the branches: it says the program is not the one
         // that wrote this journal, so cancelling a sibling would record a consequence of the
         // disagreement on a run the program has no standing to speak for.
-        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {
+        if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence || isStackExhaustion(e)) {
           await Promise.allSettled(running);
           throw e;
         }
@@ -1588,7 +1601,7 @@ export async function runScope(
         // failure, because a rejecting branch cancels its siblings and can crash before they
         // hear it, so a failed scope owes its losers exactly as a winning one does.
         for (const f of frames) f.signal.cancel("a sibling branch failed");
-        await Promise.allSettled(running);
+        throwIfStackExhausted(await Promise.allSettled(running));
         frame.clock.join(frames.map((f) => f.clock));
         const losers = branches.filter((k) => k !== failed);
         throw new ScopeFailed(e, { branches, cancel: { losers, issued: false } });
@@ -1649,7 +1662,12 @@ export async function runScope(
         (e: unknown) =>
           onSettle(
             i,
-            e instanceof Cancelled || e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence,
+            e instanceof Cancelled ||
+              e instanceof RunReleased ||
+              e instanceof RunHeld ||
+              e instanceof JournalAppendRejected ||
+              e instanceof RunDivergence ||
+              isStackExhaustion(e),
           ),
       );
     });
@@ -1675,6 +1693,9 @@ export async function runScope(
     // defect the scope entry exists to prevent. A rejection is a settle.
     await Promise.race(running.map((p) => p.then(() => undefined, () => undefined)));
     const settled = await Promise.allSettled(running);
+    // A HOST STACK EXHAUSTION cancels no sibling (§9.2), so it leaves before the cancel below: that
+    // cancel reaches every arm's handlers, and a live handler would pass it on to external work.
+    throwIfStackExhausted(settled);
     // Every arm has settled, so whatever cut it did not get earlier no longer matters; the
     // signal still says cancelled, which is what a nested branch that outlives this line reads.
     for (const f of frames) f.signal.cancel("a sibling branch won the race");
@@ -1807,12 +1828,12 @@ export async function runScope(
     } catch (e) {
       // The same host-side rule as `parallel`: a release, a held run, a refused append, or a
       // divergence cancels nothing.
-      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence) {
+      if (e instanceof RunReleased || e instanceof RunHeld || e instanceof JournalAppendRejected || e instanceof RunDivergence || isStackExhaustion(e)) {
         await Promise.allSettled(launched);
         throw e;
       }
       for (const f of frames) f.signal.cancel("a sibling branch failed");
-      await Promise.allSettled(launched);
+      throwIfStackExhausted(await Promise.allSettled(launched));
       frame.clock.join(frames.map((f) => f.clock));
       const losers = branchKeys.filter((k) => k !== failed);
       throw new ScopeFailed(e, { branches: branchKeys, cancel: { losers, issued: false } });
@@ -1867,8 +1888,15 @@ export async function runScope(
     // this process is live and the world is reachable, and walking away from live membership on
     // an ordinary error would be the `spawn` leak in another shape.
     // A HOST-SIDE UNWIND leaves the close owed: closing would be a new action after the driver
-    // said stop, and the pending entry is exactly what "a close is still owed" looks like.
-    if (bodyError instanceof RunReleased || bodyError instanceof RunHeld || bodyError instanceof JournalAppendRejected)
+    // said stop, and the pending entry is exactly what "a close is still owed" looks like. A host
+    // stack exhaustion in the body is the same unwind (§9.2): closing after it would be a new effect
+    // on a run that must stop, and a close error would replace it with one a program can catch.
+    if (
+      bodyError instanceof RunReleased ||
+      bodyError instanceof RunHeld ||
+      bodyError instanceof JournalAppendRejected ||
+      isStackExhaustion(bodyError)
+    )
       throw bodyError;
     if (bodyError instanceof Cancelled) throw new ScopeFailed(bodyError, { closed: false });
 
