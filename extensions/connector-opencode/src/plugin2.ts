@@ -210,7 +210,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     if (!id) return; // no visible session yet — the boot task above retries via sessionReady
     if (busy) return; // rechecked after the await, same reason as plugin.ts's `drive`
     // The floor: while boot text exists and its gate is closed, nothing else goes out (the 1.x
-    // `:947-951` shape without the `pendingOverride` slot, which 2.x does not have).
+    // boot floor in `drive` without the `pendingWake` slot, which 2.x does not have).
     const boot = bootPending() ? bootPrompt : undefined;
     if (bootPrompt !== undefined && boot === undefined) return;
     const parts: string[] = [];

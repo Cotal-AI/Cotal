@@ -488,12 +488,17 @@ export const cotal: Plugin = async () => {
   // The boot turn's preconditions are met (session exists, mesh link up). Kept separate from the
   // text itself because the text must OUTLIVE a failed attempt: see `bootPending` below.
   let bootReady = false;
-  /** A wake nudge that has been handed to `drive` and not yet submitted. A focus @mention is
-   *  acked-and-dropped at ingest, so it is not in the inbox and `pendingForWake()` does not count
-   *  it; the nudge string exists only in the call that carries it. What is lost when that call
-   *  returns early is therefore the WAKE, and on a channel that permits replay the message itself
-   *  stays recallable through `cotal_inbox`, and the seat simply never learns to look. Held here
-   *  for the same reason the boot text is held: an early return must cost a retry, not the wake.
+  /** The focus @mention wake that is owed and not yet submitted. A focus @mention is acked-and-dropped
+   *  at ingest, so it is not in the inbox and `pendingForWake()` does not count it; this nudge is the
+   *  only thing that tells the seat to go and look. On a channel that permits replay the message
+   *  itself stays recallable through `cotal_inbox`; without the wake the seat never learns to look.
+   *
+   *  SET AT INGEST, READ BY `drive`, CLEARED ONLY BY A LANDED SUBMISSION (#719). The `mention-wake`
+   *  handler writes it and `drive` never takes it out: no exit of `drive` holds the wake, so no early
+   *  return, refusal or failed submission has anything to put back. It used to be handed to `drive`
+   *  as a parameter and parked back here by hand at every exit that did not submit it, and an exit
+   *  that parked the wrong value (a drive carrying no wake writing `undefined` back after an await)
+   *  erased a wake another caller had parked meanwhile.
    *
    *  ONE SLOT, AND THAT IS THE DESIGN RATHER THAN A LIMIT WORTH APOLOGISING FOR. A later nudge
    *  overwrites an earlier one here, and nothing is lost by that: the nudge names the SENDER and not
@@ -510,16 +515,16 @@ export const cotal: Plugin = async () => {
    *  must never happen is the slot reaching EMPTY while a caller's wake is still owed, because then
    *  no pull is ever triggered. The invariant is that at least one wake survives to fire, not that
    *  every wake is preserved. */
-  let pendingOverride: string | undefined;
+  let pendingWake: string | undefined;
   // BUMPED ON EVERY WRITE to the slot above. Value equality cannot stand in for identity here: two
   // @mentions from the same sender produce a BYTE-IDENTICAL nudge, so comparing the strings would
-  // report "still mine" about a different caller's input in exactly the case that matters.
-  let overrideSeq = 0;
+  // report "still the one I submitted" about a wake that arrived while the submission was in flight.
+  let wakeSeq = 0;
   // WHAT THE CURRENT TURN SUBMITTED, so a `session.error` after a landed submission (#715) can tell
-  // whether a wake rode this turn. `pendingOverride` cannot answer that: it is cleared once the
-  // submission lands (line ~1032), which is correct for a turn that finishes but leaves nothing for
-  // the error arm to re-arm from. Set beside that clear, read only by the `session.error` arm, and
-  // cleared by whichever of them runs first (the turn cannot both finish and fail).
+  // whether a wake rode this turn. `pendingWake` cannot answer that: it is cleared once the
+  // submission lands, which is correct for a turn that finishes but leaves nothing for the error arm
+  // to re-arm from. Set beside that clear, read only by the `session.error` arm, and cleared by
+  // whichever of them runs first (the turn cannot both finish and fail).
   let submittedWake: string | undefined;
   /**
    * Interactive work that has been admitted and has not finished. Teardown waits for THIS before it
@@ -901,15 +906,16 @@ export const cotal: Plugin = async () => {
    *  It answers WHETHER there is work, not HOW MUCH: the nudge slot holds at most one wake, so two
    *  callers' nudges read here as one. That is sound only because a wake is a hint rather than
    *  content; see the note on the slot itself. */
-  const workPending = (): boolean => bootPending() || pendingOverride !== undefined || pendingForWake() > 0;
+  const workPending = (): boolean => bootPending() || pendingWake !== undefined || pendingForWake() > 0;
 
   /** Drive a turn carrying the current inbox batch (and the boot briefing once) into the visible
    *  session via the server API — server-side, so it can't race like the TUI input box, and the TUI
    *  renders it live (it subscribes to that session's events). Surfaces the items but does NOT ack
-   *  them — ackSurfaced runs on turn completion, so a crash/error redelivers. `override` replaces
-   *  the body (a bare nudge, e.g. a focus @mention pull) and surfaces nothing to ack. Self-guards
-   *  re-entrancy and never prompts into a running turn (opencode would COALESCE onto it). */
-  async function drive(override?: string): Promise<void> {
+   *  them — ackSurfaced runs on turn completion, so a crash/error redelivers. A pending wake
+   *  (`pendingWake`, a bare nudge for a focus @mention pull) replaces the body and surfaces nothing
+   *  to ack; it is read here and cleared only once its submission lands. Self-guards re-entrancy and
+   *  never prompts into a running turn (opencode would COALESCE onto it). */
+  async function drive(): Promise<void> {
     // THE REFUSALS LIVE HERE, at the one place this connector submits a turn, rather than at each
     // caller.
     //
@@ -922,31 +928,22 @@ export const cotal: Plugin = async () => {
     // Listing which callers are covered is what let that through; the condition is the state, so a
     // caller that reaches this line is refused by it. A prompt submitted natively in the host does
     // not route through `drive` at all; the fence note on the hook table below covers that path.
-    if (phaseClosed() || driving || busy) {
-      if (override !== undefined) {
-        pendingOverride = override;
-        overrideSeq += 1;
-      }
-      return;
-    }
+    // A refusal holds nothing: a pending wake stays in `pendingWake`, and the next turn end or wake
+    // drives it.
+    if (phaseClosed() || driving || busy) return;
     // THE BOOT TURN GOES FIRST AND IS RETRIED HERE. While it is pending, other work waits; once its
     // preconditions are met, whichever wake reaches this line carries it, so one early return no
     // longer decides whether the operator's prompt is ever submitted. "Other work" is not only an
-    // inbox batch: a focus @mention arrives as a nudge with no inbox entry behind it, so calling
-    // this a batch was wrong and the line that waits has to hold the nudge rather than discard it.
-    // CARRIED, not just passed: a nudge handed to an earlier call that could not run is picked up
-    // here rather than dropped, and a nudge this call cannot submit is put back before returning.
-    // "Picked up rather than dropped" is about the SLOT, not about every individual nudge: a later
-    // wake can overwrite an earlier one, which costs nothing because the wake is a hint and the
-    // bodies are recovered by the pull it triggers.
-    const carried = override ?? pendingOverride;
-    // WHAT THIS CALL IS ENTITLED TO CLEAR. Only a call that TOOK the value out of the slot may clear
-    // it, and only while no one has written since. A call handed its own `override` leaves whatever
-    // was parked for someone else alone.
-    const tookFromSlot = override === undefined && carried !== undefined;
-    const carriedSeq = overrideSeq;
-    // THE BOOT TEXT IS CARRIED WHENEVER THE BOOT IS PENDING, WITH OR WITHOUT A WAKE IN HAND, and
-    // the "with" is the whole correction. This line read `carried === undefined && bootPending()`,
+    // inbox batch: a focus @mention is a nudge with no inbox entry behind it, and it waits in
+    // `pendingWake` rather than in this call.
+    //
+    // READ, NOT TAKEN. The slot keeps the wake until a submission carrying it lands, so every return
+    // and the catch below leave it pending with nothing to put back. The generation is read with it
+    // so the clear after the submission can tell a wake that arrived meanwhile from this one.
+    const carried = pendingWake;
+    const carriedSeq = wakeSeq;
+    // THE BOOT TEXT IS CARRIED WHENEVER THE BOOT IS PENDING, WITH OR WITHOUT A WAKE PENDING, and the
+    // "with" is the whole correction. This line once read `carried === undefined && bootPending()`,
     // so a call holding a nudge took no boot text, fell into the branch below, and parked the nudge
     // straight back. Nothing could then empty the slot: emptying it takes a submission, a submission
     // takes `bootPrompt` cleared, and clearing it takes the boot submission this branch had just
@@ -956,22 +953,14 @@ export const cotal: Plugin = async () => {
     // before it was changed: the seat stayed online, nothing was logged, and the operator's own
     // spawn prompt was never submitted.
     const boot = bootPending() ? bootPrompt : undefined;
-    if (bootPrompt !== undefined && boot === undefined) {
-      pendingOverride = carried;
-      overrideSeq += 1;
-      // The boot text EXISTS but is not ready yet (no session, or the mesh link is still coming up),
-      // so there is nothing to compose with and whatever this call carried is held, not dropped. The
-      // boot task's own drive is what reaches the line above once the preconditions are met.
-      return;
-    }
+    // The boot text EXISTS but is not ready yet (no session, or the mesh link is still coming up), so
+    // there is nothing to compose with. The boot task's own drive reaches this line once the
+    // preconditions are met, and a pending wake waits in its slot until then.
+    if (bootPrompt !== undefined && boot === undefined) return;
     driving = true;
     try {
       const id = await ensureSession();
-      if (!id) {
-        pendingOverride = carried;
-        overrideSeq += 1;
-        return; // no visible session yet, retry on the next event/wake
-      }
+      if (!id) return; // no visible session yet, retry on the next event/wake
       // RECHECKED AFTER THE AWAIT, because the guard above is a read and this is a resume. Session
       // creation is a server round trip, so a drive admitted while the seat was running can park
       // here and come back after `quiesce` has set `stopping` and published departure. Submitting
@@ -983,11 +972,7 @@ export const cotal: Plugin = async () => {
       // of the promise. A batch still held when the seat tears down does not survive the process:
       // measured, by restarting the identity on a fresh uid and then on the same one and finding the
       // message was owed to neither. Durability across a stop is a delivery question, not this one.
-      if (phaseClosed()) {
-        pendingOverride = carried;
-        overrideSeq += 1;
-        return;
-      }
+      if (phaseClosed()) return;
       const parts: { type: "text"; text: string }[] = [];
       let ids: string[] = [];
       // COMPOSED, NOT CHOSEN BETWEEN, and that is what lets a wake arrive at ANY point relative to
@@ -1035,20 +1020,18 @@ export const cotal: Plugin = async () => {
       // WHAT THIS TURN CARRIED, so the `session.error` arm can re-arm it if this turn fails instead
       // of finishing (#715). `undefined` when no wake rode this submission.
       submittedWake = carried;
-      // CLEARED ONLY HERE, once the submission actually landed, so no early return can lose the wake
-      // it was carrying. Each return parks it explicitly and the catch does too, so every exit from
-      // this function either submits the wake or leaves it pending for the next drive.
       if (boot !== undefined) bootPrompt = undefined;
-      // OWNERSHIP-CHECKED, because the slot is shared and this clear sits AFTER an await. The value
-      // was read before that await; while it was outstanding another caller can have reached the
-      // entry guard and parked its OWN nudge here. Clearing on the strength of what THIS call took
-      // would then discard a different call's input, which is a lost update across an await and
-      // exactly the case the early returns exist to prevent.
+      // THE ONLY WRITE `drive` MAKES TO THE WAKE SLOT, and it sits after the submission landed, so
+      // every other exit leaves the wake pending for the next drive.
+      //
+      // GENERATION-CHECKED, because this clear sits AFTER an await. The value was read before that
+      // await; while it was outstanding the `mention-wake` handler can have written a NEW wake here.
+      // Clearing on the strength of what THIS call read would then discard a wake that was never
+      // submitted, which is a lost update across an await.
       //
       // BY GENERATION, NOT BY VALUE, and that distinction is load-bearing rather than fastidious:
       // two @mentions from the same sender produce a byte-identical nudge, so a value comparison
-      // would say "still mine" about someone else's input in precisely the case this guards. A call
-      // handed its own `override` never took the slot at all and so may not clear it either.
+      // would say "already submitted" about the later wake in precisely the case this guards.
       //
       // ONE SLOT IS DELIBERATE, NOT AN OVERSIGHT. A wake is not content: an @mention in focus is
       // acked at ingest, and where the channel permits replay it stays recallable, so any single
@@ -1057,23 +1040,16 @@ export const cotal: Plugin = async () => {
       // have observed, while erasing the LAST one loses the pull entirely. The
       // invariant is that at least one wake survives to fire, which this predicate gives; a queue
       // would preserve duplicates of an identical hint and buy nothing.
-      if (tookFromSlot && overrideSeq === carriedSeq) pendingOverride = undefined;
+      if (carried !== undefined && wakeSeq === carriedSeq) pendingWake = undefined;
       briefed = true;
       primed = true;
     } catch (e) {
       busy = false;
       surfaced = [];
       awaitingTurnEnd = false;
-      // THE EXIT THAT IS NOT A RETURN, and the one this was missing. Each guarded return above puts
-      // the input back by hand; a failed submission left through here and put nothing back. That was
-      // only survivable for an input already parked: a wake nudge arrives as the PARAMETER, and
-      // `pendingOverride` is cleared just below on success, so on this path there was nothing
-      // holding it. `scheduleErrorRetry` then read `workPending()` as false, because a focus
-      // @mention has no boot text, nothing parked, and no inbox entry (its body is acked-and-dropped
-      // at ingest), so the seat was never retried and never told to go and look. Parking it here is
-      // what makes the retry below have something to carry.
-      pendingOverride = carried;
-      overrideSeq += 1;
+      // NOTHING TO PUT BACK. A failed submission did not land, so the wake it carried, and any wake
+      // that arrived while it was in flight, is still in `pendingWake`, and `workPending()` gives the
+      // retry below something to carry.
       log(`drive failed: ${(e as Error).message}`);
       scheduleErrorRetry();
     } finally {
@@ -1183,15 +1159,17 @@ export const cotal: Plugin = async () => {
   agent.on("mention-wake", (item: InboxItem) => {
     // Focus: the @mention body was acked-and-dropped at ingest — wake a turn to PULL it (recall).
     //
-    // NO `busy` GUARD HERE, and its absence is the point rather than an omission. The handler above
-    // may return on `busy` because an `incoming` body is BUFFERED: it sits in the inbox and the next
+    // RECORDED FIRST AND UNCONDITIONALLY, whatever state the seat is in. The handler above may
+    // return on `busy` because an `incoming` body is BUFFERED: it sits in the inbox and the next
     // drive peeks it, so declining to drive now defers the work. This wake has nothing behind it:
     // the body was acked and dropped at ingest, so the nudge is the only copy this process will ever
-    // hold, and returning here does not defer it, it destroys it. `completeTurn` would then see
-    // `pendingForWake() === 0` and no parked override, so no later drive carries it and the seat is
-    // never told to look. Handing it to `drive` unconditionally is what makes the guard cost a
-    // retry instead of the wake: a refused call parks it in the slot and the next turn end drives it.
-    void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`);
+    // hold, and not recording it does not defer it, it destroys it. `completeTurn` would then see
+    // `pendingForWake() === 0` and no pending wake, so no later drive carries it and the seat is
+    // never told to look. Written here, the wake is held whether or not the drive below can run: a
+    // refused or failed drive leaves it pending and the next turn end drives it.
+    pendingWake = `📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`;
+    wakeSeq += 1;
+    void drive();
   });
   agent.on("wake", () => {
     if (!busy) void drive();
@@ -1438,13 +1416,13 @@ export const cotal: Plugin = async () => {
               submittedWake = undefined; // dismissed the same way as the batch it rode with, not re-armed
             } else {
               abandonSurfaced(); // failed turn: leave inbox unacked so the batch can retry on a later safe turn
-              // RE-ARM THE WAKE (#715): a wake handed to `drive` as the PARAMETER is never in
-              // `pendingOverride`, so a landed submission that then fails left `workPending()` false
-              // and the retry below a no-op — unlike a submit that never lands, already parked by
-              // the throw path at line ~1047.
-              if (submittedWake !== undefined && pendingOverride === undefined) {
-                pendingOverride = submittedWake;
-                overrideSeq += 1;
+              // RE-ARM THE WAKE (#715): a landed submission clears `pendingWake`, so a turn that
+              // then fails would leave `workPending()` false and the retry below a no-op, unlike a
+              // submission that never lands, which leaves the wake pending. Only into an empty slot:
+              // a wake that arrived during the turn is already pending and is not overwritten.
+              if (submittedWake !== undefined && pendingWake === undefined) {
+                pendingWake = submittedWake;
+                wakeSeq += 1;
               }
               submittedWake = undefined;
             }

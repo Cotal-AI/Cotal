@@ -135,11 +135,11 @@
     {
       "name": "M10 the opencode wake hint interpolates its label again",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`);",
-      "replace": "    void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? \"?\"} — read it with cotal_inbox.`);",
+      "find": "    pendingWake = `📨 You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)} — read it with cotal_inbox.`;",
+      "replace": "    pendingWake = `📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? \"?\"} — read it with cotal_inbox.`;",
       "cell": "the opencode wake hint does not interpolate a channel label raw",
       "expectRed": "the opencode wake hint does not interpolate a channel label raw",
-      "note": "The shipped pre-fix spelling, second of three."
+      "note": "The shipped pre-fix spelling, second of three. Re-anchored when the wake moved into a slot the mention-wake handler writes (#719); the mutation is unchanged in what it does."
     },
     {
       "name": "M11 the claude-code wake hint interpolates its label again",
