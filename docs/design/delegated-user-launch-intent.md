@@ -472,9 +472,10 @@ stays as written. One execution runs in this order, and every refusal before the
    second read aborts the execution. One that lands after it is ordered after the commit and refuses only later
    executions, as the platform-control record's revocation refuses only the next door call. The
    agent such an execution leaves is the user's, and its holder counts as gone (section 7.2).
-8. The host first activates the lifecycle at the pinned UID with the shipped
-   `activateLifecycleAtUid` (`implementations/auth/src/lifecycle-registry.ts:511`) and the
-   `managerInstance` its bearer exchange passes (`auth-service:<space>`, `service.ts:663`). The
+8. The host first activates the lifecycle at the pinned UID with the handle's
+   `activateManagedLifecycle`, which runs `activateLifecycleAtUid`
+   (`implementations/auth/src/lifecycle-registry.ts:511`) with the `managerInstance` the agent's
+   bearer exchange passes (`auth-service:<space>`) and mints nothing. The
    alias head is then `active` at that UID and its issuance gate is open before any row or durable
    exists. A refusal there, such as the alias being `active` or `retiring` at another UID, runs the
    compensation, whose own activation then follows the Compensation paragraph's rule for an alias
@@ -533,6 +534,9 @@ reservation or its frozen activation gate), returns at once for a completed one,
 completes it. Before it activates, the compensator reads the head and the issuance gate at the
 pinned UID, and it never activates once a retirement there has begun: the head is `retiring` or
 `retired` at that UID, or the gate is `frozen` or `retired` by `managedRetirementOpId(uid)`. The
+handle's `activateManagedLifecycle` is that read: it reads both before any write and refuses each of
+those states, `failed-precondition` for a retiring head or a gate frozen by retirement and
+`permission-denied` for a retired gate, and the compensator then goes to the managed retire door. The
 barrier creates its durable intent (`retirement-barrier.ts:615`) and freezes the gate
 (`retirement-barrier.ts:661`) before it moves the head (`retirement-barrier.ts:670`), so a
 compensation interrupted between those writes leaves the head `active` over a gate frozen by
@@ -728,11 +732,11 @@ payload. `authorizeAdmin` is unchanged.
 | `RemoteDelegatedUserIntentExecutionRequest`, `RemoteDelegatedUserIntentExecutionResult`, `parseDelegatedUserIntentRequest`, `parseRemoteDelegatedUserIntentExecutionRequest` | `@cotal-ai/core` | shipped |
 | `parseRemoteDelegatedUserIntentExecutionResult`, `resolveReadAcl` | `@cotal-ai/core` | shipped |
 | `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `DelegatedUserIntentIncarnation`, `DelegatedUserIntentFlights`, `joinOrStartDelegatedUserIntent`, `delegatedUserIntentHoldsAlias`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | shipped; stock dispatch refuses both kinds as `unimplemented` |
-| `AuthServiceHandle.observeManagerGate` | `@cotal-ai/auth` | shipped; present with `platformControl` |
+| `AuthServiceHandle.observeManagerGate`, `AuthServiceHandle.activateManagedLifecycle` | `@cotal-ai/auth` | shipped; present with `platformControl` |
 | `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | shipped |
 | `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar, the platform control door | `@cotal-ai/auth`, `@cotal-ai/core` | absent at this branch's base; shipped on main at `6ca4d8e0f` (#2408) |
 | `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged; a hosted host reaches the flight at `POST /managed-lifecycle/retire` with the handle's `cap` |
-| `activateLifecycleAtUid` | `@cotal-ai/auth` | shipped and package-internal: no host can call it, so section 6 step 8's activation and the compensation's activation are not composable from stock exports at this head. An enrolled agent's UID activates at its first bearer exchange, which runs the same activation |
+| `activateLifecycleAtUid` | `@cotal-ai/auth` | shipped and package-internal; a host reaches it only through the handle's `activateManagedLifecycle` |
 
 The platform control door landed on main at `6ca4d8e0f`. Its assignment observer is keyed by space
 and account, where the platform-control record at `2392055` keyed it by instance, so section 4.2 and

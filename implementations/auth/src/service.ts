@@ -81,7 +81,7 @@ import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster 
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, authRegistrationExecutorGrants, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
-import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
@@ -171,6 +171,9 @@ export interface AuthAuthorityPlane {
     alreadyRetired?: boolean;
   }>;
   retireManagedLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
+  /** Activate a managed agent's lifecycle at the uid its grant carries, under the same minting
+   *  authority its first bearer exchange names, and mint nothing (SPEC 13.16). */
+  activateManagedLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<void>;
   issueManagerServiceAuthority: (args: ManagerAuthorityHolder & { request: RemoteManagerAuthorityRequest }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
   maintainRemoteManager: (args: ManagerAuthorityHolder & { request: RemoteManagerMaintenanceRequest }) => Promise<import("@cotal-ai/core").RemoteManagerMaintenanceResult>;
   validateRetainedAgent: (args: ManagerAuthorityHolder & {
@@ -732,6 +735,15 @@ export async function openAuthAuthorityPlane(opts: {
         throw new EpEnvelopeError("conflict", `managed retirement operation ${opId} is already in flight for different coordinates`);
       await flight;
       return { retired: true, lifecycleUid };
+    },
+    activateManagedLifecycle: async (args) => {
+      refuseIfFenced();
+      await activateLifecycleAtUid(registry, {
+        owner: assertDerivedOwnerToken(args.owner),
+        actor: assertValidOwnerToken(args.actor),
+        lifecycleUid: assertLifecycleToken(args.lifecycleUid),
+        managerInstance: `auth-service:${space}`,
+      });
     },
     issueManagerServiceAuthority: async (holder) => {
       refuseIfFenced();
@@ -1440,6 +1452,10 @@ export interface AuthServiceHandle extends HostedServiceHandle {
    *  `platformControl`. It reads over the context's own authority connection, so a host opens no
    *  second data-account connection, and it returns the gate alone. */
   observeManagerGate?: ObserveManagerGate;
+  /** The activation a delegated launch runs at its pinned uid before any row or durable, and its
+   *  compensation runs before the terminal barrier (SPEC 13.16). Present only with
+   *  `platformControl`. It refuses every state in which a retirement at that uid has begun. */
+  activateManagedLifecycle?: AuthAuthorityPlane["activateManagedLifecycle"];
 }
 
 /** The optional public exchange face: the CLI's `--exchange-public-*`, `--advertised-server` and
@@ -1777,6 +1793,10 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
         observeManagerGate: async (instanceId: string) => {
           refuseUnlessReady();
           return (await plane.observeManagerInstance(instanceId)).gate;
+        },
+        activateManagedLifecycle: async (target) => {
+          refuseUnlessReady();
+          await plane.activateManagedLifecycle(target);
         },
       } : {}),
       readiness(): HostedServiceState {
