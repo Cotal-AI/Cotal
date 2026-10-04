@@ -50,11 +50,15 @@ const MANAGED_AGENT_KINDS = new Set([
   "manager-managed-agent-runtime-status",
 ]);
 
+const SESSION_FIELDS = "endpoint,epoch,exp,id,sessionId";
+
 function badRequest(what: string): never {
   throw new EpEnvelopeError("bad-request", `platform control request ${what}`);
 }
 
-/** Closed envelope parser. Unknown fields, `idpToken` included, are refused, never ignored. */
+/** Closed envelope parser. Unknown fields, `idpToken` included, are refused, never ignored. The
+ * reused manager-service parser checks the `session` members but not its key set, so the door closes
+ * that nested object here; the human route's parser is unchanged. */
 export function parsePlatformControlAuthorityRequest(raw: unknown): PlatformControlAuthorityRequest {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) badRequest("must be an object");
   const o = raw as Record<string, unknown>;
@@ -74,6 +78,9 @@ export function parsePlatformControlAuthorityRequest(raw: unknown): PlatformCont
   if ((inner as { actor?: unknown }).actor !== "cli") badRequest('inner request actor must be the envelope constant "cli"');
   for (const key of ["instanceId", "managerLifecycleUid"] as const)
     if (typeof (inner as Record<string, unknown>)[key] !== "string") badRequest(`inner request requires ${key}`);
+  const session = (inner as { session?: unknown }).session;
+  if (session !== undefined && (session === null || typeof session !== "object" || Object.keys(session).sort().join(",") !== SESSION_FIELDS))
+    badRequest("inner session must be exactly { id, endpoint, sessionId, epoch, exp } (the protocol is closed)");
   return o as unknown as PlatformControlAuthorityRequest;
 }
 

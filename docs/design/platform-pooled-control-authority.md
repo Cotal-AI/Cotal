@@ -214,9 +214,11 @@ export function platformControlOwner(ownerSecret: string | Uint8Array, space: st
 `runAuthService` (the CLI daemon) never constructs the door. No listener, loopback or public,
 serves it. One call runs in this order, and every refusal writes nothing:
 
-1. The envelope is closed. An unknown field, including `idpToken`, is `bad-request`. `space` and
-   `accountPublicKey` must equal the context's own `HostedContextInputs`, so one context never
-   issues for another account.
+1. The envelope is closed. An unknown field, including `idpToken`, is `bad-request`. The inner
+   `session` object must have exactly `id`, `endpoint`, `sessionId`, `epoch` and `exp`. The reused
+   manager-service parser checks those members but not the key set, so the door checks it, and the
+   human route's parser is unchanged. `space` and `accountPublicKey` must equal the context's own
+   `HostedContextInputs`, so one context never issues for another account.
 2. `observeAssignment(space, accountPublicKey)` is read fresh. It must exist and be `assigned`. Its
    account and revision must equal the envelope's, and its `instanceId` and `lifecycleUid` must
    equal the inner request's `instanceId` and `managerLifecycleUid`. A null or `revoked` row, or an
@@ -377,11 +379,12 @@ in, each on the platform family or its same-owner descendants:
 A `u_` target or caller still parses on the platform arm and is then refused on owner mismatch, so
 the door never acts on another owner (R8). The auth ledger holds rows only for derived owners, so a
 platform-owned agent's retained validation is the same "unknown agent" denial as any absent row, and
-its admin authorization is `authorized: false`. Every other guard refuses a `p_` owner as before,
-including the membership feed and the presence and message drop guards, and
-`assertDerivedOwnerToken` never accepts one. A running platform Manager presents a roster card
-under its `p_` owner (H6), so the presence admission lands with the platform Runtime round, against
-that row. No test was committed for the negative
+its admin authorization is `authorized: false`. Every other owner check refuses a `p_` owner as
+before, including the membership feed and the message drop guards, and `assertDerivedOwnerToken`
+never accepts one. Presence has no owner check to opt in: the roster reader drops only a record
+whose `card.id` differs from its KV key, and the write side is scoped to the publisher's own key.
+A platform supervisor endpoint built like the remote Manager's therefore already registers and sees
+its own roster card under the `p_` owner. No test was committed for the negative
 side. The hand test checks that the default guard and the derived-owner check refuse the issued
 `p_` owner. SPEC §13.1 scopes this extension of the §2 owner format to these principals; §2 itself
 is unchanged. The §13.2 mode-word discrimination still holds, because a `p_` token contains `_` and
@@ -446,7 +449,7 @@ Each refusal maps to the SPEC clause that states it. A security reviewer can che
 | R1 | No human impersonation | the closed envelope has no IdP field and refuses one; the owner is derived from the assignment in the `p_` grammar; issuance never reads or synthesizes `supervise`; proofs and gate principals are owner-bound, so neither door accepts the other's material | §13.1 Platform control authority, first and third paragraphs; §13.6 Platform control registration |
 | R2 | No takeover of another owner's instance | the service door refuses an instance whose gate principal names any other owner, including a human-owned instance; maintenance `targetInstanceId` must be the assigned instance and its gate principal the platform serve principal before any effect (section 3.2, step 6); no force path; that instance retires through its own owner's path first | §13.1 Platform control authority, third paragraph; §13.6 Platform control registration, maintenance paragraph |
 | R3 | No local or custodial runtime | the composition must construct `pooled: true`, and the existing constructor checks refuse PTY, `auto` and custodial runtimes; the host issues no signer, provisioner or launch authority, so the family cannot run local custody on the host's behalf; the platform supplies its own non-custodial Runtime and this design adds no hosted launcher or Runtime upstream | §13.1 fourth paragraph; Appendix B `platform-control` |
-| R4 | No generic signing RPC | a closed union of seven existing kinds; the envelope has no profile, permission, subject, TTL or claim input; inner requests keep only their existing operation-specific coordinates, validated as on the human route (session `exp` capped at the host bound, run admission `run.subject` checked against the caller's issued ceiling); unknown fields `bad-request`; managed-agent kinds `unimplemented` | §13.6 Platform control registration |
+| R4 | No generic signing RPC | a closed union of seven existing kinds; the envelope has no profile, permission, subject, TTL or claim input; inner requests keep only their existing operation-specific coordinates, validated as on the human route (session `exp` capped at the host bound, run admission `run.subject` checked against the caller's issued ceiling); unknown fields `bad-request`, including a nested `session` field; managed-agent kinds `unimplemented` | §13.6 Platform control registration |
 | R5 | No new daemon, listener or protocol | one in-process method on the hosted authority handle, present only when the host supplies `platformControl`; never constructed by `runAuthService`; no route on any listener; the loopback capability is never handed out; the platform supplies its own Runtime and its own caller-bound channel | §13.6 Platform control registration |
 | R6 | Not an exchange view | `platform-control` is never a `view` on `/exchange`; the public and managed-agent exchanges refuse it as an unknown view | §13.1 Platform control authority, first paragraph |
 | R7 | No assignment, no authority | absent observer: no door on the handle. Null, revoked or stale assignment, or an instance id or lifecycle UID the account's one assignment does not name: `permission-denied`. Observer failure: `unavailable` | §13.1 second paragraph; §13.6 |
@@ -474,10 +477,9 @@ The door needs no change in `@cotal-ai/manager`: a platform composition builds
 `ManagerOptions.remoteAuthority` with the shipped `remoteManagerClient` builders and the door as
 their `call` (section 3.3).
 
-Not in this change: the platform's own Runtime and composition root, the presence admission of a
-`p_` owner (section 6), and the managed-agent kinds, which the platform decides on its own route.
-Acceptance rows H6 to H9, H12 and H15 to H18 need one of those, a legacy deployment or the wall
-clock.
+Not in this change: the platform's own Runtime and composition root, and the managed-agent kinds,
+which the platform decides on its own route. Acceptance rows H6 to H9, H12 and H15 to H18 need one
+of those, a legacy deployment or the wall clock.
 
 ## 10. Native acceptance
 
@@ -498,7 +500,7 @@ row matches.
 | H8 | Restart the platform manager, then replay the predecessor's `renewStandingBundle` with the old `processEpoch` | the restarted manager keeps the assignment's instance id and lifecycle UID, and its gate's `processEpoch` is one higher; the replay is `conflict` (stale epoch); no JWT returned |
 | H9 | Backend marks the assignment `revoked` | the next renewal is `permission-denied`; the manager keeps last-good and logs debt; after expiry the broker refuses its connections; restart needs a new assignment |
 | H10 | Present a human `manager-service` registration proof to the door for that instance, a service-view request on `/manager-service-authority` with a human IdP token, and a door call for an instance whose gate principal is a `u_` owner | all refused; the human instance's gate is unchanged |
-| H11 | Send an inner request with an extra field (`profile`, `permissions`, `ttl`), a managed-agent enrollment kind, and an unknown kind. Then send a `session` request whose `exp` is 48h ahead | `bad-request`, `unimplemented`, `bad-request`; the session-serving JWT's `exp` is at most 24h after issue |
+| H11 | Send an inner request with an extra field (`profile`, `permissions`, `ttl`), a `session` request with an extra field inside `session`, a managed-agent enrollment kind, and an unknown kind. Then send a `session` request whose `exp` is 48h ahead | `bad-request`, `bad-request`, `unimplemented`, `bad-request`; the session-serving JWT's `exp` is at most 24h after issue |
 | H12 | On the same host, a signed-in human with `supervise` runs `cotal supervise`; then without `supervise` | the first works as before; the second gets the existing refusal sentence |
 | H13 | A `u_` principal asks the platform manager to spawn, and asks `authorizeAdmin` | spawn refused on owner mismatch; `authorized: false` |
 | H14 | Check the host for new listeners and daemons, and the control worker for the capability and signer | no new listening socket in `ss -ltnp`; the control worker's environment, files and store hold neither the loopback capability nor the account signing seed |
