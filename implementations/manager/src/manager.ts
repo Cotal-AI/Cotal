@@ -6201,6 +6201,10 @@ export class Manager {
           return { ok: false, error: `retained manifest agent ${launchSource.requested} is missing or its hash changed; refusing same-principal resume` };
         launchOptions = spec.launchOptions;
         exact = spec.continuity === "exact";
+        // An exact seat reopens its retained session or fails, like its manifest launch, so the
+        // connector must honor reopenSession before the batch starts any child.
+        if (exact && (!connector.supportsSessionReopen || !connector.supportsSessionContinuation))
+          return { ok: false, error: `${connector.name} connector does not support exact session continuity (continuity: exact)` };
       } else {
         try {
           launchOptions = loadAgentFile(entry.launch.source.configPath).launchOptions;
@@ -6241,7 +6245,8 @@ export class Manager {
           variant: entry.launch.variant,
           launchOptions,
           resume: retainedSession ? undefined : entry.launch.forkSource,
-          continueSession: retainedSession,
+          continueSession: exact ? undefined : retainedSession,
+          reopenSession: exact ? retainedSession : undefined,
           subscribe: entry.launch.subscribe,
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
@@ -6345,10 +6350,17 @@ export class Manager {
         this.watchResumeAdoption(managed);
         return { ok: false, error: readiness.detail };
       }
-      if (managed.restart) {
+      if (managed.restart || prepared.exact) {
         try {
           await this.armSessionRecovery(managed);
+          // As on a manifest launch, an exact seat is recorded only at the session it asked for,
+          // proved over the connector's authenticated control endpoint.
+          if (prepared.exact && !managed.restart?.armed)
+            throw new Error("continuity: exact needs the connector to prove its session over an authenticated control endpoint, and it supplied none");
           managed.launch.sessionId = this.readManagedSession(managed);
+          const asked = prepared.launchOpts.reopenSession;
+          if (asked !== undefined && managed.launch.sessionId !== asked)
+            throw new Error(`continuity: exact asked for session ${asked}, the connector bound ${managed.launch.sessionId}`);
           if (prepared.exact) {
             managed.continuity = { space: this.space, name: managed.name, connector: managed.agent, cwd: managed.launch.cwd };
             this.recordContinuity(managed, managed.launch.sessionId);
