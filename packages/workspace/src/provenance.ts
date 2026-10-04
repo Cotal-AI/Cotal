@@ -12,9 +12,11 @@
  * after its write. If stdout fails too, no channel is left to carry the line: the command still
  * finishes its work, and a run that would exit 0 exits 1, so the loss is never silent. A line still
  * waiting in a full pipe when the process exits, as when the CLI exits at once on a closed stdout,
- * is lost the same way and counts the same. The bound:
- * a stderr closed before the process starts is reopened by Node on /dev/null, which looks the same
- * as an operator's `2>/dev/null`, so the line is discarded where the operator sent it.
+ * is lost the same way and counts the same. Node does not say whose bytes a stream still holds, so
+ * a line that had to wait and got through just before the exit also counts while later output
+ * still waits behind it: the check cannot tell it from a line still waiting, and counts both. The
+ * other bound: a stderr closed before the process starts is reopened by Node on /dev/null, which
+ * looks the same as an operator's `2>/dev/null`, so the line is discarded where the operator sent it.
  */
 export const provenance = {
   /** `→ using <what>: <source>` — the source that WON resolution (say which layer/path). */
@@ -90,7 +92,8 @@ function lost(): void {
 
 /** The exit status is the only signal left for a line no channel carried, or one still waiting when
  *  the process exits. A waiting write whose stream holds nothing more was flushed with its callback
- *  still queued, so it does not count. Set at exit, so it also holds when the command later resets
+ *  still queued, so it does not count. One whose stream still holds later bytes may have been
+ *  flushed too, and counts. Set at exit, so it also holds when the command later resets
  *  `exitCode` or the CLI's stdout EPIPE handler exits 0. */
 function watchExit(): void {
   if (watching) return;
