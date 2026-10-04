@@ -1075,13 +1075,15 @@ the seat's last work event (presence `activeAt`), the mesh fact ends with its ag
 `· active 3s ago`, and `--json` carries `activeAt`. A seat whose turn stopped advancing keeps
 heartbeating, so its presence row stays fresh and this age is what shows the stall. A seat can be
 `running` and `mesh offline` at once: the process is alive and its presence has lapsed. That row says
-how long, as in `mesh offline for 3.5h`, counted from the seat's last presence heartbeat, which
-`--json` carries as `offlineSince` (epoch ms). The age is read only from the seat's own presence
-record, matched on its principal and lifecycle uid, so a same-named peer or an older lifecycle never
-dates it. The manager log names each managed seat that is offline on the mesh while its slot is held
-(`seat offline on the mesh: <name> ...`), including one its watch first sees offline after a reconnect,
-and each one that comes back (`seat back on the mesh: <name> ...`), so a watchdog that only checks
-process liveness has a line to act on. The manager does not reap or re-key such a seat. The mesh fact is only a verdict while the
+how long, as in `mesh offline for <age>` with an age such as `3.5h`, counted from the seat's last
+presence heartbeat, which `--json` carries as `offlineSince` (epoch ms). The age is read only from
+the seat's own presence record, matched on its principal and lifecycle uid, so a same-named peer or
+an older lifecycle never dates it. The manager log names each managed seat that is offline on the
+mesh while its slot is held
+(`seat offline on the mesh: <name> - last heartbeat <time>; process <state>`), including one its
+watch first sees offline after a reconnect, and each one that comes back
+(`seat back on the mesh: <name>`), so a watchdog that only checks process liveness has a line to
+act on. The manager does not reap or re-key such a seat. The mesh fact is only a verdict while the
 manager's own presence watch is fresh: when that watch has been silent past the liveness window, or
 has not replayed the bucket yet, every row prints `mesh unknown` with the reason instead (`--json`
 carries it as `meshView: stale | unpopulated`), because `offline` and `not in roster` would then
@@ -1114,12 +1116,12 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
 versioned `ep.v1` rail, a separate subject space from the legacy `ep` rail, and an endpoint serves
 both (SPEC 13.15). A manager older than the versioned rail serves `ep` alone, so it can be running,
 registered and answering while an issued caller's request reaches nobody. Silence on `ep.v1` is
-reported as `no manager answered on the ep.v1 rail` and names both causes it is consistent with:
-no manager running, or one older than the rail. The CLI cannot tell them apart, because the service
-registry records no package version, so check whether a manager is running and, if it is, its
-version. The same scoping applies to `cotal run`'s hosted verbs, which drop the `--local`
-suggestion there, since `--local` drives the run from the calling process and names the caller as
-its answerer.
+reported as `no manager answered on the <rail> rail` with `ep.v1` as the rail, and names both causes
+it is consistent with: no manager running, or one older than the rail. The CLI cannot tell them
+apart, because the service registry records no package version, so check whether a manager is
+running and, if it is, its version. The same scoping applies to `cotal run`'s hosted verbs, which
+drop the `--local` suggestion there, since `--local` drives the run from the calling process and
+names the caller as its answerer.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a
