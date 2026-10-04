@@ -321,11 +321,10 @@ their existing paths.
 
 The remote manager that `cotal supervise` starts can host workflow runs through its host: the host
 admits each run and signs only the run's own driver, mediator and operator credentials. A logged-in
-user's `cotal run start` against it is still refused with `permission-denied`, because the user's
-CLI credential is not an issuance and its request rides the legacy rail. The host's own manager
-refuses user-auth runs by name. [User-auth run start](design/user-auth-run-start.md) records the
-proposed path, in which the host issues the user's own connection and keeps each run bound to the
-owner who registered the manager.
+user's `cotal run start` against it is admitted: the auth callout issues the user's manager
+connection, and the host binds each run to the owner who registered the manager. The host's own
+manager refuses user-auth runs by name. [User-auth run start](design/user-auth-run-start.md) records
+the path.
 
 The registry entry decides the broker URL `supervise` dials, so a mesh published over `wss://` is
 dialed as a websocket. The manager-authority registration it runs first also takes its TLS

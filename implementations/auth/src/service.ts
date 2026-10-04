@@ -59,7 +59,7 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, authorizeServeGrant, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, SERVICE_READY, writeServiceStatus, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
+import { contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, authorizeServeGrant, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, SERVICE_READY, writeServiceStatus, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
@@ -69,7 +69,7 @@ import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
-import { calloutPermissions } from "./permissions.js";
+import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
 import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
@@ -97,7 +97,9 @@ import {
   AGENT_BEARER_TTL_SEC,
   findInteractiveActor,
   findManagedActor,
+  findActorUnified,
   ledgerAclResolver,
+  ledgerActorSourceIsLive,
   ledgerAuthorizeAgentExchange,
   ledgerAuthorizeConnect,
   ledgerAuthorizeGrant,
@@ -158,6 +160,10 @@ export interface AuthAuthorityPlane {
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
   selectManagerInstance: (owner: string, requested?: string) => Promise<string>;
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>;
+  /** The callout's issuance of an interactive user's `manager-caller` view (SPEC 13.15): one
+   *  issuer window that stages and releases evidence bound to the actor-ledger row and writes the
+   *  connection's accepted row, or renews the generation that row already names. */
+  issueUserCaller: UserCallerIssuer;
   /** #2312: may this principal hold this one session? Leader-reads the redeemed `session.<id>` row
    *  and the serving manager gate; returns the session claim (expiry from the row) or throws. */
   verifySession: (
@@ -650,6 +656,18 @@ export async function openAuthAuthorityPlane(opts: {
       throw new EpEnvelopeError("unavailable",
         `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
   };
+  // The issuer window's signer: the data account's signing key, the same `hostAuth` shape the run
+  // admission builds.
+  const issuerAuth = (): SpaceAuth => ({
+    space,
+    operator: { seed: "", jwt: "" },
+    account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
+    sys: { pub: "", jwt: "" },
+  });
+  // The source check the issuing host resolves with: an actor-ledger row is attested here, from the
+  // ledger this service owns; every other coordinate goes to core's check (SPEC 13.15).
+  const composedSourceIsLive = (session: IssuerSession) => (source: IssuedSourceRef): Promise<boolean> =>
+    parseActorLedgerSource(source) ? Promise.resolve(ledgerActorSourceIsLive(opts.dir)(source)) : session.sourceIsLive(source);
   return {
     authorizeConnect: async (t) => {
       refuseIfFenced();
@@ -665,6 +683,40 @@ export async function openAuthAuthorityPlane(opts: {
       refuseIfFenced();
       const verdict = await managerGate(owner, assertLifecycleToken(instanceId, "managerInstanceId"));
       if (verdict !== "candidate") throw new Error(`manager instance ${instanceId} is ${verdict} at the permission mint`);
+    },
+    issueUserCaller: async ({ t, connId, mint }) => {
+      refuseIfFenced();
+      const owner = assertDerivedOwnerToken(t.owner);
+      const actor = t.act.actor;
+      const uid = assertLifecycleToken(t.act.lifecycleUid ?? "", "lifecycleUid");
+      const acceptedToken = connectionAcceptedToken(connId);
+      return withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
+        // The row this connection's nonce names, read the way the client reads it.
+        const existing = await session.nc.request(acceptedReadGrant(space, acceptedToken), new Uint8Array(0), { timeout: 3000 });
+        const code = existing.headers?.code ?? 0;
+        const status = existing.headers?.get("Status") ?? "";
+        const missing = code === 404 || status.startsWith("404");
+        if (!missing && (code >= 400 || status !== ""))
+          throw new Error(`callout permissions: the accepted-row read for this connection failed (${code || status})`);
+        if (missing) {
+          const generation = mintGeneration();
+          const perms = mint({ generation, acceptedToken });
+          const ref = { space, owner, actor, uid, generation };
+          const prepared = await session.store.stage({
+            version: 1, ref, sources: [actorLedgerSource(space, owner, actor, uid)], permissions: importNativeSubjectPermissions(perms),
+          });
+          await session.store.release(prepared, async () => {});
+          await writeAcceptedRow(session.accepted, acceptedToken, ref);
+          return perms;
+        }
+        const row = JSON.parse(new TextDecoder().decode(existing.data)) as { version?: unknown; ref?: IssuedAuthorityRef };
+        const ref = row.ref;
+        if (row.version !== 1 || ref === undefined || ref.space !== space || ref.owner !== owner || ref.actor !== actor || ref.uid !== uid)
+          throw new Error("callout permissions: this connection's accepted row names another issued reference; reconnect under a new nonce");
+        const perms = mint({ generation: ref.generation, acceptedToken });
+        await session.store.confirm(ref, importNativeSubjectPermissions(perms));
+        return perms;
+      });
     },
     verifySession: async (principal, claim) => {
       refuseIfFenced();
@@ -1144,7 +1196,7 @@ export async function openAuthAuthorityPlane(opts: {
               return gate.observe();
             },
             issued: session.store,
-            sourceIsLive: (source) => session.sourceIsLive(source),
+            sourceIsLive: composedSourceIsLive(session),
             admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
           });
         } finally {
@@ -1158,7 +1210,12 @@ export async function openAuthAuthorityPlane(opts: {
       requireManagerAuthorityHolder(holder, String((request as { instanceId?: unknown })?.instanceId), 'manager run attempt needs scope "supervise"; spawn/admin do not imply it');
       const req = parseRemoteRunAttemptRequest(request);
       const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
-      const grant = await authorizeRemoteRunAttempt({
+      const authorize = (session?: IssuerSession) => authorizeRemoteRunAttempt({
+        ...(session ? { issued: session.store, sourceIsLive: composedSourceIsLive(session) } : {}),
+        isLiveManagedActor: (owner, actor, lifecycleUid) => {
+          const row = findActorUnified(opts.dir, owner, actor);
+          return row?.kind === "managed-agent" && row.lifecycleUid === lifecycleUid;
+        },
         request,
         owner,
         space,
@@ -1173,6 +1230,10 @@ export async function openAuthAuthorityPlane(opts: {
         readRunStatus: async (runId) => (await readRunRecord(recordsKv, "manager", runId))?.status?.value,
         checkpointWaiting: async (token) => (await readCheckpointStatus(recordsKv, { endpoint: "manager", token }))?.value.state === "waiting",
       });
+      // A served resume or answer resolves its caller's issuance, which needs one issuer window.
+      const grant = req.attempt?.served !== undefined || req.operator?.served !== undefined
+        ? await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, (session) => authorize(session))
+        : await authorize();
       const hostAuth: SpaceAuth = {
         space,
         operator: { seed: "", jwt: "" },
@@ -1603,7 +1664,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
       space,
       token: { key: issuer.localKeySet(), issuer: issuer.issuer },
       authorizeActor: plane.authorizeConnect,
-      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession),
+      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller),
       log: (l) => console.error(l),
     });
     // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a

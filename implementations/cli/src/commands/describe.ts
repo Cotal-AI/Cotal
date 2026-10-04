@@ -13,6 +13,7 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   dialerFor,
+  issuedUserCaller,
   parsePrincipalKey,
   resolveService,
   standaloneConnectOpts,
@@ -57,13 +58,20 @@ async function epConnection(
     console.error(c.dim("  open meshes have no service registry; sign in and grant the required user capability, or use a static-auth mesh"));
     process.exit(1);
   }
-  const nc = await dialerFor(t.server)({
-    servers: t.server,
-    ...standaloneConnectOpts(t.auth.creds
-      ? { creds: t.auth.creds, tls: t.auth.tls === true }
-      : { bearer: t.auth.bearer!, sentinelCreds: t.auth.sentinelCreds!, tls: t.auth.tls === true }),
-    maxReconnectAttempts: 0,
-  });
+  const connectOpts = standaloneConnectOpts(t.auth.creds
+    ? { creds: t.auth.creds, tls: t.auth.tls === true }
+    : { bearer: t.auth.bearer!, sentinelCreds: t.auth.sentinelCreds!, tls: t.auth.tls === true });
+  const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });
+  // A logged-in user's manager view is issued (SPEC 13.15): its requests ride `ep.v1` under the
+  // generation this connection's accepted row names.
+  if (t.auth.bearer !== undefined && t.auth.managerInstanceId !== undefined) {
+    try {
+      return { nc, space: t.space, auth: { ...t.auth, epCaller: await issuedUserCaller(nc, t.space, String(connectOpts.name), t.auth.epCaller!) } };
+    } catch (e) {
+      await nc.close();
+      throw e;
+    }
+  }
   return { nc, space: t.space, auth: t.auth };
 }
 

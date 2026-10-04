@@ -30,6 +30,7 @@ import {
   newTakeoverId,
   newIdentity,
   mintCreds,
+  issuedUserCaller,
   openRecordsBucket,
   admissionBucket,
   createRunAdmission,
@@ -599,13 +600,15 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     process.exit(1);
   }
   const auth: ControlAuth = t.auth;
-  const nc = await dialerFor(t.server)({
-    servers: t.server,
-    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
-    maxReconnectAttempts: 0,
-  });
+  const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
+  const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });
   try {
-    const service = await resolveService(nc, t.space, BASELINE_LIFECYCLE_ENDPOINT, who.caller, {
+    // A logged-in user's manager view is issued at the callout (SPEC 13.15): its generation is read
+    // back from this connection's accepted row, and every request rides `ep.v1` under it.
+    const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
+      ? await issuedUserCaller(nc, t.space, String(connectOpts.name), who.caller)
+      : who.caller;
+    const service = await resolveService(nc, t.space, BASELINE_LIFECYCLE_ENDPOINT, caller, {
       deadlineMs: 10_000,
       ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),
     });

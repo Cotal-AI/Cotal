@@ -796,8 +796,14 @@ export interface RemoteRunAttemptRequest {
   processEpoch: number;
   identities: RemoteManagerAuthorityRequest["identities"];
   /** Exactly one of `attempt` / `operator`. */
-  attempt?: { runId: string; takeoverId: string; epoch: number; fencingToken: number; driverId: string; mediatorId: string };
-  operator?: { id: string; takeoverId: string; runId?: string; answers?: { token: string } };
+  attempt?: { runId: string; takeoverId: string; epoch: number; fencingToken: number; driverId: string; mediatorId: string;
+    /** The served `run-resume` request subject, verbatim, when a caller asked for this attempt.
+     *  Absent for a boot reconcile, which continues under the original admission. */
+    served?: string };
+  operator?: { id: string; takeoverId: string; runId?: string; answers?: { token: string };
+    /** The served `run-answer` request subject, verbatim. Required with `answers` on a participant
+     *  manager. */
+    served?: string };
 }
 
 /** The host returns only signed JWTs for the nkeys held by the registered manager. The

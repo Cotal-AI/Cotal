@@ -2230,10 +2230,10 @@ material, and is the path on a bare broker with no manager or for a run with no 
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
 `--by <who>`. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
-there. A participant's manager started with `cotal supervise` hosts runs through its issuing host,
-but a logged-in user's `run start` is refused with `permission-denied`: the user's credential is not
-an issuance, so the request rides the legacy rail. [User-auth run start](design/user-auth-run-start.md)
-records the path that closes this. The guide is [workflows](workflows.md).
+there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
+its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides
+the versioned rail under that issuance. [User-auth run start](design/user-auth-run-start.md) records
+the path. The guide is [workflows](workflows.md).
 
 ## Server daemons
 

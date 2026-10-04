@@ -1,9 +1,20 @@
 # User-auth run start
 
-Status: proposed contract for issue #1956. Nothing here is implemented. This change adds this
-record, insertion-only clauses in SPEC §13.15 and §14.8, and corrected guide text. It adds no code,
-route, store, profile or exported type. Every symbol in section 4 is spelled as the implementation
-round will declare it, and none exists in source or in a built declaration at this head.
+Status: implemented for issue #1956. Section 4 names the shipped symbols, with these differences:
+
+- `issuedUserCaller` is exported by `@cotal-ai/core` (`issued-authority.ts`), because the connector's
+  manager calls open the same view and cannot import `@cotal-ai/workspace`. The connector reads the
+  row on every view; a managed row's view holds no read grant, so the broker refuses the read and the
+  call keeps the legacy rail.
+- The `issuer` profile gains the per-key `DIRECT.GET` read of the accepted store, so the callout can
+  find the row a reconnect's nonce names.
+- The attempt parser accepts `operator.answers` without `served`. A stock participant manager always
+  sends it.
+- A participant manager forwards a legacy-rail answer, and the issuing host refuses it unless it
+  comes from a live managed seat of the run's owner. A legacy-rail resume is refused on the manager.
+- `AclResolver`'s `kind` is optional, so a resolver that does not set it never issues.
+- `cotal run answer` rides the `self` target, so the forwarded subject keeps it and
+  `authorizeServedRunCaller` accepts an untargeted or self-targeted subject.
 
 The source inventory was checked at `6ca4d8e0f48d711769ea2e3710338e1e23dab82f`. Line numbers are that
 head's.

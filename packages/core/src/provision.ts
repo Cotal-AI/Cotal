@@ -1063,7 +1063,7 @@ export async function mintPublicUserJwt(
 
 /** The profiles whose credential carries caller rails, and can therefore be minted as an
  *  issuance (SPEC 13.15). Everything else is infrastructure or a one-shot with no rail to bind. */
-const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "control-caller-privileged", "control-caller-admin", "deployer"]);
+const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "control-caller-privileged", "control-caller-admin", "deployer", "manager-caller"]);
 
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
  *  exactly what each profile does. Every profile is now enumerated least-privilege — the former
@@ -1581,6 +1581,7 @@ function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOp
     pub: {
       allow: [
         `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,
+        ...(opts.issued ? [acceptedReadGrant(space, opts.issued.acceptedToken)] : []),
         ...rows.pub,
       ],
     },
@@ -2342,6 +2343,8 @@ function issuerPermissions(space: string, pr: MintPrincipal): Record<string, unk
         "$JS.API.INFO",
         `$KV.${issuedBucket(space)}.>`,
         `$KV.${acceptedBucket(space)}.>`,
+        // A user-auth connection's renewal finds the accepted row its nonce names (SPEC 13.15).
+        `$JS.API.DIRECT.GET.KV_${acceptedBucket(space)}.$KV.${acceptedBucket(space)}.>`,
         `$JS.API.STREAM.INFO.${ISSUED}`,
         `$JS.API.STREAM.MSG.GET.${ISSUED}`,
         // Source liveness: the leader-served point read of a static incarnation's issuance gate on

@@ -66,7 +66,7 @@ export {
   type DeviceLoginOpts,
   type DeviceLoginPrompt,
 } from "./login.js";
-export { calloutPermissions, type AclResolver } from "./permissions.js";
+export { calloutPermissions, type AclResolver, type UserCallerIssuer } from "./permissions.js";
 export {
   USER_AUTH_TRUST_SCHEME,
   userAuthTrustFingerprint,
@@ -105,6 +105,7 @@ export {
   grantActor,
   grantManagedActor,
   ledgerAclResolver,
+  ledgerActorSourceIsLive,
   ledgerAuthorizeConnect,
   ledgerAuthorizeGrant,
   ledgerAuthorizeAgentExchange,

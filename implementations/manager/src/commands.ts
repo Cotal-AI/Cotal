@@ -317,19 +317,19 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             const result = await provider.requestRemoteRunAdmission!({ ...runCall, request });
             return remoteRunAdmission(result, request);
           },
-          issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator }) => {
+          issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator, served }) => {
             const base = runBase();
             const request = remoteRunAttemptRequest(state, base.proof, base.account, base.epoch,
-              { attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id } });
+              { attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id, ...(served !== undefined ? { served } : {}) } });
             const result = await provider.requestRemoteRunAttempt!({ ...runCall, request });
             const pair = remoteRunAttemptCredentials(result, request, material.owner, { driver, mediator });
             if (!("driver" in pair)) throw new Error("host returned an operator instead of a run pair");
             return pair;
           },
-          issueOperator: async ({ identity, takeoverId, runId, answers }) => {
+          issueOperator: async ({ identity, takeoverId, runId, answers, served }) => {
             const { proof, account, epoch } = runBase();
             const request = remoteRunAttemptRequest(state, proof, account, epoch,
-              { operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}) } });
+              { operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}), ...(served !== undefined ? { served } : {}) } });
             const result = await provider.requestRemoteRunAttempt!({ ...runCall, request });
             const credential = remoteRunAttemptCredentials(result, request, material.owner, { operator: identity });
             if (!("operator" in credential)) throw new Error("host returned a run pair instead of an operator");

@@ -19,9 +19,11 @@ import {
   type IssuedStore,
   type IssuedSourceRef,
   EP_RAIL_V1,
+  EP_UNBOUND_CALLER_AUTHORITY,
   admissionKey,
   admissionSnapshot,
   createRunAdmission,
+  isDerivedOwner,
   isIssuedCaller,
   issuedPermitsSubject,
   parseEpSubject,
@@ -356,6 +358,8 @@ export async function admitRemoteRun(args: {
       (parsed.route === "inst" && parsed.instanceId !== r.instanceId) || !isIssuedCaller(parsed.caller))
     throw new EpEnvelopeError("permission-denied", "manager run admission needs the served v1 run-start subject of this space, endpoint and instance with an issued caller");
   const caller = parsed.caller;
+  if (isDerivedOwner(caller.owner) && caller.owner !== args.owner)
+    throw new EpEnvelopeError("permission-denied", "a participant manager admits runs only for its registered owner");
   const ref = { space: r.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
   const resolved = await args.issued.resolve(ref, args.sourceIsLive);
   const e = resolved.evidence.ref;
@@ -404,15 +408,17 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
     return v as Record<string, unknown>;
   };
   const runIdOk = (v: unknown) => typeof v === "string" && /^run-[0-9a-f]{32}$/.test(v);
+  const servedOk = (v: unknown) => v === undefined || (typeof v === "string" && v.length > 0 && v.length <= 1024);
   if (attempt !== undefined) {
-    const a = plain(attempt, ["runId", "takeoverId", "epoch", "fencingToken", "driverId", "mediatorId"]);
+    const a = plain(attempt, ["runId", "takeoverId", "epoch", "fencingToken", "driverId", "mediatorId"], ["served"]);
     if (!runIdOk(a.runId) || typeof a.takeoverId !== "string" || !ID_TOKEN.test(a.takeoverId) ||
         !Number.isSafeInteger(a.epoch) || (a.epoch as number) < 1 || !Number.isSafeInteger(a.fencingToken) || (a.fencingToken as number) < 1 ||
         typeof a.driverId !== "string" || !NKEY_USER.test(a.driverId) || typeof a.mediatorId !== "string" || !NKEY_USER.test(a.mediatorId) || a.driverId === a.mediatorId)
       admissionError("attempt requires a run id, takeover id, positive epoch/fencingToken and distinct driver/mediator nkeys");
-    return { ...registered, kind: "manager-run-attempt", attempt: { runId: a.runId as string, takeoverId: a.takeoverId, epoch: a.epoch as number, fencingToken: a.fencingToken as number, driverId: a.driverId, mediatorId: a.mediatorId } };
+    if (!servedOk(a.served)) admissionError("attempt served must be a request subject");
+    return { ...registered, kind: "manager-run-attempt", attempt: { runId: a.runId as string, takeoverId: a.takeoverId, epoch: a.epoch as number, fencingToken: a.fencingToken as number, driverId: a.driverId, mediatorId: a.mediatorId, ...(a.served !== undefined ? { served: a.served as string } : {}) } };
   }
-  const op = plain(operator, ["id", "takeoverId"], ["runId", "answers"]);
+  const op = plain(operator, ["id", "takeoverId"], ["runId", "answers", "served"]);
   if (typeof op.id !== "string" || !NKEY_USER.test(op.id) || typeof op.takeoverId !== "string" || !ID_TOKEN.test(op.takeoverId) ||
       (op.runId !== undefined && !runIdOk(op.runId)))
     admissionError("operator requires an nkey id, a takeover id and an optional run id");
@@ -422,7 +428,46 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
     if (typeof t.token !== "string" || !ID_TOKEN.test(t.token) || op.runId !== undefined) admissionError("operator answers carries exactly one checkpoint token and no run id");
     answers = { token: t.token };
   }
-  return { ...registered, kind: "manager-run-attempt", operator: { id: op.id, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId as string } : {}), ...(answers ? { answers } : {}) } };
+  if (!servedOk(op.served) || (op.served !== undefined && answers === undefined))
+    admissionError("operator served is the run-answer subject, and only an answering operator carries one");
+  return { ...registered, kind: "manager-run-attempt", operator: { id: op.id, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId as string } : {}), ...(answers ? { answers } : {}), ...(op.served !== undefined ? { served: op.served as string } : {}) } };
+}
+
+/** The served caller of a resume or an answer, checked against the run's owner (SPEC 14.8). The
+ *  subject is re-parsed as {@link admitRemoteRun} parses a run-start, except that the `self` target
+ *  a `run-answer` rides is accepted. A derived user owner must be
+ *  `runOwner`; a v1 caller's issuance must resolve live and permit the subject; a legacy caller is
+ *  accepted only for `run-answer` from a live managed row of that owner, the seat relay path. */
+async function authorizeServedRunCaller(args: {
+  served: string;
+  command: "run-resume" | "run-answer";
+  /** The admission's owner for a resume; the manager's registered owner for an answer. */
+  runOwner: string;
+  space: string;
+  endpoint: string;
+  instanceId: string;
+  issued: IssuedStore;
+  sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
+  isLiveManagedActor: (owner: string, actor: string, lifecycleUid: string) => boolean;
+}): Promise<void> {
+  const parsed = parseEpSubject(args.served);
+  if (!args.served.startsWith(`cotal.${args.space}.`) || parsed === null || parsed.plane !== "request" ||
+      parsed.endpoint !== args.endpoint || parsed.command !== args.command || (parsed.target !== null && parsed.target.mode !== "self") ||
+      (parsed.route === "inst" && parsed.instanceId !== args.instanceId))
+    throw new EpEnvelopeError("permission-denied", `a served ${args.command} must name this space, endpoint and instance, untargeted or self-targeted`);
+  const caller = parsed.caller;
+  if (isDerivedOwner(caller.owner) && caller.owner !== args.runOwner)
+    throw new EpEnvelopeError("permission-denied", "run-resume and run-answer on this manager are open only to the owner its runs were admitted for");
+  if (parsed.rail === EP_RAIL_V1 && isIssuedCaller(caller)) {
+    const ref = { space: args.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
+    const resolved = await args.issued.resolve(ref, args.sourceIsLive);
+    if (!issuedPermitsSubject(resolved.evidence.permissions.publish, args.served))
+      throw new EpEnvelopeError("permission-denied", `the caller's issued ceiling does not permit this ${args.command} subject`);
+    return;
+  }
+  if (args.command === "run-answer" && caller.owner === args.runOwner && args.isLiveManagedActor(caller.owner, caller.actor, caller.uid)) return;
+  throw new EpEnvelopeError("permission-denied", `${args.command} on a participant manager rides the versioned rail with an issued caller; only a live managed seat of the run's owner answers on the legacy rail (SPEC 14.8)`,
+    [{ kind: EP_UNBOUND_CALLER_AUTHORITY, owner: caller.owner, actor: caller.actor, uid: caller.uid }]);
 }
 
 /** What the host then signs, and nothing else: one fixed profile per caller-held nkey. */
@@ -448,6 +493,10 @@ export async function authorizeRemoteRunAttempt(args: {
   readAdmission: (runId: string) => Promise<RunAdmissionView>;
   readRunStatus: (runId: string) => Promise<RunStatusValue | undefined>;
   checkpointWaiting: (token: string) => Promise<boolean>;
+  /** The issued store and the source and ledger checks a request carrying `served` is checked with. */
+  issued?: IssuedStore;
+  sourceIsLive?: (source: IssuedSourceRef) => Promise<boolean>;
+  isLiveManagedActor?: (owner: string, actor: string, lifecycleUid: string) => boolean;
 }): Promise<RemoteRunAttemptGrant> {
   const r = parseRemoteRunAttemptRequest(args.request);
   await authenticateRegisteredManager(r, args, "run attempt");
@@ -459,9 +508,18 @@ export async function authorizeRemoteRunAttempt(args: {
       throw new EpEnvelopeError("permission-denied", `run ${runId} was admitted on another manager instance or endpoint`);
     return view.admission;
   };
+  const served = (subject: string, command: "run-resume" | "run-answer", runOwner: string) => {
+    if (args.issued === undefined || args.sourceIsLive === undefined || args.isLiveManagedActor === undefined)
+      throw new EpEnvelopeError("internal", "a served run request needs the issued store and the actor ledger on the issuing host");
+    return authorizeServedRunCaller({
+      served: subject, command, runOwner, space: r.space, endpoint: args.endpoint, instanceId: r.instanceId,
+      issued: args.issued, sourceIsLive: args.sourceIsLive, isLiveManagedActor: args.isLiveManagedActor,
+    });
+  };
   if (r.attempt) {
     const a = r.attempt;
     const admission = await admitted(a.runId);
+    if (a.served !== undefined) await served(a.served, "run-resume", admission.caller.owner);
     const status = await args.readRunStatus(a.runId);
     if (status?.state === "completed" || status?.state === "failed")
       throw new EpEnvelopeError("failed-precondition", `run ${a.runId} is ${status.state}; a terminal run gets no new attempt`);
@@ -472,6 +530,7 @@ export async function authorizeRemoteRunAttempt(args: {
   }
   const op = r.operator!;
   if (op.runId !== undefined) await admitted(op.runId);
+  if (op.served !== undefined) await served(op.served, "run-answer", args.owner);
   if (op.answers !== undefined && !(await args.checkpointWaiting(op.answers.token)))
     throw new EpEnvelopeError("failed-precondition", "run operator answers only a checkpoint that is still waiting");
   const runOperator: RunOperatorGrantArgs = { endpoint: args.endpoint, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId } : {}), ...(op.answers ? { answers: op.answers } : {}) };
