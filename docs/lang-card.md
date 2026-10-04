@@ -14,7 +14,7 @@ resume on another with the recorded steps returning instantly.
 
 | Primitive | Call | Returns |
 |---|---|---|
-| `spawn` | `await spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork? })` | agent handle |
+| `spawn` | `await spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork?, events? })` | agent handle |
 | `turn` | `await turn(agent, { name, deadline? })` | `{ status: "done" \| "blocked" \| "handoff", to?, note?, at }` |
 | `ask` | `await ask(agent, { name, schema, deadline?, attempts? })` | the record the agent published |
 | `checkpoint` | `await checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? })` | see below |
@@ -29,6 +29,8 @@ bags are closed: an unknown key is refused (L3011) with the full signature in th
 Durations are a whole number and one unit: `"30s"`, `"10m"`, `"4h"`, `"2d"`.
 `permits` meter `turns` and `wallClock` on this host; `supervise` is `{ restarts, window? }`
 (default window `10m`) and restarts the process in place until that budget is spent.
+`events: false` starts a seat without an event plane, which a connector that publishes none
+(Hermes) needs.
 
 ## Results you branch on
 

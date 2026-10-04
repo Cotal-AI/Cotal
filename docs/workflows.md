@@ -368,7 +368,11 @@ place under the same name, lifecycle uid, persona, worktree and permits; `monito
 for a restart, and `wait(down)` fires only when the seat is gone for good. Spending the budget
 retires the seat, and the next `turn` is the catchable L4002. A policy this host cannot enforce
 (an unknown key, a user-mode seat, or a runtime that cannot respawn a name in place) is refused
-at the spawn rather than accepted and ignored. `conclave` joins its
+at the spawn rather than accepted and ignored. `events: false` is the workflow form of
+`cotal spawn --no-events`: the seat starts without its AG-UI event plane. A connector that
+publishes none, such as Hermes, needs it, because an omitted `events` arms the plane and the
+manager refuses that connector at the spawn. A value that is not a boolean is refused at the
+spawn. `conclave` joins its
 members to a real channel as durable membership rows: the channel derives from the step's own
 request id when the program names none (a program-named channel is borrowed, never torn down, and
 a membership that predates the conclave survives its close), each member handle resolves to its

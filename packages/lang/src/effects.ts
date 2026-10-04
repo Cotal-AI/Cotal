@@ -119,6 +119,9 @@ export interface SpawnRequest {
   readonly supervise?: Readonly<Record<string, unknown>>;
   /** What a fork does with this agent: spawn a fresh one, or reuse the original. Default respawn. */
   readonly onFork?: "respawn" | "adopt";
+  /** `false` starts the agent without its event plane, for a connector that publishes none.
+   *  Omitted, the host's default applies. */
+  readonly events?: boolean;
 }
 
 export interface TurnRequest {

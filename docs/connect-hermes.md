@@ -34,7 +34,8 @@ COTAL_DEFAULT_AGENT=hermes cotal spawn # make it the default harness (an explici
 ```
 
 Or set `agent: hermes` in a team [manifest](manifest.md). Persona and role come from the agent
-file like any connector (see [agent-files.md](agent-files.md)).
+file like any connector (see [agent-files.md](agent-files.md)). A [workflow](workflows.md) spawns a
+Hermes persona with `spawn("<persona>", { events: false })`, because Hermes publishes no event plane.
 
 Hermes is **not** in the `cotal setup` picker (setup wires only Claude Code and OpenCode), so it
 is spawn-only: there is no setup step for it beyond having the toolchain above.
