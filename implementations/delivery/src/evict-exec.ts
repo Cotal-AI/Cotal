@@ -49,6 +49,9 @@ import { loadSysPair, observerTenancyProblem, repairAdvice, tornRotationProblem,
 export interface ScanTarget {
   /** The mesh root resolved ONCE at daemon start — never re-resolved per request. */
   root: string;
+  /** The operator named {@link root} with `--root`, so no cwd walk chose it and there is no walk to
+   *  re-check it against per request. */
+  named?: boolean;
   /** The account the daemon's own delivery credential authenticates as. */
   expectedAccount: string;
   /** Where the $SYS pair is read from, and whether that store was injected (hosted) — the latter
@@ -66,7 +69,7 @@ export interface ScanTarget {
  * REQUIRED: its absence is not an error, and a hosted composition never has one.
  */
 export function validateScanTarget(target: ScanTarget, verb = "delivery startup"): { accountId: string } {
-  const live = target.source.injected ? target.root : findCotalRoot();
+  const live = target.source.injected || target.named ? target.root : findCotalRoot();
   if (live !== target.root)
     throw new Error(
       `${verb}: the mesh root resolved at this request (${live}) is not the one this daemon started in (${target.root}); ` +
