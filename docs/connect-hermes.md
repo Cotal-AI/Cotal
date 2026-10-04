@@ -29,20 +29,26 @@ provide (`uv` + `hermes-agent` on a supported version range), is **not** offered
 ## Spawn it
 
 ```bash
-cotal spawn --agent hermes            # foreground in this terminal
-COTAL_DEFAULT_AGENT=hermes cotal spawn # make it the default harness (an explicit --agent wins)
+cotal spawn --agent hermes --no-events            # foreground in this terminal
+COTAL_DEFAULT_AGENT=hermes cotal spawn --no-events # make it the default harness (an explicit --agent wins)
 ```
 
-Or set `agent: hermes` in a team [manifest](manifest.md). Persona and role come from the agent
-file like any connector (see [agent-files.md](agent-files.md)). A [workflow](workflows.md) spawns a
-Hermes persona with `spawn("<persona>", { events: false })`, because Hermes publishes no event plane.
+Hermes publishes no AG-UI event plane, so pass `--no-events` when you spawn it. The plane is on by
+default, and a launch that arms it is refused before the gateway starts. A space whose
+registration policy requires the event plane cannot run Hermes.
+
+Or set `agent: hermes` and `events: false` in a team [manifest](manifest.md). Persona and role
+come from the agent file like any connector (see [agent-files.md](agent-files.md)). A
+[workflow](workflows.md) spawns a Hermes persona with `spawn("<persona>", { events: false })`,
+because Hermes publishes no event plane.
 
 Hermes is **not** in the `cotal setup` picker (setup wires only Claude Code and OpenCode), so it
 is spawn-only: there is no setup step for it beyond having the toolchain above.
 
 ## Choose a model
 
-Hermes is model-agnostic; set any one provider's key in your environment. Model precedence
+Hermes is model-agnostic; set any one supported provider's API key in your environment. For a
+server of your own, see [Use a custom endpoint](#use-a-custom-endpoint). Model precedence
 matches the other connectors: the `--model` flag, else the agent file's `model:`, else an ambient
 `HERMES_MODEL`. Hermes exposes no `cotal models` catalog (unlike OpenCode).
 
@@ -50,6 +56,43 @@ With none of those set, the launch is refused. The managed profile does not read
 model configured there is not used, and without a model Hermes would choose one of its own over a
 provider you may have no key for. The refusal names the three ways to set a model. To run on your
 own profile instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).
+
+## Use a custom endpoint
+
+Hermes reaches an OpenAI-compatible server of your own, such as vLLM, Ollama or LM Studio, through
+its `custom` provider. A seat gets the provider API keys this connector names plus the names you
+add with `spawn.env` (see [Launcher variables](config.md#launcher-variables)), and nothing else
+from your shell. The endpoint variables are not on that list, so exporting them alone changes
+nothing.
+
+On a managed profile, select the provider and the endpoint in your environment, and forward both
+names:
+
+```bash
+export HERMES_INFERENCE_PROVIDER=custom
+export CUSTOM_BASE_URL=http://127.0.0.1:8000/v1
+cotal spawn --agent hermes --no-events --model <model>
+```
+
+```json
+{ "spawn": { "env": ["HERMES_INFERENCE_PROVIDER", "CUSTOM_BASE_URL"] } }
+```
+
+Hermes 0.19 reads `CUSTOM_BASE_URL` only when the provider is `custom`, and it never reads
+`OPENAI_BASE_URL` for the endpoint. It does not send `CUSTOM_API_KEY` either, so this shape suits a
+server that needs no key. For a server that needs one, run on
+[your own profile](#use-your-own-hermes-profile) and put the endpoint in its `config.yaml`:
+
+```yaml
+model:
+  default: <model>
+  provider: custom
+  base_url: https://llm.example.com/v1
+  api_key: <key>
+```
+
+Cotal passes the model to Hermes unchanged, so `--model custom:<model>` names a model called
+`custom:<model>`. It does not select the provider.
 
 ## How it binds
 
@@ -94,7 +137,7 @@ Set `COTAL_HERMES_ADOPT_HOME` to your profile directory to run the gateway there
 
 ```bash
 export COTAL_HERMES_ADOPT_HOME="$HOME/.hermes"
-cotal spawn --agent hermes
+cotal spawn --agent hermes --no-events
 ```
 
 The value must be an absolute path. The launcher refuses a relative path, and a `~` your shell did
