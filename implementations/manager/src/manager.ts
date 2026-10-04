@@ -5347,6 +5347,7 @@ export class Manager {
         // (launchAgentToStartOpts), so there they are the definition's field, never a flag.
         modelFlag: !opts.resolved && opts.model !== undefined,
         variantFlag: !opts.resolved && opts.variant !== undefined,
+        launchOptions,
       });
     } catch (e) {
       return { ok: false, error: (e as Error).message };

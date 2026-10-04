@@ -121,7 +121,7 @@ function checkModelPolicy(path: string, policy: unknown): void {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry))
       throw bad(`modelPolicy.${role} must be an object with a models list`);
     const extra = Object.keys(entry).find((key) => key !== "models" && key !== "variants");
-    if (extra) throw bad(`modelPolicy.${role} has unsupported field "${extra}" (expected models, variants)`);
+    if (extra !== undefined) throw bad(`modelPolicy.${role} has unsupported field "${extra}" (expected models, variants)`);
     for (const field of ["models", "variants"] as const) {
       const list = (entry as Record<string, unknown>)[field];
       if (list === undefined && field === "variants") continue;
@@ -204,7 +204,7 @@ export function spawnEnvAllow(config: CotalConfig): readonly string[] | undefine
 
 /** One spawn's effective launch, as the model policy judges it. `persona` names the definition for
  *  the refusal; `modelFlag` / `variantFlag` say the value came from `--model` / `--variant` rather
- *  than the definition's own field. */
+ *  than the definition's own field. `launchOptions` is the merged `launchOptions:` and `--opt` bag. */
 export interface ModelPolicyLaunch {
   persona: string;
   role?: string;
@@ -212,12 +212,15 @@ export interface ModelPolicyLaunch {
   variant?: string;
   modelFlag: boolean;
   variantFlag: boolean;
+  launchOptions?: Record<string, unknown>;
 }
 
 /** The operator-facing refusal for a launch whose role `modelPolicy` constrains and whose model or
- *  variant is absent or not on the role's list, or undefined when it may launch. A role with no
- *  entry, and a launch with no role, are unconstrained. An absent model is refused rather than
- *  defaulted: the harness would pick one, and nothing would record which. */
+ *  variant is absent or not on the role's list, or that carries launch options, or undefined when it
+ *  may launch. A role with no entry, and a launch with no role, are unconstrained. An absent model is
+ *  refused rather than defaulted: the harness would pick one, and nothing would record which. Launch
+ *  options are refused because the connector applies them after the model and variant, unread, and
+ *  one can select another model (an OpenCode `model`, a Claude `--model`, a Codex `-c model`). */
 export function modelPolicyRefusal(config: CotalConfig, launch: ModelPolicyLaunch): string | undefined {
   const role = launch.role;
   if (role === undefined || !config.modelPolicy || !Object.hasOwn(config.modelPolicy, role)) return undefined;
@@ -231,6 +234,10 @@ export function modelPolicyRefusal(config: CotalConfig, launch: ModelPolicyLaunc
       return `${launch.persona} has role "${role}" and ${flag ? `the --${field} flag` : `its \`${field}:\` field`} names ${field} "${v}", which ${rule} does not allow (allowed: ${allowed.join(", ")}; ids must match whole). The seat was not launched.`;
     return undefined;
   };
+  const options = Object.keys(launch.launchOptions ?? {});
   return check("model", launch.model, policy.models, launch.modelFlag)
-    ?? (policy.variants ? check("variant", launch.variant, policy.variants, launch.variantFlag) : undefined);
+    ?? (policy.variants ? check("variant", launch.variant, policy.variants, launch.variantFlag) : undefined)
+    ?? (options.length
+      ? `${launch.persona} has role "${role}" and carries launch options (${options.join(", ")}). The harness applies them unread, after the model, so one can select a model ${rule} does not allow. A role under modelPolicy launches without launch options: drop them from \`launchOptions:\` and --opt. The seat was not launched.`
+      : undefined);
 }

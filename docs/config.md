@@ -86,7 +86,11 @@ when the role has an entry and:
 - no model resolves at all, since the harness would then pick one and nothing would record which;
 - the model is not in `models`. Ids compare whole, so `vendor/model-B-fast` does not match
   `vendor/model-B`;
-- `variants` is set and the variant is absent or not in it.
+- `variants` is set and the variant is absent or not in it;
+- the launch carries any launch option (`launchOptions:` in the persona or manifest, or `--opt`).
+  The connector applies launch options unread, after the model and variant, and one can select
+  another model (an OpenCode `model`, a Claude `--model`), so a role under the policy launches
+  without them.
 
 The refusal names the persona, whether the value came from its own field or from the flag, the
 value, and the allowed ids. Roles with no entry, and personas with no role, are not constrained.

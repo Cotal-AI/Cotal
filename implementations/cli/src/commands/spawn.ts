@@ -667,13 +667,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   //  before any provision work; core's own refusal names the offender and the `_` remedy.
   refuseUnmintableNameOrExit(requested, target.mode === "user");
   // #581: the same per-role model allowlist the manager enforces on a detached spawn, judged on the
-  // effective role and model (flag over file) before anything is provisioned or launched.
+  // effective role, model (flag over file) and launch options before anything is provisioned or launched.
   try {
     const refusal = modelPolicyRefusal(loadCotalConfig(target.root), {
       persona: `persona "${ref}" (${path})`,
       role, model: values.model ?? def.model, variant: values.variant ?? def.variant,
       modelFlag: values.model !== undefined,
       variantFlag: values.variant !== undefined,
+      launchOptions: mergeLaunchOptions(def.launchOptions, cliLaunchOptions),
     });
     if (refusal) {
       console.error(c.red(`✗ ${refusal}`));
