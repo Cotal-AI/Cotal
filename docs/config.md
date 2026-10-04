@@ -59,6 +59,9 @@ your own Claude / VS Code / Cursor config. Secrets ride as **`${VAR}` references
 | `none` or empty | Nothing |
 | `a,b` | Only those named: each **must** be declared, or the spawn fails (no silent drop) |
 
+A `supervise --roster` entry selects the same way with a `share-tools:` list: an absent key
+shares every declared server, `[]` shares none, and `[a, b]` shares only those named.
+
 Today only the `claude` connector consumes shared MCP servers; OpenCode inherits config through its
 own merge layer and Hermes has no MCP. See [Connect Claude Code](connect-claude.md) for the full
 sharing model.
