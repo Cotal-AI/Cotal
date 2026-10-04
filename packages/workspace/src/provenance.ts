@@ -63,11 +63,13 @@ function nameOf(failure: unknown): string {
 }
 
 /** Write `text` to `stream`, calling `onFail` at most once if the write fails and absorbing the
- *  stream's `error` event from then on, since the policy above reports the failure. A write can fail
- *  before it returns: it throws, or the stream is already `errored` (one that failed earlier in the
- *  same tick buffers the text and then drops it). A write left pending in a full pipe fails later,
- *  through its callback, which Node runs before the stream emits `error`; until it settles it is
- *  `waiting`. One that left nothing buffered was written, though its callback runs on a later tick. */
+ *  stream's `error` event from then on, since the policy above reports the failure. A write to a
+ *  stream already ended fails before it is made: Node refuses it but says so only on a later tick,
+ *  which an exit in the same tick never reaches. A write can fail before it returns: it throws, or
+ *  the stream is already `errored` (one that failed earlier in the same tick buffers the text and
+ *  then drops it). A write left pending in a full pipe fails later, through its callback, which Node
+ *  runs before the stream emits `error`; until it settles it is `waiting`. One that left nothing
+ *  buffered was written, though its callback runs on a later tick. */
 function send(stream: NodeJS.WriteStream, text: string, onFail: (failure: unknown) => void): void {
   const write = { stream };
   let settled = false;
@@ -85,6 +87,10 @@ function send(stream: NodeJS.WriteStream, text: string, onFail: (failure: unknow
     }
     onFail(failure);
   };
+  if (stream.writableEnded) {
+    fail("write after end");
+    return;
+  }
   try {
     stream.write(text, (e) => {
       if (e) fail(e);
