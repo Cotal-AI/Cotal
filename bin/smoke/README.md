@@ -59,6 +59,21 @@ remain in force.
 `pnpm smoke:ci:offline` keeps its existing live-suite exclusions and reports them. It is
 not the full gate or a replacement name for a smaller testing tier.
 
+## Suites that can fail
+
+A run cannot show that a suite swallowed a throw or lost a cell, so `pnpm smoke:gate-inventory`
+reads the entry file of every suite the gate reaches and refuses two shapes:
+
+- A `finally`, or a promise `.finally`, that calls `process.exit` with a status that can be 0 and
+  has no catch arm that sets a non-zero `process.exitCode`, exits non-zero or rethrows. A throw in
+  that `try` would exit 0.
+- A suite with no pinned cell count. Declare `const EXPECTED_CELLS = <n>` and fail when the cells
+  that ran `!== EXPECTED_CELLS`, after reporting failures, so a deleted cell turns the suite red.
+
+The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
+that existed when the rule landed. The census refuses an entry that pins a count now or is no
+longer a reached suite, so the list only shrinks. A new or renamed suite pins its count.
+
 ## Workspace commands
 
 Use the repository's pinned pnpm version. Recursive package tasks start when their
