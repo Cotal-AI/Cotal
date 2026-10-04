@@ -4119,19 +4119,24 @@ the execution: the request id, the serve epoch, the lifecycle UID (host-selected
 a launch, the target's for a retirement), the launch's token digest or the retirement's
 operation id, and the host incarnation `{ instanceId, processEpoch }` that executes it. A lost CAS is `conflict` and nothing is enrolled or retired. Because the reads are not
 fences (§13.1), the host MUST repeat the assignment and gate checks for a launch after the CAS and
-before any effect, and on a refusal MUST end the record `aborted` with no effect; a change that
-lands after that second read is ordered after the execution. An intent executes at most once and
-confers nothing after it executes.
+before any effect, and on a refusal MUST compensate the launch (below) before it ends the record
+`aborted`; a change that lands after that second read is ordered after the execution. An intent
+executes at most once and confers nothing after it executes.
 
 **Recovery.** From the CAS on, the host owns the pinned execution, whoever presented it. It MUST
 drive every consumed record to one outcome, `enrolled`, `retired` or `aborted`, at the pinned
 lifecycle UID, including after a restart or a lost answer. For a launch, the host's first effect
 after the post-CAS checks MUST be the issuance activation of the alias at the pinned lifecycle UID
 (§13.1), before any ledger row or durable, so that UID has an active head and an open issuance gate
-before anything is granted under it. A launch that ends without `enrolled` after that activation
-may have begun MUST be compensated before it is marked `aborted`: the retirement sequence below at
-that UID, with that UID's activation completed or adopted immediately before the terminal barrier
-unless its head is already retiring or retired there.
+before anything is granted under it. Every launch that ends without `enrolled` after its consuming
+CAS MUST be compensated before it is marked `aborted`, whichever flight observed the refusal,
+because a flight that resumes the execution cannot tell whether an earlier flight began the
+activation: the retirement sequence below at that UID, with that UID's activation completed or
+adopted immediately before the terminal barrier. Before that activation the compensator MUST read
+the head and the issuance gate at that UID. Once a retirement there has begun, because the head is
+retiring or retired at that UID or the gate is frozen or retired by `managedRetirementOpId` of that
+UID, the compensator MUST NOT run or adopt an activation and MUST go to the terminal barrier, which
+resumes that operation from its durable intent.
 Only the barrier's answer that the lifecycle is retired at that UID is terminal confirmation; a
 not-started answer MUST NOT be read as one. When that activation is refused because the alias is
 active or retiring at another UID, the record MUST keep no outcome and the compensation MUST be

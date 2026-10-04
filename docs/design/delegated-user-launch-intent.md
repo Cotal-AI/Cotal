@@ -445,17 +445,18 @@ stays as written. One execution runs in this order, and every refusal before the
    `executor`. A lost CAS is `conflict`, the flight ends, and nothing is enrolled.
 7. The CAS is the execution's commit. The reads in steps 2 and 4 are not fences (SPEC §13.1: a read
    is never a fence), so the host runs step 4 again after the CAS and before any effect. A refusal
-   there sets `outcome: "aborted"`, writes nothing else and answers with that refusal's code. A
-   reassignment, a revocation or a gate move that lands before this second read aborts the
-   execution. One that lands after it is ordered after the commit and refuses only later
+   there runs the compensation (below) at the pinned UID, then sets `outcome: "aborted"` and answers
+   with that refusal's code. A reassignment, a revocation or a gate move that lands before this
+   second read aborts the execution. One that lands after it is ordered after the commit and refuses only later
    executions, as the platform-control record's revocation refuses only the next door call. The
    agent such an execution leaves is the user's, and its holder counts as gone (section 7.2).
 8. The host first activates the lifecycle at the pinned UID with the shipped
    `activateLifecycleAtUid` (`implementations/auth/src/lifecycle-registry.ts:511`) and the
    `managerInstance` its bearer exchange passes (`auth-service:<space>`, `service.ts:663`). The
    alias head is then `active` at that UID and its issuance gate is open before any row or durable
-   exists. A refusal there, such as the alias being `active` or `retiring` at another UID, ends the
-   record `aborted` with nothing written. The host then runs the enrollment writer it already runs
+   exists. A refusal there, such as the alias being `active` or `retiring` at another UID, runs the
+   compensation, whose own activation then follows the Compensation paragraph's rule for an alias
+   live at another UID. The host then runs the enrollment writer it already runs
    for `manager-managed-agent-enrollment`, with the decision's values and the pinned UID and digest.
    It writes the ledger row through `grantManagedActor`, provisions the lifecycle-keyed durables,
    sets `outcome: "enrolled"` and returns the hosted enrollment material. The host MUST use that one
@@ -484,9 +485,11 @@ executor and sweeper roles of SPEC §13.7:
   once for a completed one, `grantManagedActor` is an upsert keyed by owner and actor, and the
   durables are keyed by the UID, so a second run writes the same head, row and durables. When the
   re-check or the writer now refuses, for example because the holder is gone or the user narrowed
-  `cli`, it runs the compensation below and sets `outcome: "aborted"`. A refusal in step 7, or a
-  refused activation in step 8, sets `aborted` directly, because no row or durable exists at a UID
-  that never activated and no flight runs that execution again. Before each effect of step 8 and
+  `cli`, it runs the compensation below and sets `outcome: "aborted"`. Every refusal after the
+  consuming CAS takes that path, the first flight's included, and none sets `aborted` directly: a
+  flight that resumes at step 7 cannot tell from its own state whether an earlier flight of the same
+  execution activated the UID or wrote its row, and the record pins no such phase. On a first
+  attempt the compensation activates a UID with no row behind it and retires it at once. Before each effect of step 8 and
   before its `outcome` CAS, the executor's flight re-reads the record, and a `sweptBy` it did not
   write ends the flight as the Alias hold paragraph says.
 - Any other incarnation is a sweeper. A restarted host is one, because its restart advanced its
@@ -505,10 +508,19 @@ so the gate the compensator opens has no row behind it. A bearer exchange at tha
 there, so it can mint only from a row a late executor writes after the prepare, and the barrier
 retires whatever that mints. The activation adopts a partial activation of the same alias and UID (its won
 reservation or its frozen activation gate), returns at once for a completed one, and otherwise
-completes it. A head already `retiring` or `retired` at the pinned UID needs no activation: the
-compensator goes straight to the barrier, which resumes or confirms that UID's retirement by its
-derived op id. The barrier then finds the active head and the open gate it requires
-(`retirement-barrier.ts:603-610`), whatever point the executor reached: after the consuming CAS
+completes it. Before it activates, the compensator reads the head and the issuance gate at the
+pinned UID, and it never activates once a retirement there has begun: the head is `retiring` or
+`retired` at that UID, or the gate is `frozen` or `retired` by `managedRetirementOpId(uid)`. The
+barrier creates its durable intent (`retirement-barrier.ts:615`) and freezes the gate
+(`retirement-barrier.ts:661`) before it moves the head (`retirement-barrier.ts:670`), so a
+compensation interrupted between those writes leaves the head `active` over a gate frozen by
+retirement, and `activateLifecycleAtUid` refuses that freeze as `failed-precondition`
+(`lifecycle-saga.ts:433-440`). The compensator goes straight to the managed retire door instead. The
+door finds the head active at the UID and joins the barrier under the same derived op id, which
+resumes from its durable intent and recognizes its own freeze (`retirement-barrier.ts:597-630`) or
+its own terminal gate (`retirement-barrier.ts:632-648`). On every other path the barrier finds the
+active head and the open gate it requires (`retirement-barrier.ts:603-610`), whatever point the
+executor reached: after the consuming CAS
 with nothing written, inside its activation, or after its ledger write and before any bearer
 exchange. Terminal confirmation is the managed retire door's `retired: true` or
 `alreadyRetired: true` at that UID. Its `notStarted` answer is never terminal confirmation, and a
@@ -660,12 +672,12 @@ payload. `authorizeAdmin` is unchanged.
 | D1 | Real user authorization only | admission derives the owner from a verified IdP subject on the host's human route and reads the user's own row fresh, requiring `spawn` | no or invalid IdP token, an `owner` field, a `p_` or service caller, a row without `spawn`: refused, nothing written | §13.16 admission |
 | D2 | No held login, copied token, synthesized `supervise` or signing RPC | the IdP token is verified and dropped; the record and both requests are closed and carry no token, scope, profile, subject, lifetime or claim; execution returns only the hosted enrollment material | an extra field is `bad-request`; neither door reads or writes `supervise` | §13.16 admission, execution |
 | D3 | The agent is the user's | the host's writer uses the record's owner and parent; `grantManagedActor` runs the envelope walk from the user's principal; the manager refuses any other `material.owner` | `the host enrolled the agent under owner <owner>, not the spawning owner <owner>` | §13.16 execution |
-| D4 | Bound to account, instance, epoch and lifecycle | admission records the assignment's account, instance, lifecycle and revision and the gate's epoch; execution compares the request with the record, then requires the fresh assignment and gate to equal the record, before the CAS and again after it for a launch | another account, instance, lifecycle or revision, in the request or in the fresh assignment: `permission-denied`; a stale gate epoch: `conflict`; a move after the CAS: `outcome: "aborted"`, no effect | §13.16 execution |
+| D4 | Bound to account, instance, epoch and lifecycle | admission records the assignment's account, instance, lifecycle and revision and the gate's epoch; execution compares the request with the record, then requires the fresh assignment and gate to equal the record, before the CAS and again after it for a launch | another account, instance, lifecycle or revision, in the request or in the fresh assignment: `permission-denied`; a stale gate epoch: `conflict`; a move after the CAS: compensated at the pinned UID, then `outcome: "aborted"`, no row | §13.16 execution |
 | D5 | One target | the record names one target; execution must name the same one; a retirement admission compares the launch record's target actor, never its admitting actor | a different target: `permission-denied`, before the CAS | §13.16 admission, execution |
 | D6 | No replay, no standing right | single CAS from `admitted` to `consumed`; `expiresAt` at most 300 s; the holder gains no ledger row, scope or grant | consumed by another request, or expired: `failed-precondition`; a lost CAS: `conflict` | §13.16 execution |
 | D7 | Retirement keeps #1972 | uid-exact prepare, known-handle provider closure, terminal barrier with the derived op id; host-run when the holder is gone | a non-delegated lifecycle, a launch with no `enrolled` outcome, or a foreign owner: refused at admission; an uncertain step keeps the alias held | §13.16 retirement |
 | D8 | R8 and H13 unchanged | section 8 | H13's spawn and `authorizeAdmin` answers unchanged | §13.16 last paragraph |
-| D9 | A crash or a lost answer strands nothing | the consuming CAS pins request id, epoch, lifecycle UID, digest or op id and the executor incarnation before any effect; one flight per intent runs the execution and every request equal to the pin joins it; only the executor advances a launch, and a sweeper takes only the terminal edge that retires the pinned UID; a launch activates its UID before any row or durable, and every compensation completes that activation before the barrier | none for the pinned retry, which gets the flight's answer; a flight whose `outcome` CAS lost answers no material; `notStarted` is never terminal confirmation; the alias stays held until an outcome | §13.16 execution, recovery |
+| D9 | A crash or a lost answer strands nothing | the consuming CAS pins request id, epoch, lifecycle UID, digest or op id and the executor incarnation before any effect; one flight per intent runs the execution and every request equal to the pin joins it; only the executor advances a launch, and a sweeper takes only the terminal edge that retires the pinned UID; a launch activates its UID before any row or durable; every refusal after the CAS is compensated, never aborted directly; every compensation completes that activation before the barrier unless a retirement at that UID has begun, which it resumes | none for the pinned retry, which gets the flight's answer; a flight whose `outcome` CAS lost answers no material; `notStarted` is never terminal confirmation; the alias stays held until an outcome | §13.16 execution, recovery |
 | D10 | A late executor cannot touch a successor | a consumed record holds its alias; after a sweeper's claim the hold outlives the outcome until the executor's own flight stops, revokes any grant at the pinned UID and sets `released`, or an operator releases it by hand | launch admission and the host's enrollment writer, for either door, refuse a held alias as `failed-precondition` with no write | §13.16 recovery |
 
 ## 10. Where it fails closed
@@ -681,6 +693,8 @@ payload. `authorizeAdmin` is unchanged.
 | a consumed record with no `outcome` | the alias stays held, no new request is admitted on the record, the executor resumes it, and any other incarnation only claims it and compensates at the pinned UID; a retry that finds neither is `unavailable` |
 | a compensation whose activation is refused because the alias is `active` or `retiring` at another UID | no `outcome`, the alias stays held, and the compensator retries at its next scan; nothing exists at the never-activated UID |
 | a managed retire door answering `notStarted` to a compensation | not terminal: the order starts again from the prepare |
+| a compensation that finds the head `retiring` or `retired`, or the gate `frozen` or `retired` by the derived op id, at the pinned UID | no activation; the managed retire door resumes that op from its durable intent |
+| a refusal after the consuming CAS on any flight, the first included | compensation at the pinned UID before `aborted`; the alias stays held until then |
 | a record a sweeper claimed and the executor has not `released` | the alias stays held after the outcome; launch admission and the enrollment writer refuse it; only the executor's flight or an operator by hand releases it |
 | a design reviewers reject | nothing lands: the declarations stay in this record (section 11) |
 
@@ -720,7 +734,7 @@ platform-control door, the platform's own route for the holder, its Runtime, and
 | A11 | Admit a retirement of an agent `U`'s own manager launched, and of another owner's agent | `failed-precondition` and `permission-denied`; nothing revoked |
 | A12 | Send either request with an extra field (`owner`, `idpToken`, `scope`, `supervise`) and send the execution kind inside a platform-control envelope | `bad-request` for all; no effect |
 | A13 | Admit a launch, have the backend advance the instance's assignment revision with its gate left open, then have the holder present the intent | `permission-denied`; the record stays `admitted`; no row |
-| A14 | Admit a launch, hold the host between the CAS and step 7's second read (a debugger breakpoint), advance the assignment revision, then release it | `permission-denied`; the record is `consumed` with `outcome: "aborted"`; no row |
+| A14 | Admit a launch, hold the host between the CAS and step 7's second read (a debugger breakpoint), advance the assignment revision, then release it | `permission-denied`; the head and gate at the pinned UID are `retired`; the record is `consumed` with `outcome: "aborted"`; no row |
 | A15 | Admit a launch and stop the host after the ledger write, before `outcome` is set and before any bearer exchange for `w1` (a breakpoint, then kill). Before restarting, read the lifecycle head and issuance gate at the pinned UID. Restart it, have the holder resend the same request, then admit a retirement of `w1`, a new launch of `w1` and a launch of `w1b` | before the restart the head is `active` and the gate `open` at the pinned UID; the restarted host is a sweeper: `sweptBy` is its incarnation, the grant at the pinned UID is revoked, the managed retire door answers `retired: true` (never `notStarted`), that lifecycle head and its gate are `retired`, and the record is `aborted` with no `released`; the resend answers `failed-precondition` and the manager frees its slot; the retirement admission and the new `w1` launch admission are `failed-precondition`; `w1b` is admitted |
 | A16 | Execute an admitted retirement, drop its answer before the holder reads it, and resend the same request | the resend answers from the same flight with the same op id; one terminal barrier; `retired: true` |
 | A17 | Admit a launch, hold its flight after step 7's second read and before the ledger write, have the holder resend the same request, advance the assignment revision, then release the flight | the resend joins the flight and answers the same material as the first request; one row at the pinned UID; `outcome: "enrolled"`; no terminal barrier at that UID; a new admission on the old revision is refused |
@@ -729,6 +743,8 @@ platform-control door, the platform's own route for the holder, its Runtime, and
 | A20 | Admit a launch and stop the host after the consuming CAS and before step 8's activation (a breakpoint, then kill). Read the head and gate at the pinned UID, then restart it | before the restart there is no gate at the pinned UID and no row; the sweeper activates that UID, the managed retire door answers `retired: true`, the head and gate are `retired` there, and the record is `aborted`; no row exists at any point |
 | A21 | Admit a launch and stop the host inside step 8's activation, after the gate at the pinned UID is created `frozen` and before the head CAS (a breakpoint, then kill). Restart it | the sweeper's activation adopts that frozen gate and completes it, then the end state of A20 |
 | A22 | Admit a launch of `w4` while `U`'s own manager has `w4` running, so the head is `active` at another UID, and stop the host after the consuming CAS (a breakpoint, then kill). Restart it, then retire `U`'s own `w4` | while that `w4` runs, the sweeper's activation is refused, the record keeps no `outcome`, no row or gate exists at the pinned UID, and a new `w4` launch admission is `failed-precondition`; after the retirement the next scan activates and retires the pinned UID and ends the record `aborted` |
+| A24 | Admit a launch of `w5` and make its durable provisioning throw `unavailable` once, after the ledger write (a breakpoint that throws). Keep the host running, advance the assignment revision, then have the holder resend the same request | the resend joins a new flight that resumes at step 7 and is refused there; that flight revokes the grant at the pinned UID, the managed retire door answers `retired: true`, the head and gate are `retired` there, the record is `aborted` with no `released`, the alias is free, and the resend answers `permission-denied` |
+| A25 | Run A24, and in its compensation make the head's `active` to `retiring` write throw `unavailable` once, right after the barrier froze the gate (a breakpoint that throws). Keep the host running and let its next scan retry | before the retry the head is `active` and the gate `frozen` by `managedRetirementOpId` at the pinned UID; the retry does not activate, the managed retire door resumes that op from its intent and answers `retired: true`, and the end state is A24's |
 | A23 | Run A19, and while the first process is still held, as `U` admit a new launch of `w1`, and have `U`'s own remote manager enroll `w1`; then release the first process, and launch `w1` again | while the first process is held both are `failed-precondition` with no row written; after its release sets `released`, the new launch is admitted and `enrolled` at a fresh UID, the ledger row for `w1` is at that UID, and it stays there: the first process writes nothing more |
 
 ## 13. Residual risk
