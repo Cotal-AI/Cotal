@@ -148,6 +148,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_SKIP_ASSIST` | `setup` | Disable the connector debug handoff on a failed step (`1`; for CI) | off |
 | `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors to stderr | off |
 | `COTAL_ENROLLMENT_FILE` | foreground `spawn` | Private `0600` file containing one remote enrollment URL; preferred over the environment form | none |
+| `COTAL_MANAGED_HANDOFF_FILE` | `cotal` entry, foreground `spawn` | Private `0600` file holding one managed lifecycle handoff from a delegating runtime; taken and deleted before anything else runs | none |
 | `COTAL_ENROLLMENT_URL` | foreground `spawn` | One remote enrollment URL when a secret file cannot be mounted; conflicts with `COTAL_ENROLLMENT_FILE` | none |
 | `COTAL_SERVE_HEADLESS` | OpenCode runtime | Run the OpenCode server without a foreground TUI (`1`) | off |
 | `COTAL_HOME` | workspace | Override the machine-home dir for the **mesh registry only** (`meshes/`, `current-mesh`, onboard marker). Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |

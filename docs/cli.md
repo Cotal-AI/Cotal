@@ -936,6 +936,24 @@ rather than choosing one. An invalid enrollment never falls back to login provis
 expired, revoked, and already-used enrollments all produce one response: ask the owner for a fresh
 one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTTP contract.
 
+A runtime that starts a managed seat outside the manager's filesystem hands the child a managed
+handoff instead: one `0600` file named by `COTAL_MANAGED_HANDOFF_FILE`, carrying the lifecycle the
+manager already enrolled. The runtime builds the command with `delegatedSeatCommand`:
+
+```bash
+COTAL_MANAGED_HANDOFF_FILE=/run/seat/handoff.json \
+  cotal spawn --config ./seat.md --space main --name <actor> --agent claude \
+    --expect-owner <owner> --expect-lifecycle-uid <uid>
+```
+
+The `cotal` entry reads the file, deletes it and drops the variable before it parses flags, prints
+help or loads extensions, so every outcome leaves no file. The spawn then refuses a handoff whose
+space, owner, actor or lifecycle UID differs from `--space`, `--expect-owner`, `--name` and
+`--expect-lifecycle-uid`, before any broker connection or exchange request. A handoff conflicts with
+the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
+there it runs the enrollment consumer above without redeeming anything. See
+[Delegated seats](embedding.md#delegated-seats-outside-the-managers-filesystem).
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | resolved mesh | Target space |
@@ -961,6 +979,8 @@ one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTT
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | none | With `-f`: waive named stale agents (apply-only) |
 | `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime |
+| `--expect-owner <u_…>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the owner the handoff must carry |
+| `--expect-lifecycle-uid <uid>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the lifecycle UID the handoff must carry |
 
 Each session uses its connector's **event plane** by default: a stream of structured events
 describing what the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after

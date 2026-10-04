@@ -513,11 +513,11 @@ agents under this manager.
 
 ### Delegated seats outside the manager's filesystem
 
-Proposed, not shipped. The [portable lifecycle bootstrap](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/portable-lifecycle-bootstrap.md)
+The [portable lifecycle bootstrap](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/portable-lifecycle-bootstrap.md)
 design and SPEC §13.17 define how a managed agent that `enrollManagedAgent` already enrolled starts
-in a child that cannot see the manager's filesystem. Today the enrollment arm writes the token and
+in a child that cannot see the manager's filesystem. The ordinary `spawn` path writes the token and
 sentinel under the manager's workspace root and hands the runtime a launch whose bearer command and
-material file are paths on that filesystem, so such a child cannot start.
+material file are paths on that filesystem, so such a child needs this path instead.
 
 The delegation boundary is one optional runtime method. A runtime that implements
 `Runtime.spawnDelegated(launch, handoff)` receives two values and no paths: a `DelegatedSeatLaunch`

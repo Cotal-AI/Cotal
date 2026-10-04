@@ -1,8 +1,7 @@
 # Portable lifecycle bootstrap
 
-Status: proposed contract for issue #2420. Nothing here ships yet. The symbols below are the
-ones the implementation round adds, spelled as they will be declared. The source inventory was
-checked at `d00f18cd62f5933c7dceb93b56559498b66656bc`.
+Status: contract for issue #2420, implemented with the symbols spelled as declared below. The source
+inventory was checked at `d00f18cd62f5933c7dceb93b56559498b66656bc`.
 
 ## Problem
 
