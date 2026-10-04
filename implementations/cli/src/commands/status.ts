@@ -7,7 +7,6 @@ import {
   isReachable,
   mintCreds,
   mintLifecycleUid,
-  invokeCommand,
   resolveService,
   standaloneConnectOpts,
   newIdentity,
@@ -30,6 +29,7 @@ import { connectorHarnesses, connectorStatusRows, machineStatus, resolveRuntimeS
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
+import { invokeRepairingSplit } from "../lib/control.js";
 import { listPersonas } from "../lib/personas.js";
 import { c, presenceDetail, statusBadge } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
@@ -908,7 +908,7 @@ async function managerServiceHealth(
   });
   try {
     const service = await resolveService(nc, target.space, "manager", auth.caller, { deadlineMs: 3_000 });
-    const response = await invokeCommand(nc, target.space, service, "status", undefined, { deadlineMs: 3_000 });
+    const response = await invokeRepairingSplit(nc, target.space, service, "status", undefined, { deadlineMs: 3_000 });
     if (response.reply.ok !== true)
       throw new EpEnvelopeError(response.reply.error?.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error?.message ?? "manager status refused");
     return response.reply.data as {
