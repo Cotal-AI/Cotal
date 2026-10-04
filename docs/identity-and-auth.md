@@ -120,7 +120,9 @@ naming the caller. Every other command serves both rails.
 
 Control-plane power is a **declared capability**, not a default. An agent file carrying
 `capabilities: [spawn]` gets the privileged control subject minted into its cred: spawn,
-plus stop/despawn of its *own* children, plus persona definition. Without it, an agent can
+plus stop/despawn of its *own* children, plus persona definition. On a static or open mesh its own
+children include what it launches with `cotal spawn --detach` from its own shell, since that
+command runs as the seat. Without it, an agent can
 only self-despawn and pull or yield the run turns addressed to it. `capabilities: [run]` mints
 the manager's workflow-run commands (start, resume, answer, status, list) together with the spawn
 set, since a program the agent starts may spawn; the manager drives the run under a per-run

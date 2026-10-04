@@ -999,6 +999,23 @@ fails, and a managed seat frees its slot only when it stops. The refusal counts 
 only while it holds a slot, so a launch whose seat already ended is not counted. The roster counts
 presence, which also includes peers no manager owns, so its total is a different number.
 
+Run from a managed seat's own shell on a static or open mesh, `cotal spawn --detach` launches as
+that seat when it targets the seat's own space. Without `--space` it picks that target the way the
+operator path does, so a recorded mesh that is not running is skipped. The CLI reads the seat's
+launch identity (`COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`, `COTAL_SPACE`, and on a static
+mesh the seat's own credential), so the manager records the seat as the spawner, the same as for
+the seat's `cotal_spawn` tool. On a static mesh that credential also proves the seat's space, so a
+launch without `COTAL_SPACE` still runs as the seat, and a target space holding no credential for
+the seat is refused. An open mesh acts as the seat only when `COTAL_SPACE` names its space. The
+seat can then stop the child with `cotal_despawn`, and the manager stops the child when the seat
+exits. On a static mesh a seat whose agent file lacks `capabilities: [spawn]` is refused, because
+its credential holds no spawn subject.
+`--on <instance>` keeps its pin: the seat's own credential has no instance route, so on a static
+mesh the CLI mints a one-shot `manager-caller` view for the seat, pinned to that instance and
+carrying the spawn subject only when the seat's credential holds it. On an open mesh the call keeps
+the TLS requirement the mesh records. `--creds`, `--server` with an unregistered `--space`, and a
+user-auth mesh keep the operator path.
+
 ## models
 
 ```bash

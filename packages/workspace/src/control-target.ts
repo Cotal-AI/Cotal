@@ -7,18 +7,29 @@
  * raw `--creds` path the space defaults to THIS FOLDER's `.cotal/auth` space rather than
  * `DEFAULT_SPACE`, because a control op addresses the manager of the folder's mesh.
  */
+import { existsSync, readFileSync } from "node:fs";
 import {
   DEFAULT_SPACE,
   DEV_OWNER,
+  dialerFor,
+  epCallerGrantRows,
+  jwtFromCreds,
+  mintCreds,
   mintLifecycleUid,
   newIdentity,
+  readAcceptedRow,
+  spawnCallerCapabilities,
+  standaloneConnectOpts,
   type EpCaller,
+  type IssuedCaller,
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
+import { agentLifecycleSecretFilePaths } from "./agent-secrets.js";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
 import { connectOrExit, connectOrThrow, connectUserControlOrExit, endpointAuth, userViewAuth, type ConnectFlags } from "./connect.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
+import { findMesh } from "./mesh-registry.js";
 import { pruneStaleMeshes } from "./preflight.js";
 
 /** Endpoint auth material for one control call: a static/raw cred OR a user-mode bearer+sentinel
@@ -130,14 +141,93 @@ export async function resolveControlTarget(
   };
 }
 
+/**
+ * The managed seat this process runs in, as THAT seat's own control target, or `undefined` outside
+ * one. A seat that shells out to `cotal` must reach the manager as itself, not as a fresh operator
+ * instrument: the manager records the requesting principal (a detached spawn's spawner, a run
+ * answer's answerer), and a one-shot instrument is a principal nothing can present again, so the
+ * seat could never stop the child it asked for (#718). Connection material is intentionally not
+ * inherited by shell children; the non-secret launch identity (`COTAL_NAME`, `COTAL_ID`,
+ * `COTAL_LIFECYCLE_UID`) names the seat, and when the launch also sets `COTAL_SPACE` only a command
+ * aimed at that registered space acts as it. A raw open target (`--server` plus an unregistered
+ * `--space`) keeps the operator resolution, as {@link connectOrThrow} orders it:
+ *
+ * - static mesh: the manager-owned lifecycle credential, whose accepted row (`COTAL_ACCEPTED_TOKEN`)
+ *   resolves an issuer-bound generation that must name the same principal and lifecycle uid. That
+ *   proof binds the space too, so a launch without `COTAL_SPACE` still acts as the seat, and a
+ *   target whose space holds no such credential is refused rather than answered as someone else;
+ * - open mesh: no credential system, so the seat's declared triple is the caller, over the
+ *   transport the registry records, and only when `COTAL_SPACE` names that space;
+ * - user-auth mesh: `undefined`, because the CLI's bearer and the seat share an owner and the
+ *   manager's owner-domain rule already covers that pair.
+ *
+ * `instanceId` (`--on <instanceId>`) pins the call to one manager instance. The seat's standing
+ * credential holds class routes only, so on a static mesh the seat's proven principal and lifecycle
+ * uid get a one-shot `manager-caller` view instead, minted from the local signer like the operator
+ * instrument `--on` already gets: every request, describe included, is pinned to that instance, it
+ * carries the spawn set only when the seat's own credential holds it, and it expires in five minutes.
+ */
+export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?: string): Promise<ControlTarget | undefined> {
+  const name = process.env.COTAL_NAME?.trim();
+  const actor = process.env.COTAL_ID?.trim();
+  const uid = process.env.COTAL_LIFECYCLE_UID?.trim();
+  const seatSpace = process.env.COTAL_SPACE?.trim();
+  const acceptedToken = process.env.COTAL_ACCEPTED_TOKEN?.trim();
+  if (!name || !actor || !uid || (!seatSpace && !acceptedToken)) return undefined;
+  if (flags.server && flags.space && !findMesh(flags.space)) return undefined;
+  // Sweep first when no space is named, as the operator resolution does, so a kept dead record is
+  // not a live candidate here either and the seat picks the same mesh the operator path would.
+  const offline = flags.space ? [] : (await pruneStaleMeshes()).offline;
+  const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server, offline });
+  if (seatSpace && mesh.space !== seatSpace) return undefined;
+  const at = { space: mesh.space, server: mesh.server, root: mesh.root, mode: mesh.mode, ...(mesh.policy ? { policy: mesh.policy } : {}) };
+  if (mesh.mode === "open") return seatSpace ? { ...at, auth: { tls: mesh.tlsRequired, epCaller: { owner: DEV_OWNER, actor, uid } } } : undefined;
+  if (mesh.mode !== "auth" || !acceptedToken) return undefined;
+  const path = agentLifecycleSecretFilePaths(mesh.root, mesh.space, name, uid).creds;
+  if (!existsSync(path))
+    throw new Error(`managed seat credential is missing at ${path}; refusing to act as a different caller`);
+  const creds = readFileSync(path, "utf8");
+  const nc = await dialerFor(mesh.server)({
+    servers: mesh.server,
+    ...standaloneConnectOpts({ creds, tls: mesh.tlsRequired }),
+    maxReconnectAttempts: 0,
+  });
+  let epCaller: IssuedCaller;
+  try {
+    const ref = await readAcceptedRow(nc, mesh.space, acceptedToken);
+    if (ref.owner !== DEV_OWNER || ref.actor !== actor || ref.uid !== uid)
+      throw new Error(`managed seat issuance resolves to ${ref.owner}.${ref.actor}/${ref.uid}, not ${DEV_OWNER}.${actor}/${uid}`);
+    epCaller = { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation } as IssuedCaller;
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+  if (instanceId === undefined) return { ...at, auth: { creds, tls: mesh.tlsRequired, epCaller } };
+  if (!mesh.auth)
+    throw new Error(`mesh "${mesh.space}" is a static-auth mesh but the seed under ${mesh.root} is missing, so no instance-pinned view can be minted for this seat`);
+  const jwt = jwtFromCreds(creds);
+  if (!jwt) throw new Error(`managed seat credential at ${path} carries no NATS user JWT`);
+  const held = new Set<string>((JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8")) as { nats?: { pub?: { allow?: string[] } } }).nats?.pub?.allow ?? []);
+  const spawn = epCallerGrantRows(mesh.space, spawnCallerCapabilities(DEV_OWNER), epCaller).pub.every((row) => held.has(row));
+  const view = await mintCreds(mesh.auth, newIdentity(), "manager-caller", {
+    principal: { owner: DEV_OWNER, actor },
+    lifecycleUid: uid,
+    managerInstanceId: instanceId,
+    capabilities: spawn ? ["spawn"] : [],
+    expiresInSeconds: 5 * 60,
+  });
+  return { ...at, auth: { creds: view, tls: mesh.tlsRequired, epCaller: { owner: DEV_OWNER, actor, uid }, managerInstanceId: instanceId } };
+}
+
 /** The caller triple a control call rides, or a refusal naming why the credential cannot. A user
  *  bearer or a minted static instrument carries its own triple. An OPEN mesh has no credential
- *  system: the manager registered under DEV_OWNER and the broker enforces nothing, so a fresh
- *  DEV_OWNER triple is synthesized. A raw `--creds` file supplies no triple and that route cannot
- *  mint one, so it is refused rather than silently downgraded. */
+ *  system: the manager registered under DEV_OWNER and the broker enforces nothing, so the call rides
+ *  the triple its target declares ({@link resolveSeatControlTarget}) or a freshly synthesized
+ *  DEV_OWNER one. A raw `--creds` file supplies no triple and that route cannot mint one, so it is
+ *  refused rather than silently downgraded. */
 export function controlCaller(auth: ControlAuth): { caller: EpCaller } | { refusal: string } {
   if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds))) return { caller: auth.epCaller };
   if (auth.creds)
     return { refusal: "this control call has no endpoint-caller triple (owner, actor, lifecycle uid), and a raw --creds invocation cannot mint one; minting the file again changes nothing. Run the command from the mesh's project folder, or name the mesh with --space against its registry entry, so the CLI mints the one-shot instrument for you" };
+  if (auth.epCaller && !auth.bearer && !auth.sentinelCreds) return { caller: auth.epCaller };
   return { caller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
 }

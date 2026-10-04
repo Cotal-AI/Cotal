@@ -201,6 +201,65 @@ The refusal and its messages were run against the 0.59.0 parser and `cotal topol
 argument lists `cotal` builds for its own processes give each flag once is read from the code, and
 was not run on a live split deployment.
 
+## Detached spawns from a seat's shell in 0.62.0
+
+On a static or open mesh, `cotal spawn --detach` run inside a managed seat's shell now launches as
+that seat. On 0.61.0 it minted a one-shot operator instrument, so the manager recorded that
+instrument as the spawner and the seat's own `cotal_despawn` of the child was refused with
+`not authorized: <seat> was not spawned by <caller> (admin tier required)`. The break is in the CLI
+on the machine where the seats run. No stored state, credential or wire message changes.
+
+### What keeps working
+
+`cotal spawn --detach` from an operator terminal or from a script outside any seat launches as
+before, and so does any call with `--creds`, one aimed at a space other than the seat's own, or a raw
+open target named with `--server` and an unregistered `--space`. A user-auth mesh is unchanged. A seat with
+`capabilities: [spawn]` still spawns from its shell, and can now stop that child with
+`cotal_despawn`. `--on <instance>` from a seat's shell still lands on that manager instance, now as
+the seat.
+
+### What stops working
+
+- On a static mesh, a seat without `capabilities: [spawn]` can no longer spawn from its shell. Its
+  own credential holds no spawn subject, so the broker refuses the request and the command exits 1.
+- A child launched from a seat's shell is now that seat's child, so the manager stops it when the
+  seat exits, as it does for a `cotal_spawn` child. A child that has to outlive the seat that
+  started it now goes with the seat.
+- A seat launched without `COTAL_SPACE` is placed by its static credential. Every connector sets
+  that variable, so this only reaches a hand-built launch: from such a seat's shell, a spawn aimed at
+  a static space that holds no credential for the seat is refused instead of running as the operator.
+
+### Upgrade order
+
+Only the CLI that seats run from their shell changes, which is the one installed on the host where
+the seats run. Brokers and managers need nothing for this break, so their order is the one the
+sections above give.
+
+### The window
+
+This break has no outage. No process restarts for it. A child already running when you upgrade
+keeps the spawner the manager recorded at its launch.
+
+### Snapshot this first
+
+Nothing is rewritten, so this break has no state to back up. List the agent files whose seats run
+`cotal spawn --detach` from their shell, note which of them lack `capabilities: [spawn]`, and note
+which of their children must outlive the seat.
+
+### The upgrade end to end
+
+```sh
+# still on 0.61.0: find the seats that spawn from their shell
+grep -rln 'cotal spawn' .cotal/agents
+# add `capabilities: [spawn]` to each of those agent files that lacks it, and launch any child
+# that must outlive its seat from an operator terminal instead
+npm i -g cotal-ai@0.62.0
+```
+
+The attribution, the despawn, the refusal of a seat without `spawn`, the stop on seat exit and a
+seat's `--on` spawn were run on a local static mesh, and the attribution and the despawn on a local
+open mesh.
+
 ## From 0.53.0 to 0.54.0
 
 Manager calls now borrow an instance-bound `manager-caller` credential. Followed mutations require
