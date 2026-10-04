@@ -24,7 +24,7 @@ import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMa
 import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
-import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
+import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
 
 /** Hermes API range this connector is written against (keep in sync with pyproject.toml).
  *
@@ -51,6 +51,25 @@ const HERMES_MAX_EXCLUSIVE = "0.22";
 /** This package's root (where pyproject.toml + plugin/ live), resolved from this source file. */
 const PKG_DIR = fileURLToPath(new URL("..", import.meta.url));
 const PLUGIN_SRC = join(PKG_DIR, "plugin", "cotal");
+
+/** How long a managed gateway may drain after SIGTERM before it is killed. The runtime that stops
+ *  this launcher SIGKILLs it 3s after its own SIGTERM, and the managed root can only be removed
+ *  once the gateway has exited, so the drain must end with room to spare inside that window. */
+const GATEWAY_DRAIN_MS = 1_500;
+
+/** `pid` and every process below it. The gateway runs as `uv` over the Hermes python process, and
+ *  uv cannot forward a SIGKILL, so killing the gateway means killing the tree. */
+function processTree(pid: number): number[] {
+  const children = new Map<number, number[]>();
+  for (const line of execFileSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" }).split("\n")) {
+    const [child, parent] = line.trim().split(/\s+/).map(Number);
+    if (!child || parent === undefined) continue;
+    children.set(parent, [...(children.get(parent) ?? []), child]);
+  }
+  const tree = [pid];
+  for (let i = 0; i < tree.length; i++) tree.push(...(children.get(tree[i]) ?? []));
+  return tree;
+}
 
 /** The bridge socket's path id is unpredictable, unlike the control endpoint's: `id` folds in the
  *  launch's own control token alongside space/name/pid, so a same-uid process cannot compute the
@@ -295,9 +314,13 @@ async function main(): Promise<void> {
   const persona = process.env.COTAL_AGENT_FILE
     ? loadAgentFile(process.env.COTAL_AGENT_FILE).persona
     : undefined;
-  // Managed (default): a disposable profile under tmp, regenerated every launch. Adopted (opt-in):
-  // the operator's own profile, into which only this connector's plugin directory is written.
-  const home = adopt ?? hermesSeatHome(config.space, config.name);
+  // Managed (default): a disposable profile under tmp, regenerated every launch and removed when the
+  // seat stops, unless it holds a `--resume` fork. Adopted (opt-in): the operator's own profile, into
+  // which only this connector's plugin directory is written, and which is never removed.
+  const managed = adopt ? undefined : hermesSeatHome(config.space, config.name);
+  const home = adopt ?? managed!.home;
+  const moved = managed && moveLegacyHermesFork(config.space, config.name);
+  if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
   if (adopt) setupAdoptedProfile(home, { persona });
   else setupProfile(home, { model: process.env.HERMES_MODEL, persona });
 
@@ -363,9 +386,13 @@ async function main(): Promise<void> {
   // Fail loudly before we hand control to the gateway if the Hermes API line is wrong.
   if (!fork) assertHermesVersion();
 
+  // A managed gateway's temp files land inside the root a stop removes, not in the shared temp dir.
+  const gatewayTmp = managed && join(managed.root, "tmp");
+  if (gatewayTmp) mkdirSync(gatewayTmp, { recursive: true });
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     HERMES_HOME: home,
+    ...(gatewayTmp ? { TMPDIR: gatewayTmp } : {}),
     [LAUNCH_MATERIAL_ENV]: material,
     COTAL_CONTROL_SOCKET: control.path,
     COTAL_BRIDGE_SOCKET: bridgeSock,
@@ -376,6 +403,33 @@ async function main(): Promise<void> {
 
   log(`launching hermes gateway as ${config.name}${config.role ? `/${config.role}` : ""} (HERMES_HOME=${home})`);
   const child = spawnHermesGateway({ pkgDir: PKG_DIR, env: childEnv });
+  const gatewayExit = new Promise<void>((done) => child.once("exit", () => done()));
+
+  // Remove the managed root, but only once the gateway can no longer write into it: let it drain,
+  // kill its tree if it is still up, and wait for its exit. Removing earlier would let a draining
+  // gateway recreate part of the directory after it was deleted.
+  const removeManaged = async (root: string): Promise<void> => {
+    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+      let timer: NodeJS.Timeout | undefined;
+      const drained = await Promise.race([
+        gatewayExit.then(() => true),
+        new Promise<boolean>((done) => (timer = setTimeout(() => done(false), GATEWAY_DRAIN_MS))),
+      ]);
+      clearTimeout(timer);
+      if (!drained) {
+        log(`gateway still running ${GATEWAY_DRAIN_MS}ms after SIGTERM; killing it before removing ${root}`);
+        for (const pid of processTree(child.pid)) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            /* already gone */
+          }
+        }
+        await gatewayExit;
+      }
+    }
+    rmSync(root, { recursive: true, force: true });
+  };
 
   let shuttingDown = false;
   const shutdown = async (code: number): Promise<void> => {
@@ -386,11 +440,15 @@ async function main(): Promise<void> {
     } catch {
       /* ignore */
     }
-    try {
-      await sidecar.stop();
-    } finally {
-      process.exit(code);
-    }
+    // A profile that holds a `--resume` fork is kept: a seat relaunched under the same name continues
+    // that fork, and the record is what refuses a different session under that name.
+    const forked = managed && existsSync(join(home, HERMES_FORK_RECORD)) ? managed : undefined;
+    if (forked) log(`keeping the managed profile ${forked.root}: it holds this seat's --resume fork`);
+    const disposable = forked ? undefined : managed;
+    const [, removed] = await Promise.allSettled([sidecar.stop(), disposable && removeManaged(disposable.root)]);
+    if (removed.status === "rejected")
+      log(`could not remove the managed profile ${disposable!.root}, so it is left on disk: ${(removed.reason as Error).message}`);
+    process.exit(code);
   };
 
   child.on("exit", (code) => void shutdown(code ?? 0));
