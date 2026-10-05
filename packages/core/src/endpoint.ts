@@ -645,6 +645,8 @@ export class CotalEndpoint extends EventEmitter {
   private activity?: string;
   /** When {@link status} or {@link activity} last changed. Heartbeats republish it unchanged. */
   private statusSince = Date.now();
+  /** When {@link activity} last changed. A status change leaves it alone. */
+  private activitySince?: number;
   /** Last harness-reported work progress. Carried by the next heartbeat, never published per event. */
   private activeAt?: number;
   private condition?: PresenceCondition;
@@ -2674,7 +2676,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   async setActivity(activity: string): Promise<void> {
-    if (activity !== this.activity) this.statusSince = Date.now();
+    if (activity !== this.activity) this.statusSince = this.activitySince = Date.now();
     this.activity = activity;
     await this.publishPresence();
   }
@@ -6139,6 +6141,7 @@ export class CotalEndpoint extends EventEmitter {
       environment: this.environment,
       activity: this.activity,
       statusSince: this.statusSince,
+      activitySince: this.activitySince,
       activeAt: this.activeAt,
       attention: this.attentionMode,
       channelModes: this.channelModes,

@@ -115,6 +115,9 @@ export interface Presence {
    *  it; a heartbeat or a repeated report does not, so an activity that outlived what it described
    *  reads as old even while `ts` stays fresh. Never carried by an offline record. */
   statusSince?: number;
+  /** Epoch ms when the current `activity` was set. A status change does not move it, so an activity
+   *  left behind while hooks flip the status every turn still reads as old. */
+  activitySince?: number;
   /** Epoch ms of the last work progress the harness reported (a turn event such as a token or a tool
    *  call). `ts` is only the heartbeat: a seat whose turn stopped advancing keeps heartbeating while
    *  this stays old. Missing means the connector reports none. */
