@@ -117,6 +117,7 @@ import {
   generationAnchor,
   sessionsBucket,
   SESSION_GRANT_MAX_TTL_MS,
+  REMOTE_MANAGER_IDENTITY_NAMES,
   type LifecycleStateTransport,
   type StaticManagedSlotRow,
   type SignerAnchor,
@@ -2308,10 +2309,9 @@ export class Manager {
     let candidate: Awaited<ReturnType<NonNullable<typeof remote.renewStandingBundle>>> | undefined;
     try {
       candidate = await remote.renewStandingBundle(processEpoch);
-      const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
-      if (Object.keys(candidate).sort().join(",") !== [...names].sort().join(","))
+      if (Object.keys(candidate).sort().join(",") !== [...REMOTE_MANAGER_IDENTITY_NAMES].sort().join(","))
         throw new Error("host returned an incomplete or widened standing credential family");
-      for (const name of names) {
+      for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {
         if (typeof candidate[name] !== "string" || inspectCredHealth(candidate[name]).state === "unreadable")
           throw new Error(`host returned an unreadable ${name} credential`);
         if (!remote.accountPublicKey || accountFromCreds(candidate[name]) !== remote.accountPublicKey)

@@ -445,7 +445,28 @@ export function managedRetirementOpId(lifecycleUid: string): string {
   return rawDigest(`retire:${assertLifecycleToken(lifecycleUid)}`).slice("sha256:".length, "sha256:".length + 26);
 }
 
-const IDENTITY_NAMES = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+/** The five standing identities of a remote manager. A parsed `identities` object keeps this key
+ *  order, which the registration proofs digest. */
+export const REMOTE_MANAGER_IDENTITY_NAMES = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+
+/** Closed parser for a request's `identities` field: exactly the five names, each exactly `{ id }`
+ *  with a user nkey. `fail` throws the calling parser's error, so each request keeps its own prefix. */
+export function parseRemoteManagerIdentities(raw: unknown, fail: (detail: string) => never): RemoteManagerAuthorityRequest["identities"] {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) fail("requires identities");
+  const ids = raw as Record<string, unknown>;
+  if (Object.keys(ids).sort().join(",") !== [...REMOTE_MANAGER_IDENTITY_NAMES].sort().join(","))
+    fail(`identities must contain exactly ${REMOTE_MANAGER_IDENTITY_NAMES.join(", ")}`);
+  const identities = {} as RemoteManagerAuthorityRequest["identities"];
+  for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {
+    const item = ids[name];
+    if (item === null || typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).join(",") !== "id")
+      fail(`identities.${name} must be exactly { id }`);
+    const id = (item as { id?: unknown }).id;
+    if (typeof id !== "string" || !/^U[A-Z2-7]{55}$/.test(id)) fail(`identities.${name}.id must be a user nkey`);
+    identities[name] = { id };
+  }
+  return identities;
+}
 
 /** The bound on one enrollment ACL list. A grant wider than this is a configuration mistake, and a
  *  request carrying thousands of patterns is a body-size attack on the host's derivation. */
@@ -481,20 +502,7 @@ function parseManagedAgentEnvelope(
   if (!/^sha256:[0-9a-f]{64}$/.test(o.registrationProof as string)) enrollmentError(what, "requires a sha256 registrationProof");
   if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0)
     enrollmentError(what, "serveEpoch must be a non-negative safe integer");
-  const ids = o.identities;
-  if (ids === null || typeof ids !== "object" || Array.isArray(ids)) enrollmentError(what, "requires identities");
-  const idObj = ids as Record<string, unknown>;
-  if (Object.keys(idObj).sort().join(",") !== [...IDENTITY_NAMES].sort().join(","))
-    enrollmentError(what, `identities must contain exactly ${IDENTITY_NAMES.join(", ")}`);
-  const identities = {} as RemoteManagerAuthorityRequest["identities"];
-  for (const name of IDENTITY_NAMES) {
-    const item = idObj[name];
-    if (item === null || typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).join(",") !== "id")
-      enrollmentError(what, `identities.${name} must be exactly { id }`);
-    const id = (item as { id?: unknown }).id;
-    if (typeof id !== "string" || !/^U[A-Z2-7]{55}$/.test(id)) enrollmentError(what, `identities.${name}.id must be a user nkey`);
-    identities[name] = { id };
-  }
+  const identities = parseRemoteManagerIdentities(o.identities, (detail) => enrollmentError(what, detail));
   return {
     space: o.space as string,
     actor: o.actor as string,

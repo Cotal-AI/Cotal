@@ -5,6 +5,7 @@ import {
   assertLifecycleToken,
   assertValidOwnerToken,
   remoteManagerActors,
+  parseRemoteManagerIdentities,
   type RemoteManagerAdminAuthorizationRequest,
   type RemoteManagerAdminAuthorizationResult,
   type PlatformControlAssignment,
@@ -15,7 +16,6 @@ import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import { requireManagerAuthorityHolder } from "./platform-control.js";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 
-const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
 const bad = (message: string): never => { throw new EpEnvelopeError("bad-request", `manager admin authorization request ${message}`); };
 
 /** `allowPlatform` admits a platform `p_…` caller owner, for the platform control holder only
@@ -34,17 +34,7 @@ export function parseRemoteManagerAdminAuthorizationRequest(raw: unknown, opts: 
   if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string)) bad("requestId must be a 22-64 character idempotency token");
   if (!/^sha256:[0-9a-f]{64}$/.test(o.registrationProof as string)) bad("requires a sha256 registrationProof");
   if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0) bad("serveEpoch must be a non-negative safe integer");
-  if (o.identities === null || typeof o.identities !== "object" || Array.isArray(o.identities)) bad("requires identities");
-  const rawIds = o.identities as Record<string, unknown>;
-  if (Object.keys(rawIds).sort().join(",") !== [...identityNames].sort().join(",")) bad(`identities must contain exactly ${identityNames.join(", ")}`);
-  const identities = {} as RemoteManagerAdminAuthorizationRequest["identities"];
-  for (const name of identityNames) {
-    const item = rawIds[name];
-    if (item === null || typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).join(",") !== "id") bad(`identities.${name} must be exactly { id }`);
-    const id = (item as { id?: unknown }).id;
-    if (typeof id !== "string" || !/^U[A-Z2-7]{55}$/.test(id)) bad(`identities.${name}.id must be a user nkey`);
-    identities[name] = { id: id as string };
-  }
+  const identities = parseRemoteManagerIdentities(o.identities, bad);
   if (o.caller === null || typeof o.caller !== "object" || Array.isArray(o.caller)) bad("requires caller");
   const caller = o.caller as Record<string, unknown>;
   if (Object.keys(caller).sort().join(",") !== "actor,lifecycleUid,owner") bad("caller must contain exactly owner, actor, lifecycleUid");
