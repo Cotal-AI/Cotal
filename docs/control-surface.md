@@ -83,7 +83,9 @@ class queue can hand `inspect` to an instance that does not host the name. When 
 different instance and is not `retired`, the miss returns `failed-precondition` with the same
 detail plus `ownerInstanceId`, which names the only manager that can act on it. The message names
 both instances, so a caller that reads only the string can tell it from `not-found`. A sibling's
-`retired` row remains `not-found`.
+`retired` row remains `not-found`. A named `cotal_despawn` resolves its target through this read
+and cannot address an instance, so it asks again until the owning instance answers, up to 16
+times.
 
 The slot is read before the head. These records do not form one atomic snapshot, so the detail
 also carries `readOrder: ["slot", "head"]` and `consistency: "ordered-not-atomic"`. A head can
@@ -256,7 +258,9 @@ states `not-executed` in its `outcome` field; a refusal that omits the field, or
 `unknown`, is surfaced to the caller instead of repaired, because neither proves the command did
 not run. The CLI's manager commands, `cotal invoke` and the manager row of `cotal status` re-describe
 and re-issue an unpinned call after each such refusal, up to 16 times, so a split reaches the
-operator only when every attempt split. A pinned call is never re-issued.
+operator only when every attempt split. A pinned call is never re-issued. An agent's own manager
+tools, such as `cotal_spawn` and `cotal_despawn`, re-describe and re-issue with the same bound,
+including the goal-result read that follows a spawn to its outcome.
 
 A manager whose boot inventory marked every declared connector unavailable does not subscribe
 `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this

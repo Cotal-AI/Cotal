@@ -43,7 +43,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
-  CotalEndpoint, EpEnvelopeError, EP_BIND_REFUSED,
+  BIND_SPLIT_REISSUES, CotalEndpoint, EpEnvelopeError, EP_BIND_REFUSED,
   compileContract, deriveReplySubject, epClassQueueGroup, epServeFilter, isRepeatSafeCommand,
   mintLifecycleUid, newIdentity, parseEndpointRequest, parseEpSubject, replyRefusedBeforeEffect,
   respondedButUnbound, DEV_OWNER,
@@ -284,11 +284,11 @@ try {
   try { second = (await poke()).reply; } catch (e) { fencedThrew = e; }
   c("the command did NOT run — the execution count is unmoved from the unfenced arm's 1",
     executions === execBefore, { execBefore, executions });
-  c("...although TWO attempts reached the responder, so the re-issue really was made",
-    attempts === attBefore + 2, { attBefore, attempts });
-  c("...and the caller COUNTED a recovery, which the unfenced arm did not",
-    ep.splitRecoveryCount === splitsBefore + 1, { splitsBefore, after: ep.splitRecoveryCount });
-  c("...and the SECOND refusal is returned rather than recovered again: one re-issue, not a loop",
+  c("...although every attempt the bound allows reached the responder, so the re-issues really were made",
+    attempts === attBefore + 1 + BIND_SPLIT_REISSUES, { attBefore, attempts });
+  c("...and the caller COUNTED each recovery, which the unfenced arm did not",
+    ep.splitRecoveryCount === splitsBefore + BIND_SPLIT_REISSUES, { splitsBefore, after: ep.splitRecoveryCount });
+  c("...and the LAST refusal is returned once the bound is spent: a bounded loop, not an endless one",
     fencedThrew === undefined && second?.ok === false && replyRefusedBeforeEffect(second?.error),
     fencedThrew ?? second);
 

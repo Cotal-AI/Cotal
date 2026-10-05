@@ -198,11 +198,11 @@ try {
   check("the caller holds a resolved handle to rewrite (the forced case can be set up at all)",
     bound !== undefined, { cached: [...cache.keys()] });
   let forcedRecoveries = 0, forcedEffects = 0, forcedOk = false;
-  // THE REPAIR IS NOT GUARANTEED TO LAND, BY DESIGN. Core repairs a bind refusal exactly once and
-  // lets a second refusal surface, while in a two-manager space roughly half of all class-queue
-  // calls split (both stated in `endpoint.ts`). The re-issue therefore goes back through the same
-  // queue and is split again about half the time. Asserting that the repair always lands is
-  // asserting a coin comes up heads.
+  // THE REPAIR IS NOT GUARANTEED TO LAND, BY DESIGN. Core re-issues a bind refusal a bounded
+  // number of times and lets the last refusal surface, while in a two-manager space roughly half
+  // of all class-queue calls split (both stated in `endpoint.ts`). Each re-issue goes back through
+  // the same queue and can split again. Asserting that the repair always lands is asserting a coin
+  // comes up heads within the bound.
   let forcedRefusedBeforeEffect = false, forcedDetail = "", forcedUid = "", forcedBoundTo = "";
   let forcedInstalled = false;
   if (bound !== undefined) {
@@ -266,7 +266,7 @@ try {
   // A recovery is emitted ONLY on a reply the caller read as refused-before-effect, so counting one
   // proves the responder produced the marked refusal — this is the fence, observed and not inferred.
   check("FORCED SPLIT IS FENCED: the wrongly-bound call was refused before it ran, then repaired",
-    forcedRecoveries === 1, { forcedRecoveries });
+    forcedRecoveries >= 1, { forcedRecoveries });
   // BOTH OUTCOMES ARE CORRECT, so both pass: the repair either landed (one effect, caller told ok)
   // or was split again and refused (no effect, and the refusal states conclusively that nothing
   // ran). Grading the first alone reddened this suite on runs where the property it exists to

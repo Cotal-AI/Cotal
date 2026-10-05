@@ -1,5 +1,6 @@
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
+  BIND_SPLIT_REISSUES,
   EpEnvelopeError,
   assertLifecycleToken,
   GOAL_BEARING_COMMANDS,
@@ -85,13 +86,6 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
  *  (the spawn capability's standing mint), `any` the admin instrument's cross-agent rows (§13.2
  *  any-mode). Replaces the deleted manager ctl tiers as the CLI's mode selector (1d). */
 export type ControlReach = "owner" | "any";
-
-/** How many times {@link invokeRepairingSplit} re-issues one call after a `not-executed` bind
- *  refusal. Every re-issue is a first attempt, so this is a loop guard and not a duplication guard.
- *  Each attempt splits with probability (m-1)/m in a space of m managers, so seventeen attempts
- *  leave a three-manager space about 1 in 1000 where the unrepaired call failed 2 in 3 (#398). An
- *  attempt costs an answered describe and invoke, never an elapsed deadline. */
-const BIND_SPLIT_REISSUES = 16;
 
 /**
  * One invoke on a resolved handle, with a SPEC 13.2 bind refusal repaired rather than surfaced.
