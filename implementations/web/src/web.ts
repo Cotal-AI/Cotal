@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { closeSync, fchmodSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -1224,8 +1225,11 @@ export async function web(args: ParsedArgs): Promise<void> {
   const launchUrl = `${url}?k=${gate.launchToken}`;
   // Written AFTER listen() succeeded, so its existence means the port is ours. A detached parent
   // reads it for the readiness nonce and the link; an operator who lost the printed line reads it
-  // for the link. 0600 — same trust boundary as the rest of `~/.cotal`, no wider.
+  // for the link; `cotal status` reads it for the address to probe. 0600 — same trust boundary as
+  // the rest of `~/.cotal`, no wider.
   if (sessionPath) {
+    // The socket's address, not the requested one: `--port 0` binds an ephemeral port.
+    const bound = httpServer.address() as AddressInfo;
     // `mode:` on writeFileSync applies at CREATION ONLY — a stale `web.session` left behind with a
     // broader mode would keep it and quietly hold the launch URL and readiness nonce world-readable.
     // Open, then fchmod the DESCRIPTOR (not the path, which could be re-pointed between the calls),
@@ -1233,7 +1237,7 @@ export async function web(args: ParsedArgs): Promise<void> {
     const sfd = openSync(sessionPath, "w", 0o600);
     try {
       fchmodSync(sfd, 0o600);
-      writeFileSync(sfd, JSON.stringify({ launchUrl, readiness: gate.readinessNonce }));
+      writeFileSync(sfd, JSON.stringify({ launchUrl, readiness: gate.readinessNonce, host: bound.address, port: bound.port }));
     } finally { closeSync(sfd); }
     process.once("exit", () => rmSync(sessionPath, { force: true }));
   }

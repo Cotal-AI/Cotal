@@ -46,7 +46,6 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { webProbeTarget } from "../src/commands/status.js";
 import { renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -73,19 +72,6 @@ for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key
 env.COTAL_HOME = home;
 env.XDG_CONFIG_HOME = join(home, "xdg");
 env.COTAL_SKIP_CONNECTOR_SEED = "1";
-
-const remoteProbe = webProbeTarget("node cotal web --host 192.0.2.10 --port 8123 --no-open");
-check("the CLI status probe uses the explicit dashboard host and port",
-  !("refused" in remoteProbe) && remoteProbe.url.href === "http://192.0.2.10:8123/api/meta", remoteProbe);
-const defaultProbe = webProbeTarget("node cotal web --no-open");
-check("the CLI status probe preserves loopback defaults when --host and --port are absent",
-  !("refused" in defaultProbe) && defaultProbe.url.href === "http://127.0.0.1:7799/api/meta", defaultProbe);
-const wildcardProbe = webProbeTarget("node cotal web --host 0.0.0.0");
-check("the CLI status probe refuses a wildcard process host rather than probing a guessed address",
-  "refused" in wildcardProbe && wildcardProbe.refused.includes("invalid process host"), wildcardProbe);
-const wildcardAliasProbe = webProbeTarget("node cotal web --host 0");
-check("the CLI status probe refuses a canonical wildcard alias",
-  "refused" in wildcardAliasProbe && wildcardAliasProbe.refused.includes("invalid process host"), wildcardAliasProbe);
 
 async function portOpen(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -152,9 +138,10 @@ async function writeWebHarness(port: number): Promise<ChildProcess> {
     `const server = createServer((req, res) => { if (req.url === "/api/meta") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ pid: process.pid })); return; } res.statusCode = 404; res.end(); });`,
     `server.listen(${port}, "127.0.0.1");`,
   ].join("\n"));
-  const child = spawn(process.execPath, [script, "web", "--port", String(port)], { cwd: root, stdio: "ignore" });
+  const child = spawn(process.execPath, [script], { cwd: root, stdio: "ignore" });
   assert.ok(child.pid, "web harness received a pid");
   writeFileSync(join(root, ".cotal", "web.pid"), String(child.pid));
+  writeFileSync(join(root, ".cotal", "web.session"), JSON.stringify({ host: "127.0.0.1", port }));
   for (let i = 0; i < 50 && !(await portOpen(port)); i++) await sleep(50);
   assert.ok(await portOpen(port), "web harness never bound its port");
   return child;
@@ -410,7 +397,7 @@ try {
   check("manager absence remains distinct from present-not-serving",
     /manager\s+absent/.test(absentText) && !/manager\s+not-serving/.test(absentText), absentText);
 
-  // A live PID record whose process is not the dashboard must not be transformed into a green web
+  // A live PID record with no recorded bound address must not be transformed into a green web
   // probe by a default-port guess.  The component has a record, but its own HTTP control surface
   // cannot be attributed, so this is the named refusal exit (3), not absent or serving.
   const foreignWeb = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
@@ -418,8 +405,8 @@ try {
   writeFileSync(join(root, ".cotal", "web.pid"), String(foreignWeb.pid));
   const webRefused = cli("status", "--components", "--space", SPACE, "--server", server);
   const webRefusedText = `${webRefused.stdout}${webRefused.stderr}`;
-  check("a live non-web pidfile is a probe refusal (3), never a healthy default-port guess",
-    webRefused.status === 3 && /web\s+refused/.test(webRefusedText) && webRefusedText.includes("recorded PID is not a web command"), webRefusedText);
+  check("a live pidfile with no recorded bound address is a probe refusal (3), never a healthy default-port guess",
+    webRefused.status === 3 && /web\s+refused/.test(webRefusedText) && webRefusedText.includes("no bound address recorded"), webRefusedText);
   try { foreignWeb.kill("SIGTERM"); } catch { /* fixture is already gone */ }
   rmSync(join(root, ".cotal", "web.pid"), { force: true });
 
