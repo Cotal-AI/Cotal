@@ -176,7 +176,10 @@ auth plane takes the claim. An absent or inconclusive oracle refuses the reclaim
 
 `@cotal-ai/manager` exports the `remoteManagerClient` namespace, containing the stock remote
 request builders and response validators, and `registerRemoteManagerAuthority` for registration
-with a host-issued prepare credential. `RemoteManagerIdentityState` describes the five private
+with a host-issued prepare credential. It returns the process epoch and registration revision its
+own registration committed. When a later start of the same instance registers before this start
+authorizes its serve grant, this start is refused with `expired`.
+`RemoteManagerIdentityState` describes the five private
 manager identities stored under an explicit account-local root. Use these public exports when
 composing `ManagerOptions.remoteAuthority`; do not copy CLI validators or import private modules.
 `managerClusterArtifacts()` returns the canonical document, manifest and their digests used by

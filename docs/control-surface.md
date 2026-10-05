@@ -170,7 +170,9 @@ state, not reporting a missing one.
 
 A space can run more than one manager. Each manager persists a stable logical instance id
 across restarts and advances its process epoch when it comes back, so callers address a
-specific manager without caring which process currently serves it. On a static or open mesh,
+specific manager without caring which process currently serves it. A start serves only at the
+epoch its own registration committed, never at the epoch of a later start of the same instance.
+On a static or open mesh,
 an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
 `cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
 pin one instance by its exact id. A foreground CLI spawn has no manager to pin and refuses the
