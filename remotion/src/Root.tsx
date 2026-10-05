@@ -2,6 +2,9 @@ import { Composition } from "remotion";
 import { ModeMulticast } from "./modes/Multicast";
 import { ModeUnicast } from "./modes/Unicast";
 import { ModeAnycast } from "./modes/Anycast";
+import { NatsIdentity } from "./nats/Identity";
+import { NatsReplay } from "./nats/Replay";
+import { NatsAttention } from "./nats/Attention";
 import { STAGE } from "./modes/scene";
 import { PeerMesh } from "./variants/PeerMesh";
 import { Observer } from "./variants/Observer";
@@ -52,6 +55,9 @@ export const Root: React.FC = () => {
       <Composition id="ModeMulticast" component={ModeMulticast} durationInFrames={150} {...MODE} />
       <Composition id="ModeUnicast" component={ModeUnicast} durationInFrames={168} {...MODE} />
       <Composition id="ModeAnycast" component={ModeAnycast} durationInFrames={162} {...MODE} />
+      <Composition id="NatsIdentity" component={NatsIdentity} durationInFrames={165} {...MODE} />
+      <Composition id="NatsReplay" component={NatsReplay} durationInFrames={180} {...MODE} />
+      <Composition id="NatsAttention" component={NatsAttention} durationInFrames={180} {...MODE} />
       <Composition id="PeerMesh" component={PeerMesh} height={340} {...COMMON} />
       <Composition id="Observer" component={Observer} height={360} {...COMMON} />
       <Composition id="WireTrace" component={WireTrace} height={320} {...COMMON} />

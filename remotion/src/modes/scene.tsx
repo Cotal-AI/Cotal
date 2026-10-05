@@ -1,4 +1,4 @@
-// Shared scene system for the three README mode animations.
+// Shared scene system for the README card animations (modes/ and nats/).
 // Brand language: cool cream card floating on the page, one gold accent,
 // hairline strokes, rounded-square nodes, lowercase mono, restraint.
 
