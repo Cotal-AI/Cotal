@@ -824,18 +824,11 @@ export async function web(args: ParsedArgs): Promise<void> {
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    // THE RESOLVED TRANSPORT, NOT A DEFAULT. `connectOrExit` already decided this from the mesh
-    // record and `Connection.tls` is non-optional, so the answer was in scope and was being dropped
-    // here — the same shape as `--tls-cert` being validated and then discarded at a call boundary,
-    // which is the defect this branch exists to close.
-    //
-    // It matters more here than the omission looks. Against a TLS broker this endpoint CONNECTED
-    // FINE without it, by upgrading the socket once it read `tls_required` — so nothing was visibly
-    // wrong. But that INFO is unauthenticated plaintext: an on-path attacker strips `tls_required`
-    // and a client with no requirement of its own carries on in the clear, with its credentials in
-    // the CONNECT line. The client's own `tls` is the PRIMARY fence, not a second layer, so a
-    // dashboard that omits it is protected by the server's cooperation rather than by its own
-    // demand.
+    // The resolved transport, because the endpoint requires TLS only when told to. Against a TLS
+    // broker it would still connect without this, upgrading once it reads `tls_required`, but that
+    // INFO is unauthenticated plaintext: an on-path attacker strips `tls_required` and a client
+    // with no requirement of its own carries on in the clear, with its credentials in the CONNECT
+    // line. The client's own `tls` is the fence.
     tls: conn.tls,
     ...(user
       ? { bearer: user.source, sentinelCreds: user.sentinelCreds, card: { owner: user.owner, actor: user.actor, name: "web", kind: "endpoint" as const } }
@@ -1100,9 +1093,10 @@ export async function web(args: ParsedArgs): Promise<void> {
       }
     }
     // Delete a channel and its content. The only write path on this otherwise read-only
-    // dashboard, so it's POST-gated and guarded by a confirm in the UI. Uses the manager cred
-    // pre-minted at startup (auth mode) or the connection creds (open / --creds), NOT the account
-    // seed (which we dropped). A wildcard / missing channel is a 400.
+    // dashboard, so it's POST-gated and guarded by a confirm in the UI. Purges with the
+    // channel-purger cred minted at startup (auth mode), the connection creds (open / --creds) or a
+    // per-delete channel-purger view (user mode), never the account seed. A wildcard / missing
+    // channel is a 400.
     if (path === "/api/channel/delete" && req.method === "POST") {
       const body = await readBody(req).catch((e: unknown) => {
         // A body this server DECLINED TO READ is not a body with no channel in it. Flattening the
