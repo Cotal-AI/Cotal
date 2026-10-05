@@ -419,7 +419,8 @@ Stock `cotal auth-service` answers both itself, because it owns the actor ledger
 provisioning authority. An enrollment writes the managed grant at a fresh UID with the supervising
 actor as its parent, provisions that UID's durables, and returns the daemon's public exchange URL as
 `agentBearerExchangeUrl`; a daemon started without `--exchange-public-port` refuses enrollment. A
-retry with the same token digest answers the same UID. While the agent's grant stands, an enrollment
+retry with the same token digest answers the same UID while the supervising actor's current grant
+covers it, and a fresh enrollment's refusal otherwise. While the agent's grant stands, an enrollment
 with another digest is refused with `conflict` until that lifecycle's retirement is prepared. A
 prepare-retirement releases the target UID's broker footprint and then revokes its grant, so the
 manager's terminal rail finds the grant gone. A platform that keeps these writers in its own storage

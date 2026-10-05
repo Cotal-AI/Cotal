@@ -96,6 +96,7 @@ import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
   AGENT_BEARER_TTL_SEC,
+  assertWithinSpawnerGrant,
   findInteractiveActor,
   findManagedActor,
   findActorUnified,
@@ -1229,7 +1230,9 @@ export async function openAuthAuthorityPlane(opts: {
         // A fresh uid is never one a retirement tombstoned, and only the host can make that promise.
         const lifecycleUid = held?.lifecycleUid ?? mintLifecycleUid();
         // The grant first: its envelope walk against the supervising actor refuses an over-wide
-        // request before any durable exists.
+        // request before any durable exists. A retry walks the held grant again: its spawner chain
+        // may have narrowed since the first answer, and provisioning would restore what it took away.
+        if (held !== undefined) assertWithinSpawnerGrant(opts.dir, held, "spawn");
         const row = held ?? grantManagedActor(opts.dir, {
           owner,
           actor: t.actor,

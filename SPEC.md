@@ -1357,8 +1357,10 @@ the same decision. Its enrollment writes the managed grant at a fresh host-minte
 the request's supervising actor as the grant's parent, so the ledger's delegation envelope bounds it,
 and then provisions that UID's durables; a provisioning failure revokes the grant and releases the
 footprint before the refusal. An enrollment whose token digest matches the agent's standing grant is
-a retry of that enrollment: it answers the held UID and provisions it again, and its failure leaves
-that grant in place. While the agent holds a grant with another digest, enrollment MUST be refused
+a retry of that enrollment: it walks the held grant through the supervising actor's current
+delegation envelope and refuses as a fresh enrollment would when the grant falls outside it;
+otherwise it answers the held UID and provisions it again, and its failure leaves that grant in
+place. While the agent holds a grant with another digest, enrollment MUST be refused
 with `conflict` until that lifecycle's retirement is prepared, so a successor never takes a running
 agent's grant. Its prepare-retirement releases the target UID's broker footprint and then revokes the
 grant, only while the grant still names that UID, so a repeated request is harmless. The service runs
