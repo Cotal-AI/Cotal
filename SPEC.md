@@ -904,8 +904,13 @@ one session and binds the minted connection's expiry to the grant's, which is th
 expiry, rather than the bearer's. The auth service's host-issuer connection performs both reads and
 holds only `STREAM.INFO` and the leader-served `STREAM.MSG.GET` on `KV_cotal_sessions_<space>`: no
 Direct Get and no write on that store.
-On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, and `session-caller`
-MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
+The `transfer-writer` view carries a required `act.transferWriter` claim `{instanceId, hex}` and is
+valid with no other view; `act.transferWriter` is valid only with it. It needs ledger scope `admin`,
+the scope of the `transcript-receive` row it serves. The human exchange accepts it only together with a
+`transferWriter` body (each without the other is a 400), and the callout mints the `transfer-writer`
+profile for that one object of that one instance's transfer bucket (§8).
+On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, `session-caller`, and
+`transfer-writer` MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
 managed-agent secret exchange MUST refuse every view other than `manager-caller`.
 
 ---
@@ -3584,7 +3589,7 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Versioned-rail request, reply, serve (§13.15) | as the four rows above | the same rows with `ep.v1` for `ep` and one more pinned token: the caller's `<generation>` literal in its request-publish and reply-subscribe rows (`ep.v1.reply.*.*.*.<cO>.<cA>.<cUid>.<generation>.*`), a spanned token in the serve credential's reply-publish row (`ep.v1.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*.*`) and its three serve-subscribe shapes per command | direct; broker-confined on the generation exactly as on the caller triple |
 | Issuance (§13.15) | the `issuer` principal (one-shot, minted per issuance or per lifecycle terminal by the party holding the space signer) | `$KV.cotal_issued_<space>.>` and `$KV.cotal_accepted_<space>.>` publish, `STREAM.INFO`/`STREAM.MSG.GET` on `KV_cotal_issued_<space>`, its own ordered consumers on that store, and ONE leader-served `STREAM.MSG.GET` on `KV_cotal_auth_<space>` for source liveness; NO auth-store write, no rail row | mediated; create-only CAS on evidence, revision-CAS on the attempt row |
 | Run admission (§14.8) | the `run-admitter` principal (one-shot, 60 s, minted per run by the hosting endpoint or the local operator) | exactly `$KV.cotal_admission_<space>.admission.v1.<endpoint>.<runId>` and `….revoked.v1.<endpoint>.<runId>` publish plus `STREAM.MSG.GET` on that store; nothing else | mediated; create-only |
-| Resume transfer write (§8) | the `transfer-writer` principal (one-shot, 5 min, minted per `cotal spawn --resume --detach --on` call by the operator holding the space signer, after it hashes the transcript) | publish exactly `$O.cotal_xfer_<space>_<instanceId>.C.<hex>` and `$O.cotal_xfer_<space>_<instanceId>.M.<name>` (one object of one instance's bucket), plus `$JS.API.DIRECT.GET.OBJ_cotal_xfer_<space>_<instanceId>.` followed by each of those two subjects; no consumer, no stream API, no other object | direct; object-pinned |
+| Resume transfer write (§8) | the `transfer-writer` principal (one-shot, 5 min, per `cotal spawn --resume --detach --on` call after the CLI hashes the transcript: minted by the operator holding the space signer, or on a user-auth space exchanged as the `transfer-writer` view, §10) | publish exactly `$O.cotal_xfer_<space>_<instanceId>.C.<hex>` and `$O.cotal_xfer_<space>_<instanceId>.M.<name>` (one object of one instance's bucket), plus `$JS.API.DIRECT.GET.OBJ_cotal_xfer_<space>_<instanceId>.` followed by each of those two subjects; no consumer, no stream API, no other object | direct; object-pinned |
 | Resume transfer read (§8) | the `transfer-reader` principal (one-shot, 5 min, minted per `transcript-receive` or sweep by the receiving manager from the space signer, or issued to a remote manager by the host's `transferReader` authority operation for that manager's own instance) | `STREAM.CREATE`, `STREAM.INFO`, `STREAM.MSG.GET`, `STREAM.PURGE` and `CONSUMER.CREATE` on its own `OBJ_cotal_xfer_<space>_<instanceId>` only, publish `$O.cotal_xfer_<space>_<instanceId>.M.>` (the stock delete marker), `$JS.API.INFO`, and that stream's `$JS.FC.OBJ_cotal_xfer_<space>_<instanceId>.>` flow control; every other credential, seats, the spawn capability, the supervisor, the provisioner and other instances' readers included, holds nothing that names `OBJ_cotal_xfer_` or `$O.cotal_xfer_` | mediated; instance-pinned |
 | Run admission read (§14.8) | the `run-mediator` and `run-operator` principals | `STREAM.MSG.GET` on `KV_cotal_admission_<space>` (leader-served; body-selected, stream-wide, the same residual as every records reader); the `run-driver` holds NO row on this store | mediated read; fail-closed |
 | Journal submission append | capability holder | `epj.<endpoint>.<command>[.<mode>[.<target tokens per mode>]].<cO>.<cA>.<cUid>` | direct, explicitly untrusted input |
@@ -4904,9 +4909,9 @@ single-function profiles, each granting only the verbs its function needs and no
   holding the space signer; the issued and accepted stores plus one auth-store liveness read.
 - `run-admitter`: one run's admission record or revocation marker (§14.8), minted per run for
   60 seconds; two exact keys and nothing else.
-- `transfer-writer`: one carried resume transcript (§8), minted per CLI call for five minutes; the
-  object's chunk and meta subjects in one instance's transfer bucket and a last-message direct get
-  on each.
+- `transfer-writer`: one carried resume transcript (§8), minted per CLI call for five minutes, or on
+  a user-auth space exchanged per call as the `transfer-writer` view; the object's chunk and meta
+  subjects in one instance's transfer bucket and a last-message direct get on each.
 - `transfer-reader`: one manager instance's `transcript-receive` or sweep (§8), minted per call for
   five minutes; its own transfer bucket's stream and nothing of any other instance. A remote manager
   receives it from the host's `transferReader` authority operation, which binds it to the

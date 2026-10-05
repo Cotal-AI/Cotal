@@ -45,8 +45,9 @@ gains `host` and `transferredAt`.
 A manager host that runs carried seats needs `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN` or a
 cloud provider selection in its environment, because each carried seat runs in its own Claude home
 with no stored login. On an authenticated mesh the CLI mints the transfer writer from the space's
-signing seed, so the carrying host needs that seed, as for any other operator command. A user-mode
-operator, who holds no seed, cannot carry in this release. A remote manager receives a carry once
+signing seed, so the carrying host needs that seed, as for any other operator command. On a user-auth
+mesh it exchanges the operator's login for a `transfer-writer` view instead, so the operator's grant
+needs scope `admin`, and the auth service must run this release. A remote manager receives a carry once
 its host serves the manager-service `transferReader` operation. A seat launched without carrying,
 including any `--resume` whose id this host does not hold, is unchanged.
 

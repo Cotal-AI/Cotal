@@ -402,8 +402,8 @@ only on a signed-in human exchange. The `manager-caller` view is the one managed
 because it narrows the agent's existing manager command set to one server-selected instance and adds
 no capability. All views are authorized against the fresh ledger row at every connect and expire
 with the bearer, so narrowing or revoking a grant bites within minutes here too. On the public
-exchange face only `channel-writer`, `channel-purger`, `manager-caller`, and `session-caller` are
-served; `admin`, `purger`, `deployer`, and `manager-service` remain loopback-only.
+exchange face only `channel-writer`, `channel-purger`, `manager-caller`, `session-caller`, and
+`transfer-writer` are served; `admin`, `purger`, `deployer`, and `manager-service` remain loopback-only.
 
 The `session-caller` view is how `cotal attach` opens a seat's session on a user-auth mesh. It needs
 no ledger scope, because the session grant is the authority. The exchange takes the grant with the
@@ -412,6 +412,11 @@ is active and unexpired, its signature equals the presented grant's, its holder 
 actor at this lifecycle, its endpoint and serving epoch match, and the serving manager's gate is open
 at that epoch. The callout repeats the same check at connect and mints the session's caller rails
 with the grant's expiry instead of the bearer's.
+
+The `transfer-writer` view is how `cotal spawn --resume <id> --detach --on <instance>` uploads a
+session this host holds on a user-auth mesh. It needs scope `admin`, as the `transcript-receive`
+call it serves does, and names one object: the target instance and the transcript's SHA-256. The
+callout mints writes to that object of that instance's transfer bucket and nothing else.
 
 ### Remote manager authority
 

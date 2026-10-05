@@ -74,6 +74,8 @@ import {
   workspaceSecretStore,
   refreshRegistrationPolicy,
   resolveSeatControlTarget,
+  connectUserControlOrExit,
+  userViewAuth,
   type Check,
   type ConnectFlags,
   type ControlAuth,
@@ -540,7 +542,7 @@ async function carryTranscriptOrExit(flags: ConnectFlags, on: string | undefined
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const t = await resolveControlTarget(flags, "control-caller-admin", on);
   const bucket = transferBucket(t.space, on);
-  const writer = await transferWriterOrExit(t, on, sha256);
+  const writer = await transferWriterOrExit(flags, t, on, sha256);
   let sent = 0;
   let chunks = 0;
   for (;;) {
@@ -559,13 +561,24 @@ async function carryTranscriptOrExit(flags: ConnectFlags, on: string | undefined
   }
 }
 
-/** The transfer writer instrument for one object in one instance's bucket (design section 6), minted
- *  from this host's copy of the mesh's signing seed once the transcript is hashed. An open mesh
+/** The transfer writer instrument for one object in one instance's bucket (design section 6), once
+ *  the transcript is hashed: minted from this host's copy of the mesh's signing seed, or on a
+ *  user-auth mesh exchanged from the operator's login as a `transfer-writer` view. An open mesh
  *  enforces no grants, so a bare connection writes there. */
-async function transferWriterOrExit(t: ControlTarget, instanceId: string, hex: string): Promise<ControlAuth> {
+async function transferWriterOrExit(flags: ConnectFlags, t: ControlTarget, instanceId: string, hex: string): Promise<ControlAuth> {
   if (t.mode === "open") return { tls: t.auth.tls };
+  if (t.mode === "user") {
+    const conn = await connectUserControlOrExit(flags);
+    try {
+      const view = await userViewAuth(conn, "transfer-writer", { transferWriter: { instanceId, hex } });
+      return { bearer: view.bearer, sentinelCreds: view.sentinelCreds, tls: conn.tls };
+    } catch (e) {
+      console.error(c.red(`✗ resume: ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
   if (t.mode !== "auth" || !t.spaceAuth) {
-    console.error(c.red("✗ resume: carrying a session mints a transfer writer from this mesh's signing seed, and this host holds none for it (a user-mode or off-registry connection)"));
+    console.error(c.red("✗ resume: carrying a session mints a transfer writer from this mesh's signing seed, and this host holds none for it (an off-registry connection)"));
     process.exit(1);
   }
   return { creds: await mintCreds(t.spaceAuth, newIdentity(), "transfer-writer", { transferWriter: { instanceId, hex } }), tls: t.auth.tls };

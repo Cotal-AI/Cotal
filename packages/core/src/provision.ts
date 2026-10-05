@@ -720,8 +720,8 @@ export interface MintOpts {
   transferWriter?: { instanceId: string; hex: string };
   /** `transfer-reader` profile only: the manager instance whose own transfer bucket this reads. */
   transferReader?: { instanceId: string };
-  /** `teardown` profile only: the space's transfer streams, enumerated before the mint, that this
-   *  teardown may inspect and delete by name ({@link transferStreamNames}). */
+  /** `teardown` profile only: the space's transfer streams, listed before the mint, that this
+   *  teardown may inspect and delete by name ({@link deleteSpace} lists and names them). */
   transferStreams?: string[];
   /** `backup` profile only: one discriminated inspector or snapshot phase. */
   backup?: BackupPermissionScope;

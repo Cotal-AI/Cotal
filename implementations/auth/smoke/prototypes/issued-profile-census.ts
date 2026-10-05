@@ -93,7 +93,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
   for (const view of USER_TOKEN_VIEWS) {
     const required = VIEW_REQUIRED_SCOPE[view];
     const scope = required === undefined ? ["spawn", "run", "admin"] : [required];
-    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}) } };
+    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}) } };
     // This fixture authorizes one coordinate to construct the shipped grant surface. Real gate
     // ownership and registration validation are graded by the live exchange suites, not this census.
     const produce = calloutPermissions(

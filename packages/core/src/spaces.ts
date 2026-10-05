@@ -14,10 +14,12 @@ import {
   deliveryBucket, managerBucket,
   artifactBucket,
   isTransferStream,
+  mintLifecycleUid,
   objectStoreStream,
 } from "./subjects.js";
-import { idFromCreds } from "./identity.js";
+import { idFromCreds, newIdentity } from "./identity.js";
 import { endpointPlaneStreamNames } from "./endpoint-binding.js";
+import { mintCreds, type SpaceAuth } from "./provision.js";
 
 /** Connect opts for a possibly-scoped cred: an authenticator plus the per-id `inboxPrefix` a scoped
  *  cred needs (its `sub.allow` is `_INBOX_<id>.>`, so JS API replies must land there, not the default
@@ -106,34 +108,38 @@ async function listTransferStreams(nc: NatsConnection, space: string): Promise<s
   return names;
 }
 
-/** The space's transfer streams, which a `teardown` mint names in `transferStreams`. Open mode, or a
- *  credential allowing `STREAM.NAMES` (a `teardown` minted without them). */
-export async function transferStreamNames(opts: { servers?: string; creds?: string; space: string }): Promise<string[]> {
+async function withSpaceConnection<T>(servers: string | undefined, creds: string | undefined, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
   const nc = await connect({
-    servers: opts.servers ?? DEFAULT_SERVER,
+    servers: servers ?? DEFAULT_SERVER,
     reconnect: false,
     maxReconnectAttempts: 0,
-    ...scopedConnectOpts(opts.creds),
+    ...scopedConnectOpts(creds),
   });
   try {
-    return await listTransferStreams(nc, opts.space);
+    return await fn(nc);
   } finally {
     await nc.close();
   }
 }
 
+const mintTeardown = (auth: SpaceAuth, transferStreams: string[]): Promise<string> =>
+  mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid(), transferStreams });
+
 /** Tear down a space — delete its chat/DM/task streams plus the presence and channel-registry KV
  *  buckets. Irreversible; all history, presence, and channel config for the space is gone. Open
- *  mode, or a `teardown` cred minted with the space's {@link transferStreamNames}. Not-found streams
- *  are ignored (idempotent); any other refusal throws, naming every stream that survived. */
-export async function deleteSpace(opts: { servers?: string; creds?: string; space: string }): Promise<void> {
-  const nc = await connect({
-    servers: opts.servers ?? DEFAULT_SERVER,
-    reconnect: false,
-    maxReconnectAttempts: 0,
-    ...scopedConnectOpts(opts.creds),
-  });
-  try {
+ *  mode, a `creds` whose grants cover every delete, or the space's trust material (`auth`), from
+ *  which it mints its own `teardown`. Not-found streams are ignored (idempotent); any other refusal
+ *  throws, naming every stream that survived. */
+export async function deleteSpace(opts: { servers?: string; creds?: string; auth?: SpaceAuth; space: string }): Promise<void> {
+  if (opts.auth && opts.creds !== undefined) throw new Error("deleteSpace: pass creds or auth, not both");
+  if (opts.auth && opts.auth.space !== opts.space) throw new Error(`deleteSpace: the trust material is for ${opts.auth.space}, not ${opts.space}`);
+  // A teardown grant names each transfer stream it may delete, and those names are found only by
+  // listing the space's streams, so trust material mints one teardown to list them and a second
+  // that names them.
+  const creds = opts.auth
+    ? await mintTeardown(opts.auth, await withSpaceConnection(opts.servers, await mintTeardown(opts.auth, []), (nc) => listTransferStreams(nc, opts.space)))
+    : opts.creds;
+  await withSpaceConnection(opts.servers, creds, async (nc) => {
     const jsm = await jetstreamManager(nc);
     // Delete EVERY stream + KV bucket `setupSpaceStreams` creates — otherwise `down` leaves the DLV/INBOX
     // streams and the members/acl/membership/delivery/manager buckets orphaned (a space leak), and since
@@ -167,7 +173,5 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; spac
         if (!(e instanceof JetStreamApiError && e.code === JetStreamApiCodes.StreamNotFound)) survived.push(`${s} (${(e as Error).message})`);
       });
     if (survived.length) throw new Error(`deleteSpace: ${opts.space} kept ${survived.length} of ${streams.length} streams: ${survived.join(", ")}`);
-  } finally {
-    await nc.close();
-  }
+  });
 }

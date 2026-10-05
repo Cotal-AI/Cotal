@@ -29,7 +29,7 @@ import type { CryptoKey, JWTVerifyGetKey } from "jose";
 import { assertValidOwnerToken } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
-import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, type UserTokenSession, type UserTokenView } from "./token.js";
+import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 import { grantCommandLine } from "./grant-command.js";
 
 /** The pinned identity of ONE external IdP. All fields are operator config — nothing in here is
@@ -116,6 +116,8 @@ export interface IdpBridge {
     /** #2312, required for view "session-caller": the identity plane's session decision for the
      *  principal this bridge derived. Returns the session claim to stamp; throws to refuse. */
     verifySession?: (p: { owner: string; actor: string; lifecycleUid: string }) => Promise<UserTokenSession>;
+    /** Required for view "transfer-writer": the one object the bearer may upload (#1499). */
+    transferWriter?: UserTokenTransferWriter;
   }): Promise<ExchangeResult>;
 }
 
@@ -270,6 +272,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         view: req.view,
         managerInstanceId: req.managerInstanceId,
         ...(session ? { session } : {}),
+        ...(req.transferWriter ? { transferWriter: req.transferWriter } : {}),
         ttlSec,
       });
       const { exp } = decodeJwt(token);

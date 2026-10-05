@@ -498,7 +498,8 @@ original is untouched.
   timeout after it joins, an uncertain launch included, and otherwise shows that record as the
   seat's provenance. `cotal attach` to such a seat names its source after the seat
   name, as `(resumed from <host>:<id>)`. A remote manager receives a carry when its host issues it a
-  transfer reader. A user-mode operator, who holds no signing seed, cannot carry in this release.
+  transfer reader. On a user-auth mesh the CLI exchanges the operator's login for a one-object
+  `transfer-writer` view, which needs scope `admin`.
 - A session name in place of an id is refused, listing each session on this host that carries
   that name with its id, SHA-256 and modification time. An id this host does not hold resolves
   against the **manager host's** `~/.claude`, as before.

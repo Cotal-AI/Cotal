@@ -162,7 +162,7 @@ export interface UserViewAuth {
  *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
  *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
  *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
-export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string } = {}): Promise<UserViewAuth> {
+export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string; transferWriter?: { instanceId: string; hex: string } } = {}): Promise<UserViewAuth> {
   if (!conn.bearer || !conn.userAuth || !conn.root)
     throw new Error(`userViewAuth: not a user-mode registry connection (view "${view}")`);
   const ua = conn.userAuth;
@@ -180,6 +180,8 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
     if (view !== "manager-caller") throw new Error("a manager instance selector requires the manager-caller view");
     assertLifecycleToken(opts.managerInstanceId, "managerInstanceId");
   }
+  if ((view === "transfer-writer") !== (opts.transferWriter !== undefined))
+    throw new Error("the transfer-writer view and the one object it uploads come together or not at all");
   const request = { store, dir, space: conn.space, actor: CLI_USER_ACTOR, view, ...opts };
   const original = view === "manager-caller" ? principalFromBearer(conn.bearer) : undefined;
   const mint = async () => {
