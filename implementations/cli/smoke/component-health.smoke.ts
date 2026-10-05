@@ -18,7 +18,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -47,7 +47,7 @@ import {
   writeServiceStatus,
 } from "@cotal-ai/core";
 import { renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -57,8 +57,11 @@ const SPACE = "component-health";
 const INSTANCE = "h".repeat(26);
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-root-`));
 const home = mkdtempSync(join(tmpdir(), "cotal-component-health-home-"));
+const xdgConfigHome = join(home, "xdg");
 const store = join(root, "jetstream");
-mkdirSync(join(root, ".cotal"), { recursive: true });
+// `cotal web --detach` below leaves the dashboard in `root` but outside the runner's process group,
+// and a killed run never reaches `finally`, so the watchdog that recording starts is what stops it.
+recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome });
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -70,7 +73,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const env = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
 env.COTAL_HOME = home;
-env.XDG_CONFIG_HOME = join(home, "xdg");
+env.XDG_CONFIG_HOME = xdgConfigHome;
 env.COTAL_SKIP_CONNECTOR_SEED = "1";
 
 async function portOpen(port: number): Promise<boolean> {
