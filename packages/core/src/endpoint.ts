@@ -390,15 +390,19 @@ const READ_HISTORY_MAX_LIMIT = 200;
  *  nothing about messages already aged out by retention — no reader can see those. */
 export type HistoryPage = { items: CotalMessage[]; complete: boolean };
 
-/** The NEWEST prefix-from-the-end of `items` whose serialized size fits `budget` bytes, order
- *  preserved. Returns `[]` when not even the newest single message fits — the caller must refuse
- *  loudly there rather than serve an empty page, which would read as "no history".
+/** The NEWEST prefix-from-the-end of `items` whose serialized `readHistory` reply fits `budget`
+ *  bytes, order preserved. Returns `[]` when not even the newest single message fits — the caller
+ *  must refuse loudly there rather than serve an empty page, which would read as "no history".
+ *
+ *  The `ControlReply` around the items rides the same NATS message, so it is charged too: items
+ *  that fit on their own can still make a reply the broker refuses.
  *
  *  Measured in ENCODED bytes, not `string.length`: a page of multi-byte text would otherwise be
  *  undercounted and still overflow the broker. Same discipline as `assertFactFits`. */
 export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMessage[] {
   const enc = new TextEncoder();
-  let used = 2; // the enclosing `[]`
+  // The reply with no items, at its longer `complete` value.
+  let used = enc.encode(JSON.stringify({ ok: true, data: { items: [], complete: false } satisfies HistoryPage })).length;
   let first = items.length; // index of the oldest kept item
   for (let i = items.length - 1; i >= 0; i--) {
     const size = enc.encode(JSON.stringify(items[i])).length + 1; // + the `,` separator
@@ -4722,23 +4726,15 @@ export class CotalEndpoint extends EventEmitter {
     // So bound by BYTES too, keeping the NEWEST that fit — which needs no new vocabulary, because
     // `complete: false` already means "older history remains behind this page". Trimming here is the
     // documented truncation signal doing its job, not a silent degradation.
-    const fitted = fitHistoryPage(wanted, this.payloadBudget());
+    const fitted = fitHistoryPage(wanted, this.maxPayload);
     // `wanted.length > 0` is load-bearing, not defensive: an EMPTY channel also fits nothing, and
     // without this guard a channel nobody has posted to was refused with "the newest message exceeds
     // the payload budget" — a confident, entirely wrong explanation for a legitimately empty result.
     // Genuine emptiness is `{ items: [], complete: true }`; only a message too large to ever send is
     // the error.
     if (wanted.length > 0 && fitted.length === 0)
-      return { ok: false, error: `readHistory: the newest message on "${channel}" alone exceeds the broker payload budget (${this.payloadBudget()} bytes) - refused loudly rather than served as an empty page` };
+      return { ok: false, error: `readHistory: the newest message on "${channel}" alone exceeds the broker payload budget (${this.maxPayload} bytes) - refused loudly rather than served as an empty page` };
     return { ok: true, data: { items: fitted, complete: reachedStart && fitted.length === wanted.length } satisfies HistoryPage };
-  }
-
-  /** Bytes a control reply may occupy: the broker's `max_payload` less headroom for the `ControlReply`
-   *  envelope wrapped around the items. Read from the live server info rather than assumed, since an
-   *  operator can raise or lower it. */
-  private payloadBudget(): number {
-    const max = this.nc?.info?.max_payload ?? 1_048_576;
-    return Math.max(1, Math.floor(max * 0.9));
   }
 
   /** Stop serving Plane-3 WITHOUT tearing down the connection, so a daemon that has just learned its
