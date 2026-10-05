@@ -426,6 +426,10 @@ export class MeshAgent extends EventEmitter {
   /** Deadlines of turns the run settled before this seat yielded them, by goal id, so a late yield
    *  is refused with {@link settledTurnError}. Bounded by {@link MAX_SETTLED_TURNS}. */
   private settledTurns = new Map<string, number>();
+  /** Goals whose yield the manager answered since the current pull began. That pull may have
+   *  snapshotted a goal before its answer; taking it back would surface the settled turn again, and
+   *  the next pull would record it as the run's settlement. */
+  private yieldedSincePull = new Set<string>();
   private turnPollTimer?: ReturnType<typeof setInterval>;
   /** The last pull failure this seat reported, so one that keeps failing is said once. */
   private pullTrouble?: string;
@@ -2166,6 +2170,7 @@ export class MeshAgent extends EventEmitter {
   private async pollTurns(): Promise<void> {
     if (!this._connected || this._stopping || this.turnPollBusy) return;
     this.turnPollBusy = true;
+    this.yieldedSincePull.clear();
     try {
       const r = await this.managerInvoke("turn-pending", undefined, { target: { mode: "self" } });
       if (!r.ok) { this.notePullTrouble(r.error ?? "refused with no message"); return; }
@@ -2182,7 +2187,7 @@ export class MeshAgent extends EventEmitter {
       for (const t of [...this.activeTurns.values()]) if (!live.has(t.goalId)) this.settleTurn(t);
       let fresh = 0;
       for (const t of turns) {
-        if (this.activeTurns.has(t.goalId)) continue;
+        if (this.activeTurns.has(t.goalId) || this.yieldedSincePull.has(t.goalId)) continue;
         this.activeTurns.set(t.goalId, { goalId: t.goalId, payload: t.payload, acceptedAt: t.acceptedAt, deadlineAt: t.deadlineAt, surfaced: false });
         fresh += 1;
       }
@@ -2271,6 +2276,7 @@ export class MeshAgent extends EventEmitter {
       return { ok: false, error: "a handoff yield names its addressee (to)" };
     const r = await this.managerInvoke("turn-yield", { goalId: t.goalId, status, to: opts.to, note: opts.note }, { target: { mode: "self" } });
     if (!r.ok) return r;
+    this.yieldedSincePull.add(t.goalId);
     // A turn the manager settled between this seat's polls is answered with that terminal's state;
     // only `succeeded` is a yield that landed.
     if ((r.data as { state?: unknown } | undefined)?.state !== "succeeded") {
