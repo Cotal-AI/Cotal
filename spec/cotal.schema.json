@@ -453,6 +453,10 @@
         "status": {
           "$ref": "#/definitions/PresenceStatus"
         },
+        "statusSince": {
+          "description": "Epoch ms when the instance entered its current `status` and `activity`. A change to either moves it; a heartbeat or a repeated report does not, so an activity that outlived what it described reads as old even while `ts` stays fresh. Never carried by an offline record.",
+          "type": "number"
+        },
         "ts": {
           "description": "Epoch ms of the last heartbeat.",
           "type": "number"

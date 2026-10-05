@@ -840,12 +840,14 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
                 .map(([c]) => `#${c}`)
             : [];
           const mutedHint = muted.length ? ` (locally muted ${muted.join(", ")}; DM to reach)` : "";
-          // The condition with how long it has held, and the age of the last harness-reported work
-          // event (#618): a turn that died or stopped advancing 40m ago no longer reads like a live one.
+          // The condition with how long it has held, how long the status and activity have stood (#578),
+          // and the age of the last harness-reported work event (#618): a turn that died or stopped
+          // advancing 40m ago no longer reads like a live one, and neither does a report made 40m ago.
           const now = Date.now();
           const since = p.condition?.since;
+          const unchanged = p.statusSince === undefined ? "" : ` · unchanged for ${ageText(now - p.statusSince)}`;
           const active = p.activeAt === undefined ? "" : ` · active ${ageText(now - p.activeAt)} ago`;
-          const condition = (p.condition ? ` (${p.condition.code}${since === undefined ? "" : ` for ${ageText(now - since)}`})` : "") + active;
+          const condition = (p.condition ? ` (${p.condition.code}${since === undefined ? "" : ` for ${ageText(now - since)}`})` : "") + unchanged + active;
           const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
           return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
         });

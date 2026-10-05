@@ -39,7 +39,11 @@ reported, such as a token or a tool call; missing means the connector reports no
 heartbeat, so a seat whose turn stopped advancing keeps a fresh `ts` and an old `activeAt`. The
 connector records it as events arrive and the next heartbeat carries it. `cotal ps`, `cotal status`,
 `cotal endpoints` and `cotal_roster` print a condition with its age and the age of `activeAt`, such
-as `waiting (rate_limit for 40m) · active 40m ago`. The optional `environment` is an opaque provider reference. Core publishes
+as `waiting (rate_limit for 40m) · active 40m ago`. The optional `statusSince` is the epoch ms when the
+instance entered its current status and activity. A change to either moves it, while a heartbeat or a
+repeated report does not, so an activity that outlived what it described reads as old. `cotal_roster`
+prints its age, such as `idle · unchanged for 40m`. An offline record carries none, because an observer
+that derives `offline` from a stale heartbeat does not know when the peer left. The optional `environment` is an opaque provider reference. Core publishes
 it and never interprets it. Readers reject a row whose `card.id` does not match its KV key and report
 that rejection through the recoverable warning path.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view

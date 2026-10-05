@@ -643,6 +643,8 @@ export class CotalEndpoint extends EventEmitter {
   private presenceRebindAt = 0;
   private status: PresenceStatus = "idle";
   private activity?: string;
+  /** When {@link status} or {@link activity} last changed. Heartbeats republish it unchanged. */
+  private statusSince = Date.now();
   /** Last harness-reported work progress. Carried by the next heartbeat, never published per event. */
   private activeAt?: number;
   private condition?: PresenceCondition;
@@ -2672,11 +2674,13 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   async setActivity(activity: string): Promise<void> {
+    if (activity !== this.activity) this.statusSince = Date.now();
     this.activity = activity;
     await this.publishPresence();
   }
 
   async setStatus(status: PresenceStatus): Promise<void> {
+    if (status !== this.status) this.statusSince = Date.now();
     this.status = status;
     await this.publishPresence();
   }
@@ -6134,14 +6138,16 @@ export class CotalEndpoint extends EventEmitter {
       condition: this.condition,
       environment: this.environment,
       activity: this.activity,
+      statusSince: this.statusSince,
       activeAt: this.activeAt,
       attention: this.attentionMode,
       channelModes: this.channelModes,
       ts: Date.now(),
     };
-    // Wire contract (SPEC §6): an OFFLINE record must not carry the advisory attention fields. Scrub at
-    // the publisher — this covers stop(), setStatus("offline"), and any future offline publish site, so
-    // the raw KV record is compliant, not only the observer-side roster materialization.
+    // Wire contract (SPEC §6): an OFFLINE record must not carry the advisory attention fields or
+    // `statusSince`. Scrub at the publisher — this covers stop(), setStatus("offline"), and any future
+    // offline publish site, so the raw KV record is compliant, not only the observer-side roster
+    // materialization.
     const record = this.status === "offline" ? this.toOffline(p) : p;
     // #1356: this put can still be in flight when a teardown runs, because a rebind reaches
     // publishPresence through onPresenceBucketEmpty and no teardown awaits that flight. Take the same
@@ -6537,9 +6543,11 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Materialize an OFFLINE presence record: drop the advisory attention fields. An offline peer must
    *  not show a stale `[focus]` or "locally muted #x" hint — SPEC: attention removed on offline sweep,
-   *  channel modes reset on restart. card/activity/ts are kept. */
+   *  channel modes reset on restart. `statusSince` goes too: it dated the live status, and an observer
+   *  that derives offline from a stale heartbeat does not know when the peer left. card/activity/ts
+   *  are kept. */
   private toOffline(p: Presence): Presence {
-    return { ...p, status: "offline", attention: undefined, channelModes: undefined };
+    return { ...p, status: "offline", statusSince: undefined, attention: undefined, channelModes: undefined };
   }
 
   /** Mark a known peer offline (on KV delete/purge), keeping it in the roster. */

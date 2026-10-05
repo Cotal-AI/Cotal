@@ -111,6 +111,10 @@ export interface Presence {
   environment?: string;
   /** Freeform "what I'm doing right now". */
   activity?: string;
+  /** Epoch ms when the instance entered its current `status` and `activity`. A change to either moves
+   *  it; a heartbeat or a repeated report does not, so an activity that outlived what it described
+   *  reads as old even while `ts` stays fresh. Never carried by an offline record. */
+  statusSince?: number;
   /** Epoch ms of the last work progress the harness reported (a turn event such as a token or a tool
    *  call). `ts` is only the heartbeat: a seat whose turn stopped advancing keeps heartbeating while
    *  this stays old. Missing means the connector reports none. */

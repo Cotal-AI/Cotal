@@ -98,9 +98,10 @@ interface MeshSignals {
 ```
 
 **How `waiting` is ordered.** `Presence.ts` is the *last heartbeat*, republished on every
-beat (2 s by default). It is not the time the agent entered its current status, and the wire
-carries no such field. So "how long has this agent been blocked" is **not knowable** from presence,
-and no surface may claim it. `waiting` is therefore name-ordered, and the fifth golden-signal tile
+beat (2 s by default). `Presence.statusSince` is when the agent entered its current status and
+activity, so an edit to the activity of a waiting agent moves it too. It dates the report, not the
+block, so "how long has this agent been blocked" is **not knowable** from presence, and no surface
+may claim it. `waiting` is therefore name-ordered, and the fifth golden-signal tile
 reports `stalestLiveTs`: the oldest heartbeat among *live* agents, which answers "is a peer going
 quiet?" and self-clears when that peer drops to offline. Offline agents are excluded: their
 heartbeat age only grows, so including them would pin the tile to an ever-increasing number that
