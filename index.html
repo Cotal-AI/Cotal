@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cotal · booth demo</title>
+<link rel="icon" href="assets/cotal-mark.svg">
+<link rel="stylesheet" href="booth.css">
+</head>
+<body>
+  <canvas id="bg" class="mesh" style="position:fixed; z-index:0;"></canvas>
+
+  <section id="attract" class="screen" style="z-index:1;">
+    <div class="overlay">
+      <div class="brand"><img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span></div>
+      <div class="tagline">The open <b>pub/sub</b> standard for AI agents</div>
+      <div class="tagsub">any agent · any topology · one shared space</div>
+      <button class="cta">Tap to see it work</button>
+      <div class="cta-sub">4 demos · 30 seconds each</div>
+    </div>
+    <div class="attract-foot">
+      <span>cotal.ai</span>
+      <span class="vendors"><img src="assets/claude-code.svg" alt="Claude Code"><img src="assets/opencode.svg" alt="OpenCode"><img src="assets/codex.svg" alt="Codex"><img src="assets/hermes.png" alt="Hermes"><img src="assets/pi.svg" alt="pi"></span>
+      <span>built on NATS + JetStream</span>
+    </div>
+  </section>
+
+  <section id="home" class="screen" style="z-index:1;">
+    <div class="wrap">
+      <div class="topbar"><img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span><span class="sep">·</span><span>booth demos</span>
+        <span class="right"><span><b>1 – 4</b> pick</span><span><b>F</b> fullscreen</span><span><b>?</b> help</span></span></div>
+      <h1>Pick a demo</h1>
+      <p class="lede">Each one is about thirty seconds. Press a button and watch the mesh do it.</p>
+      <div class="cards"></div>
+      <div class="home-foot">
+        <div class="qr"><canvas id="qr"></canvas></div>
+        <div><div class="url">cotal.ai</div><div>Open source · Apache 2.0 · <span style="font-family:var(--mono)">curl -fsSL https://get.cotal.ai | sh</span></div></div>
+        <div class="right">Claude Code · OpenCode · Codex · Hermes · pi<br>one wire, any agent</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="demo" class="screen" style="z-index:2;">
+    <div class="topbar">
+      <img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span><span class="sep">·</span>
+      <span class="kicker"></span><span class="title"></span><span class="dots"></span>
+      <span class="auto-badge">auto-playing · touch to take over</span>
+      <span class="right"><span><b>Space</b> press</span><span><b>R</b> replay</span><span><b>→</b> next</span><span><b>Esc</b> all demos</span></span>
+    </div>
+    <div id="stage" class="stage"></div>
+    <div id="capbar" class="capbar">
+      <div class="caption"><div class="lead"></div><div class="detail"></div><div class="stats"></div></div>
+      <div class="actions"></div>
+    </div>
+  </section>
+
+  <div class="hud"><button id="hud-sound">sound off · M</button><button id="hud-full">fullscreen · F</button><button id="hud-help">help · ?</button></div>
+  <div id="help">
+    <div class="box">
+      <h3>Keys</h3>
+      <dl>
+        <dt>1 – 4</dt><dd>pick a demo (home) · press a toolbar button (in a demo)</dd>
+        <dt>Space / Enter</dt><dd>press the highlighted button</dd>
+        <dt>R</dt><dd>replay this demo</dd>
+        <dt>→ / ←</dt><dd>next / previous demo</dd>
+        <dt>Esc</dt><dd>back to all demos · from there, back to the idle screen</dd>
+        <dt>F</dt><dd>fullscreen</dd>
+        <dt>M</dt><dd>sound on / off</dd>
+      </dl>
+      <p style="color:var(--dim); margin:1.4em 0 0;">Idle for a while and the screen plays the demos on its own. Any touch hands control back.</p>
+    </div>
+  </div>
+
+  <script>
+window.COTAL_QR = [
+  '1111111001110001101111111',
+  '1000001000101000001000001',
+  '1011101011001010101011101',
+  '1011101010111000001011101',
+  '1011101011111111001011101',
+  '1000001010110111101000001',
+  '1111111010101010101111111',
+  '0000000011100101000000000',
+  '1011111000110010001111100',
+  '0011100011111000100100010',
+  '0011101110100001110111011',
+  '1101100000010011010000001',
+  '1101111000100001011010111',
+  '1000110101101110110101010',
+  '1000101100000111011111011',
+  '1001110110001100101110001',
+  '1000011000001010111110100',
+  '0000000010000001100011000',
+  '1111111001011000101010111',
+  '1000001011010011100011001',
+  '1011101010010001111110101',
+  '1011101010101111011011111',
+  '1011101010000110100001101',
+  '1000001000001101101111001',
+  '1111111010001010011111111',
+];
+  </script>
+  <script src="personas.js"></script>
+  <script src="face.js"></script>
+  <script src="demos.js"></script>
+  <script src="booth.js"></script>
+</body>
+</html>
