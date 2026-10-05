@@ -106,6 +106,8 @@ function failureCondition(ev: HookEvent): PresenceCondition | undefined {
 export interface ClaudeHandleDeps {
   /** The session's AG-UI emitter, read lazily — `mcp.ts` assigns it after the handler exists. */
   events?: () => AguiEmitterHolder<ClaudeEntry, unknown> | undefined;
+  /** Told which inbox items a frame surfaced; pass {@link WakePolicy.surfaced}. */
+  surfaced?: (items: readonly InboxItem[]) => void;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -272,6 +274,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     // and go out on a later frame once a verdict frees capacity.
     if (!agent.holdInFlight(ids)) return undefined;
     inFlight.set(ev, { ids, agent });
+    deps.surfaced?.(items);
     // At-least-once, deliberately: an unconfirmed batch is re-surfaced rather than dropped, so a
     // reply that DID land but whose confirmation was lost shows the model the same message twice.
     // Say so, so a repeat reads as a repeat instead of as a peer sending twice.
@@ -461,6 +464,9 @@ export type ChannelNotify = (params: { content: string; meta: Record<string, str
 export interface WakePolicy {
   /** Flip once the MCP handshake confirms the client speaks `claude/channel`. */
   setChannelActive(active: boolean): void;
+  /** These items rode a hook frame, which spends the nudge that announced them. If that frame's
+   *  reply never reached the runtime, their next redelivery is news to the session again. */
+  surfaced(items: readonly InboxItem[]): void;
   /** Teardown: stop the retry timer. */
   stop(): void;
 }
@@ -495,6 +501,11 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
    *  unrelated push landing means the session woke for something else, and that notice carries no
    *  pull hint, so it reschedules this rather than discharging it. */
   let pendingMentionWake: { item: InboxItem; hint: string } | undefined;
+  /** Items whose own nudge the session accepted and no hook frame has carried since. Each JetStream
+   *  redelivery of a pending item re-emits `incoming`; while the session still holds that nudge (a
+   *  long tool call), printing it again only queues a duplicate per ack wait (#2584). Keyed by the
+   *  item, so a message re-buffered after it left the inbox is announced afresh. */
+  const held = new WeakSet<InboxItem>();
 
   const clearRetry = (resetDelay: boolean): void => {
     if (retryTimer) clearTimeout(retryTimer);
@@ -537,6 +548,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
         // found by accident. Treating any success as "awake, will pull" cancelled the sole recovery
         // for the one wake nothing else can replay.
         if (isMentionWake) pendingMentionWake = undefined;
+        else if (item) held.add(item);
         clearRetry(true);
         if (pendingMentionWake) scheduleRetry(); // someone else's success is not this one's delivery
       },
@@ -553,6 +565,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
   // receive-time pull-only ambient never nudges (a quiet @mention remains automatic). `muted` never reaches
   // here (ack-dropped at ingest); in `focus`, ambient/mentions never reach "incoming" either.
   agent.on("incoming", (item: InboxItem) => {
+    if (held.has(item)) return;
     const automatic = agent.inboxScope(item.recvKey) === "automatic";
     const directedOrMention = item.kind !== "channel" || item.mentionsMe;
     const ambientWakes = agent.attention === "open" && agent.status !== "working";
@@ -576,6 +589,9 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
         if (pendingMentionWake) nudge(pendingMentionWake.item, pendingMentionWake.hint, true);
         else if (agent.pendingWake() > 0) nudge();
       }
+    },
+    surfaced(items: readonly InboxItem[]): void {
+      for (const item of items) held.delete(item);
     },
     stop(): void {
       clearRetry(true);
