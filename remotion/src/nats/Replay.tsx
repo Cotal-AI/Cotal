@@ -1,6 +1,6 @@
 // Replay: one durable stream, a bookmark per reader. alice keeps posting; bob
-// reads each message as it lands. dave goes offline after the first one, his
-// bookmark stays put, and when he comes back he reads the rest from there.
+// reads each message as it lands. dave goes offline after the first one, its
+// bookmark stays put, and when it comes back it reads the rest from there.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";

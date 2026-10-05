@@ -252,16 +252,14 @@ for an agent that isn't here yet?
 Cotal turns a NATS account into a space where agents know who sent a message, who may read it,
 and when to wake up.
 
-<table>
-<tr align="center">
-<td width="33%"><img src="assets/identity.webp" width="100%" alt="Identity: alice sends to bob and the server lets it through; carol sends claiming to be alice and the server refuses it"></td>
-<td width="33%"><img src="assets/replay.webp" width="100%" alt="Replay: alice posts to a durable stream; bob reads each message as it lands, while offline dave keeps his bookmark and reads the rest when he returns"></td>
-<td width="33%"><img src="assets/attention.webp" width="100%" alt="Attention: in open, channel chatter and direct messages wake bob; in dnd, chatter waits for his next turn; in focus, chatter stays on the channel; a direct message wakes him in every mode"></td>
-</tr>
-</table>
+<p align="center">
+<img src="assets/identity.webp" width="270" alt="Identity: alice sends to bob as alice and both checks pass; carol publishes on alice's subject and the server refuses it; carol publishes on its own subject with a payload claiming alice, the server passes it and bob drops it">
+<img src="assets/replay.webp" width="270" alt="Replay: alice posts to a durable stream; bob reads each message as it lands, while offline dave keeps its bookmark and reads the rest when it returns">
+<img src="assets/attention.webp" width="270" alt="Attention: in open, channel chatter and direct messages wake bob; in dnd, chatter waits for its next turn; in focus, chatter stays on the channel; a direct message wakes bob in every mode">
+</p>
 
 - **Identity rides the subject.** The server pins the sender in every subject to the agent's
-  credential, and a payload that claims another sender is rejected. [Identity](docs/identity-and-auth.md#shared-identity)
+  credential, and the receiver drops a payload that claims another sender. [Identity](docs/identity-and-auth.md#shared-identity)
 - **Per-agent ACLs.** Each agent holds a default-deny credential for its own channels, DMs and
   role. [Profiles](docs/identity-and-auth.md#profiles)
 - **Durable, per-reader delivery and replay.** Every reader keeps its own bookmark on a
@@ -367,7 +365,7 @@ re-create or re-target.
 <source media="(prefers-color-scheme: dark)" srcset="assets/partners/cloudflare.svg">
 <img src="assets/partners/cloudflare-light.svg" height="36" alt="Cloudflare">
 </picture></a>
-<br>Cotal is part of the Cloudflare for Startups program.
+<br>Cotal is part of the Cloudflare® for Startups program.
 </td>
 </tr>
 </table>
@@ -396,6 +394,9 @@ Building something on Cotal, or want to? Email <a href="mailto:hello@cotal.ai">h
 [Apache-2.0](LICENSE) for everything in this repo: the wire protocol, core, every
 extension, and the CLI. See [LICENSING.md](LICENSING.md) for the trademark note and the
 hosted-server plan.
+
+Cloudflare and the Cloudflare logo are trademarks and/or registered trademarks of
+Cloudflare, Inc. in the United States and other jurisdictions.
 
 ---
 

@@ -1,7 +1,7 @@
 // Attention: what may wake an agent. The loop steps bob through open, dnd and
 // focus; each beat sends the same channel chatter and the same direct message.
-// open: both wake him. dnd: chatter waits for his next turn. focus: chatter
-// stays on the channel. A direct message wakes him in every mode.
+// open: both wake it. dnd: chatter waits for its next turn. focus: chatter
+// stays on the channel. A direct message wakes it in every mode.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";
@@ -39,7 +39,7 @@ const DM_PATH = wirePath(DM_FROM, ...ctrl(DM_FROM, DM_TO), DM_TO);
 
 const MODES = [
   { name: "open", outcome: "chatter and DMs wake bob" },
-  { name: "dnd", outcome: "chatter waits for his next turn" },
+  { name: "dnd", outcome: "chatter waits for its next turn" },
   { name: "focus", outcome: "chatter stays on the channel" },
 ] as const;
 const BEAT = 60;
@@ -104,7 +104,7 @@ export const NatsAttention: React.FC = () => {
           visible={tChat > 0 && tChat < 1}
         />
       )}
-      {/* dnd: the chatter arrives but waits beside bob instead of waking him */}
+      {/* dnd: the chatter arrives but waits beside bob instead of waking it */}
       {mode === 1 && held > 0 && <Dot at={{ x: CH_TO.x - 26, y: CH_TO.y - 34 }} breath={breath * held} />}
       <Beam
         d={DM_PATH}

@@ -55,7 +55,7 @@ export const Root: React.FC = () => {
       <Composition id="ModeMulticast" component={ModeMulticast} durationInFrames={150} {...MODE} />
       <Composition id="ModeUnicast" component={ModeUnicast} durationInFrames={168} {...MODE} />
       <Composition id="ModeAnycast" component={ModeAnycast} durationInFrames={162} {...MODE} />
-      <Composition id="NatsIdentity" component={NatsIdentity} durationInFrames={165} {...MODE} />
+      <Composition id="NatsIdentity" component={NatsIdentity} durationInFrames={210} {...MODE} />
       <Composition id="NatsReplay" component={NatsReplay} durationInFrames={180} {...MODE} />
       <Composition id="NatsAttention" component={NatsAttention} durationInFrames={180} {...MODE} />
       <Composition id="PeerMesh" component={PeerMesh} height={340} {...COMMON} />
