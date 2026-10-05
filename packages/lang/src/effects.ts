@@ -420,7 +420,8 @@ export interface EffectContext {
    * Present when a previous attempt at this step started but never settled, carrying whatever it
    * passed to {@link EffectContext.bind}. The handler must RE-BIND to that resource and await its
    * terminal, not issue a fresh action: the goal already exists, the checkpoint token is already
-   * minted, and issuing a second one is how a crash turns into a duplicate side effect.
+   * minted, and issuing a second one is how a crash turns into a duplicate side effect. A step
+   * inside `once` is never re-dispatched with it: it holds (spec/cotal-lang.md §7.8).
    */
   readonly resume?: Readonly<Record<string, unknown>>;
   /**

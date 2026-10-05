@@ -20,7 +20,7 @@ import type { EffectKind } from "./primitives.js";
 import { RuntimeFault } from "./errors.js";
 
 /** The concurrency combinators that open a scope. */
-export type ScopeKind = "parallel" | "race" | "fanOut" | "conclave";
+export type ScopeKind = "parallel" | "race" | "fanOut" | "conclave" | "once";
 
 /**
  * What may name a level of the scope PATH: a concurrency combinator, or a `waitUntil`.
@@ -93,6 +93,21 @@ export function requestId(runId: string, key: StepKey, inputHash: string, attemp
   return createHash("sha256")
     .update(canonicalize([runId, stepKeyString(key), inputHash, attempt]), "utf8")
     .digest("base64url");
+}
+
+/**
+ * The token a hold for an at-most-once step is minted under. Derived, not the recorded id, because
+ * the step's first dispatch may already have armed and settled a pause under that id, and a hold
+ * minted there would read that settle back as its own. A pure function of the recorded id, so a
+ * resume finds the same hold with nothing recorded before the mint.
+ */
+export function holdRequestId(requestId: string): string {
+  return createHash("sha256").update(canonicalize([requestId, "hold"]), "utf8").digest("base64url");
+}
+
+/** A step is at-most-once when any frame on its scope path is a `once`. */
+export function atMostOnce(scope: readonly ScopeFrame[]): boolean {
+  return scope.some((f) => f.kind === "once");
 }
 
 export function digest(value: unknown): string {

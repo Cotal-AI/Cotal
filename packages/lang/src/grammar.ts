@@ -1165,8 +1165,10 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   // recorded — with no divergence raised, because no effect's inputs changed.
   //
   // `conclave` is deliberately not here. Its body is a single thunk with nothing to race, so a
-  // write from inside it is as ordered as a write anywhere else in the program.
-  if (name === "parallel" || name === "race" || name === "fanOut") {
+  // write from inside it is as ordered as a write anywhere else in the program. `once` is here for
+  // another reason: a settled `once` is replayed without entering its body, so a write from it
+  // happens on the live run only.
+  if (name === "parallel" || name === "race" || name === "fanOut" || name === "once") {
     // One `seen` set per combinator call: two branches calling the same helper is one defect in
     // that helper, not two, and reporting it twice tells an author to fix one line twice.
     const seen = new Set<AnyNode>();
@@ -1263,6 +1265,16 @@ function rootIdentifier(node: AnyNode | undefined): AnyNode | undefined {
 }
 
 function capturedWrite(at: AnyNode, name: string, combinator: string, v: Validator): void {
+  if (combinator === "once") {
+    v.fail(
+      "L2032",
+      at,
+      `\`${name}\` is declared outside this \`once\` and written inside it. A settled \`once\` is replayed without entering its body, so the write happens on the live run and never on resume, and the resumed run reads the old value and takes a path it never recorded, with no divergence raised.`,
+      "Return the value from the body and read it out of `once`'s result.",
+      combinator,
+    );
+    return;
+  }
   v.fail(
     "L2032",
     at,

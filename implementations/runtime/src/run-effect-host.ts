@@ -3,7 +3,7 @@ import { digest, type EffectContext, type EffectHandler, type JournalEntry } fro
 import { MeshHandler, type MeshHandlerBinding } from "./mesh-handler.js";
 import { createRunPauseHost } from "./run-pause-host.js";
 import { createRunWaitHost } from "./run-wait-host.js";
-import { RunScopeAuthority } from "./run-scope-authority.js";
+import { RunScopeAuthority, isHold } from "./run-scope-authority.js";
 
 export interface RunEffectHost extends EffectHandler {
   adopted(entries: readonly JournalEntry[]): Promise<string[]>;
@@ -38,14 +38,18 @@ export function createRunEffectHost(
     const key = structuredClone(ctx.key);
     const captured = { ...ctx, key };
     const entry = await authority.effect(kind, captured);
+    const held = isHold(kind, entry, captured);
+    // Before the hold's first bind, end the pause the held step's first dispatch armed, so the hold
+    // is the step's only open pause. A crash before the bind leaves `hold` unset and claims again.
+    if (held && entry.hold === undefined) await handler.endPause(entry);
     const context: EffectContext = {
       ...captured,
-      resume: entry.external,
+      resume: held ? entry.hold : entry.external,
       async bind(external) {
         const snapshot = structuredClone(external);
         await ctx.bind(snapshot);
         const recorded = await authority.effect(kind, captured);
-        if (digest(recorded.external ?? null) !== digest(snapshot))
+        if (digest((held ? recorded.hold : recorded.external) ?? null) !== digest(snapshot))
           throw new Error(`run ${pinned.runId} did not persist the binding for ${captured.requestId}`);
       },
     };

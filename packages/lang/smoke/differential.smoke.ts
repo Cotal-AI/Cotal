@@ -383,6 +383,11 @@ log("rounds", rounds, r.status);`,
     { asks: { look: [{ state: "pending" }, { state: "completed" }] } },
   ],
   [
+    "once: an ask inside it, its value read out of the scope",
+    'const a = await spawn("one");\nconst r = await once(async () => await ask(a, { name: "publish", schema: { commentId: "number" } }), { name: "publish-360" });\nlog(r.commentId);',
+    { asks: { publish: { commentId: 7 } } },
+  ],
+  [
     "a checkpoint that expires",
     'const c = await checkpoint("go", "Go?", { timeout: "1m", onExpiry: "proceed" });\nlog(c.status);',
     { checkpoints: { go: { status: "expired" } } },

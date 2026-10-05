@@ -97,6 +97,21 @@ belongs to another run, a pin that differs from the recorded ones, and a differe
 A failed journal entry replays its error, while a pending entry lets the handler recover the
 external work it bound before the interruption.
 
+A step that writes to a far side that honors no idempotency key (posting a comment, sending a mail)
+belongs in `once`. A resume that finds a step inside `once` begun and never settled does not
+dispatch it again: it opens a hold, a checkpoint under a token derived from the step's recorded
+request id, whose prompt names that id. Answer it with
+`cotal run answer <run> <step-key> --value <json>`, and the value becomes the step's result. An
+expired hold fails the step with the catchable L4027. Only `ask` runs inside `once`, so wrap just
+the step that writes: a host restart while it is in flight costs a settle.
+
+```js
+const publisher = await spawn("publisher")
+const res = await once(async () => {
+  return await ask(publisher, { name: "publish", schema: { commentId: "number" } })
+}, { name: "publish-360" })
+```
+
 **Migrate** moves a run onto edited source. A dry walk of the new program over the recorded journal
 finds every recorded step the edit changed (a divergence) and every one it no longer reaches (an
 orphan), and the orphan table says what each means: a removed `sleep` is nothing, a removed `turn`

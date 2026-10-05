@@ -3049,7 +3049,12 @@ field exists to stop, so it refuses the document instead.
   declared horizon. Exactly-once is bounded honestly: delivery is at-least-once; Cotal
   guarantees idempotent submission/fact recording and fenced commits of Cotal-owned state; an
   external side effect is exactly-once only when the external API honors the propagated
-  idempotency key or fencing token, else the contract documents at-least-once effects.
+  idempotency key or fencing token, else the contract documents at-least-once effects. A
+  workflow step inside a `once` scope (`spec/cotal-lang.md` §7.8) is dispatched at most once per
+  step key whatever the far side honors, a dispatch being one call of its handler under its request
+  id that the handler does not refuse (the handler may retry inside that call): a resume that finds
+  it begun and unsettled opens a hold under a token derived from its recorded request id instead of
+  dispatching it again, trading the run's liveness for the bound.
 - **Repeat versus resubmission.** **A command that is idempotent by `id` is NOT thereby `read`:
   safe to resubmit is not safe to repeat.** That is the rule neither mechanism states alone, and
   declaring such a command `read` licenses a fresh-`id` retry that duplicates the effect. The two
@@ -4467,6 +4472,11 @@ characters**, which is an id token by construction. The reference implementation
   step's amendments beside its accepted answer in the order the records bucket committed them (each
   record's revision); `at` is the filer's clock and never decides the order. The last one listed is
   the step's current recorded position, and the accepted answer remains what the program acted on.
+- A held `once` step (`spec/cotal-lang.md` §7.8) is answered like a checkpoint, addressed by its
+  step key; the driver presents the hold id (`spec/cotal-lang.md` §7.8) as the token, whatever kind
+  the step is, and reads the step's accepted answer and amendments under the same id once it
+  settles. The run's pause authority covers that id only while the step is pending with its hold
+  bound.
 - **`notice`**, `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>`, split: spec `{ v: 1, run,
   step, addressee, fact, at }` (create-only; `fact` is the language's bounded decision record and
   is checked against its bound BEFORE any record is written), status `{ v: 1, consumedAt, by,

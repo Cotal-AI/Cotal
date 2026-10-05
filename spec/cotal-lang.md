@@ -136,6 +136,8 @@ The validator MUST also refuse, before a program runs:
   site is syntactically visible; an effect reached through a function value it cannot follow (an
   arrow passed to a user function that calls it without awaiting) is not refused, and the program
   is responsible for awaiting it.
+  The concise body of an arrow passed to `once` (§7.8) is admitted the same way, since `once` owns
+  its body as the other scopes own their branches.
 - The effect call-shape rules of §6.2 and §6.3 (L3011 to L3044).
 - **A write from a concurrent branch to a binding declared outside it (L2032, §7.7).**
 
@@ -406,6 +408,7 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 | `race` | `race(branches, { name? }) -> { index, value }` | scope `race` | optional |
 | `fanOut` | `fanOut(items, fn, { name, key? }) -> results` | scope `fanOut` | required |
 | `conclave` | `conclave(members, fn, { name, channel? }) -> result` | scope `conclave` | required |
+| `once` | `once(fn, { name }) -> value` | scope `once` | required |
 
 `persona` in `spawn` is a persona name, or a record `{ persona, model?, variant? }`.
 
@@ -447,6 +450,7 @@ and requires exactly these to diverge (§11.1).
 | `notify` | `{ agents: [agent ids], fact }` |
 | `monitor` | `{ agent }` |
 | `parallel`, `race`, `fanOut` | `{ kind, name }` |
+| `once` | `{ kind, name }` |
 | `conclave` | `{ kind, name, subject: { members: [agent ids], channel } }` |
 
 Two rules in that table are deliberate. `deadline`, `timeout` and `attempts` **stop observation**: a
@@ -527,7 +531,7 @@ and `events` on `spawn` are policy over a result and are never hashed.
   ahead of each addressee's next turn; it is never a channel message. The fact is bounded (§6.8).
 - **`monitor`** registers interest in an agent's health, after which `down(agent)` is an event a
   branch can `wait` on.
-- The four scopes are §7.
+- The four scopes are §7. `once` is the fifth (§7.8).
 
 ### 6.6 Events
 
@@ -567,6 +571,9 @@ Concurrency is visible in the source: a program has no `Promise` and no way to s
 not await except through the four **scopes**. Each scope opens a **scope frame** in the step-key
 grammar (§10.2), gives every branch its own key namespace, and writes one journal entry of its own
 whose result records how it settled.
+
+`once` (§7.8) is a fifth scope. It opens a scope frame and writes one entry like the other four, and
+runs its one branch with nothing beside it.
 
 ### 7.1 Branches and branch keys
 
@@ -658,7 +665,10 @@ into a record or array **born** outside it, through any alias (L2032 at run time
 cover this: nothing crosses an effect boundary. And it is silent: live, branches write in completion
 order; on resume the recorded effects return instantly and they write in launch order, so the run
 takes a path it never recorded with no divergence to catch it. Return the value from the branch and
-read it out of the scope's result. `conclave` has one branch and does not raise the depth.
+read it out of the scope's result. `conclave` has one branch and does not raise the depth. `once`
+raises the depth like a branch of `parallel`, though nothing runs beside it, because a settled `once`
+is replayed without entering its body (§7.8), so a write from the body would happen live and never on
+resume.
 
 ```js
 // refused: L2032
@@ -669,6 +679,48 @@ await parallel({
   first: async () => { const r = await turn(a, { name: "go" }); winner = r },
   second: async () => { const r = await turn(b, { name: "go" }); winner = r },
 })
+```
+
+### 7.8 `once`
+
+`once(fn, { name })` runs `fn` as the single branch `in` and settles with its value. Every step
+whose scope path contains a `once` frame is **at-most-once**: an implementation MUST NOT dispatch
+it twice, where a dispatch is a call of the step's handler method under the step's recorded
+request id that does not end in a refusal. A refused call performed nothing, so its step
+dispatches again as a fresh attempt; retries a handler performs inside one call are not
+dispatches, and neither are the hold's own calls, which run under the hold id. Under a `once`
+frame only `ask` may run, and every other effect MUST be refused before its entry begins, with
+L4028. A `checkpoint`, a `waitUntil` and a `conclave` call a handler method more than once at one
+key (a hold is itself a checkpoint, one observation per look, an open and a close that a resume
+calls again). A `spawn`, a `turn`, a `monitor` and a `notify` build run state inside that method
+(a seat, a handoff, a watched agent, a filed notice), which a settled answer cannot build. A
+`sleep` and a `wait` write nothing to bound, and their first dispatch holds a pause or a durable
+consumer that only their own ending ends. A resume that finds an
+at-most-once step `pending` MUST NOT call its handler method; it opens a **hold** instead, a
+checkpoint whose request carries only a prompt, dispatched at attempt 0 under the **hold id**,
+the sha256 of the canonical form of `[<recorded request id>, "hold"]` in base64url, whose
+binding is written to the entry's `hold` field and never to `external`. Before the hold's first
+bind the host MUST end the pause the step's first dispatch armed, so the hold is the step's only
+open pause; an answer, an amendment or a journal view addressed to a step whose entry carries
+`hold` MUST read the hold id's pause, never the one the first dispatch armed. A
+resolved hold settles the step `ok` with the answered value (`null` when none). An expired hold
+settles it `failed` with L4027, kind `outcome-unknown`, which a program may catch and a resume
+replays. A hold the host refuses MUST leave the step `pending`,
+never `refused`, and halts the run (L5025), so the next capable host opens the same hold; a
+cancelled hold settles the step `cancelled`, a failed one settles it `failed`, and neither is
+dispatched again. A `miss` and a `refused` verdict dispatch as they do anywhere, because a step
+with no `pending` entry was never started. `once` raises the depth like a branch of `parallel`
+(§7.7): a settled `once` is replayed without entering `fn`, so `fn` MUST NOT write to a binding
+declared outside it or into a record or array born outside it (L2032), and returns what the
+program reads instead. `once` bounds the number of dispatches; it does not make a far side's
+write exactly-once.
+
+```js
+const publisher = await spawn("publisher")
+const res = await once(async () => {
+  return await ask(publisher, { name: "publish", schema: { commentId: "number" } })
+}, { name: "publish-360" })
+log("comment", res.commentId)
 ```
 
 ## 8. Determinism
@@ -838,7 +890,7 @@ The journal is an append-only log of entries. An entry is JSON:
   run,                 // the run id
   scope,               // the scope path string (§10.2)
   kind,                // spawn | turn | ask | checkpoint | sleep | wait | waitUntil | notify
-                       //   | monitor | parallel | race | fanOut | conclave
+                       //   | monitor | parallel | race | fanOut | conclave | once
   name,                // the step name, "" when unnamed
   occurrence,          // the n-th (kind, name) in this scope, from 0
   inputHash,           // "sha256:<hex>" (§6.4)
@@ -884,6 +936,10 @@ the recorded message MUST say that the detail could not be kept: dropping the fi
 the code would hand a program a classified failure whose recorded form is missing the field sent
 to explain it.
 
+An entry MAY carry `hold`, the binding of the hold opened for an at-most-once step (§7.8); it
+answers to the crossing rule like `external`, and a resume refuses a loaded `hold` that fails it
+(L5024).
+
 The rule makes a binding **canonical, not round-trip-exact**, and the difference is a property of
 the store rather than of the language. A crossable value has a canonical form (§10.3), but a store
 is free to encode in a way that loses distinctions the canonical form keeps: JSON, the encoding this
@@ -925,7 +981,10 @@ The identity a handler submits under is written on the pending entry **before** 
 token alphabet. `attempt` is 0 except for the second mint of an escalated checkpoint (§6.5), which
 is re-issued on the same entry as attempt 1 before it is dispatched. A resumed run that finds a
 pending entry re-submits under the **recorded** id and attempt, never a re-derived one, so the far
-side recognises the work rather than receiving a second request.
+side recognises the work rather than receiving a second request. A hold (§7.8) is dispatched under
+the hold id derived from the recorded id of the step it holds, never under that id itself, because
+the step may already have armed and settled a pause there; the step's own id and attempt do not
+change.
 
 ### 10.5 Two phases, two failure domains
 
@@ -950,7 +1009,8 @@ assembly of branch outcomes, so a BRANCH that produced no value is absence and i
 through the rule;
 anything deeper is, including a field the branch's own value carries. A `conclave` settles the
 body's own value and assembles nothing, so only a body that produced NO VALUE AT ALL is absence, and
-every field of a value it did produce answers to the rule. A resume refuses a loaded record whose
+every field of a value it did produce answers to the rule. A `once` settles its body's own value the
+same way, so only a body that produced no value at all is absence; it records no `closed`. A resume refuses a loaded record whose
 `result` fails the rule, naming the entry and the field (L5024). THE RULE FENCES WHAT IS WRITTEN
 AND DOES NOT REPAIR WHAT WAS WRITTEN BEFORE IT: a record produced under an earlier host may carry a
 scope value the store already flattened, and such a record still loads and still replays, because
@@ -977,7 +1037,8 @@ it live), **replay** (return the recorded result, advance the clock, perform not
 branch), **pending** (re-bind to `external` under the recorded request id and await its terminal),
 **refused** (the step was never attempted: perform it live, as a fresh attempt, with the usual
 input-hash check), **diverged** (the recorded `inputHash` differs: stop, mutate nothing, name the
-step; L5001).
+step; L5001). Under a `once` frame (§7.8) the **pending** verdict opens a hold instead of
+re-binding.
 
 A settled **scope** is delivered from its own entry without entering a branch: the subtree is
 accounted for (a loser still `pending` is settled `cancelled`), then the cancellation intent is the
@@ -1022,6 +1083,7 @@ never looks up are **orphans**, and what happens to each depends on what it did:
 | `spawn` | **rejected** (L5003) unless the agent is adopted or released by an explicit override |
 | `checkpoint` | ignored if never resolved; a resolved one is **rejected** (L5004) unless discarded by an explicit override, recorded with the actor |
 | `parallel`, `race`, `fanOut` | ignored: a scope outlives nothing of its own |
+| `once` | ignored: a scope outlives nothing of its own |
 | any other kind | **rejected** (L5015): a kind with no policy is not waved through |
 
 A divergence inside a reached step is a rejection naming the step (L5001); an edit inside a losing
@@ -1145,6 +1207,8 @@ time, L5xxx durability, L6xxx simulation.
 | L4024 | `waitUntil` probe or predicate answered the wrong shape |
 | L4025 | Host did not schedule the run |
 | L4026 | Pause plane did not answer before the client deadline |
+| L4027 | At-most-once step's outcome was never settled |
+| L4028 | Effect not admitted inside `once` |
 | L5001 | Run divergence |
 | L5002 | Program hash not available |
 | L5003 | Orphaned `spawn` on migrate |
@@ -1209,3 +1273,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-09-27 | An update operator's operand (`x++`, `x--`) must already be a number, on the walker as it already did on the compiled engine (§4.5): a record, a numeric string or null is refused L4018 rather than settled as NaN or silently counted, so `x++`, `x + 1` and `x += 1` agree. A version-1 record whose program incremented or decremented a value other than a number is the second known case of §8.4's replay posture: it completed under the earlier walker and is now refused L4018 at that line, before any recorded entry is consumed. |
 | 2026-10-02 | A host stack exhaustion is uncatchable (§9.2) and is not L4016 (§5.4): the depth at which a host runs out of stack belongs to the host, so a program that caught it chose its next effect by the machine it ran on, and a journal recorded on one host diverged (L5001) on resume on another. It unwinds past `finally` on both engines, and a scope it fails inside settles nothing, cancels no sibling and closes no conclave. Measured before it: a `parallel` branch that overflowed settled the scope `failed` under `L4000` and cancelled its sibling, and on the compiled engine a `finally { throw ... }` replaced the overflow, which an outer `catch` then caught. A `conclave` body that overflowed still closed the room, and a close that failed replaced the overflow with an error the program caught. A `race` whose arm overflowed left its entry pending but still sent every sibling the race's cancellation after the arms settled, which a live handler saw. A `parallel` or `fanOut` whose other branch failed first settled `failed` under `L4000` over a later sibling's overflow, and the program caught it and performed its next effect. |
 | 2026-10-03 | The record and array arguments of the free builtins are checked like `len`'s (§5.4): `keys`, `values`, `entries`, `has` and `merge` take a record, and `map`, `filter`, `find`, `some`, `every`, `sort`, `slice`, `join`, `reverse`, `unique`, `sum`, `pick` and `concat`'s first argument take an array; every other kind is refused L4016 before the host is reached. Measured before it: `map(5, f)` and `keys(5)` answered `[]`, `every(5, f)` answered true, `has(f, "length")` answered true off the implementation's function wrapper, `keys("ab")` answered index strings, `concat("a", [1])` answered `"a1"` past L4018, and `keys(null)` refused with the host's error text. A version-1 record that relied on the host's answer is the third known case of §8.4's replay posture. |
+| 2026-10-05 | A fifth scope, `once` (§7.8): every step under it is dispatched at most once, and a resume that finds one pending opens a hold under a token derived from its recorded request id instead of dispatching it again. An entry may carry `hold` (§10.1). An expired hold fails the step with the catchable L4027, and an effect `once` does not admit is refused with L4028. `once` is a reserved name. |

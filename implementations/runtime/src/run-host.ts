@@ -40,7 +40,7 @@ import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
-import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
+import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer, stepPauseToken } from "./resolve-checkpoint.js";
 import type { KV } from "@nats-io/kv";
 
 function outcomeOf(out: DriveOutcome): RunHostOutcome {
@@ -82,8 +82,9 @@ type StepJournalRow = Extract<RunJournalRow, { readonly kind: "step" }>;
 /** Build the one step-row view used by both hosted status reads and the local journal command. */
 export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
   const outcome = journalOutcomeOf(e);
+  // A held step's question is its hold's, which is what the hold's checkpoint bound.
   const external = e.state === "pending"
-    ? (e.external as { asks?: unknown; addressee?: unknown; deadlineAt?: unknown; onExpiry?: unknown } | undefined)
+    ? ((e.hold ?? e.external) as { asks?: unknown; addressee?: unknown; deadlineAt?: unknown; onExpiry?: unknown } | undefined)
     : undefined;
   const result = e.state === "settled" && e.result !== null && typeof e.result === "object"
     ? e.result as { outcome?: unknown; value?: unknown; by?: unknown; artifact?: unknown; at?: unknown; answerId?: unknown }
@@ -150,7 +151,7 @@ export async function journalRows(
   records: Awaited<ReturnType<typeof replayRunJournal>>["records"],
 ): Promise<RunJournalRow[]> {
   const rows: RunJournalRow[] = [];
-  const askTokens = new Map<string, string>();
+  const steps = new Map<string, JournalEntry[]>();
   for (const { record } of records) {
     if (record.kind === "activation") {
       rows.push({ n: record.n, kind: "activation", holder: record.holder, epoch: record.epoch, replayedTo: record.replayedTo });
@@ -158,9 +159,10 @@ export async function journalRows(
     }
     const e = record.entry as JournalEntry;
     const row = journalStepRow(record.n, e);
-    if (typeof e.external?.askToken === "string") askTokens.set(row.step, e.external.askToken);
-    const token = e.state !== "settled" || (e.kind !== "checkpoint" && e.kind !== "ask") ? undefined
-      : e.kind === "ask" ? askTokens.get(row.step) ?? e.requestId : e.requestId;
+    const step = steps.get(row.step) ?? [];
+    step.push(e);
+    steps.set(row.step, step);
+    const token = e.state !== "settled" || (e.kind !== "checkpoint" && e.kind !== "ask") ? undefined : stepPauseToken(step);
     const amendments = token === undefined ? [] : await listCheckpointAmendments(kv, endpoint, token);
     const answer = token !== undefined && e.kind === "ask" ? await acceptedAskAnswer(kv, endpoint, token) : row.answer;
     rows.push({

@@ -9,10 +9,10 @@
  * divergence the differential suite could only find program-by-program.
  */
 import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, isStackExhaustion, messageOf, stackOf } from "./errors.js";
-import { digest, requestId, stepKeyString, type KeyScope, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
+import { atMostOnce, digest, holdRequestId, requestId, scopePathString, stepKeyString, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
-import { PRIMITIVES, type EffectKind } from "./primitives.js";
+import { HOLDABLE_KINDS, PRIMITIVES, type EffectKind } from "./primitives.js";
 import { parseDuration } from "./duration.js";
 import { notifyFactViolation } from "./notify-fact.js";
 import {
@@ -168,6 +168,22 @@ function recordableError(e: EffectError, kind: string): { readonly error: EntryE
 }
 
 /**
+ * L4028: an effect kind `once` does not admit (spec/cotal-lang.md §7.8), refused before its entry
+ * begins, so no handler method is called and a resume reaches the same refusal.
+ */
+function notHoldable(kind: EffectKind, path: readonly ScopeFrame[]): RuntimeFault {
+  return new RuntimeFault(
+    "L4028",
+    `\`${kind}\` runs inside \`once\` at ${scopePathString(path)}, and \`once\` admits only \`ask\`: a resume could not hold any other kind without dispatching it again or losing run state it builds. Move the \`${kind}\` outside the \`once\` that wraps the write.`,
+  );
+}
+
+/** L4011 for `once`'s body, raised by both engines before the scope's entry begins. */
+export function onceBodyNotCallable(): RuntimeFault {
+  return new RuntimeFault("L4011", "the body of `once` is not a function, so it cannot be called");
+}
+
+/**
  * Perform one effect, or replay it.
  *
  * Everything durable happens here. A handler is called only in the `miss` and `pending` cases,
@@ -240,6 +256,9 @@ export async function performEffect(
   // identity the far side may never have seen. An entry with no recorded id predates this rule.
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, key, inputHash);
+  // AT MOST ONCE (spec/cotal-lang.md §7.8): a pending step under `once` may already have written,
+  // so it is never dispatched again. Its outcome is unknown, and a hold asks for it.
+  if (verdict.verdict === "pending" && atMostOnce(key.scope)) return await performHold(host, key, reqId, verdict.entry.hold, frame);
   // WHICH attempt is open, not merely which id. An id alone cannot say how much of an escalation
   // chain is already spent, and a recovery that cannot tell replays the hop: it mints again under
   // the id the far side already holds and reads that mint's cached expiry back as a fresh
@@ -307,9 +326,6 @@ export async function performEffect(
     assertCrossable(result, `the result of ${stepKeyString(key)}`);
   } catch (e) {
     const endedAt = host.options.handler.now();
-    // A journal that just refused an append cannot be asked to record why. It leaves by its own
-    // door, unwrapped, before anything tries to settle on top of it.
-    if (e instanceof JournalAppendRejected) throw e;
     // A REFUSAL IS NOT A FAILURE. The handler attempted nothing, so recording `failed` would
     // replay a failure forever for work the world never saw (measured: the mesh handler's L5016
     // settled `failed`, and a run started before the durable-action surface landed could never
@@ -323,40 +339,110 @@ export async function performEffect(
       );
       throw new RunHeld(stepKeyString(key), e.message);
     }
-    if (e instanceof Cancelled) {
-      await host.journal.settle(key, { status: "cancelled" }, endedAt);
-      throw e;
-    }
-    // A handler may raise a language code directly, and it survives. The simulator's "unscripted
-    // effect" is L6001, and flattening that to a generic handler fault would tell a caller acting
-    // on `code` that the handler broke, when what actually happened is that their script is
-    // incomplete. Only the L-code shape is honoured: anything else a thrown object happens to
-    // call `code` (an errno, an HTTP status) is a handler fault and is recorded as one.
-    // Read defensively: a handler is other people's code and may throw a primitive, and reading
-    // `.code` or `.message` off `null` would replace its failure with the recorder's own.
-    const raised = (e as { code?: unknown } | null | undefined)?.code;
-    const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
-    const recorded = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
-    // THE STACK IS THE ONLY FIELD THAT NAMES THE HOST CODE. A handler fault happens outside both the
-    // program and the language, so `message` alone ("timeout") is the symptom with no origin, and
-    // the durable entry is usually the only look anyone gets at it. Read defensively, by the same
-    // rule as `messageOf` one line up: a primitive throw carries no stack and none is recorded.
-    const stack = stackOf(e);
-    const error: EntryError = {
-      ...(recorded !== undefined
-        ? recorded.error
-        : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
-      ...(stack !== undefined ? { stack } : {}),
-    };
-    await host.journal.settle(key, { status: "failed", error }, endedAt);
-    frame.clock.advance(endedAt);
-    // THE CALLER AND THE RECORD SAY THE SAME THING. Rethrowing the handler's own error unchanged is
-    // right whenever the record kept it; when the detail forced a downgrade it is not, because the
-    // program would then catch an L6002 the journal has no L6002 for.
-    throw recorded?.faithful === true ? e : new EffectError(error.code, error.kind, error.message);
+    return await settleThrown(host, key, frame, e, endedAt);
   }
 
   const endedAt = host.options.handler.now();
+  await host.journal.settle(key, { status: "ok", result: deepFreeze(result) }, endedAt);
+  frame.clock.advance(endedAt);
+  return result;
+}
+
+/**
+ * Settle a step whose dispatch threw anything but a refusal, and rethrow what the program sees.
+ * {@link performEffect} and {@link performHold} differ only in what a refusal records.
+ */
+async function settleThrown(host: EffectHost, key: StepKey, frame: EffectFrame, e: unknown, endedAt: number): Promise<never> {
+  // A journal that just refused an append cannot be asked to record why. It leaves by its own
+  // door, unwrapped, before anything tries to settle on top of it.
+  if (e instanceof JournalAppendRejected) throw e;
+  if (e instanceof Cancelled) {
+    await host.journal.settle(key, { status: "cancelled" }, endedAt);
+    throw e;
+  }
+  // A handler may raise a language code directly, and it survives. The simulator's "unscripted
+  // effect" is L6001, and flattening that to a generic handler fault would tell a caller acting
+  // on `code` that the handler broke, when what actually happened is that their script is
+  // incomplete. Only the L-code shape is honoured: anything else a thrown object happens to
+  // call `code` (an errno, an HTTP status) is a handler fault and is recorded as one.
+  // Read defensively: a handler is other people's code and may throw a primitive, and reading
+  // `.code` or `.message` off `null` would replace its failure with the recorder's own.
+  const raised = (e as { code?: unknown } | null | undefined)?.code;
+  const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
+  const recorded = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
+  // THE STACK IS THE ONLY FIELD THAT NAMES THE HOST CODE. A handler fault happens outside both the
+  // program and the language, so `message` alone ("timeout") is the symptom with no origin, and
+  // the durable entry is usually the only look anyone gets at it. Read defensively, by the same
+  // rule as `messageOf` one line up: a primitive throw carries no stack and none is recorded.
+  const stack = stackOf(e);
+  const error: EntryError = {
+    ...(recorded !== undefined
+      ? recorded.error
+      : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) }),
+    ...(stack !== undefined ? { stack } : {}),
+  };
+  await host.journal.settle(key, { status: "failed", error }, endedAt);
+  frame.clock.advance(endedAt);
+  // THE CALLER AND THE RECORD SAY THE SAME THING. Rethrowing the handler's own error unchanged is
+  // right whenever the record kept it; when the detail forced a downgrade it is not, because the
+  // program would then catch an L6002 the journal has no L6002 for.
+  throw recorded?.faithful === true ? e : new EffectError(error.code, error.kind, error.message);
+}
+
+/**
+ * The hold of an at-most-once step (spec/cotal-lang.md §7.8): a checkpoint under the hold id
+ * whose answer becomes the step's result. The step's own handler method is never called here.
+ *
+ * A refused hold does not settle `refused`. That verdict means "never attempted" and dispatches,
+ * so recording it would turn a host that cannot open a checkpoint into the second write. The entry
+ * stays pending with the hold it had, and the next capable host opens the same hold.
+ */
+async function performHold(
+  host: EffectHost,
+  key: StepKey,
+  recorded: string,
+  resume: Readonly<Record<string, unknown>> | undefined,
+  frame: EffectFrame,
+): Promise<unknown> {
+  const step = stepKeyString(key);
+  const ctx: EffectContext = {
+    key,
+    signal: frame.signal,
+    requestId: holdRequestId(recorded),
+    attempt: 0,
+    ...(resume !== undefined ? { resume } : {}),
+    bind: async (hold) => {
+      assertCrossable(hold, `the hold binding of ${step}`);
+      await host.journal.hold(key, hold);
+    },
+  };
+  const prompt =
+    `The outcome of ${step} is unknown: it was dispatched under request id ${recorded} and never settled, `
+    + "so it is not dispatched again. Answer with the step's result; your answer becomes its value.";
+  let raw: CheckpointRaw;
+  try {
+    raw = await host.options.handler.checkpoint({ prompt }, ctx);
+    assertCrossable(raw, `the hold of ${step}`);
+  } catch (e) {
+    if (e instanceof EffectRefused) throw new RunHeld(step, e.message);
+    return await settleThrown(host, key, frame, e, host.options.handler.now());
+  }
+
+  const endedAt = host.options.handler.now();
+  if (raw.outcome === "expired") {
+    const error: EntryError = {
+      code: "L4027",
+      kind: "outcome-unknown",
+      message:
+        `L4027 At-most-once step's outcome was never settled\n\n  step  ${step}   request id ${recorded}\n\n`
+        + "The step was dispatched and its outcome never settled, and nobody answered its hold in time. It is not dispatched again.\n\n"
+        + `Options\n  catch it: \`e.code === "L4027"\` and check the far side for the write under request id ${recorded}`,
+    };
+    await host.journal.settle(key, { status: "failed", error }, endedAt);
+    frame.clock.advance(endedAt);
+    throw new EffectError(error.code, error.kind, error.message);
+  }
+  const result = raw.value ?? null;
   await host.journal.settle(key, { status: "ok", result: deepFreeze(result) }, endedAt);
   frame.clock.advance(endedAt);
   return result;
@@ -642,6 +728,7 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
   const bag = args[spec.optionsAt];
   const stepName = (name === "checkpoint" ? args[0] : option(bag, "name")) as string | undefined;
   const handler = host.options.handler;
+  if (spec.kind !== null && !HOLDABLE_KINDS.has(spec.kind) && atMostOnce(frame.keys.path)) throw notHoldable(spec.kind, frame.keys.path);
 
   switch (name) {
     case "spawn": {
@@ -1214,6 +1301,7 @@ export async function performScope(
   /** The `branchDigest` over a named loser set. Absent where there is nothing to digest. */
   branchDigest?: (losers: readonly string[]) => string | undefined,
 ): Promise<unknown> {
+  if (scopeKey.kind === "conclave" && atMostOnce(scopeKey.scope)) throw notHoldable("conclave", scopeKey.scope);
   const inputHash = digest(
     subject === undefined
       ? { kind: scopeKey.kind, name: scopeKey.name }
@@ -1912,6 +2000,17 @@ export async function runScope(
 
     if (threw) throw new ScopeFailed(bodyError, { closed: true });
     return { branches: [branchKey], value, closed: true };
+  }
+
+  if (name === "once") {
+    // One body, the fixed branch `in`, as `conclave`'s, with no open and no close. `only` is
+    // ignored: a migration's walk always enters `in`, because one branch is never a loser.
+    const branch = frame.branch(scopeKind, scopeName, occurrence, "in");
+    try {
+      return { branches: ["in"], value: await (first as (f: Frame, a: unknown[]) => Promise<unknown>)(branch, []) };
+    } finally {
+      frame.clock.join([branch.clock]);
+    }
   }
 
   throw new InterpreterDefect(`the primitive ${name}`);

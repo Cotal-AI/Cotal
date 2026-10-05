@@ -62,6 +62,9 @@ export interface SimScript {
    * type, or never measured against it, escapes: inferred then passed by name, put through an `as`
    * cast, or handed to a parameter declared `unknown`. Those still compile with `at` present and
    * still have it discarded. This closes the idioms a new author reaches for; not the loophole.
+   *
+   * A hold (spec/cotal-lang.md §7.8) reaches `checkpoint` keyed by the held step's name, so an entry
+   * named after an `ask` inside `once` answers that step's hold, and `expired` produces L4027.
    */
   readonly checkpoints?: Readonly<Record<string, Scripted<Omit<CheckpointResultValue, "at">>>>;
   /** Keyed by the `wait` step's name. A scripted `null` is a timeout, which is a choice. */
