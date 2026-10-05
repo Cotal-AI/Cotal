@@ -478,8 +478,34 @@ over the context's own connection, so the host opens no second data-account conn
 observation for the decision: the consuming CAS and the writers still apply their own checks. The
 consuming CAS pins the incarnation of the host process that runs the flight as the executor, never
 the auth plane's, because the two can restart independently. `platformControl.host` names that
-process's reverse-DNS endpoint, the closure digest of its §13.7 cluster and every contract artifact
-the closure needs, and the auth plane self-authorizes that one name.
+process's reverse-DNS endpoint, the closure digest of its §13.7 cluster and the contract artifacts
+registration reads, and the auth plane self-authorizes that one name. Registration reads the closure
+manifest `{ v: 1, root, members }` at `clusterDigest`, then the cluster document at the manifest's
+`root`, and verifies each against its digest. `artifacts` therefore carries both, and `clusterDigest`
+is the digest of the manifest. `members` stays empty: SPEC §13.7 lists every reachable artifact
+there, but this implementation registers single-document clusters only and refuses a manifest that
+lists members. The instance id is a lifecycle token, `[a-z0-9]{26,32}`. The minimal construction
+below has one command over the void schema. A host copies it, replaces `document` with its real
+cluster, and passes `host` as `platformControl: { observeAssignment, host }`.
+
+```ts
+import { contractDigest, mintLifecycleUid, VOID_SCHEMA_DIGEST } from "@cotal-ai/core";
+
+const document = {
+  urn: "com.example.host",
+  revision: 1,
+  attributes: [],
+  events: [],
+  commands: [{
+    name: "ping", class: "ephemeral", targeted: false, capability: "host.ping",
+    inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST,
+  }],
+};
+const manifest = { v: 1, root: contractDigest(document), members: [] };
+const host = { endpoint: "com.example.host", clusterDigest: contractDigest(manifest), artifacts: [document, manifest] };
+const instanceId = mintLifecycleUid(); // first start only; later starts reuse the persisted id
+```
+
 `registerHostIncarnation(instanceId)` publishes the artifacts, registers that instance through the
 ceremony the plane runs for itself, and returns `{ instanceId, processEpoch }` with the epoch that
 registration committed. The host calls it at every start with its persisted instance id, before it
