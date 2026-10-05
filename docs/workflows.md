@@ -158,9 +158,12 @@ A completed timer records its sleep step as `ok`.
 4. Check `cotal_orientation` again, then call `cotal_run` with `verb: "ps"` before starting work.
 
 Tool visibility alone does not establish execution support. Hosted runs currently require
-static authentication with issued caller authority. Open meshes can expose the tool but refuse
-hosted runs; user-auth meshes also refuse them. A legacy credential without issued authority
-must be replaced through the current issuance path before it can start a hosted run.
+a caller with issued authority. Static authentication issues it to its credentials, and user
+authentication issues it to the connection a signed-in user's `cotal run` opens. Open meshes can expose
+the tool but refuse hosted runs. On a user-auth mesh the host's own manager refuses the family by
+name, and a participant manager started with `cotal supervise` hosts the runs of its registered
+owner. A legacy credential without issued authority must be replaced through the current issuance
+path before it can start a hosted run.
 
 ## Operating a run
 
@@ -221,11 +224,20 @@ project folder. A local start also names the run's channel ceiling itself:
 `--admit-read <channels> --admit-publish <channels>`, comma-separated patterns or `none`, both
 required. The record it writes says an operator admitted the run and why, and the host checks
 it the same way it checks a hosted admission. A registered remote user-auth manager can host a
-run through its issuing host. The host resolves the versioned caller against live issuance,
+run through its issuing host. The host resolves a versioned caller against live issuance,
 admits the run, and signs only the run's fixed driver, mediator and one-shot operator credentials
 for manager-held nkeys. Renewal checks the activated attempt; the manager holds no signer.
 Local user-auth runs remain unavailable because a user bearer holds no run rows. An open mesh
 hosts none either, since it issues no caller authority to admit a run under.
+
+A logged-in user starts runs on that remote manager with `cotal run start`. The auth callout issues
+the user's manager connection against the user's actor-ledger row, the CLI reads the generation
+back from the connection's accepted row, and every `run` verb rides the versioned rail. The issuing
+host admits a run only for the owner who registered the manager, and on every resume and answer it
+checks that owner and that the caller's issuance is still live. It also watches the resume and
+answer requests on the broker itself, and issues for one the manager forwards only if it saw that
+request, once, and only for the run, endpoint and amendment that request named. A request bound to another manager instance or epoch gets nothing, and so does one whose class or pinned contract is not the one the manager registered. Another user's start, answer or resume is refused, and so is a revoked actor's. [User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
+records the path.
 
 A hosted run is **admitted** under the caller that started it. The caller's credential is an
 issuance ([identity and auth](identity-and-auth.md#issued-authority)): its requests ride a

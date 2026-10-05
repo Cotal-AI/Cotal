@@ -433,6 +433,12 @@ export function assertDerivedOwnerToken(owner: string): string {
   return owner;
 }
 
+/** True when `owner` is a derived user owner (`u_` plus its grammar); the predicate form of
+ *  {@link assertDerivedOwnerToken}, which throws on the same input. */
+export function isDerivedOwner(owner: string): boolean {
+  return typeof owner === "string" && /^u_[a-z2-7]{26}$/.test(owner);
+}
+
 /** Prefix of every **platform owner token** — see {@link assertPlatformOwnerToken}. */
 export const PLATFORM_OWNER_PREFIX = "p_";
 

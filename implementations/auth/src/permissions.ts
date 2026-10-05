@@ -19,6 +19,15 @@ export type SessionVerifier = (
  *  binds the minted JWT to, instead of the bearer's. Stripped before the JWT is encoded. */
 export const SESSION_EXP = "__cotalSessionExp";
 
+/** The callout's issuing seam for an interactive user's `manager-caller` view (SPEC 13.15). `mint`
+ *  builds the view's permission set for the given `issued` pair, so the evidence is the set that is signed.
+ *  Issues a fresh generation, or renews the generation the connection's accepted row already names. */
+export type UserCallerIssuer = (args: {
+  t: ValidatedUserToken;
+  connId: string;
+  mint: (issued: { generation: string; acceptedToken: string }) => Record<string, unknown>;
+}) => Promise<Record<string, unknown>>;
+
 /** The per-agent channel/role ACL a user-mode grant needs — resolved SERVER-SIDE (the spawn ledger /
  *  persona registry, keyed by the authenticated principal), because the user token carries the identity
  *  and capabilities but NOT the channel read/post ACL. Injected by the composition root that launches the
@@ -29,6 +38,9 @@ export type AclResolver = (
   /** The actor's CURRENT capability grant (the row's scope), so the mint can re-contain the
    *  bearer's capabilities against the row AS OF THE MINT, not only as of the connect gate. */
   scope: string[];
+  /** The row space the actor was found in. Only an `interactive` row's `manager-caller` view is
+   *  issued (SPEC 13.15). */
+  kind?: "interactive" | "managed-agent";
 };
 
 /**
@@ -55,8 +67,15 @@ export function calloutPermissions(
 ): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
+  authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
+  verifySession: SessionVerifier,
+  issueUserCaller: UserCallerIssuer,
+): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+export function calloutPermissions(
+  resolveAcl: AclResolver,
   authorizeManagerCaller?: (owner: string, instanceId: string) => Promise<void>,
   verifySession?: SessionVerifier,
+  issueUserCaller?: UserCallerIssuer,
 ): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
   return (t, connId) => {
     assertDerivedOwnerToken(t.owner); // user-mode owners are derived — never `local`, never an nkey
@@ -123,12 +142,16 @@ export function calloutPermissions(
         const instanceId = t.act.managerInstanceId!;
         if (!authorizeManagerCaller)
           throw new Error("callout permissions: manager-caller needs the server-side manager gate authorizer");
-        return authorizeManagerCaller(t.owner, instanceId).then(() => permissionsFor(
+        const mint = (issued?: { generation: string; acceptedToken: string }) => permissionsFor(
           "manager-caller",
           t.space,
           { ...principal, lifecycleUid: t.act.lifecycleUid },
-          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId },
-        ));
+          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...(issued ? { issued } : {}) },
+        );
+        // An interactive user's view is issued (SPEC 13.15): its run commands ride `ep.v1` under a
+        // generation bound to this row. A managed row's view keeps the legacy rail.
+        return authorizeManagerCaller(t.owner, instanceId).then(() =>
+          acl.kind === "interactive" && issueUserCaller ? issueUserCaller({ t, connId, mint }) : mint());
       }
       return permissionsFor(
         t.act.view,

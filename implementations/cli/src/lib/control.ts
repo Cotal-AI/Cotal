@@ -7,6 +7,7 @@ import {
   freezeExpectedSet,
   instancePinnedInstrumentCapabilities,
   invokeCommand,
+  issuedUserCaller,
   mintCreds,
   parseEpSubject,
   respondedButUnbound,
@@ -148,13 +149,14 @@ async function askManagerEp(
   const instanceId = pin?.instanceId ?? auth.managerInstanceId;
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
-  const caller = auth.epCaller!;
-  const nc = await dialerFor(server)({
-    servers: server,
-    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
-    maxReconnectAttempts: 0,
-  });
+  const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
+  const nc = await dialerFor(server)({ servers: server, ...connectOpts, maxReconnectAttempts: 0 });
   try {
+    // A logged-in user's manager view is issued at the callout (SPEC 13.15): read its generation
+    // back from this connection's accepted row; a missing row refuses, never a legacy-rail retry.
+    const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
+      ? await issuedUserCaller(nc, space, String(connectOpts.name), auth.epCaller!)
+      : auth.epCaller!;
     // P2 item 3 `--on <instance>`: pin the resolve to the exact manager instance's `inst` route so a
     // multi-manager space addresses the intended manager, never whichever wins the class anycast.
     const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000, ...(instanceId !== undefined ? { instanceId } : {}) });

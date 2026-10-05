@@ -115,10 +115,14 @@ export interface RunHostingContext {
   /** Signerless host: the closed first-attempt/resume issuance for caller-held driver and mediator
    *  nkeys (`authorizeRemoteRunAttempt` then host signing). The host derives epoch/fence from the
    *  run record and refuses a revoked or foreign admission. Never used for renewal. */
-  readonly issueAttempt?: (args: { runId: string; takeoverId: string; epoch: number; fencingToken: number; driver: Identity; mediator: Identity }) => Promise<{ driver: string; mediator: string }>;
+  readonly issueAttempt?: (args: { runId: string; takeoverId: string; epoch: number; fencingToken: number; driver: Identity; mediator: Identity;
+    /** The served `run-resume` subject when a caller asked for this attempt; absent for a boot reconcile. */
+    served?: string }) => Promise<{ driver: string; mediator: string }>;
   /** Signerless host: one served read or answer's `run-operator` creds for a caller-held nkey (the
    *  callback combines the host JWT with the local seed, as `renewRun` does). */
-  readonly issueOperator?: (args: { identity: Identity; takeoverId: string; runId?: string; answers?: { token: string } }) => Promise<string>;
+  readonly issueOperator?: (args: { identity: Identity; takeoverId: string; runId?: string; answers?: { token: string; amend?: true };
+    /** The served `run-answer` subject, carried with `answers`. */
+    served?: string }) => Promise<string>;
 }
 
 /** The signerless callback set. RunHosting is remote exactly when ALL four are supplied; a partial
@@ -263,10 +267,7 @@ export class RunHosting {
    *  checks the answer names the run, endpoint, instance and caller it asked for. */
   private async admitRemote(admitRun: NonNullable<RunHostingContext["admitRun"]>, ctx: EpServeContext, runId: string): Promise<RunAdmission> {
     const p = ctx.subject;
-    const subject = epRequestSubject(this.ctx.space, {
-      route: p.route === "inst" ? { mode: "inst", instanceId: p.instanceId! } : { mode: p.route },
-      endpoint: p.endpoint, command: p.command, caller: p.caller, nonce: p.nonce,
-    });
+    const subject = this.servedSubject(ctx);
     const admission = await admitRun({ runId, subject });
     const c = admission.caller;
     if (admission.runId !== runId || admission.endpoint !== this.ctx.endpoint || admission.space !== this.ctx.space ||
@@ -274,6 +275,33 @@ export class RunHosting {
         c.owner !== p.caller.owner || c.actor !== p.caller.actor || c.uid !== p.caller.uid || c.generation !== p.caller.generation)
       throw new EpEnvelopeError("internal", `run ${runId}: the issuing host answered an admission for other coordinates; refused`);
     return admission;
+  }
+
+  /** The request subject this host served, rebuilt from the parsed context: what a signerless host
+   *  forwards to the issuing host, which re-parses it. */
+  private servedSubject(ctx: EpServeContext): string {
+    const p = ctx.subject;
+    return epRequestSubject(this.ctx.space, {
+      route: p.route === "inst" ? { mode: "inst", instanceId: p.instanceId! } : { mode: p.route },
+      endpoint: p.endpoint, command: p.command, ...(p.target !== null ? { target: p.target } : {}), caller: p.caller, nonce: p.nonce,
+    });
+  }
+
+  /** On a signerless host a caller's `run-resume` or `run-answer` is forwarded with the subject it
+   *  served (SPEC 14.8). A legacy-rail resume is refused here, before anything is forwarded; an
+   *  answer is forwarded either way, and the issuing host accepts a legacy one only from a live
+   *  managed seat of the run's owner. */
+  private served(ctx: EpServeContext | undefined, command: "run-resume" | "run-answer"): string | undefined {
+    if (!this.remote) return undefined;
+    if (ctx === undefined) throw new EpEnvelopeError("internal", `a signerless host forwards a served ${command}; none was given`);
+    const caller = ctx.subject.caller;
+    if (command === "run-resume" && (ctx.subject.rail !== "v1" || !isIssuedCaller(caller)))
+      throw new EpEnvelopeError(
+        "permission-denied",
+        `run-resume on this manager rides the versioned rail with the caller's issued authority, and this request rode the legacy rail with none (SPEC 13.15, 14.8)`,
+        [{ kind: EP_UNBOUND_CALLER_AUTHORITY, owner: caller.owner, actor: caller.actor, uid: caller.uid }],
+      );
+    return this.servedSubject(ctx);
   }
 
   /** One admission-store write over an ephemeral `run-admitter` credential pinned to this run. */
@@ -314,9 +342,10 @@ export class RunHosting {
    *  The source is the recorded program; a run started before programs were recorded has no
    *  hosted resume, and says so. The slot is claimed before the record read, so a second resume
    *  arriving during it is a conflict rather than a second attempt. */
-  async resume(args: { runId: string; timeout?: string }): Promise<{ runId: string }> {
+  async resume(args: { runId: string; timeout?: string }, ctx?: EpServeContext): Promise<{ runId: string }> {
     this.assertReconciled();
     const host = this.host();
+    const served = this.served(ctx, "run-resume");
     const slot = this.claim(args.runId);
     let found: { status: RunStatusValue | undefined; program: RunProgramValue | undefined; admission: RunAdmissionView } | undefined;
     try {
@@ -356,6 +385,7 @@ export class RunHosting {
       epoch: (found.status?.epoch ?? 0) + 1,
       fencingToken: (found.status?.fencingToken ?? 0) + 1,
       timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
+      ...(served !== undefined ? { served } : {}),
     }, slot);
     return { runId: args.runId };
   }
@@ -369,8 +399,10 @@ export class RunHosting {
     args: { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string },
     by: string,
     authorize?: (open: RunHostOpenPause) => void | Promise<void>,
+    ctx?: EpServeContext,
   ): Promise<unknown> {
     const host = this.host();
+    const served = this.served(ctx, "run-answer");
     const endpoint = args.endpoint ?? this.ctx.endpoint;
     let open: RunHostOpenPause;
     try {
@@ -384,7 +416,7 @@ export class RunHosting {
       throw e;
     }
     await authorize?.(open);
-    return await this.withOperator({ endpoint, answers: { token: open.token } }, (planes) =>
+    return await this.withOperator({ endpoint, answers: { token: open.token }, ...(served !== undefined ? { served } : {}) }, (planes) =>
       host.answer(planes, {
         endpoint,
         open,
@@ -403,8 +435,10 @@ export class RunHosting {
     args: { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string },
     by: string,
     authorize?: (accepted: RunHostAcceptedAnswer) => void | Promise<void>,
+    ctx?: EpServeContext,
   ): Promise<unknown> {
     const host = this.host();
+    const served = this.served(ctx, "run-answer");
     const endpoint = args.endpoint ?? this.ctx.endpoint;
     let accepted: RunHostAcceptedAnswer;
     try {
@@ -416,7 +450,7 @@ export class RunHosting {
       throw e;
     }
     await authorize?.(accepted);
-    return await this.withOperator({ endpoint, answers: { token: accepted.token } }, (planes) =>
+    return await this.withOperator({ endpoint, answers: { token: accepted.token }, amend: true, ...(served !== undefined ? { served } : {}) }, (planes) =>
       host.amend(planes, {
         endpoint,
         accepted,
@@ -625,7 +659,7 @@ export class RunHosting {
    *  including the two before a drive is attempted, frees a slot whose drive never started. */
   private async launch(
     host: RunHost,
-    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView; placements?: readonly { endpoint: string; instanceId: string }[] },
+    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView; placements?: readonly { endpoint: string; instanceId: string }[]; served?: string },
     claimed?: HostedRun,
   ): Promise<void> {
     const slot = claimed ?? this.claim(req.runId, req.placements ?? []);
@@ -649,7 +683,7 @@ export class RunHosting {
 
   private async drive(
     host: RunHost,
-    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView; placements?: readonly { endpoint: string; instanceId: string }[] },
+    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView; placements?: readonly { endpoint: string; instanceId: string }[]; served?: string },
     slot: HostedRun,
   ): Promise<void> {
     const { takeoverId, identity, mediatorIdentity } = slot;
@@ -657,7 +691,7 @@ export class RunHosting {
     if (this.remote && slot.placements.length !== 0)
       throw new EpEnvelopeError("unimplemented", `run ${req.runId}: a signerless host issues no placed-spawn mediator; drive a program with a placed spawn from a static-auth manager`);
     const issued = this.remote
-      ? await this.ctx.issueAttempt!({ runId: req.runId, takeoverId, epoch: req.epoch, fencingToken: req.fencingToken, driver: identity, mediator: mediatorIdentity })
+      ? await this.ctx.issueAttempt!({ runId: req.runId, takeoverId, epoch: req.epoch, fencingToken: req.fencingToken, driver: identity, mediator: mediatorIdentity, ...(req.served !== undefined ? { served: req.served } : {}) })
       : undefined;
     const creds = issued ? issued.driver : auth
       ? await mintCreds(auth, identity, "run-driver", {
@@ -787,7 +821,7 @@ export class RunHosting {
    *  durable the credential admits. Only an answering call holds the answer and settle writes,
    *  and those are pinned to the one pause it names. */
   private async withOperator<T>(
-    scope: { endpoint?: string; runId?: string; answers?: { token: string } },
+    scope: { endpoint?: string; runId?: string; answers?: { token: string }; amend?: true; served?: string },
     fn: (planes: RunHostPlanes, kv: KV, takeoverId: string) => Promise<T>,
   ): Promise<T> {
     const takeoverId = newTakeoverId();
@@ -798,7 +832,11 @@ export class RunHosting {
       throw new EpEnvelopeError("permission-denied", `a signerless host serves reads and answers for its own endpoint ${this.ctx.endpoint} only`);
     const operator = newIdentity();
     const creds = this.remote
-      ? await this.ctx.issueOperator!({ identity: operator, ...pin })
+      ? await this.ctx.issueOperator!({
+          identity: operator, ...pin,
+          ...(scope.answers !== undefined && scope.amend === true ? { answers: { ...scope.answers, amend: true } } : {}),
+          ...(scope.served !== undefined ? { served: scope.served } : {}),
+        })
       : auth ? await mintCreds(auth, operator, "run-operator", { runOperator: { endpoint, ...pin } }) : undefined;
     const nc = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
       servers: this.ctx.servers ?? DEFAULT_SERVER,

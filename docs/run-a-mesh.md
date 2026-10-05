@@ -314,10 +314,21 @@ request for a host-managed terminal. It never exports the space signer, a static
 provisioner credential, or generic storage authority. Remote registration publishes its service
 status at the registered revision and current process epoch, so manager-caller selection can find it.
 
-Stock participant supervision does not yet implement host-backed managed-agent enrollment or
-terminal release. Successful remote detached spawning requires a host composition for those
-operations; copying host secrets or actor-ledger files to a participant is not supported. Foreground
-spawning and operator-local hosted managers use their existing paths.
+Stock participant supervision asks its host to enroll a detached agent and to prepare its terminal
+retirement, over the same manager-authority transport. The stock auth service refuses both requests
+as `unimplemented`, because it holds none of the storage they write: a host platform intercepts them
+on its own route and asks the loopback verify-enrollment door for the decision. Successful remote
+detached spawning therefore requires such a host composition; copying host secrets or actor-ledger
+files to a participant is not supported. Foreground spawning and operator-local hosted managers use
+their existing paths.
+
+The remote manager that `cotal supervise` starts can host workflow runs through its host: the host
+admits each run and signs only the run's own driver, mediator and operator credentials. A logged-in
+user's `cotal run start` against it is admitted: the auth callout issues the user's manager
+connection, and the host binds each run to the owner who registered the manager. The host's own
+manager refuses user-auth runs by name.
+[User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
+records the path.
 
 The registry entry decides the broker URL `supervise` dials, so a mesh published over `wss://` is
 dialed as a websocket. The manager-authority registration it runs first also takes its TLS

@@ -4060,6 +4060,24 @@ one source shape this revision issues against is a static incarnation's credenti
 `retired`; a lifecycle terminal retires every issuance indexed to that family
 (`bysource.v1.…`), so a retired incarnation's generations refuse to resolve afterwards.
 
+**User-auth issuance.** On a user-auth space the issuer of an interactive actor's `manager-caller`
+view connection is the auth service, at its callout, and the material is the user JWT the callout
+returns. The callout issues that view when the bearer's actor-ledger row is an interactive row, and
+the issued view carries the per-key accepted-row read beside its instance-pinned rows. It chooses
+the generation, persists evidence whose permissions are the set it signs and whose one source is
+that row, `{ space, bucket: "cotal_actors_<space>", key: "actor.<owner>.<actor>.<lifecycleUid>" }`,
+releases it, and writes the accepted row, all before it returns the JWT. The accepted token is the
+first 32 lowercase hex characters of SHA-256 over `"cotal.accepted.v1\0"` followed by the
+connection's inbox nonce: the client chose the nonce and derives the token from it, and no token is
+read from a request body. The source is live while the auth service's actor ledger holds a row for
+that owner and actor carrying that lifecycle UID; a revoked row, or a re-grant under another UID, is
+a dead source at the next resolution. Only the auth service attests this shape; every other host
+refuses it as a coordinate it cannot attest. A reconnect under the same nonce finds the existing
+accepted row. When the row names the same triple and the ceiling being minted is byte-identical to
+the recorded evidence, the callout renews that generation; otherwise it refuses the connect, and the
+client adopts a fresh generation only through a new connection under a new nonce. A managed row's
+view, the `agent` profile and every other view keep the legacy rail.
+
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`,
 §14.8) MUST refuse a legacy-rail request with `permission-denied` carrying the detail kind
 `ai.cotal.ep.unbound-caller-authority` naming the caller triple, never route it through the
@@ -4475,6 +4493,32 @@ admitted from operator evidence named on the command line (the read and publish 
 `none`), never from the host's own scope. The admission and revocation stores are retained with
 the run, program and journal state they authorize; a restore that lacks them recreates them empty,
 and no run is taken back under authority the host cannot read.
+
+**User-auth runs.** A user-auth run is hosted by a signerless participant manager, and its issuing
+host writes the admission. The issuing host admits a run-start whose caller has a derived user owner
+only when that owner is the manager's registered owner, the owner whose `supervise` grant registered
+the instance, so every user-admitted run on a participant manager belongs to that one owner. A
+caller-requested resume and every principal answer or amendment ride the versioned rail. The manager
+forwards the request subject it served with the attempt or operator issuance it asks for, and the
+issuing host re-parses that subject, requires a user caller's owner to be the run's admitted owner
+for a resume and the registered owner for an answer, resolves the caller's own issuance as live, and
+requires its publish ceiling to permit that subject. The issuing host subscribes to those resume and
+answer request subjects itself and never replies on them, and it issues for a forwarded subject only
+when it observed a caller publish that request and has not issued for it before, so a manager cannot
+forward a request its caller never sent. It reads what that request's envelope asked for and issues
+only that: a resume attempt for the run its `runId` names, and an answering issuance for the
+endpoint the answer names, the manager's own when it names none, that amends when the request set
+`amend: true` and answers when it did not. When the request carries a `bind` (§13.2) naming
+another instance or epoch than the manager's current registration, it issues nothing, since that
+manager refuses the request unrun. It issues nothing either for a request whose `class` or pinned
+`inputDigest` and `outputDigest` differ from the command's declaration in the manager's registered
+cluster (§13.7), which that manager also refuses unrun. An answering operator issuance always carries
+the served subject. An amendment's issuance marks its pause with `amend: true`, and the issuing host
+then requires that pause settled `resumed` with an accepted answer instead of waiting. A legacy-rail
+answer is accepted only from a
+managed seat of that owner whose actor-ledger row is live, on the relay path of §14.5. A boot
+reconcile forwards no subject and continues under the original admission. This revision hosts no
+user-auth run on the signer-holding host's own manager.
 
 ---
 

@@ -42,8 +42,10 @@ import {
   assertValidOwnerToken,
   mintLifecycleUid,
   mkSecretDir,
+  parseActorLedgerSource,
   patternInAllow,
   writeSecretFile,
+  type IssuedSourceRef,
 } from "@cotal-ai/core";
 import { grantCommandLine } from "./grant-command.js";
 import type { ActorGrant } from "./idp.js";
@@ -525,7 +527,20 @@ export function ledgerAclResolver(dir: string): AclResolver {
       // The CURRENT grant's capabilities, so the mint re-contains the bearer against the row
       // as of THIS read (the callout's fresh-row re-check), not only as of the connect gate.
       scope: row.scope,
+      kind: row.kind,
     };
+  };
+}
+
+/** Is an actor-ledger source live? True only when the ledger holds a row for the source's owner and
+ *  actor, in either space (interactive or managed), whose `lifecycleUid` equals the source's.
+ *  `revokeActor` deletes the row, and a re-grant that rotates the uid leaves a row with another uid,
+ *  so both read as dead on the next resolution. */
+export function ledgerActorSourceIsLive(dir: string): (source: IssuedSourceRef) => boolean {
+  return (source) => {
+    const parsed = parseActorLedgerSource(source);
+    if (parsed === undefined) return false;
+    return findActorUnified(dir, parsed.owner, parsed.actor)?.lifecycleUid === parsed.lifecycleUid;
   };
 }
 

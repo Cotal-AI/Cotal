@@ -113,7 +113,7 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
       `$JS.API.STREAM.INFO.KV_${sessionsBucket(space)}`,
       `$JS.API.STREAM.MSG.GET.KV_${sessionsBucket(space)}`,
     ],
-    subscribe: base.subscribe,
+    subscribe: [...base.subscribe, ...servedRunRequestSubjects(space)],
   };
 }
 
@@ -129,6 +129,21 @@ export function platformReadinessGrants(space: string, connId: string, caller: E
     publish: [`$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`, ...rows.pub],
     subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`, ...rows.sub],
   };
+}
+
+/** The manager request subjects whose served form a participant manager forwards for a resume or
+ *  an answer (SPEC 14.8), on both routes a caller addresses a manager by. The issuing host reads
+ *  them and never replies: the broker let only the caller's ceiling publish each one, so observing
+ *  it is the host's own evidence that the caller asked. */
+export function servedRunRequestSubjects(space: string): string[] {
+  const p = spacePrefix(space);
+  const m = endpointToken("manager");
+  return [
+    ...["run-resume", "run-answer"].flatMap((c) => [`${p}.ep.v1.inst.${m}.*.${c}.>`, `${p}.ep.v1.one.${m}.${c}.>`]),
+    // A managed seat answers on the legacy rail, the relay path; nothing else served there is forwarded.
+    `${p}.ep.inst.${m}.*.run-answer.>`,
+    `${p}.ep.one.${m}.run-answer.>`,
+  ];
 }
 
 export { remoteManagerRegistrationProof };

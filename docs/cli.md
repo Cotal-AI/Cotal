@@ -2232,9 +2232,13 @@ checkpoint timeout for a drive (default 1h). `--local` drives in this process in
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
-`--by <who>`. A
-user-auth mesh runs no programs yet: the manager refuses the family by name, and `--local` has no
-credential there. The guide is [workflows](workflows.md).
+`--by <who>`. On a
+user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
+there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
+its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides
+the versioned rail under that issuance.
+[User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
+records the path. The guide is [workflows](workflows.md).
 
 ## Server daemons
 
