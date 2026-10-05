@@ -167,7 +167,7 @@ try {
   const register = (kv: KV, instanceId: string, opts?: { seam?: boolean }) =>
     registerServiceInstance(kv, {
       space: SPACE, spec: specFor(), instanceId, registrant: { owner: DEV_OWNER }, authority,
-      barrier: endpointRegistrationBarrier(epKv, SPACE, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid(), evict: async () => true }),
+      barrier: endpointRegistrationBarrier(epKv, SPACE, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid(), evict: async (holderPrincipals) => holderPrincipals.map(() => true) }),
       readClusterArtifact,
       ...(opts?.seam === false ? {} : { observeHolderGeneration }),
     });
@@ -378,7 +378,7 @@ try {
   const withSeam = (seam: (h: string) => Promise<number> | number) =>
     errOf(() => registerServiceInstance(recordsKv, {
       space: SPACE, spec: specFor(), instanceId: IID_F, registrant: { owner: DEV_OWNER }, authority,
-      barrier: endpointRegistrationBarrier(epKv, SPACE, { endpoint: ENDPOINT, instanceId: IID_F, opId: mintLifecycleUid(), evict: async () => true }),
+      barrier: endpointRegistrationBarrier(epKv, SPACE, { endpoint: ENDPOINT, instanceId: IID_F, opId: mintLifecycleUid(), evict: async (holderPrincipals) => holderPrincipals.map(() => true) }),
       readClusterArtifact, observeHolderGeneration: seam,
     }));
 

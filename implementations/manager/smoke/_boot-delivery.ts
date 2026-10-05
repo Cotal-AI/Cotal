@@ -30,6 +30,7 @@ import {
   CotalEndpoint,
   LEASE_TTL_MS,
   evictDeniedPrincipalWithCreds,
+  evictDeniedPrincipalsWithCreds,
   mintConnectionEvictorCreds,
   mintCreds,
   mintMembershipObserverCreds,
@@ -83,6 +84,11 @@ export async function bootDeliveryDaemon(opts: {
     evictPrincipal: (principal) =>
       evictDeniedPrincipalWithCreds({
         servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
+        options: { maxVerifyRounds: 12 },
+      }),
+    evictPrincipals: (principals) =>
+      evictDeniedPrincipalsWithCreds({
+        servers, observerCreds, evictorCreds, accountId: auth.account.pub, principals,
         options: { maxVerifyRounds: 12 },
       }),
     reloadStoreIdentity: () => reloadStoreIdentity,

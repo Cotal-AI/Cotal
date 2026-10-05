@@ -71,7 +71,14 @@ export async function registerRemoteManagerAuthority(args: {
       endpoint: MANAGER_ENDPOINT,
       instanceId: args.instanceId,
       opId: args.instanceId,
-      evict: args.evict,
+      // The host's maintenance verb evicts one principal per call, so each evict call carries one
+      // holder and registration records its verdict before the host is asked about the next.
+      evictMax: 1,
+      evict: async (principals) => {
+        const gone: boolean[] = [];
+        for (const principal of principals) gone.push(await args.evict(principal));
+        return gone;
+      },
     });
     const register = () => registerServiceInstance(recordsKv, {
       space: args.space,

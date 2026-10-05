@@ -1,7 +1,7 @@
 /**
  * The gate reconciler's AFFIRMATIVE freeze-holder check (Cotal #391), over the delivery daemon's
- * `ctl.delivery-admin` rail — the READ twin of {@link makeManagerEndpointEvictor}, and deliberately
- * shaped like it so the two guards of the same repair read the same way.
+ * `ctl.delivery-admin` rail — the READ twin of {@link makeManagerEndpointEvictionEvidence}, and
+ * deliberately shaped like it so the two guards of the same repair read the same way.
  *
  * The `$SYS` CONNZ capability lives with the DELIVERY DAEMON (co-located with the broker), never in
  * a seed-holding process — the same D5 rail-split the evictor obeys. This reaches it with a

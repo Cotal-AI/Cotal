@@ -351,8 +351,8 @@ export async function provisionEndpointGateOpen(
  *  exercised — but they are REAL code (a later takeover/re-registration of a LIVE instance MUST
  *  revoke the prior serve family and verify-evict its holders; a stub would silently skip that).
  *  `evict` is INJECTED: cluster-verified eviction is the $SYS CONNZ+KICK machinery (D5 slice 4),
- *  not this module's job. The DEFAULT is FAIL-CLOSED `() => false` — "no evictor ⇒ eviction cannot
- *  be VERIFIED ⇒ report not-verified" — so the saga's own guard (`if (!evict) throw`) leaves the
+ *  not this module's job. The DEFAULT is FAIL-CLOSED, `false` for every holder — "no evictor ⇒
+ *  eviction cannot be VERIFIED ⇒ report not-verified" — so the saga's own guard leaves the
  *  gate FROZEN for reconciliation on a takeover with no real evictor, never silently reopening into
  *  split-brain. It is ONLY consulted on a NON-EMPTY family (a takeover); a fresh registration's
  *  empty family never invokes it, so this default never touches the 1a-gate path — it enforces the
@@ -361,13 +361,13 @@ export async function provisionEndpointGateOpen(
 export function endpointRegistrationBarrier(
   kv: KV,
   space: string,
-  args: { endpoint: string; instanceId: string; opId: string; evict?: (holderPrincipal: string) => Promise<boolean> | boolean },
+  args: { endpoint: string; instanceId: string; opId: string; evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[]; evictMax?: number },
 ): import("./endpoint-service.js").EpIssuanceBarrier {
   const endpoint = endpointToken(args.endpoint);
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const opId = assertLifecycleToken(args.opId, "opId");
   const key = epgateKey(endpoint, instanceId);
-  const evict = args.evict ?? (() => false); // FAIL-CLOSED: no evictor ⇒ eviction not verified (a takeover fails closed)
+  const evict = args.evict ?? ((holderPrincipals: readonly string[]) => holderPrincipals.map(() => false)); // FAIL-CLOSED: no evictor ⇒ eviction not verified (a takeover fails closed)
   const observed = async (): Promise<{ row: import("./lifecycle-state.js").EndpointGateRow; revision: number } | null> => {
     const entry = await kv.get(key);
     if (!entry) return null;
@@ -423,7 +423,8 @@ export function endpointRegistrationBarrier(
     revoke: async (row) => {
       await markLedgerRowRevoked(kv, epcredRowKey(endpoint, instanceId, row.credentialId));
     },
-    evict: async (holderPrincipal: string) => evict(holderPrincipal),
+    evict: async (holderPrincipals: readonly string[]) => evict(holderPrincipals),
+    evictMax: args.evictMax,
     reopen: async (token: number, successor) => {
       const cur = await observed();
       // Token-pinned: only THIS barrier (still holding its freeze at `token`) reopens; a reconciler

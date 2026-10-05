@@ -3,9 +3,8 @@
  *
  * Real loopback auth broker. A predecessor leaves an eight-holder family and a frozen gate. Boot
  * heal runs first on its own executor. The following registration uses a six-second executor and
- * delays only its last holder verification past expiry. The manager must mint fresh scoped
- * authority, resume the same operation's durable progress, and converge without another gate
- * generation.
+ * its family eviction is delayed past expiry. The manager must mint fresh scoped authority, resume
+ * the same operation's durable progress, and converge without another gate generation.
  *
  * Run: pnpm smoke:registration-executor-resume
  */
@@ -19,7 +18,7 @@ import { Kvm, type KV } from "@nats-io/kv";
 import {
   CotalEndpoint, CONTROL_DELIVERY_ADMIN, DEV_OWNER,
   createSpaceAuth, endpointRegistrationBarrier, epAuthBucket, epgateKey,
-  evictDeniedPrincipalWithCreds, isReachable, mintConnectionEvictorCreds,
+  evictDeniedPrincipalsWithCreds, isReachable, mintConnectionEvictorCreds,
   mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity,
   observePrincipalLivenessWithCreds, parseEndpointGate, principalKey,
   serverConfig, serveIssuanceGateKv, setupSpaceStreams, standaloneConnectOpts,
@@ -75,8 +74,8 @@ let mgr: InstanceType<typeof Manager> | undefined;
 let evictionCalls = 0;
 let delayed = false;
 const FAMILY = 8;
-const HEAL_EVICTS = FAMILY;
-const REGISTRATION_LAST_EVICT = HEAL_EVICTS + FAMILY;
+// The boot heal sends the family as one request, then the registration sends it as another.
+const REGISTRATION_EVICT = 2;
 
 const startDaemon = async () => {
   const id = newIdentity();
@@ -96,14 +95,15 @@ const startDaemon = async () => {
     if (req.op === "principalLiveness") {
       return { ok: true, data: await observePrincipalLivenessWithCreds({ servers: SERVERS, observerCreds, accountId: auth.account.pub, principal }) };
     }
-    if (req.op === "evictPrincipal") {
+    if (req.op === "evictPrincipals") {
       evictionCalls++;
-      if (!delayed && evictionCalls === REGISTRATION_LAST_EVICT) {
+      if (!delayed && evictionCalls === REGISTRATION_EVICT) {
         delayed = true;
-        console.log("  probe: delaying only the last holder verification of the new registration past the 6s executor lifetime");
+        console.log("  probe: delaying the new registration's family eviction past the 6s executor lifetime");
         await wait(7_000);
       }
-      return { ok: true, data: await evictDeniedPrincipalWithCreds({ servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal }) };
+      const principals = (req.args as { principals: string[] }).principals;
+      return { ok: true, data: await evictDeniedPrincipalsWithCreds({ servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principals }) };
     }
     if (req.op === "reloadStoreIdentity") {
       let holds = false;
@@ -193,11 +193,7 @@ try {
   check("compressed-lifetime takeover converges under fresh authority", !a1.error, a1.error?.message);
   check("retry completes with the gate open", a1.after?.state === "open", a1.after);
   check("registration retry keeps one gate generation across executor renewal", a1.after?.generation === 3, { before, after: a1.after });
-  check(
-    "registration resume skips already-verified holders",
-    a1.evictionCalls >= HEAL_EVICTS + FAMILY && a1.evictionCalls < HEAL_EVICTS + 2 * FAMILY,
-    a1.evictionCalls,
-  );
+  check("registration resume re-sends the family as one request", a1.evictionCalls === REGISTRATION_EVICT + 1, a1.evictionCalls);
 
   console.log(`\nISSUE 1335 COMPRESSED LIFETIME ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

@@ -165,7 +165,7 @@ function makeGate(init: { endpoint: string; lifecycleUid: string; generation: nu
     },
     enumerate: () => [...rows.values()],
     revoke,
-    evict: (holderPrincipal) => { if (!evictOk) return false; evicted.push(holderPrincipal); return true; },
+    evict: (holderPrincipals) => holderPrincipals.map((p) => { if (!evictOk) return false; evicted.push(p); return true; }),
     reopen: (token, succ) => {
       if (gate.state !== "frozen" || gate.revision !== token) return false; // token-pinned CAS: a stale reopen loses
       gate.state = "open";
@@ -412,8 +412,8 @@ try {
     if (token === null) throw new Error("barrier freeze should win");
     const family = await g.barrier.enumerate();
     for (const row of family) if (row.state === "active") await g.barrier.revoke(row);
-    for (const p of new Set(family.filter((r) => r.state === "revoked").map((r) => r.holderPrincipal)))
-      if (!(await g.barrier.evict(p))) throw new Error("evict should verify gone");
+    if (!(await g.barrier.evict([...new Set(family.filter((r) => r.state === "revoked").map((r) => r.holderPrincipal))])).every(Boolean))
+      throw new Error("evict should verify gone");
     const reopened = await g.barrier.reopen(token, { generation: before.generation + 1, processEpoch: before.processEpoch, registrationRevision: before.registrationRevision + 1, nameAuthorityRevision: before.nameAuthorityRevision });
     c("mint-wins→barrier enumerates→revokes→VERIFIED-evicts the released credential by holderPrincipal",
       family.length === 1 && family[0].holderPrincipal === "u_op.mgr" && g.active() === 0 && g.revoked() === 1 && g.evicted.includes("u_op.mgr"));
