@@ -47,10 +47,10 @@ that derives `offline` from a stale heartbeat does not know when the peer left. 
 `activitySince` is when the current activity was set. A status change does not move it, so an
 activity left behind while hooks flip the status every turn still shows its age, such as
 `(set 9h ago)` after the activity on a `cotal_roster` row. The optional `environment` is an opaque provider reference. Core publishes
-it and never interprets it. Readers reject a row whose `card.id` does not match its KV key, or whose
-`card.name`, `status` or `ts` is missing or has the wrong type, and report that rejection through the
-recoverable warning path. A `ts` that is not a number never reads as stale, so a kept row would stay
-live after its key expired.
+it and never interprets it. Readers reject a row whose `card.id` does not match its KV key, whose
+`card.name` or `status` is missing or has the wrong type, or whose `ts` is not a finite number, and
+report that rejection through the recoverable warning path. A kept row whose `ts` is missing or text
+such as `"nope"` would never read as stale, so it would stay live after its key expired.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
 on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
 

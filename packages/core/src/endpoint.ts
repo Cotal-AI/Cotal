@@ -712,7 +712,7 @@ export class CotalEndpoint extends EventEmitter {
    *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
   /** Presence rows rejected because their embedded id did not match the ACL-scoped KV key, or because
-   *  a field the observer computes with was missing or of the wrong type. */
+   *  a field the observer computes with was malformed. */
   private presenceBindingDrops = 0;
 
   /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
@@ -6874,11 +6874,12 @@ function assertPartsSerializable(parts: readonly Part[]): void {
 /** A `Record` so that adding a status to {@link PresenceStatus} fails to compile until the reader accepts it. */
 const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };
 
-/** The presence fields this observer computes with, in their SPEC §6 types. A non-number `ts`
- *  makes the liveness arithmetic NaN, and `NaN > ttl` is never true, so the row would stay live
- *  after its key expired (#2612). `card.name` is the roster sort key: a non-string throws inside
- *  the watch loop and ends the watch. `status` decides offline and is what roster consumers read.
- *  `card.id` is left to the KV-key check, which rejects anything but the key string. */
+/** The presence fields this observer computes with, in their SPEC §6 types. A missing `ts` or text
+ *  such as `"nope"` makes the liveness arithmetic NaN, and a JSON `1e400` parses as `Infinity`;
+ *  neither age is ever greater than the TTL, so the row would stay live after its key expired
+ *  (#2612). `card.name` is the roster sort key: a non-string throws inside the watch loop and
+ *  ends the watch. `status` decides offline and is what roster consumers read. `card.id` is left
+ *  to the KV-key check, which rejects anything but the key string. */
 function isUsablePresence(value: unknown): value is Presence {
   return isRecord(value) && isRecord(value.card) && typeof value.card.name === "string" &&
     typeof value.status === "string" && Object.hasOwn(PRESENCE_STATUSES, value.status) &&
