@@ -34,7 +34,7 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
-## Workflow programs that bind `once`
+## Workflow programs that bind `once` in 0.65.0
 
 `once` is now a scope of the workflow language, so it is a reserved name. A program that declares
 its own `once` binding (`const once = ...`, a parameter or a function named `once`) is refused at
