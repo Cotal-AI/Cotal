@@ -1,7 +1,7 @@
 /**
  * `cotal_docs` is the Cotal knowledge base bundled with each release.
  *
- * The docs ship inside the connector as a generated bundle ({@link DOCS_BUNDLE}), built at
+ * The docs ship inside the connector as a generated bundle ({@link loadDocsBundle}), built at
  * release time from /docs, /SPEC.md and the message schema and stamped with the installed
  * version. The baseline matches the running version, works offline, and cannot drift from what is
  * installed.
@@ -11,8 +11,10 @@
  * installed release. When that path is absent (version-pinned docs are not published yet) or
  * unreachable, the tool falls back to the bundled copy and reports which source answered.
  */
-import { DOCS_BUNDLE } from "./docs-bundle.generated.js";
+import { loadDocsBundle } from "./docs-bundle.generated.js";
 import type { ToolResult } from "./tool-specs.js";
+
+export { DOCS_VERSION } from "./docs-bundle.generated.js";
 
 export interface DocsPage {
   /** URL-ish key, e.g. "architecture". Also the argument an agent passes as `page`. */
@@ -39,8 +41,12 @@ export interface DocsBundle {
   schema: { title: string; body: string };
 }
 
-/** The installed Cotal version, for stamping the orientation card and other surfaces. */
-export const DOCS_VERSION = DOCS_BUNDLE.version;
+// Built on the first `cotal_docs` call, not at import: every connector process loads this module,
+// each hook event included, and most never read the docs.
+let bundled: DocsBundle | undefined;
+function bundle(): DocsBundle {
+  return (bundled ??= loadDocsBundle());
+}
 
 const REMOTE_BASE = "https://docs.cotal.ai";
 
@@ -48,16 +54,16 @@ const REMOTE_BASE = "https://docs.cotal.ai";
  *  non-page docs; everything else matches a page slug (case-insensitive). */
 function resolvePage(page: string): DocsPage | undefined {
   const key = page.trim().toLowerCase().replace(/\.md$/, "");
-  if (key === "spec") return { slug: "spec", title: DOCS_BUNDLE.spec.title, kind: "normative", summary: "", body: DOCS_BUNDLE.spec.body };
-  if (key === "lang" || key === "cotal-lang") return { slug: "lang", title: DOCS_BUNDLE.lang.title, kind: "normative", summary: "", body: DOCS_BUNDLE.lang.body };
-  if (key === "schema") return { slug: "schema", title: DOCS_BUNDLE.schema.title, kind: "reference", summary: "", body: DOCS_BUNDLE.schema.body };
-  return DOCS_BUNDLE.pages.find((p) => p.slug === key);
+  if (key === "spec") return { slug: "spec", title: bundle().spec.title, kind: "normative", summary: "", body: bundle().spec.body };
+  if (key === "lang" || key === "cotal-lang") return { slug: "lang", title: bundle().lang.title, kind: "normative", summary: "", body: bundle().lang.body };
+  if (key === "schema") return { slug: "schema", title: bundle().schema.title, kind: "reference", summary: "", body: bundle().schema.body };
+  return bundle().pages.find((p) => p.slug === key);
 }
 
 /** Map a resolved slug to an IMMUTABLE, version-pinned URL on docs.cotal.ai. Pinning the version
  *  into the path is what makes a fetched body provably belong to the installed version. */
 function remoteUrl(slug: string): string {
-  const base = `${REMOTE_BASE}/v/${DOCS_BUNDLE.version}`;
+  const base = `${REMOTE_BASE}/v/${bundle().version}`;
   if (slug === "schema") return `${base}/cotal.schema.json`;
   if (slug === "lang") return `${base}/cotal-lang.md`;
   return `${base}/${slug}.md`;
@@ -66,12 +72,12 @@ function remoteUrl(slug: string): string {
 /** The index: version banner + every page (slug · kind · summary) + spec/schema + how to
  *  go deeper. Cheap orientation an agent reads before answering anything about Cotal. */
 export function renderDocsIndex(): string {
-  const rows = DOCS_BUNDLE.pages.map((p) => {
+  const rows = bundle().pages.map((p) => {
     const kind = p.kind ? `: ${p.kind}` : "";
     return `- \`${p.slug}\`${kind}\n  ${p.summary}`;
   });
   return [
-    `# Cotal v${DOCS_BUNDLE.version} documentation`,
+    `# Cotal v${bundle().version} documentation`,
     "",
     "The authoritative docs bundled with this installed version. This index lists what",
     "exists; it holds no answers itself. Your next call:",
@@ -82,9 +88,9 @@ export function renderDocsIndex(): string {
     "published to docs.cotal.ai for this same version.",
     "",
     "## The normative sources",
-    `- \`spec\`: ${DOCS_BUNDLE.spec.title} (the wire contract; where a page disagrees, the spec wins)`,
-    `- \`lang\`: ${DOCS_BUNDLE.lang.title} (the workflow language a durable run executes; spec §14)`,
-    `- \`schema\`: ${DOCS_BUNDLE.schema.title} (authoritative for message shapes)`,
+    `- \`spec\`: ${bundle().spec.title} (the wire contract; where a page disagrees, the spec wins)`,
+    `- \`lang\`: ${bundle().lang.title} (the workflow language a durable run executes; spec §14)`,
+    `- \`schema\`: ${bundle().schema.title} (authoritative for message shapes)`,
     "",
     "## Pages",
     ...rows,
@@ -179,12 +185,12 @@ const B = 0.75;
 
 function buildIndex(): { sections: Section[]; df: Map<string, number>; avgdl: number } {
   const sections: Section[] = [];
-  for (const p of DOCS_BUNDLE.pages) sections.push(...sectionsOf(p.slug, p.title, p.body));
-  sections.push(...sectionsOf("spec", DOCS_BUNDLE.spec.title, DOCS_BUNDLE.spec.body));
-  sections.push(...sectionsOf("lang", DOCS_BUNDLE.lang.title, DOCS_BUNDLE.lang.body));
+  for (const p of bundle().pages) sections.push(...sectionsOf(p.slug, p.title, p.body));
+  sections.push(...sectionsOf("spec", bundle().spec.title, bundle().spec.body));
+  sections.push(...sectionsOf("lang", bundle().lang.title, bundle().lang.body));
   // The schema is JSON (no Markdown headings) — index it as a single section.
-  const sTok = [...tokenize(DOCS_BUNDLE.schema.title), ...tokenize(DOCS_BUNDLE.schema.title), ...tokenize(DOCS_BUNDLE.schema.body)];
-  sections.push({ slug: "schema", pageTitle: DOCS_BUNDLE.schema.title, heading: DOCS_BUNDLE.schema.title, text: DOCS_BUNDLE.schema.body, tokens: sTok, len: sTok.length });
+  const sTok = [...tokenize(bundle().schema.title), ...tokenize(bundle().schema.title), ...tokenize(bundle().schema.body)];
+  sections.push({ slug: "schema", pageTitle: bundle().schema.title, heading: bundle().schema.title, text: bundle().schema.body, tokens: sTok, len: sTok.length });
 
   const df = new Map<string, number>();
   let total = 0;
@@ -195,8 +201,8 @@ function buildIndex(): { sections: Section[]; df: Map<string, number>; avgdl: nu
   return { sections, df, avgdl: total / Math.max(1, sections.length) };
 }
 
-// Built once at import: the bundle is static, so the section index is too.
-const INDEX = buildIndex();
+// Built on the first search, for the same reason as the bundle.
+let index: ReturnType<typeof buildIndex> | undefined;
 
 export interface DocHit {
   /** Page slug to fetch in full via cotal_docs(page: slug). */
@@ -216,18 +222,19 @@ export function searchDocs(query: string, limit = 5): DocHit[] {
   const termSet = new Set(terms);
   if (!termSet.size) return [];
 
-  const N = INDEX.sections.length;
+  const { sections, df, avgdl } = (index ??= buildIndex());
+  const N = sections.length;
   const scored: { s: Section; score: number }[] = [];
-  for (const s of INDEX.sections) {
+  for (const s of sections) {
     const tf = new Map<string, number>();
     for (const t of s.tokens) if (termSet.has(t)) tf.set(t, (tf.get(t) ?? 0) + 1);
     let score = 0;
     for (const t of termSet) {
       const f = tf.get(t) ?? 0;
       if (!f) continue;
-      const n = INDEX.df.get(t) ?? 0;
+      const n = df.get(t) ?? 0;
       const idf = Math.log(1 + (N - n + 0.5) / (n + 0.5));
-      score += idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * s.len) / INDEX.avgdl)));
+      score += idf * ((f * (K1 + 1)) / (f + K1 * (1 - B + (B * s.len) / avgdl)));
     }
     if (score > 0) scored.push({ s, score });
   }
@@ -254,13 +261,13 @@ function capSection(text: string, maxLines = 48): string {
 
 function renderSearch(query: string, hits: DocHit[]): string {
   if (!hits.length) {
-    return `No matches for "${query}" in the Cotal v${DOCS_BUNDLE.version} docs. Call cotal_docs() for the page index, or search an exact identifier (a subject, a cotal_* tool, a field name).`;
+    return `No matches for "${query}" in the Cotal v${bundle().version} docs. Call cotal_docs() for the page index, or search an exact identifier (a subject, a cotal_* tool, a field name).`;
   }
   const blocks = hits.map(
     (h) => `## ${h.heading}\n${capSection(h.text)}\n\n→ read the full page: cotal_docs(page: "${h.slug}")`,
   );
   return [
-    `# Cotal v${DOCS_BUNDLE.version} docs: top matches for "${query}"`,
+    `# Cotal v${bundle().version} docs: top matches for "${query}"`,
     "The most relevant sections are below. Read the full page before writing code or wire frames.",
     ...blocks,
   ].join("\n\n");
@@ -289,10 +296,10 @@ async function refreshPage(slug: string): Promise<{ body: string | null; note: s
   if (body === null) {
     return {
       body: null,
-      note: `(bundled v${DOCS_BUNDLE.version}; no version-pinned copy at docs.cotal.ai/v/${DOCS_BUNDLE.version}; showing bundled docs)`,
+      note: `(bundled v${bundle().version}; no version-pinned copy at docs.cotal.ai/v/${bundle().version}; showing bundled docs)`,
     };
   }
-  return { body, note: `(refreshed from docs.cotal.ai; version-pinned copy for v${DOCS_BUNDLE.version})` };
+  return { body, note: `(refreshed from docs.cotal.ai; version-pinned copy for v${bundle().version})` };
 }
 
 export interface DocsArgs {
@@ -309,13 +316,13 @@ export async function runDocs(args: DocsArgs): Promise<ToolResult> {
   if (page) {
     const found = resolvePage(page);
     if (!found) {
-      const names = DOCS_BUNDLE.pages.map((p) => p.slug).join(", ");
+      const names = bundle().pages.map((p) => p.slug).join(", ");
       return {
         text: `No Cotal doc page "${page}". Available: spec, lang, schema, ${names}. Call cotal_docs() for the index.`,
         isError: true,
       };
     }
-    let note = `(bundled v${DOCS_BUNDLE.version})`;
+    let note = `(bundled v${bundle().version})`;
     let body = found.body;
     if (args.refresh) {
       const r = await refreshPage(found.slug);

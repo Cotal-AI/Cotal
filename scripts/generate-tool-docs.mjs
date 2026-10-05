@@ -47,7 +47,7 @@ const ANNOTATIONS = {
     effect: "read-only",
     availability: "always",
     notes:
-      "Serves the version-exact docs bundled with this release (offline); `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.",
+      "Serves the version-exact docs bundled with this release (offline). The connector builds the docs and their search index when the tool is first called. `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.",
   },
   cotal_inbox: {
     effect: "clears only the messages it returns (nothing at all when peek is true)",
