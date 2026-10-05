@@ -71,8 +71,8 @@ forms below, because a form it cannot follow to the exit status can hide either 
   A catch arm prevents it only when its first statement exits with a failing status, or sets
   `process.exitCode` to one that the exit reads (`process.exit()`, `process.exit(process.exitCode)`
   or `process.exit(process.exitCode ?? 0)`) while the file writes no other code anywhere, including
-  by `++`, `--`, destructuring and `process["exitCode"]`, since a callback scheduled earlier can run
-  while the `finally` awaits.
+  by `++`, `--`, destructuring and `process["exitCode"]`, and every `process.exit` that can follow
+  reads it or fails, since a callback scheduled earlier can run while the `finally` awaits.
   A statement before it can throw past it, so log after failing. A statement inside a branch of
   the arm, a computed code and a rethrow do not count. A promise `.catch` counts only directly
   before `.finally`. A status variable that starts failing counts when the only write that clears
@@ -99,6 +99,8 @@ keeps only the low eight bits of its status, so `process.exit(256)` exits 0. The
 own status may also add a lookup into an object literal of them, such as
 `128 + { SIGINT: 2, SIGTERM: 15 }[signal]`, because a sum with a lookup that misses is NaN, on which
 `process.exit` throws rather than exits 0. A lookup alone that misses is undefined and exits 0.
+A `process.exit` passed to a call, as in `setTimeout(process.exit, 0, 0)`, reads no code, since the
+call chooses its status.
 Names resolve to the declaration they bind, so a parameter or inner function that shadows the pin or
 `main` does not count, a `process` the file declares is not the process unless it imports
 `node:process` whole, and a generator, as `main` or as a `.catch` handler, does not count, since its
@@ -130,8 +132,11 @@ value it returns. A name with a default, as a parameter or in a destructuring, a
 default. An array stands for every element, so `list[i]`, `...list` and `const [f] = list` each
 stand for all of them. A generator runs its body only as what its call returns is iterated, so its
 exits count for every call of it except one written as a whole statement, in parentheses or not, or
-a handler of `.then`, `.catch` or `.finally`. `.call`, `.apply`, `.bind`, a getter, a key of an
-object computed at run time and an imported function are not followed.
+a handler of `.then`, `.catch` or `.finally`. Those three, called by name or by a literal key such
+as `p["finally"]`, are the promise methods only when the file binds nothing to that key, since a
+method of the file by that name can iterate what its handler returns or never call it. `.call`,
+`.apply`, `.bind`, a getter, a key of an object computed at run time and an imported function are
+not followed.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The
