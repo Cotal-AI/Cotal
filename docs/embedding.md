@@ -475,13 +475,17 @@ the closure needs, and the auth plane self-authorizes that one name.
 `registerHostIncarnation(instanceId)` publishes the artifacts, registers that instance through the
 ceremony the plane runs for itself, and returns `{ instanceId, processEpoch }` with the epoch that
 registration committed. The host calls it at every start with its persisted instance id, before it
-admits or recovers any flight, so a restart fences its predecessor and advances the epoch. A start
+admits or recovers any flight, so a restart fences its predecessor. The first registration of an
+instance commits epoch 0, which is open and serving like any later epoch, and each later start of
+that instance commits the previous epoch plus one. A consumer compares epochs for equality and never
+reads 0 as absent or not ready. A start
 whose confirming read of the gate finds that a later start of the same instance registered is
 refused with `conflict`. The returned epoch is a committed coordinate and stays current only until
 the next start registers, which can happen before the call returns. `observeHostGate(instanceId)`
 is a point-in-time read of an executor's gate, and answers null for an absent gate; a sweeper
 decides on it. `awaitHostFence(instanceId, processEpoch)` resolves with the gate once it is no
-longer open at that epoch, and with null once it is absent. The host arms it with its returned
+longer open at that epoch, and with null once it is absent. It takes any non-negative safe integer
+epoch, 0 included, and refuses any other value with `bad-request`. The host arms it with its returned
 incarnation before it admits or recovers any flight, and stops serving when it resolves. It polls
 the gate, because no runtime credential may watch the auth bucket. The
 host's launch writer first activates the agent's lifecycle at the pinned UID through the handle's

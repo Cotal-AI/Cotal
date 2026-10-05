@@ -1720,6 +1720,11 @@ export class AguiEmitter<T> {
     return this.halted !== undefined;
   }
 
+  /** The run {@link closeRun} would close now, or `undefined` at a stopping point. */
+  get openRunId(): string | undefined {
+    return this.brackets.runId;
+  }
+
   /**
    * Boot recovery, branching on the WAL's tag.
    *

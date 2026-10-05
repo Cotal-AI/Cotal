@@ -1004,8 +1004,10 @@ Each session uses its connector's **event plane** by default: a stream of struct
 describing what the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
 the agent's principal, `events.<owner>.<actor>`, never after its display name, because two live
 agents are allowed to share a display name and would then share a stream. The launch grants publish
-rights on that channel alone, foreground and detached alike. `--no-events` is the explicit opt-out
-unless the selected registration says `policy: { events: "required" }`. Required policy makes the
+rights on that channel alone, foreground and detached alike. On an open mesh, which issues no
+credentials, the launch still allocates the agent an id, so the channel names a stable actor.
+`--no-events` is the explicit opt-out unless the selected registration says
+`policy: { events: "required" }`. Required policy makes the
 event arm and grant mandatory, so `--no-events` and connectors without an event plane are refused.
 
 The launch decision and the grant are separate on purpose. Holding publish rights on a channel is

@@ -258,6 +258,7 @@ arrive per persisted block, and tool activity arrives when Jcode persists the to
 blocks. User prompt text is not republished onto the event channel. The launcher sets
 `COTAL_EVENTS` by default; pass `--no-events` to opt out.
 
+
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
 so it streams boot activity instead of leaving the terminal blank. Presence still begins only after
 the readiness proof passes. An inbound peer message then wakes a Harness API turn. A directed message

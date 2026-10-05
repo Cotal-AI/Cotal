@@ -199,7 +199,7 @@ try {
     // its emitter would refuse at the first publish. The launch must carry a stable id (the seat name),
     // the same way the manager assigns one for every non-user launch.
     const r = await openRun(["--agent", "fg-probe-emitter", "--name", "fg-open-id"]);
-    check("an armed open-mesh foreground launch carries a stable id (the seat name)", r.opts?.id === "fg-open-id", { got: r.opts?.id, creds: r.opts?.creds, userAuth: r.opts?.userAuth });
+    check("an armed open-mesh foreground launch carries an allocated stable id", typeof r.opts?.id === "string" && r.opts.id.length > 0, { got: r.opts?.id, creds: r.opts?.creds, userAuth: r.opts?.userAuth });
   }
 
   {
