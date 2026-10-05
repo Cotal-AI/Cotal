@@ -1304,6 +1304,10 @@ export class Manager {
    *  daemon reloads from this manager's store AND this manager holds the per-space renewal lease.
    *  Starts false: a manager that has not proved both must not remint. */
   private daemonRenewalOwner = false;
+  /** #2561: may the lease heartbeat contend at all? Set by every claim, false while the daemon names
+   *  another store or the challenge refused. Without it the heartbeat re-takes the lease the claim
+   *  just released and holds it against every manager and `doctor auth --fix` that can remint. */
+  private daemonRenewalEligible = false;
   private daemonRenewalLeaseTimer?: ReturnType<typeof setInterval>;
   private maintenanceState: ManagerMaintenanceState = "active";
   private lifecycleInFlight = 0;
@@ -1957,7 +1961,7 @@ export class Manager {
    *  CAS is how a survivor picks up a dead owner's expired lease with no operator step. Never
    *  throws; a failed heartbeat leaves ownership to the next pass rather than ending the process. */
   private async keepDaemonRenewalLease(): Promise<void> {
-    if (!this.auth) return;
+    if (!this.auth || !this.daemonRenewalEligible) return;
     try {
       const held = await this.ep.holdDaemonRenewalLease(this.managerInstanceId);
       if (this.daemonRenewalOwner && !held)
@@ -1999,10 +2003,12 @@ export class Manager {
         (e) => e instanceof DeliveryAdminUnanswered,
       );
     } catch (e) {
+      this.daemonRenewalEligible = false;
       if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease().catch(() => {});
       this.daemonRenewalOwner = false;
       throw e;
     }
+    this.daemonRenewalEligible = relation !== "divergent";
     if (relation === "divergent") {
       // Not our daemon's store: drop any lease we hold rather than sit on it, so the manager that
       // CAN remint is not blocked behind us.
