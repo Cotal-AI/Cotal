@@ -80,6 +80,12 @@ export interface LaunchOpts {
    *  left untouched — resuming MUST NOT hijack the source session. A connector that can't fork
    *  THROWS at {@link Connector.buildLaunch} rather than silently spawning fresh. */
   resume?: string;
+  /** A carried {@link resume} (docs/design/resume-transfer.md section 7): the transcript was carried
+   *  from another host and staged by the manager. `home` is the seat-private config home the manager
+   *  created for this seat, `transcript` the staged copy the connector places into it, and `cwd` the
+   *  seat's working directory, which the home must trust. Only a connector that declares
+   *  {@link Connector.resumeTranscript} receives it. */
+  carried?: { home: string; transcript: string; cwd: string };
   /** Exact session of THIS connector process to continue after a supervised process restart.
    *  Distinct from {@link resume}: `resume` forks FROM an existing transcript into a new session;
    *  `continueSession` reopens the already-meshed session itself. Manager-internal only, never a
@@ -246,6 +252,10 @@ export interface Connector extends Extension {
    *  stays as the backstop. Only a connector that forks-from a prior session (never hijacks it) sets
    *  this `true`. */
   readonly supportsResume?: boolean;
+  /** Where this connector's host keeps resumable transcripts, so the CLI can carry one to a manager
+   *  on another host (docs/design/resume-transfer.md section 10). A connector without it never receives
+   *  a carried transcript: its resume id resolves on the manager's host. */
+  readonly resumeTranscript?: ResumeTranscriptLocator;
   /** Whether this connector can reopen the exact host session named by
    *  {@link LaunchOpts.continueSession} after a supervised process crash. Default-deny. */
   readonly supportsSessionContinuation?: boolean;
@@ -292,6 +302,14 @@ export interface Connector extends Extension {
    *  one is worse than none: someone waits for a prompt that will never appear and reads the
    *  startup as hung. Omit when there is nothing specific to say. */
   readonly launchHint?: string;
+}
+
+/** Finds the transcript of a resumable session on this host. */
+export interface ResumeTranscriptLocator {
+  /** The transcript file of session `id` under the host configuration `env` names, with the session's
+   *  title when it has one, or `undefined` when this host holds no session `id`. Throws when the id is
+   *  ambiguous or names a session by title rather than by id. */
+  find(id: string, env: NodeJS.ProcessEnv): { path: string; title?: string } | undefined;
 }
 
 /** The only continuity classes a maintenance report may promise for a connector. */

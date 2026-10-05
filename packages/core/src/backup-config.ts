@@ -22,6 +22,7 @@ import {
   spacePrefix,
   taskStream,
   artifactBucket,
+  isTransferStream,
   objectStoreStream,
 } from "./subjects.js";
 
@@ -31,7 +32,7 @@ export type SpaceBackupStreamClass = "messages" | "registry" | "authorization";
  *  bytes are neither transient (they outlive a session), derived (nothing can recompute them),
  *  nor a lease. Excluding them is a RETENTION decision — pin extends lifetime, not durability —
  *  and giving it an honest name keeps a later reader from reading it as "derived, so recoverable".*/
-export type SpaceBackupExcludedClass = "transient" | "derived" | "lease" | "control" | "artifact";
+export type SpaceBackupExcludedClass = "transient" | "derived" | "lease" | "control" | "artifact" | "transfer";
 
 export interface SpaceBackupStream {
   name: string;
@@ -95,7 +96,11 @@ export function validateSpaceBackupInventory(
   actualNames: readonly string[],
   options: { atRest?: boolean } = {},
 ): SpaceBackupInventory {
-  const inventory = spaceBackupInventory(space);
+  const fixed = spaceBackupInventory(space);
+  // A resume transfer bucket exists per receiving manager instance, so it is matched by name shape.
+  // Its objects are deleted once staged and are not state to restore.
+  const transfers = actualNames.filter((name) => isTransferStream(space, name));
+  const inventory = { ...fixed, excluded: [...fixed.excluded, ...transfers.map((name) => ({ name, class: "transfer" as const }))] };
   const actual = [...actualNames].sort();
   const optional = new Set(
     options.atRest ? inventory.excluded.filter((s) => s.class === "transient").map((s) => s.name) : [],

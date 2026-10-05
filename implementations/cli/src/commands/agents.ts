@@ -108,7 +108,7 @@ type AgentRow = {
   instanceId?: string;
   host?: string;
   /** A `--resume` seat's fork provenance (#1500); title and hash once the seat has recorded them. */
-  resume?: { source: string; title?: string; transcriptSha256?: string };
+  resume?: { source: string; title?: string; transcriptSha256?: string; host?: string; transferredAt?: string };
   lifecycleUid: string;
   id: string;
 };
@@ -363,8 +363,8 @@ export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "s
   if (r.instanceId) facts.push(`instance ${r.instanceId}`);
   if (r.host) facts.push(`host ${r.host}`);
   if (r.resume) {
-    const { source, title, transcriptSha256 } = r.resume;
-    facts.push(`forked from ${source}${title ? ` ${JSON.stringify(title)}` : ""}${transcriptSha256 ? ` sha256:${transcriptSha256}` : ""}`);
+    const { source, title, transcriptSha256, host, transferredAt } = r.resume;
+    facts.push(`forked from ${host ? `${host}:` : ""}${source}${title ? ` ${JSON.stringify(title)}` : ""}${transcriptSha256 ? ` sha256:${transcriptSha256}` : ""}${transferredAt ? ` carried ${transferredAt}` : ""}`);
   }
   return facts;
 }
@@ -596,7 +596,7 @@ const SESSION_WORKED_MS = 5_000;
  *  it rather than by prose. `gone`/`denied` stop the loop; `fatal` is a refusal that retrying can
  *  never fix; everything else is worth another attempt. */
 type Established =
-  | { ok: true; nc: NatsConnection; grant: SessionGrant; link: RedeemLink; inbox: string; server: string }
+  | { ok: true; nc: NatsConnection; grant: SessionGrant; link: RedeemLink; inbox: string; server: string; resumedFrom?: { host: string; source: string } }
   | { ok: false; kind: AttachRefusal | "fatal"; message: string; fromManager?: true };
 
 /** What a caller should DO about a manager refusal. `denied` will not change by asking again;
@@ -723,7 +723,7 @@ async function establishAttachSession(
   // seed. A registered open mesh has no seed: the same bare connection `askManagerEp` already used
   // for the control round trip opens the caller rail. USER mesh (bearer, no local seed): refuse LOUD
   // — the 2-step user-mode redemption callout is the #29 follow-up, deliberately not wired here.
-  const { grant } = reply.data as { grant: SessionGrant };
+  const { grant, resumedFrom } = reply.data as { grant: SessionGrant; resumedFrom?: { host: string; source: string } };
   // The trust material the TARGET resolved, not a second answer walked up from the cwd. This used
   // to be `loadSpaceAuth(authDir(findCotalRoot()), t.space)`, which is the defect behind issue #722:
   // resolution had already picked a root from the registry and connected with it, and then this line
@@ -805,7 +805,7 @@ async function establishAttachSession(
     // half-opens a link is what would grade this line, and it does not exist here yet.
     ...(reconnect ? { pingInterval: 10_000 } : {}),
   });
-  return { ok: true, nc, grant, link, inbox: id.id, server: t.server };
+  return { ok: true, nc, grant, link, inbox: id.id, server: t.server, ...(resumedFrom ? { resumedFrom } : {}) };
 }
 
 /** The mesh contract that decides how attach redeems a session grant. The mode is the REGISTERED
@@ -1171,7 +1171,8 @@ async function runAttachLoop(
       continue; // transient: the manager or the link is unreachable right now
     }
     saidWhy = "";
-    if (first) console.error(c.dim(`attached to ${vv.name} - ${key.label} to detach`));
+    const from = est.resumedFrom ? ` (resumed from ${est.resumedFrom.host}:${est.resumedFrom.source})` : "";
+    if (first) console.error(c.dim(`attached to ${vv.name}${from} - ${key.label} to detach`));
     else console.error(c.dim("[cotal: reconnected]"));
     first = false;
     let outcome;

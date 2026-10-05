@@ -13,6 +13,7 @@ import {
   presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket,
   deliveryBucket, managerBucket,
   artifactBucket,
+  isTransferStream,
   objectStoreStream,
 } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
@@ -134,6 +135,10 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; spac
       // missing from this list is not merely un-deleted - nothing in the system can ever reap it.
       objectStoreStream(artifactBucket(opts.space)),
     ];
+    // Each manager instance that received a carried resume holds its own transfer bucket, so those
+    // streams are found by name shape. Only an open mesh receives one in this release, and the
+    // teardown credential of an authenticated mesh holds no stream listing.
+    if (!opts.creds) for await (const name of jsm.streams.names()) if (isTransferStream(opts.space, name)) streams.push(name);
     for (const s of streams) await jsm.streams.delete(s).catch(() => {});
   } finally {
     await nc.close();

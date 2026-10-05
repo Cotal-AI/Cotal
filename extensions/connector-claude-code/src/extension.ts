@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
+import { claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -158,6 +159,7 @@ export const claudeConnector: Connector = {
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
+  resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
@@ -217,6 +219,10 @@ export const claudeConnector: Connector = {
         );
       env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
     }
+    // A carried resume (#1499) runs in the seat-private home the manager made for it. Its refusals run
+    // here, before any private file is written and before the manager spends the claim.
+    const binary = opts.resolvedBinaries?.claude ?? "claude";
+    if (opts.carried) refuseCarriedLaunch(binary, env, opts.carried.cwd);
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
@@ -315,6 +321,7 @@ export const claudeConnector: Connector = {
     // token (no shell), so a hostile-looking id can't inject. The persona prompt-file flag
     // above still applies, so the forked context runs under the current mesh persona.
     if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
+    if (opts.carried) Object.assign(env, placeCarried(opts.carried.home, opts.carried.transcript, opts.resume, opts.carried.cwd));
 
     // Opaque connector options → native `claude` flags, RAW passthrough: `key=value` renders
     // `--key value`, and an empty value (`--opt foo=`) renders a bare boolean `--foo`. No allow-list,
@@ -327,7 +334,7 @@ export const claudeConnector: Connector = {
     }
 
     return {
-      command: opts.resolvedBinaries?.claude ?? "claude",
+      command: binary,
       args,
       env,
       // The dev-channels flag shows this one-time gate. Use its unique title rather than the generic

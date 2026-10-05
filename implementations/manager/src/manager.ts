@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
-import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -94,6 +94,7 @@ import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting } from "./run-hosting.js";
 import { controlSession } from "./control-session.js";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
+import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput } from "./transcript-receive.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
@@ -584,6 +585,9 @@ export interface ForkProvenance {
   source: string;
   title?: string;
   transcriptSha256: string;
+  /** A carried resume (#1499): the host the transcript came from, and when its bytes were staged. */
+  host?: string;
+  transferredAt?: string;
 }
 
 export interface ManagerResumeAgent {
@@ -711,6 +715,10 @@ export interface StartAgentOpts {
    *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
   resume?: string;
+  /** The one-time claim `transcript-receive` issued for carried bytes of {@link resume} (#1499), and
+   *  the agent the CLI found them with. Imperative control args only, like `resume`. */
+  resumeClaim?: string;
+  resumeAgent?: string;
   /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
    *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
@@ -797,6 +805,8 @@ interface ManagedAgent {
   name: string;
   role?: string;
   agent: string;
+  /** The seat-private Claude home a carried resume launched in (#1499), removed when the seat is freed. */
+  seatHome?: string;
   /** Stable id the manager assigned this agent at spawn: the nkey public key (static auth), or
    *  the owner+actor principal dot-form (user mode). */
   id: string;
@@ -1257,6 +1267,8 @@ export class Manager {
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
    * already past an earlier shutdown check cannot finish after stop() returns. */
   private startTask?: Promise<void>;
+  /** This instance's side of a carried resume transcript (#1499); absent where it has no transfer reader. */
+  private transcripts?: TranscriptReceiver;
   /** The one stop this manager runs, with the agent policy it was asked for. A stop takes seats out
    *  of `agents` before they have exited, so a second teardown would find none and report success
    *  while the first still waits on a live seat. */
@@ -1840,6 +1852,17 @@ export class Manager {
         log: (line) => console.error(line),
       });
       await this.runHosting.reconcile();
+    }
+    // A carried resume (#1499) needs this instance's transfer reader, which only an open mesh has here.
+    if (!this.auth && !this.remoteAuthority && !this.userMode) {
+      this.transcripts = new TranscriptReceiver({
+        space: this.space,
+        instanceId: this.managerInstanceId,
+        workspaceRoot: this.workspaceRoot,
+        withReader: (fn) => this.withTransferReader(fn),
+        log: (line) => console.error(line),
+      });
+      await this.transcripts.start();
     }
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
@@ -2458,9 +2481,12 @@ export class Manager {
       });
     }
     // A later manager does not resume a delegated seat, and its close runs only inside its
-    // retirement, so a cut that holds one is refused before any child stops.
-    for (const a of this.agents.values())
+    // retirement, so a cut that holds one is refused before any child stops. A carried resume seat's
+    // private home is removed when its slot is freed, so a later manager would find nothing to fork.
+    for (const a of this.agents.values()) {
       if (a.handedOff) failures.push({ name: a.name, id: a.id, error: "a delegated seat is not resumed by a later manager; stop it before preserving" });
+      if (a.seatHome) failures.push({ name: a.name, id: a.id, error: "a carried resume seat's private home is not kept for a later manager; stop it before preserving" });
+    }
     const unverifiedStops = this.unverifiedStops.filter((stopped) => {
       try {
         if (!stopped.authoritative && stopped.handle.status() === "exited") return false;
@@ -2823,6 +2849,7 @@ export class Manager {
 
   private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
+    this.transcripts?.stop();
     this.staticReconcileStopping = true;
     const starting = this.startTask;
     for (const item of this.staticReconcileItems.values()) {
@@ -3610,6 +3637,11 @@ export class Manager {
       preparePreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx)))),
       commitPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx)))),
       abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
+      transcriptReceive: (ctx) => this.serveGated(ctx, () => adminGated(ctx, () => {
+        if (!this.transcripts)
+          throw new EpEnvelopeError("failed-precondition", "transcript-receive: this manager does not receive carried transcripts (an authenticated mesh mints no transfer credentials yet)");
+        return this.transcripts.receive(args(ctx) as unknown as TranscriptReceiveInput);
+      })),
     });
   }
 
@@ -4227,6 +4259,7 @@ export class Manager {
     this.agents.delete(a.name);
     this.recordContinuityAtStop(a, "stop");
     if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
+    if (a.seatHome) rmSync(a.seatHome, { recursive: true, force: true });
     // P2 item 6 (pin 4): end any live §13.6 attach session bound to THIS incarnation with the honest
     // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
     // exit) via the `agents` guard above; a no-op when no plane or no live session for the target.
@@ -5044,6 +5077,8 @@ export class Manager {
         variant: args.variant ? String(args.variant) : undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume ? String(args.resume) : undefined,
+        resumeClaim: args.resumeClaim !== undefined ? String(args.resumeClaim) : undefined,
+        resumeAgent: args.resumeAgent !== undefined ? String(args.resumeAgent) : undefined,
         events,
         eventsNotice,
         cwd: args.cwd ? String(args.cwd) : undefined,
@@ -5426,6 +5461,21 @@ export class Manager {
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
     if (opts.resume && !connector.supportsResume)
       return { ok: false, error: `${agent} connector does not support resuming an existing session (resume)` };
+    // A carried resume (#1499) is checked here too, before anything is minted. The claim is only
+    // looked at: the connector may still refuse the launch, and a refused launch leaves it unspent.
+    let carried: TranscriptClaim | undefined;
+    if (opts.resumeClaim !== undefined) {
+      if (opts.resume === undefined) return { ok: false, error: "resumeClaim: names carried bytes of a resume; the launch carries no resume" };
+      if (!connector.resumeTranscript) return { ok: false, error: `${agent} connector does not take a carried transcript (resumeClaim)` };
+      if (opts.resumeAgent !== agent)
+        return { ok: false, error: `resumeClaim: the session was carried for agent "${opts.resumeAgent ?? "<none>"}", and this launch resolves agent "${agent}"` };
+      if (!this.transcripts) return { ok: false, error: "resumeClaim: this manager does not receive carried transcripts" };
+      try {
+        carried = this.transcripts.peek(opts.resumeClaim, opts.resume);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
     // A restart policy this host cannot honour is refused at accept, never accepted and ignored.
     // External runtimes (tmux/cmux/orca/herdr) attach to a process they do not own and stream no
     // exit, so a name cannot be respawned in place. User-mode seats have no static slot that
@@ -5694,6 +5744,8 @@ export class Manager {
     // and retires over a live process. The slot row holds the same reference; this is the copy the
     // in-process rollback can actually read.
     let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference } | undefined;
+    // A carried resume's seat-private home, removed by the finally unless a live seat took it.
+    let seatHome: string | undefined;
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -5944,7 +5996,13 @@ export class Manager {
           handoff,
         );
       } else {
+        if (carried) {
+          seatHome = join(this.workspaceRoot, ".cotal", "seat-homes", lifecycleUid);
+          mkdirSync(seatHome, { recursive: true, mode: 0o700 });
+          launchOpts.carried = { home: seatHome, transcript: carried.path, cwd };
+        }
         spec = connector.buildLaunch(launchOpts);
+        if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
         handle = await this.spawnCustodied(name, spec, cwd, custody);
       }
@@ -5953,6 +6011,7 @@ export class Manager {
         name,
         role,
         agent,
+        ...(seatHome ? { seatHome } : {}),
         id: userLaunch ? principalKey(userLaunch.owner, name).key : identity.id,
         lifecycleUid,
         // The lifecycle-keyed family this spawn just materialized (absent on an open mesh) — the
@@ -5993,6 +6052,10 @@ export class Manager {
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
+          // A carried seat forks the staged copy the manager verified, so the claim is its provenance.
+          ...(carried
+            ? { resumed: { source: carried.source, ...(carried.title ? { title: carried.title } : {}), transcriptSha256: carried.sha256, host: carried.sourceHost, transferredAt: carried.stagedAt } }
+            : {}),
           // Opaque values may contain secrets. Preserve only their keys and require the referenced
           // persona/manifest to resolve the values again; imperative overrides have no safe payload.
           unresolvedLaunchOptionKeys:
@@ -6033,6 +6096,7 @@ export class Manager {
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
       // orphan-rollback in `finally` no longer applies to it.
       provisioned = undefined;
+      seatHome = undefined;
       // #159 B1: reply on a REAL outcome, not a timer. Wait for the agent to actually join the mesh
       // (presence) → started, the child to exit → failed (with its last output; already reaped), or
       // neither in time → uncertain. `✓ started` therefore means "it joined", never just "a process
@@ -6108,6 +6172,7 @@ export class Manager {
     } finally {
       this.reserved.delete(name);
       this.reservedLive.delete(name);
+      if (seatHome) rmSync(seatHome, { recursive: true, force: true });
       // Minted but never handed to a live slot (buildLaunch / runtime.spawn threw after mint) → tear the
       // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
       if (provisioned) {
@@ -9508,6 +9573,18 @@ export class Manager {
     }
   }
 
+  /** A connection holding this instance's transfer reader grants (docs/design/resume-transfer.md
+   *  section 6). An open mesh enforces no grants, so a bare one-shot connection is that reader. */
+  private async withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
+    if (this.auth || this.remoteAuthority || this.userMode) throw new Error("withTransferReader: an authenticated mesh needs the scoped transfer reader");
+    const nc = await this.dial({ maxReconnectAttempts: 0 });
+    try {
+      return await fn(nc);
+    } finally {
+      await nc.drain().catch(() => nc.close());
+    }
+  }
+
   /** Purge the space's retained message backlog (chat, optionally DMs). Privileged — the manager mints a
    *  short-lived "purger" cred (same destructive grant as `cotal history clear`, isolated off the
    *  supervisor); regular agents are denied STREAM.PURGE under auth. Cleanup only: leaves live agents and
@@ -9791,7 +9868,8 @@ export class Manager {
     }
     // establishAttach releases the claim it was handed on every exit; nothing to unwind here.
     const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
-    return { ok: true, data: { grant } };
+    const carried = a.launch.resumed?.host;
+    return { ok: true, data: { grant, ...(carried ? { resumedFrom: { host: carried, source: a.launch.resumed!.source } } : {}) } };
   }
 
   /** P2 item 6: the console's mesh §13.6 session establisher (backing `POST /session/<name>` on the

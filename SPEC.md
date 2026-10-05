@@ -595,6 +595,20 @@ mode.
 | `DM_<space>` | `cotal.<space>.inst.>` | Limits | file storage, no Direct Get |
 | `TASK_<space>` | `cotal.<space>.svc.>` | WorkQueue | file storage, no Direct Get |
 
+**Resume transfer bucket.** A manager instance that receives a carried resume transcript holds one
+JetStream Object Store bucket, `cotal_xfer_<space>_<instanceId>` (stream
+`OBJ_cotal_xfer_<space>_<instanceId>`): file storage, `discard=new`, `max_age=0`, rollup headers and
+Direct Get allowed, every other limit `-1`. An object is named `sha256:<hex>` for the transcript's
+digest and is written in the stock Object Store layout with its `nuid` set to `<hex>`, so every
+attempt at the same bytes writes one chunk subject, `$O.<bucket>.C.<hex>`. Each chunk is a
+JetStream publish carrying `Cotal-Offset` (transcript bytes through this chunk), `Cotal-Chunk`
+(chunks through this chunk) and `Nats-Expected-Last-Subject-Sequence` (the previous chunk's stream
+sequence, `0` for the first); the acknowledged chain is the upload's only checkpoint, and a writer
+continues from its last chunk. The commit is the stock meta record, published with `Nats-Rollup:
+sub` and an expected last subject sequence. The target manager stages a committed object, verified
+against its digest, removes the object whole, and removes any transfer idle for ten minutes; no
+message expires by age.
+
 Channel **live** delivery is a native core-NATS subscription to `cotal.<space>.chat.*.*.<channel>`
 (wildcard sender owner+actor) bounded by `sub.allow` (§9), not a durable consumer; join/leave is the
 subscribe/unsubscribe and needs no privileged mediation. The legacy v0.2 `chat_<owner>-<actor>`

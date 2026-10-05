@@ -1,5 +1,7 @@
 import { spawn as spawnProcess, execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, rmSync, statSync } from "node:fs";
+import { hostname } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
   agentFilePath,
@@ -27,6 +29,8 @@ import {
   registry,
   resolveAuthProvider,
   CotalEndpoint,
+  transferBucket,
+  writeTransfer,
   type AgentDef,
   type CompletionResult,
   type Connector,
@@ -48,6 +52,7 @@ import {
   credsFlag,
   defaultAgentOverride,
   defaultAgentType,
+  DEFAULT_CONNECTOR,
   defaultPersonaOverride,
   defaultPersonaRef,
   launchFlags,
@@ -70,12 +75,13 @@ import {
   refreshRegistrationPolicy,
   resolveSeatControlTarget,
   type Check,
+  type ConnectFlags,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
+import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
@@ -461,6 +467,12 @@ async function spawnDetached(
     process.exit(1);
   }
   provenance.read("mesh", `${t.space} (${t.server})`);
+  let resumeAgent: string | undefined;
+  let resumeClaim: string | undefined;
+  if (values.resume !== undefined) {
+    resumeAgent = values.agent ?? defaultAgentType(DEFAULT_CONNECTOR);
+    resumeClaim = await carryTranscriptOrExit(flags, on, values.resume, resumeAgent);
+  }
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
   const reply = await askManager(t.space, t.server, "start", {
     name: ref,
@@ -478,6 +490,7 @@ async function spawnDetached(
     launchOptions,
     cwd: values.cwd,
     resume: values.resume, // host-local session id; the manager preflights connector resume support
+    ...(resumeClaim !== undefined ? { resumeClaim, resumeAgent } : {}),
     prompt: values.prompt,
     shareTools: values["share-tools"],
     subscribe: splitFlag(values.subscribe),
@@ -498,6 +511,49 @@ async function spawnDetached(
     c.green(`✓ spawned ${c.bold(d.name)} (detached)`) +
       c.dim(` (${d.role ?? "no role"} · ${d.agent} · ${d.mode}) - attach with: cotal attach --name ${d.name}`),
   );
+}
+
+/**
+ * Carry a session this host holds to the manager instance a detached resume launches on, and return
+ * the claim its `spawn` names (#1499, docs/design/resume-transfer.md section 2). Undefined when this
+ * host holds no session `id`: the id then resolves on the manager's host as it always has. Only the
+ * connector can tell a local session from one that lives on the manager's host, so a connector this
+ * CLI cannot load is refused.
+ */
+async function carryTranscriptOrExit(flags: ConnectFlags, on: string | undefined, id: string, agent: string): Promise<string | undefined> {
+  let found: { path: string; title?: string } | undefined;
+  try {
+    await materializeExtension({ kind: "connector", name: agent });
+    found = registry.resolve<Connector>("connector", agent).resumeTranscript?.find(id, process.env);
+  } catch (e) {
+    console.error(c.red(`✗ resume: ${(e as Error).message}`));
+    process.exit(1);
+  }
+  if (found === undefined) return undefined;
+  if (on === undefined) {
+    console.error(c.red(`✗ resume: session ${id} is held on this host, and carrying it needs one manager instance; pass --on <instance>`));
+    process.exit(1);
+  }
+  const bytes = readFileSync(found.path);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const t = await resolveControlTarget(flags, "control-caller-admin", on);
+  const bucket = transferBucket(t.space, on);
+  let sent = 0;
+  let chunks = 0;
+  for (;;) {
+    const reply = await askManager(t.space, t.server, "transcriptReceive", {
+      sha256, size: bytes.length, source: id, sourceHost: hostname(), ...(found.title ? { title: found.title } : {}),
+    }, t.auth, "owner", undefined, { instanceId: on });
+    failIfNotOk(reply);
+    const answer = reply.data as { state: "upload" } | { state: "staged"; claim: string };
+    if (answer.state === "staged") {
+      console.log(c.dim(`carried session ${id} to ${on}: sha256:${sha256}, ${sent} of ${bytes.length} bytes sent in ${chunks} chunks`));
+      return answer.claim;
+    }
+    const pass = await withControlConnection(t.server, t.auth, (nc) => writeTransfer(nc, bucket, bytes));
+    sent += pass.sent;
+    chunks += pass.chunks;
+  }
 }
 
 /**
