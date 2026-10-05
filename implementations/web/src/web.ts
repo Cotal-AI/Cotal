@@ -1298,7 +1298,7 @@ async function launchDetachedWeb(
   const url = webUrl(host, port);
   const sessionPath = localProcessPath(SESSION_FILE, context);
   try {
-    await waitForDetachedWeb(child, { pidPath, sessionPath, url, space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
+    await waitForDetachedWeb(child, { pidPath, sessionPath, url: boundUrl(host, port), space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
   } catch (e) {
     let cleanupError: Error | undefined;
     try { await terminateDetachedWeb(child, pidPath); }
@@ -1484,6 +1484,12 @@ export function normalizeWebHost(input: string | undefined): string {
 
 export function webUrl(host: string, port: number): string {
   if (host === WEB_HOST && port === WEB_PORT) return WEB_URL;
+  return boundUrl(host, port);
+}
+
+/** The address the server binds, for a probe made by this process rather than a browser:
+ *  `cotal.localhost` is a browser convention, and a system resolver such as WSL2's has no answer for it. */
+function boundUrl(host: string, port: number): string {
   const literal = host.includes(":") ? `[${host}]` : host;
   return `http://${literal}:${port}/`;
 }
