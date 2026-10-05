@@ -500,7 +500,9 @@ enrollment (#1972):
   actor-ledger row.
 - A placed `spawn` was refused at `run start`: `a signerless host issues no placed-spawn mediator`.
 
-The change is two decisions. Neither adds an authority, a mediator or a signer to the participant.
+With both lifted, a third gap showed: a completed run left its agent running.
+
+The change is three decisions. None adds an authority, a mediator or a signer to the participant.
 
 | Site | Change |
 |---|---|
@@ -508,6 +510,7 @@ The change is two decisions. Neither adds an authority, a mediator or a signer t
 | `implementations/manager/src/manager.ts`, `epAdminReach` | A remote-authority manager asks the host's admin door about the run's admitted caller in place of its derived caller. The manager already relays the caller tuple it served, so this relays nothing it could not relay before. |
 | `implementations/auth/src/manager-authority.ts`, `authorizeRemoteRunAttempt` | The mediator is pinned to a placement on the registered instance. |
 | `implementations/auth/src/service.ts`, `renewRunDriver` | The renewed mediator carries the same placement. |
+| `implementations/runtime/src/mesh-handler.ts`, `spawnDespawnTarget` | A succeeded spawn terminal's identity comes before the acceptance floor, for the run's release and its roster. |
 
 The host never sees the program, so it cannot mint a placement the program named. The only instance
 a participant manager may place a spawn on is its own, and the instance-pinned `describe`,
@@ -518,12 +521,21 @@ at a lifecycle UID it picks, under the participant's owner, bounded by the parti
 grant. The run turns the seat on the owner path, and the seat answers an `ask` on the relay path of
 section 5, P4.
 
+The manager answers a spawn's acceptance before it enrolls, so the floor the run binds carries the
+participant's provisional UID, and only the succeeded terminal carries the host's. A completed run
+released its seats by the floor, which names a lifecycle the manager does not run. Its target
+resolver answers that `expired`, and the release reads `expired` as already gone. 95 seconds after
+the run completed, `cotal ps` still listed the seat, and `cotal stop --name` stopped it. The release
+and the run's roster now take the succeeded terminal's identity first. A static seat's terminal
+names no `owner.actor` principal, so it keeps the floor.
+
 Revoking the user's row demotes the run's next spawn, because the admin door reads the row at that
 moment, and the participant manager's own host calls stop under the same row.
 
 Checked by hand on a fresh stack, before and after: a placed and an unplaced run each spawn an agent,
-turn it to `done`, receive its `ask` record from the seat and complete. A placement on another
-instance is refused at `run start`. User B's resume of A's run, from B's own participant manager, and
-B's answer are refused by the issuing host as admitted on another manager instance. Revoking A's row
-between two spawns of one run refuses the second spawn, and A's next start is refused.
+turn it to `done`, receive its `ask` record from the seat, complete and release the seat. A
+placement on another instance is refused at `run start`. User B's resume of A's run, from B's own
+participant manager, and B's answer are refused by the issuing host as admitted on another manager
+instance. Revoking A's row between two spawns of one run refuses the second spawn, and A's next
+start is refused.
 
