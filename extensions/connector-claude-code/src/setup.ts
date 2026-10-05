@@ -207,18 +207,19 @@ function userServers(): Record<string, unknown> {
 }
 
 /** Whether setup may copy a server entry into the cotal config. The entry must name a transport
- *  Claude Code starts (a non-empty `command` for stdio, a `url` for http, sse and ws) and give each
- *  field the type {@link McpServerSpec} gives it: Claude Code skips an entry that does not, so a copy
- *  would be shared in name only, and a field of the wrong type also makes launch throw for every spawn.
- *  That config holds secrets only as `${VAR}` references, and literal text cannot be told apart from a
- *  secret, so every `env` and `headers` value must be references and nothing else. */
+ *  Claude Code can start (a non-empty `command` for stdio, a non-empty `url` for http, sse and ws) and
+ *  give each field the type {@link McpServerSpec} gives it: any other entry is skipped or never
+ *  connects, so a copy would be shared in name only, and a field of the wrong type also makes launch
+ *  throw for every spawn. That config holds secrets only as `${VAR}` references, and literal text
+ *  cannot be told apart from a secret, so every `env` and `headers` value must be references and
+ *  nothing else. */
 function copyable(spec: unknown): spec is McpServerSpec {
   const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
   const isOptionalString = (v: unknown) => v === undefined || typeof v === "string";
   return (
     isRecord(spec) &&
     [spec.command, spec.type, spec.url].every(isOptionalString) &&
-    (spec.type === undefined || spec.type === "stdio" ? Boolean(spec.command) : REMOTE_TRANSPORTS.has(spec.type) && spec.url !== undefined) &&
+    (spec.type === undefined || spec.type === "stdio" ? Boolean(spec.command) : REMOTE_TRANSPORTS.has(spec.type) && Boolean(spec.url)) &&
     (spec.args === undefined || (Array.isArray(spec.args) && spec.args.every((arg) => typeof arg === "string"))) &&
     [spec.env, spec.headers].every(
       (values) => values === undefined || (isRecord(values) && Object.values(values).every((v) => typeof v === "string" && v.replace(ENV_REFERENCE, "") === "")),
