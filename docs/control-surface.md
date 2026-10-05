@@ -151,7 +151,10 @@ a bounded, durable outcome that a later `ps` or status read settles against the 
 `uncertain` is a real terminal outcome, not an absence and not a silent hang. It carries the
 diagnosis of whoever owned the deadline: for a launch that
 names the agent and says to inspect it rather than re-issue, since re-issuing after a launch
-that in fact succeeded mints a duplicate. A committer that supplies no diagnosis falls back to
+that in fact succeeded mints a duplicate. A follower keeps the acceptance as the data of any
+terminal other than `succeeded`, so `cotal_spawn` returns an uncertain launch as a pending result
+instead of an error: it names the allocated agent, its id, and its manager, and tells the calling
+agent to watch the roster. A committer that supplies no diagnosis falls back to
 "the success signal did not arrive within the readiness deadline". The agent's own eventual
 state is then observable on its presence record.
 

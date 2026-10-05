@@ -1339,8 +1339,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }) {
         try {
           const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, instance });
-          if (!reply.ok) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
-          const d = reply.data as { name?: string; mode?: string; model?: string } | undefined;
+          // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
+          // failed launch, and the caller's retry starts a second agent on the same work.
+          const pending = reply.code === "uncertain";
+          if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
+          const d = reply.data as { name?: string; mode?: string; model?: string; actor?: string; executor?: { lifecycleUid: string } } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
           const who = role ? `${actual}/${role}` : actual;
@@ -1348,6 +1351,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // `actual`, not silently address the wrong peer later (the tool result is the only channel).
           const lead = actual !== name ? `"${name}" was taken — spawning ${who} instead` : `Spawning ${who}`;
           const pin = d?.model ? ` recorded model ${JSON.stringify(d.model)}` : "";
+          if (pending)
+            return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${actual}, and cotal_despawn it if it never joins.`);
           return ok(`${lead}${mode ? ` (${mode})` : ""}${pin} — it will appear in the roster shortly.`);
         } catch (e) {
           return controlFailure(`Couldn't spawn ${name}`, e);

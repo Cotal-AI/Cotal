@@ -1991,7 +1991,8 @@ export class MeshAgent extends EventEmitter {
           `requested model ${JSON.stringify(requested)} but ${recordedLabel} for "${seat}" — refusing a spawn whose pin did not land. The seat may already be live; inspect it before retrying, because a retry duplicates the spawn`,
       };
     }
-    if (!reply.ok) {
+    // An uncertain launch stays managed with its pin recorded, so it carries the pin like a started one.
+    if (!reply.ok && reply.code !== "uncertain") {
       return {
         ok: false,
         error: `${reply.error ?? "manager refused"} (requested model ${JSON.stringify(requested)}; ${recordedLabel} for "${seat}")`,
@@ -2005,7 +2006,7 @@ export class MeshAgent extends EventEmitter {
       };
     }
     return {
-      ok: true,
+      ...reply,
       data: { ...(reply.data as Record<string, unknown> | undefined), model: recorded.model },
     };
   }
@@ -2101,6 +2102,8 @@ export class MeshAgent extends EventEmitter {
       return {
         ok: false,
         error: renderLifecycleBlocked(raw, r.reply.error),
+        ...(r.reply.error?.code ? { code: r.reply.error.code } : {}),
+        ...(r.reply.data !== undefined ? { data: r.reply.data } : {}),
         ...(r.reply.error?.details ? { details: r.reply.error.details } : {}),
       };
     }
