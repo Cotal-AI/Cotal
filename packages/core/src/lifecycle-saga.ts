@@ -433,8 +433,8 @@ export async function runActivationSagaAtUid(
     } else if (gate.row.state === "frozen") {
       if (gate.row.op?.kind !== "activation")
         throw lifecycleBlocked("failed-precondition", `the issuance gate for ${lifecycleUid} is frozen by a ${gate.row.op?.kind ?? "<unknown>"} (op ${gate.row.op?.opId ?? "<none>"}); a barrier is in flight - issuance activation neither adopts nor overrides it (SPEC 13.1)`, {
-          blockedOp: (gate.row.op?.kind === "retirement" || gate.row.op?.kind === "takeover" || gate.row.op?.kind === "registration") ? gate.row.op.kind : "registration",
-          headState: "retiring",
+          blockedOp: gate.row.op!.kind,
+          gateState: "frozen",
           ...(gate.row.op?.opId !== undefined ? { opId: gate.row.op.opId } : {}),
           remedy: gate.row.op?.kind === "registration" ? "cotal reconcile-gate" : "retry",
         });
@@ -442,7 +442,7 @@ export async function runActivationSagaAtUid(
     } else if (gate.row.state === "retired") {
       throw lifecycleBlocked("permission-denied", `uid ${lifecycleUid} has a terminally retired issuance gate; a burned uid never re-activates - re-grant the actor for a fresh incarnation (SPEC 13.1)`, {
         blockedOp: gate.row.op?.kind === "activation" ? "activation" : "retirement",
-        headState: "retired",
+        gateState: "retired",
         ...(gate.row.op?.opId !== undefined ? { opId: gate.row.op.opId } : {}),
       });
     } else {

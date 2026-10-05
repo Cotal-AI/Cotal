@@ -5594,7 +5594,7 @@ export class Manager {
       void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner, delegated: held.delegated, secretPaths: held.secretPaths, delegatedHandle: held.delegatedHandle, launch: held.launch }).catch(() => {});
       const err = lifecycleBlocked("failed-precondition",
         `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
-        { blockedOp: "retirement", headState: "retiring", opId: held.opId, remedy: "retry" });
+        { blockedOp: "retirement", opId: held.opId, remedy: "retry" });
       return { ok: false, error: renderLifecycleBlocked(err.message, err), details: err.details };
     }
     if (variant && !connector.supportsModelVariant)

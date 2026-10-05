@@ -233,10 +233,14 @@ export const EP_LIFECYCLE_BLOCKED = "ai.cotal.ep.lifecycle-blocked";
 
 export type LifecycleBlockedOp = "registration" | "retirement" | "activation" | "takeover";
 export type LifecycleHeadState = "active" | "retiring" | "retired";
+export type LifecycleGateState = "frozen" | "retired";
 
+/** `headState` is set only by a site that read the lifecycle head and `gateState` only by one
+ *  that read the issuance gate: a gate frozen by a takeover says nothing about the head. */
 export interface LifecycleBlockedFacts {
   blockedOp: LifecycleBlockedOp;
-  headState: LifecycleHeadState;
+  headState?: LifecycleHeadState;
+  gateState?: LifecycleGateState;
   opId?: string;
   remedy?: string;
 }
@@ -246,7 +250,9 @@ export interface EpLifecycleBlockedDetail extends EpErrorDetail, LifecycleBlocke
 }
 
 export function lifecycleBlockedDetail(facts: LifecycleBlockedFacts): EpLifecycleBlockedDetail {
-  return { kind: EP_LIFECYCLE_BLOCKED, blockedOp: facts.blockedOp, headState: facts.headState,
+  return { kind: EP_LIFECYCLE_BLOCKED, blockedOp: facts.blockedOp,
+    ...(facts.headState !== undefined ? { headState: facts.headState } : {}),
+    ...(facts.gateState !== undefined ? { gateState: facts.gateState } : {}),
     ...(facts.opId !== undefined ? { opId: facts.opId } : {}),
     ...(facts.remedy !== undefined ? { remedy: facts.remedy } : {}) };
 }
@@ -277,9 +283,11 @@ export function lifecycleBlockedFrom(source: unknown): EpLifecycleBlockedDetail 
 export function renderLifecycleBlocked(message: string, source: unknown): string {
   const d = lifecycleBlockedFrom(source);
   if (!d) return message;
-  const parts = [`blockedOp=${d.blockedOp}`, `headState=${d.headState}`];
-  if (typeof d.opId === "string" && d.opId.length > 0) parts.push(`opId=${d.opId}`);
-  if (typeof d.remedy === "string" && d.remedy.length > 0) parts.push(`remedy=${d.remedy}`);
+  const parts = [`blockedOp=${d.blockedOp}`];
+  for (const k of ["headState", "gateState", "opId", "remedy"] as const) {
+    const v = d[k];
+    if (typeof v === "string" && v.length > 0) parts.push(`${k}=${v}`);
+  }
   const suffix = `[lifecycle ${parts.join(" ")}]`;
   return message.includes(suffix) ? message : `${message} ${suffix}`;
 }

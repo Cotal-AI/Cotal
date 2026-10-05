@@ -530,15 +530,15 @@ export async function runStaticTerminal(
     }
   } else if (gate.row.state === "frozen" && gate.row.op?.kind !== "retirement") {
     throw lifecycleBlocked("failed-precondition", `the issuance gate for ${args.lifecycleUid} is frozen by a ${gate.row.op?.kind ?? "<unknown>"} (op ${gate.row.op?.opId ?? "<none>"}); a foreign barrier is in flight - refuse (SPEC 13.1)`, {
-      blockedOp: (gate.row.op?.kind === "takeover" || gate.row.op?.kind === "registration" || gate.row.op?.kind === "activation") ? gate.row.op.kind : "registration",
-      headState: "retiring",
+      blockedOp: gate.row.op!.kind,
+      gateState: "frozen",
       ...(gate.row.op?.opId !== undefined ? { opId: gate.row.op.opId } : {}),
       remedy: gate.row.op?.kind === "registration" ? "cotal reconcile-gate" : "retry",
     });
   } else if (gate.row.state === "frozen" && gate.row.op?.opId !== args.opId) {
     throw lifecycleBlocked("failed-precondition", `the issuance gate for ${args.lifecycleUid} is frozen by retirement op ${gate.row.op?.opId ?? "<none>"}, not ${args.opId}; one retirement at a time (SPEC 13.1)`, {
       blockedOp: "retirement",
-      headState: "retiring",
+      gateState: "frozen",
       ...(gate.row.op?.opId !== undefined ? { opId: gate.row.op.opId } : {}),
       remedy: "retry",
     });

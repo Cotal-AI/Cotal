@@ -35,7 +35,7 @@ const silentConn = {
 
 const blocked = lifecycleBlocked("conflict",
   `the issuance gate for "mgr-1" is frozen; another barrier holds it; if the holder is a dead predecessor, run: cotal reconcile-gate (SPEC 13.8)`,
-  { blockedOp: "registration", headState: "retiring", opId: OPID, remedy: "cotal reconcile-gate" });
+  { blockedOp: "registration", gateState: "frozen", opId: OPID, remedy: "cotal reconcile-gate" });
 
 console.log("A. a failed goal terminal carries the lifecycle-blocked facts the manager already had");
 {
@@ -72,7 +72,7 @@ console.log("A. a failed goal terminal carries the lifecycle-blocked facts the m
   check("the follow reply is a failed terminal, not silence", r.reply.ok === false && err?.code === "failed", err);
   check("the lifecycle-blocked marker is on the reply the spawn caller sees", facts?.kind === EP_LIFECYCLE_BLOCKED, facts);
   check("...naming the blocked op", facts?.blockedOp === "registration", facts);
-  check("...naming the head state", facts?.headState === "retiring", facts);
+  check("...naming the gate state", facts?.gateState === "frozen", facts);
   check("...naming the opId holding it", facts?.opId === OPID, facts);
   check("...naming the remedy", facts?.remedy === "cotal reconcile-gate", facts);
   check("the string a ControlReply caller reads still carries the facts",
@@ -108,10 +108,10 @@ console.log("C. MeshAgent.managerInvoke renders the facts into the string an age
   const r = await a.purgeHistory();
   check("a thrown lifecycle-blocked envelope is not reported as silence",
     r.ok === false && !(r.error ?? "").includes("no responder answered"), r);
-  check("...and the rendered string names blockedOp, headState, opId, and remedy",
+  check("...and the rendered string names blockedOp, gateState, opId, and remedy",
     typeof r.error === "string"
       && r.error.includes("blockedOp=registration")
-      && r.error.includes("headState=retiring")
+      && r.error.includes("gateState=frozen")
       && r.error.includes(`opId=${OPID}`)
       && r.error.includes("remedy=cotal reconcile-gate"),
     r.error);

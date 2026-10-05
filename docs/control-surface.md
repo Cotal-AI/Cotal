@@ -160,9 +160,12 @@ still legitimately waiting for its terminal.
 
 A spawn that is **refused** because a lifecycle barrier already holds the actor (a frozen
 issuance gate, a retiring alias, a retired uid) is not a wait-timeout. The manager already
-knows the blocked op (`registration` / `retirement` / `activation` / `takeover`), the head
-state (`active` / `retiring` / `retired`), the `opId` holding it, and the remedy when one
-exists (`retry`, `cotal reconcile-gate`). Those facts ride `error.details[]` as
+knows the blocked op (`registration` / `retirement` / `activation` / `takeover`), the `opId`
+holding it, and the remedy when one exists (`retry`, `cotal reconcile-gate`). The detail
+carries `headState` (`active` / `retiring` / `retired`) only when the refusing site read the
+lifecycle head, and `gateState` (`frozen` / `retired`) only when it read the issuance gate. A
+gate frozen by a takeover or a registration says nothing about the head, so that refusal
+carries `gateState=frozen` and no `headState`. Those facts ride `error.details[]` as
 `kind = ai.cotal.ep.lifecycle-blocked` and are also appended to the error string, so a
 caller that only prints `error.message` still sees them. A connector that collapses the
 refusal to "startup failed (unknown)" or a SPEC 13.6 wait-timeout is hiding a knowable

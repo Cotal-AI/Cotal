@@ -34,6 +34,28 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Lifecycle-blocked refusals in 0.66.0
+
+A refusal that carries `ai.cotal.ep.lifecycle-blocked` now reports only the lifecycle state it
+read. Nothing about a running mesh changes. A client that branches on the detail must read the new
+field.
+
+### What stops working
+
+A refusal raised at the issuance gate used to carry `headState` without reading the head:
+`retiring` for a frozen gate and `retired` for a retired one. It now carries `gateState`
+(`frozen` or `retired`) and no `headState`. A client that treats `headState: "retired"` as a
+burned uid, or `headState: "retiring"` as a retirement in flight, no longer matches those
+refusals, and the `[lifecycle ...]` suffix on the error string changes the same way. A custom
+issuance barrier whose `observe` returns a frozen gate without a valid `op` (a string `opId` and
+one of the four op kinds) is now refused as `internal` by `registerServiceInstance`.
+
+### Before the upgrade
+
+Update such a client to read `gateState` for a gate refusal and `blockedOp` for the operation that
+holds the gate. `headState` is present only when the refusal read the head, for example an
+activation refused because the head is still retiring.
+
 ## Workflow programs that bind `once` in 0.65.0
 
 `once` is now a scope of the workflow language, so it is a reserved name. A program that declares
