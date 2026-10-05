@@ -1,4 +1,0 @@
----
----
-
-Live smoke suites now say which `nats-server` they ran on. `teardownOnSignal` in `@cotal-ai/smoke-kit`, which the spawn-site census requires every test broker to be handed to, reads each running child's binary from `/proc/<pid>/exe` and, when that binary's `--version` names a nats-server, prints `smoke broker: nats-server <version> at <path>` for every broker, whatever name it was started under, including a broker whose binary was unlinked or replaced while it runs. A run therefore carries its own record of the server that produced its result. A child whose binary cannot be run or does not answer `--version` within ten seconds, or that was started under a `nats-server` name and whose binary reports no nats-server version, fails the suite. The `--version` probe runs in its own process group, which is killed when the probe returns. Off Linux each child started under a `nats-server` name prints that its binary is not recorded.
