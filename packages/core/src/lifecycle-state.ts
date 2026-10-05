@@ -25,8 +25,15 @@ const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafe
  *  `mappingRevision` is NOT here: it is the head key's STORE revision (§13.1), returned beside
  *  the mapping by the leader read. `currentCredentialId` stays ABSENT until the (3) normative
  *  ledger mints under the reopened gate (an active head naming a released credential before the
- *  ledger exists would be exactly the unledgered mint §13.1 forbids). */
-export interface LifecycleMapping {
+ *  ledger exists would be exactly the unledgered mint §13.1 forbids).
+ *
+ *  `state`: `active` is the ONLY current state. `retiring` = the terminal barrier's op-bound
+ *  containment phase (non-current, NOT replaceable). `retired` = terminal AND asserts the
+ *  completed barrier (only then may activation replace the alias, with a fresh UID). The
+ *  retirement `op` intent is REQUIRED at `retiring` and absent otherwise, as `parseLifecycleHead`
+ *  enforces it; carried in the type so a reader that has checked the state reads the op without
+ *  re-deriving the rule. */
+export type LifecycleMapping = ({ state: "active" | "retired"; op?: never } | { state: "retiring"; op: { opId: string; kind: "retirement" } }) & {
   owner: string;
   actor: string;
   /** The never-reused, space-globally reserved lifecycle UID of THIS incarnation. */
@@ -36,10 +43,6 @@ export interface LifecycleMapping {
   /** The fenced process epoch (§13.1: live authority binds it; advanced only by the takeover
    *  barrier). */
   processEpoch: number;
-  /** `active` is the ONLY current state. `retiring` = the terminal barrier's op-bound
-   *  containment phase (non-current, NOT replaceable). `retired` = terminal AND asserts the
-   *  completed barrier (only then may activation replace the alias, with a fresh UID). */
-  state: "active" | "retiring" | "retired";
   /** The public credential fingerprint + authority epoch — absent until the ledger slice. */
   currentCredentialId?: string;
   /** The opId of the takeover operation that LAST advanced this epoch (SPEC 13.1: the epoch
@@ -48,9 +51,7 @@ export interface LifecycleMapping {
    *  takeover finds a foreign opId and refuses, never claiming the winner's completion. Absent
    *  at initial activation (epoch 1), present from the first takeover. */
   lastTakeoverOpId?: string;
-  /** REQUIRED at `retiring` (the retirement operation's durable intent); absent otherwise. */
-  op?: { opId: string; kind: "retirement" };
-}
+};
 
 export const LIFECYCLE_HEAD_STATES: ReadonlySet<string> = new Set(["active", "retiring", "retired"]);
 
