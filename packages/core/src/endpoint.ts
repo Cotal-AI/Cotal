@@ -34,7 +34,7 @@ import {
   parseSecretStoreIdentity,
   type SecretStoreIdentity,
 } from "./secret-store.js";
-import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
+import { BIND_SPLIT_REISSUES, resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
@@ -2432,7 +2432,8 @@ export class CotalEndpoint extends EventEmitter {
    *  and only knowing someone answered:
    *   - the RESPONDER fenced it on the request's `bind` (§13.2, an `ok:false` reply marked
    *     {@link replyRefusedBeforeEffect}): the command did not run, so the bind is dropped and the
-   *     call re-issued ONCE for any command. If that re-issue cannot be resolved, the refusal
+   *     call re-issued for any command, up to {@link BIND_SPLIT_REISSUES} times while each re-issue
+   *     is refused the same way. If a re-issue cannot be resolved, the refusal
    *     surfaces — still saying the command did not run — naming the resolve failure as why the
    *     repair could not be attempted.
    *   - this CLIENT caught it on the reply ({@link respondedButUnbound}: a different instance,
@@ -2483,7 +2484,7 @@ export class CotalEndpoint extends EventEmitter {
     const doInvoke = async (signal = opts.signal): Promise<EpAttributedReply> => {
       signal?.throwIfAborted();
       try {
-        const r = await invokeResolved(await resolve(signal), signal);
+        let r = await invokeResolved(await resolve(signal), signal);
         // THE RESPONDER FENCED IT (§13.2 `ai.cotal.ep.bind-refused`): a class member saw the call
         // was bound to a different incarnation and refused BEFORE running the command.
         //
@@ -2492,9 +2493,10 @@ export class CotalEndpoint extends EventEmitter {
         // otherwise keep its stale bind and meet the same refusal forever.
         //
         // The re-issue is NOT gated on {@link isRepeatSafeCommand}: the responder states the command
-        // did not run, so this is a FIRST attempt, not a second. Exactly once; a second refusal
-        // surfaces.
-        if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {
+        // did not run, so each re-issue is a FIRST attempt, not a second. It repeats up to the bound
+        // the CLI uses, because the re-issue rides the same class queue and splits again at the same
+        // rate; repairing once left a quarter of all calls in a two-manager space failing (#443).
+        for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error); reissues++) {
           // Counted before it is repaired: a recovery that leaves no trace takes the split rate with it.
           this.splitsRecovered++;
           // `boundTo` is the other half of `servedBy`: who the handle THOUGHT it was talking to,
@@ -2549,7 +2551,7 @@ export class CotalEndpoint extends EventEmitter {
               "not-executed",
             );
           }
-          return await invokeResolved(reissueTarget, signal);
+          r = await invokeResolved(reissueTarget, signal);
         }
         return r;
       } catch (e) {

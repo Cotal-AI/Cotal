@@ -12,6 +12,7 @@ import {
   resolvePeer as resolvePeerInRoster,
   CotalEndpoint,
   BASELINE_LIFECYCLE_ENDPOINT,
+  BIND_SPLIT_REISSUES,
   assertLifecycleToken,
   EpEnvelopeError,
   isPublishPermissionDenied,
@@ -220,6 +221,9 @@ const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
  *  poll is the intake's whole latency: a fresh turn waits at most one interval plus one wake.
  *  Deadlines are minutes-scale; fifteen seconds of intake lag is invisible to a run. */
 const TURN_POLL_MS = 15_000;
+/** The manager's namespaced detail on an `inspect` miss that found a durable slot. The manager owns
+ *  the shape; this keys only on the discriminator and the owning instance it may name. */
+const STATIC_SLOT_OBSERVATION_DETAIL = "ai.cotal.manager.static-slot-observation";
 /** How many turns the run settled before this seat yielded them one session remembers. The
  *  manager serves a seat one turn at a time, so a short memory covers every late yield. */
 const MAX_SETTLED_TURNS = 32;
@@ -2110,7 +2114,12 @@ export class MeshAgent extends EventEmitter {
    *  block's subject arity. The owner-mode standing mint pins the caller's OWN owner, so a
    *  foreign-owner target is broker-denied at publish (the same own-domain boundary as ctl). */
   private async managerTargetFor(name: string): Promise<{ target: EpVerbTarget } | { error: ControlReply }> {
-    const info = await this.managerInvoke("inspect", { name });
+    let info = await this.managerInvoke("inspect", { name });
+    // `inspect` is instance-local, and in a multi-manager space the class queue can hand it to a
+    // sibling that answers with the owning instance instead of the row. A static credential cannot
+    // address that instance, so the read is asked again until the queue reaches the owner (#443).
+    for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && info.details?.some((d) => d.kind === STATIC_SLOT_OBSERVATION_DETAIL && d.ownerInstanceId !== undefined); reissues++)
+      info = await this.managerInvoke("inspect", { name });
     if (!info.ok) return { error: info };
     const row = info.data as { id: string; lifecycleUid: string };
     const dot = row.id.indexOf(".");

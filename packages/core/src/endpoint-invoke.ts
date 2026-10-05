@@ -337,6 +337,13 @@ export async function resolveService(
   return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands, ...(opts.instanceId !== undefined ? { pinnedInstanceId: opts.instanceId } : {}) };
 }
 
+/** How many times a call is re-issued after a `not-executed` bind refusal. Every
+ *  re-issue is a first attempt, so this is a loop guard and not a duplication guard. Each attempt
+ *  splits with probability (m-1)/m in a space of m managers, so seventeen attempts leave a
+ *  three-manager space about 1 in 1000 where the unrepaired call failed 2 in 3 (#398). An attempt
+ *  costs an answered describe and invoke, never an elapsed deadline. */
+export const BIND_SPLIT_REISSUES = 16;
+
 /**
  * INVOKE one named command on a resolved service: validate nothing here (the compiled input
  * contract in {@link epCall}'s request builder gates args before publish, and the responder's
