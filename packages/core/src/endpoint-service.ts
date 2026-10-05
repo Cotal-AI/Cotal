@@ -26,7 +26,7 @@ import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TR
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
-import { ISSUANCE_GATE_OP_KINDS, type EndpointRepairCursor } from "./lifecycle-state.js";
+import { ISSUANCE_GATE_OP_KINDS, type EndpointRepairCursor, type GateStateOp } from "./lifecycle-state.js";
 
 // ---- value shapes (§13.7 "Descriptor and describe") ------------------------------------------
 
@@ -430,12 +430,12 @@ export async function registerServiceInstance(
     throw new EpEnvelopeError("internal", `the issuance gate is for "${obs.space}/${obs.endpoint}/${obs.lifecycleUid}", not "${args.space}/${spec.endpoint}/${args.instanceId}"; a registration drives only its OWN instance's gate, and the instance token is unique only within (space, endpoint) (SPEC 13.1)`);
   if (obs.state === "retired")
     throw lifecycleBlocked("failed-precondition", `the issuance gate for "${args.instanceId}" is retired; the lifecycle is permanently closed and its id is never reused, so a re-read cannot help (SPEC 13.1)`, {
-      blockedOp: obs.op?.kind === "activation" ? "activation" : "retirement",
+      blockedOp: obs.op.kind === "activation" ? "activation" : "retirement",
       gateState: "retired",
-      ...(obs.op?.opId !== undefined ? { opId: obs.op.opId } : {}),
+      opId: obs.op.opId,
     });
   const resuming = obs.state === "frozen"
-    && obs.op?.kind === "registration"
+    && obs.op.kind === "registration"
     && args.barrier.operationId !== undefined
     && obs.op.opId === args.barrier.operationId;
   if (obs.state !== "open" && !resuming) {
@@ -1717,7 +1717,7 @@ export function assertServeGrantMintable(serve: EpServeGrant, mint: { space: str
  *  authority binding transfers, §13.9). `generation` is a monotonic freeze/reopen counter (every
  *  barrier bumps it, so a superseded mint's rebuilt CAS loses even if two coordinates coincide).
  *  `revision` is the KV store revision the mint's CAS and every barrier's freeze pin. */
-export interface EpGateState {
+export type EpGateState = GateStateOp & {
   /** The gate's space. In production the gate physically lives in the per-space
    *  `KV_cotal_auth_<space>` bucket (§13.9:2393), so the space is the bucket and cannot be crossed;
    *  carrying it here is defense-in-depth for the in-memory seam/fake, so a mint/registration
@@ -1745,15 +1745,12 @@ export interface EpGateState {
    *  is not this principal (a SIBLING ACTOR under the registered owner) cannot win the gate — so
    *  the ledger/eviction target can never diverge from the registered serving principal. */
   principal: string;
-  state: "open" | "frozen" | "retired";
   generation: number;
   processEpoch: number;
   registrationRevision: number;
   nameAuthorityRevision: number;
   revision: number;
-  /** Present when the gate is frozen or retired: the op that owns the freeze / terminal. */
-  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
-}
+};
 
 /** The successor gate coordinate a barrier reopens at (§13.1): the three currency dimensions plus
  *  the bumped `generation`. A re-registration advances `registrationRevision`; a takeover advances

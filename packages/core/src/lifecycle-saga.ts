@@ -23,6 +23,7 @@ import { mintLifecycleUid, assertLifecycleToken } from "./subjects.js";
 import {
   type LifecycleMapping,
   type EpGateRow,
+  type GateOp,
   lifecycleHeadKey as headKey,
   uidReservationKey as uidKey,
   issuanceGateKey as gateKey,
@@ -188,7 +189,7 @@ export async function gateFreeze(
   if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
   if (current.row.state !== "open")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${current.row.state}", not open; only an open gate freezes (a frozen/retired gate belongs to its own operation, SPEC 13.1)`);
-  const op: EpGateRow["op"] = { opId: assertLifecycleToken(args.op.opId), kind: args.op.kind };
+  const op: GateOp = { opId: assertLifecycleToken(args.op.opId), kind: args.op.kind };
   if (args.op.successor !== undefined) op.successor = args.op.successor;
   const row: EpGateRow = { lifecycleUid: current.row.lifecycleUid, state: "frozen", generation: current.row.generation, op };
   const revision = await putGate(t, args.lifecycleUid, row, args.revision);
@@ -206,8 +207,8 @@ export async function gateReopen(
   if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
   if (current.row.state !== "frozen")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${current.row.state}", not frozen; there is no freeze to reopen (SPEC 13.1)`);
-  if (current.row.op?.opId !== args.opId)
-    throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} is frozen by operation ${current.row.op?.opId ?? "<none>"}, not ${args.opId}; only the completing operation reopens its own freeze (SPEC 13.1)`);
+  if (current.row.op.opId !== args.opId)
+    throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} is frozen by operation ${current.row.op.opId}, not ${args.opId}; only the completing operation reopens its own freeze (SPEC 13.1)`);
   if (current.row.op.kind === "retirement")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is frozen by a RETIREMENT; a retirement freeze never reopens (SPEC 13.1: its only exit is the terminal)`);
   const row: EpGateRow = { lifecycleUid: current.row.lifecycleUid, state: "open", generation: current.row.generation + 1 };
@@ -225,14 +226,14 @@ export async function gateRetire(
   const current = await gateObserve(t, args.lifecycleUid);
   if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
   if (current.row.state === "retired") {
-    if (current.row.op?.opId !== args.opId)
-      throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} was terminalized by operation ${current.row.op?.opId ?? "<none>"}, not ${args.opId}; terminal idempotence is same-op idempotence (SPEC 13.1)`);
+    if (current.row.op.opId !== args.opId)
+      throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} was terminalized by operation ${current.row.op.opId}, not ${args.opId}; terminal idempotence is same-op idempotence (SPEC 13.1)`);
     return current; // idempotent terminal, same op
   }
   if (current.row.state !== "frozen")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is "${current.row.state}"; only a frozen gate terminalizes (freeze first; the bar precedes the terminal, SPEC 13.1)`);
-  if (current.row.op?.opId !== args.opId)
-    throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} is frozen by operation ${current.row.op?.opId ?? "<none>"}, not ${args.opId}; only the owning operation terminalizes its freeze (SPEC 13.1)`);
+  if (current.row.op.opId !== args.opId)
+    throw new EpEnvelopeError("permission-denied", `the issuance gate for ${args.lifecycleUid} is frozen by operation ${current.row.op.opId}, not ${args.opId}; only the owning operation terminalizes its freeze (SPEC 13.1)`);
   if (current.row.op.kind !== "activation" && current.row.op.kind !== "retirement")
     throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${args.lifecycleUid} is frozen by a ${current.row.op.kind}; only an activation orphan or a retirement terminalizes (a ${current.row.op.kind} aborts by reopening, SPEC 13.1)`);
   const row: EpGateRow = { lifecycleUid: current.row.lifecycleUid, state: "retired", generation: current.row.generation, op: current.row.op };
@@ -423,27 +424,27 @@ export async function runActivationSagaAtUid(
     let gate = await gateObserve(t, lifecycleUid);
     let opId: string;
     if (gate === undefined) {
+      opId = mintLifecycleUid();
       try {
-        gate = await gateCreateFrozen(t, { lifecycleUid, op: { opId: mintLifecycleUid(), kind: "activation" } });
+        gate = await gateCreateFrozen(t, { lifecycleUid, op: { opId, kind: "activation" } });
       } catch (e) {
         if (isCasLoss(e)) continue; // a sibling created it; re-observe and adopt
         throw e;
       }
-      opId = gate.row.op!.opId;
     } else if (gate.row.state === "frozen") {
-      if (gate.row.op?.kind !== "activation")
-        throw lifecycleBlocked("failed-precondition", `the issuance gate for ${lifecycleUid} is frozen by a ${gate.row.op?.kind ?? "<unknown>"} (op ${gate.row.op?.opId ?? "<none>"}); a barrier is in flight - issuance activation neither adopts nor overrides it (SPEC 13.1)`, {
-          blockedOp: gate.row.op!.kind,
+      if (gate.row.op.kind !== "activation")
+        throw lifecycleBlocked("failed-precondition", `the issuance gate for ${lifecycleUid} is frozen by a ${gate.row.op.kind} (op ${gate.row.op.opId}); a barrier is in flight - issuance activation neither adopts nor overrides it (SPEC 13.1)`, {
+          blockedOp: gate.row.op.kind,
           gateState: "frozen",
-          ...(gate.row.op?.opId !== undefined ? { opId: gate.row.op.opId } : {}),
-          remedy: gate.row.op?.kind === "registration" ? "cotal reconcile-gate" : "retry",
+          opId: gate.row.op.opId,
+          remedy: gate.row.op.kind === "registration" ? "cotal reconcile-gate" : "retry",
         });
       opId = gate.row.op.opId;
     } else if (gate.row.state === "retired") {
       throw lifecycleBlocked("permission-denied", `uid ${lifecycleUid} has a terminally retired issuance gate; a burned uid never re-activates - re-grant the actor for a fresh incarnation (SPEC 13.1)`, {
-        blockedOp: gate.row.op?.kind === "activation" ? "activation" : "retirement",
+        blockedOp: gate.row.op.kind === "activation" ? "activation" : "retirement",
         gateState: "retired",
-        ...(gate.row.op?.opId !== undefined ? { opId: gate.row.op.opId } : {}),
+        opId: gate.row.op.opId,
       });
     } else {
       // Open gate: the saga writes the head BEFORE its reopen, so an open gate with the head
@@ -499,8 +500,8 @@ export async function resumeActivationSaga(
   if (gate.row.state === "retired") {
     // Terminal idempotence is SAME-OP idempotence: a stranger cannot claim another
     // operation's terminal as its own settlement.
-    if (gate.row.op?.opId !== args.opId)
-      throw new EpEnvelopeError("permission-denied", `the gate for uid ${args.lifecycleUid} was terminalized by operation ${gate.row.op?.opId ?? "<none>"}, not ${args.opId} (SPEC 13.1)`);
+    if (gate.row.op.opId !== args.opId)
+      throw new EpEnvelopeError("permission-denied", `the gate for uid ${args.lifecycleUid} was terminalized by operation ${gate.row.op.opId}, not ${args.opId} (SPEC 13.1)`);
     return "already-settled";
   }
   if (gate.row.state === "open") {

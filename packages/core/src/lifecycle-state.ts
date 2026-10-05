@@ -112,22 +112,29 @@ export function parseLifecycleHead(raw: Uint8Array, key: string, owner: string, 
 
 // ---- the issuance gate (auth store, agent family `gate.<lifecycleUid>`) ---------------------
 
-/** The agent-family issuance gate row (§13.1, amended): `frozen` MUST carry the durable op
- *  intent; the embedded uid MUST agree with the key. (The disjoint ENDPOINT family
- *  `epgate.<endpoint>.<instanceId>` is separate.) */
-export interface EpGateRow {
+/** A gate's durable op intent (§13.1), one shape for both gate families. `successor` is a
+ *  per-kind summary token: only `takeover`/`registration` may carry one (their authoritative
+ *  successor artifacts live under `stage.<opId>.`); `activation`/`retirement` never do. */
+export interface GateOp {
+  opId: string;
+  kind: "activation" | "takeover" | "registration" | "retirement";
+  successor?: string;
+}
+
+/** A gate's state bound to its op intent as both gate parsers enforce it (§13.1): the op is
+ *  REQUIRED at `frozen` (which operation owns this freeze and may advance it) AND at `retired`
+ *  (the terminalizing op, audit + same-op idempotence), and absent at `open`. Carried in the
+ *  type so a reader that has checked the state reads the op without re-deriving the rule. */
+export type GateStateOp = { state: "open"; op?: never } | { state: "frozen" | "retired"; op: GateOp };
+
+/** The agent-family issuance gate row (§13.1, amended): the embedded uid MUST agree with the
+ *  key. (The disjoint ENDPOINT family `epgate.<endpoint>.<instanceId>` is separate.) */
+export type EpGateRow = GateStateOp & {
   lifecycleUid: string;
-  state: "open" | "frozen" | "retired";
   /** Mint generation: born 0 under the activation freeze, first mintable generation is 1 (the
    *  activation's reopen), and every barrier reopen advances it. */
   generation: number;
-  /** REQUIRED at `frozen` (which operation owns this freeze and may advance it) AND at
-   *  `retired` (the terminalizing op, audit + same-op idempotence); absent at `open`.
-   *  `successor` is a per-kind summary token (SPEC 13.1): only `takeover`/`registration`
-   *  may carry one (their authoritative successor artifacts live under `stage.<opId>.`);
-   *  `activation`/`retirement` never do. */
-  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
-}
+};
 
 export const ISSUANCE_GATE_STATES: ReadonlySet<string> = new Set(["open", "frozen", "retired"]);
 export const ISSUANCE_GATE_OP_KINDS: ReadonlySet<string> = new Set(["activation", "takeover", "registration", "retirement"]);
@@ -323,8 +330,7 @@ export function parseEndpointRepairCursor(raw: Uint8Array, key: string): Endpoin
  *  exactly like the agent family. Lifted to core (guarded-core: ONE encoder shared by the auth
  *  session ledger and the manager's endpoint-serve wiring; a second dialect is the dual-encoder
  *  drift this module bans). */
-export interface EndpointGateRow {
-  state: "open" | "frozen" | "retired";
+export type EndpointGateRow = GateStateOp & {
   generation: number;
   processEpoch: number;
   registrationRevision: number;
@@ -335,8 +341,7 @@ export interface EndpointGateRow {
    *  rows (`epcred.`) copy it as their `holderPrincipal`, so the endpoint KEY identity
    *  (`endpoint`) and the evictable principal stay disjoint. */
   principal: string;
-  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
-}
+};
 
 /** The endpoint gate key `epgate.<endpoint>.<instanceId>` (an instanceId is unique ONLY within
  *  `(space, endpoint)`, so the key is endpoint-qualified — equal instanceIds under two endpoints

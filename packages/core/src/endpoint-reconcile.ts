@@ -144,8 +144,8 @@ export async function reconcileEndpointGate(opts: {
 
   if (row.state !== "frozen")
     throw new GateReconcileRefused("not-frozen", `the gate at ${key} is "${row.state}", not "frozen" — this reconciles a frozen gate only, and an open gate needs no repair`);
-  if (row.op?.kind !== "registration")
-    throw new GateReconcileRefused("wrong-op-kind", `the gate at ${key} is frozen under a "${row.op?.kind}" op, not a registration — this completes a crashed REGISTRATION's §13.1 obligation only; refusing to reinterpret another op's intent`);
+  if (row.op.kind !== "registration")
+    throw new GateReconcileRefused("wrong-op-kind", `the gate at ${key} is frozen under a "${row.op.kind}" op, not a registration — this completes a crashed REGISTRATION's §13.1 obligation only; refusing to reinterpret another op's intent`);
   const opId = row.op.opId;
 
   // ---- 2. THE GUARD. Affirmative liveness, before anything is mutated.

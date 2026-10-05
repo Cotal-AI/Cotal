@@ -508,7 +508,7 @@ export async function runStaticTerminal(
       await casStaticSlot(t, { ...cur.row, phase: "retired" }, cur.revision);
     return "retired";
   }
-  if (gate.row.state === "frozen" && gate.row.op?.kind === "activation") {
+  if (gate.row.state === "frozen" && gate.row.op.kind === "activation") {
     // A crashed ACTIVATION. Two durable shapes, decided by the head (§13.1: the saga writes the
     // head BEFORE its reopen):
     const head = await headCandidate(t, args.owner, args.actor);
@@ -528,18 +528,18 @@ export async function runStaticTerminal(
         await casStaticSlot(t, { ...cur.row, phase: "retired" }, cur.revision);
       return "retired";
     }
-  } else if (gate.row.state === "frozen" && gate.row.op?.kind !== "retirement") {
-    throw lifecycleBlocked("failed-precondition", `the issuance gate for ${args.lifecycleUid} is frozen by a ${gate.row.op?.kind ?? "<unknown>"} (op ${gate.row.op?.opId ?? "<none>"}); a foreign barrier is in flight - refuse (SPEC 13.1)`, {
-      blockedOp: gate.row.op!.kind,
+  } else if (gate.row.state === "frozen" && gate.row.op.kind !== "retirement") {
+    throw lifecycleBlocked("failed-precondition", `the issuance gate for ${args.lifecycleUid} is frozen by a ${gate.row.op.kind} (op ${gate.row.op.opId}); a foreign barrier is in flight - refuse (SPEC 13.1)`, {
+      blockedOp: gate.row.op.kind,
       gateState: "frozen",
-      ...(gate.row.op?.opId !== undefined ? { opId: gate.row.op.opId } : {}),
-      remedy: gate.row.op?.kind === "registration" ? "cotal reconcile-gate" : "retry",
+      opId: gate.row.op.opId,
+      remedy: gate.row.op.kind === "registration" ? "cotal reconcile-gate" : "retry",
     });
-  } else if (gate.row.state === "frozen" && gate.row.op?.opId !== args.opId) {
-    throw lifecycleBlocked("failed-precondition", `the issuance gate for ${args.lifecycleUid} is frozen by retirement op ${gate.row.op?.opId ?? "<none>"}, not ${args.opId}; one retirement at a time (SPEC 13.1)`, {
+  } else if (gate.row.state === "frozen" && gate.row.op.opId !== args.opId) {
+    throw lifecycleBlocked("failed-precondition", `the issuance gate for ${args.lifecycleUid} is frozen by retirement op ${gate.row.op.opId}, not ${args.opId}; one retirement at a time (SPEC 13.1)`, {
       blockedOp: "retirement",
       gateState: "frozen",
-      ...(gate.row.op?.opId !== undefined ? { opId: gate.row.op.opId } : {}),
+      opId: gate.row.op.opId,
       remedy: "retry",
     });
   }

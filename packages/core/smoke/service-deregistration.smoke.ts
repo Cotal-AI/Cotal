@@ -54,7 +54,7 @@ import {
   isReachable, openRecordsBucket, registerServiceInstance, deregisterServiceInstance, writeServiceStatus,
   freezeExpectedSet, readRecord, deleteRecordEntry, recordSpecKey, recordStatusKey, RECORD_KINDS,
   SERVICE_READY, EpEnvelopeError, compileContract, contractDigest, VOID_SCHEMA,
-  type EpIssuanceBarrier, type ServiceNameAuthority, type ServiceSpec,
+  mintLifecycleUid, type EpIssuanceBarrier, type EpGateState, type ServiceNameAuthority, type ServiceSpec,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -96,19 +96,18 @@ const CLOSURE = contractDigest(MANIFEST);
 const artifacts = new Map<string, unknown>([[contractDigest(DOC), DOC], [CLOSURE, MANIFEST], [D_VOID, VOID_SCHEMA]]);
 const spec: ServiceSpec = { endpoint: ENDPOINT, owner: "u_op", clusterDigests: [CLOSURE], protocol: { v: 1 } };
 const authority: ServiceNameAuthority = { authorize: (name, owner) => ({ authorized: name === ENDPOINT && owner === "u_op", revision: 0 }) };
-type Gate = { space: string; endpoint: string; lifecycleUid: string; principal: string; state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number };
-const gates = new Map<string, Gate>();
+const gates = new Map<string, EpGateState>();
 function barrierFor(instanceId: string): EpIssuanceBarrier {
   const key = `${ENDPOINT}/${instanceId}`;
   if (!gates.has(key)) gates.set(key, { space: SPACE, endpoint: ENDPOINT, lifecycleUid: instanceId, principal: "u_op.mgr", state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
-  const g = gates.get(key)!;
+  const op = { opId: mintLifecycleUid(), kind: "registration" as const };
   return {
-    observe: () => ({ ...g }),
-    freeze: (rev) => { if (g.state !== "open" || g.revision !== rev) return null; g.state = "frozen"; g.revision++; return g.revision; },
+    observe: () => ({ ...gates.get(key)! }),
+    freeze: (rev) => { const g = gates.get(key)!; if (g.state !== "open" || g.revision !== rev) return null; gates.set(key, { ...g, state: "frozen", op, revision: rev + 1 }); return rev + 1; },
     enumerate: () => [],
     revoke: () => {},
     evict: (holderPrincipals) => holderPrincipals.map(() => true),
-    reopen: (token, succ) => { if (g.state !== "frozen" || g.revision !== token) return false; g.state = "open"; g.generation = succ.generation; g.processEpoch = succ.processEpoch; g.registrationRevision = succ.registrationRevision; g.nameAuthorityRevision = succ.nameAuthorityRevision; g.revision++; return true; },
+    reopen: (token, succ) => { const { op: _op, ...g } = gates.get(key)!; if (g.state !== "frozen" || g.revision !== token) return false; gates.set(key, { ...g, state: "open", generation: succ.generation, processEpoch: succ.processEpoch, registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision, revision: token + 1 }); return true; },
   };
 }
 const register = (kv: KV, instanceId: string) =>
