@@ -22,19 +22,19 @@
  * submission path: `drive` is where this connector starts a turn, and `swapping`, `stopping`,
  * `busy` and `bootPrompt` decide whether IT submits one. The host's own prompt path is a different
  * road. A human typing in the attached TUI, or an API caller hitting the server directly, reaches
- * `chat.message` as a notification the connector cannot refuse: its hooks return `Promise<void>`
- * and influence the host by MUTATING the output object it is handed, and `chat.message`'s output
- * names no cancel and no skip. So a natively submitted prompt REACHES THE HOST whether or not this
- * connector is stopping, cutting over, busy, or holding the boot floor: none of those flags is
- * consulted on that path. What the host then does with it is OpenCode's business, not this
- * connector's, and it is not always a new model turn. At the pinned 1.16.2, a prompt arriving while
- * the session is already running is coalesced into the run in flight rather than starting a second
- * one, which is the same COALESCE behaviour `busy` exists to avoid provoking.
+ * `chat.message`. This connector's hooks return `Promise<void>` and influence the host by MUTATING
+ * the output object they are handed, and `chat.message`'s output names no cancel and no skip. So a
+ * natively submitted prompt REACHES THE HOST whether or not this connector is cutting over, busy,
+ * or holding the boot floor: none of those flags is consulted on that path. `stopping` is the
+ * exception: the `chat.message` entry in `hooks` refuses a prompt during teardown by rejecting.
+ * What the host does with an admitted prompt is OpenCode's business, not this connector's, and it
+ * is not always a new model turn. At the pinned 1.16.2, a prompt arriving while the session is
+ * already running is coalesced into the run in flight rather than starting a second one, which is
+ * the same COALESCE behaviour `busy` exists to avoid provoking.
  *
  * Read every ordering and precedence claim in this file with that scope: they are claims about
  * connector-submitted turns against each other, not about the host's turns. Where a specific
  * comment says "connector-submitted" it is inheriting this paragraph, not adding a new caveat.
- * Refusing or deferring native submission is separate work, tracked in #687.
  */
 import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
 import {
@@ -1189,12 +1189,13 @@ export const cotal: Plugin = async () => {
   };
 
   /**
-   * EVERY WAY IN THROUGH THIS HOOK TABLE, FENCED BY MEMBERSHIP IN IT. The tool map is intake too, it
-   * does not arrive through this table, and it is fenced separately at its own wrap below. Once
-   * teardown has begun, admitting more work undoes the teardown: a late `permission.asked` or tool
-   * hook republishes presence over the offline record `quiesce` exists to publish, a part or idle
-   * enqueues holder work after the join has already snapshotted it, and a late `session.created`
-   * extends the very chain the join is waiting on.
+   * EVERY WAY IN THROUGH THIS HOOK TABLE, FENCED BY MEMBERSHIP IN IT. The tool map and the prompt
+   * hook are intake too and do not go through this table, because returning nothing refuses neither
+   * of them, so each is fenced at its own entry in `hooks` below. Once teardown has begun, admitting
+   * more work undoes the teardown: a late `permission.asked` or tool hook republishes presence over
+   * the offline record `quiesce` exists to publish, a part or idle enqueues holder work after the
+   * join has already snapshotted it, and a late `session.created` extends the very chain the join is
+   * waiting on.
    *
    * The refusal is applied by CONSTRUCTION rather than written at each entry, because writing it at
    * each entry is the mistake this file has now made twice: the guard was correct for every caller
@@ -1206,17 +1207,8 @@ export const cotal: Plugin = async () => {
    * hook when the flag flips; that work is what the joins in `quiesce` cover, and a hook that had
    * already passed this point still runs. The two together are the claim, and neither is it alone.
    *
-   * AND IT FENCES THIS CONNECTOR, NOT THE EDITOR. `@opencode-ai/plugin`'s `index.d.ts` types
-   * `chat.message` as `(input, output: { message; parts }) => Promise<void>`. A fenced hook
-   * returning early is that hook completing, and the `output` it was handed names no cancel and no
-   * skip, so this table does not stop a prompt submitted through the editor. Two hooks in that same
-   * file are handed one: `permission.ask` gets `status`, and `experimental.compaction.autocontinue`
-   * gets `enabled`, its doc comment saying `false` skips the synthetic continue turn. This
-   * connector implements neither. Cancelling a native turn would take the SDK's session `abort`,
-   * which this teardown does not call.
-   *
-   * WHETHER SUCH A TURN'S EVENTS SURVIVE IS TIMING. `quiesce` calls `agent.stop()` last, after the
-   * intake wait, the offline publish and the two settles, so holder work already queued when this
+   * WHETHER A RUNNING TURN'S EVENTS SURVIVE IS TIMING. `quiesce` calls `agent.stop()` last, after
+   * the intake wait, the offline publish and the two settles, so holder work already queued when this
    * flag flipped can still settle and publish through an endpoint that is still up. Work arriving
    * afterwards is refused at this table.
    */
@@ -1253,15 +1245,6 @@ export const cotal: Plugin = async () => {
     );
 
   const intake = {
-    "chat.message": async (input, output) => {
-      if (!ours(input.sessionID)) return;
-      // OpenCode exposes the selected model only on this prompt hook. Do not invent a pre-turn
-      // default: before the first prompt the dashboard truthfully shows "not reported".
-      if (input.model)
-        await track(agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant));
-      injectIntoPrompt(output);
-    },
-
     event: async ({ event }) => {
       // The server emits `permission.asked` (the SDK's `permission.updated` type ships but never
       // fires — #11616), so match the real runtime name out of band. With permission:"allow" this
@@ -1461,6 +1444,22 @@ export const cotal: Plugin = async () => {
   const hooks: Hooks = {
     tool: fenceTools(buildCotalTools(agent, config)),
     ...fence(intake),
+
+    // THE PROMPT HOOK IS REFUSED BY REJECTING, because a hook that returns lets the prompt through.
+    // `chat.message`'s output names no cancel and no skip, but OpenCode awaits this hook before it
+    // saves the user message or starts the model loop, and a rejection fails the prompt there. So a
+    // prompt typed into the editor or posted to the server after the stop began starts no turn.
+    // Session `abort` cannot stand in for it: an idle session has no run yet for the abort to find.
+    // A turn already running when the stop began is not cancelled.
+    "chat.message": async (input, output) => {
+      if (stopping) throw new Error("the prompt was not run: this seat is shutting down");
+      if (!ours(input.sessionID)) return;
+      // OpenCode exposes the selected model only on this prompt hook. Do not invent a pre-turn
+      // default: before the first prompt the dashboard truthfully shows "not reported".
+      if (input.model)
+        await track(agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant));
+      injectIntoPrompt(output);
+    },
 
     // The editor unloading the plugin. Same teardown as the manager's stop, minus the exit: see
     // `quiesce`, which owns the join so that neither exit can drift from the other.

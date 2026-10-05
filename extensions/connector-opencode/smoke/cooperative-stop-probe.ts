@@ -378,12 +378,12 @@ if (late) {
     // The tool hook DOES check ownership, and which session is the owned one depends on where the
     // chain stopped, so knock with every id this probe created rather than guessing.
     for (const id of ["ses_coop", "ses_next", "ses_third"]) await fireTool(id);
-    // A prompt hook too. It has no presence-visible effect (its publish carries the stored status,
-    // which is already offline), so it is knocked but not graded (see the fixture's note).
+    // A prompt hook too. After the stop it refuses by rejecting, which is how OpenCode is told not to
+    // run the prompt, and it publishes nothing, so it is knocked but not graded (see the fixture's note).
     await (hooks as unknown as { "chat.message": (i: unknown, o: unknown) => Promise<void> })["chat.message"](
       { sessionID: "ses_coop" },
       { parts: [] },
-    );
+    ).catch(() => undefined);
     // AND THE TOOL MAP, which is intake that never passes through the hook table: OpenCode holds
     // these closures from registration. cotal_status is the one with a presence-visible effect, so
     // it is the one that can be graded rather than merely exercised.
