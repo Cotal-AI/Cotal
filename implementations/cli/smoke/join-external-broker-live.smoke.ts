@@ -4,10 +4,9 @@
  * The shape this proves is the whole point, so it is worth stating before the code. An always-on
  * box runs the broker AND the control plane (delivery daemon + manager). Another machine holds the
  * space's trust material, registers the mesh, and from then on its agents are ordinary peers.
- * It elects no lease and runs no daemon. Joining is the participant path: it installs the trust
- * material and registry record needed to connect agents to a control plane hosted elsewhere. It does
- * not confer manager or delivery authority on the joining machine. Hosting a control plane on that
- * machine is Track A2, outside this test.
+ * Registering elects no lease and starts no daemon. The trust material still carries the space's
+ * signing seed, so that machine may run `cotal supervise` and hold its own manager-instance lease
+ * beside the box's: the manager-host split the run-a-mesh guide documents.
  *
  * The two machines are simulated by two roots with two separate COTAL_HOME registries, because a
  * single-home test would silently share the registry and hide exactly the asymmetry under test.
@@ -93,7 +92,7 @@ try {
   // client of it. Removing it is a successor slice (a record that references pre-minted creds,
   // so `checkTrust` can accept "I hold a credential" instead of "I can mint any credential"),
   // and that slice owns rewriting this setup. What this file proves is narrower and true: the
-  // registration path is now fenced, and a joining machine elects no lease and runs no daemon.
+  // registration path is now fenced, and registering elects no lease and starts no daemon.
   process.env.COTAL_HOME = joinHome;
   check("the joining machine starts with an empty registry", loadMeshes().length === 0);
   saveSpaceAuth(authDir(joinRoot), auth);
@@ -178,8 +177,7 @@ try {
   // anyone else. It is deliberately NOT a per-space singleton - `readManagerLease` documents that
   // "several managers may hold one space, each renewing its own lease.<instanceId>" - so this cell
   // asserts the exclusivity that exists and does not restate a space-wide claim the code does not
-  // make. Whatever keeps a joining machine client-only is decided where a manager may START, not
-  // here.
+  // make.
   const leaseA = new CotalEndpoint({
     space: SPACE, servers: broker.servers, creds: await mintCreds(auth, newIdentity(), "supervisor"),
     card: { name: "mgr-a", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false,
