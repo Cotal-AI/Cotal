@@ -254,6 +254,10 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+  // A client ends a stdio session by closing our stdin, and so does a harness that dies. The mesh
+  // connection would keep this process alive past it, heartbeating a presence no session backs,
+  // which every peer's roster reads as a live agent (#544).
+  process.stdin.once("end", () => void shutdown());
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

@@ -297,6 +297,10 @@ A `SessionStart` during an open turn, including compaction, preserves the curren
 | `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
 
+The connector also leaves gracefully when its stdin closes. An MCP client closes it to end the
+session, and a killed `claude` closes it with no `SessionEnd`, so a dead session drops off the
+roster instead of staying on it as a live peer.
+
 `StopFailure` maps `rate_limit` and `overloaded` directly; auth and credential failures to
 `auth`; account and billing failures to `billing`; `invalid_request` to `request`;
 `model_not_found` to `model`; `server_error` to `server`; `max_output_tokens` to `context`; and
