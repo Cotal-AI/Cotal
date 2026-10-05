@@ -536,7 +536,8 @@ export type FreeSlotCause =
   | "supervise-recovery-failed"
   | "session-bind-failed"
   | "resume-session-rebind-failed"
-  | "carried-fork-refused";
+  | "carried-fork-refused"
+  | "resume-custody-unrecorded";
 
 /** Operator-facing phrasing per cause. Kept beside the union so adding a member without a sentence
  *  is a type error rather than a blank in the log. The stop family's sentences carry the principal
@@ -551,6 +552,7 @@ const FREE_SLOT_CAUSE_TEXT: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, st
   "session-bind-failed": "this manager stopped it: its host session could not be bound at launch",
   "resume-session-rebind-failed": "this manager stopped it: its host session could not be rebound on resume",
   "carried-fork-refused": "this manager stopped it: it recorded no fork of the carried transcript",
+  "resume-custody-unrecorded": "this manager stopped it: its custody reference could not be recorded on resume",
 };
 
 /** The stop family's sentences — the same job {@link FREE_SLOT_CAUSE_TEXT} does for the string
@@ -4919,10 +4921,10 @@ export class Manager {
         }
         a.handle = handle;
         a.control = spec.control;
+        await this.recordSlotRuntime(a);
         replacement = undefined;
         restart.opts = opts;
         restart.recovering = false;
-        await this.recordSlotRuntime(a);
         if (continueSession !== undefined)
           console.error(`! ${a.name}: recovered Pi session ${continueSession} after crash (${restart.crashes.length}/${limit})`);
         else
@@ -6817,7 +6819,22 @@ export class Manager {
       this.agents.set(entry.name, managed);
       this.reservedLive.add(entry.name);
       if (this.resumeAttemptId) this.resumedAgentNames.add(entry.name);
-      await this.recordSlotRuntime(managed);
+      try {
+        await this.recordSlotRuntime(managed);
+      } catch (error) {
+        const detail = `${managed.name} resumed, but ${(error as Error).message}`;
+        this.stopHandle(managed, false);
+        try {
+          await this.awaitHandleExit(managed.handle);
+        } catch (exit) {
+          // A resumed seat keeps its retained credentials, so freeing it runs no deprovision and
+          // nothing would reap it: it stays managed until it exits or the manager stops it.
+          this.watchExit(managed);
+          return { ok: false, error: `${detail}; it stays managed because its stop is unproven: ${(exit as Error).message}` };
+        }
+        this.freeSlot(managed, true, "resume-custody-unrecorded", true);
+        return { ok: false, error: detail };
+      }
       const readiness = await this.awaitReadiness(managed, readinessTimeoutMs);
       if (!readiness.ok && !readiness.uncertain) return { ok: false, error: readiness.detail };
       if (!readiness.ok) {
@@ -8965,8 +8982,7 @@ export class Manager {
   /** Re-record the custody reference of a managed agent's CURRENT handle on its active slot: a
    *  same-lifecycle restart or a resume binds a new custody under the old uid, and the successor's
    *  reap must address the live one. Static auth only; a runtime without durable custody records
-   *  nothing (there is nothing to reap by reference). Loud on failure, never fatal to the bind: the
-   *  handle is already live and a stale reference is refused by identity at reap time. */
+   *  nothing (there is nothing to reap by reference). */
   private async recordSlotRuntime(a: ManagedAgent): Promise<void> {
     if (a.handle.reference === undefined) return;
     await this.recordSlotCustody(a, a.handle.reference);
@@ -8974,18 +8990,21 @@ export class Manager {
 
   /** Record one custody reference on an agent's ACTIVE slot. Split from {@link recordSlotRuntime}
    *  so a restart or a resume can record the reference it RESERVED before spawning, while no
-   *  handle exists yet. Static auth only; a runtime without durable custody reserves nothing. */
+   *  handle exists yet. Static auth only; a runtime without durable custody reserves nothing.
+   *  Throws when the slot does not take the reference: a slot left on the previous one reaps that
+   *  seat, already gone, so a successor would retire the lifecycle over the new one. */
   private async recordSlotCustody(a: { name: string; id: string; lifecycleUid: string }, runtime: RuntimeReference): Promise<void> {
     if (!this.auth || this.userMode) return;
     try {
       await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
         const slot = await readStaticSlot(t, DEV_OWNER, a.name);
-        if (slot === undefined || slot.row.lifecycleUid !== a.lifecycleUid || slot.row.phase !== "active") return;
+        if (slot === undefined || slot.row.lifecycleUid !== a.lifecycleUid || slot.row.phase !== "active")
+          throw new Error(`the slot is ${slot === undefined ? "absent" : `${slot.row.phase} at uid ${slot.row.lifecycleUid}`}`);
         if (slot.row.runtime?.kind === runtime.kind && slot.row.runtime.id === runtime.id) return;
         await casStaticSlot(t, { ...slot.row, runtime }, slot.revision);
       });
     } catch (e) {
-      console.error(`! ${a.name}: could not record the custody reference ${runtime.kind}:${runtime.id} on its static slot: ${(e as Error).message} - a successor reaps this seat only by an up-to-date reference`);
+      throw new Error(`could not record the custody reference ${runtime.kind}:${runtime.id} on the static slot of "${a.name}": ${(e as Error).message}`);
     }
   }
 

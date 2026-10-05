@@ -1475,7 +1475,12 @@ process through the runtime's custody reference recorded on the slot (the pty ru
 process start identity in its seat record, so a reused pid is never signalled), and only then
 retires the lifecycle and frees the alias. A runtime that custodies its seats reserves that
 reference before it launches one, and the manager records it on the slot's first durable row, so a
-manager that dies part-way through a spawn also leaves a seat its successor can address. A spawn
+manager that dies part-way through a spawn also leaves a seat its successor can address. A
+same-lifecycle restart or a resume records the new seat's reference on the slot the same way, and
+when the slot does not take it the restart or resume fails and stops any seat it started, so the
+slot never names a seat that has already exited while its replacement runs. A resumed seat keeps
+its retained credentials, so the resume frees it only once its exit is proved; a seat whose stop
+cannot be proved stays managed, and the resume's error says so. A spawn
 that launched its seat and then failed is rolled back by the manager that launched it, and that
 rollback reaps the seat through the same reserved reference before the lifecycle retires. Missing or unverified broker evidence keeps the slot
 terminalizing, and so does a runtime that cannot reap by reference.
