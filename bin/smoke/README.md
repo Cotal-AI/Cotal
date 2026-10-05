@@ -77,31 +77,38 @@ forms below, because a form it cannot follow to the exit status can hide either 
   it is the last statement of the `try`.
 - A suite with no pinned cell count. Declare `const EXPECTED_CELLS = <n>`, never reassign it, and
   compare the cells that ran with it by `===` or `!==`, after reporting failures, so a deleted cell
-  turns the suite red. `==` and `!=` coerce, so a tally of `"5"` would match. The comparison is the
-  whole condition of a statement every run reaches, and a mismatch fails the run in one of four
-  forms: `if (ran !== EXPECTED_CELLS)` with an arm that always runs `process.exit(1)`; the same
-  arm setting `process.exitCode = 1`, when the file writes no other code and every `process.exit`
-  that can follow reads it; the same arm throwing, outside any function or `try` with a catch; or
-  `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`. A statement before the failing one in the arm
-  counts only where a throw would also escape, and only when it cannot end the run.
+  turns the suite red. `==` and `!=` coerce, so a tally of `"5"` would match. The cells that ran are
+  counted by a `let` that starts at 0 and that only `++` or `+=` a number writes, by the `length` of
+  a `const` that starts as `[]` when the file assigns no `length`, by a sum of those, or by a
+  `const` that holds one. An alias of the pin, a literal or a call counts nothing, so it is no
+  tally. The comparison is the whole condition of a statement every run reaches, and a mismatch
+  fails the run in one of four forms: `if (ran !== EXPECTED_CELLS)` with an arm that always runs
+  `process.exit(1)`; the same arm setting `process.exitCode = 1`, when the file writes no other code
+  and every `process.exit` that can follow reads it; the same arm throwing, outside any function or
+  `try` with a catch; or `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`. A statement before the
+  failing one in the arm counts only where a throw would also escape, and only when it cannot end
+  the run.
 
 A failing status is an integer from 1 to 255, written as a literal or a sum of literals. The process
-keeps only the low eight bits of its status, so `process.exit(256)` exits 0. The `finally` exit's own
-status may also add a lookup into an object literal of them, such as
+keeps only the low eight bits of its status, so `process.exit(256)` exits 0. The `finally` exit's
+own status may also add a lookup into an object literal of them, such as
 `128 + { SIGINT: 2, SIGTERM: 15 }[signal]`, because a sum with a lookup that misses is NaN, on which
-`process.exit` throws rather than exits 0. A lookup alone that misses is undefined and exits 0. Names
-resolve to the declaration they bind, so a parameter or inner function that shadows the pin or
-`main` does not count, and neither does a generator, as a function or as a `.catch` handler, whose
+`process.exit` throws rather than exits 0. A lookup alone that misses is undefined and exits 0.
+Names resolve to the declaration they bind, so a parameter or inner function that shadows the pin or
+`main` does not count, a `process` the file declares is not the process unless it imports
+`node:process` whole, and a generator, as `main` or as a `.catch` handler, does not count, since its
 call runs none of its body.
 
 Every run reaches a statement of the file, of a bare block, of a `try` or `finally` block, or of the
-body of a function that a reached statement calls (`main()`, `await main()`, `main().catch(...)`),
-when no earlier statement in its block exits, throws or returns, or holds a `return` or a
-`process.exit` with a status that can be 0 in a branch or block, or calls a function of the file
-whose body can make such an exit. A platform skip that exits 0 before the comparison is such a
-branch. An async function called without `await` counts only when no later statement exits or calls
-such a function. A comparison in a branch, a loop, a callback, a check function, a failure tally or
-a variable pins nothing.
+body of a function that a reached statement calls (`main()`, `await main()`,
+`await main().catch(...)`) with arguments and parameter defaults that cannot exit 0, when no earlier
+statement in its block exits, throws or returns, or holds a `return` or a `process.exit` with a
+status that can be 0 in a branch or block, or calls or passes to a call a function of the file whose
+body can make such an exit. A function passed to a call or to `new` can be called at any time after,
+such as during an `await`. A platform skip that exits 0 before the comparison is such a branch. An
+async function counts only when its call is awaited, because an `await` that never settles ends an
+unawaited run with exit 0. A comparison in a branch, a loop, a callback, a check function, a failure
+tally or a variable pins nothing.
 
 A throw or a rejection before the comparison skips it. A statement in a `try` counts only when its
 catch arm fails the run as a mismatch arm would and its `finally` holds no `return`. A statement of a
@@ -109,12 +116,16 @@ function called with `.catch(handler)` or `.then(f, handler)` counts only when t
 function written in place whose first statement fails the run.
 
 A call stands for every value the file gives its callee: the declarations of a name and every
-assignment to it, `||=`, `&&=` and `??=` included, an alias such as `const stop = process.exit` or
-`const { exit } = process`, and, for `o.k()` or `o["k"]()`, every value the file binds to the key
-`k` on any object, since the gate does not track which object it is. A value written as `a ? b : c`,
-`b || c`, `b && c` or `b ?? c` stands for both `b` and `c`, and `(a, b)` for `b`. A function passed
-as an argument, `.call`, `.apply`, `.bind`, a getter, a key computed at run time and an imported
-function are not followed.
+assignment to it, `||=`, `&&=` and `??=` included, an alias such as `const stop = process.exit`,
+`const { exit } = process` or `import { exit } from "node:process"`, and, for `o.k()` or
+`o["k"]()`, every value the file binds to the key `k` on any object, since the gate does not track
+which object it is. A value written as `a ? b : c`, `b || c`, `b && c` or `b ?? c` stands for both
+`b` and `c`, `(a, b)` for `b`, `await a` for `a`, and a call of a function of the file for every
+value it returns. A generator runs its body only as what its call returns is iterated, so its exits
+count for every call of it except one written as a whole statement or a `.finally` handler. A
+function passed as an argument is followed only to decide whether a statement can end the run.
+`.call`, `.apply`, `.bind`, a getter, a key computed at run time and an imported function are not
+followed.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The
