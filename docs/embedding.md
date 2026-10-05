@@ -473,8 +473,10 @@ the closure needs, and the auth plane self-authorizes that one name.
 ceremony the plane runs for itself, and returns `{ instanceId, processEpoch }` with the epoch that
 registration committed. The host calls it at every start with its persisted instance id, before it
 admits or recovers any flight, so a restart fences its predecessor and advances the epoch. A start
-that a later start of the same instance superseded before it returned is refused with `conflict`.
-A sweeper reads an executor's gate
+whose confirming read of the gate finds that a later start of the same instance registered is
+refused with `conflict`. When the later start registers after that read, the earlier start returns
+its own epoch, which the gate already fences as it fences any restarted predecessor. No read can
+close that window, so the gate is the fence. A sweeper reads an executor's gate
 with `observeHostGate(instanceId)`, which answers null for an absent gate. The
 host's launch writer first activates the agent's lifecycle at the pinned UID through the handle's
 `activateManagedLifecycle`, before any ledger row or durable, and its compensation runs the same

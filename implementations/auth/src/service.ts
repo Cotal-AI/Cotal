@@ -284,8 +284,8 @@ function contractArtifactReader(values: unknown[]): (digest: string) => unknown 
  *  registration that advertises them. The issuance gate is provisioned open once, on first sight
  *  (§13.1); on a restart it already exists and `registerServiceInstance` freezes and re-registers
  *  it, which advances the process epoch and fences the predecessor. A first registration stays at
- *  epoch 0. It returns the epoch this registration committed, and refuses once a later registration
- *  of the same instance has superseded it. */
+ *  epoch 0. It returns the epoch this registration committed, and refuses when its confirming read
+ *  finds that a later registration of the same instance superseded it. */
 async function registerSelfAuthorizedInstance(nc: NatsConnection, args: {
   space: string;
   endpoint: string;
@@ -307,11 +307,13 @@ async function registerSelfAuthorizedInstance(nc: NatsConnection, args: {
     space, spec, instanceId, registrant: { owner: DEV_OWNER }, authority: selfNameAuthority(endpoint), barrier,
     readClusterArtifact: contractArtifactReader(args.artifacts),
   });
-  // A second start of the same instance can complete between this reopen and the return. Its epoch
-  // is not this start's to claim, and this start's epoch is already fenced.
+  // A second start of the same instance can complete between this reopen and this read. Its epoch
+  // is not this start's to claim, and this start's epoch is already fenced. One that completes after
+  // the read leaves this start returning its own epoch, which the gate fences as it fences any
+  // restart's predecessor; no read can close that window.
   const observed = await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe();
   if (observed?.state !== "open" || observed.processEpoch !== processEpoch || observed.registrationRevision !== registrationRevision)
-    throw new EpEnvelopeError("conflict", `a later registration of ${endpoint}/${instanceId} superseded this one (process epoch ${processEpoch}) before it returned; this start is fenced (SPEC 13.1)`);
+    throw new EpEnvelopeError("conflict", `the issuance gate of ${endpoint}/${instanceId} is no longer open at this registration (process epoch ${processEpoch}, revision ${registrationRevision}); a later barrier fenced this start (SPEC 13.1)`);
   return { authKv, recordsKv, registrationRevision, processEpoch };
 }
 
@@ -1605,15 +1607,23 @@ export interface AuthServiceHandle extends HostedServiceHandle {
   observeManagerGate?: ObserveManagerGate;
   /** The activation a delegated launch runs at its pinned uid before any row or durable, and its
    *  compensation runs before the terminal barrier (SPEC 13.16). Present only with
-   *  `platformControl`. It refuses every state in which a retirement at that uid has begun. */
+   *  `platformControl`. It refuses every state in which a retirement at that uid has begun, and
+   *  throws the activation saga's `EpEnvelopeError` unchanged. A retirement there has begun or
+   *  completed only when `lifecycleBlockedFrom(err)` is defined and its `headState` is `"retired"`
+   *  or its `blockedOp` is `"retirement"`. A gate frozen by a takeover or a registration is a
+   *  barrier in flight, and `already-exists`, `conflict`, `unavailable`, `not-found` and a
+   *  `permission-denied` without that detail are not retirement. */
   activateManagedLifecycle?: AuthAuthorityPlane["activateManagedLifecycle"];
   /** The host incarnation a delegated user intent pins as its executor (SPEC 13.16). Present only
    *  with `platformControl.host`. It registers `instanceId` of the host endpoint in this context's
    *  account through the §13.7 ceremony the auth plane runs for itself. The host calls it at every
    *  start with its persisted instance id, before it admits or recovers any flight, so each start
    *  fences its predecessor and advances the process epoch. It returns the epoch this registration
-   *  committed, and refuses with `conflict` when a later start of the same instance superseded it
-   *  before it returned. */
+   *  committed. A later start of the same instance that registers before this registration's
+   *  confirming read of the gate makes it refuse with `conflict`. One that registers after that read
+   *  leaves it returning its own epoch, which the gate already fences as it fences any restarted
+   *  predecessor, so a sweeper reads that executor as gone. No read can close that window; the gate
+   *  is the fence. */
   registerHostIncarnation?(instanceId: string): Promise<DelegatedUserIntentIncarnation>;
   /** A sweeper's read of an executor's issuance gate on the host endpoint (SPEC 13.16). Present
    *  only with `platformControl.host`. Null is an absent gate. It reads over the context's own
