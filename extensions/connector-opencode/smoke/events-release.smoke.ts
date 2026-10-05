@@ -34,7 +34,6 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer, connect as netConnect, type Socket } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { join as joinPath } from "node:path";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -394,7 +393,7 @@ try {
   const walOf = (name: string): { pending?: unknown } | undefined => {
     const pd = principalDir(WS_PENDING);
     if (!pd) return undefined;
-    const f = joinPath(pd, name, "wal.json");
+    const f = join(pd, name, "wal.json");
     if (!existsSync(f)) return undefined;
     try { return JSON.parse(readFileSync(f, "utf8")) as { pending?: unknown }; } catch { return undefined; }
   };
