@@ -1,5 +1,5 @@
 /**
- * A MANAGER NEVER ENDS ITS OWN PROCESS OVER ITS LIVENESS LEASE.
+ * A MANAGER ENDS ITS OWN PROCESS OVER ITS LIVENESS LEASE ONLY WHEN ANOTHER PROCESS HOLDS IT.
  * Run: pnpm smoke:lease-loss-keeps-serving   (no broker; in-process manager with a fake runtime)
  *
  * THIS IS A REPRODUCTION FIRST. Written against the shipped behaviour and observed RED on it.
@@ -13,9 +13,10 @@
  *
  * WHAT THIS SUITE GRADES. Every verdict the lease re-read can return (`unknown`, `gone`, `taken`) and
  * the recovery after it, driven through the real `renewLease` against a stub endpoint, with
- * `process.exit` neutralised so a regression is observed rather than fatal. For each: the process is not
- * ended, no child is stopped, no agent leaves the managed map, and the operator gets one line, not one
- * per tick. `gone` must also put the key back.
+ * `process.exit` neutralised so a regression is observed rather than fatal. For `unknown` and `gone`: the
+ * process is not ended, no child is stopped, no agent leaves the managed map, and the operator gets one
+ * line, not one per tick. `gone` must also put the key back. For `taken` the process is superseded and
+ * must end, still without stopping a child.
  *
  * THE POSITIVE CONTROL IS NOT OPTIONAL. "stops === 0" is also what a broken counter reports. Cell 0
  * drives the ORDINARY shutdown path, which stays destructive, and requires the same counter to reach 1.
@@ -211,21 +212,21 @@ const other: ManagerLeaseInfo = { holder: "local.other", instanceId: "smoke-inst
   check("gone: the operator is told the key was gone and re-acquired", t.lines.some((l) => /gone/.test(l) && /re-acquired/.test(l)), t.lines);
 }
 
-// ── Cell 3 — taken: a same-id process holds the key ──────────────────────────────────────────
+// ── Cell 3 — taken: a same-id process holds the key, so this one is superseded ───────────────
 {
   const a = fakeHandle("worker");
   const d = managerWith([a], { renew: timeout, read: async () => ({ info: other, revision: 7 }) });
   const t = await d.tick();
-  check("taken: the process is not ended", t.exited === false, t);
-  check("taken: no child is stopped and the agent stays managed", a.stops === 0 && d.agents.size === 1, `stops=${a.stops} agents=${d.agents.size}`);
+  check("taken: the process is ended", t.exited === true, t);
+  check("taken: no child is stopped on the way out", a.stops === 0, `stops=${a.stops}`);
   check("taken: the held revision is not adopted from another process's key", d.revision() === 1, d.revision());
-  check("taken: the operator is told which pid holds it and to stop one of the two", t.lines.some((l) => l.includes(`pid ${other.pid}`) && /stop one of them/.test(l)), t.lines);
+  check("taken: the operator is told which pid holds it and that this one exits", t.lines.some((l) => l.includes(`pid ${other.pid}`) && /stops serving and exits/.test(l)), t.lines);
 }
 
 // ── Cell 5 — a resume-pending cut keeps its children too ─────────────────────────────────────
 // The old exit path had a second arm for a maintenance cut that had committed and not finalized: it
-// stopped the children rather than detaching them. There is no exit now, so there is no arm; this cell
-// pins that a later edit does not bring a "retained stop" back under any lease verdict.
+// stopped the children rather than detaching them. Only `taken` exits now, and it stops no child, so
+// there is no arm; this cell pins that a later edit does not bring a "retained stop" back.
 {
   const a = fakeHandle("worker");
   const d = managerWith([a], { renew: timeout, read: timeout }, { resumeAttemptId: "cell5" });

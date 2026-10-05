@@ -213,15 +213,17 @@ laterally; the manager only births and configures them.
   the same flag), and MCP `cotal_spawn` accepts the equivalent `instance` argument. An untargeted spawn rides class anycast and the acceptance records which
   instance took it. `ps` and `status` scatter across every registered instance and label a
   non-answering one as registered with no answer within the deadline, never dropping it.
-- **A manager holds a liveness lease, and nothing about it ends the process.** Each instance
-  keeps its own key in the space's manager bucket and refreshes it several times over inside the
-  key's TTL. A refresh that fails is a question, not a verdict, so the manager re-reads the key
-  before deciding what to do. If the key is still its own it adopts the broker's revision and
-  carries on. If the key is gone (it expired during a stall) it puts it back. If another process
-  holds it, it says so and keeps serving; which of the two goes is the operator's call. If the
-  broker cannot be asked at all it keeps serving and asks again, for as long as that takes. A
-  manager that cannot reach its broker gains nothing by ending itself, and the seats it holds
-  lose everything. Each change of state is one line in the manager's log, not one line per tick.
+- **A manager holds a liveness lease, and only losing it to another process ends the process.**
+  Each instance keeps its own key in the space's manager bucket and refreshes it several times
+  over inside the key's TTL. A refresh that fails is a question, not a verdict, so the manager
+  re-reads the key before deciding what to do. If the key is still its own it adopts the broker's
+  revision and carries on. If the key is gone (it expired during a stall) it puts it back. If
+  another process holds it, that process took the instance over during the stall, so this one
+  says so and exits without releasing the lease or the registration, which are the successor's
+  now. If the broker cannot be asked at all it keeps serving and asks again, for as long as that
+  takes. A manager that cannot reach its broker gains nothing by ending itself, and the seats it
+  holds lose everything. Each change of state is one line in the manager's log, not one line per
+  tick.
   A clean stop waits for a renew already in flight and then releases the key at the broker's own
   revision, so a same-root restart never waits out the bucket TTL.
 - **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
