@@ -133,6 +133,13 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   the dialog title in normalized terminal output and presses Enter once when it appears, so startup
   speed does not affect a supervised launch. If the declared prompt never appears, the seat exits
   with a bounded error naming the unmatched prompt instead of hanging silently.
+- **Trusted directory.** Claude opens a directory it has not trusted on its workspace-trust dialog,
+  and the dialog's default answer exits. No one is at a supervised seat to answer it, so a launch
+  whose directory the manager host's own Claude does not trust is refused before it starts, naming
+  the directory and the dialog. Trust is read as Claude reads it: trust given to a parent directory
+  counts up to the root of the directory's own Git repository, and a linked worktree shares the trust
+  of its repository's main checkout. Open `claude` in that directory on the manager host once and
+  trust it, then spawn again. A foreground `cotal spawn` shows the dialog in your own terminal instead.
 
 Inbound mesh messages arrive in context as
 `<channel source="cotal" from="bob" kind="dm" …>…</channel>`: each meta key a tag

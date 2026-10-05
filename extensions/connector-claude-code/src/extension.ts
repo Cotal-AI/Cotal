@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
+import { refuseUntrustedCwd } from "./trust.js";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -219,10 +220,14 @@ export const claudeConnector: Connector = {
         );
       env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
     }
-    // A carried resume (#1499) runs in the seat-private home the manager made for it. Its refusals run
-    // here, before any private file is written and before the manager spends the claim.
+    // A carried resume (#1499) runs in the seat-private home the manager made for it, and every
+    // supervised seat needs a directory Claude already trusts. These refusals run here, before any
+    // private file is written and before the manager spends the claim.
     const binary = opts.resolvedBinaries?.claude ?? "claude";
-    if (opts.carried) refuseCarriedLaunch(binary, env, opts.carried.cwd);
+    if (opts.carried) refuseCarriedLaunch(binary, env);
+    if (opts.cwd) refuseUntrustedCwd(opts.cwd);
+    // placeCarried trusts the carried directory in the seat's home, whatever cwd came beside it.
+    if (opts.carried && opts.carried.cwd !== opts.cwd) refuseUntrustedCwd(opts.carried.cwd);
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
