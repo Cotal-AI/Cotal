@@ -103,8 +103,9 @@ in-process plugin does everything.
   server error. A turn already running when the stop began is not cancelled.
 - **An instance dispose ends the seat on 1.x.** OpenCode can dispose an instance while its server
   keeps running, for example after a global config change or on `POST /instance/dispose`. The
-  connector then runs the same teardown as a stop and exits the server. The TUI closes whenever its
-  server exits, so the manager sees the seat end.
+  connector then runs the same teardown as a stop and exits the server. Whenever the server exits,
+  the launcher closes its TUI, killing it if it is still up 3 seconds later, so the manager sees the
+  seat end.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector
