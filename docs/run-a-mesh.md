@@ -315,12 +315,13 @@ provisioner credential, or generic storage authority. Remote registration publis
 status at the registered revision and current process epoch, so manager-caller selection can find it.
 
 Stock participant supervision asks its host to enroll a detached agent and to prepare its terminal
-retirement, over the same manager-authority transport. The stock auth service refuses both requests
-as `unimplemented`, because it holds none of the storage they write: a host platform intercepts them
-on its own route and asks the loopback verify-enrollment door for the decision. Successful remote
-detached spawning therefore requires such a host composition; copying host secrets or actor-ledger
-files to a participant is not supported. Foreground spawning and operator-local hosted managers use
-their existing paths.
+retirement, over the same manager-authority transport. The stock auth service answers both when it
+runs with a public exchange face: it grants the agent under the participant's owner at a lifecycle
+UID it picks, bounded by the participant actor's own grant, provisions that UID's durables, and on
+retirement releases them and revokes the grant before the manager's terminal rail. A host platform
+that keeps these writers in its own storage intercepts both requests on its own route instead.
+Copying host secrets or actor-ledger files to a participant is not supported. Foreground spawning
+and operator-local hosted managers use their existing paths.
 
 The remote manager that `cotal supervise` starts can host workflow runs through its host: the host
 admits each run and signs only the run's own driver, mediator and operator credentials. A logged-in

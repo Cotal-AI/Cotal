@@ -2,7 +2,7 @@
   "suite": [
     "implementations/auth/smoke/managed-agent-enrollment.smoke.ts"
   ],
-  "guard": "Host-owned managed-agent enrollment and terminal-release preparation are authorized only for a caller holding supervise at its own instance's current open manager gate, with the host-issued registration proof, the host-selected lifecycle UID, and the one derived terminal operation id; stock refuses both kinds rather than answering them",
+  "guard": "Host-owned managed-agent enrollment and terminal-release preparation are authorized only for a caller holding supervise at its own instance's current open manager gate, with the host-issued registration proof, the host-selected lifecycle UID, and the one derived terminal operation id; stock dispatch sends each kind to its own host arm rather than to a manager-lifecycle phase",
   "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/managed-agent-enrollment.smoke.ts",
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/managed-agent-enrollment.json",
   "completionMarker": "MANAGED-AGENT-ENROLLMENT SMOKE",
@@ -17,7 +17,7 @@
     "The opId mutation trusts the caller's opId instead of recomputing managedRetirementOpId(target.lifecycleUid). Two opIds for one lifecycle means two barriers over one head, which is the hazard the derivation exists to remove.",
     "The tokenHash mutation lets the closed parser accept any string where the sha256 digest belongs, so a plaintext standing actor token would pass as a digest and land on the host and in its logs. The suite feeds it a real actorToken and names the refusal.",
     "The lifecycle-uid mutation lets the enrollment parser retain a caller-supplied lifecycleUid. Only the host can see the retirement tombstones that make a UID permanently unusable, so a participant-named UID could aim a fresh grant at a dead incarnation.",
-    "The dispatch mutation removes the unimplemented refusal, so a managed-agent request falls through to the manager-lifecycle issuer. The suite names both refusal cells, and its negative control proves an ordinary manager-authority request still reaches its own arm."
+    "The dispatch mutation drops the enrollment branch, so a managed-agent request falls through to the manager-lifecycle issuer. The suite names the routing cell, and its negative control proves an ordinary manager-authority request still reaches its own arm."
   ],
   "mutations": [
     {
@@ -155,12 +155,12 @@
       "cell": "enrollment refuses an unknown top-level field"
     },
     {
-      "name": "stock dispatch answers a managed-agent request instead of refusing it",
+      "name": "stock dispatch sends an enrollment request to the manager-lifecycle issuer",
       "file": "implementations/auth/src/service.ts",
-      "find": "  if (request.kind === \"manager-managed-agent-enrollment\" || request.kind === \"manager-managed-agent-prepare-retirement\")\n    throw new EpEnvelopeError(\"unimplemented\", \"managed agent enrollment and retirement preparation must be handled by host platform interception\");\n",
+      "find": "  if (request.kind === \"manager-managed-agent-enrollment\")\n    return ctx.enrollManagedAgent({ owner, scope: row.scope ?? [], request: body.request as RemoteManagedAgentEnrollmentRequest });\n",
       "replace": "",
-      "expectRed": "FAIL: dispatch refuses an enrollment request with unimplemented",
-      "cell": "dispatch refuses an enrollment request with unimplemented"
+      "expectRed": "FAIL: dispatch sends an enrollment request to the host enrollment arm with the caller's ledger scope",
+      "cell": "dispatch sends an enrollment request to the host enrollment arm with the caller's ledger scope"
     }
   ]
 }

@@ -59,7 +59,7 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
+import { CotalEndpoint, deprovisionAgent, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
@@ -99,11 +99,13 @@ import {
   findInteractiveActor,
   findManagedActor,
   findActorUnified,
+  grantManagedActor,
   ledgerAclResolver,
   ledgerActorSourceIsLive,
   ledgerAuthorizeAgentExchange,
   ledgerAuthorizeConnect,
   ledgerAuthorizeGrant,
+  revokeManagedActor,
 } from "./ledger.js";
 import {
   AUTH_PROVIDER_NAME,
@@ -202,6 +204,22 @@ export interface AuthAuthorityPlane {
     scope: string[];
     request: import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest;
   }) => Promise<import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest>;
+  /** Host-owned managed-agent enrollment (#1972): the enrollment decision, then the ledger grant at
+   *  a host-chosen uid and that uid's durables. A failed provision revokes the grant it wrote. */
+  enrollManagedAgent: (args: {
+    owner: string;
+    scope: string[];
+    request: RemoteManagedAgentEnrollmentRequest;
+    sentinelCreds: string;
+    agentBearerExchangeUrl: string;
+  }) => Promise<RemoteManagedAgentEnrollmentResult>;
+  /** Host-owned retirement preparation (#1972): the prepare decision, then the target uid's broker
+   *  footprint and grant are released, so the participant's terminal rail finds the grant gone. */
+  prepareManagedAgentRetirement: (args: {
+    owner: string;
+    scope: string[];
+    request: RemoteManagedAgentPrepareRetirementRequest;
+  }) => Promise<RemoteManagedAgentPrepareRetirementResult>;
   /** Decide one hosted runtime create or status read. The plane reads the manager actor's ledger
    *  row, the gate, and the proof itself; it touches no provider and writes nothing. */
   verifyManagedAgentRuntime: (args: {
@@ -717,6 +735,15 @@ export async function openAuthAuthorityPlane(opts: {
     observedRunRequests.delete(subject);
     return observed !== undefined && observed.expires > Date.now() ? observed.request : undefined;
   };
+  const observeManagerGate: ObserveManagerGate = async (instanceId) =>
+    serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
+  // A managed lifecycle's broker footprint, released under a deprovisioner pinned to that uid, so
+  // no call here can reach a same-name successor's durables.
+  const deprovisionManagedFootprint = async (owner: string, actor: string, lifecycleUid: string, memberChannels: string[]): Promise<void> => {
+    const targetId = principalKey(owner, actor).key;
+    const creds = await mintCreds(issuerAuth(), newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid, memberChannels } });
+    await deprovisionAgent({ servers: server, space, targetId, lifecycleUid, memberChannels, creds });
+  };
   return {
     authorizeConnect: async (t) => {
       refuseIfFenced();
@@ -1173,6 +1200,103 @@ export async function openAuthAuthorityPlane(opts: {
           return gate.observe();
         },
       });
+    },
+    enrollManagedAgent: async ({ owner, scope, request, sentinelCreds, agentBearerExchangeUrl }) => {
+      refuseIfFenced();
+      const r = await authorizeRemoteManagedAgentEnrollment({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate });
+      const t = r.target;
+      // A fresh uid is never one a retirement tombstoned, and only the host can make that promise.
+      const lifecycleUid = mintLifecycleUid();
+      // The grant first: its envelope walk against the supervising actor refuses an over-wide
+      // request before any durable exists.
+      const row = grantManagedActor(opts.dir, {
+        owner,
+        actor: t.actor,
+        scope: t.capabilities ?? [],
+        allowSubscribe: t.allowSubscribe ?? [],
+        allowPublish: t.allowPublish ?? [],
+        ...(t.role !== undefined ? { role: t.role } : {}),
+        ...(t.label !== undefined ? { label: t.label } : {}),
+        parent: principalKey(owner, r.actor).key,
+        lifecycleUid,
+        tokenHash: t.tokenHash,
+      });
+      const subscribe = t.subscribe ?? [];
+      try {
+        const identity = newIdentity();
+        const provisioner = new CotalEndpoint({
+          space,
+          servers: server,
+          channels: [],
+          creds: await mintCreds(issuerAuth(), identity, "provisioner"),
+          card: { id: identity.id, name: "provisioner", role: "provisioner", kind: "endpoint" },
+          registerPresence: false,
+          watchPresence: false,
+          watchChannels: false,
+          consume: false,
+        });
+        await provisioner.start();
+        try {
+          await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe, allowSubscribe: row.allowSubscribe, role: row.role });
+        } finally {
+          await provisioner.stop();
+        }
+      } catch (e) {
+        // The participant learns no uid from a refused enrollment and so can never retire this one:
+        // the grant and any durable it got must go now.
+        revokeManagedActor(opts.dir, owner, t.actor);
+        await deprovisionManagedFootprint(owner, t.actor, lifecycleUid, []).catch((err) =>
+          opts.log(`auth-service: refused enrollment of ${owner}/${t.actor} left durables at ${lifecycleUid}: ${err instanceof Error ? err.message : String(err)}`));
+        throw e;
+      }
+      return {
+        v: 1,
+        kind: "manager-managed-agent-enrollment",
+        space,
+        owner,
+        actor: r.actor,
+        instanceId: r.instanceId,
+        managerLifecycleUid: r.managerLifecycleUid,
+        requestId: r.requestId,
+        registrationProof: r.registrationProof,
+        serveEpoch: r.serveEpoch,
+        material: {
+          owner,
+          actor: t.actor,
+          lifecycleUid,
+          sentinelCreds,
+          subscribe,
+          allowSubscribe: row.allowSubscribe,
+          allowPublish: row.allowPublish,
+          agentBearerExchangeUrl,
+        },
+      };
+    },
+    prepareManagedAgentRetirement: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      const r = await authorizeRemoteManagedAgentPrepareRetirement({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate });
+      const { actor, lifecycleUid } = r.target;
+      // Only a grant still at the target uid is this lifecycle's. A row at another uid belongs to a
+      // successor, and an absent row means an earlier attempt already released both halves.
+      const row = findManagedActor(opts.dir, owner, actor);
+      if (row?.lifecycleUid === lifecycleUid) {
+        // Footprint before grant: while the row stands, a retry still knows which channels to purge.
+        await deprovisionManagedFootprint(owner, actor, lifecycleUid, row.allowSubscribe.filter(isConcreteChannel));
+        revokeManagedActor(opts.dir, owner, actor);
+      }
+      return {
+        v: 1,
+        kind: "manager-managed-agent-prepare-retirement",
+        space,
+        owner,
+        actor: r.actor,
+        instanceId: r.instanceId,
+        managerLifecycleUid: r.managerLifecycleUid,
+        requestId: r.requestId,
+        target: r.target,
+        opId: r.opId,
+        prepared: true,
+      };
     },
     verifyManagedAgentRuntime: async ({ owner, request }) => {
       refuseIfFenced();
@@ -1800,6 +1924,9 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
       mintConnectCredential: plane.mintConnectCredential,
     });
     const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
+    // Set once the public face binds. An enrolled child's bearer exchanges there without the
+    // loopback capability, so enrollment needs that face.
+    let publicUrl: string | undefined;
     const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
     const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
     const ctx: HandlerCtx = {
@@ -1813,6 +1940,12 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
       verifyManagedAgentEnrollment: plane.verifyManagedAgentEnrollment,
       verifyManagedAgentPrepareRetirement: plane.verifyManagedAgentPrepareRetirement,
       verifyManagedAgentRuntime: plane.verifyManagedAgentRuntime,
+      enrollManagedAgent: (args) => {
+        if (publicUrl === undefined)
+          throw new EpEnvelopeError("failed-precondition", "managed agent enrollment needs the public exchange face, where the enrolled agent's bearer exchanges - start the auth service with --exchange-public-port");
+        return plane.enrollManagedAgent({ ...args, sentinelCreds: callout.sentinelCreds, agentBearerExchangeUrl: publicUrl });
+      },
+      prepareManagedAgentRetirement: plane.prepareManagedAgentRetirement,
       scanManagerGoalIndex: plane.scanManagerGoalIndex,
       authorizeManagerAdmin: plane.authorizeManagerAdmin,
       admitManagerRun: plane.admitManagerRun,
@@ -1841,7 +1974,6 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
 
     // The optional PUBLIC face: its own server, its own closed route table, its own budgets — also
     // loopback-bound (the operator's reverse proxy terminates TLS and forwards here).
-    let publicUrl: string | undefined;
     if (o.publicFace !== undefined) {
       const face = o.publicFace;
       // The discovery bundle is GENERATED from the daemon's own recorded config — the pinned IdP,
@@ -2033,6 +2165,8 @@ interface HandlerCtx {
   verifyManagedAgentEnrollment: AuthAuthorityPlane["verifyManagedAgentEnrollment"];
   verifyManagedAgentPrepareRetirement: AuthAuthorityPlane["verifyManagedAgentPrepareRetirement"];
   verifyManagedAgentRuntime: AuthAuthorityPlane["verifyManagedAgentRuntime"];
+  enrollManagedAgent: (args: HumanHolder & { request: RemoteManagedAgentEnrollmentRequest }) => Promise<RemoteManagedAgentEnrollmentResult>;
+  prepareManagedAgentRetirement: AuthAuthorityPlane["prepareManagedAgentRetirement"];
   scanManagerGoalIndex: (args: HumanHolder & { request: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest }) => ReturnType<AuthAuthorityPlane["scanManagerGoalIndex"]>;
   authorizeManagerAdmin: (args: HumanHolder & { request: RemoteManagerAdminAuthorizationRequest }) => ReturnType<AuthAuthorityPlane["authorizeManagerAdmin"]>;
   admitManagerRun: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["admitManagerRun"]>;
@@ -2055,7 +2189,7 @@ interface HandlerCtx {
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
-  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt">,
+  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt">,
   owner: string,
   body: { request: unknown },
 ): Promise<unknown> {
@@ -2064,13 +2198,12 @@ export async function dispatchManagerAuthorityRequest(
   const request = body.request as { kind?: unknown; actor?: unknown };
   if (typeof request.actor !== "string") throw new Error("manager-service authority request requires an actor");
   const row = ledgerAuthorizeGrant(ctx.dir)(owner, request.actor);
-  // #1972: the managed-agent lifecycle operations mutate host storage (a database row, JetStream
-  // durables, a ledger grant), and stock holds none of that composition. A host platform intercepts
-  // these kinds on its own public route and calls the loopback verify-enrollment door for the
-  // decision. Refusing here keeps them from falling through to `managerServiceAuthority`, which
-  // would answer a manager-lifecycle phase for an agent-lifecycle request.
-  if (request.kind === "manager-managed-agent-enrollment" || request.kind === "manager-managed-agent-prepare-retirement")
-    throw new EpEnvelopeError("unimplemented", "managed agent enrollment and retirement preparation must be handled by host platform interception");
+  // #1972: this service owns the ledger and the space's provisioning authority, so it is the host
+  // that enrolls a remote manager's managed agent and prepares its terminal release.
+  if (request.kind === "manager-managed-agent-enrollment")
+    return ctx.enrollManagedAgent({ owner, scope: row.scope ?? [], request: body.request as RemoteManagedAgentEnrollmentRequest });
+  if (request.kind === "manager-managed-agent-prepare-retirement")
+    return ctx.prepareManagedAgentRetirement({ owner, scope: row.scope ?? [], request: body.request as RemoteManagedAgentPrepareRetirementRequest });
   // The hosted runtime kinds read and drive host-owned intent state that stock does not hold.
   if (request.kind === "manager-managed-agent-runtime-create" || request.kind === "manager-managed-agent-runtime-status")
     throw new EpEnvelopeError("unimplemented", "managed agent runtime create and status must be handled by host platform interception");

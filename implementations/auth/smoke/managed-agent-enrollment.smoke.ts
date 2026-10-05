@@ -15,9 +15,9 @@
  *   C. prepare-retirement authorization: the same gate/proof/scope family plus the two guards only
  *      it has — a target owner that is not the authenticated owner, and an opId that is not
  *      `managedRetirementOpId(target.lifecycleUid)`.
- *   D. the dispatch refusal: stock `dispatchManagerAuthorityRequest` answers `unimplemented` for
- *      both kinds rather than falling through to a manager-lifecycle phase, and the refusal happens
- *      for a caller whose ledger row is otherwise fully granted.
+ *   D. the dispatch routing: stock `dispatchManagerAuthorityRequest` sends each kind to its own
+ *      host arm with the caller's ledger scope, rather than falling through to a manager-lifecycle
+ *      phase.
  *
  * The HTTP door's own guards, its internal scope derivation, and its public-face 404 run against
  * the real daemon in remote-exchange.smoke.ts.
@@ -273,7 +273,7 @@ try {
       () => release(prepare({ registrationProof: `sha256:${"f".repeat(64)}` })), "permission-denied", /does not match current host registration/);
   }
 
-  console.log("D. the stock dispatch refusal");
+  console.log("D. the stock dispatch routing");
   {
     const store = workspaceSecretStore(tmp);
     ensurePinnedIdp(dir, "http://127.0.0.1:49151/api/auth");
@@ -281,28 +281,33 @@ try {
       store, dir, space, operatorSeed: auth.operator.seed,
       account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     });
-    // A FULLY granted caller: the refusal below must be about the operation having no stock
-    // composition, never about this row lacking authority.
     grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "admin"], allowSubscribe: [">"], allowPublish: [">"] });
     const wrongArm = async () => { throw new Error("wrong dispatcher arm"); };
+    const routed: Array<{ arm: string; owner: string; scope: string[] }> = [];
+    const hostArm = (arm: string) => (async ({ owner, scope }: { owner: string; scope: string[] }) => {
+      routed.push({ arm, owner, scope });
+      throw new Error(`${arm} arm`);
+    }) as never;
     const ctx = {
       space, dir, secrets: store,
       managerServiceAuthority: wrongArm as never,
       maintainRemoteManager: wrongArm as never,
       validateRetainedAgent: wrongArm as never,
+      enrollManagedAgent: hostArm("enrollment"),
+      prepareManagedAgentRetirement: hostArm("prepare-retirement"),
       scanManagerGoalIndex: wrongArm as never,
       authorizeManagerAdmin: wrongArm as never,
       admitManagerRun: wrongArm as never,
       issueManagerRunAttempt: wrongArm as never,
     };
-    await refuses("dispatch refuses an enrollment request with unimplemented",
-      () => dispatchManagerAuthorityRequest(ctx, OWNER, { request: enrollment() }),
-      "unimplemented", /must be handled by host platform interception/);
-    await refuses("dispatch refuses a prepare-retirement request with unimplemented",
-      () => dispatchManagerAuthorityRequest(ctx, OWNER, { request: prepare() }),
-      "unimplemented", /must be handled by host platform interception/);
-    // The proof that the refusal is the KIND branch and not a broken dispatcher: the same context,
-    // the same granted row, a manager-lifecycle request — and the request reaches its arm.
+    const enrolled = await outcome(() => dispatchManagerAuthorityRequest(ctx, OWNER, { request: enrollment() }));
+    check("dispatch sends an enrollment request to the host enrollment arm with the caller's ledger scope",
+      enrolled.message === "enrollment arm" && routed.at(-1)?.owner === OWNER && routed.at(-1)?.scope.includes("supervise") === true, { enrolled, routed });
+    const prepared = await outcome(() => dispatchManagerAuthorityRequest(ctx, OWNER, { request: prepare() }));
+    check("dispatch sends a prepare-retirement request to the host retirement arm with the caller's ledger scope",
+      prepared.message === "prepare-retirement arm" && routed.at(-1)?.owner === OWNER && routed.at(-1)?.scope.includes("supervise") === true, { prepared, routed });
+    // The same context, the same granted row, a manager-lifecycle request — and the request reaches
+    // its own arm, not a managed-agent one.
     const reached = await outcome(() => dispatchManagerAuthorityRequest(ctx, OWNER, { request: {
       v: 1, kind: "manager-service-authority", operation: "prepare", space, actor: "cli",
       instanceId: INSTANCE, managerLifecycleUid: MANAGER_UID, requestId: `req${mintLifecycleUid()}`, identities,

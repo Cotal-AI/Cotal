@@ -146,6 +146,8 @@ await cell("actual host dispatcher runs the fixed provider validation and return
       space, dir, secrets: store,
       managerServiceAuthority: async () => { throw new Error("wrong dispatcher arm"); },
       maintainRemoteManager: async () => { throw new Error("wrong dispatcher arm"); },
+      enrollManagedAgent: async () => { throw new Error("wrong dispatcher arm"); },
+      prepareManagedAgentRetirement: async () => { throw new Error("wrong dispatcher arm"); },
       scanManagerGoalIndex: async () => { throw new Error("wrong dispatcher arm"); },
       authorizeManagerAdmin: async () => { throw new Error("wrong dispatcher arm"); },
       admitManagerRun: async () => { throw new Error("wrong dispatcher arm"); },
