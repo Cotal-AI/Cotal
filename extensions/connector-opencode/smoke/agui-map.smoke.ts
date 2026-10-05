@@ -139,7 +139,7 @@ const R = await replay(true);
     first.slice(1).join(",") === [AGUI_EVENT_TYPE.TEXT_MESSAGE_START, AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT, AGUI_EVENT_TYPE.TEXT_MESSAGE_END].join(","),
     first.slice(1));
   c("arms:a step-start maps to nothing", emit({ id: "prt_1", messageID: "msg_1", type: "step-start" }).length === 0);
-  c("arms:a step-finish maps to nothing, usage included, because no carrier exists for it",
+  c("arms:a step-finish maps to nothing, usage included",
     emit({ id: "prt_2", messageID: "msg_1", type: "step-finish", cost: 1 }).length === 0);
   c("arms:a patch maps to nothing", emit({ id: "prt_3", messageID: "msg_1", type: "patch" }).length === 0);
   c("arms:a synthetic text part maps to nothing",
