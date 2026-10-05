@@ -21,6 +21,7 @@ import {
   createManagerInstanceIdentity,
   loadManagerInstanceIdentity,
   saveManagerInstanceIdentity,
+  spaceSegment,
 } from "../src/auth-paths.js";
 
 const N = 8;
@@ -61,8 +62,8 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
       adopted.instanceId === planted.instanceId && adopted.serveIdentity.id === planted.serveIdentity.id);
 
     const refuseRoot = mkdtempSync(join(tmpdir(), "cotal-iid-refuse-"));
-    mkdirSync(join(refuseRoot, ".cotal", "auth"), { recursive: true });
-    const refusePath = join(refuseRoot, ".cotal", "auth", `manager-instance.${Buffer.from(SPACE, "utf8").toString("hex")}.json`);
+    mkdirSync(join(refuseRoot, ".cotal", spaceSegment(SPACE)), { recursive: true });
+    const refusePath = join(refuseRoot, ".cotal", spaceSegment(SPACE), "manager-instance.json");
     writeFileSync(refusePath, "{not-json", { flag: "wx", mode: 0o600 });
     let refuseMsg = "";
     try {
@@ -75,11 +76,8 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
     rmSync(refuseRoot, { recursive: true, force: true });
 
     const lostRoot = mkdtempSync(join(tmpdir(), "cotal-iid-lost-"));
-    mkdirSync(join(lostRoot, ".cotal", "auth"), { recursive: true });
-    const lostPath = join(
-      lostRoot, ".cotal", "auth",
-      `manager-instance.${Buffer.from(SPACE, "utf8").toString("hex")}.json`,
-    );
+    mkdirSync(join(lostRoot, ".cotal", spaceSegment(SPACE)), { recursive: true });
+    const lostPath = join(lostRoot, ".cotal", spaceSegment(SPACE), "manager-instance.json");
     writeFileSync(lostPath, JSON.stringify(candidate("winner"), null, 2), { flag: "wx", mode: 0o600 });
     const adoptedAfterExclusive = createManagerInstanceIdentity(lostRoot, SPACE, candidate("late"));
     check("ACCEPT: exclusive-create loser adopts the winner (EEXIST then load)",
@@ -146,7 +144,7 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
       }
       const unique = new Set(ids);
       const fileId = loadManagerInstanceIdentity(raceRoot, SPACE)?.instanceId;
-      const leftovers = readdirSync(join(raceRoot, ".cotal", "auth")).filter((n) => n.endsWith(".tmp"));
+      const leftovers = readdirSync(join(raceRoot, ".cotal", spaceSegment(SPACE))).filter((n) => n.endsWith(".tmp"));
       if (unique.size !== 1 || fileId !== [...unique][0] || leftovers.length !== 0) {
         raced++;
         console.log(`  ✗ FAIL: round ${r} unique=${unique.size} file=${fileId} leftovers=${leftovers.length}`);

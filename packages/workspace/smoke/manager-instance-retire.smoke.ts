@@ -10,11 +10,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  authDir,
   createManagerInstanceIdentity,
   loadManagerInstanceIdentity,
   retireManagerInstanceIdentity,
   saveManagerInstanceIdentity,
+  spaceSegment,
   type ManagerInstanceIdentity,
   type RetireManagerInstanceIdentityOpts,
 } from "../src/auth-paths.js";
@@ -26,7 +26,8 @@ let refused = 0;
 let removed = 0;
 const check = (name: string, ok: boolean) => { assert.ok(ok, name); console.log(`  ✓ ${name}`); passed++; };
 const ident = (n: string, seed = `seed-${n}`): ManagerInstanceIdentity => ({ instanceId: `inst-${n}`, serveIdentity: { id: `U${n}`, seed } });
-const file = (space: string) => join(authDir(root), `manager-instance.${Buffer.from(space, "utf8").toString("hex")}.json`);
+const dir = (space: string) => join(root, ".cotal", spaceSegment(space));
+const file = (space: string) => join(dir(space), "manager-instance.json");
 const retire = (space: string, expected: ManagerInstanceIdentity, opts?: RetireManagerInstanceIdentityOpts) => {
   examined++;
   try {
@@ -39,7 +40,7 @@ const retire = (space: string, expected: ManagerInstanceIdentity, opts?: RetireM
     return { outcome: "refused" as const, error: (e as Error).message };
   }
 };
-const noStrays = () => readdirSync(authDir(root)).every((n) => !n.includes(".retiring."));
+const noStrays = () => readdirSync(join(root, ".cotal")).every((d) => readdirSync(join(root, ".cotal", d)).every((n) => !n.includes(".retiring.")));
 const childWrite = (action: "b" | "c" | "d" | "remove") => {
   // Whatever runs this suite may be a managed agent session, so the inherited environment can carry
   // a live credential and a live broker URL. Strip every COTAL_ key from the copy before the child
@@ -96,11 +97,11 @@ try {
   // A non-ENOENT rename failure is uncertain, not an absent/removed retirement.
   let renameFailure: unknown;
   try {
-    retireManagerInstanceIdentity(root, "beta", sibling, { onBeforeRename: () => chmodSync(authDir(root), 0o500) });
+    retireManagerInstanceIdentity(root, "beta", sibling, { onBeforeRename: () => chmodSync(dir("beta"), 0o500) });
   } catch (error) {
     renameFailure = error;
   } finally {
-    chmodSync(authDir(root), 0o700);
+    chmodSync(dir("beta"), 0o700);
   }
   check("a non-ENOENT rename error refuses by name", renameFailure instanceof Error &&
     renameFailure.message.startsWith("manager-instance-identity-retire-refused") &&
@@ -142,8 +143,8 @@ try {
     },
     onBeforeLinkBack: () => {
       racesTriggered++;
-      const strays = readdirSync(authDir(root)).filter((n) => n.includes(".retiring."));
-      if (strays.length > 0) capturedCollisionPath = join(authDir(root), strays[0]);
+      const strays = readdirSync(dir(raceSpace)).filter((n) => n.includes(".retiring."));
+      if (strays.length > 0) capturedCollisionPath = join(dir(raceSpace), strays[0]);
       childWrite("d");
     },
   });
