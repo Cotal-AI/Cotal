@@ -63,13 +63,8 @@
  * turn can be a turn without re-emitting the peer's content. See {@link ORIGIN_RULE} and
  * {@link ABSENT_ORIGIN_RULE}, which are where this now lives.
  *
- * **KEEP THIS PARAGRAPH HONEST.** Its earlier form said "no run is ever opened and the connector
- * emits nothing" and "escalated as a plan defect rather than decided here" — describing the state
- * before the ruling, directly above code that had already implemented it. A successor read it,
- * believed it over the code, and escalated a closed question as a live blocker; the measurement that
- * corrected it took one run of the real mapper (**67 runs / 5217 events** on the 5938-record
- * session, `diagnose()` → `null`). **A stale header is not a documentation defect, it is a false
- * claim about the function beneath it.** If the rule changes again, this paragraph changes with it.
+ * On the 5938-record session the real mapper opens **67 runs** and emits **5217 events**, and
+ * `diagnose()` returns `null`.
  *
  * **DO NOT "FIX" THIS BY TREATING ABSENT `origin` AS HUMAN.** In a Claude session `user` is also the
  * role of a TOOL RESULT: that predicate selects **825** of the interactive session's 892 user
