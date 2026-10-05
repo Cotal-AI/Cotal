@@ -101,9 +101,9 @@ function checkedEviction(principal: string, data: unknown, log: (line: string) =
   return d as EvictionResult;
 }
 
-/** Build the registration barrier's `evict(holderPrincipal) → verifiedGone` over the delivery
- *  daemon's `ctl.delivery-admin` rail. Per-call connection (eviction is a rare, heavyweight barrier
- *  step; a standing privileged connection would be a wider surface holding nothing). */
+/** Verify-evict ONE principal over the delivery daemon's `ctl.delivery-admin` rail, answering the
+ *  daemon's evidence. Per-call connection (eviction is a rare, heavyweight barrier step; a standing
+ *  privileged connection would be a wider surface holding nothing). */
 export function makeManagerEndpointEvictionEvidence(opts: {
   space: string;
   servers: string;
@@ -166,39 +166,44 @@ export function makeManagerEndpointEvictionEvidence(opts: {
   };
 }
 
-/** Boolean adapter for barriers that only consume the verified-gone decision. */
-export function makeManagerEndpointEvictor(opts: Parameters<typeof makeManagerEndpointEvictionEvidence>[0]): (holderPrincipal: string) => Promise<boolean> {
-  const evidence = makeManagerEndpointEvictionEvidence(opts);
-  return async (principal) => (await evidence(principal)).verifiedGone;
-}
-
-/** The repair's family evictor: verify-evict a SET of holders over ONE scoped connection, with one
- *  `evictPrincipals` request (one shared daemon sweep) per {@link EVICT_PRINCIPALS_MAX} holders.
- *  Answers `verifiedGone` per holder in input order. A daemon that does not serve the batch verb,
- *  or any unreachable or unusable reply, throws naming the cure: nothing is reported verified. */
+/** The family evictor of the registration barrier and the frozen-gate repair: verify-evict a SET of
+ *  holders with one `evictPrincipals` request (one shared daemon sweep) per
+ *  {@link EVICT_PRINCIPALS_MAX} holders. Answers `verifiedGone` per holder in input order. A daemon
+ *  that does not serve the batch verb, or any unreachable or unusable reply, throws naming the cure:
+ *  nothing is reported verified. */
 export function makeManagerEndpointHolderEvictor(opts: Parameters<typeof makeManagerEndpointEvictionEvidence>[0]): (holderPrincipals: readonly string[]) => Promise<boolean[]> {
   return async (principals) => {
-    const id = newIdentity();
-    let ep: CotalEndpoint | undefined;
     try {
-      const creds = await mintCreds(opts.auth, id, "endpoint-evictor", { expiresInSeconds: 60 });
-      ep = new CotalEndpoint({
-        space: opts.space,
-        servers: opts.servers,
-        creds,
-        card: { id: id.id, name: "manager-endpoint-evict", kind: "endpoint" },
-        channels: [],
-        consume: false,
-        watchChannels: false,
-        watchPresence: false,
-        registerPresence: false,
-      });
-      ep.on("error", () => {});
-      await ep.start();
       const verified: boolean[] = [];
       for (let i = 0; i < principals.length; i += EVICT_PRINCIPALS_MAX) {
         const chunk = principals.slice(i, i + EVICT_PRINCIPALS_MAX);
-        const r = await ep.requestDeliveryAdmin("evictPrincipals", { principals: chunk }, 15_000);
+        // Each attempt mints its own 60s credential, so waiting out a silent rail never leaves a
+        // request riding a credential that expired during the wait.
+        const ask = async (requestMs: (capMs: number) => number): Promise<ControlReply> => {
+          const id = newIdentity();
+          let ep: CotalEndpoint | undefined;
+          try {
+            const creds = await mintCreds(opts.auth, id, "endpoint-evictor", { expiresInSeconds: 60 });
+            ep = new CotalEndpoint({
+              space: opts.space,
+              servers: opts.servers,
+              creds,
+              card: { id: id.id, name: "manager-endpoint-evict", kind: "endpoint" },
+              channels: [],
+              consume: false,
+              watchChannels: false,
+              watchPresence: false,
+              registerPresence: false,
+            });
+            ep.on("error", () => {});
+            await ep.start();
+            return await ep.requestDeliveryAdmin("evictPrincipals", { principals: chunk }, requestMs(15_000));
+          } finally {
+            await ep?.stop().catch(() => {});
+          }
+        };
+        const r = await untilDeliveryAdminAnswers(opts.unreachableWaitMs ?? 0, ask, (reason, delayMs) =>
+          opts.log(`manager-endpoint-evict: the ctl.delivery-admin rail did not answer (${reason}); retrying in ${delayMs / 1000}s`));
         if (!r.ok) {
           opts.log(`manager-endpoint-evict: the delivery daemon refused the family eviction: ${r.error ?? "(no error copy)"}`);
           throw new Error(`the delivery daemon refused the family eviction: ${r.error ?? "no error copy"}`);
@@ -215,8 +220,6 @@ export function makeManagerEndpointHolderEvictor(opts: Parameters<typeof makeMan
         `the delivery daemon could not verify-evict the credential family on the ctl.delivery-admin rail (${e instanceof Error ? e.message : String(e)}); ` +
         `the gate stays frozen. Start the delivery daemon (\`cotal up\` runs it) at this version and retry — eviction is never skipped (SPEC 13.1)`,
       );
-    } finally {
-      await ep?.stop().catch(() => {});
     }
   };
 }

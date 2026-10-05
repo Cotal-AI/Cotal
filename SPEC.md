@@ -4703,10 +4703,11 @@ single-function profiles, each granting only the verbs its function needs and no
   every principal still pending. Every KICK settles before the re-scan that verifies it. Its reply
   is one `EvictionResult` per principal in request order, each read as `evictPrincipal`'s
   (an under-reported scan leaves every principal it would have decided `verifiedGone:false,
-  scanComplete:false`). Frozen-gate reconciliation (§13.1) verify-evicts its whole holder set
-  through it, so repair costs a constant number of sweeps rather than one per family holder, and
-  KICKing a live family costs one broker round trip per 16 live connections. A
-  daemon that does not serve it refuses the verb, and the repair then leaves the gate frozen. Its READ-ONLY twin `principalLiveness` answers whether one
+  scanComplete:false`). Frozen-gate reconciliation and an endpoint re-registration (§13.1) each
+  verify-evict their whole holder set through it, so neither costs one sweep per family holder,
+  and KICKing a live family costs one broker round trip per 16 live connections. A
+  daemon that does not serve it refuses the verb, and the repair or re-registration then leaves
+  the gate frozen. Its READ-ONLY twin `principalLiveness` answers whether one
   principal still holds a live connection (the same CONNZ sweep, observer credential only — the
   KICK credential is never opened on that path), reporting `live` / `gone` / `unknown` with scan
   completeness as a separate field and a reply bound to the exact principal queried. It exists

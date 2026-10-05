@@ -2,7 +2,7 @@
   "suite": [
     "implementations/manager/smoke/registration-executor-resume.smoke.ts"
   ],
-  "guard": "manager boot gives post-heal re-registration fresh scoped authority and resumes durable verified-holder progress under the same registration operation",
+  "guard": "manager boot gives post-heal re-registration fresh scoped authority and resumes the same registration operation, re-sending its credential family as one eviction request",
   "command": "pnpm smoke:registration-executor-resume",
   "completionMarker": "ISSUE 1335 COMPRESSED LIFETIME",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/registration-executor-resume.json",
@@ -11,10 +11,10 @@
     "command because registerServiceInstance and the repair cursor live in @cotal-ai/core.",
     "",
     "MUTATION 1 restores the defect: heal and the following registration share one executor window,",
-    "so a six-second credential expires during the delayed last holder of the new registration.",
+    "so a six-second credential expires during the new registration's delayed family eviction.",
     "",
-    "MUTATION 2 ignores durable verified holders on the same-op retry, so the last-holder delay is",
-    "followed by a full re-walk instead of one remaining eviction."
+    "MUTATION 2 sends the registration's family one holder per eviction request, so each attempt",
+    "costs eight requests instead of one."
   ],
   "mutations": [
     {
@@ -27,14 +27,14 @@
       "note": "Without a new executor after the eight-holder boot heal, the six-second registration window is already exhausted and the takeover cannot converge."
     },
     {
-      "name": "same-op retry re-verifies holders the durable cursor already recorded",
+      "name": "registration evicts its family one holder per request",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "    const verified = new Set(progress?.verified ?? []);",
-      "replace": "    const verified = new Set<string>();",
+      "find": "      const gone = await args.barrier.evict(pending);",
+      "replace": "      const gone: boolean[] = [];\n      for (const h of pending) gone.push(...(await args.barrier.evict([h])));",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
-      "expectRed": "registration resume skips already-verified holders",
-      "cell": "registration resume skips already-verified holders",
-      "note": "The gate can still reopen after a full re-walk. Only the durable skip is removed, which this cell counts."
+      "expectRed": "registration resume re-sends the family as one request",
+      "cell": "registration resume re-sends the family as one request",
+      "note": "The gate still reopens with one request per holder. Only the request count changes, which this cell counts."
     }
   ]
 }

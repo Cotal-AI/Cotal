@@ -11,8 +11,8 @@
     {
       "name": "remote registration drops host eviction wiring",
       "file": "implementations/manager/src/remote-register.ts",
-      "find": "      evict: args.evict,",
-      "replace": "      evict: async () => false,",
+      "find": "      evict: async (principals) => {\n        const gone: boolean[] = [];\n        for (const principal of principals) gone.push(await args.evict(principal));\n        return gone;\n      },",
+      "replace": "      evict: async (principals) => principals.map(() => false),",
       "expectRed": "same remote manager instance restarts after clean expired-executor deregistration",
       "cell": "same remote manager instance restarts after clean expired-executor deregistration",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/manager build"

@@ -600,15 +600,19 @@ export async function registerServiceInstance(
       }
     }
     const verified = new Set(progress?.verified ?? []);
-    for (const holderPrincipal of holders) {
-      if (verified.has(holderPrincipal)) continue;
-      if (!(await args.barrier.evict(holderPrincipal)))
-        throw new Error(`principal "${holderPrincipal}" is not verified evicted`);
-      if (args.barrier.progress && progress) {
-        progress = { ...progress, verified: [...verified, holderPrincipal].sort() };
+    const pending = holders.filter((h) => !verified.has(h));
+    if (pending.length > 0) {
+      const gone = await args.barrier.evict(pending);
+      if (gone.length !== pending.length)
+        throw new Error(`the evictor answered ${gone.length} verdict(s) for ${pending.length} holder(s)`);
+      const evicted = pending.filter((_, i) => gone[i] === true);
+      if (args.barrier.progress && progress && evicted.length > 0) {
+        progress = { ...progress, verified: [...verified, ...evicted].sort() };
         progressRevision = await args.barrier.progress.save(progress, progressRevision);
       }
-      verified.add(holderPrincipal);
+      const unverified = pending.filter((_, i) => gone[i] !== true);
+      if (unverified.length > 0)
+        throw new Error(`principal(s) ${unverified.map((h) => `"${h}"`).join(", ")} not verified evicted`);
     }
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `re-registration could not revoke + verify-evict the superseded serve family; the gate is left frozen for reconciliation, no new spec published (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
@@ -1778,12 +1782,14 @@ export interface EpIssuanceBarrier {
   enumerate: () => Promise<EpServeLedgerRow[]> | EpServeLedgerRow[];
   /** Flip one enumerated row `active`→`revoked` (§13.1: enforce revocation on the ledger). */
   revoke: (row: EpServeLedgerRow) => Promise<void> | void;
-  /** VERIFIED cluster-wide eviction of a revoked `holderPrincipal` (§13.1): enforce the
-   *  revocation on every server, evict the principal's live connections, and RE-SCAN — returning
-   *  `true` only when the principal is verified GONE. FAIL-CLOSED: `false` (or a throw) means the
-   *  barrier MUST NOT complete (no spec write, no reopen); the gate stays frozen for reconciliation
-   *  so old authority is never published-over while it is still live. */
-  evict: (holderPrincipal: string) => Promise<boolean> | boolean;
+  /** VERIFIED cluster-wide eviction of revoked holder principals (§13.1): enforce the revocation
+   *  on every server, evict the principals' live connections, and RE-SCAN — answering, per holder
+   *  in input order, `true` only when that principal is verified GONE. FAIL-CLOSED: a `false` (or a
+   *  throw) means the barrier MUST NOT complete (no spec write, no reopen); the gate stays frozen
+   *  for reconciliation so old authority is never published-over while it is still live. It takes
+   *  the whole set because a family keeps a row for every credential it ever staged, so evicting
+   *  one holder at a time makes every restart slower than the last. */
+  evict: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[];
   /** Token-pinned CAS `frozen` → `open` at the successor coordinate (§13.1). TRUE iff the gate is
    *  still frozen at THIS barrier's `token`; FALSE if a reconciler/newer barrier superseded it (a
    *  stale reopen loses and never clobbers the newer gate). Advances the currency the barrier

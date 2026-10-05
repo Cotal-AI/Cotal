@@ -77,6 +77,12 @@ is still connecting, and nothing is sent after it. A daemon that answers fails t
 it refuses or its reply cannot be read. One that stays silent for the whole wait fails it, and the
 manager log names the rail.
 
+A restart verify-evicts every holder in the manager's credential family, and the family keeps a
+ledger row for every credential an earlier incarnation was issued. The manager sends those holders
+as one `evictPrincipals` request per 256, and the daemon answers each request with one shared sweep
+of the broker. A daemon that does not serve that verb refuses it, and the restart leaves the gate
+frozen.
+
 An agent binds its per-member delivery durable even when the plane reached by its connection has no
 ready delivery lease, so a daemon that starts later can deliver through it. A missing or not-ready
 lease emits a warning that names the durable, space, and condition. It tells the agent to reconnect

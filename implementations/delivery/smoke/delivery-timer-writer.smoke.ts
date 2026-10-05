@@ -129,7 +129,7 @@ function makeGate(init: { generation: number; processEpoch: number; registration
     },
     enumerate: () => [...rows.values()],
     revoke,
-    evict: () => true,
+    evict: (holderPrincipals) => holderPrincipals.map(() => true),
     reopen: (token, succ) => {
       if (gate.state !== "frozen" || gate.revision !== token) return false;
       gate.state = "open";

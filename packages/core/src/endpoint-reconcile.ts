@@ -167,8 +167,8 @@ export async function reconcileEndpointGate(opts: {
     );
 
   // ---- 3. Only now: the shipped composition, in the §13.1 order, over the DEAD op's own id.
-  // The repair evicts the family as one set below, so the barrier is built without a per-holder
-  // evictor (its own default is fail-closed) and is used here for enumerate, revoke and reopen.
+  // The repair evicts the family as one set below, so the barrier is built without an evictor (its
+  // own default is fail-closed) and is used here for enumerate, revoke and reopen.
   const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId });
 
   const rows = await barrier.enumerate();
