@@ -15,7 +15,7 @@ import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
 import { attributionSafe, fmtBody, fmtItem, fmtFrom } from "./framing.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
-import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
+import { buildOrientation, presenceLiveness, renderOrientation, type OrientationTool } from "./orientation.js";
 import { runDocs } from "./docs.js";
 
 /** What a Cotal tool returns: text to show the model, flagged on failure. MCP wraps it in
@@ -803,25 +803,12 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         "List the agents currently present in your Cotal space, with their role, status, and current activity.",
       run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
-        const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
         // #1229: rendering never refuses, but it must not present a partial or last-known roster
-        // as a complete one. `unpopulated` = the watch has not replayed its initial snapshot (a
-        // reconnect refill); `stale` = the bucket has been silent past the liveness window.
-        const view = agent.presenceView();
-        const viewSentence =
-          view.state === "unpopulated"
-            ? `The presence watch has not completed its initial snapshot in "${config.space}", so this list may be partial and a missing name is not an absence verdict.`
-            : view.state === "stale"
-              ? `The presence view in "${config.space}" has been silent since ${new Date(view.staleSince).toISOString()}, so the rows below are last-known.`
-              : "";
+        // as a complete one.
+        const presence = presenceLiveness(agent);
+        const preface = presence.live ? "" : `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: ${presence.detail}.\n\n`;
         const roster = agent.roster();
-        if (!roster.length) {
-          const empty = `No one is present in "${config.space}" yet.`;
-          const preface = writeFailure?.stuck
-            ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. This empty roster is last-known until a write succeeds or the broker store is repaired.`
-            : viewSentence;
-          return ok(preface ? `${preface}\n\n${empty}` : empty);
-        }
+        if (!roster.length) return ok(`${preface}No one is present in "${config.space}" yet.`);
         // Names aren't unique. Where one repeats, append the instance id so a DM can target the
         // exact peer (the id is the only authoritative address); keep unique rows clean.
         const counts = new Map<string, number>();
@@ -861,11 +848,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           const activity = p.activity ? `: ${p.activity}${activityAge === undefined ? "" : ` (set ${activityAge} ago)`}` : "";
           return `${statusGlyph(p.status)} ${who} — ${progress}${activity}${attn}${me}${mutedHint}${id}`;
         });
-        const rendered = `Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`;
-        const preface = writeFailure?.stuck
-          ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. The roster below is last-known until a write succeeds or the broker store is repaired.`
-          : viewSentence;
-        return ok(preface ? `${preface}\n\n${rendered}` : rendered);
+        return ok(`${preface}Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`);
       },
     },
     {
