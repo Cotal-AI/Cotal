@@ -9,6 +9,7 @@ import {
   endpointRegistrationBarrier,
   epAuthBucket,
   fetchContractArtifact,
+  foreignSlotHeldFrom,
   provisionEndpointGateOpen,
   publishContractArtifact,
   readEndpointGateGeneration,
@@ -97,9 +98,11 @@ export async function registerRemoteManagerAuthority(args: {
     try {
       await register();
     } catch (error) {
-      const match = (error as Error).message.match(/concurrent registration for endpoint "manager" \(instance "([a-z0-9]{26,32})"\) holds the governance slot/);
-      if (!match || !args.reconcileForeignRegistration) throw error;
-      await args.reconcileForeignRegistration(match[1]!);
+      // Only a holder whose gate is still at the slot's stamp left a frozen registration the host
+      // can reconcile; every other refusal is about this registrant's view of that gate.
+      const held = foreignSlotHeldFrom(error);
+      if (held?.condition !== "in-flight" || !args.reconcileForeignRegistration) throw error;
+      await args.reconcileForeignRegistration(held.holderInstanceId);
       await register();
     }
     const observed = await fence.observe();

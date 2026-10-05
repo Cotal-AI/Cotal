@@ -334,7 +334,12 @@ so reopening that gate is what separates them: the holder's own restart heals it
 [`cotal reconcile-gate`](cli.md#reconcile-gate) is the operator's route when the boot path cannot
 run. The registration path is the slot's only writer, and neither repair command writes it.
 A registration that cannot read the holder's gate at all refuses, because an unreadable gate does
-not distinguish the two states either.
+not distinguish the two states either. Each of these refusals carries
+`kind = ai.cotal.ep.foreign-slot-held` in `error.details[]` with the holder's instance id and the
+`condition` that refused: `in-flight` for a holder gate still at the stamp, or `no-seam`,
+`unreadable`, `garbled` or `behind` when the registration could not read that gate or read it below
+the stamp. A remote manager asks its host to reconcile the holder only on `in-flight`, the one
+condition a gate repair can clear.
 
 For the instance that cannot cooperate, an operator names it:
 `cotal deregister-instance --instance <id>` ([cli.md](cli.md#deregister-instance)). It removes the
