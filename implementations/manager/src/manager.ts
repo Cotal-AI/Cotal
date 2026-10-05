@@ -1853,8 +1853,9 @@ export class Manager {
       });
       await this.runHosting.reconcile();
     }
-    // A carried resume (#1499) needs this instance's transfer reader, which only an open mesh has here.
-    if (!this.auth && !this.remoteAuthority && !this.userMode) {
+    // A carried resume (#1499) needs this instance's transfer reader, which a manager mints from the
+    // space's signing seed (or needs none on an open mesh). A remote manager has no issuer for it yet.
+    if (!this.remoteAuthority && !this.userMode) {
       this.transcripts = new TranscriptReceiver({
         space: this.space,
         instanceId: this.managerInstanceId,
@@ -3639,7 +3640,7 @@ export class Manager {
       abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
       transcriptReceive: (ctx) => this.serveGated(ctx, () => adminGated(ctx, () => {
         if (!this.transcripts)
-          throw new EpEnvelopeError("failed-precondition", "transcript-receive: this manager does not receive carried transcripts (an authenticated mesh mints no transfer credentials yet)");
+          throw new EpEnvelopeError("failed-precondition", "transcript-receive: this manager does not receive carried transcripts (a user-mode or remote manager has no transfer reader)");
         return this.transcripts.receive(args(ctx) as unknown as TranscriptReceiveInput);
       })),
     });
@@ -9574,10 +9575,19 @@ export class Manager {
   }
 
   /** A connection holding this instance's transfer reader grants (docs/design/resume-transfer.md
-   *  section 6). An open mesh enforces no grants, so a bare one-shot connection is that reader. */
+   *  section 6), minted for this one receive or sweep from the space's signing seed. An open mesh
+   *  enforces no grants, so a bare one-shot connection is that reader there. */
   private async withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-    if (this.auth || this.remoteAuthority || this.userMode) throw new Error("withTransferReader: an authenticated mesh needs the scoped transfer reader");
-    const nc = await this.dial({ maxReconnectAttempts: 0 });
+    if (this.remoteAuthority || this.userMode) throw new Error("withTransferReader: a user-mode or remote manager has no transfer reader");
+    const nc = await this.dial(this.auth
+      ? {
+          ...standaloneConnectOpts({
+            creds: await mintCreds(this.auth, newIdentity(), "transfer-reader", { transferReader: { instanceId: this.managerInstanceId } }),
+            /* not yet wired to a recorded transport */ tls: false,
+          }),
+          maxReconnectAttempts: 0,
+        }
+      : { maxReconnectAttempts: 0 });
     try {
       return await fn(nc);
     } finally {

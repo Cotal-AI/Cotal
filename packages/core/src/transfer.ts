@@ -83,6 +83,47 @@ export async function ensureTransferStore(nc: NatsConnection, space: string, ins
   return bucket;
 }
 
+/**
+ * The operator's transfer instrument (design section 6): publish the one object's chunk and meta
+ * subjects in one instance's bucket, and read the last message of each with a direct get. It names
+ * no other object, no stream API beyond those two reads, and no consumer, so a copied instrument can
+ * extend or commit only the transcript the CLI hashed before minting it.
+ */
+export function transferWriterGrants(space: string, instanceId: string, hex: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const bucket = transferBucket(space, instanceId);
+  const subjects = [transferChunkSubject(bucket, hex), transferMetaSubject(bucket, hex)];
+  const direct = `$JS.API.DIRECT.GET.${objectStoreStream(bucket)}`;
+  return { publish: [...subjects, ...subjects.map((s) => `${direct}.${s}`)], subscribe: [`_INBOX_${connId}.>`] };
+}
+
+/**
+ * A manager instance's transfer reader (design section 6): create and read its own bucket's stream,
+ * stream it through the stock `get`'s push consumer, and remove a transfer with the stock delete
+ * marker and a filtered purge. Every row names the instance's own stream, so it reads no other
+ * instance's transfers. The push consumer delivers to this connection's own inbox, and a caller-chosen
+ * `deliver_subject` could only export the bucket this reader is already entitled to.
+ */
+export function transferReaderGrants(space: string, instanceId: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const bucket = transferBucket(space, instanceId);
+  const stream = objectStoreStream(bucket);
+  return {
+    publish: [
+      // The stock Object Store client opens its manager with the account API check.
+      "$JS.API.INFO",
+      `$JS.API.STREAM.CREATE.${stream}`,
+      `$JS.API.STREAM.INFO.${stream}`,
+      `$JS.API.STREAM.MSG.GET.${stream}`,
+      `$JS.API.STREAM.PURGE.${stream}`,
+      `$JS.API.CONSUMER.CREATE.${stream}`,
+      `$JS.API.CONSUMER.CREATE.${stream}.>`,
+      `$O.${bucket}.M.>`,
+      // Flow control replies of the stock get's push consumer, which the broker names by stream.
+      `$JS.FC.${stream}.>`,
+    ],
+    subscribe: [`_INBOX_${connId}.>`],
+  };
+}
+
 /** How far a chain got: the last chunk's headers and stream sequence, or all zero for no chain. */
 export interface ChainHead {
   offset: number;
@@ -152,7 +193,8 @@ export type WriteOutcome =
 export async function writeTransfer(nc: NatsConnection, bucket: string, bytes: Uint8Array): Promise<WriteOutcome> {
   const digest = createHash("sha256").update(bytes).digest();
   const hex = digest.toString("hex");
-  const jsm = await jetstreamManager(nc);
+  // The writer's instrument holds its two direct gets and nothing else on the JetStream API.
+  const jsm = await jetstreamManager(nc, { checkAPI: false });
   const js = jetstream(nc);
   const meta = await readMetaHead(jsm, bucket, hex, "direct");
   if (meta.live) return { state: "live", sent: 0, chunks: 0 };

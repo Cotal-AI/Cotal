@@ -7,7 +7,7 @@ import {
   epcStreamName, epeStreamName, epfStreamName, epjStreamName, eprStreamName,
   eptStreamName, eptReqStreamName, epwStreamName,
   channelBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
-  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket,
+  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket, transferBucket, objectStoreStream,
   type Profile, type MintOpts, type MintPrincipal, type EpCapability,
 } from "@cotal-ai/core";
 import { calloutPermissions } from "../../src/permissions.js";
@@ -20,8 +20,11 @@ export interface ProfileFixture {
   permissions: Record<string, unknown>;
   producer: "permissionsFor" | "epServeGrantRows" | "calloutPermissions";
 }
+/** The manager instance every instance-pinned fixture names, so {@link streamSubjects} can model its
+ *  transfer bucket. */
+const CENSUS_INSTANCE = "i".repeat(26);
 export async function profileFixtures(space: string): Promise<ProfileFixture[]> {
-  const uid = "u".repeat(26), instance = "i".repeat(26), session = "s".repeat(26);
+  const uid = "u".repeat(26), instance = CENSUS_INSTANCE, session = "s".repeat(26);
   const principal: MintPrincipal = { owner: "local", actor: "census", connId: "census0123456789abcdef", lifecycleUid: uid };
   const rows: ProfileFixture[] = [];
   const one = (profile: Profile, opts: MintOpts = {}, variant = "default", pr = principal): void => {
@@ -75,6 +78,8 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     "endpoint-evictor": () => one("endpoint-evictor"),
     issuer: () => one("issuer"),
     "run-admitter": () => one("run-admitter", { runAdmitter: { endpoint: "manager", runId: "census-run" } }),
+    "transfer-writer": () => one("transfer-writer", { transferWriter: { instanceId: instance, hex: "0".repeat(64) } }),
+    "transfer-reader": () => one("transfer-reader", { transferReader: { instanceId: instance } }),
     "remote-manager"() {
       for (const actor of [`manager_${instance}`, `manager_exec_${instance}`]) {
         one("remote-manager", { remoteManager: { owner: "local", instanceId: instance, actor } }, actor.startsWith("manager_exec") ? "executor" : "server", { ...principal, actor });
@@ -167,6 +172,8 @@ export function streamSubjects(space: string): Record<string, string> {
     [`KV_cotal_accepted_${space}`]: kv(`cotal_accepted_${space}`),
     [`KV_cotal_admission_${space}`]: kv(`cotal_admission_${space}`),
     [`KV_${sessionsBucket(space)}`]: kv(sessionsBucket(space)),
+    // The census instance's transfer bucket (SPEC 8): its writer and reader read it raw.
+    [objectStoreStream(transferBucket(space, CENSUS_INSTANCE))]: `$O.${transferBucket(space, CENSUS_INSTANCE)}.>`,
   };
 }
 
@@ -228,7 +235,7 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "session-ledger", "session-serving", "run-mediator", "run-operator", "remote-manager",
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
   "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
-  "issuer", "run-admitter",
+  "issuer", "run-admitter", "transfer-writer", "transfer-reader",
 ]);
 
 /** Every shipped `.ts` under the source trees a credential's grants can come from. */

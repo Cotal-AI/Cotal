@@ -76,6 +76,8 @@ import {
   resolveSeatControlTarget,
   type Check,
   type ConnectFlags,
+  type ControlAuth,
+  type ControlTarget,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -538,6 +540,7 @@ async function carryTranscriptOrExit(flags: ConnectFlags, on: string | undefined
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const t = await resolveControlTarget(flags, "control-caller-admin", on);
   const bucket = transferBucket(t.space, on);
+  const writer = await transferWriterOrExit(t, on, sha256);
   let sent = 0;
   let chunks = 0;
   for (;;) {
@@ -550,10 +553,22 @@ async function carryTranscriptOrExit(flags: ConnectFlags, on: string | undefined
       console.log(c.dim(`carried session ${id} to ${on}: sha256:${sha256}, ${sent} of ${bytes.length} bytes sent in ${chunks} chunks`));
       return answer.claim;
     }
-    const pass = await withControlConnection(t.server, t.auth, (nc) => writeTransfer(nc, bucket, bytes));
+    const pass = await withControlConnection(t.server, writer, (nc) => writeTransfer(nc, bucket, bytes));
     sent += pass.sent;
     chunks += pass.chunks;
   }
+}
+
+/** The transfer writer instrument for one object in one instance's bucket (design section 6), minted
+ *  from this host's copy of the mesh's signing seed once the transcript is hashed. An open mesh
+ *  enforces no grants, so a bare connection writes there. */
+async function transferWriterOrExit(t: ControlTarget, instanceId: string, hex: string): Promise<ControlAuth> {
+  if (t.mode === "open") return { tls: t.auth.tls };
+  if (t.mode !== "auth" || !t.spaceAuth) {
+    console.error(c.red("✗ resume: carrying a session mints a transfer writer from this mesh's signing seed, and this host holds none for it (a user-mode or off-registry connection)"));
+    process.exit(1);
+  }
+  return { creds: await mintCreds(t.spaceAuth, newIdentity(), "transfer-writer", { transferWriter: { instanceId, hex } }), tls: t.auth.tls };
 }
 
 /**

@@ -487,12 +487,14 @@ original is untouched.
 - `--detach --resume <id> --on <instance>` carries a session held on *your* machine to that
   manager instance, which may run on another host. The CLI finds the transcript under your
   Claude config (`~/.claude`, or `$CLAUDE_CONFIG_DIR`), sends it through a JetStream Object
-  Store bucket only that instance reads, and prints `carried session <id> to <instance>:
+  Store bucket only that instance reads, under a writer credential pinned to that one transcript,
+  and prints `carried session <id> to <instance>:
   sha256:<hex>, <sent> of <size> bytes sent in <chunks> chunks`. A re-run of the same bytes
   sends nothing, and an interrupted carry continues where it stopped. The seat forks it in a
   private Claude home under the manager's `.cotal/seat-homes/`, which no other seat's Claude
   lists or finds, and which is removed when the seat stops. `cotal attach` to such a seat names its
-  source after the seat name, as `(resumed from <host>:<id>)`.
+  source after the seat name, as `(resumed from <host>:<id>)`. A user-mode mesh and a remote manager
+  refuse a carry in this release.
 - A session name in place of an id is refused, listing each session on this host that carries
   that name with its id, SHA-256 and modification time. An id this host does not hold resolves
   against the **manager host's** `~/.claude`, as before.

@@ -88,6 +88,7 @@ import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CM
 import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
+import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
@@ -175,6 +176,13 @@ export type Profile =
   // over. Creates that ONE run's admission record and, later, its revocation marker. The driver
   // holds nothing on this store; the mediator reads it.
   | "run-admitter"
+  // A carried resume's TRANSFER WRITER (docs/design/resume-transfer.md section 6): the operator's
+  // per-call instrument for ONE object in ONE manager instance's transfer bucket, minted after the
+  // CLI has hashed the transcript ({@link transferWriterGrants}).
+  | "transfer-writer"
+  // A manager instance's TRANSFER READER: one `transcript-receive` or sweep over its own transfer
+  // bucket and no other ({@link transferReaderGrants}).
+  | "transfer-reader"
   // Closed human-issued remote manager authority. Never exposed as a generic profile string: the
   // auth provider's typed manager-service protocol is the only mint door.
   | "remote-manager";
@@ -277,6 +285,8 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "run-operator": { class: "one-shot", defaultTtlSeconds: 60, note: "one served run-status / run-ps / run-answer call (SPEC 14.3): the hosting manager mints it per call on its own connection, never the serve rails; 60s bounds a copied cred to a minute" },
   issuer: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one issuance's evidence stage/release or one lifecycle terminal's issuance retirement (SPEC 13.15)" },
   "run-admitter": { class: "one-shot", defaultTtlSeconds: 60, note: "one hosted run's admission record create, or its revocation marker (SPEC 14.8); 60s bounds a copied cred to a minute" },
+  "transfer-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one carried resume per CLI call: one object's chunk and meta subjects in one instance's transfer bucket" },
+  "transfer-reader": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one transcript-receive or sweep over the minting instance's own transfer bucket" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
@@ -704,6 +714,11 @@ export interface MintOpts {
   /** `run-admitter` profile only: the ONE hosted run whose admission record and revocation marker
    *  this connection may create. */
   runAdmitter?: { endpoint: string; runId: string };
+  /** `transfer-writer` profile only: the ONE object (the transcript's hex digest) in the ONE manager
+   *  instance's transfer bucket this instrument may write. */
+  transferWriter?: { instanceId: string; hex: string };
+  /** `transfer-reader` profile only: the manager instance whose own transfer bucket this reads. */
+  transferReader?: { instanceId: string };
   /** `backup` profile only: one discriminated inspector or snapshot phase. */
   backup?: BackupPermissionScope;
   /** `restore` profile only: one discriminated initiate, upload, validate, or checkpoint phase. */
@@ -1166,6 +1181,16 @@ export function permissionsFor(
   if (profile === "run-admitter") {
     if (!opts.runAdmitter) throw new Error("permissionsFor: run-admitter requires opts.runAdmitter ({endpoint, runId} of the ONE run it admits)");
     return runAdmitterPermissions(space, pr, opts.runAdmitter);
+  }
+  if (profile === "transfer-writer") {
+    if (!opts.transferWriter) throw new Error("permissionsFor: transfer-writer requires opts.transferWriter ({instanceId, hex} of the ONE object it writes)");
+    const g = transferWriterGrants(space, opts.transferWriter.instanceId, opts.transferWriter.hex, pr.connId);
+    return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
+  }
+  if (profile === "transfer-reader") {
+    if (!opts.transferReader) throw new Error("permissionsFor: transfer-reader requires opts.transferReader ({instanceId} whose own bucket it reads)");
+    const g = transferReaderGrants(space, opts.transferReader.instanceId, pr.connId);
+    return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
   }
   if (profile === "endpoint-evictor") {
     // P2 item 3 (slice 3a): a SCOPED delivery-admin caller for ONE re-registration's verify-evict.
