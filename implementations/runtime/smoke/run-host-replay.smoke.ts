@@ -554,10 +554,9 @@ try {
 }
 
 const EXPECTED_CELLS = 12;
-const ran = ok + fail;
 console.log(`run-host-replay.smoke: ${ok} passed, ${fail} failed`);
-if (ran !== EXPECTED_CELLS) {
-  console.log(`SUITE INCOMPLETE: ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+if (ok + fail !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE: ran ${ok + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   done();
   process.exit(1);
 }

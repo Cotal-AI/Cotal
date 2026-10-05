@@ -399,10 +399,9 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
 }
 
 const EXPECTED_CELLS = 25;
-const ran = ok + fail;
 console.log(`mesh-monitor.smoke: ${ok} passed, ${fail} failed`);
-if (ran !== EXPECTED_CELLS) {
-  console.log(`SUITE INCOMPLETE — ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+if (ok + fail !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE — ran ${ok + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   done();
   process.exit(1);
 }

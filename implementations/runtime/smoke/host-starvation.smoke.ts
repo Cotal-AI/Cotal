@@ -724,10 +724,9 @@ done();
 // stops being paid for the moment nobody counts it, which is the same way a displaced mutation
 // anchor stops grading without anything going red.
 const EXPECTED_CELLS = 58;
-const ran = ok + fail;
-if (ran !== EXPECTED_CELLS) {
+if (ok + fail !== EXPECTED_CELLS) {
   console.error(
-    `ACCOUNTING BROKEN: ran ${ran} cells, expected ${EXPECTED_CELLS}. A cell was added or removed `
+    `ACCOUNTING BROKEN: ran ${ok + fail} cells, expected ${EXPECTED_CELLS}. A cell was added or removed `
       + `without updating EXPECTED_CELLS. If the change was intentional, update the constant in the `
       + `same commit so the new total is reviewed rather than inherited.`,
   );

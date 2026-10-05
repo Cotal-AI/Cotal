@@ -294,10 +294,9 @@ try {
 }
 
 const EXPECTED = 21;
-const ran = ok + fail;
 console.log(`supervise restart smoke: ${ok} passed, ${fail} failed`);
-if (ran !== EXPECTED) {
-  console.log(`SUITE INCOMPLETE — ran ${ran} of ${EXPECTED} cells; a partial run is not a pass`);
+if (ok + fail !== EXPECTED) {
+  console.log(`SUITE INCOMPLETE — ran ${ok + fail} of ${EXPECTED} cells; a partial run is not a pass`);
   process.exit(1);
 }
 process.exit(fail === 0 ? 0 : 1);

@@ -82,11 +82,12 @@ forms below, because a form it cannot follow to the exit status can hide either 
   turns the suite red. `==` and `!=` coerce, so a tally of `"5"` would match. The cells that ran are
   counted by a `let` that starts at 0 and that only `++` or `+=` a number writes, by the `length` of
   a `const` that starts as `[]` when the file declares no `length` and writes none (by `=`, `++`,
-  `--`, `delete` or destructuring), by a sum of those, or by a `const` that holds one. An alias of
-  the pin, a literal or a call counts nothing, so it is no tally. The census cannot see what a cell
-  proves: it counts the writes to the counters, so an increment with no check before it, in any
-  counter of the sum, passes as a cell that proves nothing, as a check of `true` would. Review of
-  the suite has to catch that. The comparison is the whole condition of a statement every run
+  `--`, `delete` or destructuring), or by a sum of those, read in the comparison itself. A `const`
+  copy misses the cells counted after it is taken, and an alias of the pin, a literal or a call
+  counts nothing, so none of them is a tally. The census cannot see what a cell proves: it counts
+  the writes to the counters, so an increment with no check before it, in any counter of the sum,
+  passes as a cell that proves nothing, as a check of `true` would. Review of the suite has to
+  catch that. The comparison is the whole condition of a statement every run
   reaches, and a mismatch fails the run in one of four forms: `if (ran !== EXPECTED_CELLS)` with an
   arm that always runs `process.exit(1)`; the same arm setting `process.exitCode = 1`, when the file
   writes no other code and every `process.exit` that can follow reads it; the same arm throwing,
@@ -115,7 +116,8 @@ status that can be 0 in a branch or block, or calls or passes to a call a functi
 body can make such an exit. A `finally` block counts only when its `try` and catch arm cannot make
 such an exit either, since `process.exit` ends the process without running the `finally`. A
 function passed to a call, to `new` or to a tagged template can be called at any time after, such
-as during an `await`, and so can a class field initializer, which runs when `new` builds an object.
+as during an `await`, and so can the initializer of a field that is not `static`, which runs when
+`new` builds an object.
 A platform skip that exits 0 before the comparison is such a branch. An async function counts only
 when its call is awaited, because an `await` that never settles ends an unawaited run with exit 0. A
 comparison in a branch, a loop, a callback, a check function, a failure tally or a variable pins
@@ -133,10 +135,10 @@ assignment to it, `||=`, `&&=` and `??=` included, an alias such as `const stop 
 `o["k"]()`, every value the file binds to the key `k` on any object, since the gate does not track
 which object it is. A value written as `a ? b : c`, `b || c`, `b && c` or `b ?? c` stands for both
 `b` and `c`, `(a, b)` for `b`, `await a` for `a`, and a call of a function of the file for every
-value it returns. A class stands for its constructor, its field initializers and the class it
-extends, all of which `new` runs, and `super` for the class it extends. A name with a default, as
-a parameter or in a destructuring, also stands for the
-default. An array stands for every element, so `list[i]`, `...list` and `const [f] = list` each
+value it returns. A class stands for its constructor, the initializers of its fields that are not
+`static` and the class it extends, all of which `new` runs, and `super` for the class it extends. A
+name with a default, as a parameter or in a destructuring, also stands for the default. An array
+stands for every element, so `list[i]`, `...list` and `const [f] = list` each
 stand for all of them. A generator runs its body only as what its call returns is iterated, so its
 exits count for every call of it except one written as a whole statement, in parentheses or not, or
 a handler of `.then`, `.catch` or `.finally`. Those three, called by name or by a literal key such

@@ -403,10 +403,15 @@ const EQUALITY = [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.Exclamati
 const parseSuite = (file: string, text: string): ts.SourceFile =>
   ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
 
-/** Every node under `root` matching `pred`, not descending into nested functions unless `deep`. */
+/** A class field that is not `static`, whose initializer `new` runs when it builds an object, not where the class is written. */
+const isInstanceField = (n: ts.Node): n is ts.PropertyDeclaration => ts.isPropertyDeclaration(n) && !(ts.getCombinedModifierFlags(n) & ts.ModifierFlags.Static);
+const initializesInstance = (n: ts.Node) => isInstanceField(n.parent) && n.parent.initializer === n;
+/** Every node under `root` matching `pred`, leaving out the bodies of nested functions and the initializers of
+ *  instance fields unless `deep`. */
 function findIn<T extends ts.Node>(root: ts.Node, pred: (n: ts.Node) => n is T, deep = false): T[] {
   const found: T[] = [];
   const visit = (n: ts.Node) => {
+    if (!deep && n !== root && initializesInstance(n)) return;
     if (pred(n)) found.push(n);
     if (!deep && n !== root && ts.isFunctionLike(n)) return;
     ts.forEachChild(n, visit);
@@ -497,9 +502,9 @@ const runs = (arm: ts.Node): ts.Node[] => {
   const end = list.findIndex(endsRun);
   return end < 0 ? list : list.slice(0, end + 1);
 };
-/** The function or class field around `n`. A field initializer runs when `new` builds an object, not where it is written, as a body runs when called. */
+/** The function around `n`, or the instance field whose initializer holds it: code that runs when it is called or an object is built, not where it is written. */
 const enclosingFunction = (n: ts.Node): ts.Node | undefined =>
-  ts.isSourceFile(n.parent) ? undefined : ts.isFunctionLike(n.parent) || ts.isPropertyDeclaration(n.parent) ? n.parent : enclosingFunction(n.parent);
+  ts.isSourceFile(n.parent) ? undefined : ts.isFunctionLike(n.parent) || initializesInstance(n) ? n.parent : enclosingFunction(n.parent);
 
 /** The key `name` binds or reads: an identifier, a literal, or a computed literal. */
 const nameKey = (name: ts.Node | undefined): string | undefined =>
@@ -617,8 +622,9 @@ function exitsOfCall(sf: ts.SourceFile, callee: ts.Node, site: ts.Node, status: 
     if (isExitRef(v)) return [{ site, status }];
     if (!(ts.isFunctionLike(v) || ts.isClassLike(v)) || (!iterated && isGenerator(v)) || seen.has(v)) return [];
     seen.add(v);
-    // `new` runs the field initializers of a class.
-    return exitsIn(sf, v, seen);
+    if (!ts.isClassLike(v)) return exitsIn(sf, v, seen);
+    // `new` runs the initializers of the instance fields; the rest of the class ran where it is written.
+    return v.members.filter(isInstanceField).flatMap((f) => (f.initializer ? exitsIn(sf, f.initializer, seen) : []));
   });
 }
 /** The outermost of the parentheses and type assertions around `n`, or `n` when there are none. */
@@ -827,24 +833,24 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
     const found = ts.isIdentifier(o) && PIN_NAME.test(o.text) ? declOf(o) : undefined;
     return !!found && nonZeroLiteral(found.decl.initializer) && !found.writes.length;
   };
-  // A count of the cells that ran, so it cannot equal the pin by construction: a sum of counters, each a `let` that
-  // starts at 0 and is written only by `++` or `+=` a literal, the `length` of a `const` that starts as `[]` when no
-  // `length` is declared or written, or a `const` holding such a sum. An alias of the pin, a literal or a call is no count.
-  const isTally = (n: ts.Node, path: ts.Node[] = []): boolean => {
+  // A count of the cells that ran, read in the comparison itself, so it cannot equal the pin by construction and misses
+  // no cell counted before it: a sum of counters, each a `let` that starts at 0 and is written only by `++` or `+=` a
+  // literal, or the `length` of a `const` that starts as `[]` when no `length` is declared or written. A `const` copy,
+  // an alias of the pin, a literal or a call is no count.
+  const isTally = (n: ts.Node): boolean => {
     const e = unwrap(n);
-    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) return isTally(e.left, path) && isTally(e.right, path);
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) return isTally(e.left) && isTally(e.right);
     const array = ts.isPropertyAccessExpression(e) && e.name.text === "length" ? unwrap(e.expression) : undefined;
     const found = declOf(array ?? e);
-    if (!found || path.includes(found.decl) || !found.decl.initializer) return false;
+    if (!found?.decl.initializer) return false;
     const init = unwrap(found.decl.initializer);
     if (!(ts.getCombinedNodeFlags(found.decl) & ts.NodeFlags.Const))
       return !array && ts.isNumericLiteral(init) && Number(init.text) === 0 &&
         found.writes.every((w) =>
           ((ts.isPrefixUnaryExpression(w) || ts.isPostfixUnaryExpression(w)) && w.operator === ts.SyntaxKind.PlusPlusToken) ||
           (ts.isBinaryExpression(w) && w.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken && ts.isNumericLiteral(unwrap(w.right))));
-    if (!array) return isTally(init, [...path, found.decl]);
     // `keyed` holds the values bound to `length`; `++`, `--`, `delete` and a destructuring write one too.
-    return ts.isArrayLiteralExpression(init) && !init.elements.length && !keyed.has("length") && !findIn(sf, (m): m is ts.Expression => memberKey(m) === "length" && !!writeOf(m), true).length;
+    return !!array && ts.isArrayLiteralExpression(init) && !init.elements.length && !keyed.has("length") && !findIn(sf, (m): m is ts.Expression => memberKey(m) === "length" && !!writeOf(m), true).length;
   };
   // True when `cond` is true on a mismatch, false when it is true on a match, undefined when it is not a pin comparison.
   const onMismatch = (cond: ts.Node): boolean | undefined => {
@@ -945,6 +951,7 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin compared with a call is unpinned", !pinsWith(`if (count() !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin compared with a counter that starts above 0 is unpinned", !pinsCellCount(control(`const EXPECTED_CELLS = 5; let ran = 5; if (ran !== EXPECTED_CELLS) process.exit(1);`))],
   ["a pin compared with a sum of counters is pinned", pinsWith(`let fail = 0; const failures = []; if (ran + fail + failures.length !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin compared with a copy of the counter is unpinned", !pinsWith(`const total = ran; ran++; if (total !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin in a function whose argument exits 0 is unpinned", !pinsWith(`function main(x) { if (ran !== EXPECTED_CELLS) process.exit(1); } main(process.exit(0));`)],
   ["a pin in a function whose parameter default exits 0 is unpinned", !pinsWith(`function main({ ok = process.exit(0) } = {}) { if (ran !== EXPECTED_CELLS) process.exit(1); } main();`)],
   ["a pin in an async main nothing awaits is unpinned", !pinsWith(`async function main() { await f(); if (ran !== EXPECTED_CELLS) process.exit(1); } main().catch(() => { process.exitCode = 1; });`)],
@@ -974,6 +981,10 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin in a finally whose try can exit 0 is unpinned", !pinsWith(`try { process.exit(0); } finally { if (ran !== EXPECTED_CELLS) process.exit(1); }`)],
   ["a pin after new of a class whose constructor exits 0 is unpinned", !pinsWith(`class Stop { constructor() { process.exit(0); } } new Stop(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin after new of a class whose constructor exits 1 is pinned", pinsWith(`class Bail { constructor() { process.exit(1); } } if (failed) new Bail(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after new of a class whose instance field exits 0 is unpinned", !pinsWith(`class Stop { field = process.exit(0); } new Stop(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a class whose instance field exits 0 is pinned when nothing builds one", pinsWith(`class Unused { field = process.exit(0); } if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a class whose static field exits 0 is unpinned", !pinsWith(`class Stop { static field = process.exit(0); } if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a catch arm exitCode after a class whose static field can exit 0 fails the run", fails(`class Boot { static mode = skip ? process.exit(0) : 1; } try { f(); } catch { process.exitCode = 1; } finally { process.exit(process.exitCode ?? 0); }`)],
   ["a tagged template in a finally that exits 0 swallows", swallows(`function stop() { process.exit(0); } try { f(); } finally { stop\`cleanup\`; }`)],
 ];
 const brokenControls = censusControls.filter(([, ok]) => !ok).map(([name]) => name);

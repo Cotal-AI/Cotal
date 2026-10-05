@@ -641,10 +641,9 @@ await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
 const EXPECTED_CELLS = 20;
-const ran = ok + fail;
 console.log(`mesh-worktree.smoke: ${ok} passed, ${fail} failed`);
-if (ran !== EXPECTED_CELLS) {
-  console.log(`SUITE INCOMPLETE — ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+if (ok + fail !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE — ran ${ok + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   process.exitCode = 1;
   done();
   process.exit(1);

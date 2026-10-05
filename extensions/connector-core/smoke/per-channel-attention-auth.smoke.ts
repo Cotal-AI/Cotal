@@ -286,11 +286,10 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 const EXPECTED_CELLS = 22;
-const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
-console.log(`SUITE COMPLETE: ${ran} cells`);
-if (ran !== EXPECTED_CELLS) {
-  console.log(`SUITE INCOMPLETE: ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+console.log(`SUITE COMPLETE: ${pass + fail} cells`);
+if (pass + fail !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE: ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   process.exit(1);
 }
 process.exit(fail === 0 ? 0 : 1);

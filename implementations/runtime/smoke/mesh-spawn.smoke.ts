@@ -1312,10 +1312,9 @@ await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
 const EXPECTED_CELLS = 70;
-const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
-if (ran !== EXPECTED_CELLS) {
-  console.log(`SUITE INCOMPLETE — ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+if (ok + fail !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE — ran ${ok + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   process.exit(1);
 }
 process.exit(fail === 0 ? 0 : 1);

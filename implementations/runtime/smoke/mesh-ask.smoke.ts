@@ -872,10 +872,9 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 const EXPECTED_CELLS = 42;
-const ran = ok + fail;
 console.log(`mesh-ask.smoke: ${ok} passed, ${fail} failed`);
-if (ran !== EXPECTED_CELLS) {
-  console.log(`SUITE INCOMPLETE — ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
+if (ok + fail !== EXPECTED_CELLS) {
+  console.log(`SUITE INCOMPLETE — ran ${ok + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   await nc.close();
   done();
   process.exit(1);
