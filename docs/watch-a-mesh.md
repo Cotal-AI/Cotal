@@ -123,8 +123,9 @@ Flags: `--space` (default `main`), `--server` (the mesh's broker, resolved from 
 (run in the background), `--no-open` (skip auto-launching the browser), `--creds` (override the
 self-minted cred). Remote exposure requires an explicit concrete `--host`; wildcard addresses
 `0.0.0.0` and `::` are refused because neither is a browser destination. Detached mode waits for
-the real HTTP server at the selected host before returning, logs to `<mesh-root>/.cotal/web.log`, and is stopped by
-`cotal down web` or bare `cotal down`. It requires a recorded mesh root; after `cotal up` records the
+the real HTTP server at the bound host and port before returning, logs to `<mesh-root>/.cotal/web.log`, and is stopped by
+`cotal down web` or bare `cotal down`. On the default host it probes `127.0.0.1`, because a system
+resolver such as WSL2's may not answer the branded `cotal.localhost`. It requires a recorded mesh root; after `cotal up` records the
 mesh, it can be launched from any directory. The branded URL `http://cotal.localhost:7799/` resolves
 to loopback with no DNS setup in Chrome, Firefox, and Edge; Safari may not resolve `*.localhost`,
 so use `http://127.0.0.1:7799`. A custom `--port` uses the plain loopback address. An explicit
