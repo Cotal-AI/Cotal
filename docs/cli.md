@@ -2136,7 +2136,8 @@ every registry provider it contributes. Commands appear in help, completion, and
 providers are lazy-loaded by commands such as `supervise`; local process providers participate in
 `status` and selective `down`. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is the
 canonical command/process example. Installed packages and their location are described in
-[config](config.md).
+[config](config.md). When a package needs an export its linked `@cotal-ai/*` peer does not have,
+`add` rolls back and names which install is behind, as a later load of an installed one does.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,
