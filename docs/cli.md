@@ -477,6 +477,10 @@ A seat whose launch options could not be resolved is refused rather than checkpo
 manager's own wording: `imperative launch options have no non-secret durable source (<keys>)`. The
 refusal arrives at prepare time, so the cut stops before any child does.
 
+A delegated seat (SPEC §13.17) is refused at prepare time too, with
+`a delegated seat is not resumed by a later manager; stop it before preserving`. A manager stop
+after a refused cut retires that seat through its retirement path.
+
 ## clean
 
 ```bash
@@ -936,6 +940,34 @@ rather than choosing one. An invalid enrollment never falls back to login provis
 expired, revoked, and already-used enrollments all produce one response: ask the owner for a fresh
 one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTTP contract.
 
+A runtime that starts a managed seat outside the manager's filesystem hands the child a managed
+handoff instead: one `0600` file named by `COTAL_MANAGED_HANDOFF_FILE`, carrying the lifecycle the
+manager already enrolled. The runtime builds the command with `delegatedSeatCommand`:
+
+```bash
+COTAL_MANAGED_HANDOFF_FILE=/run/seat/handoff.json \
+  cotal spawn --config ./seat.md --space main --name <actor> --agent claude \
+    --expect-owner <owner> --expect-lifecycle-uid <uid>
+```
+
+The `cotal` entry reads the file, deletes it and drops the variable before it parses flags, prints
+help or loads extensions, so every outcome leaves no file. The variable is read under any letter
+case; spellings that name different files are refused after every one of them was deleted. The
+spawn then refuses a malformed handoff, or one whose space, owner, actor or lifecycle UID differs
+from `--space`, `--expect-owner`, `--name` and `--expect-lifecycle-uid`, before any broker
+connection or exchange request. Every refusal on this path names the field and never a value from
+the handoff. The registration's server, exchange and enforcement checks, the local state this
+machine keeps for the space (its mesh record, user-auth state and agent secret files), target
+resolution, the policy refresh, the broker preflight and the agent auth preflight quote the space,
+the server, the exchange URL, the actor or a path named for one of them in their own diagnostics and
+in the filesystem errors under them. For a handoff each prints one fixed sentence that names the
+field and the phase instead, whether its check fails or an error is thrown. The event-plane policy
+refusals name the handoff's space field. An actor outside `[A-Za-z0-9_]` and a space that cannot
+name local state, such as `..`, are refused as malformed before any plane. A handoff conflicts with
+the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
+there it runs the enrollment consumer above without redeeming anything. See
+[Delegated seats](embedding.md#delegated-seats-outside-the-managers-filesystem).
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | resolved mesh | Target space |
@@ -961,6 +993,8 @@ one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTT
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | none | With `-f`: waive named stale agents (apply-only) |
 | `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime |
+| `--expect-owner <u_…>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the owner the handoff must carry |
+| `--expect-lifecycle-uid <uid>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the lifecycle UID the handoff must carry |
 
 Each session uses its connector's **event plane** by default: a stream of structured events
 describing what the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after

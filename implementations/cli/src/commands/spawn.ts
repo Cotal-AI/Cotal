@@ -19,6 +19,8 @@ import {
   parseShareSelection,
   principalKey,
   mintLifecycleUid,
+  MANAGED_HANDOFF_FILE_ENV,
+  parseManagedLifecycleHandoff,
   spawnNameError,
   provisionAgent,
   provisionAgentDurables,
@@ -33,6 +35,7 @@ import {
   type FlagValues,
   type LaunchOpts,
   type LaunchSpec,
+  type ManagedLifecycleHandoff,
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
@@ -54,15 +57,19 @@ import {
   materializeSecretToFile,
   mergeLaunchOptions,
   parseLaunchOptions,
+  preflightOrThrow,
   provenance,
   resolveMeshTarget,
+  resolveTargetOrThrow,
   serverFlag,
   spaceAccountPath,
   spaceFlag,
+  spaceKey,
   userAuthStateDir,
   workspaceSecretStore,
   refreshRegistrationPolicy,
   resolveSeatControlTarget,
+  type Check,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -72,6 +79,7 @@ import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
+import { claimManagedHandoff } from "../managed-handoff.js";
 import {
   checkDialPolicy,
   checkEnforcement,
@@ -180,17 +188,58 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
   return { bundle: { ...o, ...material.material, idp } as EnrollmentBundle, ...(stock ? { stock } : {}) };
 }
 
-async function registerEnrollmentMesh(stock: UserBundle, root: string): Promise<void> {
-  const serverCheck = checkServer(stock.server);
-  if (!serverCheck.ok) throw new Error(serverCheck.message.replace(/^✗\s*/, ""));
+/** What a managed handoff's bootstrap refuses with at each phase that runs a check shared with the
+ *  enrollment path. Those checks' diagnostics, and the filesystem errors under them, quote the
+ *  space, the server, the exchange URL, the actor or a path named for one of them, and a handoff
+ *  refusal never echoes the document, so each sentence names only the field and the phase. */
+const HANDOFF_REFUSALS = {
+  space: "the managed handoff's space is malformed",
+  bundle: "the managed handoff's mesh fields failed the user-auth bundle check",
+  registration: "the managed handoff's space failed the local registration",
+  target: "the managed handoff's space failed target resolution",
+  server: "the managed handoff's server is not a broker URL this machine may dial",
+  exchange: "the managed handoff's exchangeUrl failed the exchange check",
+  enforcement: "the managed handoff's server failed the enforcement check",
+  policy: "the managed handoff's exchangeUrl failed the policy refresh",
+  preflight: "the managed handoff's server failed the broker preflight",
+  bearer: "the managed handoff's actorToken failed the agent auth preflight",
+} as const;
+
+/** Map a parsed handoff onto the redeem consumer's shapes. Pure. */
+export function handoffEnrollmentBundle(h: ManagedLifecycleHandoff): { bundle: EnrollmentBundle; stock: UserBundle } {
+  const userAuth = { provider: h.authProvider, idp: h.idp, endpoints: { url: h.exchangeUrl }, remote: true };
+  try {
+    const { bundle, stock } = checkEnrollmentBundle({
+      space: h.space, actor: h.actor, owner: h.owner, lifecycleUid: h.lifecycleUid, actorToken: h.actorToken, sentinelCreds: h.sentinelCreds,
+      subscribe: h.subscribe, allowSubscribe: h.allowSubscribe, allowPublish: h.allowPublish,
+      brokerAccess: { kind: "direct", url: h.server }, authServiceUrl: h.exchangeUrl, idp: h.idp,
+      server: h.server, tlsRequired: h.tlsRequired, userAuth, ...(h.policy ? { policy: h.policy } : {}),
+    }, h.actor);
+    return { bundle, stock: stock! };
+  } catch {
+    throw new Error(HANDOFF_REFUSALS.bundle);
+  }
+}
+
+/** With `refusals`, a step that fails its check or throws refuses with its phase's sentence instead
+ *  of its diagnostic. */
+async function registerEnrollmentMesh(stock: UserBundle, root: string, refusals?: typeof HANDOFF_REFUSALS): Promise<void> {
+  const step = async <T>(phase: "server" | "exchange" | "enforcement" | "registration", run: () => Check<T> | Promise<Check<T>>): Promise<T> => {
+    let check: Check<T>;
+    try {
+      check = await run();
+    } catch (e) {
+      throw refusals ? new Error(refusals[phase]) : e;
+    }
+    if (!check.ok) throw new Error(refusals?.[phase] ?? check.message.replace(/^✗\s*/, ""));
+    return check.value;
+  };
+  await step("server", () => checkServer(stock.server));
   const tlsRequired = stock.tlsRequired || tlsIntent(stock.server, false);
-  const dial = checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false });
-  if (!dial.ok) throw new Error(dial.message.replace(/^✗\s*/, ""));
-  const exchange = await verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space));
-  if (!exchange.ok) throw new Error(exchange.message.replace(/^✗\s*/, ""));
-  const enforcement = checkEnforcement("user", await probeEnforcement(stock.server), stock.server, stock.space, root);
-  if (!enforcement.ok) throw new Error(enforcement.message.replace(/^✗\s*/, ""));
-  persistRemoteUserEntry(stock.space, stock.server, root, stock, tlsRequired, Boolean(dial.value.residual));
+  const dial = await step("server", () => checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false }));
+  await step("exchange", () => verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space)));
+  await step("enforcement", async () => checkEnforcement("user", await probeEnforcement(stock.server), stock.server, stock.space, root));
+  await step("registration", () => ({ ok: true, value: persistRemoteUserEntry(stock.space, stock.server, root, stock, tlsRequired, Boolean(dial.residual)) }));
 }
 
 /** Completion for `cotal spawn` — `--space <TAB>` lists the running meshes, and the first positional
@@ -332,6 +381,8 @@ export const spawnFlags = [
   { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
   { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
   { name: "on", type: "string", value: "<instance>", description: "with --detach: target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not roster's `local.…` principal id" },
+  { name: "expect-owner", type: "string", value: "<u_…>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the owner the managed handoff must carry` },
+  { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
 ] as const satisfies readonly FlagSpec[];
 
 /** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
@@ -470,6 +521,9 @@ async function spawnDetached(
 export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
   const values = args.values as FlagValues<typeof spawnFlags>;
+  // Claimed first: custody already removed the file and its variable, so the text lives only here
+  // and no refusal below can leave it anywhere.
+  const handoffText = claimManagedHandoff();
   let enrollmentUrl: string | undefined;
   try {
     enrollmentUrl = enrollmentInput();
@@ -480,6 +534,52 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // The URL is the credential. Keep the local value, but remove both input forms before this
     // command can start extension, bearer-preflight, or harness children.
     scrubEnrollmentEnv(process.env);
+  }
+  let redeemedEnrollment: ReturnType<typeof checkEnrollmentBundle> | undefined;
+  if (handoffText === undefined && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined)) {
+    console.error(c.red(`✗ --expect-owner and --expect-lifecycle-uid apply only with ${MANAGED_HANDOFF_FILE_ENV}`));
+    process.exit(1);
+  }
+  if (handoffText !== undefined) {
+    const refusal =
+      enrollmentUrl ? `${MANAGED_HANDOFF_FILE_ENV} cannot be combined with ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV}`
+      : values.detach || values.file || values.creds ? `${MANAGED_HANDOFF_FILE_ENV} applies only to a foreground persona spawn without --creds`
+      : !values.space || !values.name || !values["expect-owner"] || !values["expect-lifecycle-uid"]
+        ? `${MANAGED_HANDOFF_FILE_ENV} requires --space, --name, --expect-owner and --expect-lifecycle-uid`
+      : !values.config ? `${MANAGED_HANDOFF_FILE_ENV} requires --config <persona-file>`
+      : undefined;
+    if (refusal) {
+      console.error(c.red(`✗ ${refusal}`));
+      process.exit(1);
+    }
+    try {
+      loadAgentFile(resolvePath(values.config!));
+    } catch (e) {
+      console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
+      process.exit(1);
+    }
+    try {
+      const handoff = parseManagedLifecycleHandoff(handoffText, {
+        space: values.space!, owner: values["expect-owner"]!, actor: values.name!, lifecycleUid: values["expect-lifecycle-uid"]!,
+      });
+      try {
+        spaceKey(handoff.space);
+      } catch {
+        throw new Error(HANDOFF_REFUSALS.space);
+      }
+      const { bundle, stock } = handoffEnrollmentBundle(handoff);
+      redeemedEnrollment = { bundle, stock };
+      let registered: boolean;
+      try {
+        registered = findMesh(handoff.space) !== undefined;
+      } catch {
+        throw new Error(HANDOFF_REFUSALS.registration);
+      }
+      if (!registered) await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."), HANDOFF_REFUSALS);
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
   }
   if (enrollmentUrl && (values.detach || values.file)) {
     console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} apply only to a foreground persona spawn`));
@@ -575,7 +675,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  let redeemedEnrollment: ReturnType<typeof checkEnrollmentBundle> | undefined;
   // An enrollment may bootstrap the stock remote user-mesh record before normal target resolution.
   // Redeem only when the named space is not registered; an existing entry defers redemption until
   // after persona resolution so the response actor can be checked against the requested identity.
@@ -601,18 +700,31 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
 
   // Which mesh this spawn joins — creds + personas together, resolved from --server/--space, the
-  // selected `current` mesh, a local project, or the registry's only running mesh.
-  const target = await resolveTargetOrExit({ server: values.server, space: values.space });
+  // selected `current` mesh, a local project, or the registry's only running mesh. A handoff's
+  // resolution diagnostics quote its space, and only a remote user-auth record can host the
+  // lifecycle it carries, so any other record is refused before a later step reads it.
+  const target = handoffText === undefined
+    ? await resolveTargetOrExit({ server: values.server, space: values.space })
+    : await resolveTargetOrThrow({ server: values.server, space: values.space }).catch(() => {
+      console.error(c.red(`✗ ${HANDOFF_REFUSALS.target}`));
+      process.exit(1);
+    });
+  if (handoffText !== undefined && !(target.mode === "user" && target.userAuth?.remote)) {
+    console.error(c.red("✗ the managed handoff's space is registered here as a local mesh, so it cannot host a managed handoff"));
+    process.exit(1);
+  }
   let policy: typeof target.policy;
   try {
     policy = await refreshRegistrationPolicy(target);
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${handoffText === undefined ? (e as Error).message : HANDOFF_REFUSALS.policy}`));
     process.exit(1);
   }
   const eventsRequired = policy?.events === "required";
+  // A handoff's space is a value from the document, so its policy refusals name the field instead.
+  const policySpace = handoffText === undefined ? `space "${target.space}"` : "the managed handoff's space";
   if (eventsRequired && values["no-events"]) {
-    console.error(c.red(`✗ space "${target.space}" requires the event plane by registration policy; --no-events is not allowed`));
+    console.error(c.red(`✗ ${policySpace} requires the event plane by registration policy; --no-events is not allowed`));
     process.exit(1);
   }
   // Foreground is the operator's own in-process launch (no typed door, no epAdminReach) and is
@@ -633,7 +745,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     def = loadAgentFile(path);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
+    // The not-found text names the mesh's space and server, which for a handoff are its values.
+    if (handoffText !== undefined) {
+      console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
+    } else if (code === "ENOENT") {
       // A refusal that names no root is why this bug cost an hour. The old text asserted an absence
       // ("no default persona yet") and prescribed a remedy (`cotal setup`) without saying WHERE it
       // had looked — so when setup seeded a cwd-derived root and spawn read the resolved mesh's,
@@ -696,7 +811,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
 
   // Preflight: fail with one sentence if the mesh is down or won't take our creds, instead of
   // crashing mid-connect with a raw NATS Authorization Violation.
-  await preflightOrExit(target);
+  if (handoffText === undefined) await preflightOrExit(target);
+  else
+    await preflightOrThrow(target).catch(() => {
+      console.error(c.red(`✗ ${HANDOFF_REFUSALS.preflight}`));
+      process.exit(1);
+    });
 
   // A second `cotal spawn` of the same agent would otherwise join under a duplicate mesh identity:
   // auto-number the name past anyone already present (best-effort — this path bypasses the manager's
@@ -777,7 +897,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // mode the owner is resolved inside the provisioning call below.
   if (launchEvents && !connector.eventChannel) {
     console.error(c.red(eventsRequired
-      ? `✗ space "${space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
+      ? `✗ ${policySpace} requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
       : `✗ connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events to launch it without one`));
     process.exit(1);
   }
@@ -789,18 +909,18 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const remoteProvisioningUrl = target.mode === "user" && target.userAuth?.remote
     ? target.userAuth.endpoints?.agentProvisioningUrl
     : undefined;
-  if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl && !enrollmentUrl) {
+  if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl && !enrollmentUrl && !redeemedEnrollment) {
     console.error(c.red(`✗ mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`));
     console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), or run the agent there`));
     process.exit(1);
   }
-  if (target.mode === "user" && target.userAuth?.remote && enrollmentUrl) {
+  if (target.mode === "user" && target.userAuth?.remote && (enrollmentUrl || redeemedEnrollment)) {
     if (!redeemedEnrollment) {
       try {
         const provider = resolveAuthProvider();
         if (!provider.postAgentEnrollment)
           throw new Error(`the registered auth provider "${provider.name}" cannot redeem remote agent enrollments`);
-        const body = await provider.postAgentEnrollment({ url: enrollmentUrl, idpUrl: target.userAuth.idp.url });
+        const body = await provider.postAgentEnrollment({ url: enrollmentUrl!, idpUrl: target.userAuth.idp.url });
         redeemedEnrollment = checkEnrollmentBundle(body, name);
       } catch (e) {
         console.error(c.red(`✗ ${(e as Error).message}`));
@@ -820,7 +940,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       console.error(c.red("✗ the enrollment's authServiceUrl does not match the registered mesh exchange"));
       process.exit(1);
     }
-    const remote = await provisionRemoteUserForeground(target, name, { body: enrolled, exchangeUrl: enrolled.authServiceUrl });
+    const remote = await provisionRemoteUserForeground(target, name, { body: enrolled, exchangeUrl: enrolled.authServiceUrl },
+      handoffText === undefined ? undefined : HANDOFF_REFUSALS);
     userAuth = remote.userAuth;
     userCleanup = remote.cleanup;
     remoteUserAuth = true;
@@ -1109,20 +1230,30 @@ function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; materi
  *  Deliberately NOT reusing the local path's cleanup: nothing here created broker state locally, so
  *  teardown is the mesh's business (its lifecycle owns the row and the durables). The spawned
  *  agent's material is shredded on exit; the row is not revoked from here, because this machine
- *  holds no authority to revoke it. */
+ *  holds no authority to revoke it. For a managed handoff, `refusals` replaces the sentences of the
+ *  local-state, material and bearer steps, which quote the space, the actor or the exchange URL. */
 async function provisionRemoteUserForeground(
   target: MeshTarget,
   name: string,
   source: { provisioningUrl: string } | { body: unknown; exchangeUrl: string },
+  refusals?: typeof HANDOFF_REFUSALS,
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; material: RemoteAgentMaterial }> {
   const { space } = target;
-  const dir = userAuthStateDir(target.root, space);
   const store = workspaceSecretStore(target.root);
   const composition = { injected: false as const, root: target.root };
   const fail = (msg: string): never => {
     console.error(c.red(`✗ ${msg}`));
     process.exit(1);
   };
+  // Resolved first, as by every consumer of the space's local state: each resolution migrates a
+  // pre-hex or root-scoped layout, or refuses an ambiguous one, before any request or material.
+  let paths: ReturnType<typeof agentSecretFilePaths>;
+  try {
+    userAuthStateDir(target.root, space);
+    paths = agentSecretFilePaths(target.root, space, name);
+  } catch (e) {
+    return fail(refusals?.registration ?? (e as Error).message);
+  }
   let provider: ReturnType<typeof resolveAuthProvider>;
   try {
     provider = resolveAuthProvider();
@@ -1149,9 +1280,9 @@ async function provisionRemoteUserForeground(
     }
   }
   const checked = checkRemoteAgentMaterial(body, name);
-  if (!checked.ok) return fail(checked.message);
+  if (!checked.ok) return fail(refusals?.bundle ?? checked.message);
   const material = checked.material;
-  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, space, name);
+  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = paths;
   try {
     // Land both secrets 0600 through the store, exactly as the local path does — the bearer
     // re-exec and the launch handoff read FILES.
@@ -1191,12 +1322,19 @@ async function provisionRemoteUserForeground(
       },
     };
   } catch (e) {
-    await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
-    await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
-    rmSync(tokenPath, { force: true });
-    rmSync(sentinelPath, { force: true });
-    rmSync(healthPath, { force: true });
-    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
+    let cause = e as Error;
+    try {
+      await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
+      await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
+      rmSync(tokenPath, { force: true });
+      rmSync(sentinelPath, { force: true });
+      rmSync(healthPath, { force: true });
+    } catch (shred) {
+      // Material may be left behind, which outranks the failure that started the shred, and an
+      // escaped error would bypass the refusal below.
+      cause = shred as Error;
+    }
+    return fail(refusals?.bearer ?? `agent auth preflight failed for "${name}": ${cause.message}`);
   }
 }
 

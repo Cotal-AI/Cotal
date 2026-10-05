@@ -6,6 +6,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } f
 import { isAbsolute, join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
+  MANAGED_HANDOFF_KIND,
   accountFromCreds,
   credsClaims,
   DEFAULT_SERVER,
@@ -70,8 +71,8 @@ import {
   resolveService,
   invokeCommand,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -792,6 +793,9 @@ interface PreparedResume {
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
 }
 
+/** What the host returned for one managed-agent enrollment (#1972). */
+type ManagedEnrollment = Awaited<ReturnType<NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>>>;
+
 interface ManagedAgent {
   name: string;
   role?: string;
@@ -838,6 +842,10 @@ interface ManagedAgent {
    *  runtime (ConPTY/Windows) can send a cooperative `{op:"shutdown"}` over it instead of a hard
    *  kill that would deny the agent its clean mesh-leave. */
   control?: { path: string; token: string };
+  /** Set when `Runtime.spawnDelegated` started this seat outside the manager's filesystem. Its
+   *  handle's `stop()` is the fenced close by lifecycle key, which retirement runs only after the
+   *  host revoked the grant, never from the stop door. */
+  handedOff?: true;
   launch: ManagedLaunch;
   /** Set on a manifest `continuity: exact` seat once its first session was proven: the coordinates
    *  its assignment is recorded under, kept current at every later proven rebind and at its stop. */
@@ -1076,6 +1084,9 @@ export class Manager {
    *  a reader of that name could not tell the two apart (#382). Never pruned in-process: one string
    *  per numbered spawn. */
   private readonly issuedNumberedNames = new Set<string>();
+  /** Lifecycle UIDs already handed to `Runtime.spawnDelegated`: a lifecycle is handed off at most
+   *  once, so a lost create acknowledgement can never become a second create. */
+  private readonly delegatedLaunched = new Set<string>();
   /** Expiry stamps (`startedAt + MIN_LIFETIME`) for slots that freed while still young — a
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
@@ -1086,7 +1097,7 @@ export class Manager {
    *  refuses legibly AND re-fires the request. In-memory: across a manager restart the durable
    *  truth is the auth-side lifecycle head itself (an unretired head refuses issuance — the
    *  named residual this belt narrows, not replaces). */
-  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; startedAt: number; lastError?: string; standingAuthorityLive?: boolean; launch?: { allowSubscribe: readonly string[] }; lastResources?: DeprovisionResourceAccounting }>();
+  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; delegatedHandle?: AgentHandle; startedAt: number; lastError?: string; standingAuthorityLive?: boolean; launch?: { allowSubscribe: readonly string[] }; lastResources?: DeprovisionResourceAccounting }>();
   /** Exact predecessor incarnations whose full hosted retirement reached a terminal answer. Presence
    *  is advisory and can retain that old lifecycle briefly after its process exits. Resume may ignore
    *  only this exact (alias, principal, lifecycleUid) row when adopting a different lifecycle; every
@@ -2372,7 +2383,7 @@ export class Manager {
 
   /** A cleanup spawned by accepted active-mode work is part of that work for maintenance draining,
    * even where the ordinary control reply remains fire-and-forget. */
-  private trackDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; launch?: { allowSubscribe: readonly string[] } }, context = ""): void {
+  private trackDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; delegatedHandle?: AgentHandle; launch?: { allowSubscribe: readonly string[] } }, context = ""): void {
     this.lifecycleInFlight++;
     void this.deprovision(a)
       .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${(e as Error).message}`))
@@ -2449,6 +2460,10 @@ export class Manager {
         error,
       });
     }
+    // A later manager does not resume a delegated seat, and its close runs only inside its
+    // retirement, so a cut that holds one is refused before any child stops.
+    for (const a of this.agents.values())
+      if (a.handedOff) failures.push({ name: a.name, id: a.id, error: "a delegated seat is not resumed by a later manager; stop it before preserving" });
     const unverifiedStops = this.unverifiedStops.filter((stopped) => {
       try {
         if (!stopped.authoritative && stopped.handle.status() === "exited") return false;
@@ -2752,7 +2767,7 @@ export class Manager {
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
       managed.filter((a) => !a.suppressCleanup).map((a) =>
-        this.deprovision(a).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
+        this.deprovision({ ...a, ...(a.handedOff ? { delegatedHandle: a.handle } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
       ),
     );
     if (failures.length)
@@ -2783,7 +2798,9 @@ export class Manager {
     const failures: string[] = [];
     await Promise.all(managed.map(async (a) => {
       try {
-        a.handle.stop({ graceful: false });
+        // No cut holds a delegated seat (runPreparation refuses one), so stopping it is its retirement.
+        if (a.handedOff) await this.deprovision({ ...a, delegatedHandle: a.handle });
+        else a.handle.stop({ graceful: false });
       } catch (e) {
         failures.push(`${a.name}: stop failed: ${(e as Error).message}`);
       }
@@ -3763,7 +3780,11 @@ export class Manager {
     a.terminalizing = true;
     try {
       if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
-      a.handle.stop({ graceful });
+      // A delegated seat's close runs only inside its retirement, after the host revoked its grant,
+      // so stopping it starts that retirement. Every exit wait on a stop path then settles on that
+      // close; the free path's own teardown joins the same flight.
+      if (a.handedOff) this.trackDeprovision({ ...a, delegatedHandle: a.handle });
+      else a.handle.stop({ graceful });
     } catch (e) {
       console.error(`stop ${a.name} (${a.id}): ${(e as Error).message}`);
     }
@@ -3843,7 +3864,7 @@ export class Manager {
        *  later step, so a caller that must hold the enrolled uid holds it whatever fails after. */
       onEnrolled?: (enrolled: { owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string } }) => void;
     },
-  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
+  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] }; enrolled?: { material: ManagedEnrollment; actorToken: string } } | { error: string }> {
     if (opts.delegatedIntent) {
       // startAgentActive refused a delegated launch on a manager without this callback.
       const execute = this.remoteAuthority!.executeDelegatedUserIntent!;
@@ -3987,7 +4008,7 @@ export class Manager {
       onEnrolled?: (enrolled: { owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string } }) => void;
     },
     enroll: NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>,
-  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } } | { error: string }> {
+  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] }; enrolled?: { material: ManagedEnrollment; actorToken: string } } | { error: string }> {
     let provider;
     try {
       provider = resolveAuthProvider();
@@ -4060,6 +4081,7 @@ export class Manager {
         lifecycleUid: material.lifecycleUid,
         files,
         launch: { owner: material.owner, actor: name, sentinelCredsPath: files.sentinelCreds, bearerCmd },
+        enrolled: { material, actorToken },
       };
     } catch (e) {
       // Shred every local secret this attempt materialized. The HOST's rows are the host's to
@@ -4084,6 +4106,45 @@ export class Manager {
       const leftover = unshredded.length ? `; cleanup failed: ${unshredded.join("; ")}` : "";
       return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}` };
     }
+  }
+
+  /** This manager's registry record for its space, which pins the broker and IdP a delegated seat's
+   *  handoff carries. It must pin the exchange the host enrolls against, or the child would register
+   *  a mesh whose bearers come from somewhere else. */
+  private delegatedMeshRecord(): MeshEntry & { userAuth: UserAuthInfo } {
+    const record = loadMeshes().find((m) => m.space === this.space);
+    if (!record?.userAuth)
+      throw new Error(`a delegated seat needs this manager's user-mode registry record for space "${this.space}", and there is none`);
+    if (record.userAuth.endpoints?.url !== this.remoteAuthority?.agentBearerExchangeUrl)
+      throw new Error(`the registry record for space "${this.space}" pins a different exchange than the host's agentBearerExchangeUrl`);
+    return record as MeshEntry & { userAuth: UserAuthInfo };
+  }
+
+  /** The one handoff a delegated seat receives, built from values this manager holds: the
+   *  enrollment result, the token it generated, and its own registry record. No path crosses. */
+  private composeManagedHandoff(enrolled: ManagedEnrollment, actorToken: string): ManagedLifecycleHandoff {
+    const record = this.delegatedMeshRecord();
+    if (enrolled.agentBearerExchangeUrl !== record.userAuth.endpoints?.url)
+      throw new Error(`the host enrolled "${enrolled.actor}" against a different exchange than this manager's registry record pins`);
+    const { url, issuer, audience } = record.userAuth.idp;
+    return {
+      kind: MANAGED_HANDOFF_KIND,
+      space: this.space,
+      owner: enrolled.owner,
+      actor: enrolled.actor,
+      lifecycleUid: enrolled.lifecycleUid,
+      server: record.server,
+      tlsRequired: record.tlsRequired === true,
+      authProvider: record.userAuth.provider,
+      idp: { url, issuer, audience },
+      exchangeUrl: enrolled.agentBearerExchangeUrl,
+      sentinelCreds: enrolled.sentinelCreds,
+      actorToken,
+      subscribe: enrolled.subscribe,
+      allowSubscribe: enrolled.allowSubscribe,
+      allowPublish: enrolled.allowPublish,
+      ...(record.policy ? { policy: record.policy } : {}),
+    };
   }
 
   /**
@@ -4188,7 +4249,7 @@ export class Manager {
     // this, but the intent is "user mode only", not "any principal-shaped id").
     if (this.userMode) {
       const p = parsePrincipalKey(a.id);
-      if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: p.owner, actor: p.actor, agentId: a.id, userOwner: a.userOwner, delegated: a.delegated, secretPaths: a.secretPaths, launch: { allowSubscribe: a.launch.allowSubscribe }, startedAt: Date.now() });
+      if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: p.owner, actor: p.actor, agentId: a.id, userOwner: a.userOwner, delegated: a.delegated, secretPaths: a.secretPaths, launch: { allowSubscribe: a.launch.allowSubscribe }, ...(a.handedOff ? { delegatedHandle: a.handle } : {}), startedAt: Date.now() });
     } else if (this.auth) {
       // Unit B: a STATIC lifecycle now also holds its name pending its own terminal (the F1
       // static retirement the detached deprovision below drives) — the alias frees only when the
@@ -4204,7 +4265,7 @@ export class Manager {
     // is usually the seat ending, but a stop that could not prove the process gone leaves one the
     // terminal must still address before it frees the alias.
     if (!a.suppressCleanup && (this.maintenanceState === "active" || acceptedBeforeFence))
-      this.trackDeprovision({ ...a, runtime: a.handle?.reference });
+      this.trackDeprovision({ ...a, runtime: a.handle?.reference, ...(a.handedOff ? { delegatedHandle: a.handle } : {}) });
   }
 
   /** Tear down a departed agent's minted footprint (#159 B2, auth mode): its local-principal durables
@@ -4219,7 +4280,7 @@ export class Manager {
    *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
-  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
+  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; delegatedHandle?: AgentHandle; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
     if (!this.auth && !this.remoteAuthority) return; // open mesh mints no creds/durables — nothing to tear down
     // SINGLE-FLIGHT per (name, lifecycleUid) (INT-2/C): join an in-flight teardown for this exact
     // lifecycle rather than launching a second concurrent one whose delayed name-keyed revoke could
@@ -4235,7 +4296,7 @@ export class Manager {
   }
 
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
-  private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
+  private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; delegatedHandle?: AgentHandle; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
     if (this.remoteAuthority) {
       if (a.delegated) {
         // The agent is its user's: only that user's retirement intent retires it, so the name stays
@@ -4254,6 +4315,13 @@ export class Manager {
         target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid },
         opId: retireOpId(a.lifecycleUid),
       });
+      // A delegated seat's fenced close runs only now, after the grant is revoked so its child can
+      // obtain no fresh bearer, and before the barrier, which must never run ahead of a create that
+      // could still land. A close that cannot prove that yet throws here and keeps the alias held.
+      if (a.delegatedHandle) {
+        a.delegatedHandle.stop({ graceful: true });
+        await this.awaitHandleExit(a.delegatedHandle);
+      }
       await this.requestRetirement(a);
       return;
     }
@@ -5371,6 +5439,27 @@ export class Manager {
       if (this.userMode)
         return { ok: false, error: "supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death" };
     }
+    // A delegated seat starts outside this host from values alone, so a choice only this host can
+    // honour is refused here, before enrollment, and named rather than dropped.
+    if (this.runtime.spawnDelegated) {
+      const delegatedBy = `runtime "${this.runtime.kind}" starts seats outside this host`;
+      if (!this.remoteAuthority?.enrollManagedAgent)
+        return { ok: false, error: `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path` };
+      try {
+        this.delegatedMeshRecord();
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+      if (opts.resume)
+        return { ok: false, error: `${delegatedBy}, so it cannot resume a session held on this host (resume)` };
+      if (opts.resolved?.continuity === "exact")
+        return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
+      if (typeof opts.cwd === "string" && opts.cwd !== "")
+        return { ok: false, error: `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory` };
+      const shared = Object.keys(connectorServers(loadCotalConfig(this.workspaceRoot), agent, parseShareSelection(opts.shareTools)));
+      if (shared.length)
+        return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
+    }
 
     // A placed spawn's cwd is checked on this host BEFORE anything is minted or reserved: an absolute
     // path this manager cannot realpath, or one that is not a directory, is refused here with the
@@ -5505,7 +5594,7 @@ export class Manager {
       return { ok: false, error: `the name "${identityName}" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };
     const held = this.retiring.get(identityName);
     if (held !== undefined) {
-      void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner, delegated: held.delegated, secretPaths: held.secretPaths, launch: held.launch }).catch(() => {});
+      void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner, delegated: held.delegated, secretPaths: held.secretPaths, delegatedHandle: held.delegatedHandle, launch: held.launch }).catch(() => {});
       const err = lifecycleBlocked("failed-precondition",
         `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
         { blockedOp: "retirement", headState: "retiring", opId: held.opId, remedy: "retry" });
@@ -5529,6 +5618,10 @@ export class Manager {
         return { ok: false, error: (e as Error).message };
       }
     }
+    // The child takes launch options as `--opt k=v`, so only string values can cross to it.
+    const unportable = this.runtime.spawnDelegated ? Object.keys(launchOptions ?? {}).filter((k) => typeof launchOptions![k] !== "string") : [];
+    if (unportable.length)
+      return { ok: false, error: `runtime "${this.runtime.kind}" starts seats outside this host, so it cannot pass non-string launch options (${unportable.join(", ")})` };
 
     // #4 A4 (panel): the roster the allocation consults must reflect the initial presence snapshot,
     // or a spawn immediately after manager boot races an already-live unmanaged peer and re-opens the
@@ -5688,6 +5781,7 @@ export class Manager {
       let issued: ManagedAgent["issued"];
       let userLaunch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } | undefined;
       let userOwner: string | undefined;
+      let enrolled: { material: ManagedEnrollment; actorToken: string } | undefined;
       if (this.userMode) {
         const prep = await this.provisionUserAgent(name, {
           spawner,
@@ -5721,6 +5815,7 @@ export class Manager {
         lifecycleUid = prep.lifecycleUid;
         userLaunch = prep.launch;
         userOwner = prep.owner;
+        enrolled = prep.enrolled;
         provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner, ...(opts.delegatedIntent ? { delegated: true as const } : {}), secretPaths: prep.files, ...(custody ? { runtime: custody } : {}) };
       } else if (this.auth) {
         // Unit B (§13.1): reserve + activate this incarnation's DURABLE identity BEFORE any
@@ -5838,9 +5933,24 @@ export class Manager {
         // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
         workspaceRoot: this.workspaceRoot,
       };
-      const spec = connector.buildLaunch(launchOpts);
-      spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
-      const handle = await this.spawnCustodied(name, spec, cwd, custody);
+      // A delegated seat gets no local launch at all: no launch-material file, control token or
+      // manager path is produced for it, only the handoff its runtime writes into the child.
+      let spec: LaunchSpec | undefined;
+      let handle: AgentHandle;
+      if (this.runtime.spawnDelegated) {
+        const handoff = this.composeManagedHandoff(enrolled!.material, enrolled!.actorToken);
+        if (this.delegatedLaunched.has(lifecycleUid))
+          throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${this.runtime.kind}"; a lifecycle is handed off at most once`);
+        this.delegatedLaunched.add(lifecycleUid);
+        handle = this.runtime.spawnDelegated(
+          { agent, persona: readFileSync(configPath, "utf8"), role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events },
+          handoff,
+        );
+      } else {
+        spec = connector.buildLaunch(launchOpts);
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
+        handle = await this.spawnCustodied(name, spec, cwd, custody);
+      }
       hooks?.onLaunched?.(); // P2 item 2: the "launched" progress edge (process spawned, pre-presence)
       const managed: ManagedAgent = {
         name,
@@ -5858,7 +5968,8 @@ export class Manager {
         authorityParent: userLaunch && spawner && parsePrincipalKey(spawner) ? spawner : undefined,
         startedAt: Date.now(),
         handle,
-        control: spec.control,
+        control: spec?.control,
+        ...(spec ? {} : { handedOff: true as const }),
         launch: {
           source: opts.resolved
             ? {
@@ -5884,7 +5995,7 @@ export class Manager {
           events,
           shareTools: opts.shareTools,
           forkSource: opts.resume,
-          ...(opts.resume !== undefined && spec.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
+          ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
           // Opaque values may contain secrets. Preserve only their keys and require the referenced
           // persona/manifest to resolve the values again; imperative overrides have no safe payload.
           unresolvedLaunchOptionKeys:
@@ -5893,7 +6004,7 @@ export class Manager {
               : undefined,
         },
         // A delegated agent is never restarted (SPEC 13.16), so its slot arms no recovery.
-        ...((connector.supportsSessionContinuation || opts.supervise !== undefined) && !opts.delegatedIntent
+        ...(spec && (connector.supportsSessionContinuation || opts.supervise !== undefined) && !opts.delegatedIntent
           ? {
               restart: {
                 opts: launchOpts,
@@ -6054,6 +6165,7 @@ export class Manager {
             userOwner: held.userOwner,
             delegated: held.delegated,
             secretPaths: held.secretPaths,
+            delegatedHandle: held.delegatedHandle,
           }).catch(() => {});
           return {
             ok: false,

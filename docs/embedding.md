@@ -511,6 +511,57 @@ namespace from the agent children, which mount no signer at all; that split is f
 hosted-composition work, so until it (or a remote/injected minter) exists, do not run untrusted
 agents under this manager.
 
+### Delegated seats outside the manager's filesystem
+
+The [portable lifecycle bootstrap](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/portable-lifecycle-bootstrap.md)
+design and SPEC §13.17 define how a managed agent that `enrollManagedAgent` already enrolled starts
+in a child that cannot see the manager's filesystem. The ordinary `spawn` path writes the token and
+sentinel under the manager's workspace root and hands the runtime a launch whose bearer command and
+material file are paths on that filesystem, so such a child needs this path instead.
+
+The delegation boundary is one optional runtime method. A runtime that implements
+`Runtime.spawnDelegated(launch, handoff)` receives two values and no paths: a `DelegatedSeatLaunch`
+(connector name, persona text, model and the other launch choices) and a `ManagedLifecycleHandoff`
+(space, owner, actor, the host-chosen `lifecycleUid`, broker and IdP pins, the pinned exchange base,
+the sentinel, the channel lists, and the raw actor token). The manager enrolls once, as it does
+today, and builds the handoff from what it holds. It never sends the token to the host, never copies
+a file from its workspace or secret store, and never builds a local launch for that seat. No signer,
+issuer or callout record, loopback capability, provisioner or manager credential, control token, or
+manager path crosses. A spawn choice that only the manager's host can honour is refused before
+enrollment: `--resume`, a manifest agent's `continuity: exact`, `--cwd`, and any shared MCP server,
+whether from `--share-tools` or the config default (`--share-tools none` passes).
+
+The runtime creates one provider resource under `managedRuntimeKey(target)`, writes the handoff into
+it as one 0600 file and the persona beside it, and runs the stock bootstrap there:
+`cotal spawn --config <persona-file> --space <space> --name <actor> --expect-owner <owner> --expect-lifecycle-uid <uid>`
+with `COTAL_MANAGED_HANDOFF_FILE` naming the file. `delegatedSeatCommand` builds that argv. The
+`cotal` entry reads the file into memory, deletes it and drops the variable before it parses flags,
+prints help or loads extensions, so every outcome, a refusal of its own flags included, leaves no
+file. It refuses before any broker connection or exchange request when the
+space, owner, actor, or lifecycle UID differ from the expected values, and then runs the
+enrollment-redeem consumer: it registers the mesh in its own home, writes the token to its own 0600
+file, and exchanges it through `agent-bearer --exchange-url` unchanged. It never enrolls, redeems, or
+mints a token or UID.
+
+Readiness is still mesh presence. A create whose answer is lost leaves the handle running, so the
+launch settles uncertain and stays held; the manager never retries it. A provider read that finds no
+resource under the key is not an exit, because the create may still land. Every close by
+`managedRuntimeKey` is fenced: it completes only once the create was answered or the provider refuses
+any later create under the key. A provider that names its own resources may run the create as a
+durable operation keyed by `managedRuntimeKey` and close through the identifier its authenticated
+create response returned, kept where the host can read it without the manager. Only that response
+binds an identifier to the key; one derived from the key or found by name or listing is never closed
+or adopted, and while the response is unknown the launch stays held. Every stop, the reap of a child
+whose parent exited and `Manager.stop({ withAgents: true })` included, runs `prepareAgentRetirement`
+for the UID-exact target, then `stop()` on the handle `spawnDelegated` returned, then the terminal
+barrier. `preparePreservation` refuses a cut that holds a delegated seat, and a `Manager.stop()` after
+a refused cut retires the seat through the same steps. After the manager is gone
+the host runs the same steps, makes the same fenced close by `managedRuntimeKey`, and finishes at
+`MANAGED_RETIRE_PATH`. Supply `spawnDelegated` only from a runtime whose host can make that fenced
+close without the manager. The enrollment redeem
+(`COTAL_ENROLLMENT_FILE`) stays for lifecycles whose token the host generated itself; a host cannot
+mint one for a manager-enrolled lifecycle because it holds only the digest.
+
 ## Provisioning a space (one-space reference shape)
 
 ```ts
