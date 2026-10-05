@@ -404,6 +404,11 @@ running mesh with the right credentials instead of mistaking the cwd for a space
   project. `--space <name>` overrides it for one command.
 - When one broker has records for several spaces, `cotal up --space <name>` refreshes that named
   space.
+- A refresh rewrites only what that command decided: the server, root and mode, the user-auth
+  endpoints, and an explicit `--host` or `--max-sessions`. Every other field, such as the TLS
+  requirement, is kept as the record stands when the refresh writes it, so a change another
+  command made during the refresh survives. If the record was removed during the refresh, `up`
+  fails instead of writing it back.
 - With no live selected default, a project with its own `.cotal/` resolves to that project's
   mesh; otherwise one running mesh is used automatically and several are an error.
 - `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry.
