@@ -498,7 +498,7 @@ a secret, so it leaves out a server with an `env` or `headers` value that is any
 references (a `Bearer ${TOKEN}` header among them) and names it in its output. To share one,
 add it to the cotal config with each secret written as a `${VAR}` reference, and export that
 variable where you spawn. Setup also leaves out and names an entry Claude Code skips as malformed,
-such as one whose `command` is not a string, because a spawn would fail on it.
+such as one with no `command` or `url` to start it from, or one whose `command` is not a string.
 
 At launch the connector forwards *only* the named vars the chosen servers declare and
 passes the merged config as an owner-only temp file; `--strict-mcp-config` stays on, so

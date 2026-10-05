@@ -17,6 +17,7 @@ import { ENV_REFERENCE } from "@cotal-ai/connector-core";
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-claude.md";
 const MARKETPLACE = "cotal-mesh";
+const REMOTE_TRANSPORTS = new Set<unknown>(["http", "sse", "ws"]);
 
 function cotalHome(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
@@ -205,16 +206,19 @@ function userServers(): Record<string, unknown> {
   return config?.mcpServers ?? {};
 }
 
-/** Whether setup may copy a server entry into the cotal config. Each field must have the type
- *  {@link McpServerSpec} gives it: Claude Code skips an entry that does not, and launch would throw on
- *  it for every spawn. That config holds secrets only as `${VAR}` references, and literal text cannot
- *  be told apart from a secret, so every `env` and `headers` value must be references and nothing else. */
+/** Whether setup may copy a server entry into the cotal config. The entry must name a transport
+ *  Claude Code starts (a non-empty `command` for stdio, a `url` for http, sse and ws) and give each
+ *  field the type {@link McpServerSpec} gives it: Claude Code skips an entry that does not, so a copy
+ *  would be shared in name only, and a field of the wrong type also makes launch throw for every spawn.
+ *  That config holds secrets only as `${VAR}` references, and literal text cannot be told apart from a
+ *  secret, so every `env` and `headers` value must be references and nothing else. */
 function copyable(spec: unknown): spec is McpServerSpec {
   const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
   const isOptionalString = (v: unknown) => v === undefined || typeof v === "string";
   return (
     isRecord(spec) &&
     [spec.command, spec.type, spec.url].every(isOptionalString) &&
+    (spec.type === undefined || spec.type === "stdio" ? Boolean(spec.command) : REMOTE_TRANSPORTS.has(spec.type) && spec.url !== undefined) &&
     (spec.args === undefined || (Array.isArray(spec.args) && spec.args.every((arg) => typeof arg === "string"))) &&
     [spec.env, spec.headers].every(
       (values) => values === undefined || (isRecord(values) && Object.values(values).every((v) => typeof v === "string" && v.replace(ENV_REFERENCE, "") === "")),
