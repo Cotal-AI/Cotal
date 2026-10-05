@@ -376,8 +376,10 @@ Live clients MUST NOT heartbeat as `offline`. A graceful disconnect MAY publish 
 `offline` presence record. Observers MUST also derive `offline` from stale timestamps and
 from KV delete/purge events. Offline peers MAY remain in local rosters for observability.
 An instance MUST write only its own presence key, and the key MUST equal `card.id`.
-Readers MUST drop a record whose `card.id` differs from its KV key and SHOULD report the
-rejection on their recoverable diagnostic path.
+Readers MUST drop a record whose `card.id` differs from its KV key, or whose `card.name`,
+`status` or `ts` does not have the type given above, and SHOULD report the rejection on their
+recoverable diagnostic path. A `ts` that is not a finite number never reads as stale, so a
+reader that kept the record would show its peer live after the key expired.
 
 `PresenceCondition`:
 

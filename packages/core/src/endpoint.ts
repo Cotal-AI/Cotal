@@ -711,7 +711,8 @@ export class CotalEndpoint extends EventEmitter {
    *  only evidence the split rate exists. Always on, never behind a flag — a counter you have to
    *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
-  /** Presence rows rejected because their embedded id did not match the ACL-scoped KV key. */
+  /** Presence rows rejected because their embedded id did not match the ACL-scoped KV key, or because
+   *  a field the observer computes with was missing or of the wrong type. */
   private presenceBindingDrops = 0;
 
   /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
@@ -726,7 +727,7 @@ export class CotalEndpoint extends EventEmitter {
     return this.splitsRecovered;
   }
 
-  /** Mis-keyed presence rows this reader rejected. The warning event may be missed; the count cannot. */
+  /** Mis-keyed or malformed presence rows this reader rejected. The warning event may be missed; the count cannot. */
   get presenceBindingDropCount(): number {
     return this.presenceBindingDrops;
   }
@@ -6463,10 +6464,15 @@ export class CotalEndpoint extends EventEmitter {
       this.markOffline(e.key);
       return;
     }
-    let p: Presence;
+    let p: unknown;
     try {
-      p = e.json<Presence>();
+      p = e.json<unknown>();
     } catch {
+      return;
+    }
+    if (!isUsablePresence(p)) {
+      this.presenceBindingDrops++;
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a record with a string card.name, a known status and a finite ts`));
       return;
     }
     this.applyPresence(e.key, p);
@@ -6478,9 +6484,9 @@ export class CotalEndpoint extends EventEmitter {
     // with its bucket key is forged or corrupt. Drop it rather than surface a spoofed roster identity.
     // The write-side scoping ($KV.<presenceBucket>.<own-id>) is the primary guard; this rejects a
     // mis-keyed record even if a broad writer slips one in under another agent's key.
-    if (raw.card?.id !== id) {
+    if (raw.card.id !== id) {
       this.presenceBindingDrops++;
-      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(id)}: card.id ${JSON.stringify(raw.card?.id)} does not match its KV key`));
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(id)}: card.id ${JSON.stringify(raw.card.id)} does not match its KV key`));
       return;
     }
     const prev = this.roster.get(id);
@@ -6865,6 +6871,19 @@ function assertPartsSerializable(parts: readonly Part[]): void {
   }
 }
 
+/** A `Record` so that adding a status to {@link PresenceStatus} fails to compile until the reader accepts it. */
+const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };
+
+/** The presence fields this observer computes with, in their SPEC §6 types. A non-number `ts`
+ *  makes the liveness arithmetic NaN, and `NaN > ttl` is never true, so the row would stay live
+ *  after its key expired (#2612). `card.name` is the roster sort key: a non-string throws inside
+ *  the watch loop and ends the watch. `status` decides offline and is what roster consumers read.
+ *  `card.id` is left to the KV-key check, which rejects anything but the key string. */
+function isUsablePresence(value: unknown): value is Presence {
+  return isRecord(value) && isRecord(value.card) && typeof value.card.name === "string" &&
+    typeof value.status === "string" && Object.hasOwn(PRESENCE_STATUSES, value.status) &&
+    typeof value.ts === "number" && Number.isFinite(value.ts);
+}
 
 /** Shallow-equal two per-channel-mode maps (presence dedup): a change must re-emit, so an attention
  *  toggle isn't swallowed as a quiet heartbeat. Absent and empty compare equal. */
