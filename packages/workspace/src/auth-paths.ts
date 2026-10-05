@@ -370,14 +370,38 @@ export function brokerAuthPath(dir: string): string {
  *  (stable across restart, so a restart re-registers the SAME id with an ADVANCED epoch and the
  *  (i) fence bites) + the serve nkey identity (so re-registration reuses the SAME gate principal —
  *  provisionEndpointGateOpen stays idempotent, no core barrier change, and eviction targets a
- *  stable principal). Holds a private seed, so it lands in a HARDENED secret file, space-scoped by
- *  a hex key (an authDir is a shared namespace; a raw space token can collide/case-fold). */
+ *  stable principal). Holds a private seed, so it lands in a HARDENED secret file in the space's
+ *  segment of this root (see {@link managerIdentityFile}). */
 export interface ManagerInstanceIdentity {
   instanceId: string;
   serveIdentity: { id: string; seed: string };
 }
+/** A manager identity record of this root, `<root>/.cotal/space.<hex>/<name>`. It is state of this
+ *  root, so it stays out of `.cotal/auth`: that folder is what an operator copies to give another
+ *  root a mesh's trust, and an identity copied with it made the other root's manager this root's
+ *  logical instance. An older build kept the record in `.cotal/auth` as `legacyName`; the first
+ *  touch moves it here, so an upgraded root restarts as the same instance (SPEC 13.6). */
+function managerIdentityFile(root: string, space: string, name: string, legacyName: string): string {
+  const path = join(root, ".cotal", spaceSegment(space), name);
+  const legacy = join(authDir(root), legacyName);
+  if (!existsSync(legacy)) return path;
+  mkSecretDir(dirname(path));
+  // A link, not a rename: it never replaces a record already at `path`, and a concurrent first
+  // touch that linked first is the same inode, which tells it apart from a second record.
+  try { linkSync(legacy, path); } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return path;
+    if (code !== "EEXIST") throw e;
+    const old = statSync(legacy, { throwIfNoEntry: false });
+    const current = statSync(path);
+    if (old && (old.ino !== current.ino || old.dev !== current.dev))
+      throw new Error(`both ${path} and the older ${legacy} hold a manager identity for space "${space}" - refusing to guess which belongs to this root. Remove the one that did not come from this root, then retry.`);
+  }
+  rmSync(legacy, { force: true });
+  return path;
+}
 function managerInstanceFile(root: string, space: string): string {
-  return join(authDir(root), `manager-instance.${Buffer.from(space, "utf8").toString("hex")}.json`);
+  return managerIdentityFile(root, space, "manager-instance.json", `manager-instance.${spaceKey(space)}.json`);
 }
 /** Load this workspace root's persisted manager instance identity for `space`, or undefined if a
  *  manager has never registered here. A present-but-MALFORMED file fails LOUD: minting a fresh id
@@ -399,9 +423,9 @@ export function loadManagerInstanceIdentity(root: string, space: string): Manage
 }
 /** Persist this workspace root's manager instance identity for `space` (hardened secret file). */
 export function saveManagerInstanceIdentity(root: string, space: string, identity: ManagerInstanceIdentity): void {
-  const dir = authDir(root);
-  mkSecretDir(dir); // harden the auth dir BEFORE the secret (with its seed) lands
-  writeSecretFile(managerInstanceFile(root, space), JSON.stringify(identity, null, 2));
+  const path = managerInstanceFile(root, space);
+  mkSecretDir(dirname(path)); // harden the dir BEFORE the secret (with its seed) lands
+  writeSecretFile(path, JSON.stringify(identity, null, 2));
 }
 
 /**
@@ -412,9 +436,8 @@ export function saveManagerInstanceIdentity(root: string, space: string, identit
  * refuses with a named error (`manager-instance-identity-create-lost`).
  */
 export function createManagerInstanceIdentity(root: string, space: string, candidate: ManagerInstanceIdentity): ManagerInstanceIdentity {
-  const dir = authDir(root);
-  mkSecretDir(dir);
   const path = managerInstanceFile(root, space);
+  mkSecretDir(dirname(path));
   try {
     writeSecretFileCreateOnly(path, JSON.stringify(candidate, null, 2));
     return candidate;
@@ -438,7 +461,7 @@ export interface ManagerSiblingIdentities {
   sessionLedger: { id: string; seed: string };
 }
 function managerSiblingFile(root: string, space: string): string {
-  return join(authDir(root), `manager-siblings.${spaceKey(space)}.json`);
+  return managerIdentityFile(root, space, "manager-siblings.json", `manager-siblings.${spaceKey(space)}.json`);
 }
 function readManagerSiblingRecord(f: string, space: string): ManagerSiblingIdentities | undefined {
   type Nkey = { id?: unknown; seed?: unknown } | null | undefined;
@@ -460,7 +483,7 @@ export function claimManagerSiblingIdentities(root: string, space: string): Mana
   const path = managerSiblingFile(root, space);
   const stored = readManagerSiblingRecord(path, space);
   if (stored !== undefined) return stored;
-  mkSecretDir(authDir(root));
+  mkSecretDir(dirname(path));
   const candidate: ManagerSiblingIdentities = { goalWriter: newIdentity(), sessionLedger: newIdentity() };
   try {
     writeSecretFileCreateOnly(path, JSON.stringify(candidate, null, 2));
@@ -571,7 +594,7 @@ export interface RetireManagerInstanceIdentityOpts {
  * It refuses, throwing an error that starts with `manager-instance-identity-retire-refused`, when
  * the entry is not regular, does not parse, is malformed, or holds another identity. A missing
  * record returns `absent` and never establishes ownership. The record is renamed to a private name
- * in the auth directory and checked again there before deletion. A changed captured record is
+ * in its own directory and checked again there before deletion. A changed captured record is
  * linked back only if the canonical path is still free; on a collision both records are preserved.
  *
  * This establishes only which record was deleted. It is not proof that a manager stopped: the
@@ -627,7 +650,7 @@ function accountFileKey(space: string): string {
  * which host may write as that identity now, and it is monotonic, so it survives a clock that is
  * wrong in a way a time-based lease does not.
  *
- * It lives beside {@link ManagerInstanceIdentity} and follows that file's three established rules:
+ * It follows the three rules {@link ManagerInstanceIdentity}'s file established:
  * space-scoped by a hex key (an auth dir is a shared namespace and a raw space token can collide or
  * case-fold), published by exclusive create, and loud on a malformed record rather than minted over,
  * because minting over it is how a stale host would become authoritative again.

@@ -1706,12 +1706,12 @@ export class Manager {
     } catch (e) {
       // Our OWN instance id already holds a live key ⇒ refuse. Anything else (e.g. a KV/JS error) is a
       // real failure to surface, not a silent "held" — keep the cause so it isn't misread as a conflict.
-      const held = await this.ep.readManagerLease().catch(() => undefined);
+      const held = (await this.ep.readOwnManagerLease(this.managerInstanceId).catch(() => undefined))?.info;
       await this.ep.stop();
       await this.attach.stop();
       throw new Error(
         held
-          ? `manager instance ${this.managerInstanceId} already serves space "${this.space}" from this workspace root (${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first before restarting the same instance`
+          ? `manager instance ${this.managerInstanceId} already serves space "${this.space}" from ${held.root === this.leaseInfo.root ? "this" : "another"} workspace root (${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first before restarting the same instance`
           : `could not acquire the manager lease for space "${this.space}": ${(e as Error).message}`,
       );
     }
