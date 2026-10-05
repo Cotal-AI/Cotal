@@ -912,7 +912,8 @@ state wins):
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`
 means the component record is live but its service/readiness surface did not answer or is not ready.
 Those are intentionally separate exit cases. A failed or unreadable probe is `refused`, never an
-absent component or a clean zero.
+absent component or a clean zero. A PID record that exists but cannot be read refuses only its own
+row. A record that its component removes while the pass runs reads as `absent`.
 
 ## spawn
 

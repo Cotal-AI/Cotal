@@ -756,9 +756,16 @@ function componentExit(components: readonly ComponentHealth[]): number {
   return Math.max(...components.map((component) => COMPONENT_EXIT[component.verdict]));
 }
 
-function processRecord(path: string): { kind: "absent" } | { kind: "dead"; pid: number } | { kind: "unattributable"; raw: string } | { kind: "live"; pid: number } | { kind: "unknown"; pid: number } {
-  if (!existsSync(path)) return { kind: "absent" };
-  const raw = readFileSync(path, "utf8").trim();
+function processRecord(path: string): { kind: "absent" } | { kind: "unreadable"; error: string } | { kind: "dead"; pid: number } | { kind: "unattributable"; raw: string } | { kind: "live"; pid: number } | { kind: "unknown"; pid: number } {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8").trim();
+  } catch (e) {
+    // A component removes its own record on exit, so the file can be gone by the time it is read:
+    // that is absence. Any other failed read refuses this component's row, never the whole pass.
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent" };
+    return { kind: "unreadable", error: (e as Error).message };
+  }
   if (!raw) return { kind: "absent" };
   const pid = parsePid(raw);
   if (pid === undefined) return { kind: "unattributable", raw };
@@ -768,12 +775,13 @@ function processRecord(path: string): { kind: "absent" } | { kind: "dead"; pid: 
 
 function pidFacts(record: ReturnType<typeof processRecord>): string[] {
   if (record.kind === "live" || record.kind === "dead" || record.kind === "unknown") return [`pid ${record.pid}`];
+  if (record.kind === "unreadable") return [`pidfile unreadable: ${record.error}`];
   return [];
 }
 
 function processVerdict(record: ReturnType<typeof processRecord>): ComponentVerdict | undefined {
   if (record.kind === "absent" || record.kind === "dead") return "absent";
-  if (record.kind === "unattributable" || record.kind === "unknown") return "refused";
+  if (record.kind === "unattributable" || record.kind === "unknown" || record.kind === "unreadable") return "refused";
   return undefined;
 }
 
@@ -929,8 +937,9 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
   const facts = pidFacts(record);
   // A corrupt or kernel-unreadable LOCAL record is neither evidence that the manager is absent nor
   // permission to replace it with a network answer.  Name that failed local control surface first.
-  if (record.kind === "unattributable" || record.kind === "unknown") {
-    facts.push(record.kind === "unattributable" ? "unattributable pidfile" : "pid liveness unestablishable");
+  if (processVerdict(record) === "refused") {
+    if (record.kind === "unattributable") facts.push("unattributable pidfile");
+    if (record.kind === "unknown") facts.push("pid liveness unestablishable");
     facts.push("static reconciliation not reported by this manager build");
     return { name: "manager", verdict: "refused", facts };
   }

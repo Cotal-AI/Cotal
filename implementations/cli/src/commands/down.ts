@@ -1049,8 +1049,14 @@ export type PidfileState = { pid?: number; live: boolean; note?: string };
 
 /** Shared hardened pid probe: positive integers only, and EPERM means the process exists. */
 export function pidfileState(path: string): PidfileState {
-  if (!existsSync(path)) return { live: false, note: "no pidfile" };
-  const raw = readFileSync(path, "utf8").trim();
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8").trim();
+  } catch (e) {
+    // A process removes its own record on exit, so the file can be gone by the time it is read.
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { live: false, note: "no pidfile" };
+    throw e;
+  }
   if (raw.startsWith("removing:")) return { live: false, note: "extension removal in progress" };
   const pid = parsePid(raw);
   if (!pid) return { live: false, note: "bad pidfile" };
