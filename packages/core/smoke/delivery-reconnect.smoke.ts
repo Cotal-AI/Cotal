@@ -73,12 +73,14 @@ try {
   const reviewGen = pre.generation ?? 0;
   await observer.readMembership(); // open the membership-feed KV on the old connection before rebuilding
   const membershipStream = `KV_${membershipBucket(space)}`;
+  // PUSH-BOUND consumers only. The admin cred holds no consumer delete on this bucket (#691), so a
+  // stopped or superseded watch leaves its unbound consumer to the broker's inactive threshold.
   const membershipConsumers = async (): Promise<string[]> => {
     const j = await (await fetch(`http://127.0.0.1:${MON}/jsz?consumers=true&streams=true&accounts=true`)).json() as
-      { account_details?: { stream_detail?: { name: string; consumer_detail?: { name: string }[] }[] }[] };
+      { account_details?: { stream_detail?: { name: string; consumer_detail?: { name: string; push_bound?: boolean }[] }[] }[] };
     const out: string[] = [];
     for (const acc of j.account_details ?? []) for (const st of acc.stream_detail ?? [])
-      if (st.name === membershipStream) for (const c of st.consumer_detail ?? []) out.push(c.name);
+      if (st.name === membershipStream) for (const c of st.consumer_detail ?? []) if (c.push_bound) out.push(c.name);
     return out.sort();
   };
   let membershipChanges = 0;
@@ -143,10 +145,10 @@ try {
   const afterMembershipConsumers = await membershipConsumers();
   const successorMembershipConsumerName = afterMembershipConsumers.find((n) => n !== predecessorMembershipConsumerName);
   check("reconnect creates exactly one successor membership consumer", afterMembershipConsumers.length === 1 && successorMembershipConsumerName !== undefined, { predecessorMembershipConsumerName, afterMembershipConsumers });
-  check("reconnect deletes the predecessor membership consumer instead of accumulating one", !afterMembershipConsumers.includes(predecessorMembershipConsumerName), { predecessorMembershipConsumerName, afterMembershipConsumers });
+  check("reconnect leaves no bound predecessor membership consumer", !afterMembershipConsumers.includes(predecessorMembershipConsumerName), { predecessorMembershipConsumerName, afterMembershipConsumers });
   await membershipWatch.stop();
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
-  check("stopping the membership watch deletes its broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
+  check("stopping the membership watch unbinds its broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
 
   // Invoke the REAL public stop while its broker consumer is live, then terminal-close that epoch.
   // The stop promise must remain endpoint-owned and pending until fresh-epoch retained-identity deletion.
@@ -184,7 +186,7 @@ try {
   await shutdownWatch.stop();
   await observer.stop();
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
-  check("awaited watch stop before endpoint stop deletes the broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
+  check("awaited watch stop before endpoint stop unbinds the broker consumer", (await membershipConsumers()).length === 0, await membershipConsumers());
 
   await observer.stop();
 
@@ -199,14 +201,8 @@ try {
   const endpointStopped = await Promise.race([observer.stop().then(() => true), wait(2000).then(() => false)]);
   const brokerDownWatchStopped = await Promise.race([brokerDownStop.then(() => true, () => false), wait(1000).then(() => false)]);
   check("endpoint shutdown while broker is down settles the public membership stop", endpointStopped && brokerDownWatchStopped, { endpointStopped, brokerDownWatchStopped });
-  // This terminal boundary explicitly leaves broker expiry to retire the unreachable consumer; remove it
-  // from the cardinality census so subsequent cells grade their own ownership rather than this exception.
-  const expiredByShutdown = await membershipConsumers();
-  const cleanupNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "admin"), tls: false }) });
-  try {
-    const jsm = await import("@nats-io/jetstream").then(({ jetstreamManager }) => jetstreamManager(cleanupNc));
-    for (const name of expiredByShutdown) await jsm.consumers.delete(membershipStream, name);
-  } finally { await cleanupNc.drain(); }
+  // This terminal boundary leaves broker expiry to retire the unreachable consumer, which the bound-only
+  // census no longer counts, so later cells grade their own ownership rather than this exception.
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 0; i++) await wait(50);
   check("the broker-down shutdown exception is isolated before later lifecycle cells", (await membershipConsumers()).length === 0, await membershipConsumers());
 
@@ -215,7 +211,7 @@ try {
   observer.on("error", () => {}); await observer.start();
 
   // Terminal self-heal starts only AFTER the old connection is closed. Its cleanup request cannot ride
-  // that epoch, so the fresh connection must delete the predecessor by recorded stream+consumer name.
+  // that epoch, so the fresh connection must release the predecessor by recorded stream+consumer name.
   let terminalChanges = 0;
   const terminalWatch = await observer.watchMembership(() => { terminalChanges++; });
   await wait(200);
@@ -230,7 +226,7 @@ try {
   await Promise.race([healed, wait(5000)]);
   await wait(200);
   const terminalAfter = await membershipConsumers();
-  check("terminal self-heal creates one successor and deletes the closed-epoch predecessor", terminalAfter.length === 1 && !terminalAfter.some((n) => terminalBefore.includes(n)), { terminalBefore, terminalAfter });
+  check("terminal self-heal creates one successor and leaves no bound closed-epoch predecessor", terminalAfter.length === 1 && !terminalAfter.some((n) => terminalBefore.includes(n)), { terminalBefore, terminalAfter });
   const terminalNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: membershipRwCreds, tls: false }) });
   try {
     const feed = await new Kvm(terminalNc).open(membershipBucket(space));

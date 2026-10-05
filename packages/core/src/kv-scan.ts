@@ -1,6 +1,6 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
-import type { MsgRequest, NextMsgRequest } from "@nats-io/jetstream";
+import type { ConsumerInfo, MsgRequest, NextMsgRequest } from "@nats-io/jetstream";
 
 /**
  * The ONE sanctioned way to read every live entry of a KV bucket.
@@ -100,6 +100,14 @@ export class IncompleteKvScan extends Error {
 
 export interface LiveKvEntriesOptions {
   signal?: AbortSignal;
+  /** Runs each delete of the scan's own consumer, for a caller that must recognise a refused one: a
+   *  profile without the delete row is refused by design (#691), and the endpoint keeps that
+   *  refusal's connection-status echo off its `error` event. */
+  deleteOwnConsumer?: (stream: string, name: string, del: () => Promise<boolean>) => Promise<boolean>;
+  /** Runs with the scan's consumer before its first delivery. nats.js rebuilds that consumer after a
+   *  stall or a sequence gap and deletes the predecessor itself, with no hook before the send, so a
+   *  caller that must recognise that refused delete (#691) learns the consumer's name here. */
+  onConsumer?: (info: ConsumerInfo) => void;
 }
 
 /**
@@ -169,6 +177,7 @@ export async function liveKvEntries(
   try {
     // THE BIND-TIME PROOF, continued: zero here is the only thing that yields an empty result.
     const initialInfo = await oc.info(true);
+    opts?.onConsumer?.(initialInfo);
     initialName = initialInfo.name;
     activeConsumerName = initialInfo.name;
     expected = initialInfo.num_pending;
@@ -228,12 +237,13 @@ export async function liveKvEntries(
   } finally {
     // Delete ONLY this scan's own consumer in finally. If rotation occurred, delete the rotated consumer too.
     // TTL (inactive_threshold) remains the crash/deletion-failure backstop.
+    const deleteOwn = opts?.deleteOwnConsumer ?? ((_stream, _name, del) => del());
     const targetName = (oc as unknown as { name?: string }).name ?? activeConsumerName;
     if (targetName && initialName && targetName !== initialName) {
       for (let i = 0; i < 20; i++) {
         let deleted = false;
         try {
-          deleted = await bucket.jsm.consumers.delete(bucket.stream, targetName);
+          deleted = await deleteOwn(bucket.stream, targetName, () => bucket.jsm.consumers.delete(bucket.stream, targetName));
         } catch {
           // in-flight creation or already deleted
         }
@@ -241,7 +251,8 @@ export async function liveKvEntries(
         await new Promise((r) => setTimeout(r, 20));
       }
     } else {
-      await oc.delete().catch(() => { /* deletion failure: TTL is the backstop */ });
+      // The client sets `name` on every push consumer it returns; the cast above only hides it from the type.
+      await deleteOwn(bucket.stream, targetName!, () => oc.delete()).catch(() => { /* deletion failure: TTL is the backstop */ });
     }
   }
   if (opts?.signal?.aborted) {

@@ -4606,27 +4606,30 @@ CHAT history, presence, and channel registry:
 - `$JS.API.CONSUMER.CREATE.<CHAT>.>`
 - `$JS.API.CONSUMER.INFO.<CHAT>.>`
 - `$JS.API.CONSUMER.MSG.NEXT.<CHAT>.>`
-- `$JS.API.CONSUMER.DELETE.<CHAT>.>`
 - `$JS.ACK.<CHAT>.>`
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
-- `$JS.API.CONSUMER.DELETE.<KV>.>`
 - `$JS.API.STREAM.INFO.<CHKV>`
 - `$JS.API.STREAM.MSG.GET.<CHKV>`
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
-- `$JS.API.CONSUMER.DELETE.<CHKV>.>`
 - `$JS.API.STREAM.INFO.<MEMKV>`
 - `$JS.API.STREAM.MSG.GET.<MEMKV>`
 - `$JS.API.CONSUMER.CREATE.<MEMKV>.>`
 - `$JS.API.CONSUMER.INFO.<MEMKV>.>`
-- `$JS.API.CONSUMER.DELETE.<MEMKV>.>`
 - `$JS.API.STREAM.INFO.<DLVKV>`
 - `$JS.API.STREAM.MSG.GET.<DLVKV>`
 - `$JS.FC.>`
 
 The membership feed (`MEMKV`) is read-only for this profile and, per §8's membership-feed
 paragraph, display-only and not part of the contract a client must implement.
+
+The profile holds **no** `CONSUMER.DELETE` on any of these streams. Its consumers are client-named
+ordered consumers (`oc_<nuid>_<serial>`, renamed on every rebuild), so the only expressible delete
+grant is stream-wide, and a stream-wide grant lets one holder delete another principal's watch
+cursors and the delivery daemon's `fanout` durable. The broker removes these consumers at their
+inactive threshold (five minutes after the last interest), and a client MUST treat a refused delete
+of its own ephemeral consumer as that outcome rather than as a failure.
 
 ### Admin
 
@@ -4642,7 +4645,6 @@ frame; §13.2, §13.11). Plus DM history read grants:
 - `$JS.API.CONSUMER.CREATE.<DM>.>`
 - `$JS.API.CONSUMER.INFO.<DM>.>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DM>.>`
-- `$JS.API.CONSUMER.DELETE.<DM>.>`
 - `$JS.ACK.<DM>.>`
 
 Admin still has no application publish grants.

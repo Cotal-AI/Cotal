@@ -291,16 +291,14 @@ try {
       await tryPublish(agCreds, `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmDurable(DEV_OWNER, agId.id, otherUid)}`, agId.id) === "denied");
     check("bind the SAME alias's dlv durable under a LIED lifecycle uid DENIED",
       await tryPublish(agCreds, `$JS.API.CONSUMER.MSG.NEXT.${DLV}.${dlvDurable(DEV_OWNER, agId.id, otherUid)}`, agId.id) === "denied");
-    // A KV watch is a client-managed ordered consumer. The client deletes the current `oc_*`
-    // consumer when the watch resets or stops, so CREATE+INFO without DELETE is not a usable
-    // read grant: cleanup is broker-refused, the watcher rebuilds again, and consumers accumulate.
-    // The generated name cannot be pinned at mint time, so the narrow boundary is the two public
-    // read-only KV streams an agent actually watches — never another KV stream or a stream delete.
-    check("delete an ordered presence-watch consumer ALLOWED (watch reset/stop cleanup)",
-      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.${PKV}.oc_agent-presence-probe_1`, agId.id) === "allowed");
-    check("delete an ordered channel-registry-watch consumer ALLOWED (watch reset/stop cleanup)",
-      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.KV_${channelBucket(space)}.oc_agent-channels-probe_1`, agId.id) === "allowed");
-    check("delete a consumer on a different KV stream DENIED (cleanup grant is not KV-wide)",
+    // A KV watch's `oc_<nuid>_<serial>` name cannot be pinned at mint time, and a stream-wide
+    // delete would reach every peer's watch cursor (#691), so the agent holds none: the broker
+    // reaps a rebuilt watch's predecessor at its inactive threshold.
+    check("delete an ordered presence-watch consumer DENIED (a peer's watch cursor is not the agent's to remove)",
+      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.${PKV}.oc_agent-presence-probe_1`, agId.id) === "denied");
+    check("delete an ordered channel-registry-watch consumer DENIED",
+      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.KV_${channelBucket(space)}.oc_agent-channels-probe_1`, agId.id) === "denied");
+    check("delete a consumer on a different KV stream DENIED",
       await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.KV_${membersBucket(space)}.oc_agent-escape-probe_1`, agId.id) === "denied");
     check("delete the presence STREAM itself DENIED (consumer cleanup is not bucket destruction)",
       await tryPublish(agCreds, `$JS.API.STREAM.DELETE.${PKV}`, agId.id) === "denied");

@@ -2,25 +2,25 @@
   "suite": [
     "packages/core/smoke/manager-split-auth.smoke.ts"
   ],
-  "guard": "a minted agent credential can delete only its client-managed ordered consumers on the public presence and channel-registry KV streams",
+  "guard": "a minted agent credential cannot delete ordered watch consumers on the public presence and channel-registry KV streams, so it cannot remove a peer's watch cursor (#691)",
   "command": "pnpm smoke:manager-split",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/agent-watch-cleanup.json",
   "mutations": [
     {
-      "name": "drop the agent presence-watch consumer cleanup grant",
+      "name": "restore the agent's stream-wide presence-watch consumer delete",
       "file": "packages/core/src/provision.ts",
-      "find": "    `$JS.API.CONSUMER.DELETE.${KV}.>`,\n    \"$JS.FC.>\",",
-      "replace": "    \"$JS.FC.>\",",
-      "expectRed": "delete an ordered presence-watch consumer ALLOWED (watch reset/stop cleanup)",
-      "cell": "delete an ordered presence-watch consumer ALLOWED (watch reset/stop cleanup)"
+      "find": "\n    \"$JS.FC.>\",\n",
+      "replace": "\n    `$JS.API.CONSUMER.DELETE.${KV}.>`,\n    \"$JS.FC.>\",\n",
+      "expectRed": "delete an ordered presence-watch consumer DENIED (a peer's watch cursor is not the agent's to remove)",
+      "cell": "delete an ordered presence-watch consumer DENIED (a peer's watch cursor is not the agent's to remove)"
     },
     {
-      "name": "drop the agent channel-registry-watch consumer cleanup grant",
+      "name": "restore the agent's stream-wide channel-registry-watch consumer delete",
       "file": "packages/core/src/provision.ts",
-      "find": "    `$JS.API.CONSUMER.DELETE.${CHKV}.>`,\n",
-      "replace": "",
-      "expectRed": "delete an ordered channel-registry-watch consumer ALLOWED (watch reset/stop cleanup)",
-      "cell": "delete an ordered channel-registry-watch consumer ALLOWED (watch reset/stop cleanup)"
+      "find": "\n    `$JS.API.CONSUMER.INFO.${CHKV}.>`,\n",
+      "replace": "\n    `$JS.API.CONSUMER.INFO.${CHKV}.>`,\n    `$JS.API.CONSUMER.DELETE.${CHKV}.>`,\n",
+      "expectRed": "delete an ordered channel-registry-watch consumer DENIED",
+      "cell": "delete an ordered channel-registry-watch consumer DENIED"
     }
   ]
 }
