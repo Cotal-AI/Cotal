@@ -361,7 +361,7 @@ export async function provisionEndpointGateOpen(
 export function endpointRegistrationBarrier(
   kv: KV,
   space: string,
-  args: { endpoint: string; instanceId: string; opId: string; evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[] },
+  args: { endpoint: string; instanceId: string; opId: string; evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[]; evictMax?: number },
 ): import("./endpoint-service.js").EpIssuanceBarrier {
   const endpoint = endpointToken(args.endpoint);
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
@@ -424,6 +424,7 @@ export function endpointRegistrationBarrier(
       await markLedgerRowRevoked(kv, epcredRowKey(endpoint, instanceId, row.credentialId));
     },
     evict: async (holderPrincipals: readonly string[]) => evict(holderPrincipals),
+    evictMax: args.evictMax,
     reopen: async (token: number, successor) => {
       const cur = await observed();
       // Token-pinned: only THIS barrier (still holding its freeze at `token`) reopens; a reconciler

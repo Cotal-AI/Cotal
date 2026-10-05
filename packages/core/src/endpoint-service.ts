@@ -407,6 +407,11 @@ export async function registerServiceInstance(
   assertBoundedOwner(args.registrant.owner, "registrant owner");
   if (args.registrant.owner !== spec.owner)
     throw new EpEnvelopeError("permission-denied", `the registration's authenticated caller "${args.registrant.owner}" is not the descriptor owner "${spec.owner}" (SPEC 13.9: authenticated caller binding, never a payload claim)`);
+  const evictMax = args.barrier.evictMax ?? EVICT_PRINCIPALS_MAX;
+  // Checked before the freeze: a zero bound never ends the sweep loop and a NaN one ends it
+  // without evicting anyone.
+  if (!Number.isInteger(evictMax) || evictMax < 1)
+    throw new EpEnvelopeError("internal", `the issuance barrier's evictMax ${evictMax} is not a positive integer, so the superseded family could never be verify-evicted (SPEC 13.1)`);
   // The NAME-AUTHORITY decision is deferred until UNDER the frozen gate (phase 1): a transfer must
   // freeze this same gate, so authorizing while we hold the freeze serializes the decision with the
   // transfer — checking here (pre-freeze) would repeat the torn owner-vs-revision read the atomic
@@ -604,8 +609,8 @@ export async function registerServiceInstance(
     const pending = holders.filter((h) => !verified.has(h));
     // Each bounded sweep is recorded before the next starts, so a family whose sweeps outlast one
     // registration executor still advances, and a refused later sweep keeps the earlier verdicts.
-    for (let i = 0; i < pending.length; i += EVICT_PRINCIPALS_MAX) {
-      const sweep = pending.slice(i, i + EVICT_PRINCIPALS_MAX);
+    for (let i = 0; i < pending.length; i += evictMax) {
+      const sweep = pending.slice(i, i + evictMax);
       const gone = await args.barrier.evict(sweep);
       if (gone.length !== sweep.length)
         throw new Error(`the evictor answered ${gone.length} verdict(s) for ${sweep.length} holder(s)`);
@@ -1793,8 +1798,12 @@ export interface EpIssuanceBarrier {
    *  for reconciliation so old authority is never published-over while it is still live. It takes
    *  a set because a family keeps a row for every credential it ever staged, so evicting one holder
    *  at a time makes every restart slower than the last; registration passes at most
-   *  {@link EVICT_PRINCIPALS_MAX} holders per call and records the verdicts before the next call. */
+   *  {@link evictMax} holders per call and records the verdicts before the next call. */
   evict: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[];
+  /** The most holders one {@link evict} call carries, {@link EVICT_PRINCIPALS_MAX} when absent. A
+   *  throwing call records none of its verdicts, so an evictor that runs one operation per holder
+   *  declares 1 and a refusal keeps every holder verified before it. */
+  evictMax?: number;
   /** Token-pinned CAS `frozen` → `open` at the successor coordinate (§13.1). TRUE iff the gate is
    *  still frozen at THIS barrier's `token`; FALSE if a reconciler/newer barrier superseded it (a
    *  stale reopen loses and never clobbers the newer gate). Advances the currency the barrier
