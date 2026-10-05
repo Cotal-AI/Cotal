@@ -1247,7 +1247,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // session file and prints the link to the operator's terminal, so repeating the live credential in
   // the log adds secret-at-rest exposure and no recovery value. An attached process still prints it.
   if (!process.env[DETACHED_LOG_ENV]) {
-    console.log(`  ${c.cyan(launchUrl)}  ${c.dim("(Ctrl-C to stop)")}`);
+    printLaunchLink(launchUrl, host, port, "(Ctrl-C to stop)");
     console.log(c.dim("  the link is single-use; it opens one session in one browser"));
   }
   if (!values["no-open"]) openBrowser(launchUrl);
@@ -1316,7 +1316,7 @@ async function launchDetachedWeb(
   // instead of being handed a URL that will refuse them.
   const launchUrl = readSessionLaunchUrl(sessionPath);
   console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
-  if (launchUrl) console.log(`  ${c.cyan(launchUrl)}  ${c.dim("(single-use link)")}`);
+  if (launchUrl) printLaunchLink(launchUrl, host, port, "(single-use link)");
   else console.log(c.dim(`  launch link: see ${sessionPath}`));
   console.log(c.dim(`  log: ${logPath}`));
   console.log(c.dim("  stop: cotal down web"));
@@ -1491,11 +1491,21 @@ export function webUrl(host: string, port: number): string {
   return boundUrl(host, port);
 }
 
-/** The address the server binds, for a probe made by this process rather than a browser:
- *  `cotal.localhost` is a browser convention, and a system resolver such as WSL2's has no answer for it. */
+/** The address the server binds, for a client that does not resolve `cotal.localhost` itself: that
+ *  name is a browser convention, and a system resolver such as WSL2's has no answer for it. */
 function boundUrl(host: string, port: number): string {
   const literal = host.includes(":") ? `[${host}]` : host;
   return `http://${literal}:${port}/`;
+}
+
+/** On the branded default the link is printed a second time at the bound address, so an operator
+ *  whose browser or resolver has no answer for `cotal.localhost` still has a way in. Both carry the
+ *  one token, so opening either spends it. */
+function printLaunchLink(launchUrl: string, host: string, port: number, note: string): void {
+  console.log(`  ${c.cyan(launchUrl)}  ${c.dim(note)}`);
+  const bound = boundUrl(host, port);
+  if (webUrl(host, port) !== bound)
+    console.log(`  ${c.cyan(`${bound}${new URL(launchUrl).search}`)}  ${c.dim("(the same link, where cotal.localhost does not resolve)")}`);
 }
 
 function json(res: ServerResponse, data: unknown, status = 200): void {

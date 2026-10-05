@@ -1916,8 +1916,9 @@ The browser observability dashboard: presence, channels, and a live feed. It is 
 `cotal up`: it ships inside `cotal-ai` as the `@cotal-ai/web` extension, seeded automatically on first
 run (like the built-in connectors) so it always matches your CLI version. It self-registers `cotal web`
 into this surface and serves
-`http://cotal.localhost:7799` by default (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; Safari may
-need `http://127.0.0.1:7799`). On a user-auth mesh the dashboard rides the read-only admin view
+`http://cotal.localhost:7799` by default (loopback; `*.localhost` resolves in Chrome/Firefox/Edge; for Safari
+or a system resolver such as WSL2's, the launch link is also printed at `http://127.0.0.1:7799`).
+On a user-auth mesh the dashboard rides the read-only admin view
 over your login, and a channel purge asks for its own channel-purger view per click; both need
 ledger scope `admin`. The public exchange serves `channel-purger` for a remote owner; it still
 refuses the startup admin view, so a remote `cotal web` is not a complete channel-management
