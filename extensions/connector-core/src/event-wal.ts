@@ -606,9 +606,6 @@ export class EventWal {
    * publish. An UNBOUND log still opens, replays and reports its own frontier, so a caller that
    * only READS one needs no record; but every step toward a publish reads the subject's tip, so
    * `expectedTip`, `beginSend`, `recordAck` and `abandon` all throw until this has been called.
-   * An earlier version of this sentence said an unbound WAL behaved exactly as it did before,
-   * which was true when it was written and stopped being true in the same change that made the
-   * unbound expectation throw.
    */
   async bindSubjectFrontier(frontier: SubjectFrontier): Promise<void> {
     // Binding the SAME record twice is not a change, and refusing it would only push a caller that
@@ -852,20 +849,12 @@ export class EventWal {
     //     truncate and overwrite an arbitrary file the process could open. One plant, one write.
     // Found by fmae-rev-sec, reproduced independently by fmae-rev-eng and fmae-rev-wal, then here.
     //
-    // **The symlink half is the one I have no excuse for: I added `O_NOFOLLOW` to `JsonlFileSource`
-    // in this same session, for this same class, and did not carry it to the file this module
-    // writes.** A fence built on the read path while the write path stayed open.
-    //
     // O_EXCL makes a pre-existing temp a hard failure rather than something to adopt; O_NOFOLLOW
     // refuses a symlink outright; the random suffix removes the predictability that made planting
     // reliable; and 0600 comes from the CREATE flags, which is the only place it can come from —
     // `rename` preserves the inode's mode, so there is no post-rename chmod here and this comment
     // does not claim one. The suite asserts the mode on the surviving file, which is where the
     // guarantee has to hold; the code's part is refusing to adopt an existing inode at all.
-    // (An earlier version of this sentence said the mode was "asserted on the surviving inode" as
-    // though the production path checked it. It does not — the SUITE does. Flagged independently by
-    // two reviewers: a comment describing a check that lives somewhere else is the same overclaim
-    // class this file's own header warns about.)
     const tmp = join(
       dirname(this.path),
       `.${createHash("sha256").update(this.path).digest("hex").slice(0, 12)}.${process.pid}.${randomUUID().slice(0, 8)}.wal.tmp`,
