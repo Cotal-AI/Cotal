@@ -302,7 +302,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // current boundary and never republish history. The holder carries the value opaquely to
           // the connector-owned source factory.
           adoptEvents(ev.transcript_path, ev.source);
-          recordCarriedFork(process.env, ev.source);
+          recordCarriedFork(process.env, ev);
           // Claude Code reports the session's actual model here (the ONLY hook that carries it; absent
           // after /clear or conversation recovery, so guard on string). Surface it in presence when the
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the

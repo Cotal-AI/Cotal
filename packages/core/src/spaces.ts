@@ -5,7 +5,7 @@
 // server hosts a single account/space, so this is really an open-mode admin capability.
 
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { DEFAULT_SERVER } from "./endpoint.js";
 import {
@@ -124,7 +124,8 @@ export async function transferStreamNames(opts: { servers?: string; creds?: stri
 
 /** Tear down a space — delete its chat/DM/task streams plus the presence and channel-registry KV
  *  buckets. Irreversible; all history, presence, and channel config for the space is gone. Open
- *  mode, or a cred allowing STREAM.DELETE. Not-found streams are ignored (idempotent). */
+ *  mode, or a `teardown` cred minted with the space's {@link transferStreamNames}. Not-found streams
+ *  are ignored (idempotent); any other refusal throws, naming every stream that survived. */
 export async function deleteSpace(opts: { servers?: string; creds?: string; space: string }): Promise<void> {
   const nc = await connect({
     servers: opts.servers ?? DEFAULT_SERVER,
@@ -136,7 +137,7 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; spac
     const jsm = await jetstreamManager(nc);
     // Delete EVERY stream + KV bucket `setupSpaceStreams` creates — otherwise `down` leaves the DLV/INBOX
     // streams and the members/acl/membership/delivery/manager buckets orphaned (a space leak), and since
-    // `teardown` is the sole STREAM.DELETE holder, nothing else could ever reap them. Best-effort.
+    // `teardown` is the sole STREAM.DELETE holder, nothing else could ever reap them.
     const streams = [
       chatStream(opts.space),
       dmStream(opts.space),
@@ -160,7 +161,12 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; spac
     // Each manager instance that received a carried resume holds its own transfer bucket, so those
     // streams are found by name shape; a teardown credential deletes the ones named at its mint.
     streams.push(...await listTransferStreams(nc, opts.space));
-    for (const s of streams) await jsm.streams.delete(s).catch(() => {});
+    const survived: string[] = [];
+    for (const s of streams)
+      await jsm.streams.delete(s).catch((e: unknown) => {
+        if (!(e instanceof JetStreamApiError && e.code === JetStreamApiCodes.StreamNotFound)) survived.push(`${s} (${(e as Error).message})`);
+      });
+    if (survived.length) throw new Error(`deleteSpace: ${opts.space} kept ${survived.length} of ${streams.length} streams: ${survived.join(", ")}`);
   } finally {
     await nc.close();
   }

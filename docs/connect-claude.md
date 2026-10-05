@@ -492,10 +492,11 @@ original is untouched.
   sha256:<hex>, <sent> of <size> bytes sent in <chunks> chunks`. A re-run of the same bytes
   sends nothing, and an interrupted carry continues where it stopped. The seat forks it in a
   private Claude home under the manager's `.cotal/seat-homes/`, which no other seat's Claude
-  lists or finds, and which is removed when the seat stops. When Claude resumes, the seat records
-  the SHA-256 of the transcript it read; the manager stops a seat whose record names other bytes
-  than the carried ones, or that records none before its join timeout, and otherwise shows that
-  record as the seat's provenance. `cotal attach` to such a seat names its source after the seat
+  lists or finds, and which is removed when the seat stops. When Claude starts the fork, the seat
+  records the SHA-256 of the transcript it read from its own project; the manager stops a seat
+  whose record names other bytes than the carried ones, or that records none within the join
+  timeout after it joins, an uncertain launch included, and otherwise shows that record as the
+  seat's provenance. `cotal attach` to such a seat names its source after the seat
   name, as `(resumed from <host>:<id>)`. A remote manager receives a carry when its host issues it a
   transfer reader. A user-mode operator, who holds no signing seed, cannot carry in this release.
 - A session name in place of an id is refused, listing each session on this host that carries

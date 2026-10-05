@@ -75,7 +75,7 @@ export function SpacePicker({
         onConfirm={() => {
           const space = del.space;
           setDel(null);
-          void deleteSpace({ servers: server, creds, space }).then(() => setNonce((n) => n + 1));
+          void deleteSpace({ servers: server, creds, space }).then(() => setNonce((n) => n + 1), (e: Error) => setError(e.message));
         }}
         onCancel={() => setDel(null)}
       />

@@ -138,15 +138,18 @@ export function placeCarried(home: string, transcript: string, resume: string | 
 }
 
 /**
- * Write a carried seat's fork record once Claude has resumed: the digest of the transcript it read,
- * which the manager holds to the carried claim before it records the seat's provenance. A seat that
- * was not carried, or a session start that is not the resume, writes nothing; a later resume of the
- * same seat keeps the first record.
+ * Write a carried seat's fork record once Claude has forked: the digest of the transcript its
+ * `--resume` read, which the manager holds to the carried claim before it records the seat's
+ * provenance. Claude starts the fork as `source: "fork"`, a new session whose `transcript_path` sits
+ * in the project `--resume` searches first, and the source is hashed there. Any other start writes
+ * nothing, which the manager refuses; a later fork of the same seat keeps the first record.
  */
-export function recordCarriedFork(env: NodeJS.ProcessEnv, start: unknown): void {
+export function recordCarriedFork(env: NodeJS.ProcessEnv, ev: Record<string, unknown>): void {
   const source = env.COTAL_CLAUDE_CARRIED;
-  if (!source || !env.CLAUDE_CONFIG_DIR || start !== "resume") return;
-  const transcript = join(env.CLAUDE_CONFIG_DIR, "projects", SEAT_PROJECT, `${source}.jsonl`);
+  if (!source || !env.CLAUDE_CONFIG_DIR || ev.source !== "fork") return;
+  const project = join(env.CLAUDE_CONFIG_DIR, "projects", SEAT_PROJECT);
+  if (typeof ev.session_id !== "string" || ev.session_id === source || ev.transcript_path !== join(project, `${ev.session_id}.jsonl`)) return;
+  const transcript = join(project, `${source}.jsonl`);
   const title = titleOf(transcript);
   try {
     writeFileSync(carriedForkRecord(env.CLAUDE_CONFIG_DIR), JSON.stringify({ source, ...(title ? { title } : {}), transcriptSha256: sha256(transcript) }), { mode: 0o600, flag: "wx" });

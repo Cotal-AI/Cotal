@@ -4746,6 +4746,7 @@ export class Manager {
     const deadline = Date.now() + timeoutMs;
     let record: ForkProvenance | undefined;
     while (!(record = this.readForkRecord(a))) {
+      if (a.terminalizing || a.handle.status() === "exited") return `${a.name} stopped before it wrote a fork record`;
       if (Date.now() >= deadline) return `${a.name} wrote no fork record within ${timeoutMs} ms, so it cannot be shown to have forked the carried transcript`;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -4753,6 +4754,21 @@ export class Manager {
       return `${a.name} forked a transcript with sha256:${record.transcriptSha256}, not the carried sha256:${claim.transcriptSha256}`;
     a.launch.resumed = { ...record, host: claim.host, transferredAt: claim.transferredAt };
     return undefined;
+  }
+
+  /** A carried seat whose launch was uncertain is held to the claim once it joins, as a started one
+   *  is; the wait ends when the seat stops or exits, which its exit watcher reaps. */
+  private async refuseLateCarriedFork(a: ManagedAgent, timeoutMs: number): Promise<void> {
+    for (;;) {
+      const late = await this.awaitReadiness(a, timeoutMs, { reapOnExit: false });
+      if (late.ok) break;
+      if (!late.uncertain || a.terminalizing) return;
+    }
+    const refused = await this.refuseCarriedFork(a, timeoutMs);
+    if (refused === undefined || a.terminalizing || a.handle.status() === "exited") return;
+    console.error(`! ${refused}; stopping it`);
+    this.stopHandle(a, false);
+    this.freeSlot(a, true, "carried-fork-refused");
   }
 
   private readManagedSession(a: ManagedAgent): string {
@@ -6149,11 +6165,13 @@ export class Manager {
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       if (!readiness.ok) {
         this.watchExit(managed);
+        if (managed.launch.carried) void this.refuseLateCarriedFork(managed, readinessTimeoutMs);
         await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } });
         return { ok: false, error: readiness.detail };
       }
       if (managed.launch.carried) {
         const refused = await this.refuseCarriedFork(managed, readinessTimeoutMs);
+        if (refused !== undefined && managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: refused }; }
         if (refused !== undefined) {
           this.stopHandle(managed, false);
           this.freeSlot(managed, true, "carried-fork-refused");

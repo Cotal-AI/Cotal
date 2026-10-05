@@ -241,7 +241,6 @@ await onBroker({ authSpace: AUTH_SPACE }, undefined, async ({ servers, creds }) 
   const err = await trySetup({ servers, space, creds });
   check("the provisioner credential is AUTHORIZED to reconcile the legacy cap to -1",
     err === "" && (await maxBytesOf(servers, space, creds)) === -1, err);
-  await deleteSpace({ servers, space, creds });
 });
 
 console.log("\nthe broker's file store is the operative bound (open mode):");
