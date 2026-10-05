@@ -164,7 +164,7 @@ The guarantees, at a glance, each enforced by the broker per
   `0700` directory) carries no authentication, and a reap trusts the pids and start tokens it
   names. A process running as the same uid can rewrite them, and the next legitimate reap then
   signals the processes it chose. Each forged pid must carry its real start token, and a record
-  from another boot is refused, but a same-uid process can read both from `/proc`. This stays
+  from another boot signals nothing, but a same-uid process can read both from `/proc`. This stays
   inside the same-uid boundary under *Adversaries*: such a process can already reach the
   account signer in the default compositions.
 

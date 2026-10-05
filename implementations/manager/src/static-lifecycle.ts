@@ -202,9 +202,7 @@ export async function listStaticSlotObservations(
 
 function sameAudit(a: StaticLifecycleAuditSpec, b: StaticLifecycleAuditSpec): boolean {
   return a.v === b.v && a.principal === b.principal && a.alias === b.alias && a.lifecycleUid === b.lifecycleUid &&
-    a.managerInstance === b.managerInstance && a.managerProcessUid === b.managerProcessUid && a.retirementOpId === b.retirementOpId &&
-    a.broker.kicked === b.broker.kicked && a.broker.remaining === b.broker.remaining &&
-    a.broker.scanComplete === b.broker.scanComplete && a.broker.verifiedGone === b.broker.verifiedGone;
+    a.managerInstance === b.managerInstance && a.retirementOpId === b.retirementOpId;
 }
 
 /** The terminal barrier's verified-eviction step, over the SPEC'S TARGET SET.
@@ -260,7 +258,9 @@ async function evictAndAudit(
     try { value = JSON.parse(new TextDecoder().decode(existing.value)); }
     catch { throw new EpEnvelopeError("failed-precondition", `lifecycle audit ${key} conflict is malformed`); }
     if (!sameAudit(value as StaticLifecycleAuditSpec, spec)) throw new EpEnvelopeError("already-exists", `lifecycle audit ${key} records different evidence`);
-    // Timestamp may differ only after the stable manager identities and retirement op prove the same retry.
+    // The first attempt's record stands. A retry can run in a later manager process, or after an
+    // earlier attempt already kicked the connections, so the process uid, broker counts and timestamp
+    // describe only the attempt that wrote the record; the retirement op identifies the retirement.
   }
 }
 
