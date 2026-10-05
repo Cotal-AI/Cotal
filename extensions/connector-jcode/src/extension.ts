@@ -173,10 +173,6 @@ export const jcodeConnector: Connector = {
     if (opts.events !== false) {
       if (!opts.workspaceRoot)
         throw new Error("jcode connector: events require a workspace root for durable AG-UI state");
-      // Open mode has no credential to supply a stable actor. The event plane refuses an endpoint
-      // that self-mints a new actor on every process, so use the managed seat name there. Auth modes
-      // already pass the allocated identity in `opts.id` and keep their principal-based channel.
-      if (!opts.id && !opts.creds && !opts.userAuth) env.COTAL_ID = opts.name;
       env.COTAL_EVENTS = "1";
       env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
     }

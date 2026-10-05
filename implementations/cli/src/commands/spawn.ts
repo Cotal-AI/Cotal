@@ -1031,6 +1031,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     await materializeSecretToFile(secrets, agentCredsKey(space, name, composition), credsPath);
     id = identity.id;
     provenance.wrote(`creds for ${name} (auth mode)`, credsPath);
+  } else if (launchEvents) {
+    // OPEN mesh: nothing mints an identity, and an endpoint with no id and no credentials self-mints a
+    // fresh random actor per process. The event plane refuses such an endpoint at its first publish,
+    // so an armed seat would run its turn and then lose every frame. The seat name is the stable
+    // actor here, decided once for every connector rather than in each one.
+    id = name;
   }
 
   // Which of the operator's personal MCP servers to share with this agent: declared in the cotal

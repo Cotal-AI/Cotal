@@ -195,6 +195,14 @@ try {
   }
 
   {
+    // An open mesh mints no identity, so an armed seat would self-mint a random actor per process and
+    // its emitter would refuse at the first publish. The launch must carry a stable id (the seat name),
+    // the same way the manager assigns one for every non-user launch.
+    const r = await openRun(["--agent", "fg-probe-emitter", "--name", "fg-open-id"]);
+    check("an armed open-mesh foreground launch carries a stable id (the seat name)", r.opts?.id === "fg-open-id", { got: r.opts?.id, creds: r.opts?.creds, userAuth: r.opts?.userAuth });
+  }
+
+  {
     const r = await openRun(["--agent", "fg-probe-emitter", "--events"]);
     check("--events reaches the connector on the foreground path", r.opts?.events === true, r.stderr.slice(0, 300));
     // THE CELL THAT WAS MISSING. The flag alone launches nothing: a connector that publishes an
@@ -307,7 +315,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 14;
+const EXPECTED = 15;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
