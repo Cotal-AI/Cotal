@@ -521,11 +521,13 @@ compiled engine is version `2`, two languages rather than two speeds of one (`sp
 executed by the compiled engine**. The program runs in its own locked-down worker thread with
 nothing in its global scope, while the effects and the durable journal stay in the driver's process,
 bridged over a message port. No socket or credential enters the isolate holding the program,
-and **every version-`1` record keeps replaying on the walker**, which is the walker's job. The
-driver serves a declared set of versions, and a record whose version it does not serve is refused
-by name (**L5023**) with the run left untouched, instead of being replayed by whichever engine
-happens to be present. Records do not cross between versions in either direction; the repair is to
-resume on the recorded version, or to fork.
+and **every version-`1` record keeps replaying on the walker**, which is the walker's job. On either
+engine the driver bounds an effect's `ok` result at the broker's `max_payload` less 4096 bytes: a
+larger result is refused ahead of the settling append (**L5006**), the step stays pending, and the
+run is released. The driver serves a declared set of versions, and a record whose version it does
+not serve is refused by name (**L5023**) with the run left untouched, instead of being replayed by
+whichever engine happens to be present. Records do not cross between versions in either
+direction; the repair is to resume on the recorded version, or to fork.
 
 **The engine needs node 22 or newer** and refuses below it as `EngineUnavailable`, which is an
 implementation limit and not a language error: it carries no `L` code, so there is nothing to look

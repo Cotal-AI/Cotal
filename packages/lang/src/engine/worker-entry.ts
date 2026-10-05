@@ -25,7 +25,7 @@
 
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import "ses";
-import { Journal, type JournalStore } from "../journal.js";
+import { EffectResultTooLarge, Journal, type JournalStore } from "../journal.js";
 import { EngineUnavailable } from "../errors.js";
 import { assertCrossable } from "../values.js";
 import { EffectError, type EffectHandler } from "../effects.js";
@@ -108,7 +108,12 @@ async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal 
     const seam = bridgedSeam(bridge.port, bridge.clock);
     return {
       handler: seam.handler,
-      journal: new Journal({ run: request.runId, entries: request.entries ?? [], store: seam.store }),
+      journal: new Journal({
+        run: request.runId,
+        entries: request.entries ?? [],
+        store: seam.store,
+        ...(request.resultBytes !== undefined ? { resultBytes: request.resultBytes } : {}),
+      }),
     };
   }
   return {
@@ -193,13 +198,15 @@ const answerWith = (e: unknown): void => {
       ...(typeof err?.code === "string" ? { code: err.code } : {}),
       name: typeof err?.name === "string" ? err.name : "Error",
       message: typeof err?.message === "string" ? err.message : String(e),
-      // A release's reason is a field on the class (L5012), and an EffectError's kind and detail
-      // are its domain; each crosses as the field it is. See WorkerRunFailed.
+      // A release's reason is a field on the class (L5012), an EffectError's kind and detail are its
+      // domain, and an L5006 refusal's step, size and bound are its own; each crosses as the field
+      // it is. See WorkerRunFailed.
       ...(typeof err?.reason === "string" ? { reason: err.reason } : {}),
       ...(typeof (err as { step?: unknown })?.step === "string" ? { step: (err as { step: string }).step } : {}),
       ...(err?.pending === true ? { pending: true } : {}),
       ...(typeof err?.kind === "string" ? { kind: err.kind } : {}),
       ...(err?.detail !== undefined && e instanceof EffectError ? { detail: err.detail } : {}),
+      ...(e instanceof EffectResultTooLarge ? { tooLarge: { stepKey: e.stepKey, bytes: e.bytes, bound: e.bound } } : {}),
     } satisfies WorkerRunResult,
   });
 };

@@ -71,14 +71,16 @@ import { releasableSeats } from "./run-scope-authority.js";
 /**
  * What an entry in the engine table is handed: everything `drive()` prepared, with the pieces the
  * two engines consume left whole. The walker takes the store-backed `journal`; the compiled engine
- * takes the `store` and the activated `entries` themselves, because its journal is rebuilt inside
- * the worker thread and only the durable half stays out here. Both read the same `options`.
+ * takes the `store`, the activated `entries` and the `resultBytes` bound themselves, because its
+ * journal is rebuilt inside the worker thread and only the durable half stays out here. Both read
+ * the same `options`.
  */
 interface HostedEngineRequest {
   readonly source: string;
   readonly journal: Journal;
   readonly store: RunJournalStore;
   readonly entries: readonly JournalEntry[];
+  readonly resultBytes?: number;
   readonly options: {
     readonly runId: string;
     readonly handler: EffectHandler;
@@ -107,6 +109,7 @@ const hostedEngineRun = (r: HostedEngineRequest): Promise<RunResult> =>
     handler: r.options.handler,
     store: r.store,
     entries: r.entries,
+    ...(r.resultBytes !== undefined ? { resultBytes: r.resultBytes } : {}),
     shouldStop: r.options.shouldStop,
     ...(r.options.file !== undefined ? { file: r.options.file } : {}),
     ...(r.options.seed !== undefined ? { seed: r.options.seed } : {}),
@@ -696,7 +699,14 @@ async function drive(
   }
 
   try {
-    const engineReq: HostedEngineRequest = { source: req.source, journal, store, entries: seeded, options };
+    const engineReq: HostedEngineRequest = {
+      source: req.source,
+      journal,
+      store,
+      entries: seeded,
+      ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
+      options,
+    };
     const result = expect === "new" ? await engine.run(engineReq) : await engine.resume(engineReq);
     // The discharge BEFORE the completed note: `result.journal` is the final folded record on both
     // engines, and a crash between the two leaves `issued: false` for the next completion's sweep
