@@ -431,20 +431,23 @@ export async function registerServiceInstance(
   if (obs.state === "retired")
     throw lifecycleBlocked("failed-precondition", `the issuance gate for "${args.instanceId}" is retired; the lifecycle is permanently closed and its id is never reused, so a re-read cannot help (SPEC 13.1)`, {
       blockedOp: obs.op?.kind === "activation" ? "activation" : "retirement",
-      headState: "retired",
+      gateState: "retired",
       ...(obs.op?.opId !== undefined ? { opId: obs.op.opId } : {}),
     });
   const resuming = obs.state === "frozen"
     && obs.op?.kind === "registration"
     && args.barrier.operationId !== undefined
     && obs.op.opId === args.barrier.operationId;
-  if (obs.state !== "open" && !resuming)
+  if (obs.state !== "open" && !resuming) {
+    if (obs.op === undefined)
+      throw new EpEnvelopeError("internal", `the issuance gate for "${args.instanceId}" is frozen without its op intent; a frozen gate is op-bound (SPEC 13.1)`);
     throw lifecycleBlocked("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; if the holder is a dead predecessor, run: cotal reconcile-gate (SPEC 13.8)`, {
-      blockedOp: obs.op?.kind ?? "registration",
-      headState: obs.state === "frozen" ? "retiring" : "retired",
-      ...(obs.op?.opId !== undefined ? { opId: obs.op.opId } : {}),
+      blockedOp: obs.op.kind,
+      gateState: "frozen",
+      opId: obs.op.opId,
       remedy: "cotal reconcile-gate",
     });
+  }
   const token = resuming ? obs.revision : await args.barrier.freeze(obs.revision);
   if (token === null)
     throw new EpEnvelopeError("conflict", `a concurrent barrier froze the issuance gate for "${args.instanceId}" first; re-read and re-decide (SPEC 13.1/13.8)`);

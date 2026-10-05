@@ -1610,7 +1610,7 @@ export interface AuthServiceHandle extends HostedServiceHandle {
    *  compensation runs before the terminal barrier (SPEC 13.16). Present only with
    *  `platformControl`. It refuses every state in which a retirement at that uid has begun, and
    *  throws the activation saga's `EpEnvelopeError` unchanged. A retirement there has begun or
-   *  completed only when `lifecycleBlockedFrom(err)` is defined and its `headState` is `"retired"`
+   *  completed only when `lifecycleBlockedFrom(err)` is defined and its `gateState` is `"retired"`
    *  or its `blockedOp` is `"retirement"`. A gate frozen by a takeover or a registration is a
    *  barrier in flight, and `already-exists`, `conflict`, `unavailable`, `not-found` and a
    *  `permission-denied` without that detail are not retirement. */

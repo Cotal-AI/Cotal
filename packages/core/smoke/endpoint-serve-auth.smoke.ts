@@ -111,7 +111,7 @@ function memKv(): KV {
 
 /** A faithful in-memory model of the §13.1 durable issuance gate (`gate.<lifecycleUid>`): ONE key
  *  binding `{lifecycleUid, state, generation, processEpoch, registrationRevision,
- *  nameAuthorityRevision, revision}` with BOTH halves of the seam sharing it. The mint's `commit`
+ *  nameAuthorityRevision, revision, op}` with BOTH halves of the seam sharing it. The mint's `commit`
  *  and every barrier's `freeze` are revision-pinned CAS on the SAME key and each advances
  *  `revision`, so exactly one of a parked mint's commit and a barrier's freeze wins. `freeze`
  *  returns the FROZEN revision as a fencing token; `reopen(token, …)` is a CAS that only the
@@ -133,6 +133,7 @@ function makeGate(init: { endpoint: string; lifecycleUid: string; generation: nu
     registrationRevision: init.registrationRevision,
     nameAuthorityRevision: init.nameAuthorityRevision ?? 0,
     revision: 1,
+    op: undefined as EpGateState["op"],
   };
   const rows = new Map<string, EpServeLedgerRow>(); // keyed by credentialId; row.state is active|revoked
   const evicted: string[] = [];
@@ -160,7 +161,7 @@ function makeGate(init: { endpoint: string; lifecycleUid: string; generation: nu
     observe,
     freeze: (expectedRevision) => {
       if (gate.state !== "open" || gate.revision !== expectedRevision) return null; // revision-pinned CAS
-      gate.state = "frozen"; gate.revision++;
+      gate.state = "frozen"; gate.op = { opId: "f".repeat(26), kind: "registration" }; gate.revision++;
       return gate.revision; // the fencing token = the frozen revision
     },
     enumerate: () => [...rows.values()],
@@ -169,6 +170,7 @@ function makeGate(init: { endpoint: string; lifecycleUid: string; generation: nu
     reopen: (token, succ) => {
       if (gate.state !== "frozen" || gate.revision !== token) return false; // token-pinned CAS: a stale reopen loses
       gate.state = "open";
+      gate.op = undefined;
       gate.generation = succ.generation;
       gate.processEpoch = succ.processEpoch;
       gate.registrationRevision = succ.registrationRevision;
