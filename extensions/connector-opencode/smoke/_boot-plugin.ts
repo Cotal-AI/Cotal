@@ -12,6 +12,19 @@ import type { OpenCode2Context, OpenCode2Event, OpenCode2ToolEditor } from "../s
  *  real one, and every smoke picks the change up together. */
 export const bootPlugin = cotal as () => ReturnType<typeof cotal>;
 
+/** Tear a 1.x arm down and keep the smoke running. `dispose` ends its host process once the teardown
+ *  has run, so a smoke that boots several arms in one process, or still has to report after the
+ *  teardown, stands in for that exit while the call runs. */
+export async function disposeInProcess(hooks: { dispose?: () => Promise<void> } | undefined): Promise<void> {
+  const exit = process.exit;
+  process.exit = (() => undefined) as typeof process.exit;
+  try {
+    await hooks?.dispose?.();
+  } finally {
+    process.exit = exit;
+  }
+}
+
 /** A fake OpenCode 2.x plugin context, for smokes that drive `setupCotal` with no opencode process
  *  and no real HTTP server behind it — only the fake server the smoke itself runs. `session.hook`,
  *  `tool.hook` and `permission.hook` each just record `(name, cb)`; `tool.transform` calls the

@@ -45,7 +45,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { bootPlugin } from "./_boot-plugin.js";
+import { bootPlugin, disposeInProcess } from "./_boot-plugin.js";
 // The tokens still come from the plugin itself: the retirement and abandonment cells key on the
 // exported constants, so rewording a log line cannot silently disarm them.
 import { SESSION_RETIRED, SETTLE_ABANDONED } from "../src/plugin.js";
@@ -421,7 +421,7 @@ try {
 
   console.log(`opencode-events-reset smoke: ${pass} passed, ${fail} failed`);
 } finally {
-  await hooks?.dispose?.();
+  await disposeInProcess(hooks);
   link.close();
   await probe.stop().catch(() => {});
   oc.close();

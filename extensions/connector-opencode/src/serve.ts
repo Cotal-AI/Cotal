@@ -59,18 +59,19 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-/** SIGTERM the serve, then SIGKILL if it's still alive 3s later — a lingering serve keeps the
- *  agent's data dir (SQLite) open and wedges every later same-name spawn. Resolves once it's dead. */
-async function killServe(serve: ChildProcess): Promise<void> {
-  if (serve.exitCode !== null || serve.signalCode !== null) return;
-  serve.kill("SIGTERM");
+/** SIGTERM the child, then SIGKILL if it's still alive 3s later. Resolves once it's dead. A
+ *  lingering serve keeps the agent's data dir (SQLite) open and wedges every later same-name spawn;
+ *  a stopped or SIGTERM-ignoring TUI keeps the seat's process up after its server has gone. */
+async function terminate(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
   const dead = await Promise.race([
-    once(serve, "exit").then(() => true),
+    once(child, "exit").then(() => true),
     new Promise<boolean>((r) => setTimeout(() => r(false), 3000)),
   ]);
   if (!dead) {
-    serve.kill("SIGKILL");
-    await once(serve, "exit");
+    child.kill("SIGKILL");
+    await once(child, "exit");
   }
 }
 
@@ -202,7 +203,7 @@ async function main(): Promise<void> {
     process.stderr.write(
       `[cotal-connector] serve: agent session never came up (~60s) — aborting. Check the boot log above for plugin/mesh errors (OPENCODE_DB=${dbPath})\n`,
     );
-    await killServe(serve);
+    await terminate(serve);
     process.exit(1);
   }
 
@@ -214,7 +215,7 @@ async function main(): Promise<void> {
   if (process.env.COTAL_SERVE_HEADLESS?.trim() === "1") {
     process.stdout.write(`[cotal-serve] ${JSON.stringify({ port: Number(port), session: id, password: SECRET })}\n`);
     for (const sig of ["SIGINT", "SIGTERM"] as const)
-      process.on(sig, () => void killServe(serve).then(() => process.exit(0)));
+      process.on(sig, () => void terminate(serve).then(() => process.exit(0)));
     return;
   }
 
@@ -238,9 +239,12 @@ async function main(): Promise<void> {
       tui.kill(sig);
       serve.kill(sig);
     });
+  // The server is the seat. A TUI stays up against a server that has gone, so without this the
+  // seat's process outlives it and the manager goes on listing a seat that has left the mesh.
+  serve.on("exit", () => void terminate(tui));
   tui.on("exit", (code, signal) => {
     // TUI closed → tear down the server, for real (SIGKILL fallback), before exiting.
-    void killServe(serve).then(() => process.exit(code ?? (signal ? 1 : 0)));
+    void terminate(serve).then(() => process.exit(code ?? (signal ? 1 : 0)));
   });
 }
 

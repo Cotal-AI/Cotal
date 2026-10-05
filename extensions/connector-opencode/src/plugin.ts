@@ -590,10 +590,10 @@ export const cotal: Plugin = async () => {
   let controlServer: ReturnType<typeof startControlServer> | undefined;
   /**
    * THE ONE TEARDOWN, because there are two ways out and an invariant that holds on one of them
-   * is not an invariant. `dispose` is the editor unloading the plugin; `shutdown` is the manager
-   * stopping a supervised seat over the control socket, which is the path a managed agent
-   * actually takes. Both must give the event work a bounded chance to settle before the process
-   * stops, so that wait lives here and neither caller owns a copy of it.
+   * is not an invariant. `dispose` is the host disposing the plugin's instance; the control op is
+   * the manager stopping a supervised seat over the control socket, which is the path a managed
+   * agent actually takes. Both must give the event work a bounded chance to settle before the
+   * process stops, so that wait lives here and neither caller owns a copy of it.
    *
    * A queued swap still holds a drain that flushes and closes a run, and it runs on its own chain
    * rather than on this one, so without waiting for it a stop can be followed by frames for a session
@@ -640,10 +640,9 @@ export const cotal: Plugin = async () => {
    * THE PRINCIPAL LOCK GOES BACK ON THE LINE AFTER THEM, and this is the only place it does. A
    * lock is per PRINCIPAL while a holder is per THREAD, so a `/new` must keep it for the session
    * that follows; only the final teardown may hand it back. Both ways out reach this routine, so a
-   * dispose that leaves its host process alive releases it exactly as a supervised stop does. That
-   * was the reachable failure: the lock was taken and never released, so its record went on naming
-   * a pid that was alive and no longer publishing, and a replacement process for this principal was
-   * refused its own event plane.
+   * dispose releases it exactly as a supervised stop does. That was the reachable failure: the lock
+   * was taken and never released, so its record went on naming a pid that was alive and no longer
+   * publishing, and a replacement process for this principal was refused its own event plane.
    */
   const quiesce = async (): Promise<void> => {
     stopping = true;
@@ -699,10 +698,10 @@ export const cotal: Plugin = async () => {
     await agent.stop();
   };
   /**
-   * The manager's cooperative stop. `process.exit` is deliberately AFTER the shared teardown and
-   * not beside it: it used to sit in a `finally` around the presence and agent stop only, so it
-   * ran even when those threw and it ran before any event work could finish. An exit that cannot
-   * be delayed by the teardown is an exit that cannot honour it.
+   * The manager's cooperative stop and the host's dispose. `process.exit` is deliberately AFTER the
+   * shared teardown and not beside it: it used to sit in a `finally` around the presence and agent
+   * stop only, so it ran even when those threw and it ran before any event work could finish. An
+   * exit that cannot be delayed by the teardown is an exit that cannot honour it.
    */
   const shutdown = async (): Promise<void> => {
     try {
@@ -1461,15 +1460,12 @@ export const cotal: Plugin = async () => {
       injectIntoPrompt(output);
     },
 
-    // The editor unloading the plugin. Same teardown as the manager's stop, minus the exit: see
-    // `quiesce`, which owns the join so that neither exit can drift from the other.
-    //
-    // NO CELL GRADES THE dispose CALLER SPECIFICALLY. The shared routine is graded through the
-    // manager's cooperative stop, which is the path a supervised seat takes and the one that has a
-    // harness; this caller reaches the same code. Filed as #632.
-    dispose: async () => {
-      await quiesce();
-    },
+    // The host disposing this plugin's instance, which it does with its process still serving (a
+    // global config change, `POST /instance/dispose`). The next request loads the plugin again and
+    // gets the cached hooks back, so a dispose that left the process running would leave it serving
+    // a stopped seat. Nothing the teardown closes can be taken again in-process (the launch material
+    // is scrubbed at boot), so a dispose ends the process the way the manager's stop does.
+    dispose: shutdown,
   };
 
   guard.__cotalOpencodeHooks = hooks;
