@@ -34,6 +34,24 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Workflow programs that bind `once` in 0.65.0
+
+`once` is now a scope of the workflow language, so it is a reserved name. A program that declares
+its own `once` binding (`const once = ...`, a parameter or a function named `once`) is refused at
+validation with L2002. Nothing else about a running mesh changes.
+
+### What stops working
+
+A run whose recorded program binds `once` cannot be resumed after the upgrade, because a resume
+validates the recorded program again. A new `cotal run start` of such a program is refused before
+anything is recorded.
+
+### Before the upgrade
+
+List the runs with `cotal run ps` and check each program that is still running or held for a
+binding named `once`. Let those runs finish on the old version before you upgrade the manager, and
+rename the binding in the program before you start it again.
+
 ## From 0.58.0 to 0.59.0
 
 Every connector now publishes a failed run's `RUN_ERROR` on `events.<owner>.<actor>` with the fixed

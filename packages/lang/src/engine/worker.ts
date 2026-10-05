@@ -107,6 +107,8 @@ export interface WorkerRunFailed {
   readonly reason?: string;
   /** `RunHeld.step` (L5025): the step whose refusal held the run, carried like `reason`. */
   readonly step?: string;
+  /** `RunHeld.pending` (L5025): the refusal was an at-most-once step's hold, carried like `step`. */
+  readonly pending?: boolean;
   /**
    * An `EffectError`'s domain fields, carried so a host can rebuild the class whole: `kind` is what
    * failure handling branches on and `detail` is a recorded value, already fenced at its throw

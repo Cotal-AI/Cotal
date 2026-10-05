@@ -60,7 +60,7 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
@@ -219,8 +219,12 @@ function reportOutcome(runId: string, out: DriveOutcome): void {
   }
   const reason = out.reason;
   console.log(`run ${runId}: released — ${reason.name}: ${reason.message.split("\n")[0]}`);
-  if (reason.name === "RunHeld") {
-    console.log("the run is held: one step is settled `refused`, and a resume on a host that can perform it continues exactly there");
+  if (reason instanceof RunHeld) {
+    console.log(
+      reason.pending
+        ? "the run is held: one at-most-once step's hold could not be opened and its entry stays `pending`, and a resume on a host that can open a checkpoint reopens the hold without dispatching the step again"
+        : "the run is held: one step is settled `refused`, and a resume on a host that can perform it continues exactly there",
+    );
   }
   process.exitCode = 2;
 }

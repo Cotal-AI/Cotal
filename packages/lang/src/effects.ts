@@ -332,9 +332,9 @@ export class EffectRefused extends Error {
  *
  * It travels like {@link RunReleased}: a workflow's `try` cannot catch it and `finally` does not
  * run on the way out (§9.2). The program is not at fault and has not failed; the run is exactly
- * where its journal says it is, holding one `refused` entry, and the repair is a capable host
- * rather than anything the program could do with one more effect. Like {@link RunReleased}, the
- * language raises it and never accepts it from outside.
+ * where its journal says it is, holding one `refused` entry or one held step still `pending`, and
+ * the repair is a capable host rather than anything the program could do with one more effect.
+ * Like {@link RunReleased}, the language raises it and never accepts it from outside.
  */
 export class RunHeld extends Error {
   readonly code = "L5025";
@@ -343,11 +343,20 @@ export class RunHeld extends Error {
     readonly step: string,
     /** The refusal's own message. Named `reason` so it crosses the worker boundary like {@link RunReleased.reason}. */
     readonly reason: string,
+    /**
+     * The refused effect was an at-most-once step's hold (spec/cotal-lang.md §7.8). That step was
+     * dispatched, so its entry stays `pending`, and saying it was never attempted would invite the
+     * second write the hold exists to prevent.
+     */
+    readonly pending = false,
   ) {
     super(
       `L5025 Effect refused; run held for a capable host\n\n  step  ${step}\n\n${reason}\n\n` +
-        `The step was never attempted: its entry is settled \`refused\`, and a resume on a host ` +
-        `that can perform it picks the run up exactly here.`,
+        (pending
+          ? `The step's outcome is unknown: it was dispatched and its entry stays \`pending\`, and a resume ` +
+            `on a host that can open a checkpoint reopens its hold without dispatching it again.`
+          : `The step was never attempted: its entry is settled \`refused\`, and a resume on a host ` +
+            `that can perform it picks the run up exactly here.`),
     );
     this.name = "RunHeld";
   }
@@ -420,7 +429,8 @@ export interface EffectContext {
    * Present when a previous attempt at this step started but never settled, carrying whatever it
    * passed to {@link EffectContext.bind}. The handler must RE-BIND to that resource and await its
    * terminal, not issue a fresh action: the goal already exists, the checkpoint token is already
-   * minted, and issuing a second one is how a crash turns into a duplicate side effect.
+   * minted, and issuing a second one is how a crash turns into a duplicate side effect. A step
+   * inside `once` is never re-dispatched with it: it holds (spec/cotal-lang.md §7.8).
    */
   readonly resume?: Readonly<Record<string, unknown>>;
   /**

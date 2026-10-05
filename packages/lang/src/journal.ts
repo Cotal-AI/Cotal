@@ -72,6 +72,12 @@ export interface JournalEntry {
   /** The external resource this effect bound, so a crash mid-effect is recoverable. */
   readonly external?: Readonly<Record<string, unknown>>;
   /**
+   * The binding of the hold opened for an at-most-once step (spec/cotal-lang.md §7.8). Its own
+   * field so the first attempt's `external` stays on the entry as the write's evidence. An entry
+   * carrying it is a held step.
+   */
+  readonly hold?: Readonly<Record<string, unknown>>;
+  /**
    * WHAT THIS STEP HAS OBSERVED SO FAR, and the distinction this field exists to make is the whole
    * of #1459.
    *
@@ -312,7 +318,7 @@ export function journalEntryKeyString(entry: JournalEntry): string {
  * `workerData` is a structured clone, which preserves `Date`, `NaN`, `-0`, an own `undefined` key
  * and a `Map`.
  */
-type RecordedField = "external" | "error.detail" | "result" | "observations";
+type RecordedField = "external" | "hold" | "error.detail" | "result" | "observations";
 
 /**
  * WHY EACH FIELD MATTERS, said in its own words. One sentence for all three would have to be vague
@@ -320,6 +326,7 @@ type RecordedField = "external" | "error.detail" | "result" | "observations";
  */
 const WHAT_THE_FIELD_IS: Record<RecordedField, string> = {
   external: "`external` is what a resume re-binds the handler's own record to",
+  hold: "`hold` is what a resume re-binds an at-most-once step's hold to",
   "error.detail": "`error.detail` is how a failed step explains itself, and a resume hands it to the program that catches it",
   result: "`result` is what a resume hands back INSTEAD of running the step again",
   observations:
@@ -340,11 +347,12 @@ function bindingWithoutCanonicalForm(entry: JournalEntry, field: RecordedField, 
 }
 
 /** The entry kinds whose `result` is an assembly of branches rather than one handler's value. */
-const SCOPE_KINDS: ReadonlySet<string> = new Set(["parallel", "race", "fanOut", "conclave"]);
+const SCOPE_KINDS: ReadonlySet<string> = new Set(["parallel", "race", "fanOut", "conclave", "once"]);
 
 /** What the crossing rule calls the value it is refusing, so its path reads as the record's own. */
 const LABEL_OF: Record<RecordedField, string> = {
   external: "the recorded binding",
+  hold: "the recorded hold binding",
   "error.detail": "the recorded failure detail",
   result: "the recorded result",
   observations: "the recorded observation",
@@ -417,6 +425,15 @@ export class Journal {
         } catch (cause) {
           if (!(cause instanceof NotCrossable)) throw cause;
           throw bindingWithoutCanonicalForm(e, field, cause);
+        }
+      }
+      // AND A HOLD'S BINDING, which a resume re-binds the hold to exactly as it re-binds `external`.
+      if (e.hold !== undefined) {
+        try {
+          assertCrossable(e.hold, LABEL_OF.hold);
+        } catch (cause) {
+          if (!(cause instanceof NotCrossable)) throw cause;
+          throw bindingWithoutCanonicalForm(e, "hold", cause);
         }
       }
       // AND THE OBSERVATIONS, by the same rule and for a reason the other two do not cover: an
@@ -591,6 +608,22 @@ export class Journal {
     const entry = this.byKey.get(k);
     if (entry === undefined) throw new Error(`bind before begin for ${k}`);
     const next = { ...entry, external };
+    await this.persist(k, next);
+    this.byKey.set(k, next);
+  }
+
+  /** Record a hold's own binding, beside the first attempt's `external` rather than over it. */
+  async hold(key: StepKey, hold: Readonly<Record<string, unknown>>): Promise<void> {
+    if (this.readOnly) throw new JournalReadOnlyError(key);
+    const k = Journal.keyOf(key);
+    const entry = this.byKey.get(k);
+    if (entry === undefined) throw new Error(`hold before begin for ${k}`);
+    if (entry.state !== "pending")
+      throw new Error(`hold on a settled entry for ${k}; a hold binds only a step whose outcome is still unknown`);
+    // The seed check refuses a `hold` that is not crossable (L5024), so one written here would
+    // publish an entry this journal's own reload refuses.
+    assertCrossable(hold, `the hold binding of ${stepKeyString(key)}`);
+    const next = { ...entry, hold };
     await this.persist(k, next);
     this.byKey.set(k, next);
   }

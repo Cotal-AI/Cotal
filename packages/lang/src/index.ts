@@ -158,8 +158,10 @@ export {
 export {
   DIGEST_PREFIX,
   KeyScope,
+  atMostOnce,
   branchKeys,
   digest,
+  holdRequestId,
   programHashOf,
   scopePathString,
   stepKeyEquals,

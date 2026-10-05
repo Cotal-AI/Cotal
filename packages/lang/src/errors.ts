@@ -133,6 +133,11 @@ export const CATALOG = {
   // late, and the remedy differs (capacity for this host versus a broker that is behind). `L4000`
   // would send a reader to their own program for a condition in neither the program nor the effect.
   L4026: "Pause plane did not answer before the client deadline",
+  // An at-most-once step's hold expired (spec/cotal-lang.md §7.8). CATCHABLE, like L4003 and
+  // L4023: the write may or may not have happened, and the program decides what to do about that.
+  L4027: "At-most-once step's outcome was never settled",
+  // A program fault like L4011: the program put an effect inside `once` that a hold cannot bound.
+  L4028: "Effect not admitted inside `once`",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",

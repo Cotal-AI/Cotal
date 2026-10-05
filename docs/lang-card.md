@@ -23,7 +23,9 @@ resume on another with the recorded steps returning instantly.
 | `notify` | `await notify(agents, fact, { name? })` | `null` |
 | `monitor` | `await monitor(agent, { name? })` | `null` |
 
-`parallel`, `race`, `fanOut` and `conclave` are the four concurrency scopes (below). Step names
+`parallel`, `race`, `fanOut` and `conclave` are the four concurrency scopes (below).
+`await once(fn, { name })` runs `fn` so that the `ask` inside it is dispatched at most once: a
+resume that finds it begun and never settled opens a hold for a person to answer instead. Step names
 are kebab-case; where the reference says a name is required, it must be a string literal. Option
 bags are closed: an unknown key is refused (L3011) with the full signature in the answer.
 Durations are a whole number and one unit: `"30s"`, `"10m"`, `"4h"`, `"2d"`.

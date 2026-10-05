@@ -48,7 +48,7 @@ import {
 } from "@cotal-ai/core";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
-import { journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
+import { holdRequestId, journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 
 /** No open checkpoint (or ask) answers to this address in this run. */
 export class CheckpointNotOpen extends Error {
@@ -305,25 +305,33 @@ export async function amendAcceptedAnswer(
   return { token, answerId, supersedes };
 }
 
-/** The token a settled checkpoint (or ask) settled under, or a loud refusal naming why the step has
- *  none to amend. A checkpoint settles under its request id; an `ask` under its LAST attempt's
- *  token, which rides the step's pending entries as `askToken` (attempt 1 is the request id). */
+/** The token a step's pause is read under, over the step's records in append order. A held step
+ *  (spec/cotal-lang.md §7.8) reads at its hold id whatever its kind. An `ask` reads at its LAST
+ *  attempt's token, which rides its records as `askToken` (attempt 1 is the request id), and any
+ *  other step at its request id. */
+export function stepPauseToken(records: readonly JournalEntry[]): string | undefined {
+  const last = records.at(-1);
+  if (last?.requestId === undefined) return undefined;
+  if (records.some((e) => e.hold !== undefined)) return holdRequestId(last.requestId);
+  if (last.kind !== "ask") return last.requestId;
+  const askToken = records.findLast((e) => typeof e.external?.askToken === "string")?.external?.askToken;
+  return typeof askToken === "string" ? askToken : last.requestId;
+}
+
+/** The token a settled checkpoint, ask or held step settled under, or a loud refusal naming why the
+ *  step has none to amend. */
 export function settledPauseToken(
   entries: readonly JournalEntry[],
   runId: string,
   stepKey: string,
 ): string | undefined {
-  let entry: JournalEntry | undefined;
-  let askToken: string | undefined;
-  for (const e of entries) {
-    if (journalEntryKeyString(e) !== stepKey) continue;
-    entry = e;
-    if (typeof e.external?.askToken === "string") askToken = e.external.askToken;
-  }
+  const records = entries.filter((e) => journalEntryKeyString(e) === stepKey);
+  const entry = records.at(-1);
   if (entry === undefined) throw new CheckpointNotAmendable(runId, stepKey, "unknown");
-  if (entry.kind !== "checkpoint" && entry.kind !== "ask") throw new CheckpointNotAmendable(runId, stepKey, "not-a-checkpoint");
+  if (!records.some((e) => e.hold !== undefined) && entry.kind !== "checkpoint" && entry.kind !== "ask")
+    throw new CheckpointNotAmendable(runId, stepKey, "not-a-checkpoint");
   if (entry.state === "pending") throw new CheckpointNotAmendable(runId, stepKey, "open");
-  return entry.kind === "ask" ? askToken ?? entry.requestId : entry.requestId;
+  return stepPauseToken(records);
 }
 
 /** The token of the open checkpoint (or ask attempt) at this address, or a loud refusal naming
@@ -337,14 +345,15 @@ export function openCheckpointToken(
 ): string {
   // Append order, later record wins: a settled step has a settled entry written after its pending
   // one, and answering the pending one would present a token whose pause is already over.
-  let entry: JournalEntry | undefined;
-  for (const e of entries) if (journalEntryKeyString(e) === stepKey) entry = e;
+  const records = entries.filter((e) => journalEntryKeyString(e) === stepKey);
+  const entry = records.at(-1);
   if (entry === undefined) throw new CheckpointNotOpen(runId, stepKey, "unknown");
-  if (entry.kind !== "checkpoint" && entry.kind !== "ask") throw new CheckpointNotOpen(runId, stepKey, "not-a-checkpoint");
+  if (!records.some((e) => e.hold !== undefined) && entry.kind !== "checkpoint" && entry.kind !== "ask")
+    throw new CheckpointNotOpen(runId, stepKey, "not-a-checkpoint");
   if (entry.state !== "pending") throw new CheckpointNotOpen(runId, stepKey, "settled");
-  if (entry.requestId === undefined) throw new CheckpointNotOpen(runId, stepKey, "no-identity");
-  if (entry.kind === "ask" && typeof entry.external?.askToken === "string") return entry.external.askToken;
-  return entry.requestId;
+  const token = stepPauseToken(records);
+  if (token === undefined) throw new CheckpointNotOpen(runId, stepKey, "no-identity");
+  return token;
 }
 
 /** The run's step entries, in append order. Read-only: this replays under its own consumer name and

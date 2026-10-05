@@ -110,6 +110,7 @@ import {
   type SpawnRequest,
   type TurnRequest,
   type TurnResultValue,
+  holdRequestId,
   journalEntryKeyString,
   stepKeyString,
 } from "@cotal-ai/lang";
@@ -634,6 +635,7 @@ export class MeshHandler {
     const owed = this.services ? await this.services.authority.cleanupEntries() : entries;
     for (const e of owed) {
       if (e.requestId === undefined) continue;
+      if (e.hold !== undefined) await this.cancelTimer({ endpoint: this.binding.endpoint, token: holdRequestId(e.requestId) });
       if (e.kind === "spawn") {
         await this.dischargeSpawn(e);
         continue;
@@ -667,23 +669,34 @@ export class MeshHandler {
           });
         continue;
       }
-      if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait" && e.kind !== "ask" && e.kind !== "turn") continue;
-      // An ask's armed timer is its CURRENT attempt's, whose token is bound as `askToken`; a
-      // crash before the first bind leaves attempt 1, which is the request id itself.
-      const current = e.kind === "ask" && typeof e.external?.askToken === "string"
-        ? e.external.askToken
-        : e.requestId;
-      await this.cancelTimer({ endpoint: this.binding.endpoint, token: current });
-      if (e.kind === "wait") {
-        await this.cancelTimer({ endpoint: this.binding.endpoint, token: derivedToken(e.requestId, "wait-timeout") });
-        if (this.services) {
-          await this.services.waits.close(e.requestId);
-          continue;
-        }
-        try {
-          await this.jsm.consumers.delete(chatStream(this.binding.space), waitConsumerName(e.requestId));
-        } catch { /* never created, or already deleted — nothing is held either way */ }
+      await this.endPause(e);
+    }
+  }
+
+  /**
+   * End the pause a step armed: claim the kind's armed pauses and, for a `wait`, close its
+   * consumer. A cancelled loser's discharge calls it, and so does a hold before its first bind
+   * (spec/cotal-lang.md §7.8), which claims an `ask`'s open attempt. An `ask`'s relay goal is left
+   * as the discharge leaves it.
+   */
+  async endPause(e: JournalEntry): Promise<void> {
+    if (e.requestId === undefined) return;
+    if (e.kind !== "sleep" && e.kind !== "checkpoint" && e.kind !== "wait" && e.kind !== "ask" && e.kind !== "turn") return;
+    // An ask's armed timer is its CURRENT attempt's, whose token is bound as `askToken`; a
+    // crash before the first bind leaves attempt 1, which is the request id itself.
+    const current = e.kind === "ask" && typeof e.external?.askToken === "string"
+      ? e.external.askToken
+      : e.requestId;
+    await this.cancelTimer({ endpoint: this.binding.endpoint, token: current });
+    if (e.kind === "wait") {
+      await this.cancelTimer({ endpoint: this.binding.endpoint, token: derivedToken(e.requestId, "wait-timeout") });
+      if (this.services) {
+        await this.services.waits.close(e.requestId);
+        return;
       }
+      try {
+        await this.jsm.consumers.delete(chatStream(this.binding.space), waitConsumerName(e.requestId));
+      } catch { /* never created, or already deleted — nothing is held either way */ }
     }
   }
 
@@ -3005,7 +3018,9 @@ export async function rearmOutstandingPauses(
  * first bind it is attempt 1, which is the request id itself. A `turn`'s is under its goal id,
  * which is the request id: that pause is the client-side L4003 authority the run keeps for a
  * manager that dies, so leaving it armed at the predecessor's coordinates would go dark in exactly
- * the window recovery opens.
+ * the window recovery opens. A held step's hold is armed under its hold id once the hold binds; the
+ * attempt token the hold claimed is still listed and re-arms nothing, because the reconciler
+ * re-emits a schedule only for a waiting pause.
  */
 export function outstandingPauseTokens(entries: readonly JournalEntry[]): string[] {
   const last = new Map<string, JournalEntry>();
@@ -3017,6 +3032,7 @@ export function outstandingPauseTokens(entries: readonly JournalEntry[]): string
     if (e.kind === "sleep" || e.kind === "checkpoint" || e.kind === "turn") tokens.push(e.requestId);
     else if (e.kind === "ask") tokens.push(typeof e.external?.askToken === "string" ? e.external.askToken : e.requestId);
     else if (e.kind === "wait") tokens.push(e.requestId, derivedToken(e.requestId, "wait-timeout"));
+    if (e.hold !== undefined) tokens.push(holdRequestId(e.requestId));
   }
   return tokens;
 }

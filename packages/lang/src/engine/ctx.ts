@@ -27,7 +27,7 @@ import { NotCrossable, Prng, assertNoCode, birthDepth, born as stampBirth, deepF
 import type { AgentHandleValue } from "../effects.js";
 import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
-import { dispatchPrimitive, freeConstructors, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
+import { dispatchPrimitive, freeConstructors, onceBodyNotCallable, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
 import { PRIMITIVES } from "../primitives.js";
 import type { RunOptions } from "../interpret.js";
 
@@ -425,6 +425,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 
   /** `parallel`/`race` take a record or an array OF ARMS; the other two take data in that position. */
   const branchesOf = (name: string, first: unknown): unknown => {
+    if (name === "once") return asArm(first);
     if (name !== "parallel" && name !== "race") return first;
     if (Array.isArray(first)) return first.map(asArm);
     if (first === null || typeof first !== "object") return first;
@@ -498,6 +499,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     const frame = currentFrame();
     const scopeKind = name as ScopeKind;
     const first = args[0];
+    if (name === "once" && typeof first !== "function") throw onceBodyNotCallable();
     const bag = args[spec.optionsAt];
     const scopeName = (option(bag, "name") as string | undefined) ?? null;
     // Allocated HERE, synchronously, exactly as the walker allocates it: the occurrence is what

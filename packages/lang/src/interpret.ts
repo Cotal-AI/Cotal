@@ -39,6 +39,7 @@ import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./
 import {
   dispatchPrimitive,
   freeConstructors,
+  onceBodyNotCallable,
   option,
   performEffect,
   performScope,
@@ -1055,6 +1056,7 @@ class Interpreter {
     const scopeKind = name as ScopeKind;
 
     const first = await this.evaluate(argNodes[0] as AnyNode, env, frame);
+    if (name === "once" && typeof first !== "function") throw onceBodyNotCallable();
     const bagNode = argNodes[spec.optionsAt];
     const bag = bagNode === undefined ? undefined : await this.evaluate(bagNode, env, frame);
     const scopeName = (this.option(bag, "name") as string | undefined) ?? null;

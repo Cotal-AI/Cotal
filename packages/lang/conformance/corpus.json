@@ -48,6 +48,12 @@
     },
     {
       "index": 7,
+      "heading": "7.8 `once`",
+      "source": "const publisher = await spawn(\"publisher\")\nconst res = await once(async () => {\n  return await ask(publisher, { name: \"publish\", schema: { commentId: \"number\" } })\n}, { name: \"publish-360\" })\nlog(\"comment\", res.commentId)\n",
+      "verdict": "accepted"
+    },
+    {
+      "index": 8,
       "heading": "9.1 What a program can catch",
       "source": "const builder = await spawn(\"builder\")\ntry {\n  await turn(builder, { name: \"build\", deadline: \"10m\" })\n} catch (e) {\n  if (e.code === \"L4003\") {\n    await notify([builder], { decision: \"build\", outcome: \"timed-out\" })\n  } else {\n    throw e\n  }\n}\n",
       "verdict": "accepted"

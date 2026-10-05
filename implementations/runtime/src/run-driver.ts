@@ -721,9 +721,9 @@ async function drive(
       await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };
     }
-    // A HELD run is released with its refusal already recorded: this host could not perform the
-    // next step (the entry is settled `refused`, L5025), the program has neither failed nor
-    // finished, and a capable host's resume performs the step live.
+    // A HELD run is released with its journal already saying why: this host could not perform the
+    // next step (its entry is settled `refused`, or a held step's stays `pending`, L5025), the
+    // program has neither failed nor finished, and a capable host's resume continues there.
     if (e instanceof RunHeld) {
       await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };

@@ -513,9 +513,10 @@ function classify(
     case "parallel":
     case "race":
     case "fanOut":
+    case "once":
       // A scope is not an effect and outlives nothing by itself; every consequence it had belongs
       // to an entry underneath it, and those get their own rows. `conclave` is the exception and is
-      // above, which is exactly why the orphan table lists it and not these three.
+      // above, which is exactly why the orphan table lists it and not these four.
       return ignore("a scope outlives nothing of its own; what ran under it has its own rows");
 
     default:

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { Journal, digest, journalEntryKeyString, stepKeyString, type EffectContext, type JournalEntry } from "@cotal-ai/lang";
+import { Journal, atMostOnce, digest, holdRequestId, journalEntryKeyString, stepKeyString, type EffectContext, type JournalEntry } from "@cotal-ai/lang";
 import type { RunHostPlanes, RunHostLease, RunJournalActivation } from "@cotal-ai/core";
 import { replayOwnJournal } from "./journal-store.js";
 
@@ -66,6 +66,13 @@ export function releasableSeats(runId: string, entries: readonly JournalEntry[])
     && !handedOver.has(journalEntryKeyString(e)));
 }
 
+/** A hold (spec/cotal-lang.md §7.8): a checkpoint at an at-most-once step's key, at attempt 0, under
+ *  the hold id the step's recorded request id derives. Read from the journal, never from the caller. */
+export function isHold(kind: string, entry: JournalEntry, ctx: Pick<EffectContext, "key" | "requestId" | "attempt">): boolean {
+  return kind === "checkpoint" && atMostOnce(ctx.key.scope) && entry.requestId !== undefined
+    && ctx.requestId === holdRequestId(entry.requestId) && ctx.attempt === 0;
+}
+
 export type PauseOperation = "read" | "mint" | "attach" | "rearm" | "heartbeat" | "claim" | "fire";
 export type WaitOperation = "open" | "fetch" | "ack" | "close";
 
@@ -116,9 +123,9 @@ export class RunScopeAuthority {
   async effect(kind: string, ctx: Pick<EffectContext, "key" | "requestId" | "attempt">): Promise<JournalEntry> {
     const entries = await this.entries();
     const entry = entries.find((candidate) => journalEntryKeyString(candidate) === stepKeyString(ctx.key));
-    if (entry === undefined || entry.kind !== kind || entry.requestId !== ctx.requestId
-      || (entry.attempt ?? 0) !== ctx.attempt || entry.state !== "pending"
-      || this.cleanup(entries).has(journalEntryKeyString(entry)))
+    if (entry === undefined || entry.state !== "pending" || this.cleanup(entries).has(journalEntryKeyString(entry))
+      || !(isHold(kind, entry, ctx)
+        || (entry.kind === kind && entry.requestId === ctx.requestId && (entry.attempt ?? 0) === ctx.attempt)))
       throw new RunScopeDenied(this.runId, ctx.requestId, `perform ${kind}`);
     return entry;
   }
@@ -192,10 +199,16 @@ export class RunScopeAuthority {
   }
 }
 
-/** Identities a step can own. An ask's old attempt drops out as soon as the next bind lands. */
+/** Identities a step can own. An ask's old attempt drops out as soon as the next bind lands. A
+ *  held step also owns its hold id, whatever its kind, once the hold's bind lands. */
 function pauseTokens(entry: JournalEntry): string[] {
   const id = entry.requestId;
   if (id === undefined) return [];
+  const own = kindPauseTokens(entry, id);
+  return entry.hold === undefined ? own : [...own, holdRequestId(id)];
+}
+
+function kindPauseTokens(entry: JournalEntry, id: string): string[] {
   if (entry.kind === "sleep" || entry.kind === "checkpoint" || entry.kind === "turn") return [id];
   if (entry.kind === "wait") return [id, derive(id, "wait-timeout")];
   if (entry.kind !== "ask") return [];
