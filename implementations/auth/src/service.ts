@@ -1582,7 +1582,7 @@ async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: Evic
     // Owed by the gate: a freeze by THIS op is the barrier's live claim (the bar of every
     // barrier). A takeover completed under this predicate reopens the gate, so its completed
     // intent stays skipped exactly as before.
-    let owed = gate !== undefined && gate.row.state === "frozen" && gate.row.op?.opId === it.opId;
+    let owed = gate !== undefined && gate.row.state === "frozen" && gate.row.op.opId === it.opId;
     // #878: a retirement whose gate terminal landed by THIS op but whose head terminal did not.
     // The head decides the completed cell: `retired` at this uid means the barrier's last step ran
     // (skip), and a head at ANOTHER uid means a successor already replaced the retired predecessor
@@ -1590,7 +1590,7 @@ async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: Evic
     // the wedged crash window, and `active` at this uid is a backward head (impossible; a head
     // never un-retires) — both resume, so the barrier either finishes the tail or refuses loud; an
     // absent head is corruption the barrier refuses loud (a head is never deleted, SPEC 13.12).
-    if (!owed && it.kind === "retirement" && gate !== undefined && gate.row.state === "retired" && gate.row.op?.opId === it.opId) {
+    if (!owed && it.kind === "retirement" && gate !== undefined && gate.row.state === "retired" && gate.row.op.opId === it.opId) {
       const head = await readLifecycleHeadForOperation(reg, it.owner, it.actor);
       owed = head === undefined
         || (head.mapping.lifecycleUid === it.lifecycleUid && head.mapping.state !== "retired");

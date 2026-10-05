@@ -625,13 +625,13 @@ export async function runAgentRetirementBarrier(
     if (gate === undefined)
       throw new EpEnvelopeError("internal", `the issuance gate for ${intent.lifecycleUid} vanished mid-operation; a gate is never deleted (corruption, SPEC 13.12)`);
     if (gate.row.state === "frozen") {
-      if (gate.row.op?.opId !== opId)
-        throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${intent.lifecycleUid} is frozen by operation ${gate.row.op?.opId ?? "<none>"}, not ${opId}; one barrier at a time (SPEC 13.1)`);
+      if (gate.row.op.opId !== opId)
+        throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${intent.lifecycleUid} is frozen by operation ${gate.row.op.opId}, not ${opId}; one barrier at a time (SPEC 13.1)`);
       break; // our freeze (fresh or resumed) — proceed into containment
     }
     if (gate.row.state === "retired") {
-      if (gate.row.op?.opId !== opId)
-        throw new EpEnvelopeError("permission-denied", `the issuance gate for ${intent.lifecycleUid} was terminalized by operation ${gate.row.op?.opId ?? "<none>"}, not ${opId} (SPEC 13.1)`);
+      if (gate.row.op.opId !== opId)
+        throw new EpEnvelopeError("permission-denied", `the issuance gate for ${intent.lifecycleUid} was terminalized by operation ${gate.row.op.opId}, not ${opId} (SPEC 13.1)`);
       // OUR gate terminal is durable, so steps ≤ 7 completed; only the head terminal may
       // remain. Verify the frontier (it precedes the gate terminal in this op) and finish.
       const fr = await recordsKv.get(frontierKey);

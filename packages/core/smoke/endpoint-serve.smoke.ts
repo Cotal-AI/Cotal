@@ -36,7 +36,7 @@ import {
   epRequestSubject, epCallerReplyFilter, parseEpSubject, recordSpecKey, recordStatusKey, RECORD_KINDS,
   type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
   type EpCommandDef, type DescribeAnswer, type EpServeGrant, type CompiledContract,
-  type EpIssuanceBarrier, type EpVerbOp,
+  mintLifecycleUid, type EpIssuanceBarrier, type EpGateState, type EpVerbOp,
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
@@ -172,18 +172,18 @@ const authority: ServiceNameAuthority = {
 // instanceId) gate. This smoke exercises the registry/serve/describe SURFACE; the fence internals
 // (revision-pinned CAS, freeze token, verified evict, drift) are proven in endpoint-serve-auth.smoke.ts.
 // Here the barrier only needs to be a faithful freeze->(spec write)->reopen writer.
-const gateStates = new Map<string, { space: string; endpoint: string; lifecycleUid: string; principal: string; state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
+const gateStates = new Map<string, EpGateState>();
 function barrierFor(endpoint: string, instanceId: string): EpIssuanceBarrier {
   const key = `${endpoint}/${instanceId}`;
   if (!gateStates.has(key)) gateStates.set(key, { space: SPACE, endpoint, lifecycleUid: instanceId, principal: "u_op.mgr", state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
-  const g = gateStates.get(key)!;
+  const op = { opId: mintLifecycleUid(), kind: "registration" as const };
   return {
-    observe: () => ({ ...g }),
-    freeze: (rev) => { if (g.state !== "open" || g.revision !== rev) return null; g.state = "frozen"; g.revision++; return g.revision; },
+    observe: () => ({ ...gateStates.get(key)! }),
+    freeze: (rev) => { const g = gateStates.get(key)!; if (g.state !== "open" || g.revision !== rev) return null; gateStates.set(key, { ...g, state: "frozen", op, revision: rev + 1 }); return rev + 1; },
     enumerate: () => [],
     revoke: () => {},
     evict: (holderPrincipals) => holderPrincipals.map(() => true),
-    reopen: (token, succ) => { if (g.state !== "frozen" || g.revision !== token) return false; g.state = "open"; g.generation = succ.generation; g.processEpoch = succ.processEpoch; g.registrationRevision = succ.registrationRevision; g.nameAuthorityRevision = succ.nameAuthorityRevision; g.revision++; return true; },
+    reopen: (token, succ) => { const { op: _op, ...g } = gateStates.get(key)!; if (g.state !== "frozen" || g.revision !== token) return false; gateStates.set(key, { ...g, state: "open", generation: succ.generation, processEpoch: succ.processEpoch, registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision, revision: token + 1 }); return true; },
   };
 }
 /** register-with-barrier: thread the per-instance barrier so the registration runs its §13.1 protocol. */
