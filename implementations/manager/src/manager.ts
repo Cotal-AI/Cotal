@@ -137,12 +137,9 @@ import {
   epgateKey,
   parseEndpointGate,
   readEndpointGateGeneration,
-  registerServiceInstance,
+  registerServingInstance,
   deregisterServiceInstance,
   type ServiceDeregistration,
-  authorizeServeGrant,
-  writeServiceStatus,
-  SERVICE_READY,
   serveEndpoint,
   type EpIssuanceGate,
   bindGoal,
@@ -7513,7 +7510,7 @@ export class Manager {
         ...(auth ? { evict: makeManagerEndpointHolderEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) } : {}),
       });
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
-      const { registrationRevision, processEpoch } = await registerServiceInstance(recordsKv, {
+      const { grant } = await registerServingInstance(recordsKv, {
         space: this.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
         // #1393: when a FOREIGN instance holds the endpoint governance slot, let core tell an
         // in-flight registration from one abandoned by a predecessor that died between its
@@ -7522,41 +7519,9 @@ export class Manager {
         // reopened past the slot's stamp.
         observeHolderGeneration: (holderInstanceId) =>
           readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
+        status: { connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })) },
       });
-      // processEpoch is the one this registration's reopen committed (checklist 4: never derived
-      // from the uid string). A gate read here could already show a successor's epoch; the fences
-      // below refuse that successor instead of serving at it. The fence is also the mint's §13.1
-      // release CAS.
       const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
-      const grant = await authorizeServeGrant(recordsKv, {
-        space: this.space, endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: processEpoch,
-        holder: { owner: DEV_OWNER }, authority, readClusterArtifact,
-        readProcessEpoch: async () => {
-          const g = await fence.observe();
-          if (g === null) throw new Error(`no issuance gate for ${MANAGER_ENDPOINT}/${iid}`);
-          return g.processEpoch;
-        },
-      });
-      // P2 item 3 (class scatter): write this instance's CONVERGED svc status so it is a §13.5
-      // scatter member — `freezeExpectedSet` skips any instance whose status is absent or lags the
-      // current registration. Instance-side `ready` at the just-registered spec revision, epoch-fenced
-      // to the gate's processEpoch (the same leader-served reader `authorizeServeGrant` used); on a
-      // restart it CAS-updates the predecessor's status forward (the advanced epoch supersedes the old
-      // one). Key-pinned to this instance's own status key on the SAME executor.
-      await writeServiceStatus(recordsKv, {
-        endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: processEpoch,
-        status: {
-          state: SERVICE_READY,
-          epoch: processEpoch,
-          observedSpecRevision: registrationRevision,
-          connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
-        },
-        readProcessEpoch: async () => {
-          const g = await fence.observe();
-          if (g === null) throw new Error(`no issuance gate for ${MANAGER_ENDPOINT}/${iid}`);
-          return g.processEpoch;
-        },
-      });
       // Open mesh: NO mint - the §13.1 fence is issuance-only and nothing is ever issued, so the
       // gate keeps an empty `epcred` family; the serve connection below stays bare.
       const creds = auth ? await mintCreds(auth, serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant }) : undefined;
