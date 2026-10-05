@@ -6,14 +6,15 @@ import React from "react";
 import { AbsoluteFill, Easing, interpolate } from "remotion";
 import { fontFamily } from "../_shared";
 
-// Square-ish stage so three cards sit side by side in the README and wrap
-// to a stack when the viewport is narrow. Single source of truth for size.
+// Square-ish stage. Single source of truth for size.
 export const STAGE = { w: 860, h: 620 } as const;
 
-// The NATS cards show one per row at the README column width, 294 CSS px on a
-// 360 px phone. Their type is scaled so the smallest text (18 px) still renders
-// at 11 CSS px there, and the stage is taller to make room for it.
-export const NATS_TYPE = 1.9;
+// The README cards (modes/ and nats/) show one per row at the README column
+// width, 294 CSS px on a 360 px phone. Their type is scaled so the smallest text
+// (18 px) still renders at 11 CSS px there, and their stages are taller to make
+// room for it.
+export const CARD_TYPE = 1.9;
+export const MODE_STAGE = { w: STAGE.w, h: 780 } as const;
 export const NATS_STAGE = { w: STAGE.w, h: 700 } as const;
 const INSET = 16;
 

@@ -8,6 +8,7 @@ import {
   Beam,
   bez,
   Card,
+  CARD_TYPE,
   ChannelPill,
   fade,
   Labels,
@@ -20,27 +21,32 @@ import {
 } from "./scene";
 
 // Centered on the stage: alice and the cluster equidistant from the card middle.
-const ALICE: Pt = { x: 118, y: 300 };
-const PILL: Pt = { x: 425, y: 300 };
+const ALICE: Pt = { x: 100, y: 410 };
+const PILL: Pt = { x: 400, y: 410 };
 const RECV: Pt[] = [
-  { x: 726, y: 134 },
-  { x: 726, y: 300 },
-  { x: 726, y: 466 },
+  { x: 700, y: 240 },
+  { x: 700, y: 410 },
+  { x: 700, y: 580 },
 ];
 // Shared cast + presence, identical across all three cards: bob and dave busy,
 // carol free. Only the message flow differs, so the three glance as one space.
 const NAMES = [
-  { name: "bob", role: "builder", status: "working" },
-  { name: "carol", role: "reviewer", status: "idle" },
-  { name: "dave", role: "builder", status: "working" },
+  { name: "bob", status: "working" },
+  { name: "carol", status: "idle" },
+  { name: "dave", status: "working" },
 ] as const;
 
+// The pill's label takes the smallest card text size, which leaves the wires
+// on either side room to read.
+const PILL_TYPE = (18 * CARD_TYPE) / 24;
+const PILL_HALF = 92 * PILL_TYPE + 8;
+
 const IN_START: Pt = { x: ALICE.x + 52, y: ALICE.y };
-const IN_END: Pt = { x: PILL.x - 100, y: PILL.y };
-const OUT_START: Pt = { x: PILL.x + 100, y: PILL.y };
+const IN_END: Pt = { x: PILL.x - PILL_HALF, y: PILL.y };
+const OUT_START: Pt = { x: PILL.x + PILL_HALF, y: PILL.y };
 const outCtrl = (r: Pt): [Pt, Pt] => [
-  { x: OUT_START.x + 80, y: OUT_START.y },
-  { x: r.x - 115, y: r.y },
+  { x: OUT_START.x + 60, y: OUT_START.y },
+  { x: r.x - 90, y: r.y },
 ];
 const OUT_END = (r: Pt): Pt => ({ x: r.x - 54, y: r.y });
 
@@ -78,10 +84,10 @@ export const ModeMulticast: React.FC = () => {
       <Wires paths={[IN_PATH, ...OUT_PATHS]} glow={[inGlow, flash, flash, flash]} />
       <Ripple at={PILL} p={prog(frame, T.fanStart - 2, T.fanStart + 30)} />
       <Ripple at={PILL} p={prog(frame, T.fanStart + 8, T.fanStart + 42)} />
-      <AgentNode at={ALICE} name="alice" role="planner" status="working" flash={emit} />
-      <ChannelPill at={PILL} label="#general" glow={pillGlow} />
+      <AgentNode at={ALICE} name="alice" status="working" flash={emit} type={CARD_TYPE} />
+      <ChannelPill at={PILL} label="#general" glow={pillGlow} type={PILL_TYPE} />
       {NAMES.map((n, i) => (
-        <AgentNode key={n.name} at={RECV[i]!} name={n.name} role={n.role} status={n.status} flash={flash} />
+        <AgentNode key={n.name} at={RECV[i]!} name={n.name} status={n.status} flash={flash} type={CARD_TYPE} />
       ))}
       <Beam
         d={IN_PATH}
@@ -102,6 +108,7 @@ export const ModeMulticast: React.FC = () => {
         mode="multicast"
         caption="broadcast to a channel"
         subject="cotal.demo.chat.general"
+        type={CARD_TYPE}
       />
     </Card>
   );
