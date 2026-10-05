@@ -117,7 +117,7 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
   state.pending = []; // the deadline (or another yield path) settled it on the plane
   await poll();
   const r = await a.yieldTurn("done");
-  check("the dropped turn is not yieldable: nothing is active", r.ok === false && String(r.error).includes("no turn is active"), r.error);
+  check("the dropped turn is not yieldable: the refusal names its settlement", r.ok === false && String(r.error).includes('turn "g2" was already settled by the run'), r.error);
 }
 
 // ── 3) the working→idle boundary IS the done signal ───────────────────────────────────────────

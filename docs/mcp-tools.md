@@ -300,7 +300,7 @@ Report the outcome of a workflow turn assigned to you. Use this only when your c
 
 Usually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{"status":"blocked","note":"<what prevents progress>"}`. To hand the assigned turn to another agent, call `{"status":"handoff","to":"<agent-name>","note":"<handoff context>"}`.
 
-When you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.
+When you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded, and neither can one the run already settled, such as a turn whose deadline elapsed: that refusal names the turn and its deadline. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.
 
 - **Side-effect:** settles one run turn via the manager (done / blocked / handoff).
 - **Available:** always; only meaningful while a run turn is pending on you.
