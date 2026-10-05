@@ -154,9 +154,13 @@ export function refuseAnyArgs(name: string, args: unknown): string | undefined {
   return keys.length ? `${name}: unknown argument(s): ${keys.join(", ")} — this tool takes no arguments` : undefined;
 }
 
-/** Compact age: `12s`, `47m`, `3h`, `2d`. */
-function ageText(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
+/** Compact age of an epoch-ms stamp at `now`: `12s`, `47m`, `3h`, `2d`, or undefined without a stamp.
+ *  A presence record is parsed from the bucket unchecked, so anything but a finite number counts as no
+ *  stamp: the subtraction would date `null` from the epoch, render a string as `NaNd`, and render an
+ *  exponent literal such as `1e400`, which parses to an infinity, as `0s` or `Infinityd`. */
+function ageText(now: number, at: number | undefined): string | undefined {
+  if (typeof at !== "number" || !Number.isFinite(at)) return undefined;
+  const s = Math.max(0, Math.floor((now - at) / 1000));
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86_400) return `${Math.floor(s / 3600)}h`;
@@ -843,13 +847,19 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // The condition with how long it has held, how long the status and activity have stood (#578),
           // and the age of the last harness-reported work event (#618): a turn that died or stopped
           // advancing 40m ago no longer reads like a live one, and neither does a report made 40m ago.
+          // The activity also carries its own age (#544): a hook flips the status every turn and leaves
+          // the activity alone, so the status age cannot date it.
           const now = Date.now();
-          const since = p.condition?.since;
-          const unchanged = p.statusSince === undefined ? "" : ` · unchanged for ${ageText(now - p.statusSince)}`;
-          const active = p.activeAt === undefined ? "" : ` · active ${ageText(now - p.activeAt)} ago`;
-          const condition = (p.condition ? ` (${p.condition.code}${since === undefined ? "" : ` for ${ageText(now - since)}`})` : "") + unchanged + active;
+          const conditionAge = ageText(now, p.condition?.since);
+          const unchangedAge = ageText(now, p.statusSince);
+          const activeAge = ageText(now, p.activeAt);
+          const unchanged = unchangedAge === undefined ? "" : ` · unchanged for ${unchangedAge}`;
+          const active = activeAge === undefined ? "" : ` · active ${activeAge} ago`;
+          const condition = (p.condition ? ` (${p.condition.code}${conditionAge === undefined ? "" : ` for ${conditionAge}`})` : "") + unchanged + active;
           const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
-          return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
+          const activityAge = ageText(now, p.activitySince);
+          const activity = p.activity ? `: ${p.activity}${activityAge === undefined ? "" : ` (set ${activityAge} ago)`}` : "";
+          return `${statusGlyph(p.status)} ${who} — ${progress}${activity}${attn}${me}${mutedHint}${id}`;
         });
         const rendered = `Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`;
         const preface = writeFailure?.stuck

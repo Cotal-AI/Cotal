@@ -43,7 +43,10 @@ as `waiting (rate_limit for 40m) · active 40m ago`. The optional `statusSince` 
 instance entered its current status and activity. A change to either moves it, while a heartbeat or a
 repeated report does not, so an activity that outlived what it described reads as old. `cotal_roster`
 prints its age, such as `idle · unchanged for 40m`. An offline record carries none, because an observer
-that derives `offline` from a stale heartbeat does not know when the peer left. The optional `environment` is an opaque provider reference. Core publishes
+that derives `offline` from a stale heartbeat does not know when the peer left. The optional
+`activitySince` is when the current activity was set. A status change does not move it, so an
+activity left behind while hooks flip the status every turn still shows its age, such as
+`(set 9h ago)` after the activity on a `cotal_roster` row. The optional `environment` is an opaque provider reference. Core publishes
 it and never interprets it. Readers reject a row whose `card.id` does not match its KV key and report
 that rejection through the recoverable warning path.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view

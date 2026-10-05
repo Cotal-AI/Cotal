@@ -191,7 +191,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : \"\"}${attn}${me}${mutedHint}${id}`",
+      "anchor": "`${statusGlyph(p.status)} ${who} — ${progress}${activity}${attn}${me}${mutedHint}${id}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {

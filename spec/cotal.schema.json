@@ -424,6 +424,10 @@
           "description": "Freeform \"what I'm doing right now\".",
           "type": "string"
         },
+        "activitySince": {
+          "description": "Epoch ms when the current `activity` was set. A status change does not move it, so an activity left behind while hooks flip the status every turn still reads as old.",
+          "type": "number"
+        },
         "attention": {
           "$ref": "#/definitions/AttentionMode",
           "description": "This instance's current global attention mode. Advisory, within-space observability — a peer can see \"they're in focus\" and choose to DM. Published from the connector's authoritative state (presence is a mirror, never the source of truth for delivery). `open`/absent ⇒ receives all."
