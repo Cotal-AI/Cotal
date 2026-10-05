@@ -1114,7 +1114,7 @@ export async function openAuthAuthorityPlane(opts: {
                 principal: { owner, actor: actors.serve },
                 lifecycleUid: r.managerLifecycleUid,
                 expiresInSeconds: standingTtl,
-                endpointServe: reconstructRemoteManagerServeGrant(r, owner, actors.serve, observed),
+                endpointServe: reconstructRemoteManagerServeGrant(r, owner, observed),
                 serveIssuance: gate,
               },
             );

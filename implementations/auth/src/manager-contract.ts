@@ -1,7 +1,6 @@
 import {
   authorizeTrustedServeSnapshot,
   contractDigest,
-  remoteManagerActors,
   type EpCommandAuthority,
   type EpGateState,
   type RemoteManagerAuthorityRequest,
@@ -13,7 +12,6 @@ import {
 export function reconstructRemoteManagerServeGrant(
   request: RemoteManagerAuthorityRequest,
   owner: string,
-  _serveActor: string,
   observed: EpGateState,
 ) {
   const artifacts = request.contractArtifacts ?? [];
@@ -65,8 +63,6 @@ export function remoteManagerServeGrantFromCluster(
 ) {
   const surface = remoteManagerSurface(document);
   const cluster = document as Record<string, unknown>;
-  const actors = remoteManagerActors(request.instanceId);
-  void actors;
   return authorizeTrustedServeSnapshot({
     space: request.space,
     endpoint: "manager",
