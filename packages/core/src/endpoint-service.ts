@@ -26,7 +26,7 @@ import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TR
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
-import type { EndpointRepairCursor } from "./lifecycle-state.js";
+import { ISSUANCE_GATE_OP_KINDS, type EndpointRepairCursor } from "./lifecycle-state.js";
 
 // ---- value shapes (§13.7 "Descriptor and describe") ------------------------------------------
 
@@ -439,8 +439,8 @@ export async function registerServiceInstance(
     && args.barrier.operationId !== undefined
     && obs.op.opId === args.barrier.operationId;
   if (obs.state !== "open" && !resuming) {
-    if (obs.op === undefined)
-      throw new EpEnvelopeError("internal", `the issuance gate for "${args.instanceId}" is frozen without its op intent; a frozen gate is op-bound (SPEC 13.1)`);
+    if (typeof obs.op?.opId !== "string" || !ISSUANCE_GATE_OP_KINDS.has(obs.op.kind))
+      throw new EpEnvelopeError("internal", `the issuance gate for "${args.instanceId}" is frozen without a valid op intent; a frozen gate is op-bound (SPEC 13.1)`);
     throw lifecycleBlocked("conflict", `the issuance gate for "${args.instanceId}" is ${obs.state}; another barrier holds it; if the holder is a dead predecessor, run: cotal reconcile-gate (SPEC 13.8)`, {
       blockedOp: obs.op.kind,
       gateState: "frozen",

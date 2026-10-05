@@ -47,8 +47,8 @@ A refusal raised at the issuance gate used to carry `headState` without reading 
 (`frozen` or `retired`) and no `headState`. A client that treats `headState: "retired"` as a
 burned uid, or `headState: "retiring"` as a retirement in flight, no longer matches those
 refusals, and the `[lifecycle ...]` suffix on the error string changes the same way. A custom
-issuance barrier whose `observe` returns a frozen gate without its `op` is now refused as
-`internal` by `registerServiceInstance`.
+issuance barrier whose `observe` returns a frozen gate without a valid `op` (a string `opId` and
+one of the four op kinds) is now refused as `internal` by `registerServiceInstance`.
 
 ### Before the upgrade
 
