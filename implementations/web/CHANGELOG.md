@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.63.0
+
+### Patch Changes
+
+- d8c557c: The web dashboard now binds the account seed only inside the step that connects and mints its channel-purger cred. Before, the full connection, seed included, stayed in scope of the request handlers beside the narrowed copy they were meant to use, so a one-word edit in a handler could reach the seed and still compile. A handler that reaches for the seed now fails to typecheck.
+
 ## 0.62.0
 
 ## 0.61.0

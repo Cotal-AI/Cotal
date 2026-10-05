@@ -1,5 +1,18 @@
 # @cotal-ai/example-06-feed-agent
 
+## 0.0.37
+
+### Patch Changes
+
+- Updated dependencies [62ebc6b]
+- Updated dependencies [22e210a]
+- Updated dependencies [cb6a0bf]
+- Updated dependencies [5738154]
+- Updated dependencies [101c9b0]
+- Updated dependencies [9d5cc09]
+- Updated dependencies [c975258]
+  - @cotal-ai/core@0.63.0
+
 ## 0.0.36
 
 ### Patch Changes
