@@ -81,8 +81,8 @@ export interface OpenCodeMapper {
  *   emitted by inventing a name and pairing positionally. `step-finish` carries `cost` and `tokens`:
  *   it is a usage record wearing a step's name, and emitting it as a step boundary would tell a
  *   consumer that a phase ended when what happened is that token counts arrived. §3.2 routes that
- *   usage to `cotal.usage` on `RUN_FINISHED`, and NO SUCH MEMBER EXISTS on `CotalMeta` today, so v1
- *   drops it and the carrier is filed against the frame contract rather than invented here.
+ *   usage to `cotal.usage` on `RUN_FINISHED`. `CotalMeta.usage` is that carrier, and filling it is
+ *   a change of its own, so v1 still drops the numbers.
  * - `file`, `patch`, `snapshot`, `subtask`, `agent`, `retry`, `compaction` -> nothing in v1 (§3.4).
  *
  * **THERE IS STILL NO `RUN_ERROR` ARM HERE, AND THAT IS NOW A STATEMENT ABOUT WHERE IT LIVES.**

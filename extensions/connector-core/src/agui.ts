@@ -116,6 +116,30 @@ export interface CotalMeta {
   providerMessageId?: string;
   /** The harness's stop reason, on the event that carries one. */
   stopReason?: string;
+  /**
+   * Model usage for the whole run, on the event that closes it (`RUN_FINISHED` or `RUN_ERROR`).
+   * The union has no step events, so the run terminal is the only boundary every connector shares.
+   *
+   * Set only by a connector whose harness reports the numbers, and a count the harness does not
+   * report is omitted rather than zeroed, so a reader can tell "none" from "unknown". The cache and
+   * reasoning counts are PARTS of the totals beside them: harnesses disagree on whether their input
+   * count includes cached tokens, and one stated rule is what keeps two connectors from publishing
+   * different quantities under the same name.
+   */
+  usage?: {
+    /** Every prompt token the model read, cached or not. */
+    inputTokens?: number;
+    /** The part of `inputTokens` read from the provider's prompt cache. */
+    cacheReadTokens?: number;
+    /** The part of `inputTokens` written to the provider's prompt cache. */
+    cacheWriteTokens?: number;
+    /** Every token the model generated, reasoning included. */
+    outputTokens?: number;
+    /** The part of `outputTokens` spent on reasoning. */
+    reasoningTokens?: number;
+    /** The run's cost in US dollars. */
+    costUsd?: number;
+  };
   /** `tool_result.is_error` — AG-UI's result event has no error field of its own. */
   isError?: boolean;
   /** Subagent linkage. Deliberately NOT `parentRunId`, which is retry/edit lineage. */
