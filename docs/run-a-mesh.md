@@ -323,8 +323,9 @@ The remote manager that `cotal supervise` starts can host workflow runs through 
 admits each run and signs only the run's own driver, mediator and operator credentials. A logged-in
 user's `cotal run start` against it is admitted: the auth callout issues the user's manager
 connection, and the host binds each run to the owner who registered the manager. The host's own
-manager refuses user-auth runs by name. [User-auth run start](design/user-auth-run-start.md) records
-the path.
+manager refuses user-auth runs by name.
+[User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
+records the path.
 
 The registry entry decides the broker URL `supervise` dials, so a mesh published over `wss://` is
 dialed as a websocket. The manager-authority registration it runs first also takes its TLS
