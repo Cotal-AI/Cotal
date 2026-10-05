@@ -156,8 +156,8 @@ At a step whose scope path contains a `once` frame:
 program's own handler behind it, or in the agent that answers it. It calls its handler method once
 per activation through `performEffect`, its result is a record a settler can supply, and once the
 hold opens nothing its first dispatch left behind settles the step except through the hold: the
-open attempt's pause is ended (§6.1), and the agent its attempt was relayed to answers by step key,
-which then reads the hold (§4.3). Every other effect kind is refused under `once` with L4028 (an
+open attempt's pause is ended (§6.1), and the agent its attempt was relayed to answers the hold
+only with an operator's reach (§4.3). Every other effect kind is refused under `once` with L4028 (an
 effect `once` does not admit) before its entry begins, for one of three reasons.
 
 It calls a handler method more than once at one key, so a hold cannot bound it:
@@ -249,12 +249,19 @@ The hosted `ask` also relays each attempt to its seat as a `turn` goal under the
 `cancel` for one, and a discharged `ask` leaves its relay as well (#2596). The hold leaves it too,
 so the seat may still be shown that turn until it yields or the relay's deadline, the ask's
 recorded `deadlineAt`, passes. The relay is one goal per attempt and is never submitted again, so a
-write the seat makes in that turn is the first dispatch's one write. The seat answers it with the
-command the relay renders, `cotal run answer <run> <step-key>` (`renderAskRequest` in
-`extensions/connector-core/src/agent.ts`), so its answer reads the step's pause as every answer
-does (§6.1): before the hold's first bind that is the claimed attempt pause, which refuses it, and
-after it the hold, which takes it as the settle of the agent that made the write, unchecked against
-the ask's schema like any settle (item 3 above).
+write the seat makes in that turn is the first dispatch's one write, and the hold is its only
+settle. The seat answers that turn with the command the relay renders,
+`cotal run answer <run> <step-key>` (`renderAskRequest` in
+`extensions/connector-core/src/agent.ts`), which reads the step's pause as every answer does
+(§6.1). Before the hold's first bind that is the claimed attempt pause, which refuses it. After the
+bind it is the hold, and the manager refuses the answer of a baseline seat: a baseline seat may
+answer only the pause its pending relay names, and this relay names the attempt's token
+(`authorizeRunAnswer` in `implementations/manager/src/manager.ts`, unchanged). A seat whose persona
+carries the `run` capability has an operator's reach and is not held to its relay, so its answer
+lands on the hold as an operator's does, unchecked against the ask's schema (item 3). The hold's
+timeout is the host's default checkpoint timeout and is not tied to the relay's deadline, so the
+seat can still write after the hold settles or expires. That write is still the one write, and an
+expired hold's L4027 says the outcome is unknown, which stays true.
 
 **`holdRequestId(requestId)`** is a new export of `packages/lang/src/keys.ts`, beside `requestId`:
 the sha256 of `canonicalize([requestId, "hold"])` in base64url, 43 characters in the endpoint id
@@ -284,8 +291,9 @@ reads it from the same places.
 
 The pause a held `ask`'s first dispatch armed does not outlive the hold: the hosted handler claims
 it before the hold's first bind (§6.1). Its relay to the seat can outlive the hold, and the seat's
-answer to it then lands on the hold (§4.3). An answer addressed to the step lands on the hold, and
-an amendment and the journal row of a held step read the hold's pause (§6.1).
+answer to it reaches the hold only when the seat has an operator's reach (§4.3). An answer
+addressed to the step lands on the hold, and an amendment and the journal row of a held step read
+the hold's pause (§6.1).
 
 ## 5. The step journal
 
@@ -447,8 +455,12 @@ word, and the run's existing ownership, lease and cleanup checks apply unchanged
   §11.2 gains the same row (§7).
 - Who may answer does not change. Answering a hold goes through `resolveCheckpoint` and the run's
   own ACL, the path every checkpoint and `ask` answer takes, so whoever may answer a pause of the
-  run may settle a hold, and nobody else. The request id in the prompt is the identity already on
-  the pending entry and in `cotal run journal`; it is not a credential.
+  run may settle a hold, and nobody else. That is an operator, or a seat whose persona carries the
+  `run` capability. A baseline seat answers only the pause its pending relay names
+  (`authorizeRunAnswer`), and no relay names a hold id, because the hold is minted at attempt 0
+  with no `to` and relays nothing. So a baseline seat never settles a hold, including the seat the
+  held `ask` was relayed to (§4.3). The request id in the prompt is the identity already on the
+  pending entry and in `cotal run journal`; it is not a credential.
 
 ## 7. Normative text, insertion-only
 
@@ -671,18 +683,22 @@ On a local mesh with a manager:
 
 1. `cotal run start --file publish.cotal.js` with the program above followed by
    `await turn(publisher, { name: "after" })`, where the `publisher` seat's answer to `publish`
-   appends one line to a file outside the run and then answers.
+   appends one line to a file outside the run and then answers. The `publisher` persona carries no
+   `run` capability.
 2. When the line appears, kill the manager process (SIGKILL) before the answer is accepted.
 3. Restart the manager. It takes the run back from the journal.
 4. Expected: `cotal run journal <run>` shows `/once:publish-360#0/b:in/ask:publish#0` open with the
    hold's question naming the recorded request id; the seat receives no second `publish` turn; the
    file still has one line. The first attempt's pause, read with `readCheckpointStatus` at the
    `askToken` on the step's pending entry, is no longer waiting: here it holds no answer, because
-   the hold claimed it. The seat's first `publish` goal is still accepted (§4.3); the seat would
-   answer it with the step-key command step 6 runs, so step 6 covers its answer too.
+   the hold claimed it. The seat's first `publish` goal is still accepted (§4.3). The seat answers
+   that goal with the command it renders, once with `{"wrong":"shape"}` and once with
+   `{"commentId":1000}`: both are refused permission-denied, nothing is filed under the hold id, and
+   the step stays open.
 5. Kill and restart the manager again while the hold is open. Expected: the hold's timer is
    re-armed under the hold id, and `cotal run journal` still shows the same question.
-6. `cotal run answer <run> "/once:publish-360#0/b:in/ask:publish#0" --value '{"commentId":1000}'`.
+6. `cotal run answer <run> "/once:publish-360#0/b:in/ask:publish#0" --value '{"commentId":1000}'`
+   from the operator's terminal.
    Expected: the answer is presented under the hold id, the step settles with that value, the
    `after` turn reaches the seat, because a held `ask` builds no run state a later step reads, and
    the run completes. `cotal run journal <run>` prints the step's answer as the hold's: its answer
@@ -701,6 +717,11 @@ On a local mesh with a manager:
    Expected: the restarted manager opens the hold, and after step 6 the step's value, the printed
    answer and the amendment's `supersedes` are the hold's `{ "commentId": 1000 }`, never the
    `{ "commentId": 7 }` the first attempt's pause holds.
+9. Repeat steps 1 to 6 with the `publisher` persona carrying the `run` capability, where the seat
+   does not answer in step 4, and in step 6 it answers its first `publish` goal with the command
+   that goal renders instead of the operator.
+   Expected: the answer is presented under the hold id, the step settles with that value, and
+   `cotal run journal <run>` prints the seat as `by`.
 
 ## 9. Out of scope
 
