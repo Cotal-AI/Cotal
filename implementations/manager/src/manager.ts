@@ -6822,9 +6822,18 @@ export class Manager {
       try {
         await this.recordSlotRuntime(managed);
       } catch (error) {
+        const detail = `${managed.name} resumed, but ${(error as Error).message}`;
         this.stopHandle(managed, false);
+        try {
+          await this.awaitHandleExit(managed.handle);
+        } catch (exit) {
+          // A resumed seat keeps its retained credentials, so freeing it runs no deprovision and
+          // nothing would reap it: it stays managed until it exits or the manager stops it.
+          this.watchExit(managed);
+          return { ok: false, error: `${detail}; it stays managed because its stop is unproven: ${(exit as Error).message}` };
+        }
         this.freeSlot(managed, true, "resume-custody-unrecorded", true);
-        return { ok: false, error: `${managed.name} resumed, but ${(error as Error).message}` };
+        return { ok: false, error: detail };
       }
       const readiness = await this.awaitReadiness(managed, readinessTimeoutMs);
       if (!readiness.ok && !readiness.uncertain) return { ok: false, error: readiness.detail };
