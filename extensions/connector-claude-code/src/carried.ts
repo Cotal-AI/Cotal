@@ -23,11 +23,6 @@ function configDir(env: NodeJS.ProcessEnv): string {
   return env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude");
 }
 
-/** The `.claude.json` Claude reads beside a config directory: inside a `CLAUDE_CONFIG_DIR`, else in HOME. */
-function stateFile(env: NodeJS.ProcessEnv): string {
-  return env.CLAUDE_CONFIG_DIR ? join(env.CLAUDE_CONFIG_DIR, ".claude.json") : join(env.HOME || homedir(), ".claude.json");
-}
-
 /** Every regular `*.jsonl` file one level under `projects/`. Linked project directories and files are
  *  skipped, so a link cycle in the tree is never followed. */
 function transcripts(env: NodeJS.ProcessEnv): string[] {
@@ -95,10 +90,9 @@ function versionAtLeast(text: string): boolean {
 
 /**
  * Refuse a carried launch this host cannot run, before anything is written: a Claude that ignores
- * `CLAUDE_CODE_PROJECT_DIR_NAME`, a seat environment with no credential a fresh home can use, or a
- * working directory the manager's own Claude home does not trust.
+ * `CLAUDE_CODE_PROJECT_DIR_NAME`, or a seat environment with no credential a fresh home can use.
  */
-export function refuseCarriedLaunch(binary: string, seatEnv: Record<string, string>, cwd: string): void {
+export function refuseCarriedLaunch(binary: string, seatEnv: Record<string, string>): void {
   const version = execFileSync(binary, ["--version"], { encoding: "utf8", timeout: 10_000 });
   if (!versionAtLeast(version))
     throw new Error(`claude connector: a carried resume needs Claude ${MIN_VERSION.join(".")} or later (CLAUDE_CODE_PROJECT_DIR_NAME); this host runs ${version.trim()}`);
@@ -109,15 +103,6 @@ export function refuseCarriedLaunch(binary: string, seatEnv: Record<string, stri
         (seatEnv.ANTHROPIC_API_KEY ? ", and ANTHROPIC_API_KEY alone needs an approval that home cannot remember" : "") +
         "; run `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN in the manager's environment",
     );
-  let trusted = false;
-  try {
-    const state = JSON.parse(readFileSync(stateFile(process.env), "utf8")) as { projects?: Record<string, { hasTrustDialogAccepted?: unknown }> };
-    trusted = state.projects?.[cwd]?.hasTrustDialogAccepted === true;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-  }
-  if (!trusted)
-    throw new Error(`claude connector: the manager's Claude home does not trust ${cwd}; open \`claude\` in that directory on the manager host once, then launch again`);
 }
 
 /** Where a carried seat writes its fork record: the manager's {@link LaunchSpec.resumeRecordPath}. */

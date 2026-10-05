@@ -6035,8 +6035,9 @@ export class Manager {
         envAllow,
         resolvedBinaries: bootStatus?.binaries,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
-        // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
+        // (possibly per-agent) launch cwd.
         workspaceRoot: this.workspaceRoot,
+        cwd,
       };
       // A delegated seat gets no local launch at all: no launch-material file, control token or
       // manager path is produced for it, only the handoff its runtime writes into the child.
@@ -6731,6 +6732,7 @@ export class Manager {
           mcpServers,
           envAllow,
           workspaceRoot: this.workspaceRoot,
+          cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };

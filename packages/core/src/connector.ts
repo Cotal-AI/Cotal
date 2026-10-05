@@ -129,10 +129,14 @@ export interface LaunchOpts {
    * again later. Absent for standalone/foreground launches that have no manager boot inventory. */
   resolvedBinaries?: Readonly<Record<string, string>>;
   /** The manager's workspace root. Connectors that keep per-agent local state (e.g. the OpenCode
-   *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory — which can
-   *  point at any repo — doesn't scatter that state into the target tree. The per-agent working
-   *  directory itself is the manager's concern and is passed to the runtime, not here. */
+   *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory ({@link cwd})
+   *  — which can point at any repo — doesn't scatter that state into the target tree. */
   workspaceRoot?: string;
+  /** The directory a supervised seat runs in, set by the manager beside the runtime spawn. A
+   *  connector whose harness stops an untrusted directory at a startup question refuses it here,
+   *  since no one is at a supervised seat to answer. A foreground launch runs in the operator's
+   *  terminal and omits it. */
+  cwd?: string;
 }
 
 /** A recipe for starting an agent as a mesh node — command, args, and extra env. */
