@@ -8,7 +8,7 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readPidfile, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -60,10 +60,8 @@ export function deliveryLiveness(
   space: string = folderSpace(),
   readCommand: CommandReader = readProcessCommand,
 ): "alive" | "dead" | "unknown" | "absent" | "unattributable" | "foreign" {
-  const p = PID_PATH(space);
-  if (!existsSync(p)) return "absent";
-  const raw = readFileSync(p, "utf8").trim();
-  if (raw === "") return "absent";
+  const raw = readPidfile(PID_PATH(space));
+  if (!raw) return "absent";
   const pid = parsePid(raw);
   if (pid === undefined) return "unattributable"; // see managerLiveness: never fold this into absent
   const liveness = probe(pid);
@@ -322,15 +320,15 @@ export async function stopDelivery(
   const dropCreds = async (): Promise<void> => {
     for (const k of keys) await credsStore().delete(k);
   };
+  const raw = readPidfile(p);
+  if (raw === undefined) {
+    await dropCreds(); // no pid recorded: no live daemon to strand
+    return;
+  }
   const removeRecords = async (): Promise<void> => {
     removePidPair(p, raw); // records go only on proven death; the pin goes with the pidfile (#969), unless a successor was published (#1238)
     await dropCreds();
   };
-  if (!existsSync(p)) {
-    await dropCreds(); // no pid recorded: no live daemon to strand
-    return;
-  }
-  const raw = readFileSync(p, "utf8").trim();
   const pid = parsePid(raw);
   if (pid === undefined) {
     if (raw === "") {

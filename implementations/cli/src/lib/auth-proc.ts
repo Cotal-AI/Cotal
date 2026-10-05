@@ -8,11 +8,11 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { parsePid, probeLiveness, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, readPidfile, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
 import type { SignalFn } from "./manager-proc.js";
 
 import { selfArgv } from "./self-exec.js";
@@ -63,7 +63,8 @@ export function reclaimDeadLegacyPid(space: string): void {
   } catch {
     return; // parent dir gone → nothing to reclaim
   }
-  const trimmed = readFileSync(legacy, "utf8").trim();
+  const trimmed = readPidfile(legacy);
+  if (trimmed === undefined) return; // removed since the listing → nothing to reclaim
   if (trimmed === "") {
     rmSync(legacy, { force: true }); // empty = pre-protocol husk, safe to reclaim (as the canonical claim does)
     return;
@@ -87,9 +88,9 @@ export function reclaimDeadLegacyPid(space: string): void {
 
 /** True if the auth service we started for THIS space is still running (pid file + liveness). */
 export function authServiceUp(space: string): boolean {
-  const p = readPidPath(space);
-  if (!existsSync(p)) return false;
-  const pid = parsePid(readFileSync(p, "utf8")); // strict positive safe integer, or undefined
+  const raw = readPidfile(readPidPath(space));
+  if (raw === undefined) return false;
+  const pid = parsePid(raw); // strict positive safe integer, or undefined
   return pid !== undefined && probeLiveness(pid) === "alive"; // up only if provably present; dead/unknown → not up
 }
 
@@ -192,9 +193,9 @@ function startAuthServiceDetached(space: string, server: string, command: string
  *  to a pid nobody can attribute. */
 function authServiceWaitPid(space: string, launched: number | undefined): number | undefined {
   if (launched !== undefined && launched > 0) return launched;
-  const p = readPidPath(space);
-  if (!existsSync(p)) return undefined;
-  const pid = parsePid(readFileSync(p, "utf8"));
+  const raw = readPidfile(readPidPath(space));
+  if (raw === undefined) return undefined;
+  const pid = parsePid(raw);
   return pid !== undefined && probeLiveness(pid) === "alive" ? pid : undefined;
 }
 
@@ -236,8 +237,8 @@ export async function ensureAuthService(opts: {
 export async function stopAuthService(space: string, probe: LivenessProbe = probeLiveness, signal?: SignalFn): Promise<void> {
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = readPidPath(space); // find a pre-hex pidfile too, or an upgrade leaks the signer
-  if (!existsSync(p)) return;
-  const trimmed = readFileSync(p, "utf8").trim();
+  const trimmed = readPidfile(p);
+  if (trimmed === undefined) return;
   if (trimmed === "") {
     rmSync(p, { force: true }); // empty husk: no process to signal
     return;

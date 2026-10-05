@@ -11,6 +11,7 @@ import {
   MANAGER_PIDFILE,
   parsePid,
   probeLiveness,
+  readPidfile,
   readProcessCommand,
   spaceKey,
   spaceSegment,
@@ -124,10 +125,8 @@ function meshOf(values: { mesh?: string }): string {
  *  (which resolves its root from cwd); `service status` must judge the unit's recorded root,
  *  not whatever folder the operator is standing in. */
 function managerHealthFor(root: string, mesh: string): { state: string; pid?: number } {
-  const pidPath = localProcessPath(MANAGER_PIDFILE, { root, space: mesh });
-  if (!existsSync(pidPath)) return { state: "absent" };
-  const raw = readFileSync(pidPath, "utf8").trim();
-  if (raw === "") return { state: "absent" };
+  const raw = readPidfile(localProcessPath(MANAGER_PIDFILE, { root, space: mesh }));
+  if (!raw) return { state: "absent" };
   const pid = parsePid(raw);
   if (pid === undefined) return { state: "unattributable" };
   const liveness = probeLiveness(pid);

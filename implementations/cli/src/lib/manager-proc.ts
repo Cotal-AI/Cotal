@@ -7,7 +7,7 @@ import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import {
   canonicalLocalProcessPath, commandIsCotalSupervisor, localProcessPath, parsePid, probeLiveness,
-  readProcessCommand, reclaimDeadPreUpgradeRecord,
+  readPidfile, readProcessCommand, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE,
   type CommandReader, type LivenessProbe, type LocalProcessContext,
   identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, parsePositiveIntegerFlag, removePidPair, verifyIdentityPin, writePidPair,
@@ -111,10 +111,8 @@ export function managerRecordState(
   readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
 ): ManagerRecord {
-  const p = PID_PATH(space);
-  if (!existsSync(p)) return { state: "absent" };
-  const raw = readFileSync(p, "utf8").trim();
-  if (raw === "") return { state: "absent" }; // a pre-protocol husk: nothing is behind it
+  const raw = readPidfile(PID_PATH(space));
+  if (!raw) return { state: "absent" }; // no record, or a pre-protocol husk: nothing is behind it
   const pid = parsePid(raw);
   // NOT `absent`. Folding non-empty corrupt content into "no manager recorded" is what let the
   // ensure paths OVERWRITE it and launch a replacement, which is the same defect as deleting it:
@@ -352,6 +350,11 @@ export async function stopManager(
   const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
   const p = PID_PATH(space);
   const marker = DELIVERY_AWARE_MARKER(space);
+  const raw = readPidfile(p);
+  if (raw === undefined) {
+    rmSync(marker, { force: true }); // a marker with no pid records nothing
+    return "already-gone";
+  }
   // Records are cleared only on PROVEN death; the identity pin is removed with them so the next
   // start does not inherit a pin for a process that no longer exists (#969), unless a successor was
   // published meanwhile (#1238).
@@ -359,11 +362,6 @@ export async function stopManager(
     rmSync(marker, { force: true });
     removePidPair(p, raw);
   };
-  if (!existsSync(p)) {
-    rmSync(marker, { force: true }); // a marker with no pid records nothing
-    return "already-gone";
-  }
-  const raw = readFileSync(p, "utf8").trim();
   const pid = parsePid(raw);
   if (pid === undefined) {
     // An EMPTY pidfile is a pre-protocol husk with nothing behind it, and clearing it is safe. ANY
