@@ -153,12 +153,15 @@ export const NatsIdentity: React.FC = () => {
   const delivered = fade(frame, T.aDeliverEnd, T.aDeliverEnd + 6) * (1 - fade(frame, T.aFlashEnd - 8, T.aFlashEnd));
   const dropped = fade(frame, T.pDeliverEnd, T.pDeliverEnd + 6) * (1 - fade(frame, T.pDroppedEnd - 12, T.pDroppedEnd));
 
-  const glowA = fade(frame, T.aCheck - 4, T.aCheck) * (1 - fade(frame, T.aDeliverStart, T.aDeliverEnd));
-  const glowP = fade(frame, T.pCheck - 4, T.pCheck) * (1 - fade(frame, T.pDeliverStart, T.pDeliverEnd));
+  // Wire afterglows fade within 8 frames: img2webp -lossy treats a slower per-frame
+  // change as no change, so the encoded card would keep the wire lit.
+  const glowA = fade(frame, T.aCheck - 4, T.aCheck) * (1 - fade(frame, T.aDeliverStart, T.aDeliverStart + 8));
+  const glowP = fade(frame, T.pCheck - 4, T.pCheck) * (1 - fade(frame, T.pDeliverStart, T.pDeliverStart + 8));
+  const glowOut = flashAt(frame, T.aDeliverEnd, T.aDeliverEnd + 8);
 
   return (
     <Card frame={frame}>
-      <Wires paths={[PATH_A, PATH_C, PATH_OUT]} glow={[glowA, glowP, deliverFlash]} />
+      <Wires paths={[PATH_A, PATH_C, PATH_OUT]} glow={[glowA, glowP, glowOut]} />
 
       <div
         style={{
