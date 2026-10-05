@@ -9,6 +9,7 @@ import {
   type RemoteManagerMaintenanceResult,
 } from "@cotal-ai/core";
 import type { AuthLedgerScanner } from "./ledger-scanner.js";
+import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 
 const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
@@ -71,12 +72,7 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
 export async function authorizeRemoteManagerMaintenance(args: ManagerAuthorityHolder & {
   request: RemoteManagerMaintenanceRequest;
   space: string;
-  observeManagerGate(instanceId: string): Promise<{
-    state: "open" | "frozen" | "retired";
-    principal: string;
-    processEpoch: number;
-    registrationRevision: number;
-  } | null>;
+  observeManagerGate: ObserveManagerGate;
   scanner: AuthLedgerScanner;
 }): Promise<RemoteManagerMaintenanceRequest> {
   const r = parseRemoteManagerMaintenanceRequest(args.request);

@@ -11,6 +11,7 @@ import {
 } from "@cotal-ai/core";
 import { timingSafeEqual } from "node:crypto";
 import { findActorUnified } from "./ledger.js";
+import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import { requireManagerAuthorityHolder } from "./platform-control.js";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 
@@ -68,9 +69,7 @@ export async function authorizeRemoteManagerAdmin(args: {
   managerOwner: string;
   proofSecret: string | Uint8Array;
   dir: string;
-  observeManagerGate: (instanceId: string) => Promise<{
-    state: "open" | "frozen" | "retired"; principal: string; processEpoch: number; registrationRevision: number;
-  } | null>;
+  observeManagerGate: ObserveManagerGate;
 } & ({ managerScope: string[]; managerAssignment?: never } | { managerAssignment: PlatformControlAssignment; managerScope?: never })): Promise<RemoteManagerAdminAuthorizationResult> {
   const request = parseRemoteManagerAdminAuthorizationRequest(args.request, { allowPlatform: args.managerAssignment !== undefined });
   if (request.space !== args.space) throw new EpEnvelopeError("permission-denied", `manager admin authorization names space ${request.space}, not this host space ${args.space}`);

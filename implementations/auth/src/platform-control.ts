@@ -10,6 +10,7 @@ import {
   assertPlatformOwnerToken,
   remoteManagerActors,
   type EpAttributedReply,
+  type EpGateState,
   type PlatformControlAssignment,
   type PlatformControlAuthorityRequest,
   type PlatformControlAuthorityResult,
@@ -91,7 +92,7 @@ export interface PlatformControlDeps {
   owner: string;
   observeAssignment(space: string, accountPublicKey: string): Promise<PlatformControlAssignment | null>;
   /** Read-only view of one manager instance: whether its `svc.manager` record is current, and its gate. */
-  observeManagerInstance(instanceId: string): Promise<{ registered: boolean; gate: { state: string; principal: string } | null }>;
+  observeManagerInstance(instanceId: string): Promise<{ registered: boolean; gate: Pick<EpGateState, "state" | "principal"> | null }>;
   dispatch(holder: Extract<ManagerAuthorityHolder, { holder: "platform" }>, request: PlatformControlInnerRequest): Promise<unknown>;
 }
 

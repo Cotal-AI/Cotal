@@ -10,6 +10,7 @@ import {
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { timingSafeEqual } from "node:crypto";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
+import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 
 const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
 const bad = (message: string): never => { throw new EpEnvelopeError("bad-request", `manager goal-index scan request ${message}`); };
@@ -51,9 +52,7 @@ export async function authorizeRemoteManagerGoalIndexScan(args: ManagerAuthority
   request: RemoteManagerGoalIndexScanRequest;
   space: string;
   proofSecret: string | Uint8Array;
-  observeManagerGate: (instanceId: string) => Promise<{
-    state: "open" | "frozen" | "retired"; principal: string; processEpoch: number; registrationRevision: number;
-  } | null>;
+  observeManagerGate: ObserveManagerGate;
 }): Promise<RemoteManagerGoalIndexScanRequest> {
   const request = parseRemoteManagerGoalIndexScanRequest(args.request);
   if (request.space !== args.space) throw new EpEnvelopeError("permission-denied", `manager goal-index scan names space ${request.space}, not this host space ${args.space}`);

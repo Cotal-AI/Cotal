@@ -19,6 +19,7 @@ import {
   parseRemoteManagedAgentRuntimeCreateRequest,
   parseRemoteManagedAgentRuntimeStatusRequest,
   remoteManagerActors,
+  type EpGateState,
   type RemoteManagedAgentEnrollmentRequest,
   type RemoteManagedAgentPrepareRetirementRequest,
   type RemoteManagedAgentRuntimeCreateRequest,
@@ -29,12 +30,7 @@ import { ledgerAuthorizeGrant } from "./ledger.js";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 
 /** The live manager gate the host observes for itself. A null answer is an absent registration. */
-export type ObserveManagerGate = (instanceId: string) => Promise<{
-  state: "open" | "frozen" | "retired";
-  principal: string;
-  processEpoch: number;
-  registrationRevision: number;
-} | null>;
+export type ObserveManagerGate = (instanceId: string) => Promise<Pick<EpGateState, "state" | "principal" | "processEpoch" | "registrationRevision"> | null>;
 
 export interface AuthorizeRemoteManagedAgentEnrollmentArgs {
   request: RemoteManagedAgentEnrollmentRequest;

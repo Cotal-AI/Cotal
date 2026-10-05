@@ -36,6 +36,7 @@ import type { KV } from "@nats-io/kv";
 import { timingSafeEqual } from "node:crypto";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
+import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 
 /** Host-only renewal authorization. The embedding host supplies a fresh gate and active run
  * observation from its authoritative stores, never coordinates asserted by the participant. */
@@ -45,9 +46,7 @@ export async function authorizeRemoteManagerRenewal(args: {
   space: string;
   accountPublicKey: string;
   proofSecret: string | Uint8Array;
-  observeManagerGate: (instanceId: string) => Promise<{
-    state: "open" | "frozen" | "retired"; principal: string; processEpoch: number; registrationRevision: number;
-  } | null>;
+  observeManagerGate: ObserveManagerGate;
   observeRun: (runId: string) => Promise<{
     state: string; holder: string; takeoverId: string; epoch: number; fencingToken: number; instanceId: string;
   } | null>;
@@ -273,7 +272,7 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   };
 }
 
-type ManagerGate = { state: "open" | "frozen" | "retired"; principal: string; processEpoch: number; registrationRevision: number };
+type ManagerGate = NonNullable<Awaited<ReturnType<ObserveManagerGate>>>;
 
 function admissionError(what: string): never {
   throw new EpEnvelopeError("bad-request", `manager run admission request ${what}`);
@@ -317,7 +316,7 @@ export function parseRemoteRunAdmissionRequest(raw: unknown): RemoteRunAdmission
  *  owner's serve actor, current process epoch, and the current-registration proof. */
 async function authenticateRegisteredManager(
   r: Pick<RemoteRunAdmissionRequest, "space" | "actor" | "instanceId" | "managerLifecycleUid" | "identities" | "registrationProof" | "accountPublicKey" | "processEpoch">,
-  args: { owner: string; space: string; accountPublicKey: string; proofSecret: string | Uint8Array; observeManagerGate: (instanceId: string) => Promise<ManagerGate | null> },
+  args: { owner: string; space: string; accountPublicKey: string; proofSecret: string | Uint8Array; observeManagerGate: ObserveManagerGate },
   what: string,
 ): Promise<ManagerGate> {
   if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
@@ -349,7 +348,7 @@ export async function admitRemoteRun(args: {
   accountPublicKey: string;
   proofSecret: string | Uint8Array;
   endpoint: string;
-  observeManagerGate: (instanceId: string) => Promise<ManagerGate | null>;
+  observeManagerGate: ObserveManagerGate;
   issued: IssuedStore;
   sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
   admissions: KV;
@@ -568,7 +567,7 @@ export async function authorizeRemoteRunAttempt(args: {
   accountPublicKey: string;
   proofSecret: string | Uint8Array;
   endpoint: string;
-  observeManagerGate: (instanceId: string) => Promise<ManagerGate | null>;
+  observeManagerGate: ObserveManagerGate;
   readAdmission: (runId: string) => Promise<RunAdmissionView>;
   readRunStatus: (runId: string) => Promise<RunStatusValue | undefined>;
   checkpointWaiting: (token: string) => Promise<boolean>;
