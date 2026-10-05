@@ -45,7 +45,7 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
-| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, `platformControlReadiness`, its read-only readiness read, `observeManagerGate`, the manager gate read a host composing the delegated user intent decisions passes them, and `activateManagedLifecycle`, the activation that host runs at a delegated launch's pinned lifecycle UID. `runAuthService` remains the CLI entry. |
+| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, `platformControlReadiness`, its read-only readiness read, `observeManagerGate`, the manager gate read a host composing the delegated user intent decisions passes them, and `activateManagedLifecycle`, the activation that host runs at a delegated launch's pinned lifecycle UID. With `platformControl.host` it also has `registerHostIncarnation`, which registers the host process's own endpoint instance and returns the incarnation a delegated execution pins, `observeHostGate`, the read of that endpoint's issuance gate, and `awaitHostFence`, which resolves once a later registration or barrier fences an incarnation. `runAuthService` remains the CLI entry. |
 | `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` *(types)* | `@cotal-ai/core` | the closed envelope, its inner request union, its result and the backend's assignment row for `platformControlAuthority`. `platformControlOwner` in `@cotal-ai/auth` derives the `p_` owner the door issues under. |
 | `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
@@ -468,6 +468,22 @@ for a host that owns an intent store and those writers to compose on its own rou
 holder's gate through the handle's `observeManagerGate`, present with `platformControl`, which reads
 over the context's own connection, so the host opens no second data-account connection. It is an
 observation for the decision: the consuming CAS and the writers still apply their own checks. The
+consuming CAS pins the incarnation of the host process that runs the flight as the executor, never
+the auth plane's, because the two can restart independently. `platformControl.host` names that
+process's reverse-DNS endpoint, the closure digest of its §13.7 cluster and every contract artifact
+the closure needs, and the auth plane self-authorizes that one name.
+`registerHostIncarnation(instanceId)` publishes the artifacts, registers that instance through the
+ceremony the plane runs for itself, and returns `{ instanceId, processEpoch }` with the epoch that
+registration committed. The host calls it at every start with its persisted instance id, before it
+admits or recovers any flight, so a restart fences its predecessor and advances the epoch. A start
+whose confirming read of the gate finds that a later start of the same instance registered is
+refused with `conflict`. The returned epoch is a committed coordinate and stays current only until
+the next start registers, which can happen before the call returns. `observeHostGate(instanceId)`
+is a point-in-time read of an executor's gate, and answers null for an absent gate; a sweeper
+decides on it. `awaitHostFence(instanceId, processEpoch)` resolves with the gate once it is no
+longer open at that epoch, and with null once it is absent. The host arms it with its returned
+incarnation before it admits or recovers any flight, and stops serving when it resolves. It polls
+the gate, because no runtime credential may watch the auth bucket. The
 host's launch writer first activates the agent's lifecycle at the pinned UID through the handle's
 `activateManagedLifecycle`, before any ledger row or durable, and its compensation runs the same
 call before the terminal barrier, so a launch whose agent never exchanged its bearer still reaches

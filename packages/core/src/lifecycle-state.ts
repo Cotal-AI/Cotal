@@ -12,7 +12,7 @@
  */
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { LIFECYCLE_HEAD, UID_RESERVATION, recordAtomicKey } from "./endpoint-records.js";
-import { assertLifecycleToken, endpointToken } from "./endpoint-subjects.js";
+import { assertLifecycleToken, endpointNameOf, endpointToken } from "./endpoint-subjects.js";
 import { parsePrincipalKey, isPrincipalOwnerToken } from "./subjects.js";
 
 const dec = new TextDecoder();
@@ -302,7 +302,7 @@ export function parseEndpointRepairCursor(raw: Uint8Array, key: string): Endpoin
   if (parts.length !== 3 || parts[0] !== "eprepair")
     throw new EpEnvelopeError("internal", `the repair cursor key ${key} is not an eprepair key`);
   try {
-    if (eprepairKey(parts[1], parts[2]) !== key) throw new Error("rebuild mismatch");
+    if (eprepairKey(endpointNameOf(parts[1]), parts[2]) !== key) throw new Error("rebuild mismatch");
   } catch {
     throw new EpEnvelopeError("internal", `the repair cursor key ${key} does not rebuild from its endpoint/instanceId`);
   }

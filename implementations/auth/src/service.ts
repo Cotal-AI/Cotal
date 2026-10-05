@@ -58,8 +58,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
-import { contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, authorizeServeGrant, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, SERVICE_READY, writeServiceStatus, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
+import { Kvm, type KV } from "@nats-io/kv";
+import { contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, authorizeServeGrant, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, SERVICE_READY, writeServiceStatus, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
@@ -78,7 +78,7 @@ import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface } from "./manager-contract.js";
-import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, authRegistrationExecutorGrants, servedRunRequestSubjects, type AuthorityClient } from "./authority-client.js";
+import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -90,6 +90,7 @@ import { makeDeliveryAdminEvictor, makeDeliveryAdminHolderEvictor } from "./barr
 import { resumeAgentRetirement, runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
 import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
+import type { DelegatedUserIntentIncarnation } from "./delegated-user-intent.js";
 import { joinOrStartRetirement, openAuthAdminListener, type AuthAdminListener, type RetirementFlights } from "./auth-admin.js";
 import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
@@ -148,6 +149,7 @@ const PUBLIC_FAILED_PER_MIN = 30; // per-PEER refused-exchange window (rolling m
 const PUBLIC_PEER_BUCKETS_MAX = 1024; // bounded LRU of per-peer failure buckets
 const PUBLIC_MAX_IN_FLIGHT = 64; // global concurrent-admission cap on the public listener
 const PUBLIC_DEADLINE_MS = 10_000; // hard wall-clock deadline per public request
+const HOST_FENCE_POLL_MS = 1_000; // how often awaitHostFence re-reads the host gate
 const OBSERVED_RUN_REQUEST_WINDOW_MS = 5 * 60_000; // how long an observed served resume or answer can still be forwarded
 
 type Values = Record<string, string | undefined>;
@@ -228,6 +230,11 @@ export interface AuthAuthorityPlane {
   /** Read-only view of one manager instance for the platform control door: whether its
    *  `svc.manager` record is current, and its gate. It probes, freezes and writes nothing. */
   observeManagerInstance: (instanceId: string) => Promise<{ registered: boolean; gate: EpGateState | null }>;
+  /** Register one instance of the platform host's endpoint through the §13.7 ceremony this plane
+   *  runs for `auth`, and return the process epoch that registration committed (SPEC 13.16). */
+  registerHostInstance: (host: NonNullable<PlatformControlInput["host"]>, instanceId: string) => Promise<number>;
+  /** The issuance gate of one instance of `endpoint`. It probes, freezes and writes nothing. */
+  observeEndpointGate: (endpoint: string, instanceId: string) => Promise<EpGateState | null>;
   /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
    *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
    *  moment, and the composition root must take the whole service DOWN loud (a fenced plane that
@@ -258,6 +265,57 @@ export function authorizeRemoteManagerRetirement(args: {
     throw new EpEnvelopeError("permission-denied", `manager-service retirement gate belongs to ${args.gate.principal}, not the server-derived serve principal ${servePrincipal}`);
   if (args.gate.processEpoch !== args.serveEpoch)
     throw new EpEnvelopeError("conflict", `manager-service retirement serve epoch ${args.serveEpoch} is stale; current is ${args.gate.processEpoch}`);
+}
+
+/** The §13.9 name authority in static mode: the plane holds the space signing seed, so it
+ *  self-authorizes exactly one endpoint name for exactly DEV_OWNER, as the manager does for
+ *  "manager". */
+function selfNameAuthority(endpoint: string): ServiceNameAuthority {
+  return { authorize: (name, owner) => ({ authorized: name === endpoint && owner === DEV_OWNER, revision: 0 }) };
+}
+
+/** Each contract artifact by its §13.7 content digest. */
+function contractArtifactReader(values: unknown[]): (digest: string) => unknown {
+  const store = new Map(values.map((v) => [contractDigest(v), v]));
+  return (digest) => store.get(digest);
+}
+
+/** The §13.7 registration ceremony for one instance of an endpoint this plane self-authorizes, on
+ *  a connection scoped to that instance. The contract artifacts are published before the
+ *  registration that advertises them. The issuance gate is provisioned open once, on first sight
+ *  (§13.1); on a restart it already exists and `registerServiceInstance` freezes and re-registers
+ *  it, which advances the process epoch and fences the predecessor. A first registration stays at
+ *  epoch 0. It returns the epoch this registration committed, and refuses when its confirming read
+ *  finds that a later registration of the same instance superseded it. */
+async function registerSelfAuthorizedInstance(nc: NatsConnection, args: {
+  space: string;
+  endpoint: string;
+  instanceId: string;
+  principal: string;
+  clusterDigest: string;
+  artifacts: unknown[];
+}): Promise<{ authKv: KV; recordsKv: KV; registrationRevision: number; processEpoch: number }> {
+  const { space, endpoint, instanceId } = args;
+  const authKv = await new Kvm(nc).open(epAuthBucket(space));
+  const recordsKv = await new Kvm(nc).open(recordsBucket(space));
+  const storeCtx = await contractStoreContext(nc, space);
+  for (const value of args.artifacts) await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
+  if ((await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe()) === null)
+    await provisionEndpointGateOpen(authKv, { endpoint, instanceId, principal: args.principal });
+  const barrier = endpointRegistrationBarrier(authKv, space, { endpoint, instanceId, opId: mintLifecycleUid() });
+  const spec = { endpoint, owner: DEV_OWNER, clusterDigests: [args.clusterDigest], protocol: { v: 1 as const } };
+  const { registrationRevision, processEpoch } = await registerServiceInstance(recordsKv, {
+    space, spec, instanceId, registrant: { owner: DEV_OWNER }, authority: selfNameAuthority(endpoint), barrier,
+    readClusterArtifact: contractArtifactReader(args.artifacts),
+  });
+  // A second start of the same instance can complete between this reopen and this read. Its epoch
+  // is not this start's to claim, and this start's epoch is already fenced. One that completes after
+  // the read leaves this start returning its own epoch, which the gate fences as it fences any
+  // restart's predecessor; no read can close that window.
+  const observed = await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe();
+  if (observed?.state !== "open" || observed.processEpoch !== processEpoch || observed.registrationRevision !== registrationRevision)
+    throw new EpEnvelopeError("conflict", `the issuance gate of ${endpoint}/${instanceId} is no longer open at this registration (process epoch ${processEpoch}, revision ${registrationRevision}); a later barrier fenced this start (SPEC 13.1)`);
+  return { authKv, recordsKv, registrationRevision, processEpoch };
 }
 
 /**
@@ -328,56 +386,30 @@ export async function openAuthAuthorityPlane(opts: {
     });
     const iid = authIdentity.instanceId;
     const artifacts = authClusterArtifacts();
-    const store = new Map<string, unknown>([
-      [artifacts.rootDigest, artifacts.document],
-      [artifacts.closureDigest, artifacts.manifest],
-    ]);
-    const readClusterArtifact = (digest: string): unknown => store.get(digest);
-    // §13.9 name authority, static mode: the auth plane holds the space signing seed, so it
-    // self-authorizes exactly its own name ("auth") for exactly DEV_OWNER — mirrors the manager's
-    // own self-authorization for "manager".
-    const authority: ServiceNameAuthority = {
-      authorize: (name, owner) => ({ authorized: name === AUTH_SERVICE_ENDPOINT && owner === DEV_OWNER, revision: 0 }),
-    };
-    const servePrincipal = principalKey(DEV_OWNER, authIdentity.serveIdentity.id).key;
-    const registrationOpId = mintLifecycleUid();
+    const values = [...authContractArtifactValues(), artifacts.document, artifacts.manifest];
     const regClient = await openAuthorityClient({
       server, space, dataAccount, label: `cotal:auth-registration:${space}`,
-      grants: (id) => authRegistrationExecutorGrants(space, id, iid),
+      grants: (id) => registrationExecutorGrants(space, id, AUTH_SERVICE_ENDPOINT, iid),
       log,
     });
     try {
-      const authKv = await new Kvm(regClient.nc).open(epAuthBucket(space));
-      const recordsKv = await new Kvm(regClient.nc).open(recordsBucket(space));
-      // §13.7 contract-artifact publication BEFORE the registration that advertises the digests.
-      const storeCtx = await contractStoreContext(regClient.nc, space);
-      for (const value of [...authContractArtifactValues(), artifacts.document, artifacts.manifest])
-        await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
-      // §13.1 pre-registration: the issuance gate, born open@gen0, provisioned ONCE on the FIRST
-      // registration. On a restart the gate already exists; `registerServiceInstance` below
-      // freezes + re-registers it (advancing the epoch).
-      if ((await serveIssuanceGateKv(authKv, space, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid }).observe()) === null)
-        await provisionEndpointGateOpen(authKv, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, principal: servePrincipal });
-      const barrier = endpointRegistrationBarrier(authKv, space, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, opId: registrationOpId });
-      const spec = { endpoint: AUTH_SERVICE_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
-      const { registrationRevision } = await registerServiceInstance(recordsKv, {
-        space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
+      const { authKv, recordsKv, registrationRevision, processEpoch } = await registerSelfAuthorizedInstance(regClient.nc, {
+        space, endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid,
+        principal: principalKey(DEV_OWNER, authIdentity.serveIdentity.id).key,
+        clusterDigest: artifacts.closureDigest, artifacts: values,
       });
-      const fence = serveIssuanceGateKv(authKv, space, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid });
-      const observed = await fence.observe();
-      if (observed === null) throw new Error(`the issuance gate for ${AUTH_SERVICE_ENDPOINT}/${iid} vanished after registration`);
       const readProcessEpoch = async (): Promise<number> => {
-        const g = await fence.observe();
+        const g = await serveIssuanceGateKv(authKv, space, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid }).observe();
         if (g === null) throw new Error(`no issuance gate for ${AUTH_SERVICE_ENDPOINT}/${iid}`);
         return g.processEpoch;
       };
       const grant = await authorizeServeGrant(recordsKv, {
-        space, endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
-        holder: { owner: DEV_OWNER }, authority, readClusterArtifact, readProcessEpoch,
+        space, endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, epoch: processEpoch, holder: { owner: DEV_OWNER },
+        authority: selfNameAuthority(AUTH_SERVICE_ENDPOINT), readClusterArtifact: contractArtifactReader(values), readProcessEpoch,
       });
       await writeServiceStatus(recordsKv, {
-        endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
-        status: { state: SERVICE_READY, epoch: observed.processEpoch, observedSpecRevision: registrationRevision },
+        endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, epoch: processEpoch,
+        status: { state: SERVICE_READY, epoch: processEpoch, observedSpecRevision: registrationRevision },
         readProcessEpoch,
       });
       authServeInstanceId = iid;
@@ -1339,6 +1371,28 @@ export async function openAuthAuthorityPlane(opts: {
       const rec = await readSvcRecordLeader(recordsJsm, space, recordSpecKey(RECORD_KINDS.svc, ["manager", instanceId]));
       return { registered: rec !== undefined && !("deleted" in rec), gate: gate ?? null };
     },
+    registerHostInstance: async (host, instanceId) => {
+      refuseIfFenced();
+      const regClient = await openAuthorityClient({
+        server, space, dataAccount, label: `cotal:host-registration:${space}`,
+        grants: (id) => registrationExecutorGrants(space, id, host.endpoint, instanceId),
+        log,
+      });
+      try {
+        return (await registerSelfAuthorizedInstance(regClient.nc, {
+          space, endpoint: host.endpoint, instanceId,
+          // The host is minted no serve credential, so the gate binds a principal nothing holds.
+          principal: principalKey(DEV_OWNER, `host_serve_${instanceId}`).key,
+          clusterDigest: host.clusterDigest, artifacts: host.artifacts,
+        })).processEpoch;
+      } finally {
+        await regClient.close();
+      }
+    },
+    observeEndpointGate: async (endpoint, instanceId) => {
+      refuseIfFenced();
+      return await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint, instanceId }).observe();
+    },
     fenced,
     close: async () => {
       // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
@@ -1554,8 +1608,34 @@ export interface AuthServiceHandle extends HostedServiceHandle {
   observeManagerGate?: ObserveManagerGate;
   /** The activation a delegated launch runs at its pinned uid before any row or durable, and its
    *  compensation runs before the terminal barrier (SPEC 13.16). Present only with
-   *  `platformControl`. It refuses every state in which a retirement at that uid has begun. */
+   *  `platformControl`. It refuses every state in which a retirement at that uid has begun, and
+   *  throws the activation saga's `EpEnvelopeError` unchanged. A retirement there has begun or
+   *  completed only when `lifecycleBlockedFrom(err)` is defined and its `headState` is `"retired"`
+   *  or its `blockedOp` is `"retirement"`. A gate frozen by a takeover or a registration is a
+   *  barrier in flight, and `already-exists`, `conflict`, `unavailable`, `not-found` and a
+   *  `permission-denied` without that detail are not retirement. */
   activateManagedLifecycle?: AuthAuthorityPlane["activateManagedLifecycle"];
+  /** The host incarnation a delegated user intent pins as its executor (SPEC 13.16). Present only
+   *  with `platformControl.host`. It registers `instanceId` of the host endpoint in this context's
+   *  account through the §13.7 ceremony the auth plane runs for itself. The host calls it at every
+   *  start with its persisted instance id, before it admits or recovers any flight, so each start
+   *  fences its predecessor and advances the process epoch. It returns the epoch this registration
+   *  committed, a coordinate that a later start of the same instance can fence at any moment, even
+   *  before this call returns. A later start that registers before this registration's confirming
+   *  read of the gate makes it refuse with `conflict`; the host learns of every other through
+   *  `awaitHostFence`. */
+  registerHostIncarnation?(instanceId: string): Promise<DelegatedUserIntentIncarnation>;
+  /** A sweeper's point-in-time read of an executor's issuance gate on the host endpoint (SPEC
+   *  13.16). Present only with `platformControl.host`. Null is an absent gate. It reads over the
+   *  context's own authority connection and writes nothing. */
+  observeHostGate?(instanceId: string): Promise<EpGateState | null>;
+  /** Resolves with the gate once the issuance gate of `instanceId` on the host endpoint is no longer
+   *  open at `processEpoch`: a later registration moved the epoch, a barrier froze or retired it, or
+   *  it is absent (null). Present only with `platformControl.host`. The host arms it with the
+   *  incarnation `registerHostIncarnation` returned, before it admits or recovers any flight, and
+   *  stops serving when it resolves. It rejects once the context is no longer ready or a read
+   *  fails. */
+  awaitHostFence?(instanceId: string, processEpoch: number): Promise<EpGateState | null>;
 }
 
 /** The optional public exchange face: the CLI's `--exchange-public-*`, `--advertised-server` and
@@ -1572,6 +1652,11 @@ export interface PublicFaceInput {
 export interface PlatformControlInput {
   /** The one current assignment for this account, or null. Read fresh on every door call. */
   observeAssignment(space: string, accountPublicKey: string): Promise<PlatformControlAssignment | null>;
+  /** The host process that executes delegated user intents (SPEC 13.16): its reverse-DNS endpoint
+   *  name, the closure digest of the §13.7 cluster it registers, and every contract artifact that
+   *  closure needs. The auth plane self-authorizes this one name. Absent: the handle has no
+   *  `registerHostIncarnation` or `observeHostGate`. */
+  host?: { endpoint: string; clusterDigest: string; artifacts: unknown[] };
 }
 
 /** Start one account-scoped auth-service context. Every input is explicit: the state dir, the
@@ -1601,6 +1686,12 @@ export async function startAuthService(inputs: HostedContextInputs & {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`auth-service: port must be a port number, got ${port}`);
   if (inputs.platformControl !== undefined && typeof inputs.platformControl?.observeAssignment !== "function")
     throw new Error("auth-service: platformControl requires an observeAssignment function");
+  const host = inputs.platformControl?.host;
+  if (host !== undefined) {
+    endpointToken(host.endpoint);
+    if (!host.endpoint.includes("."))
+      throw new Error(`auth-service: platformControl.host.endpoint "${host.endpoint}" must be a reverse-DNS name; single-label names are reserved (SPEC 13.2)`);
+  }
   const badFace = inputs.publicFace && checkPublicFace(inputs.publicFace);
   if (badFace) throw new Error(badFace);
   const started = await startAuthContext({
@@ -1823,6 +1914,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
     });
     const context = o.context ?? { accountPublicKey: keys.dataAccount.pub, lifecycleUid: "" };
     const platformControl = o.platformControl;
+    const host = platformControl?.host;
     // The human route's retained-validation composition, for the platform holder.
     const validateRetainedForHolder = async (holder: Extract<ManagerAuthorityHolder, { holder: "platform" }>, request: RemoteRetainedAgentValidationRequest) => {
       const retained = await plane.validateRetainedAgent({ ...holder, request });
@@ -1897,6 +1989,28 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
         activateManagedLifecycle: async (target) => {
           refuseUnlessReady();
           await plane.activateManagedLifecycle(target);
+        },
+      } : {}),
+      ...(host !== undefined ? {
+        registerHostIncarnation: async (instanceId: string) => {
+          refuseUnlessReady();
+          return { instanceId, processEpoch: await plane.registerHostInstance(host, instanceId) };
+        },
+        observeHostGate: async (instanceId: string) => {
+          refuseUnlessReady();
+          return await plane.observeEndpointGate(host.endpoint, instanceId);
+        },
+        awaitHostFence: async (instanceId: string, processEpoch: number) => {
+          if (!Number.isSafeInteger(processEpoch) || processEpoch < 0)
+            throw new EpEnvelopeError("bad-request", `processEpoch must be a non-negative integer, got ${String(processEpoch)}`);
+          // No runtime credential may create a consumer on the auth bucket (SPEC 13.9), so the
+          // gate cannot be watched; the hook polls its leader-served read.
+          for (;;) {
+            refuseUnlessReady();
+            const gate = await plane.observeEndpointGate(host.endpoint, instanceId);
+            if (gate?.state !== "open" || gate.processEpoch !== processEpoch) return gate;
+            await new Promise((r) => setTimeout(r, HOST_FENCE_POLL_MS));
+          }
         },
       } : {}),
       readiness(): HostedServiceState {

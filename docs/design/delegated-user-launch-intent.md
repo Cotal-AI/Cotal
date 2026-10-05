@@ -467,7 +467,8 @@ stays as written. One execution runs in this order, and every refusal before the
    with `joinOrStartDelegatedUserIntent`, and the flight CASes the record from `admitted` to
    `consumed` at the revision step 2 read. The same write sets `execution` to the request's
    `requestId` and `serveEpoch`, that UID, the token digest, and this host process's incarnation as
-   `executor`. A lost CAS is `conflict`, the flight ends, and nothing is enrolled.
+   `executor`, which the handle's `registerHostIncarnation` returned at this process's start. A
+   lost CAS is `conflict`, the flight ends, and nothing is enrolled.
 7. The CAS is the execution's commit. The reads in steps 2 and 4 are not fences (SPEC §13.1: a read
    is never a fence), so the host runs step 4 again after the CAS and before any effect. A refusal
    there runs the compensation (below) at the pinned UID, then sets `outcome: "aborted"` and answers
@@ -503,6 +504,8 @@ answers material it did not commit. The manager frees or keeps its alias only on
 The execution has one executor, the incarnation the consuming CAS pinned, and recovery follows the
 executor and sweeper roles of SPEC §13.7:
 
+- The executor stops every flight before its next effect once the handle's `awaitHostFence`,
+  armed with its incarnation at start, resolves: a later registration or barrier has fenced it.
 - The executor, in the same process run, starts a new flight for the record when its earlier
   flight ended with no `outcome`, for example on an `unavailable` writer error, at its next scan of
   consumed records or on a retry. That flight resumes at step 7.
@@ -520,10 +523,10 @@ executor and sweeper roles of SPEC §13.7:
   write ends the flight as the Alias hold paragraph says.
 - Any other incarnation is a sweeper. A restarted host is one, because its restart advanced its
   process epoch. A sweeper acts only on a consumed record with no `outcome`, and only when it
-  believes the executor gone: the executor instance's serving issuance gate is absent, not `open`,
-  or at another process epoch. It first CASes `sweptBy` to its own incarnation and changes nothing
-  else; a lost claim starts nothing. It may then take only a terminal edge that removes authority:
-  for a launch, the compensation below and then `outcome: "aborted"`; for a retirement, the section 7
+  believes the executor gone: the executor instance's serving issuance gate, read with the handle's
+  `observeHostGate`, is absent, not `open`, or at another process epoch. It first CASes `sweptBy`
+  to its own incarnation and changes nothing else; a lost claim starts nothing. It may then take
+  only a terminal edge that removes authority: for a launch, the compensation below and then `outcome: "aborted"`; for a retirement, the section 7
   order and then `outcome: "retired"`. A sweeper never runs step 7 or step 8, because advancing a
   launch on a gone executor's behalf is the split brain §13.7 forbids. It always compensates a
   launch, because it cannot know how far step 8 got.
@@ -736,6 +739,7 @@ payload. `authorizeAdmin` is unchanged.
 | `parseRemoteDelegatedUserIntentExecutionResult`, `resolveReadAcl` | `@cotal-ai/core` | shipped |
 | `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `DelegatedUserIntentIncarnation`, `DelegatedUserIntentFlights`, `joinOrStartDelegatedUserIntent`, `delegatedUserIntentHoldsAlias`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | shipped; stock dispatch refuses both kinds as `unimplemented` |
 | `AuthServiceHandle.observeManagerGate`, `AuthServiceHandle.activateManagedLifecycle` | `@cotal-ai/auth` | shipped; present with `platformControl` |
+| `AuthServiceHandle.registerHostIncarnation`, `AuthServiceHandle.observeHostGate`, `AuthServiceHandle.awaitHostFence`, `PlatformControlInput.host` | `@cotal-ai/auth` | shipped; present with `platformControl.host`; the host registers its persisted instance id at every start and arms `awaitHostFence` with the returned incarnation, before it admits or recovers a flight; the return is a committed coordinate, `observeHostGate` a point-in-time read, and the hook resolves once a later registration or barrier fences that incarnation |
 | `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | shipped |
 | `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar, the platform control door | `@cotal-ai/auth`, `@cotal-ai/core` | absent at this branch's base; shipped on main at `6ca4d8e0f` (#2408) |
 | `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged; a hosted host reaches the flight at `POST /managed-lifecycle/retire` with the handle's `cap` |
