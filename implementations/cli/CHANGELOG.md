@@ -1,5 +1,18 @@
 # @cotal-ai/cli
 
+## 0.65.0
+
+### Patch Changes
+
+- a87a66c: A mesh registry record this build cannot use no longer refuses a command in the catalog preparation that runs before the command's own checks. While such a record is present the preparation neither refreshes nor applies a catalog, so `cotal spawn` reports its own usage errors and a managed handoff refuses with its handoff-phase sentence instead of the record's path. A snapshot an interrupted command left unapplied is applied once the record is restored or removed. Every command that resolves its target through the registry still refuses the record by name.
+- 2cef9e6: A caller now validates a request's args in the form they are sent, so a key whose value is undefined, which JSON drops, no longer fails a responder's closed input contract. A `cotal spawn --detach` from a current CLI was refused by every manager released before `defaultAgent` existed, even with `COTAL_DEFAULT_AGENT` unset. A caller-side args refusal is now marked `not-executed`, since nothing was published. Args that JSON cannot carry, such as a BigInt, get the same `bad-request` refusal. A refusal that names a key the responder's contract does not declare carries an `ai.cotal.ep.undeclared-arg` detail. The CLI reads that detail on manager commands and reports version skew with its own version, where it used to print a bare schema error followed by a warning that the request may have run.
+- Updated dependencies [ba5468d]
+- Updated dependencies [451ffee]
+- Updated dependencies [f01aa7c]
+- Updated dependencies [2cef9e6]
+  - @cotal-ai/core@0.65.0
+  - @cotal-ai/workspace@0.65.0
+
 ## 0.64.0
 
 ### Minor Changes

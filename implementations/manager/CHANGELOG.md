@@ -1,5 +1,18 @@
 # @cotal-ai/manager
 
+## 0.65.0
+
+### Patch Changes
+
+- f01aa7c: A manager start now serves at the process epoch its own registration committed. Both the boot registration and `registerRemoteManagerAuthority` read the issuance gate again after `registerServiceInstance` returned and took that read's epoch, so a start that a second start of the same instance superseded in between authorized its serve grant at the successor's epoch, and the remote path returned the successor's epoch and registration revision as its own. `registerServiceInstance` now returns the `processEpoch` its completing reopen committed, both registration paths use it, and the serve grant's epoch check refuses a superseded start with `expired`.
+- Updated dependencies [ba5468d]
+- Updated dependencies [451ffee]
+- Updated dependencies [f01aa7c]
+- Updated dependencies [2cef9e6]
+  - @cotal-ai/core@0.65.0
+  - @cotal-ai/workspace@0.65.0
+  - @cotal-ai/seat@0.65.0
+
 ## 0.64.0
 
 ### Minor Changes
