@@ -43,7 +43,7 @@
       "name": "a live pid with no recorded bound address is guessed onto the default port instead of refused",
       "file": "implementations/cli/src/commands/status.ts",
       "find": "  const bound = webBoundAddress(localProcessPath(\"web.session\", context));\n  if (!bound) return { name: \"web\", verdict: \"refused\", facts: [...facts, \"probe refused (no bound address recorded)\"] };",
-      "replace": "  const bound = webBoundAddress(localProcessPath(\"web.session\", context)) ?? { host: \"127.0.0.1\", port: 7799, readiness: \"\" };",
+      "replace": "  const bound = webBoundAddress(localProcessPath(\"web.session\", context)) ?? { host: \"127.0.0.1\", port: 7799 };",
       "expectRed": "a live pidfile with no recorded bound address is a probe refusal (3), never a healthy default-port guess",
       "cell": "a live pidfile with no recorded bound address is a probe refusal (3), never a healthy default-port guess",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
