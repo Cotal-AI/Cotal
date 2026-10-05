@@ -763,12 +763,35 @@ export async function activityBackfill(
  *  for channel delete. The dashboard is a loopback HTTP process and the seed can mint ANY identity
  *  or role, so the seed is bound only inside this function and a request handler in {@link web}
  *  that reaches for it fails to compile. A narrowed copy made inside `web()` would leave the full
- *  value in the handlers' scope beside it. `--creds` and open meshes have no seed and purge with the
- *  connection's own creds; user mode mints a purger view per delete instead. */
-async function connectWithoutSeed(values: ConnectFlags): Promise<{ conn: Omit<Connection, "auth">; purgeCreds: string | undefined }> {
+ *  value in the handlers' scope beside it. Resolves `undefined` in a parent that hands off to a
+ *  `--detach` child. The mint comes last, after that hand-off and the pidfile claim, because the
+ *  cred has no expiry and a process that detaches or is refused must not mint one it then drops.
+ *  `--creds` and open meshes have no seed and purge with the connection's own creds; user mode
+ *  mints a purger view per delete instead. */
+async function connectWithoutSeed(
+  raw: readonly string[],
+  values: ConnectFlags & { detach?: boolean; "no-open"?: boolean },
+  host: string,
+  port: number,
+): Promise<{ conn: Omit<Connection, "auth">; user: UserViewAuth | undefined; pidPath: string | undefined; purgeCreds: string | undefined } | undefined> {
   const { auth, ...conn } = await connectOrExit(values, "admin");
-  const purgeCreds = !conn.bearer && auth ? await mintCreds(auth, newIdentity(), "channel-purger") : conn.creds;
-  return { conn, purgeCreds };
+  const detachedRoot = process.env[DETACHED_ROOT_ENV];
+  if (detachedRoot && conn.root !== detachedRoot)
+    throw new Error(`detached web target lost its recorded mesh root (${detachedRoot}) before startup`);
+  if (values.detach) {
+    if (!conn.root)
+      throw new Error("`cotal web --detach` requires a recorded mesh root; start or register the mesh with `cotal up` first");
+    await launchDetachedWeb(raw, conn.root, conn.space, conn.server, host, port, Boolean(values["no-open"]));
+    return undefined;
+  }
+  const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
+  const pidPath = conn.root ? localProcessPath(webProcess.pidFile, { root: conn.root, space: conn.space }) : undefined;
+  if (pidPath) {
+    claimPid(pidPath);
+    process.once("exit", () => releasePid(pidPath));
+  }
+  const purgeCreds = !user && auth ? await mintCreds(auth, newIdentity(), "channel-purger") : conn.creds;
+  return { conn, user, pidPath, purgeCreds };
 }
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
@@ -789,24 +812,11 @@ export async function web(args: ParsedArgs): Promise<void> {
   // "channel-purger" view per action, so each destructive click is a fresh ledger check, and
   // `cotal actor revoke` kills the dashboard live (eviction) while a scope edit bites at the next
   // refresh.
-  const { conn, purgeCreds } = await connectWithoutSeed(values);
-  const detachedRoot = process.env[DETACHED_ROOT_ENV];
-  if (detachedRoot && conn.root !== detachedRoot)
-    throw new Error(`detached web target lost its recorded mesh root (${detachedRoot}) before startup`);
-  if (values.detach) {
-    if (!conn.root)
-      throw new Error("`cotal web --detach` requires a recorded mesh root; start or register the mesh with `cotal up` first");
-    await launchDetachedWeb(args.raw, conn.root, conn.space, conn.server, host, port, Boolean(values["no-open"]));
-    return;
-  }
-  const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
+  const started = await connectWithoutSeed(args.raw, values, host, port);
+  if (!started) return;
+  const { conn, user, pidPath, purgeCreds } = started;
   const { server, space } = conn;
-  const pidPath = conn.root ? localProcessPath(webProcess.pidFile, { root: conn.root, space }) : undefined;
   const sessionPath = conn.root ? localProcessPath(SESSION_FILE, { root: conn.root, space }) : undefined;
-  if (pidPath) {
-    claimPid(pidPath);
-    process.once("exit", () => releasePid(pidPath));
-  }
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
