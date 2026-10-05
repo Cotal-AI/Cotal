@@ -95,6 +95,10 @@ in-process plugin does everything.
   wake stays pending until a turn carrying it is accepted, so a busy session, a refused turn or a
   failed submission only delays it. Several pending mentions share one wake. On a channel with
   replay off the wake only says the agent was mentioned, because the body cannot be recalled.
+- **A stopping seat refuses prompts on 1.x.** Once a stop has begun, a prompt typed into the TUI
+  or sent to the server API fails with `the prompt was not run: this seat is shutting down`, so the
+  agent starts no new model turn after it has announced it is leaving. A turn already running when
+  the stop began is not cancelled.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector
