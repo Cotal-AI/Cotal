@@ -331,7 +331,16 @@ async function printProject(root: string, cmd: string, selected: Selected, value
   printPersonas(root, cmd, selected, values);
   let nats: Proc | undefined;
   for (const component of localProcessSurface().filter((component) => localProcessVisible(component, context)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50))) {
-    const state = proc(localProcessPath(component.pidFile, context));
+    const pidPath = localProcessPath(component.pidFile, context);
+    let state: Proc;
+    try {
+      state = proc(pidPath);
+    } catch (e) {
+      // `pidfileState` throws on a record it cannot read so `clean` and `down` refuse to act on it.
+      // Status is the recovery command: name the failed read on this row and report the rest.
+      row(component.name, c.red(`pidfile unreadable · ${(e as Error).message}`));
+      continue;
+    }
     if (component.name === "nats") nats = state;
     if (component.name === "manager") {
       // #2073: a live manager pid used to print green `running` on the pidfile alone, which is how

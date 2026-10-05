@@ -870,6 +870,8 @@ membership feed). Stale Claude skills and out-of-date `.agents` skills recommend
 not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
 nothing. The manager row asks the service endpoint once: a live process that does not answer is
 `not serving`, and a probe that could not be made leaves the row `running · service unchecked`.
+A process row whose PID record exists but cannot be read reads `pidfile unreadable` with the error,
+and the other rows still print.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
 stale with the last successful snapshot timestamp and the refresh error. It never calls that state

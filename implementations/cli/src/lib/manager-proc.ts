@@ -167,8 +167,9 @@ export function managerHasDeliveryMarker(space: string = folderSpace()): boolean
   let markerPid: number;
   let livePid: number;
   try {
-    markerPid = Number(readFileSync(markerPath, "utf8").trim());
+    // The pid record first: with no manager there is nothing to bind, so a leftover marker is never read.
     livePid = Number(readFileSync(pidPath, "utf8").trim());
+    markerPid = Number(readFileSync(markerPath, "utf8").trim());
   } catch (e) {
     // A manager removes both records on exit, so either can be gone by the time it is read.
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
