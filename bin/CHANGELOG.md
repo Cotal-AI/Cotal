@@ -1,5 +1,33 @@
 # cotal-ai
 
+## 0.63.0
+
+### Minor Changes
+
+- 22e210a: Start an already-enrolled managed agent in a child outside the manager's filesystem (SPEC §13.17). A runtime may offer `Runtime.spawnDelegated(launch, handoff)`. A manager whose runtime does enrolls through `enrollManagedAgent` once, refuses `--resume`, a manifest agent's `continuity: exact`, `--cwd`, shared MCP servers and non-string launch options before enrolling, never builds a local launch for the seat, and hands the lifecycle off at most once as one closed `cotal-managed-handoff/v1` value carrying the issued owner, actor, host-chosen lifecycle UID, sentinel, pinned exchange base and the raw actor token, which the host never receives. `delegatedSeatCommand` builds the child's `cotal spawn --expect-owner <owner> --expect-lifecycle-uid <uid>` command with `COTAL_MANAGED_HANDOFF_FILE` naming the handoff file. The `cotal` entry takes and deletes that file and drops the variable under any letter case before it parses flags, prints help or loads extensions, including when it refuses an older Node, and refuses spellings that name different files after deleting each of them. The spawn refuses a foreign space, owner, actor or lifecycle UID, an unknown field, a wrong kind and a file that is not a private regular file before any broker connection or exchange request, then runs the enrollment-redeem consumer without redeeming or minting, and exchanges through `agent-bearer --exchange-url` unchanged. No refusal on that path echoes a value from the handoff: the registration's server, exchange and enforcement checks, the local state this machine keeps for the space (its mesh record, user-auth state and agent secret files), target resolution, the policy refresh, the broker preflight, the agent auth preflight and the event-plane policy each refuse with a fixed sentence naming the field and the phase, whether a check fails or a filesystem, exchange or broker error is thrown under it, and an actor that is not a single token or a space that cannot name local state is refused as malformed before any plane. Readiness stays presence-observed, so a lost create acknowledgement settles uncertain and stays held. Every stop of a delegated seat, the reap of a child whose parent exited and a destructive manager shutdown included, runs prepare-retirement, then the handle's fenced close by `managedRuntimeKey`, then the terminal barrier. A preservation cut refuses a delegated seat at prepare time, and a manager stop after a refused cut retires it the same way. A provider resource is bound to that key only by the provider's authenticated answer to its create. The design record, the embedding guide, the CLI and configuration references and SPEC §13.17 describe the shipped shape.
+
+### Patch Changes
+
+- Updated dependencies [da45107]
+- Updated dependencies [62ebc6b]
+- Updated dependencies [22e210a]
+- Updated dependencies [cb6a0bf]
+- Updated dependencies [5738154]
+- Updated dependencies [101c9b0]
+- Updated dependencies [9d5cc09]
+- Updated dependencies [22ed4c4]
+- Updated dependencies [a2fe3a2]
+- Updated dependencies [42d89b6]
+- Updated dependencies [c975258]
+  - @cotal-ai/manager@0.63.0
+  - @cotal-ai/core@0.63.0
+  - @cotal-ai/cli@0.63.0
+  - @cotal-ai/connector-core@0.63.0
+  - @cotal-ai/workspace@0.63.0
+  - @cotal-ai/auth@0.63.0
+  - @cotal-ai/runtime@0.63.0
+  - @cotal-ai/delivery@0.63.0
+
 ## 0.62.0
 
 ### Patch Changes

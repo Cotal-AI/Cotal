@@ -1,5 +1,19 @@
 # @cotal-ai/workspace
 
+## 0.63.0
+
+### Patch Changes
+
+- 9d5cc09: First-run `cotal setup` now shares your own Claude Code MCP servers with the sessions Cotal spawns. It copies the user-scope servers from your Claude Code config into the cotal config's `connectors.claude.mcpServers` and names them in its output, so a spawned session has the tools you know plus the cotal tools. Before this, a spawned session loaded only the cotal server and setup never said why. With none to copy it writes an empty list, and a cotal config that already declares that list keeps it. A server with an `env` or `headers` value that is anything but `${VAR}` references is left out and named, because the cotal config keeps secrets only as `${VAR}` references. So is an entry no session can start, such as one with a missing or empty `command` or `url`, or one whose `command` is not a string. For a lighter seat, remove entries from the cotal config or spawn with `--share-tools none`. Connector setup providers gain an optional `mcpServers` action whose `seed` input the CLI binds to workspace's new `seedConnectorServers`, which writes under a lock so two setups run at once record one list. Core exports `readCotalConfigFile` and the `ConnectorShareSetupInput` type, and connector-core exports the `ENV_REFERENCE` pattern it already used.
+- Updated dependencies [62ebc6b]
+- Updated dependencies [22e210a]
+- Updated dependencies [cb6a0bf]
+- Updated dependencies [5738154]
+- Updated dependencies [101c9b0]
+- Updated dependencies [9d5cc09]
+- Updated dependencies [c975258]
+  - @cotal-ai/core@0.63.0
+
 ## 0.62.0
 
 ### Minor Changes
