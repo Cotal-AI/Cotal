@@ -261,17 +261,17 @@
 
   // ---------- the stage (panels around the canvas) ----------
   const TEMPLATES = {
-    team: `<div class="pane roster-pane"><div class="ph"><span class="live"></span>roster · live presence</div><div class="roster"></div></div>
-           <div class="pane meshwrap"><canvas class="mesh"></canvas><div class="legend"><span class="chat"><i></i>channel</span><span class="dm"><i></i>direct</span><span class="any"><i></i>anycast</span><span class="st working"><i></i>working</span><span class="st idle"><i></i>idle</span></div></div>
-           <div class="pane feed"><div class="ph">cotal console · all activity</div><div class="lines"></div></div>`,
+    team: `<div class="pane roster-pane"><div class="ph"><span class="live"></span>roster</div><div class="roster"></div></div>
+           <div class="pane meshwrap"><canvas class="mesh"></canvas></div>
+           <div class="pane feed"><div class="ph">activity</div><div class="lines"></div></div>`,
     modes: `<div class="toolbar"></div>
-            <div class="pane meshwrap"><canvas class="mesh"></canvas><div class="legend"><span class="chat"><i></i>channel</span><span class="dm"><i></i>direct</span><span class="any"><i></i>anycast</span><span class="st working"><i></i>working</span><span class="st idle"><i></i>idle</span></div></div>
-            <div class="pane feed"><div class="ph">cotal console · all activity</div><div class="lines"></div></div>`,
+            <div class="pane meshwrap"><canvas class="mesh"></canvas></div>
+            <div class="pane feed"><div class="ph">activity</div><div class="lines"></div></div>`,
     topo: `<div class="toolbar"></div>
-           <div class="pane meshwrap"><canvas class="mesh"></canvas><div class="counter"></div><div class="legend"><span class="chat"><i></i>channel</span><span class="dm"><i></i>direct</span><span class="any"><i></i>anycast</span></div></div>`,
-    lang: `<div class="pane code"><div class="ph">program · ship.cotal.js</div><div class="lines"></div></div>
-           <div class="pane meshwrap"><canvas class="mesh"></canvas><div class="hostbadge">run host · alive</div></div>
-           <div class="pane journal"><div class="ph">step journal · the whole state of the run</div><div class="rows"></div></div>`,
+           <div class="pane meshwrap"><canvas class="mesh"></canvas><div class="counter"></div></div>`,
+    lang: `<div class="pane code"><div class="ph">ship.cotal.js</div><div class="lines"></div></div>
+           <div class="pane meshwrap"><canvas class="mesh"></canvas><div class="hostbadge">host alive</div></div>
+           <div class="pane journal"><div class="ph">journal</div><div class="rows"></div></div>`,
   };
 
   class Stage {
@@ -342,15 +342,13 @@
     feed({ from, to, kind = 'chat', text, sys }) {
       const box = $('.feed .lines', this.root); if (!box) return;
       const ln = h('div', 'ln' + (sys ? ' sys' : ''));
-      const t = new Date(this.clock + (Date.now() - this.clock));
-      ln.append(h('span', 't', t.toTimeString().slice(0, 8)));
-      if (sys) { const m = h('span', 'msg'); m.innerHTML = sys; m.style.gridRow = '1'; ln.append(m); }
+      if (sys) { const m = h('span', 'msg'); m.innerHTML = sys; ln.append(m); }
       else {
         const who = h('span', 'who'); const f = h('b', null, from); f.style.color = nameColor(from); who.append(f);
         if (to) { who.append(h('span', 'arrow', '→')); who.append(h('span', 'to ' + kind, to)); }
         ln.append(who, h('span', 'msg', text));
       }
-      box.append(ln); while (box.children.length > 16) box.firstChild.remove();
+      box.append(ln); while (box.children.length > 9) box.firstChild.remove();
       sfx.kind(kind);
     }
     // roster with faces
@@ -363,11 +361,11 @@
       const card = h('div', 'agent idle'); card.id = 'ag-' + a.id;
       const cv = document.createElement('canvas'); card.append(cv);
       const meta = h('div', 'meta');
-      const name = h('div', 'name'); name.append(document.createTextNode(a.id)); name.append(h('span', 'role', a.role)); name.style.color = nameColor(a.id);
-      const vendor = h('div', 'vendor'); const im = new Image(); im.src = VENDORS[a.vendor].img; vendor.append(im, document.createTextNode(VENDORS[a.vendor].label));
-      const st = h('div', 'st idle', 'idle');
+      const name = h('div', 'name'); name.append(h('i', 'st idle'));
+      const nm = h('b', null, a.id); nm.style.color = nameColor(a.id); name.append(nm);
+      const im = new Image(); im.src = VENDORS[a.vendor].img; im.title = VENDORS[a.vendor].label; im.className = 'vendor'; name.append(im);
       const say = h('div', 'say');
-      meta.append(name, vendor, st, say); card.append(meta); box.append(card);
+      meta.append(name, h('div', 'role', a.role), say); card.append(meta); box.append(card);
       this.faces.set(a.id, new window.Face(cv, a.persona));
       requestAnimationFrame(() => requestAnimationFrame(() => card.classList.add('in')));
       if (!animate) card.classList.add('in');
@@ -375,7 +373,7 @@
     status(id, s) {
       if (this.mesh) this.mesh.status(id, s);
       const card = $('#ag-' + id, this.root); if (!card) return;
-      card.className = 'agent in ' + s; const st = $('.st', card); st.className = 'st ' + s; st.textContent = s;
+      card.className = 'agent in ' + s; $('.st', card).className = 'st ' + s;
       const f = this.faces.get(id); if (f) f.expr = s === 'working' ? 'neutral' : s === 'waiting' ? 'surprised' : 'neutral';
     }
     think(id, text = 'thinking') {
@@ -404,18 +402,20 @@
       const box = $('.journal .rows', this.root); if (!box) return;
       const r = h('div', 'jr ' + status); r.dataset.key = scope + key;
       r.append(h('span', 'i', ICON[status]));
-      const k = h('span', 'k'); if (scope) k.append(h('span', 'scope', scope)); k.append(document.createTextNode(key)); r.append(k);
-      r.append(h('span', 's', note || status)); box.append(r);
-      while (box.children.length > 13) box.firstChild.remove();
+      const k = h('span', 'k'); const br = /\/b:([^/]+)\//.exec(scope || '');
+      if (br) k.append(h('span', 'branch', br[1]));
+      k.append(document.createTextNode(key.replace(/#0$/, ''))); r.append(k);
+      r.append(h('span', 's', note || (status === 'ok' ? '' : status))); box.append(r);
+      while (box.children.length > 12) box.firstChild.remove();
       return r;
     }
     journalSet(fullKey, status, note) {
       const r = this.root.querySelector(`.jr[data-key="${CSS.escape(fullKey)}"]`); if (!r) return;
-      r.className = 'jr ' + status; $('.i', r).textContent = ICON[status]; $('.s', r).textContent = note || status;
+      r.className = 'jr ' + status; $('.i', r).textContent = ICON[status]; $('.s', r).textContent = note || (status === 'ok' ? '' : status);
     }
     journalFreeze(on) { for (const r of this.root.querySelectorAll('.jr')) r.classList.toggle('frozen', on); }
     journalClear() { const box = $('.journal .rows', this.root); if (box) box.textContent = ''; }
-    host(alive) { const b = $('.hostbadge', this.root); if (!b) return; b.classList.toggle('dead', !alive); b.textContent = alive ? 'run host · alive' : 'run host · dead'; this.root.classList.toggle('dead', !alive); }
+    host(alive) { const b = $('.hostbadge', this.root); if (!b) return; b.classList.toggle('dead', !alive); b.textContent = alive ? 'host alive' : 'host dead'; this.root.classList.toggle('dead', !alive); }
   }
   const ICON = { pending: '◌', ok: '✓', replayed: '⟲', dead: '✕', live: '●' };
   const highlight = (src) => src
@@ -435,8 +435,6 @@
       window.addEventListener('keydown', (e) => this.onKey(e), true);
       window.addEventListener('mousemove', () => { this.lastInput = Date.now(); }, { passive: true });
       setInterval(() => this.tick(), 1000);
-      $('#hud-sound').onclick = (e) => { e.stopPropagation(); this.toggleSound(); };
-      $('#hud-full').onclick = (e) => { e.stopPropagation(); this.fullscreen(); };
       $('#hud-help').onclick = (e) => { e.stopPropagation(); $('#help').classList.toggle('on'); };
       this.showAttract();
     },
@@ -450,13 +448,13 @@
       this.attractMesh = new Mesh($('#bg'), { seed: 42 });
       const M = this.attractMesh, rand = mulberry(11);
       const vendors = Object.keys(VENDORS);
-      const chans = [['#general', 0.5, 0.5], ['#review', 0.2, 0.3], ['#research', 0.8, 0.68]];
+      const chans = [['#review', 0.18, 0.3], ['#research', 0.82, 0.7]];
       for (const [id, x, y] of chans) M.add({ id, kind: 'channel', label: id, x, y, drift: true, seed: rand() * 10 });
-      const names = ['planner', 'builder', 'reviewer', 'critic', 'security', 'scout', 'writer', 'tester', 'ops', 'merger', 'designer', 'analyst', 'guide', 'editor'];
+      const names = ['planner', 'builder', 'reviewer', 'security', 'scout', 'ops', 'merger', 'analyst', 'guide', 'editor'];
       names.forEach((n, i) => {
-        const ang = (i / names.length) * 6.283 + rand(); const rr = 0.26 + rand() * 0.2;
-        M.add({ id: n, label: n, x: 0.5 + Math.cos(ang) * rr, y: 0.5 + Math.sin(ang) * rr * 1.25, vendor: vendors[i % vendors.length], status: pick(['idle', 'working', 'working', 'idle', 'waiting'], rand), drift: true, seed: rand() * 10, size: 0.95 });
-        M.link(n, pick(chans, rand)[0]); if (rand() < 0.5) M.link(n, pick(chans, rand)[0]);
+        const ang = ((i + 0.5) / names.length) * 6.283 + (rand() - 0.5) * 0.25; const rr = 0.34 + rand() * 0.1;
+        M.add({ id: n, label: n, x: 0.5 + Math.cos(ang) * rr * 1.2, y: 0.5 + Math.sin(ang) * rr * 1.15, vendor: vendors[i % vendors.length], status: pick(['idle', 'working', 'idle', 'idle', 'waiting'], rand), drift: true, seed: rand() * 10, size: 0.95 });
+        M.link(n, chans[i % 2][0]); if (rand() < 0.4) M.link(n, chans[(i + 1) % 2][0]);
       });
       setInterval(() => {
         if (this.screen !== 'attract' && this.screen !== 'home') return;
@@ -474,9 +472,8 @@
       const grid = $('#home .cards'); grid.textContent = '';
       window.DEMOS.forEach((d, i) => {
         const c = h('button', 'card'); c.onclick = () => this.startDemo(i, false);
-        const num = h('div', 'num'); num.append(h('span', 'k', String(i + 1)), document.createTextNode('demo ' + (i + 1) + ' of ' + window.DEMOS.length), h('span', 'secs', '~' + d.secs + 's'));
+        const num = h('div', 'num'); num.append(h('span', 'k', String(i + 1)));
         c.append(num, h('h2', null, d.title), h('p', null, d.hook));
-        const tags = h('div', 'tags'); for (const t of d.tags) tags.append(h('span', 'tag ' + (t.cls || ''), t.text)); c.append(tags);
         c.append(h('div', 'play', 'Play ▶'));
         grid.append(c);
       });
@@ -492,7 +489,7 @@
       this.demoIndex = (i + window.DEMOS.length) % window.DEMOS.length; this.auto = auto;
       const demo = window.DEMOS[this.demoIndex];
       this.show('demo');
-      $('#demo .title').textContent = demo.title; $('#demo .kicker').textContent = 'demo ' + (this.demoIndex + 1) + ' of ' + window.DEMOS.length;
+      $('#demo .title').textContent = demo.title;
       const dots = $('#demo .dots'); dots.textContent = ''; window.DEMOS.forEach((_, j) => dots.append(h('i', j === this.demoIndex ? 'on' : '')));
       const run = new Run(auto); this.run = run;
       this.stage.setup(demo.layout);
@@ -550,7 +547,7 @@
         if (idle > 30 && shown > (this.autoNext ? 8 : 25)) { const i = this.autoNext || 0; this.autoNext = 0; this.startDemo(i, true); }
       }
     },
-    toggleSound() { sfx.on = !sfx.on; sfx.ensure(); $('#hud-sound').classList.toggle('on', sfx.on); $('#hud-sound').textContent = sfx.on ? 'sound on · M' : 'sound off · M'; },
+    toggleSound() { sfx.on = !sfx.on; sfx.ensure(); $('#hud-help').classList.toggle('on', sfx.on); },
     fullscreen() { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {}); },
   };
 

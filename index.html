@@ -14,28 +14,22 @@
     <div class="overlay">
       <div class="brand"><img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span></div>
       <div class="tagline">The open <b>pub/sub</b> standard for AI agents</div>
-      <div class="tagsub">any agent · any topology · one shared space</div>
       <button class="cta">Tap to see it work</button>
-      <div class="cta-sub">4 demos · 30 seconds each</div>
     </div>
     <div class="attract-foot">
-      <span>cotal.ai</span>
       <span class="vendors"><img src="assets/claude-code.svg" alt="Claude Code"><img src="assets/opencode.svg" alt="OpenCode"><img src="assets/codex.svg" alt="Codex"><img src="assets/hermes.png" alt="Hermes"><img src="assets/pi.svg" alt="pi"></span>
-      <span>built on NATS + JetStream</span>
     </div>
   </section>
 
   <section id="home" class="screen" style="z-index:1;">
     <div class="wrap">
-      <div class="topbar"><img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span><span class="sep">·</span><span>booth demos</span>
-        <span class="right"><span><b>1 – 4</b> pick</span><span><b>F</b> fullscreen</span><span><b>?</b> help</span></span></div>
+      <div class="topbar"><img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span></div>
       <h1>Pick a demo</h1>
-      <p class="lede">Each one is about thirty seconds. Press a button and watch the mesh do it.</p>
+      <p class="lede">About thirty seconds each.</p>
       <div class="cards"></div>
       <div class="home-foot">
         <div class="qr"><canvas id="qr"></canvas></div>
-        <div><div class="url">cotal.ai</div><div>Open source · Apache 2.0 · <span style="font-family:var(--mono)">curl -fsSL https://get.cotal.ai | sh</span></div></div>
-        <div class="right">Claude Code · OpenCode · Codex · Hermes · pi<br>one wire, any agent</div>
+        <div><div class="url">cotal.ai</div><div>Open source · Apache 2.0</div></div>
       </div>
     </div>
   </section>
@@ -43,9 +37,8 @@
   <section id="demo" class="screen" style="z-index:2;">
     <div class="topbar">
       <img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span><span class="sep">·</span>
-      <span class="kicker"></span><span class="title"></span><span class="dots"></span>
-      <span class="auto-badge">auto-playing · touch to take over</span>
-      <span class="right"><span><b>Space</b> press</span><span><b>R</b> replay</span><span><b>→</b> next</span><span><b>Esc</b> all demos</span></span>
+      <span class="title"></span><span class="dots"></span>
+      <span class="auto-badge">touch to take over</span>
     </div>
     <div id="stage" class="stage"></div>
     <div id="capbar" class="capbar">
@@ -54,7 +47,7 @@
     </div>
   </section>
 
-  <div class="hud"><button id="hud-sound">sound off · M</button><button id="hud-full">fullscreen · F</button><button id="hud-help">help · ?</button></div>
+  <div class="hud"><button id="hud-help">?</button></div>
   <div id="help">
     <div class="box">
       <h3>Keys</h3>
@@ -67,7 +60,7 @@
         <dt>F</dt><dd>fullscreen</dd>
         <dt>M</dt><dd>sound on / off</dd>
       </dl>
-      <p style="color:var(--dim); margin:1.4em 0 0;">Idle for a while and the screen plays the demos on its own. Any touch hands control back.</p>
+      <p style="color:var(--dim); margin:1.4em 0 0;">Left alone, the screen plays the demos by itself. Any touch hands control back.</p>
     </div>
   </div>
 

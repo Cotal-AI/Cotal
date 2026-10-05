@@ -34,7 +34,7 @@
     M.add({ id: '#review', kind: 'channel', label: '#review', x: 0.5, y: 0.74 });
     for (const a of agents) { M.add({ id: a.id, label: a.id, vendor: a.vendor, x: a.x, y: a.y }); M.link(a.id, '#general'); M.link(a.id, '#review'); }
     S.roster(agents);
-    S.feed({ sys: 'space <b>demo</b> · 4 agents online · 2 channels' });
+    S.feed({ sys: '4 agents online' });
 
     const members = (ch) => M.edges.filter((e) => e.b === ch).map((e) => e.a);
     const mcast = async (from, ch, text) => {
@@ -44,7 +44,7 @@
     };
     const dm = async (from, to, text) => { S.feed({ from, to, kind: 'dm', text }); M.dashed(from, to, 'dm', 1400); await M.pulse(from, to, 'dm'); };
 
-    S.caption('Five agents. Four vendors. One shared space.', 'They see each other and talk directly. No orchestrator in the middle.');
+    S.caption('Five agents, four vendors, one space.', 'No orchestrator in the middle.');
     await run.press(S, [{ id: 'go', label: 'Ship a feature', key: 'Space', primary: true }], { autoAfter: 2600 });
 
     // 1. multicast
@@ -53,12 +53,12 @@
     const plan = 'Plan: david builds the API, reviewers stand by.';
     swallow(S.say('sven', plan));
     await run.sleep(500);
-    S.caption('One post to #general. Every subscriber receives it.', 'Multicast is how a group stays in sync.', { cls: 'chat', text: 'multicast' });
+    S.caption('One post. Every member gets it.', '', { cls: 'chat', text: 'multicast' });
     await mcast('sven', '#general', plan);
     await run.sleep(1400);
 
     // 2. unicast
-    S.caption('A direct message to david. Delivered durably.', 'Unicast: if he is mid-turn it waits in his inbox. Nothing is lost.', { cls: 'dm', text: 'unicast' });
+    S.caption('A direct message to david.', 'If he is busy it waits in his inbox.', { cls: 'dm', text: 'unicast' });
     await dm('sven', 'david', 'Spec is in wt-1. Ship it as PR #42.');
     S.status('sven', 'idle'); S.status('david', 'working'); S.think('david', 'building POST /users');
     await run.sleep(2200);
@@ -68,30 +68,30 @@
     await mcast('david', '#review', 'PR #42 is up: POST /users');
     S.status('david', 'waiting');
     await run.sleep(400);
-    S.caption('"Any reviewer: grade PR #42." One free reviewer claims it.', 'Anycast addresses a role, not a name. Delegation without a scheduler.', { cls: 'anycast', text: 'anycast' });
+    S.caption('Sent to a role. One free reviewer claims it.', '', { cls: 'anycast', text: 'anycast' });
     S.status('sven', 'working');
     S.feed({ from: 'sven', to: '@reviewer', kind: 'anycast', text: 'grade PR #42' });
     M.dashed('sven', 'ray', 'anycast', 1200); M.dashed('sven', 'mira', 'anycast', 1200);
     await run.sleep(550);
     await M.pulse('sven', 'ray', 'anycast');
     S.status('ray', 'working'); S.think('ray', 'reading the diff');
-    S.feed({ sys: '<b>ray</b> claimed it · mira stays free' });
+    S.feed({ sys: 'ray claimed it' });
     S.status('sven', 'idle');
     await run.sleep(1800);
 
     // 4. late joiner
-    S.caption('garry joins late and replays the history first.', 'Durable streams: a late joiner catches up, then goes live.', { cls: 'gold', text: 'late join' });
+    S.caption('garry joins late and replays the history.', '', { cls: 'gold', text: 'late join' });
     M.add({ id: 'garry', label: 'garry', vendor: 'pi', x: garry.x, y: garry.y, from: { x: 0.5, y: -0.15 } });
     M.link('garry', '#general'); M.link('garry', '#review');
     S.rosterAdd(garry);
-    S.feed({ sys: '<b>garry</b> (security) joined · replaying 4 messages' });
+    S.feed({ sys: 'garry joined · replaying 4 messages' });
     await run.sleep(600);
     for (let i = 0; i < 4; i++) { swallow(M.pulse(i % 2 ? '#review' : '#general', 'garry', 'chat', { dur: 320 })); await run.sleep(170); }
     S.status('garry', 'working'); S.think('garry', 'auditing PR #42');
     await run.sleep(1400);
 
     // 5. peers talk to each other
-    S.caption('They talk to each other, not through a controller.', 'Finding, fix, approval: peer to peer, across vendors.');
+    S.caption('Peers talk to peers.', 'Finding, fix, approval: across vendors.');
     swallow(S.say('ray', 'Missing input validation on /users.'));
     await dm('ray', 'david', 'Missing input validation on /users.');
     S.status('david', 'working'); S.think('david', 'fixing');
@@ -111,8 +111,8 @@
     await mcast('sven', '#general', 'Merged PR #42 ✓');
     S.status('sven', 'idle');
     for (const a of ['sven', 'david', 'ray', 'mira', 'garry']) S.mood(a, 'happy');
-    S.caption('Shipped. Every message rode one durable, replayable log.', 'Three delivery modes, live presence, late join: one open standard on NATS.');
-    S.stats([{ n: '5', label: 'agents' }, { n: '4', label: 'vendors' }, { n: '3', label: 'delivery modes' }, { n: '0', label: 'orchestrators' }]);
+    S.caption('Shipped.', 'One durable log. One open standard.');
+    S.stats([{ n: '5', label: 'agents' }, { n: '4', label: 'vendors' }, { n: '0', label: 'orchestrators' }]);
   }
 
   // ------------------------------------------------------------------ 2. three ways to send
@@ -122,10 +122,10 @@
     M.add({ id: '#general', kind: 'channel', label: '#general', x: 0.5, y: 0.3 });
     for (const [id, v, x, y] of [['bob', 'opencode', 0.74, 0.12], ['carol', 'codex', 0.88, 0.32], ['dan', 'hermes', 0.74, 0.5]]) { M.add({ id, label: id, vendor: v, x, y }); M.link(id, '#general'); }
     M.link('alice', '#general');
-    M.add({ id: 'role', kind: 'label', label: 'role: reviewer (3 holders)', color: 'anycast', x: 0.76, y: 0.63 });
+    M.add({ id: 'role', kind: 'label', label: 'reviewers', color: 'anycast', x: 0.76, y: 0.64 });
     for (const [id, v, x, y] of [['rev-1', 'codex', 0.6, 0.84], ['rev-2', 'pi', 0.76, 0.92], ['rev-3', 'hermes', 0.92, 0.8]]) M.add({ id, label: id, vendor: v, x, y });
     M.status('bob', 'working'); M.status('rev-2', 'working');
-    S.feed({ sys: 'space <b>demo</b> · 7 agents online · <b>bob</b> and <b>rev-2</b> are mid-turn' });
+    S.feed({ sys: '7 agents online · bob and rev-2 are busy' });
 
     const CHAT = ['Standup: API freeze at 16:00.', 'Heads up: main is green again.', 'Design review moved to #general.'];
     const DM = ['bob, can you take the migration?', 'bob: the fixture is in wt-2.', 'bob, PR #51 needs your eyes.'];
@@ -137,10 +137,10 @@
       if (draining) return; draining = true;
       try {
         await run.sleep(2800);
-        M.status('bob', 'idle'); S.feed({ sys: '<b>bob</b> finished his turn · reading inbox' });
+        M.status('bob', 'idle'); S.feed({ sys: 'bob is free · reading inbox' });
         await run.sleep(300);
-        while (inbox > 0) { inbox--; M.badge('bob', inbox ? 'inbox ' + inbox : null); M.ring('bob', '#d29922'); S.feed({ sys: 'delivered to <b>bob</b> · acknowledged' }); await run.sleep(480); }
-        S.caption('Delivered when he freed up. In order. Nothing lost.', 'That is what agents need: they spend most of their time mid-turn.', { cls: 'dm', text: 'unicast' });
+        while (inbox > 0) { inbox--; M.badge('bob', inbox ? 'inbox ' + inbox : null); M.ring('bob', '#d29922'); S.feed({ sys: 'delivered to bob' }); await run.sleep(480); }
+        S.caption('Delivered when he freed up. Nothing lost.', '', { cls: 'dm', text: 'unicast' });
         bobBusy = false;
         await run.sleep(5000);
         M.status('bob', 'working'); bobBusy = true;
@@ -151,11 +151,11 @@
     const actions = {
       chat: async () => {
         S.toolbarMark('chat');
-        S.caption('One post. Every subscriber gets it.', '#general has three members: one stream, one bookmark per reader.', { cls: 'chat', text: 'multicast' });
+        S.caption('One post. Everyone in #general gets it.', '', { cls: 'chat', text: 'multicast' });
         S.feed({ from: 'alice', to: '#general', kind: 'chat', text: pick(CHAT) });
         await M.pulse('alice', '#general', 'chat');
         await Promise.all(['bob', 'carol', 'dan'].map((m) => M.pulse('#general', m, 'chat', { dur: 520 })));
-        S.feed({ sys: 'delivered to <b>bob</b>, <b>carol</b>, <b>dan</b>' });
+        S.feed({ sys: 'delivered to bob, carol, dan' });
       },
       dm: async () => {
         S.toolbarMark('dm');
@@ -163,12 +163,12 @@
         M.dashed('alice', 'bob', 'dm', 1200); await M.pulse('alice', 'bob', 'dm');
         if (bobBusy) {
           inbox++; M.badge('bob', 'inbox ' + inbox);
-          S.caption('bob is mid-turn. The message waits in his inbox.', 'Durable, per-reader delivery. Press again: it queues behind, in order.', { cls: 'dm', text: 'unicast' });
-          S.feed({ sys: '<b>bob</b> is working · queued (' + inbox + ')' });
+          S.caption('bob is busy. It waits in his inbox.', 'Press again: it queues in order.', { cls: 'dm', text: 'unicast' });
+          S.feed({ sys: 'bob is busy · queued (' + inbox + ')' });
           drain();
         } else {
-          S.caption('bob is free. Delivered now, acknowledged on read.', 'Same message, same inbox. Only the timing differs.', { cls: 'dm', text: 'unicast' });
-          S.feed({ sys: 'delivered to <b>bob</b> · acknowledged' });
+          S.caption('bob is free. Delivered now.', '', { cls: 'dm', text: 'unicast' });
+          S.feed({ sys: 'delivered to bob' });
         }
       },
       anycast: async () => {
@@ -180,7 +180,7 @@
         const free = holders.filter((h) => M.get(h).status !== 'working');
         if (!free.length) {
           M.badge('role', 'queued 1');
-          S.caption('All three reviewers are busy. The work waits on the role.', 'A shared work queue: the first one to free up takes it.', { cls: 'anycast', text: 'anycast' });
+          S.caption('All reviewers busy. The work waits on the role.', '', { cls: 'anycast', text: 'anycast' });
           await run.sleep(1800);
           M.status('rev-1', 'idle'); M.badge('role', null);
           free.push('rev-1');
@@ -188,8 +188,8 @@
         const winner = free[rr++ % free.length];
         await M.pulse('alice', winner, 'anycast'); M.status(winner, 'working');
         const busy = holders.filter((h) => h !== winner && M.get(h).status === 'working');
-        S.feed({ sys: '<b>' + winner + '</b> claimed it' + (busy.length ? ' · ' + busy.join(', ') + ' skipped (busy)' : '') });
-        S.caption('Addressed to a role. One free holder claims it.', (busy.length ? busy.join(' and ') + ' busy, so skipped. ' : '') + 'Press again: the next free one takes it.', { cls: 'anycast', text: 'anycast' });
+        S.feed({ sys: winner + ' claimed it' + (busy.length ? ' · ' + busy.join(', ') + ' busy' : '') });
+        S.caption('Sent to a role. One free reviewer claims it.', busy.length ? busy.join(' and ') + ' busy, so skipped.' : '', { cls: 'anycast', text: 'anycast' });
         (async () => { try { await run.sleep(3200); M.status(winner, 'idle'); } catch { /* cancelled */ } })();
       },
     };
@@ -198,8 +198,8 @@
       { id: 'chat', label: 'Multicast', key: '1', cls: 'chat' },
       { id: 'dm', label: 'Unicast', key: '2', cls: 'dm' },
       { id: 'anycast', label: 'Anycast', key: '3', cls: 'any' },
-    ].map((it) => ({ ...it, onPress: chooser(state) })), 'press one, in any order');
-    S.caption('Three ways to send. One model.', 'To a channel, to one peer, or to a role. Press one.');
+    ].map((it) => ({ ...it, onPress: chooser(state) })));
+    S.caption('Three ways to send.', 'Press one.');
 
     const autoSeq = ['chat', 'dm', 'dm', 'anycast', 'anycast'];
     for (let i = 0; ; i++) {
@@ -208,12 +208,12 @@
       tried.add(id);
       if (run.auto && i >= autoSeq.length - 1) { await run.sleep(3600); break; }
       if (!run.auto && tried.size === 3) {
-        S.stats([{ n: '3', label: 'modes' }, { n: '1', label: 'addressing scheme' }, { n: '0', label: 'lost messages' }]);
+        S.stats([{ n: '3', label: 'modes' }, { n: '0', label: 'lost messages' }]);
         S.actions([{ id: 'next', label: 'Next demo', key: '→', primary: true, onPress: next }]);
       }
     }
-    S.caption('One addressing scheme. Three ways to reach it.', 'A channel, a peer, or a role: all durable, all on one stream.');
-    S.stats([{ n: '3', label: 'modes' }, { n: '1', label: 'addressing scheme' }, { n: '0', label: 'lost messages' }]);
+    S.caption('One addressing scheme.', 'A channel, a peer, or a role.');
+    S.stats([{ n: '3', label: 'modes' }, { n: '0', label: 'lost messages' }]);
   }
 
   // ------------------------------------------------------------------ 3. any topology
@@ -226,7 +226,7 @@
     M.add({ id: '#team', kind: 'channel', label: '#team', x: 0.5, y: 0.5 });
     let mode = null, swarm = [], stop = false;
     const state = { resolve: null };
-    const count = () => S.counter('<b>' + (names.length + swarm.length) + '</b> agents online · ' + (mode === 'hybrid' ? 3 : 1) + ' channel' + (mode === 'hybrid' ? 's' : ''));
+    const count = () => S.counter('<b>' + (names.length + swarm.length) + '</b> agents');
     const ensure = (id, label, x, y) => { if (!M.has(id) || M.get(id).dying) { M.add({ id, kind: 'channel', label, x, y, from: { x: 0.5, y: 0.5 } }); } else M.move(id, x, y); };
     const drop = (id) => { if (M.has(id)) M.remove(id); };
     const relinkSwarm = () => { for (const s of swarm) M.link(s, mode === 'hybrid' ? (Math.random() < 0.5 ? '#a' : '#b') : '#team'); };
@@ -243,11 +243,11 @@
       },
     };
     const CAP = {
-      peers: ['A flat team of peers.', 'Everyone in #team, anyone can message anyone. No one is in charge.'],
-      supervisor: ['A manager with workers.', 'The lead hands out work by anycast; workers report back by direct message. Same agents, same wire.'],
-      chain: ['A pipeline.', 'Each stage hands off to the next with a direct message. Still the same wire.'],
-      hybrid: ['Two teams with leads, and the leads are peers.', 'Any shape you can draw. It is configuration, not a framework.'],
-      scale: ['Forty more agents just joined.', 'Local-first with no rewrite to scale: the same subjects and streams run from a laptop to a cluster.'],
+      peers: ['A flat team of peers.', 'No one is in charge.'],
+      supervisor: ['A manager with workers.', 'Work goes out by anycast, reports come back by DM.'],
+      chain: ['A pipeline.', 'Each stage hands off to the next.'],
+      hybrid: ['Two teams, and the leads are peers.', ''],
+      scale: ['Forty more just joined.', 'Same wire, from a laptop to a cluster.'],
     };
     const setMode = (m) => { mode = m; layouts[m](); relinkSwarm(); S.toolbarMark(m); S.caption(CAP[m][0], CAP[m][1]); count(); };
     const addSwarm = () => {
@@ -288,8 +288,8 @@
 
     S.toolbar([
       { id: 'peers', label: 'Peers', key: '1' }, { id: 'supervisor', label: 'Supervisor', key: '2' }, { id: 'chain', label: 'Pipeline', key: '3' }, { id: 'hybrid', label: 'Hybrid', key: '4' }, { id: 'scale', label: '+40 agents', key: '5', cls: 'any' },
-    ].map((it) => ({ ...it, onPress: chooser(state) })), 'same nine agents, re-wired');
-    setMode('peers'); S.caption('Nine agents, one space. The shape is yours.', 'Press a topology: the same agents re-wire live.');
+    ].map((it) => ({ ...it, onPress: chooser(state) })));
+    setMode('peers'); S.caption('Nine agents. Pick a shape.', '');
 
     const autoSeq = [['supervisor', 5200], ['chain', 5600], ['hybrid', 6200], ['scale', 5600], ['peers', 7000]];
     let scaledAt = 0;
@@ -300,13 +300,13 @@
       else setMode(id);
       if (run.auto && i >= autoSeq.length - 1) { await run.sleep(5000); break; }
       if (!run.auto && scaledAt) {
-        S.stats([{ n: String(names.length + swarm.length), label: 'agents' }, { n: '4', label: 'topologies' }, { n: '1', label: 'standard' }, { n: '0', label: 'rewrites' }]);
+        S.stats([{ n: String(names.length + swarm.length), label: 'agents' }, { n: '4', label: 'topologies' }, { n: '0', label: 'rewrites' }]);
         S.actions([{ id: 'next', label: 'Next demo', key: '→', primary: true, onPress: next }]);
       }
     }
     stop = true;
-    S.caption('Any shape you can draw, on one standard.', 'Peers, supervisor, pipeline, hybrid: the topology is yours to define.');
-    S.stats([{ n: String(names.length + swarm.length), label: 'agents' }, { n: '4', label: 'topologies' }, { n: '1', label: 'standard' }, { n: '0', label: 'rewrites' }]);
+    S.caption('Any shape you can draw.', 'Topology is configuration.');
+    S.stats([{ n: String(names.length + swarm.length), label: 'agents' }, { n: '4', label: 'topologies' }, { n: '0', label: 'rewrites' }]);
   }
 
   // ------------------------------------------------------------------ 4. a workflow that survives
@@ -334,36 +334,36 @@
     const step = async (line, key, scope, ms, note) => { S.hl(line); S.journal({ key, scope, status: 'pending' }); await run.sleep(ms); return () => { S.journalSet(scope + key, 'ok', note); S.codeDone(line); }; };
     const spawnAt = (id, vendor, x, y) => { M.add({ id, label: id, vendor, x, y, from: RUN }); M.link(id, 'run'); };
 
-    S.caption('A workflow is a program. Every effect is journalled.', 'Run it. You will be the human in the loop.');
+    S.caption('A workflow is a program.', 'Run it. You are the human in the loop.');
     await run.press(S, [{ id: 'go', label: 'Run the workflow', key: 'Space', primary: true }], { autoAfter: 2600 });
 
-    let done = await step(0, 'spawn:planner#0', '/', 650); spawnAt('planner', 'claude', 0.18, 0.3); done('ok · seat planner#1');
+    let done = await step(0, 'spawn:planner#0', '/', 650); spawnAt('planner', 'claude', 0.18, 0.3); done();
     await run.sleep(450);
-    done = await step(1, 'spawn:builder#0', '/', 650); spawnAt('builder', 'opencode', 0.42, 0.2); done('ok · wt-1');
-    S.caption('spawn brings real agents into the run.', 'Each one is a seat on the mesh, with a worktree of its own.');
+    done = await step(1, 'spawn:builder#0', '/', 650); spawnAt('builder', 'opencode', 0.42, 0.2); done();
+    S.caption('spawn brings real agents in.', '');
     await run.sleep(500);
 
     S.hl(3); S.journal({ key: 'ask:plan#0', scope: '/', status: 'pending' }); M.status('planner', 'working');
     await M.pulse('run', 'planner', 'gold'); await run.sleep(1300); await M.pulse('planner', 'run', 'gold');
-    M.status('planner', 'idle'); S.journalSet('/ask:plan#0', 'ok', 'ok · { steps: 3 }'); S.codeDone(3);
+    M.status('planner', 'idle'); S.journalSet('/ask:plan#0', 'ok', '{ steps: 3 }'); S.codeDone(3);
     await run.sleep(300);
 
     S.hl(4); S.journal({ key: 'checkpoint:approve-plan#0', scope: '/', status: 'pending', note: 'waiting for a human' });
     M.add({ id: 'you', label: 'you', x: 0.82, y: 0.86, status: 'waiting', from: { x: 1.1, y: 1 } }); M.link('you', 'run');
-    S.caption('Approve the plan?', 'A checkpoint is a durable pause a human resolves from anywhere. It waits 4 hours if it must. You are the human.', { cls: 'gold', text: 'checkpoint' });
+    S.caption('Approve the plan?', 'A durable pause. It waits for you, hours if it must.', { cls: 'gold', text: 'checkpoint' });
     await run.press(S, [{ id: 'ok', label: 'Approve', key: 'Space', primary: true }], { autoAfter: 3000 });
     await M.pulse('you', 'run', 'gold'); M.status('you', 'idle'); sfx.ok();
     S.journalSet('/checkpoint:approve-plan#0', 'ok', 'resolved by you'); S.codeDone(4);
     await run.sleep(300);
 
     S.hl(6); S.journal({ key: 'turn:build#0', scope: '/', status: 'pending' }); M.status('builder', 'working');
-    S.caption('The builder takes a turn in its own worktree.', 'turn wakes an agent; it reads its channels and speaks for itself.');
+    S.caption('The builder takes a turn.', '');
     await M.pulse('run', 'builder', 'gold'); await run.sleep(2000); await M.pulse('builder', 'run', 'gold');
-    M.status('builder', 'idle'); S.journalSet('/turn:build#0', 'ok', 'done · 2.0s'); S.codeDone(6);
+    M.status('builder', 'idle'); S.journalSet('/turn:build#0', 'ok', 'done'); S.codeDone(6);
     await run.sleep(300);
 
     S.hl(8); S.journal({ key: 'fanOut:review#0', scope: '/', status: 'pending', note: '2 branches' });
-    S.caption('Two reviewers in parallel, each in its own journal branch.', 'Concurrency you can read back afterwards.');
+    S.caption('Two reviewers in parallel.', '');
     await run.sleep(600);
     S.hl(9); S.journal({ key: 'spawn:reviewer#0', scope: SEC, status: 'pending' }); S.journal({ key: 'spawn:reviewer#0', scope: CRI, status: 'pending' });
     await run.sleep(650);
@@ -375,36 +375,36 @@
     swallow(M.pulse('run', 'security', 'gold')); swallow(M.pulse('run', 'critic', 'gold', { delay: 120 }));
     await run.sleep(900);
 
-    S.caption('Now kill the process that is driving this run.', 'The agents are real seats on the mesh. The run is a program plus its journal, nothing else.', { cls: 'red', text: 'crash test' });
+    S.caption('Now kill the host.', 'The program and its journal are the whole state.', { cls: 'red', text: 'crash test' });
     const killed = run.press(S, [{ id: 'kill', label: 'Kill the host', key: 'Space', cls: 'danger' }], { autoAfter: 2800 });
-    (async () => { try { await run.sleep(1500); await M.pulse('security', 'run', 'gold'); M.status('security', 'idle'); S.journalSet(SEC + 'ask:verdict#0', 'ok', 'ok · { ok: true }'); } catch { /* cancelled */ } })();
+    (async () => { try { await run.sleep(1500); await M.pulse('security', 'run', 'gold'); M.status('security', 'idle'); S.journalSet(SEC + 'ask:verdict#0', 'ok', '{ ok: true }'); } catch { /* cancelled */ } })();
     await killed;
 
     S.host(false); S.journalFreeze(true); sfx.bad(); S.hl(-1);
-    S.caption('The host is dead. Nothing was serialized.', 'The journal and the program are the whole state. Resume on any machine.', { cls: 'red', text: 'host died' });
+    S.caption('The host is dead.', 'Resume on any machine.', { cls: 'red', text: 'host died' });
     await run.sleep(500);
     await run.press(S, [{ id: 'resume', label: 'Resume on another host', key: 'Space', primary: true }], { autoAfter: 3000 });
 
     S.host(true); S.journalFreeze(false); S.codeReset();
-    S.caption('Resume re-runs the program from the top.', 'Recorded steps return their recorded results instantly. No agent is asked twice.', { cls: 'chat', text: 'replay' });
+    S.caption('Resume replays the journal.', 'No agent is asked twice.', { cls: 'chat', text: 'replay' });
     const recorded = [[0, '/spawn:planner#0'], [1, '/spawn:builder#0'], [3, '/ask:plan#0'], [4, '/checkpoint:approve-plan#0'], [6, '/turn:build#0'], [9, SEC + 'spawn:reviewer#0'], [9, CRI + 'spawn:reviewer#0'], [10, SEC + 'ask:verdict#0']];
     for (const [line, key] of recorded) { S.hl(line, 'replay'); S.journalSet(key, 'replayed', 'replayed'); sfx.kind('chat'); await run.sleep(260); S.codeDone(line); }
     S.hl(10); S.journalSet(CRI + 'ask:verdict#0', 'pending', 'live · recovered');
-    S.caption('It reaches the one unfinished step and continues live.', 'The critic never noticed. Its verdict lands in the same journal.');
+    S.caption('It picks up the one unfinished step.', '');
     await run.sleep(1700);
     await M.pulse('critic', 'run', 'gold'); M.status('critic', 'idle');
-    S.journalSet(CRI + 'ask:verdict#0', 'ok', 'ok · { ok: true }'); S.journalSet('/fanOut:review#0', 'ok', 'ok · 2 branches'); S.codeDone(8); S.codeDone(10); S.codeDone(11);
+    S.journalSet(CRI + 'ask:verdict#0', 'ok', '{ ok: true }'); S.journalSet('/fanOut:review#0', 'ok', '2 branches'); S.codeDone(8); S.codeDone(10); S.codeDone(11);
     await run.sleep(400);
     S.hl(13); S.journal({ key: 'log', scope: '/', status: 'ok', note: 'merged true' }); sfx.ok(); M.ring('run', '#e9c46a'); M.status('you', 'idle');
     await run.sleep(400); S.codeDone(13);
-    S.caption('Merged. One dead host, zero lost work.', 'Cotal Lang: a small JavaScript subset where every effect is durable and every run is replayable.');
-    S.stats([{ n: '11', label: 'steps' }, { n: '1', label: 'dead host' }, { n: '0', label: 'lost work' }, { n: '0', label: 'agents re-asked' }]);
+    S.caption('Merged.', 'One dead host, zero lost work.');
+    S.stats([{ n: '11', label: 'steps' }, { n: '1', label: 'dead host' }, { n: '0', label: 'lost work' }]);
   }
 
   window.DEMOS = [
-    { id: 'team', layout: 'team', secs: 30, title: 'A team ships a feature', hook: 'Five agents from four vendors coordinate as peers in one shared space. No orchestrator.', tags: [{ text: 'presence' }, { text: 'multicast', cls: 'chat' }, { text: 'unicast', cls: 'dm' }, { text: 'anycast', cls: 'any' }, { text: 'late join', cls: 'gold' }], run: team },
-    { id: 'modes', layout: 'modes', secs: 30, title: 'Three ways to send', hook: 'To a channel, to one peer, or to a role. One addressing scheme, durable by default.', tags: [{ text: 'multicast', cls: 'chat' }, { text: 'unicast', cls: 'dm' }, { text: 'anycast', cls: 'any' }, { text: 'durable inbox' }], run: modes },
-    { id: 'topo', layout: 'topo', secs: 35, title: 'Any topology', hook: 'Peers, supervisor, pipeline, hybrid: the same agents re-wired live. Then forty more join.', tags: [{ text: 'topology' }, { text: 'scale', cls: 'any' }, { text: 'local-first' }], run: topo },
-    { id: 'lang', layout: 'lang', secs: 40, title: 'A workflow that survives', hook: 'Cotal Lang: a program spawns agents, pauses for your approval, and survives its host being killed.', tags: [{ text: 'cotal lang', cls: 'gold' }, { text: 'checkpoint', cls: 'gold' }, { text: 'journal' }, { text: 'resume' }], run: lang },
+    { id: 'team', layout: 'team', secs: 30, title: 'A team ships a feature', hook: 'Five agents from four vendors coordinate as peers. No orchestrator.', tags: [{ text: 'presence' }, { text: 'multicast', cls: 'chat' }, { text: 'unicast', cls: 'dm' }, { text: 'anycast', cls: 'any' }, { text: 'late join', cls: 'gold' }], run: team },
+    { id: 'modes', layout: 'modes', secs: 30, title: 'Three ways to send', hook: 'To a channel, to one peer, or to a role.', tags: [{ text: 'multicast', cls: 'chat' }, { text: 'unicast', cls: 'dm' }, { text: 'anycast', cls: 'any' }, { text: 'durable inbox' }], run: modes },
+    { id: 'topo', layout: 'topo', secs: 35, title: 'Any topology', hook: 'The same agents re-wired live into any shape.', tags: [{ text: 'topology' }, { text: 'scale', cls: 'any' }, { text: 'local-first' }], run: topo },
+    { id: 'lang', layout: 'lang', secs: 40, title: 'A workflow that survives', hook: 'A program that pauses for your approval and survives its host being killed.', tags: [{ text: 'cotal lang', cls: 'gold' }, { text: 'checkpoint', cls: 'gold' }, { text: 'journal' }, { text: 'resume' }], run: lang },
   ];
 })();
