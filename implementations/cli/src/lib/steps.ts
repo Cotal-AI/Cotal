@@ -1,11 +1,12 @@
 import * as p from "@clack/prompts";
+import type { ConnectorAssist } from "@cotal-ai/core";
 import { dim } from "./theme.js";
 import { abortIfCancel } from "./cancel.js";
-import { assistAvailable, runHandoff } from "./assist.js";
+import { assistAllowed, noAssistLine, runHandoff } from "./assist.js";
 import type { SetupLog } from "./setup-log.js";
 
 export interface Step {
-  /** Slug used in the log and the Claude handoff prompt. */
+  /** Slug used in the log and the debug handoff prompt. */
   name: string;
   /** Human line shown while the step runs. */
   title: string;
@@ -19,19 +20,22 @@ export interface Step {
   confirm?: string;
   /** The step draws its own live pane; the runner shows no spinner, just the result line. */
   live?: boolean;
-  /** Paths/URLs Claude should read when this step fails. */
+  /** Paths/URLs the debug handoff should read when this step fails. */
   context?: string[];
   /** Throw to fail; a returned string becomes the detail on the result line. */
   run(): Promise<string | void>;
 }
 
-/** Run steps in order with a failure loop per step: offer a Claude handoff, then
+/** Debug handoffs the failure menu may offer, resolved only when a step fails. */
+export type AssistSource = () => Promise<readonly ConnectorAssist[]>;
+
+/** Run steps in order with a failure loop per step: offer each debug handoff `assists` yields, then
  *  retry / skip / quit. Returns false on abort.
  *
  *  `yes` is non-interactive accept-all (agents/CI): optional and `confirm` steps run
  *  without prompting (so e.g. demo agents are written), and a failure aborts with the
  *  log path instead of opening the recovery menu/handoff, even on a TTY. */
-export async function runSteps(steps: Step[], log: SetupLog, opts: { yes?: boolean } = {}): Promise<boolean> {
+export async function runSteps(steps: Step[], log: SetupLog, opts: { yes?: boolean; assists?: AssistSource } = {}): Promise<boolean> {
   const interactive = process.stdin.isTTY && !opts.yes;
   for (const step of steps) {
     if (step.optional && !opts.yes && (!interactive || !(await ask(`${step.title}?`)))) {
@@ -45,12 +49,12 @@ export async function runSteps(steps: Step[], log: SetupLog, opts: { yes?: boole
       log.line(`${step.name}: skipped (declined consent)`);
       continue;
     }
-    if (!(await runOne(step, log, interactive))) return false;
+    if (!(await runOne(step, log, interactive, opts.assists))) return false;
   }
   return true;
 }
 
-async function runOne(step: Step, log: SetupLog, interactive: boolean): Promise<boolean> {
+async function runOne(step: Step, log: SetupLog, interactive: boolean, assists: AssistSource | undefined): Promise<boolean> {
   for (;;) {
     if (step.explain) p.log.step(step.explain);
     const spin = step.live ? undefined : p.spinner();
@@ -74,9 +78,9 @@ async function runOne(step: Step, log: SetupLog, interactive: boolean): Promise<
         return false;
       }
 
-      const choice = await failureMenu(step);
-      if (choice === "debug") {
-        await runHandoff({ step: step.name, error: err, context: step.context ?? [], logPath: log.path });
+      const choice = await failureMenu(step, assists);
+      if (typeof choice === "object") {
+        await runHandoff(choice, { step: step.name, error: err, context: step.context ?? [], logPath: log.path });
         continue;
       }
       if (choice === "retry") continue;
@@ -93,11 +97,21 @@ async function runOne(step: Step, log: SetupLog, interactive: boolean): Promise<
   }
 }
 
-type Choice = "retry" | "debug" | "skip" | "quit";
+type Choice = "retry" | "skip" | "quit" | ConnectorAssist;
 
-async function failureMenu(step: Step): Promise<Choice> {
+async function failureMenu(step: Step, assists: AssistSource | undefined): Promise<Choice> {
   const options: { value: Choice; label: string }[] = [{ value: "retry", label: "Retry this step" }];
-  if (assistAvailable()) options.push({ value: "debug", label: "Debug it with Claude" });
+  if (assistAllowed()) {
+    let handoffs: readonly ConnectorAssist[] = [];
+    let reason = "no installed connector offers one with its harness on PATH";
+    try {
+      handoffs = (await assists?.()) ?? [];
+    } catch (e) {
+      reason = `connector discovery failed: ${(e as Error).message}`;
+    }
+    for (const assist of handoffs) options.push({ value: assist, label: `Debug it with ${assist.title}` });
+    if (!handoffs.length) p.log.message(noAssistLine(reason));
+  }
   options.push({ value: "skip", label: step.optional ? "Skip it" : "Skip (may abort)" });
   options.push({ value: "quit", label: "Quit setup" });
   const choice = await p.select({ message: "What now?", options });

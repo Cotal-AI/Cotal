@@ -24,8 +24,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import net, { type AddressInfo } from "node:net";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "../src/index.js";
 
 let cells = 0, failed = 0;
@@ -36,10 +35,6 @@ const ok = (name: string, cond: boolean, detail?: unknown): void => {
   console.log(`  x FAIL  ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = async (): Promise<number> => new Promise((res) => {
-  const s = net.createServer();
-  s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-});
 
 /** EVERY CALL HERE IS BOUNDED, because the defect under test is a call that never returns. With the
  *  guard mutated away an unbounded read would kill the run on the harness timeout and report an

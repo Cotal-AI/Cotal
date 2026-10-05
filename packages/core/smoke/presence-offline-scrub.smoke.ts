@@ -15,7 +15,7 @@ import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { CotalEndpoint, isReachable, mintLifecycleUid, presenceBucket, principalKey, DEV_OWNER, type Presence } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
@@ -40,7 +40,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 try {
-  for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
 
   const ep = new CotalEndpoint({ space, servers, channels: ["general"], card: { name: "otto", kind: "agent", id }, lifecycleUid: mintLifecycleUid() });
   ep.on("error", () => {});

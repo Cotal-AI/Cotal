@@ -4,11 +4,16 @@ Inbound: the sidecar pushes mesh messages over the bridge; the adapter builds a 
 and calls ``handle_message`` — which wakes an idle session or **queues + interrupts a running one**
 (the gateway's own busy handling), so a peer can DRIVE a live turn, not just leave a message.
 Outbound: the gateway hands a turn's reply to ``send()``, which the adapter routes back to that
-message's mesh origin (the channel it came in on, or a DM to the sender).
+message's mesh origin (the channel it came in on, or a DM to the sender), as a reply to it.
+
+A DM answering a question one of this gateway's sessions asked goes to that session, not to
+``dm:<sender>`` (see replies.py).
 """
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import uuid
 from typing import Any, Optional
 
@@ -20,9 +25,28 @@ from gateway.platforms.base import (
 )
 from gateway.config import Platform, PlatformConfig
 
-from . import hooks
+from . import hooks, replies
 from .bridge_client import get_client
+from .resume import seed_chat
 from .framing import format_injection
+
+logger = logging.getLogger(__name__)
+# How many delivered messages a turn reply can still name as the one it answers.
+MAX_ANSWERING = 1024
+
+
+class InjectionRefused(Exception):
+    """The host would not run an answer in the session that asked. The answer is not acked, and the
+    sidecar offers it again later (``deferred``)."""
+
+
+def chat_type_for(chat_id: str) -> Optional[str]:
+    """The chat type of a chat_id minted on inbound, or None for an id this adapter did not mint."""
+    if chat_id.startswith("channel:"):
+        return "group"
+    if chat_id.startswith("dm:"):
+        return "dm"
+    return None
 
 
 def _target_for(chat_id: str) -> dict:
@@ -39,6 +63,9 @@ class CotalAdapter(BasePlatformAdapter):
         super().__init__(config, Platform("cotal"))
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._client = get_client()
+        # message id -> the contextId of a message delivered into its sender's own chat, for the
+        # turn reply that names it (the gateway's ``reply_to``).
+        self._answering: dict[str, Optional[str]] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect the bridge and start receiving.
@@ -111,8 +138,15 @@ class CotalAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Any = None, metadata: Any = None
     ) -> SendResult:
-        # The gateway delivers a turn's reply here → route it back to the message's mesh origin.
-        self._client.reply(_target_for(chat_id), content)
+        # The gateway delivers a turn's reply here → route it back to the message's mesh origin. A
+        # reply to a message delivered here names it and copies its contextId (it belongs to the
+        # asker); otherwise the sidecar pairs a DM reply with its peer's oldest unanswered message.
+        answered = str(reply_to) if reply_to is not None else None
+        if answered not in self._answering:
+            answered = None
+        self._client.reply(
+            _target_for(chat_id), content, answered, self._answering.get(answered) if answered else None
+        )
         return SendResult(success=True, message_id=uuid.uuid4().hex)
 
     async def get_chat_info(self, chat_id: str) -> dict:
@@ -140,11 +174,17 @@ class CotalAdapter(BasePlatformAdapter):
         after a crash). Until proven, this acks on the inject coroutine completing without error.
         """
         recv_key = msg.get("recvKey")
-        if recv_key and not fut.cancelled() and fut.exception() is None:
+        if not recv_key or fut.cancelled():
+            return
+        exc = fut.exception()
+        if exc is None:
             # Address the bridge by the per-delivery receive key (#624): the wire id of an id-less
             # message is "", which the truthiness check below would silently never deliver-ack, and
             # the bridge's own guard would then never clear its in-flight slot.
             self._client.delivered(recv_key)
+        elif isinstance(exc, InjectionRefused):
+            # Not taken: free the bridge's in-flight slot without an ack, so the answer is kept.
+            self._client.deferred(recv_key)
 
     async def _inject(self, msg: dict) -> None:
         kind = msg.get("kind")
@@ -152,17 +192,47 @@ class CotalAdapter(BasePlatformAdapter):
 
         if kind == "channel":
             ch = msg.get("channel") or "general"
-            chat_id, chat_type, chat_name = f"channel:{ch}", "group", f"#{ch}"
+            chat_id, chat_name = f"channel:{ch}", f"#{ch}"
         else:  # dm / anycast → a turn whose reply goes straight back to the sender
-            chat_id, chat_type, chat_name = f"dm:{msg.get('fromId')}", "dm", sender
+            chat_id, chat_name = f"dm:{msg.get('fromId')}", sender
+        chat_type = chat_type_for(chat_id)
 
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_name,
-            chat_type=chat_type,
-            user_id=msg.get("fromId"),
-            user_name=sender,
-        )
+        # The answer to a question one of our sessions asked runs in that session. The sidecar has
+        # checked that its sender is the peer the question went to.
+        asker = replies.asking_session(msg.get("contextId")) if msg.get("answersQuestion") is True else None
+        if asker and "session_key" in asker:  # a session on another platform
+            try:
+                taken = replies.inject(format_injection(msg), asker["session_key"])
+            except Exception:
+                # A host that raised has not taken it: keep the answer for the asker, as for a refusal.
+                logger.exception(
+                    "cotal: the host failed to run an answer in session %s; it is kept and offered again",
+                    asker["session_key"],
+                )
+                raise InjectionRefused(asker["session_key"]) from None
+            if taken:
+                return
+            # Running it in another session would consume the answer where nobody asked for it.
+            logger.warning(
+                "cotal: the host refused to run an answer in session %s; it is kept and offered "
+                "again. Allow it with plugins.entries.cotal.allow_gateway_injection: true",
+                asker["session_key"],
+            )
+            raise InjectionRefused(asker["session_key"])
+        if asker:
+            source = self.build_source(**asker)
+        else:
+            if msg.get("id"):
+                self._answering[msg["id"]] = msg.get("contextId")
+                if len(self._answering) > MAX_ANSWERING:
+                    del self._answering[next(iter(self._answering))]
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=chat_name,
+                chat_type=chat_type,
+                user_id=msg.get("fromId"),
+                user_name=sender,
+            )
         event = MessageEvent(
             # A PEER NAMES ITSELF AND WRITES ITS OWN BODY, so neither is framing. This text is
             # auto-injected into a turn rather than returned when the model asks, so the model never
@@ -177,4 +247,10 @@ class CotalAdapter(BasePlatformAdapter):
             source=source,
             message_id=msg.get("id"),
         )
+        # `cotal spawn --resume`: a chat whose session is still empty starts as a branch of the
+        # launcher's fork, so its first turn carries the source context. No await sits between the
+        # check and the switch inside seed_chat, so a second message for the same chat sees it done.
+        fork = os.environ.get("COTAL_HERMES_FORK_SESSION")
+        if fork:
+            seed_chat(getattr(self, "_session_store", None), source, fork)
         await self.handle_message(event)

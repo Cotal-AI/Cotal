@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   registry,
+  SpawnRefused,
   type AgentHandle,
   type LaunchSpec,
   type Pane,
@@ -80,19 +81,26 @@ export class CmuxRuntime implements Runtime {
     // `name` becomes a temp-script key and a `cotal-<name>` tab id — keep it a bare token
     // so it can't traverse paths or break the workspace label.
     if (!/^[A-Za-z0-9_.-]+$/.test(name))
-      throw new Error(`cmux runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
+      throw new SpawnRefused(`cmux runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
     if (!cmux.available())
-      throw new Error(
+      throw new SpawnRefused(
         `the cmux CLI (${process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux"}) couldn't reach the app — ` +
           "is cmux running, and is this process inside a cmux surface (CMUX_SOCKET_PATH set)?",
       );
     // `confirm` auto-clears a one-time prompt (Claude's dev-channels) by sending Enter to this
     // tab's own surface — so a spawned teammate joins the mesh without anyone switching to its tab.
-    const command = paneCommand(
-      { command: spec.command, args: spec.args, env: spec.env, cwd, confirm: Boolean(spec.confirm) },
-      false,
-      true, // isolate: spawned agent gets ONLY the connector-declared env (P3)
-    );
+    // Nothing has the spec's command until openWorkspace, so a launch script that cannot be written
+    // is a refusal.
+    let command: string;
+    try {
+      command = paneCommand(
+        { command: spec.command, args: spec.args, env: spec.env, cwd, confirm: Boolean(spec.confirm) },
+        false,
+        true, // isolate: spawned agent gets ONLY the connector-declared env (P3)
+      );
+    } catch (err) {
+      throw new SpawnRefused((err as Error).message);
+    }
     // Keep the new tab's workspace ref so we can drive (send keys to its terminal)
     // and close it later. cmux targets the tab's single terminal surface by workspace.
     const workspace = cmux.openWorkspace(`cotal-${name}`, JSON.stringify(surface(command)), { focus: false });

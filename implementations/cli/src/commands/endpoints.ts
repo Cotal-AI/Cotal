@@ -1,6 +1,6 @@
 import { type ParsedArgs, type Presence } from "@cotal-ai/core";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
-import { c, statusBadge } from "../ui.js";
+import { c, presenceDetail, statusBadge } from "../ui.js";
 
 /** List the mesh presence roster, including infrastructure endpoints such as the manager. */
 export async function endpoints(args: ParsedArgs): Promise<void> {
@@ -39,7 +39,7 @@ export function printEndpoints(roster: Presence[], space: string): void {
   const kindWidth = Math.max(...rows.map((row) => row.kind.length));
   for (const row of rows) {
     const activity = row.presence.activity ? `  ${c.dim(row.presence.activity)}` : "";
-    const condition = row.presence.condition ? ` (${row.presence.condition.code})` : "";
+    const condition = presenceDetail(row.presence);
     console.log(`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${condition}${activity}`);
   }
 }

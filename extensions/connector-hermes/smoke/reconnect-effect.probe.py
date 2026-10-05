@@ -118,12 +118,37 @@ sys.modules.update(
 _tmp = tempfile.mkdtemp()
 _sockpath = os.path.join(_tmp, "bridge.sock")
 os.environ["COTAL_BRIDGE_SOCKET"] = _sockpath
+# The control token the client must present on the first frame of every connect and reconnect.
+# Set before BridgeClient is ever constructed, so its resolution (COTAL_CONTROL_TOKEN or
+# _material_token()) finds this value rather than raising for a missing token.
+_TOKEN = "reconnect-effect-smoke-token"
+os.environ["COTAL_CONTROL_TOKEN"] = _TOKEN
 sys.path.insert(0, PLUGIN_PARENT)
 
 _srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 _srv.bind(_sockpath)
 _srv.listen(8)
 _conns: list[socket.socket] = []
+# The first frame of every accepted connection, recorded so the suite can assert the client
+# authenticates on connect AND on every reconnect, not merely once at process start.
+_first_frames: list[dict] = []
+
+
+def _record_first_frame(conn: socket.socket) -> None:
+    buf = b""
+    while b"\n" not in buf:
+        try:
+            data = conn.recv(4096)
+        except OSError:
+            return
+        if not data:
+            return
+        buf += data
+    line, _rest = buf.split(b"\n", 1)
+    try:
+        _first_frames.append(json.loads(line))
+    except ValueError:
+        pass
 
 
 def _serve() -> None:
@@ -133,6 +158,7 @@ def _serve() -> None:
         except OSError:
             return
         _conns.append(conn)
+        threading.Thread(target=_record_first_frame, args=(conn,), daemon=True).start()
 
 
 threading.Thread(target=_serve, daemon=True).start()
@@ -229,6 +255,19 @@ def main() -> None:
     print("PUSHED_WARM", pushed_warm)
     print("COLD_DELIVERED", cold)
     print("WARM_DELIVERED", warm)
+    # The real Python client must present the control token on the first frame of EVERY connect
+    # and reconnect, not merely once. Two accepted connections are expected here: the cold connect
+    # and the post-disconnect reconnect. The frame is read by a background thread per connection,
+    # so poll rather than reading _first_frames the instant the scenario returns.
+    _frame_deadline = time.time() + 3.0
+    while len(_first_frames) < 2 and time.time() < _frame_deadline:
+        time.sleep(0.05)
+    print("FIRST_FRAME_CONNECTIONS", len(_first_frames))
+    print(
+        "FIRST_FRAMES_TOKENED",
+        len(_first_frames) >= 2
+        and all(f.get("t") == "subscribe" and f.get("token") == _TOKEN for f in _first_frames),
+    )
 
     if MODE == "subject":
         # A missing or raising `reopen` is a FAILED PROPERTY, not a dead instrument: at the merge

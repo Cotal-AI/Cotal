@@ -24,24 +24,15 @@
  */
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { once } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, mintLifecycleUid, seedChannelRegistry } from "@cotal-ai/core";
-import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function freePort(): Promise<number> {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const port = (server.address() as { port: number }).port;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
-}
 async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 30_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -99,7 +90,7 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
     return;
   }
   fail++;
-  console.log(`  ✗ FAIL: ${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  console.log(`  ✗ FAIL: ${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
 };
 function readJsonLines<T>(path: string): T[] {
   if (!existsSync(path)) return [];
@@ -181,6 +172,11 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
+      // Keeps the post-join notice a noReply append (#2001's pendingKickoff path is for launches
+      // with no spawn prompt). The busy window below must be a seat that is busy WITHOUT a
+      // Cotal-owned turn, which only holds if the host's next send after readiness is the append
+      // the fake refuses, not a driven turn it queues; see issue #2029.
+      COTAL_JCODE_PROMPT: "FX26-KICKOFF-AFTER-BUSY-WINDOW-2029-LOSS",
       COTAL_LIFECYCLE_UID: lifecycleUid,
       COTAL_CONTROL_SOCKET: join(root, "control.sock"),
       COTAL_CONTROL_TOKEN: "jcode-qfloss-control-token",

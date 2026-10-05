@@ -15,9 +15,15 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
+from . import replies
 from .bridge_client import get_client
+
+# The tools that ask a question of a peer, or of one agent of a role. Each call stamps a context id
+# minted for that question, so the answer can be routed back to the session that asked (see
+# replies.py). A channel broadcast is not one: everyone on the channel reads its context id.
+_QUESTIONS = frozenset({"cotal_dm", "cotal_anycast"})
 
 
 def _spec(descriptor: dict) -> dict:
@@ -38,11 +44,42 @@ def _handler(name: str) -> Callable[..., str]:
     signature can't reject a kwarg the host adds."""
     def run(args: dict, **_ctx: Any) -> str:
         try:
-            return get_client().call_tool(name, args or {})
+            session = _calling_session() if name in _QUESTIONS else None
+            context_id = replies.issue(session) if session else None
+            # A cotal session dm:<peer id> is that peer's conversation: a DM to it there answers it.
+            chat_id = (session or {}).get("chat_id", "")
+            peer_id = chat_id[len("dm:"):] if chat_id.startswith("dm:") else None
+            return get_client().call_tool(name, args or {}, context_id=context_id, peer_id=peer_id)
         except Exception as e:  # surfaced back to the model as the tool result
             return f"cotal error: {e}"
 
     return run
+
+
+def _calling_session() -> Optional[dict]:
+    """The gateway session this tool call runs in: a cotal session's gateway source, or the session
+    key of a session on another platform when the host can inject into it; None otherwise. The
+    gateway binds these per task (``gateway.session_context``)."""
+    from gateway.session_context import get_session_env
+
+    if get_session_env("HERMES_SESSION_PLATFORM", "") != "cotal":
+        key = get_session_env("HERMES_SESSION_KEY", "")
+        return {"session_key": key} if key and replies.can_inject() else None
+    from .adapter import chat_type_for
+
+    # Not every supported gateway binds a chat type, so it is read off the chat_id the adapter
+    # minted for the session: the answer's source must match the asker's to key the same session.
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+    chat_type = chat_type_for(chat_id)
+    if not chat_type:
+        return None
+    return {
+        "chat_id": chat_id,
+        "chat_type": chat_type,
+        "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME", ""),
+        "user_id": get_session_env("HERMES_SESSION_USER_ID", ""),
+        "user_name": get_session_env("HERMES_SESSION_USER_NAME", ""),
+    }
 
 
 def _load_descriptors() -> list[dict]:

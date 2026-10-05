@@ -27,6 +27,10 @@
  * warning text, the cache staying on the last good token) cannot grade either alone - a future
  * change could emit the message and still adopt.
  *
+ * THE MARGIN EDGE is graded on a pinned clock. On a live clock, zero margin is a one-millisecond
+ * race, so those cells pin `Date.now` for one refresh and read the delay that refresh arms. The
+ * delay also pins the 15s retry value, which the 12s window below only bounds from below.
+ *
  * No broker and no auth service: the bearer is a JWT-shaped string, which is all `bearerExpiryMs` and
  * `decodeBearerPrincipal` read. Imported from `../src/` so a mutation on source is visible without a
  * dist rebuild.
@@ -144,6 +148,74 @@ c(
   rotated.internals.currentBearer?.slice(0, 24),
 );
 c("and it is not reported as a failure", rotated.warnings.length === 0, rotated.warnings.map((e) => e.message));
+
+// ── The margin edge, on a pinned clock ────────────────────────────────────────────────────────────
+// The re-serve refusal needs the held token to have no margin left: `exp - now - 60s <= 0`. No cell
+// above holds a token near zero, and on a live clock zero is a one-millisecond race. `Date.now` is
+// pinned instead, as `secret-fs.smoke.ts` pins it, and put back before any timer can run: the
+// refresh awaits only the source, which resolves as a microtask, so every `Date.now()` it makes
+// reads the pinned value. Timers keep their own clock. `setTimeout` is wrapped for the same window,
+// so the delay the refresh arms is read directly.
+const EDGE_EXP = Math.floor(Date.now() / 1000) + 600;
+const EDGE = mintAt(EDGE_EXP, "edge");
+/** The instant at which EDGE has zero margin left. */
+const EDGE_ZERO_MARGIN = EDGE_EXP * 1000 - 60_000;
+
+/** One non-initial refresh at a pinned `now`. Returns every delay it passed to `setTimeout`. */
+const refreshAt = async (ep: Internals, nowMs: number): Promise<number[]> => {
+  const realNow = Date.now;
+  const realSetTimeout = globalThis.setTimeout;
+  const delays: number[] = [];
+  Date.now = () => nowMs;
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    delays.push(ms ?? 0);
+    return realSetTimeout(fn, ms);
+  }) as unknown as typeof setTimeout;
+  try {
+    await ep.refreshBearer();
+  } finally {
+    Date.now = realNow;
+    globalThis.setTimeout = realSetTimeout;
+  }
+  return delays;
+};
+
+const zero = armed("s1572d", async () => EDGE);
+await zero.internals.refreshBearer(true);
+const zeroDelays = await refreshAt(zero.internals, EDGE_ZERO_MARGIN);
+c(
+  "a re-served token with zero margin left is refused (the margin edge is inclusive)",
+  zero.warnings.some((e) => /re-served the token already held/.test(e.message)),
+  zero.warnings.map((e) => e.message),
+);
+c(
+  "that refusal arms the retry at 15s (BEARER_RETRY_MS), not at the 5s floor",
+  zeroDelays.length === 1 && zeroDelays[0] === 15_000,
+  zeroDelays,
+);
+
+// The other side of the edge, same token: one millisecond earlier the refusal must not fire. This
+// is also what shows the cells above refuse because of the margin and not because of the pinning.
+const oneMs = armed("s1572e", async () => EDGE);
+await oneMs.internals.refreshBearer(true);
+const oneMsDelays = await refreshAt(oneMs.internals, EDGE_ZERO_MARGIN - 1);
+c(
+  "the same token with 1ms of margin left is adopted, with no warning",
+  oneMs.warnings.length === 0 && oneMsDelays.length === 1 && oneMsDelays[0] === 5_000,
+  { warnings: oneMs.warnings.map((e) => e.message), oneMsDelays },
+);
+
+// A source that caches: the same bytes on every read while the token still has most of its life.
+// That is not the #1561 loop, because the delay it arms is minutes, not the floor.
+const CACHED = mintBearer(10 * 60_000, "cached");
+const cache = armed("s1572f", async () => CACHED);
+await cache.internals.refreshBearer(true);
+await cache.internals.refreshBearer();
+c(
+  "a re-served token with most of its life left is adopted, with no warning",
+  cache.warnings.length === 0,
+  cache.warnings.map((e) => e.message),
+);
 
 // ── The cadence, both directions, measured in the same window ─────────────────────────────────────
 // Longer than the 5s floor, shorter than the 15s backoff. The refused source must read NONE; the

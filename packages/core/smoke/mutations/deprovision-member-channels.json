@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "packages/core/smoke/deprovision-agent-auth.smoke.ts"
+  ],
+  "guard": "deprovisionAgent purges the retired lifecycle's durable membership rows for its exact memberChannels",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/core exec tsx smoke/deprovision-agent-auth.smoke.ts",
+  "completionMarker": "DEPROVISION SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/deprovision-member-channels.json",
+  "why": [
+    "The deprovisionAgent helper deletes exact-keyed durable membership rows for the retiring lifecycle.",
+    "Removing the member deletion loop leaves the retired lifecycle's member rows in place.",
+    "The suite must catch this on the named cell asserting the retired lifecycle's named-channel rows are gone."
+  ],
+  "mutations": [
+    {
+      "name": "deprovisionAgent skips deleting member rows on the target channels",
+      "file": "packages/core/src/streams.ts",
+      "find": "const mRes = await purgeKvKeyWithAccounting(jsm, membersKv, membersBucket(opts.space), mKeyStr);",
+      "replace": "const mRes: any = { outcome: \"absent\", status: \"absent\" }; /* member row deletion skipped */",
+      "expectRed": "MEMBERS: the retired lifecycle's named-channel rows are GONE",
+      "cell": "MEMBERS: the retired lifecycle's named-channel rows are GONE",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

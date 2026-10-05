@@ -26,6 +26,8 @@ import {
   progressSignal,
   userViewAuth,
   userViewAuthOrExit,
+  type ConnectFlags,
+  type Connection,
   type LocalProcess,
   type UserViewAuth,
 } from "@cotal-ai/workspace";
@@ -446,27 +448,6 @@ export class PayloadTooLarge extends Error {}
  *    formed an opinion, so the refusal was the expensive part rather than the cheap one. */
 const MAX_BODY_BYTES = 8 * 1024;
 
-/** THE LIMIT, PARSED ONCE, because three routes each re-deriving
- *  `query.get("limit") ? Number(...) : N` is how they came to disagree about the same parameter.
- *
- *  MEASURED ON THE SHIPPED ROUTES, against a real broker, before this existed:
- *    ?limit=abc       `Number("abc")` is NaN and every comparison against NaN is false, so core's
- *                     `limit <= 0` guard does not fire and the widening search's two exits can
- *                     never be true. No answer after 30s, and the ABANDONED request kept consuming
- *                     half a core with its caller long gone, invisible because the process keeps
- *                     serving everything else.
- *    ?limit=Infinity  passes the same guard, and `slice(-Infinity)` is the whole array: a channel's
- *                     entire retained history from a one word request. `1e999` is the same value.
- *    ?limit=2.5       silently truncated to 2.
- *    ?limit=" 5"      accepted as 5, because `Number()` trims whitespace.
- *
- *  So the accepted form is the narrow one: a plain run of digits naming a safe integer. `0` keeps
- *  meaning zero, which is what it already did and what a caller expects; an absent or empty
- *  parameter keeps meaning the route's own default, the one shape the old parse got right.
- *
- *  Everything else is REFUSED rather than clamped. A clamp would answer a request nobody made, and
- *  the caller who wrote `limit=2.5` would never learn that the page they read was not the page they
- *  asked for. */
 /** Codepoints `JSON.stringify` leaves RAW that PRODUCE NO GLYPH OF THEIR OWN, or that reorder the
  *  text around them, stated as Unicode PROPERTIES rather than as a hand list. That wording is
  *  narrower than "change what a reader sees" on purpose, and the narrowing is a review finding:
@@ -589,7 +570,29 @@ function canonicalChannel(name: string): string {
  *  test above it, so its value cannot carry anything the quoter would escape today. It quotes
  *  anyway: the guarantee that a refusal renders its input unambiguously should hold because the
  *  quoting site holds it, not because a regex two lines up stays exactly as narrow as it is this
- *  morning. */
+ *  morning.
+ *
+ *  THE LIMIT, PARSED ONCE, because three routes each re-deriving
+ *  `query.get("limit") ? Number(...) : N` is how they came to disagree about the same parameter.
+ *
+ *  MEASURED ON THE SHIPPED ROUTES, against a real broker, before this existed:
+ *    ?limit=abc       `Number("abc")` is NaN and every comparison against NaN is false, so core's
+ *                     `limit <= 0` guard does not fire and the widening search's two exits can
+ *                     never be true. No answer after 30s, and the ABANDONED request kept consuming
+ *                     half a core with its caller long gone, invisible because the process keeps
+ *                     serving everything else.
+ *    ?limit=Infinity  passes the same guard, and `slice(-Infinity)` is the whole array: a channel's
+ *                     entire retained history from a one word request. `1e999` is the same value.
+ *    ?limit=2.5       silently truncated to 2.
+ *    ?limit=" 5"      accepted as 5, because `Number()` trims whitespace.
+ *
+ *  So the accepted form is the narrow one: a plain run of digits naming a safe integer. `0` keeps
+ *  meaning zero, which is what it already did and what a caller expects; an absent or empty
+ *  parameter keeps meaning the route's own default, the one shape the old parse got right.
+ *
+ *  Everything else is REFUSED rather than clamped. A clamp would answer a request nobody made, and
+ *  the caller who wrote `limit=2.5` would never learn that the page they read was not the page they
+ *  asked for. */
 export function historyLimit(query: URLSearchParams, fallback: number): number {
   const raw = query.get("limit");
   if (raw === null || raw === "") return fallback;
@@ -617,11 +620,15 @@ export interface ActivityPage {
    *  and "the space is empty". The names are those two sources rather than individual channels: one
    *  read either arrived or it did not, and {@link activityBackfill} says why at its source list. */
   missing: string[];
+  /** Why each source in `missing` did not answer, keyed by its name. A read that ran out of time and
+   *  a read that was refused (the client refusing a consumer create over `max_payload`, say) are
+   *  different things for an operator to act on, and a name alone made them the same bytes. */
+  reasons: Record<string, string>;
   deadlineMs: number;
 }
 
-/** The all-activity backfill: recent chat history merged with DM history, oldest-first, capped, and
- *  BOUNDED.
+/** The all-activity backfill: recent chat history merged with DM history, oldest-first by `ts`,
+ *  capped, and BOUNDED.
  *
  * WHAT CHANGED AND WHY, because the previous shape had two failure modes and no good one. It fanned
  * out under `Promise.all` and awaited the DM backlog after it, so (1) one channel's rejection
@@ -697,6 +704,7 @@ export async function activityBackfill(
     // start another read: the page is closed, and issuing broker work for it would be waste with a
     // guaranteed-discarded result.
     const settled: (ActivityPage["entries"] | typeof LATE)[] = new Array(sources.length).fill(LATE);
+    const failed: (string | undefined)[] = new Array(sources.length);
     let next = 0;
     let expired = false;
     void clock.until.then(() => { expired = true; });
@@ -707,9 +715,11 @@ export async function activityBackfill(
         try {
           const r = await within(sources[i].read(clock.signal), clock.until);
           if (r !== LATE) settled[i] = r;
-        } catch {
+        } catch (e) {
           // A source that FAILED is missing for the same reason a late one is: it has nothing to
           // contribute. It is named the same way, and it no longer takes the whole page with it.
+          // Its reason is kept, because a refusal and a timeout ask different things of an operator.
+          failed[i] = e instanceof Error ? e.message : String(e);
         }
       }
     };
@@ -717,11 +727,23 @@ export async function activityBackfill(
 
     const entries: ActivityPage["entries"] = [];
     const missing: string[] = [];
+    const reasons: Record<string, string> = {};
     for (let i = 0; i < settled.length; i++) {
       const r = settled[i];
-      if (r === LATE) missing.push(sources[i].name);
-      else entries.push(...r);
+      if (r === LATE) {
+        missing.push(sources[i].name);
+        reasons[sources[i].name] = failed[i] === undefined
+          ? `the read did not finish within ${deadlineMs}ms`
+          : `the read failed: ${failed[i]}`;
+      } else entries.push(...r);
     }
+    // THE PAGE IS ORDERED BY `ts`, AND THE CHAT HALF WAS CHOSEN BY ARRIVAL. The chat rows are the
+    // newest `limit` by CHAT stream sequence, the order the broker stored them in, and the DM rows
+    // are the newest `limit` of the DM stream. The two streams number their messages independently,
+    // so the sender's `ts` is the only key both halves carry: it orders the merged page and makes the
+    // final cut to `limit` across both. Where a sender's clock disagrees with arrival, two chat rows
+    // can show in an order their arrival did not imply. The sort is stable, so rows with equal `ts`
+    // keep the order the reads returned: chat in stream sequence, then DMs in stream sequence.
     entries.sort((a, b) => a.msg.ts - b.msg.ts);
     return {
       entries: entries.slice(-limit),
@@ -729,11 +751,47 @@ export async function activityBackfill(
       read: sources.length - missing.length,
       of: sources.length,
       missing,
+      reasons,
       deadlineMs,
     };
   } finally {
     clock.done();
   }
+}
+
+/** Connects the dashboard and spends the account seed on its one write cred, the channel-purger
+ *  for channel delete. The dashboard is a loopback HTTP process and the seed can mint ANY identity
+ *  or role, so the seed is bound only inside this function and a request handler in {@link web}
+ *  that reaches for it fails to compile. A narrowed copy made inside `web()` would leave the full
+ *  value in the handlers' scope beside it. Resolves `undefined` in a parent that hands off to a
+ *  `--detach` child. The mint comes last, after that hand-off and the pidfile claim, because the
+ *  cred has no expiry and a process that detaches or is refused must not mint one it then drops.
+ *  `--creds` and open meshes have no seed and purge with the connection's own creds; user mode
+ *  mints a purger view per delete instead. */
+async function connectWithoutSeed(
+  raw: readonly string[],
+  values: ConnectFlags & { detach?: boolean; "no-open"?: boolean },
+  host: string,
+  port: number,
+): Promise<{ conn: Omit<Connection, "auth">; user: UserViewAuth | undefined; pidPath: string | undefined; purgeCreds: string | undefined } | undefined> {
+  const { auth, ...conn } = await connectOrExit(values, "admin");
+  const detachedRoot = process.env[DETACHED_ROOT_ENV];
+  if (detachedRoot && conn.root !== detachedRoot)
+    throw new Error(`detached web target lost its recorded mesh root (${detachedRoot}) before startup`);
+  if (values.detach) {
+    if (!conn.root)
+      throw new Error("`cotal web --detach` requires a recorded mesh root; start or register the mesh with `cotal up` first");
+    await launchDetachedWeb(raw, conn.root, conn.space, conn.server, host, port, Boolean(values["no-open"]));
+    return undefined;
+  }
+  const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
+  const pidPath = conn.root ? localProcessPath(webProcess.pidFile, { root: conn.root, space: conn.space }) : undefined;
+  if (pidPath) {
+    claimPid(pidPath);
+    process.once("exit", () => releasePid(pidPath));
+  }
+  const purgeCreds = !user && auth ? await mintCreds(auth, newIdentity(), "channel-purger") : conn.creds;
+  return { conn, user, pidPath, purgeCreds };
 }
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
@@ -746,19 +804,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // An invalid remote-exposure request must have no dashboard side effects.
   const host = normalizeWebHost(values.host);
   const port = values.port ? Number(values.port) : WEB_PORT;
-  // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast), then DROP the account
-  // seed. The dashboard is a loopback HTTP process; holding the space signing seed (`auth` — it can
-  // mint ANY identity/role) for the whole session would make a dashboard compromise = full account
-  // control. Instead pre-mint ONE scoped `channel-purger` cred for the only write path (channel delete
-  // = filtered CHAT purge + a channel-registry key delete), then EXPLICITLY narrow the `Connection`
-  // the request handlers close over so it no longer carries `auth` (see the drop below, just after
-  // the mint). `--creds` / open mode have no seed → the connection creds carry the purge rights.
-  //
-  // This paragraph used to say the seed "falls out of scope here". IT DID NOT: `conn` stayed in
-  // scope for the whole function and the delete path referenced it inside the handler, so the seed
-  // was reachable from the request handlers for as long as this comment claimed it was not. The
-  // mitigation is now performed rather than described — the correction is stated instead of quietly
-  // overwritten, because a comment that was wrong once is worth flagging to whoever reads it next.
+  // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast).
   //
   // USER MODE: the god view rides an exchange-gated "admin" VIEW bearer (ledger scope "admin",
   // fresh-checked at every mint and every connect) — standing via a bearer SOURCE so the tap
@@ -766,45 +812,11 @@ export async function web(args: ParsedArgs): Promise<void> {
   // "channel-purger" view per action, so each destructive click is a fresh ledger check, and
   // `cotal actor revoke` kills the dashboard live (eviction) while a scope edit bites at the next
   // refresh.
-  const conn = await connectOrExit(values, "admin");
-  const detachedRoot = process.env[DETACHED_ROOT_ENV];
-  if (detachedRoot && conn.root !== detachedRoot)
-    throw new Error(`detached web target lost its recorded mesh root (${detachedRoot}) before startup`);
-  if (values.detach) {
-    if (!conn.root)
-      throw new Error("`cotal web --detach` requires a recorded mesh root; start or register the mesh with `cotal up` first");
-    await launchDetachedWeb(args.raw, conn.root, conn.space, conn.server, host, port, Boolean(values["no-open"]));
-    return;
-  }
-  const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
+  const started = await connectWithoutSeed(args.raw, values, host, port);
+  if (!started) return;
+  const { conn, user, pidPath, purgeCreds } = started;
   const { server, space } = conn;
-  const pidPath = conn.root ? localProcessPath(webProcess.pidFile, { root: conn.root, space }) : undefined;
   const sessionPath = conn.root ? localProcessPath(SESSION_FILE, { root: conn.root, space }) : undefined;
-  if (pidPath) {
-    claimPid(pidPath);
-    process.once("exit", () => releasePid(pidPath));
-  }
-  const purgeCreds = !user && conn.auth ? await mintCreds(conn.auth, newIdentity(), "channel-purger") : conn.creds;
-
-  // THE SEED IS DROPPED HERE, AND THIS IS THE LINE THAT MAKES THE CLAIM ABOVE TRUE.
-  //
-  // The header above has always said the account seed "isn't reachable from the request handlers".
-  // It was NOT true: `conn` is bound at the top of `web()` and was referenced INSIDE
-  // `handleRequest` (the `userViewAuth(conn, …)` call on the delete path), so the handler closed
-  // over the whole `Connection` — including `conn.auth`, the `SpaceAuth` carrying the broker
-  // operator seed and the account seed/signingSeed that can mint ANY identity or role. The
-  // mitigation was described in a comment and never implemented; that gap is what D3 recorded.
-  //
-  // The last use of `conn.auth` is the line above, so from this point the handler needs a
-  // Connection WITHOUT it. `userViewAuth` reads only `bearer`/`userAuth`/`root`/`space` and never
-  // touches `auth`, so nothing downstream loses anything. `auth` is optional on `Connection`, so
-  // the narrowed value is still a `Connection` and the compiler keeps it that way.
-  //
-  // HONEST LIMIT, so this is not read as more than it is: this is DEFENSE IN DEPTH, not a claim of
-  // unexploitability. An attacker with code execution in this process can reach the heap, where
-  // lexical scope means nothing. What it does buy is that the DOCUMENTED mitigation is now real,
-  // and that a future edit reaching for `conn` inside the handler has to notice this line first.
-  const { auth: _accountSeedIsNotForRequestHandlers, ...connForHandlers } = conn;
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
@@ -872,7 +884,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       .catch((e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }));
   }, 150);
   try {
-    membershipWatch = await ep.watchMembership(pushMembership);
+    membershipWatch = await ep.watchMembership(pushMembership, (e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: e.message }));
   } catch (e) {
     console.error(c.dim(`• membership feed unavailable - graph shows traffic only (${(e as Error).message})`));
   }
@@ -912,9 +924,18 @@ export async function web(args: ParsedArgs): Promise<void> {
     // person to add a route above it inherits no protection and nothing says so.
     const verdict = gate.check(req, query);
     if (verdict !== undefined && "refuse" in verdict) {
+      // #2024: a refused request that announced a body is closed rather than drained; the fact is
+      // read here, after the gate, so the pre-gate prefix stays a parse and nothing else.
+      const announcedBody = Number(req.headers["content-length"]) > 0 || req.headers["transfer-encoding"] !== undefined;
       // A NAMED refusal, never a redirect and never an empty 200. The condition is the body, so a
       // caller that reads only the body still learns which of the three failed.
-      res.writeHead(verdict.refuse === CROSS_ORIGIN ? 403 : 401, { "content-type": "application/json" });
+      res.writeHead(verdict.refuse === CROSS_ORIGIN ? 403 : 401, {
+        "content-type": "application/json",
+        // A refusal that leaves a caller uploading on a kept-alive connection is drained by Node
+        // before the socket comes back, so the pre-auth corner #2024 names is an unbounded read.
+        // The close header is the whole remedy; see the catch below for what it does and costs.
+        ...(announcedBody ? { connection: "close" } : {}),
+      });
       return void res.end(JSON.stringify({ error: verdict.refuse }));
     }
     if (verdict !== undefined && "exchange" in verdict) {
@@ -926,6 +947,14 @@ export async function web(args: ParsedArgs): Promise<void> {
       });
       return void res.end();
     }
+
+    // The delete endpoint is the sole route that reads a request body. Refuse an announced body
+    // before dispatch everywhere else, so the next no-body route inherits the same bound instead
+    // of silently letting Node drain an upload the handler will never inspect.
+    const declared = Number(req.headers["content-length"]);
+    const announcedBody = declared > 0 || req.headers["transfer-encoding"] !== undefined;
+    const noBodyRoute = path !== "/api/channel/delete" || req.method !== "POST";
+    if (noBodyRoute && announcedBody) throw noBody(path, declared);
 
     if (path === "/feed") {
       res.writeHead(200, {
@@ -1010,9 +1039,9 @@ export async function web(args: ParsedArgs): Promise<void> {
       // A partial page is worth SAYING on the server too: the operator watching this log is the one
       // who can tell a slow link from a half of the feed that refused, and the browser's marker
       // never reaches them. What `missing` names is a source, `chat` or `direct messages`, so this
-      // line reports which half went unanswered and never an individual channel.
+      // line reports which half went unanswered and never an individual channel, each with its reason.
       if (page.partial)
-        console.error(c.yellow(`~ ${req.method ?? "GET"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.join(", ")}`));
+        console.error(c.yellow(`~ ${req.method ?? "GET"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.map((m) => `${m} (${page.reasons[m]})`).join(", ")}`));
       return json(res, page);
     }
     if (path === "/api/dms") {
@@ -1095,7 +1124,7 @@ export async function web(args: ParsedArgs): Promise<void> {
         // User mode mints a one-shot channel-purger VIEW per delete — the ledger is re-checked at
         // this click, and a mid-session revoke becomes this handler's 400, never a dead dashboard.
         const result = user
-          ? await userViewAuth(connForHandlers, "channel-purger").then((p: UserViewAuth) =>
+          ? await userViewAuth(conn, "channel-purger").then((p: UserViewAuth) =>
               clearChannel({ servers: server, space, channel, bearer: p.bearer, sentinelCreds: p.sentinelCreds }),
             )
           : await clearChannel({ servers: server, space, channel, creds: purgeCreds });
@@ -1269,7 +1298,7 @@ async function launchDetachedWeb(
   const url = webUrl(host, port);
   const sessionPath = localProcessPath(SESSION_FILE, context);
   try {
-    await waitForDetachedWeb(child, { pidPath, sessionPath, url, space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
+    await waitForDetachedWeb(child, { pidPath, sessionPath, url: boundUrl(host, port), space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
   } catch (e) {
     let cleanupError: Error | undefined;
     try { await terminateDetachedWeb(child, pidPath); }
@@ -1455,6 +1484,12 @@ export function normalizeWebHost(input: string | undefined): string {
 
 export function webUrl(host: string, port: number): string {
   if (host === WEB_HOST && port === WEB_PORT) return WEB_URL;
+  return boundUrl(host, port);
+}
+
+/** The address the server binds, for a probe made by this process rather than a browser:
+ *  `cotal.localhost` is a browser convention, and a system resolver such as WSL2's has no answer for it. */
+function boundUrl(host: string, port: number): string {
   const literal = host.includes(":") ? `[${host}]` : host;
   return `http://${literal}:${port}/`;
 }
@@ -1499,6 +1534,13 @@ async function readBody(req: IncomingMessage): Promise<{ channel?: string }> {
 function tooLarge(bytes: number, how: "declared" | "read"): PayloadTooLarge {
   return new PayloadTooLarge(
     `request body ${how === "declared" ? "declares" : "exceeds"} ${bytes} bytes, over the ${MAX_BODY_BYTES} byte limit for this route`,
+  );
+}
+
+function noBody(path: string, declared: number): PayloadTooLarge {
+  const announced = declared > 0 ? `${declared} bytes` : "transfer-encoding";
+  return new PayloadTooLarge(
+    `request body announces ${announced}, over the 0 byte limit because ${path} takes no request body`,
   );
 }
 

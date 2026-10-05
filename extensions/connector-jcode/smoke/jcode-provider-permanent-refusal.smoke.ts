@@ -1,25 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
-import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessError } from "@1jehuang/jcode-sdk";
 import { CotalEndpoint, isReachable, seedChannelRegistry } from "@cotal-ai/core";
-import { PERMANENT_BRIDGE_RECOVERY_CODES, permanentBridgeRecoveryFailure } from "../src/host.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { BRIDGE_RECOVERY_WINDOW_MS, PERMANENT_BRIDGE_RECOVERY_CODES, permanentBridgeRecoveryFailure } from "../src/host.js";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function freePort(): Promise<number> {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const port = (server.address() as { port: number }).port;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
-}
 async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 20_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -47,7 +37,7 @@ let child: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let passed = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
-  assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  assert.ok(condition, `${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
   passed++;
   console.log(`  ✓ ${name}`);
 };
@@ -143,9 +133,33 @@ try {
   await waitFor("initial bridge", () => entries().find((entry) => entry.ev === "listening"));
   await waitFor("mesh presence", () => peerId);
   check("the shipped Jcode host joins before the provider stall (instrument control)", Boolean(peerId));
+  // `listening` is the fake's socket being up and presence is the host announcing itself on the
+  // mesh. Neither says the host has a jcode SESSION, and the stall marker is delivered as a turn, so
+  // a marker that arrives before the session exists has nothing to run on. The host creates or
+  // attaches its session in its boot sequence rather than on the first turn (`host.ts`, beside the
+  // SIGINT handlers), so this wait resolves during startup and cannot deadlock on the turn it is
+  // gating. `fake-jcode.mjs` logs `session_path` for exactly this use: "Recorded so a test can
+  // assert WHICH path the host took, not merely that it started."
+  await waitFor("the host's jcode session", () => entries().find((entry) => entry.ev === "session_path"));
   await operator.unicast(peerId!, "SIMULATE_PROVIDER_STALL");
+  // Delivery and behaviour are separate waits on purpose. The fake logs every inbound frame, so the
+  // marker ARRIVING at the bridge is directly observable, and the refusal below is downstream of
+  // that arrival. Shard 3 reddened twice on 2026-10-01 (01c8af371 and 8e57aa9fc), both at `timed out
+  // waiting for persistent permanent replacement refusal` and both green on a re-run with no code
+  // change, and the single combined wait could not say whether the marker had even reached the
+  // bridge. A timeout on the first wait now names the delivery; a timeout on the second names the
+  // host's recovery, which is the defect this suite exists to catch.
+  await waitFor("the stall marker to reach the bridge", () =>
+    entries().find((entry) =>
+      entry.ev === "request" &&
+      String((entry.frame as { content?: unknown } | undefined)?.content ?? "").includes("SIMULATE_PROVIDER_STALL"),
+    ),
+  );
+  // The refusal answers the replacement's attach, so it arrives inside the host's recovery window,
+  // after the broken tree's teardown and the relaunch (#1219).
   await waitFor("persistent permanent replacement refusal", () =>
     entries().find((entry) => entry.ev === "attach_refused" && entry.code === "invalid_request"),
+    BRIDGE_RECOVERY_WINDOW_MS,
   );
   const terminalDeadline = Date.now() + 10_000;
   while (

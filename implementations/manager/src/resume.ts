@@ -85,6 +85,9 @@ const agent = z.strictObject({
     events: z.boolean().default(false),
     shareTools: z.string().max(4096).optional(),
     forkSource: z.string().min(1).max(4096).optional(),
+    // Optional: a seat that was not resumed, or has not recorded its fork yet, has none, and an
+    // inventory written before this field existed must still resume.
+    resumed: z.strictObject({ source: z.string().min(1).max(4096), title: z.string().min(1).max(1024).optional(), transcriptSha256: digest }).optional(),
     sessionId: z.string().min(1).max(4096).optional(),
     // The connector's session pointer file. Optional because a seat whose connector declares no
     // continuation has none, and because an inventory written before this field existed must still
@@ -96,6 +99,10 @@ const agent = z.strictObject({
   spawner: z.string().min(1).max(256),
   authorityParent: z.string().min(1).max(256).optional(),
   startedAt: z.string().min(1).max(64),
+  // The CHAT stream frontier at the preservation cut (issue #545). Optional because an inventory
+  // written before this field existed must still resume rather than be refused, exactly as
+  // sessionStatePath's absence means no pointer rather than a stricter refusal.
+  backfillFloor: z.number().int().nonnegative().optional(),
 });
 
 const inventory = z.strictObject({

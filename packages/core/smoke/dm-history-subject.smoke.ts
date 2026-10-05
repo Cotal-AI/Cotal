@@ -187,7 +187,7 @@ try {
     parts: [{ kind: "text", text: "no-from" }],
   })));
   raw.publish(dmSubj, JSON.stringify(envelope({
-    id: "bad-id-388",
+    label: "bad-id-388",
     id: 123,
     parts: [{ kind: "text", text: "numeric-id" }],
   })));

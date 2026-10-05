@@ -409,17 +409,33 @@ class Emitter {
    * program that reads `e.code`.
    */
   private tryStatement(node: AnyNode): string {
-    let out = `try ${this.block(node.block as AnyNode)}`;
+    const finalizer = node.finalizer as AnyNode | null;
+    // Allocated before the body is emitted, so no temp inside the try or catch can share its slot.
+    const forfeit = finalizer === null || finalizer === undefined ? null : this.temp();
+    const block = this.block(node.block as AnyNode);
+    let out = `try ${block}`;
     const handler = node.handler as AnyNode | null;
-    if (handler !== null && handler !== undefined) {
+    // With no catch, the wrapper below is the only `try` the block needs.
+    if (handler === null || handler === undefined) out = block;
+    else {
       const raw = this.temp();
       const caught = this.seam("caught", raw);
       const param = handler.param as AnyNode | null;
       const bind = param === null || param === undefined ? `${caught};\n` : this.bindPattern(param, caught, "const");
       out += `catch (${raw}) {\n${bind}${this.block(handler.body as AnyNode, true)}}\n`;
     }
-    if (node.finalizer !== null && node.finalizer !== undefined) out += `finally ${this.block(node.finalizer as AnyNode)}`;
-    return out;
+    if (forfeit === null) return out;
+    // AN UNCATCHABLE FAULT UNWINDS PAST `finally` TOO (§9.2), as it does on the walker. A native
+    // `finally` runs on every exit, so the try and catch are wrapped once more: `caught` asks whether
+    // what left them is uncatchable (it rethrows those), and the finalizer is skipped when it is, so
+    // it can neither perform an effect past the fault nor replace it with a completion of its own.
+    const left = this.temp();
+    const asked = this.temp();
+    return (
+      `${forfeit} = false;\ntry {\n${out}} catch (${left}) {\n` +
+      `try { ${this.seam("caught", left)}; } catch (${asked}) { ${forfeit} = true; throw ${asked}; }\n` +
+      `throw ${left};\n} finally {\nif (!${forfeit}) ${this.block(finalizer as AnyNode)}}\n`
+    );
   }
 
   /**
@@ -703,7 +719,6 @@ class Emitter {
     return String((node as { raw?: string }).raw ?? String(v));
   }
 
-  /** `x++`, `--o.count`: JavaScript's meaning, with the read charged through `Number` as the walker charges it. */
   /**
    * `x++`'s operand, coerced through the seam's `update` selector.
    *
@@ -719,6 +734,7 @@ class Emitter {
     return `((${t} = ${code}), typeof ${t} === "number" ? ${t} : ${this.seam("unary", `${q("update")}, ${t}`)})`;
   }
 
+  /** `x++`, `--o.count`: JavaScript's meaning, with the read charged through `Number` as the walker charges it. */
   private update(node: AnyNode): string {
     const delta = node.operator === "++" ? "+ 1" : "- 1";
     const prefix = node.prefix === true;
@@ -956,13 +972,6 @@ class Emitter {
       .join(", ");
   }
 
-  /**
-   * The static per-call-site payload an effect carries.
-   *
-   * Only `race` needs one today: its journal entry holds a `branchDigest` over the LOSING arms'
-   * source, which the walker computes from the AST at run time. The engine has no AST then, so
-   * without this the two journals cannot be byte-identical for any race that settled.
-   */
   /**
    * The static payload a call site carries, because the engine has no AST at run time.
    *

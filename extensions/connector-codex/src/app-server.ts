@@ -752,9 +752,6 @@ export class AppServerDriver extends EventEmitter {
     this.writeLine({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported by the cotal host" } });
   }
 
-  /** Emit the terminals held while ownership was undecidable. Once no `turn/start` is outstanding
-   *  the ownership set is settled, so each held turn gets its true `owned` — including one that
-   *  completed before the response that claimed it ever arrived. */
   /** Tombstone a turn whose terminal has been seen, keeping only a short recent tail — a late
    *  `turn/started` follows its terminal by milliseconds, so unbounded history buys nothing while
    *  a long-lived agent would accumulate one entry per turn forever. */
@@ -767,6 +764,9 @@ export class AppServerDriver extends EventEmitter {
     }
   }
 
+  /** Emit the terminals held while ownership was undecidable. Once no `turn/start` is outstanding
+   *  the ownership set is settled, so each held turn gets its true `owned` — including one that
+   *  completed before the response that claimed it ever arrived. */
   private releaseBuffered(): void {
     if (this.pendingStarts.size > 0 || this.buffered.length === 0) return;
     const held = this.buffered;

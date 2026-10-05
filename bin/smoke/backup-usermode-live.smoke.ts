@@ -20,13 +20,13 @@
  */
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { createServer as createSocket, type AddressInfo } from "node:net";
+import type { AddressInfo } from "node:net";
 import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const worktree = resolve(import.meta.dirname, "..", "..");
 
@@ -71,14 +71,6 @@ const until = async (cond: () => boolean | Promise<boolean>, ms = 10_000): Promi
   while (Date.now() < end) { if (await cond()) return true; await wait(100); }
   return false;
 };
-const freePort = () => new Promise<number>((resolvePort, reject) => {
-  const socket = createSocket();
-  socket.once("error", reject);
-  socket.listen(0, "127.0.0.1", () => {
-    const port = (socket.address() as AddressInfo).port;
-    socket.close((error) => error ? reject(error) : resolvePort(port));
-  });
-});
 
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -196,7 +188,7 @@ try {
   // preserve cut speaks ctl.admin. EVERY ledger write happens BEFORE the backup — the ledger is an
   // authority input, so a re-grant after the artifact would itself be trust drift.
   await must("actor grant cli (scope incl. admin)",
-    ["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--label", "smoke human"]);
+    ["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "smoke human"]);
   const OWNER = await cotalAuthProvider.ownerForLogin({ store: workspaceSecretStore(root), dir: stateDir, space: SPACE });
   // A retained MANAGED agent principal: real user-mode agent authority (ledger row + sentinel +
   // actor token), the material a same-principal resume must reuse rather than replace.

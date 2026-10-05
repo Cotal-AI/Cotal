@@ -76,7 +76,7 @@ for (const [label, value] of [
   ["several", ["general", "ops"]],
 ] as const) {
   const back = reread(join(dir, `policy-${label.replace(/ /g, "-")}.md`), {
-    name: "policy", subscribe: value, allowSubscribe: value, allowPublish: value,
+    name: "policy", subscribe: [...value], allowSubscribe: [...value], allowPublish: [...value],
   });
   ok(`a ${label} subscribe survives a save`, JSON.stringify(back.subscribe) === JSON.stringify(value), back.subscribe);
   ok(`a ${label} allowSubscribe survives a save`, JSON.stringify(back.allowSubscribe) === JSON.stringify(value), back.allowSubscribe);

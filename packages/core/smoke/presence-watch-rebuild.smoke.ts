@@ -1,15 +1,15 @@
 /**
- * A PRESENCE WATCH MUST CLEAN UP AFTER ITSELF WHEN IT REBUILDS.
+ * A STALLED PRESENCE WATCH REBUILDS, AND ITS PREDECESSOR IS THE BROKER'S TO REAP.
  *
  * WHAT WAS MEASURED. A KV watch is an ordered push consumer. The client rebuilds it whenever it
  * stops hearing from the server (`idle_heartbeat` 30s, two missed), and the rebuild DELETES its
  * predecessor before creating the successor (`pushconsumer.ts` reset: `api.delete(stream, name)`
- * then a new `oc_<nuid>_<serial+1>`). The elevated dashboard credential held CREATE and INFO on the
- * presence bucket and NOT DELETE, so every rebuild's cleanup was refused. Against a stalled link:
- * 21 `Publish Violation - Subject "$JS.API.CONSUMER.DELETE.KV_cotal_presence_<space>.oc_..."` in the
- * broker log and NINE consumers left on one bucket, each living until its 5-minute inactivity
- * threshold. The three sibling buckets this profile watches (chat, the channel registry, the
- * membership feed) all carried DELETE already; this one was the gap.
+ * then a new `oc_<nuid>_<serial+1>`). The elevated dashboard credential holds CREATE and INFO on the
+ * presence bucket and NOT DELETE: the generated name cannot be pinned at mint time, and the only
+ * expressible delete grant is stream-wide, which let one observer delete another principal's live
+ * watch cursors (#691). So the rebuild's cleanup is refused (one `Publish Violation` per rebuild in
+ * the broker log, which the client ignores) and the predecessor lives until its 5-minute
+ * inactivity threshold.
  *
  * THE STIMULUS IS A STALL, NOT A DROP, and the difference is the whole reason this fixture works.
  * The client CANCELS the heartbeat monitor on a `disconnect` and restarts it on `reconnect`, so
@@ -17,11 +17,9 @@
  * link that stays UP while the bytes stop moving, which is what a saturated WAN link is. Measured
  * both ways here: the drop arm is the control that proves the stall arm is doing the work.
  *
- * WHAT THIS DOES NOT CLAIM. Not "no consumer is ever left behind". Under a SUSTAINED stall the
- * client's own retry loop creates consumers whose names it then does not retain (its `_info` only
- * advances when an `add` succeeds), so a few are unreachable by any cleanup this credential could
- * perform. The claim is the one the grant is responsible for: the cleanup is ATTEMPTED and ALLOWED,
- * the predecessor it names is gone, and the broker logs nothing.
+ * THE CLAIM. The stall rebuilds the watch, the rebuild's delete of its predecessor is refused by
+ * the broker rather than reaching it, the predecessor is still listed after the rebuild, left to
+ * the inactive threshold, and the endpoint raises no `error` for that refusal.
  *
  * Needs nats-server on PATH. Runs ~2 minutes: the heartbeat window is 30s and the client needs two.
  * Run: pnpm smoke:presence-watch-rebuild:auth
@@ -126,7 +124,12 @@ try {
     space, servers: SLOW, creds: webCreds, channels: [], consume: false,
     registerPresence: false, watchPresence: true, card: { name: "web", kind: "endpoint" },
   });
-  ep.on("error", () => { /* the stall raises connection errors by design */ });
+  const deleteErrors: string[] = [];
+  ep.on("error", (e: Error) => {
+    // The stall raises connection errors by design; 1.6 claims none of them names a presence consumer delete.
+    const subject = (e.cause as { subject?: string } | undefined)?.subject;
+    if (subject?.startsWith(`$JS.API.CONSUMER.DELETE.${stream}.`)) deleteErrors.push(subject);
+  });
   await ep.start();
   await wait(1200);
 
@@ -153,22 +156,22 @@ try {
   const serial = (n: string): number => Number(n.slice(n.lastIndexOf("_") + 1));
   ok("1.3 the stall REBUILT the watch (the live consumer is a later incarnation)",
     afterStall.some((n) => serial(n) > serial(predecessor)), { predecessor, afterStall });
-  ok("1.4 and the rebuild DELETED the predecessor it named, instead of abandoning it",
-    !afterStall.includes(predecessor), { predecessor, afterStall });
-  ok("1.5 with NOTHING refused: no consumer-delete violation on the presence bucket",
-    deleteViolations().length === 0, deleteViolations().slice(0, 2));
+  ok("1.4 the rebuild's delete of its predecessor was REFUSED: no stream-wide consumer delete",
+    deleteViolations().length > 0, deleteViolations().slice(0, 2));
+  ok("1.5 so the predecessor is still listed, left to the broker's inactive threshold",
+    afterStall.includes(predecessor), { predecessor, afterStall });
+  ok("1.6 and the client treats that refusal as handled: no endpoint error names the delete",
+    deleteErrors.length === 0, deleteErrors.slice(0, 2));
 
   await ep.stop().catch(() => { /* the stall may have left it mid-rebuild */ });
 
-  // POSITIVE CONTROL, and it is not optional. 1.5 is a claim about an ABSENCE, and an absence is
-  // also what a fixture that cannot see violations at all reports. So provoke one deliberately, on a
-  // subject this credential is genuinely denied, and require that it shows up in the same log by the
-  // same reading. Without this cell, deleting the log file would score a pass.
+  // POSITIVE CONTROL: provoke a violation deliberately, on a subject this credential is genuinely
+  // denied, and require that it shows up in the same log by the same reading 1.4 uses.
   const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: webCreds, tls: false }), maxReconnectAttempts: 0 });
   nc.publish(`$JS.API.STREAM.DELETE.${stream}`, new TextEncoder().encode("{}"));
   await nc.flush().catch(() => { /* the violation IS the point */ });
   await wait(600);
-  ok("1.6 POSITIVE CONTROL: this fixture CAN see a violation in this log, so 1.5's zero means something",
+  ok("1.7 POSITIVE CONTROL: this fixture reads violations from this log the way 1.4 does",
     log.split("\n").some((l) => /Violation/i.test(l) && l.includes(`STREAM.DELETE.${stream}`)),
     log.split("\n").filter((l) => /Violation/i.test(l)).slice(-2));
   await nc.drain().catch(() => { /* already gone */ });

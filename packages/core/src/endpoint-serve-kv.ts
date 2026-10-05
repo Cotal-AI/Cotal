@@ -15,8 +15,8 @@
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
-import { endpointToken, assertLifecycleToken } from "./endpoint-subjects.js";
-import { epgateKey, epcredRowKey, eprepairKey, parseEndpointGate, parseLedgerRow, parseEndpointRepairCursor, type CredentialLedgerRow, type EndpointRepairCursor } from "./lifecycle-state.js";
+import { assertLifecycleToken } from "./endpoint-subjects.js";
+import { epgateKey, epcredFamilyPrefix, epcredRowKey, eprepairKey, parseEndpointGate, parseLedgerRow, parseEndpointRepairCursor, type CredentialLedgerRow, type EndpointRepairCursor } from "./lifecycle-state.js";
 import type { EpIssuanceGate, EpServeLedgerRow } from "./endpoint-service.js";
 
 const enc = new TextEncoder();
@@ -78,7 +78,7 @@ export async function readEndpointGateGeneration(
   kv: KV,
   args: { endpoint: string; instanceId: string },
 ): Promise<number> {
-  const endpoint = endpointToken(args.endpoint);
+  const { endpoint } = args;
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const key = epgateKey(endpoint, instanceId);
   const entry = await kv.get(key);
@@ -98,7 +98,7 @@ export async function readEndpointGateGeneration(
  *  this by unwrapping its branded `SessionAuthStore` to `(kv, space)`. `space` is carried on the
  *  observed gate for the core mint's space-bond defense (the KV IS the space bucket). */
 export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: string; instanceId: string }): EpIssuanceGate {
-  const endpoint = endpointToken(args.endpoint);
+  const { endpoint } = args;
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const key = epgateKey(endpoint, instanceId);
   return {
@@ -332,7 +332,7 @@ export async function provisionEndpointGateOpen(
   kv: KV,
   args: { endpoint: string; instanceId: string; principal: string },
 ): Promise<void> {
-  const endpoint = endpointToken(args.endpoint);
+  const { endpoint } = args;
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const key = epgateKey(endpoint, instanceId);
   const row = { state: "open" as const, generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, principal: args.principal };
@@ -351,8 +351,8 @@ export async function provisionEndpointGateOpen(
  *  exercised — but they are REAL code (a later takeover/re-registration of a LIVE instance MUST
  *  revoke the prior serve family and verify-evict its holders; a stub would silently skip that).
  *  `evict` is INJECTED: cluster-verified eviction is the $SYS CONNZ+KICK machinery (D5 slice 4),
- *  not this module's job. The DEFAULT is FAIL-CLOSED `() => false` — "no evictor ⇒ eviction cannot
- *  be VERIFIED ⇒ report not-verified" — so the saga's own guard (`if (!evict) throw`) leaves the
+ *  not this module's job. The DEFAULT is FAIL-CLOSED, `false` for every holder — "no evictor ⇒
+ *  eviction cannot be VERIFIED ⇒ report not-verified" — so the saga's own guard leaves the
  *  gate FROZEN for reconciliation on a takeover with no real evictor, never silently reopening into
  *  split-brain. It is ONLY consulted on a NON-EMPTY family (a takeover); a fresh registration's
  *  empty family never invokes it, so this default never touches the 1a-gate path — it enforces the
@@ -361,13 +361,13 @@ export async function provisionEndpointGateOpen(
 export function endpointRegistrationBarrier(
   kv: KV,
   space: string,
-  args: { endpoint: string; instanceId: string; opId: string; evict?: (holderPrincipal: string) => Promise<boolean> | boolean },
+  args: { endpoint: string; instanceId: string; opId: string; evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[]; evictMax?: number },
 ): import("./endpoint-service.js").EpIssuanceBarrier {
-  const endpoint = endpointToken(args.endpoint);
+  const { endpoint } = args;
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const opId = assertLifecycleToken(args.opId, "opId");
   const key = epgateKey(endpoint, instanceId);
-  const evict = args.evict ?? (() => false); // FAIL-CLOSED: no evictor ⇒ eviction not verified (a takeover fails closed)
+  const evict = args.evict ?? ((holderPrincipals: readonly string[]) => holderPrincipals.map(() => false)); // FAIL-CLOSED: no evictor ⇒ eviction not verified (a takeover fails closed)
   const observed = async (): Promise<{ row: import("./lifecycle-state.js").EndpointGateRow; revision: number } | null> => {
     const entry = await kv.get(key);
     if (!entry) return null;
@@ -401,8 +401,8 @@ export function endpointRegistrationBarrier(
     },
     enumerate: async () => {
       const rows: import("./endpoint-service.js").EpServeLedgerRow[] = [];
-      const prefix = `epcred.${endpoint}.${instanceId}.`;
-      for await (const rowKey of await kv.keys(`epcred.${endpoint}.${instanceId}.>`)) {
+      const prefix = `${epcredFamilyPrefix(endpoint, instanceId)}.`;
+      for await (const rowKey of await kv.keys(`${prefix}>`)) {
         if (!rowKey.startsWith(prefix)) continue;
         const entry = await kv.get(rowKey);
         if (!entry || entry.operation !== "PUT") continue; // a DEL marker is corruption elsewhere; enumeration skips
@@ -423,7 +423,8 @@ export function endpointRegistrationBarrier(
     revoke: async (row) => {
       await markLedgerRowRevoked(kv, epcredRowKey(endpoint, instanceId, row.credentialId));
     },
-    evict: async (holderPrincipal: string) => evict(holderPrincipal),
+    evict: async (holderPrincipals: readonly string[]) => evict(holderPrincipals),
+    evictMax: args.evictMax,
     reopen: async (token: number, successor) => {
       const cur = await observed();
       // Token-pinned: only THIS barrier (still holding its freeze at `token`) reopens; a reconciler

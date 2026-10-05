@@ -12,8 +12,10 @@ trap '/bin/rm -f "$tmp"' EXIT
 
 for path in \
   bin/smoke/ci-suites.txt \
+  bin/smoke/ci-suite-costs.json \
   bin/smoke/ci-suites.mjs \
   bin/smoke/shard.mjs \
+  bin/smoke/shard-pool.mjs \
   bin/smoke/reap-smoke-brokers.mjs \
   package.json \
   pnpm-workspace.yaml

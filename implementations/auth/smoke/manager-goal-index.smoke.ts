@@ -27,7 +27,7 @@ const request: RemoteManagerGoalIndexScanRequest = {
   ...base,
   registrationProof: remoteManagerCurrentRegistrationProof(secret, owner, base, gate),
 };
-const run = (overrides: Partial<Parameters<typeof authorizeRemoteManagerGoalIndexScan>[0]> = {}) =>
+const run = (overrides: Partial<Extract<Parameters<typeof authorizeRemoteManagerGoalIndexScan>[0], { scope: string[] }>> = {}) =>
   authorizeRemoteManagerGoalIndexScan({ request, space: "demo", owner, scope: ["supervise"], proofSecret: secret, observeManagerGate: async () => gate, ...overrides });
 
 assert.throws(() => parseRemoteManagerGoalIndexScanRequest({ ...request, filter: "goalidx.>" }), /unknown field/);

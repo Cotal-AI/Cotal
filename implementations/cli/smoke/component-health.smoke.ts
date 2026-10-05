@@ -48,7 +48,7 @@ import {
 } from "@cotal-ai/core";
 import { webProbeTarget } from "../src/commands/status.js";
 import { renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -86,15 +86,6 @@ check("the CLI status probe refuses a wildcard process host rather than probing 
 const wildcardAliasProbe = webProbeTarget("node cotal web --host 0");
 check("the CLI status probe refuses a canonical wildcard alias",
   "refused" in wildcardAliasProbe && wildcardAliasProbe.refused.includes("invalid process host"), wildcardAliasProbe);
-
-async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const addr = server.address();
-  assert.ok(addr && typeof addr === "object");
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return addr.port;
-}
 
 async function portOpen(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -376,6 +367,21 @@ try {
     /manager\s+not-serving/.test(presentText) && presentText.includes(`pid ${held.pid}`) && presentText.includes("static reconciliation not reported by this manager build"), presentText);
   check("manager row names the lease holder rather than substituting service success",
     /lease holder local\./.test(presentText) && presentText.includes("serve no answer"), presentText);
+
+  // #2073, bare status (no `--components`). Still the OPEN mesh from the file header: it removes
+  // minting from the experiment so the only changed variable is the component's own control
+  // surface. Bare status now probes a live manager pid's service endpoint once before printing the
+  // row, so the same holder fixture (a real renewed lease, a real pidfile, no served endpoint) must
+  // read `not serving` here too, not just behind `--components`. The static-mesh `--components`
+  // refusal this issue also fixes (`componentEp`'s lifecycleUid mint) has no credential to mint on
+  // this open mesh, so it is NOT graded here; the hand test's step 2 is its check. Do not "simplify"
+  // this block into `--components` later: the open-mesh cells above already cover that surface, and
+  // the whole point of this block is the BARE path's own probe.
+  const bare = cli("status", "--space", SPACE, "--server", server);
+  const bareText = `${bare.stdout}${bare.stderr}`.replace(/\x1b\[[0-9;]*m/g, "");
+  check("bare status says not serving for a live pid whose rail does not answer (#2073)",
+    /manager\s+not serving \(pid \d+\)/.test(bareText) && bareText.includes("service endpoint not answering") && !/manager\s+running \(pid/.test(bareText), bareText);
+  check("bare status keeps exit 0 when the manager is not serving (#2073)", bare.status === 0, bareText);
 
   await stop(holder);
   holder = undefined;

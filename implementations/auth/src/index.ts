@@ -1,4 +1,6 @@
-export { deriveOwnerToken, deriveOwnerForIdpSubject } from "./derive.js";
+export { deriveOwnerToken, deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
+export { parsePlatformControlAuthorityRequest, type ManagerAuthorityHolder } from "./platform-control.js";
+export type { PlatformControlAssignment } from "@cotal-ai/core";
 export {
   AUTH_CALLOUT_SUBJECT,
   createCalloutAuth,
@@ -64,7 +66,7 @@ export {
   type DeviceLoginOpts,
   type DeviceLoginPrompt,
 } from "./login.js";
-export { calloutPermissions, type AclResolver } from "./permissions.js";
+export { calloutPermissions, type AclResolver, type UserCallerIssuer } from "./permissions.js";
 export {
   USER_AUTH_TRUST_SCHEME,
   userAuthTrustFingerprint,
@@ -103,6 +105,7 @@ export {
   grantActor,
   grantManagedActor,
   ledgerAclResolver,
+  ledgerActorSourceIsLive,
   ledgerAuthorizeConnect,
   ledgerAuthorizeGrant,
   ledgerAuthorizeAgentExchange,
@@ -116,7 +119,7 @@ export {
   type ActorKind,
   type ActorRow,
 } from "./ledger.js";
-export { runAuthService, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type AuthAuthorityPlane } from "./service.js";
+export { runAuthService, startAuthService, type AuthServiceHandle, type PublicFaceInput, type PlatformControlInput, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, handleManagerServiceAuthority, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, MANAGED_RETIRE_PATH, VERIFY_ENROLLMENT_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type AuthAuthorityPlane } from "./service.js";
 export { remoteManagerIssuerGrants } from "./authority-client.js";
 // The R1 connect-arm deny-new READ seam (SPEC 13.1): the reader grant builder, the sealed
 // shape-proved reader, and the pure connect-credential check the production composition runs.
@@ -126,7 +129,7 @@ export {
   authConnectReaderGrants, openConnectReader, authorizeConnectCredential,
   type ConnectReader,
 } from "./connect-reader.js";
-export { issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, type IssueRemoteManagerAuthorityArgs } from "./manager-authority.js";
+export { admitRemoteRun, authorizeRemoteRunAttempt, parseRemoteRunAttemptRequest, type RemoteRunAttemptGrant, parseRemoteRunAdmissionRequest, authorizeRemoteManagerRenewal, issueRemoteManagerAuthority, parseRemoteManagerAuthorityRequest, type IssueRemoteManagerAuthorityArgs } from "./manager-authority.js";
 export { parseRemoteManagerMaintenanceRequest, authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 export {
   parseRemoteRetainedAgentValidationRequest,
@@ -136,6 +139,31 @@ export {
   type AuthorizeRemoteRetainedAgentValidationArgs,
 } from "./retained-manager-validation.js";
 export { parseRemoteManagerAdminAuthorizationRequest, authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
+export {
+  authorizeRemoteManagedAgentEnrollment,
+  authorizeRemoteManagedAgentPrepareRetirement,
+  authorizeRemoteManagedAgentRuntimeCreate,
+  authorizeRemoteManagedAgentRuntimeStatus,
+  type AuthorizeRemoteManagedAgentEnrollmentArgs,
+  type AuthorizeRemoteManagedAgentPrepareRetirementArgs,
+  type AuthorizeRemoteManagedAgentRuntimeArgs,
+  type RemoteManagedAgentRuntimeDecision,
+  type ObserveManagerGate,
+} from "./managed-agent-enrollment.js";
+export {
+  authorizeDelegatedUserIntentAdmission,
+  authorizeDelegatedUserIntentExecution,
+  delegatedUserIntentHoldsAlias,
+  joinOrStartDelegatedUserIntent,
+  type AuthorizeDelegatedUserIntentAdmissionArgs,
+  type AuthorizeDelegatedUserIntentExecutionArgs,
+  type DelegatedUserIntentDecision,
+  type DelegatedUserIntentExecutionPin,
+  type DelegatedUserIntentFlights,
+  type DelegatedUserIntentIncarnation,
+  type DelegatedUserIntentRecord,
+  type ObservePlatformControlAssignment,
+} from "./delegated-user-intent.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT

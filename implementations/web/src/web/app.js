@@ -119,14 +119,14 @@ function setConn(live) {
   el.querySelector(".t").textContent = live ? "live" : "disconnected";
 }
 
-/** Say WHICH sources are showing their last good value, and why. Visible, not a console line: the
- *  whole point of keeping the snapshot is that the reader knows they are looking at it. Cleared by
- *  the next refresh in which everything landed, which is what recovery looks like from here. */
 /** What the marker is currently saying, so a source read OUTSIDE the poll can add to it without
  *  erasing the poll's own findings. `refresh()` sets the four polled sources; the open channel's
  *  history is read later, inside `select()`, and a bare `setStale([channel])` there would drop the
  *  roster/channels/dms/activity refusals from the same label. */
 let staleNow = [];
+/** Say WHICH sources are showing their last good value, and why. Visible, not a console line: the
+ *  whole point of keeping the snapshot is that the reader knows they are looking at it. Cleared by
+ *  the next refresh in which everything landed, which is what recovery looks like from here. */
 function setStale(stale) {
   staleNow = stale;
   renderStale();
@@ -300,19 +300,19 @@ function rosterStatus(id) {
 }
 // id→name resolution shared by the DM lens and the all-activity feed. `from` carries a full
 // card (id+name), but a unicast `to` is the bare recipient identity id (a pubkey) — without this
-// it renders raw. Sources: live roster cards, DM senders, and feed senders we've seen.
+// it renders raw. Source: live roster cards ONLY. A message payload's from.name is sender-chosen
+// display text, not identity (#1399): writing it here would let one peer relabel another.
 function nameIndex() {
   const idName = new Map();
   for (const p of roster) if (p.card?.id) idName.set(p.card.id, p.card.name);
-  for (const m of dms) if (m.from?.id && m.from?.name) idName.set(m.from.id, m.from.name);
-  for (const e of activity) if (e.msg?.from?.id && e.msg.from.name) idName.set(e.msg.from.id, e.msg.from.name);
   return idName;
 }
 // Resolve an EndpointRef object or a bare id to a display name; an unknown id shrinks to a short
-// prefix, and a string that isn't an identity (already a name) passes through unchanged.
+// prefix, and a string that isn't an identity (already a name) passes through unchanged. An object
+// resolves through its AUTHENTICATED id — its .name is payload text and is never rendered.
 function displayNameOf(x, idx) {
   if (!x) return "?";
-  if (typeof x === "object") return x.name || displayNameOf(x.id, idx);
+  if (typeof x === "object") return displayNameOf(x.id, idx);
   if (idx.has(x)) return idx.get(x);
   // Principal ids are exactly two NATS-safe tokens, owner.actor. Keep the opaque owner for
   // namespace disambiguation, but require a long actor so ordinary dotted display names survive.
@@ -486,6 +486,7 @@ function rowHTML(e) {
   </div>`;
 }
 function liveEntry(mode, msg, idx) {
+  const fromId = msg.from?.id;
   const target =
     mode === "chat"
       ? `#${msg.channel ?? ""}`
@@ -496,8 +497,10 @@ function liveEntry(mode, msg, idx) {
     type: "msg",
     mode,
     ts: time(msg.ts),
-    who: msg.from?.name ?? "?",
-    role: msg.from?.role,
+    // who/role come from the roster by authenticated id; the payload's from.name/from.role are
+    // sender-chosen display text and are never rendered (#1399).
+    who: fromId ? displayNameOf(fromId, idx) : "?",
+    role: fromId ? roleOf(fromId) : undefined,
     target,
     body: bodyText(msg),
   };
@@ -1054,7 +1057,7 @@ async function refresh() {
       stale.push({
         kind: "partial",
         name: "activity",
-        reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.join(", ")}`,
+        reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.map((m) => `${m} (${activityPage.reasons[m]})`).join(", ")}`,
       });
     const rosterView = staleNow.find((s) => s.name === "roster");
     if (rosterView && !stale.some((s) => s.name === "roster")) stale.push(rosterView);

@@ -62,13 +62,18 @@ TypeScript.
 curl -fsSL https://get.cotal.ai | sh
 ```
 
-Installs into your home directory, no sudo, then runs guided setup. Read it first at
+Installs into your home directory, no sudo, then runs `cotal setup`. Read it first at
 [get.cotal.ai](https://get.cotal.ai), or preview it with `| sh -s -- --dry-run`.
 
-On Windows, or if you already have Node 22+: `npm install -g cotal-ai && cotal setup`.
+On Windows, or if you already have Node 22+: `npm install -g cotal-ai && cotal setup`. The
+installer is a POSIX shell script, so npm is the Windows route
+([details](docs/getting-started.md#start-a-local-mesh)).
 Prefer your agent to do it? Point it at <https://docs.cotal.ai/prompt.md>.
 
-Setup gets your machine ready and **starts nothing**. Then:
+`cotal setup` gets your machine ready and **starts nothing**. It seeds a `default` persona and
+installs Cotal's Agent Skills: a `cotal-skills` plugin for Claude Code when Claude Code is
+installed, and `~/.agents/skills` for Codex, Cursor, OpenCode, Gemini CLI and Windsurf.
+`cotal setup --skills` refreshes only the skills. Then:
 
 ```bash
 cotal up --detach  # start the mesh
@@ -82,7 +87,8 @@ is the whole point.
 
 `cotal up` is **JWT-authed** by default (sender authenticity + per-agent ACLs, plus the
 server-side delivery daemon for durable delivery). `cotal up --open` gives you a loopback-only,
-live-only mesh with no auth.
+live-only mesh with no auth, and `cotal up --user-auth --idp <auth base URL>` gives you one where
+people [sign in](#identity-and-access).
 
 Want the guided team? `cotal setup --demo` adds david (engineer), sven (guide) and me (the
 session you drive); then `cotal spawn david` and watch with `cotal web` (or `cotal console`
@@ -139,6 +145,40 @@ Cotal reuses A2A's data shapes to stay interoperable: identity is an A2A `AgentC
 reuse A2A `Message`/`Part`. It does not adopt A2A's HTTP/JSON-RPC transport, `Task`
 RPCs, or request/response server model. Only the shapes carry over. Underneath, NATS +
 JetStream has run in production for years. We didn't invent the hard parts.
+
+## Workflow runs
+
+A workflow run coordinates agents over hours or days and survives the process that started it.
+You write it in Cotal Lang, a small subset of JavaScript where every interaction with the world is
+one of a dozen effects such as `spawn`, `turn`, `ask`, `checkpoint`, `sleep` and `wait`. Each
+effect is recorded in the run's step journal, so a run that stops resumes from its journal on any
+host.
+
+```js
+const planner = await spawn("planner")
+const builder = await spawn("builder")
+
+await turn(planner, { name: "plan" })
+const approval = await checkpoint("approve-plan", "Build the plan?", { timeout: "4h" })
+if (approval.value === "yes") {
+  await turn(builder, { name: "build", deadline: "30m" })
+}
+```
+
+The manager of a JWT-authed mesh hosts the run. Anyone holding the `run` capability answers the
+checkpoint, from a terminal or from an agent session through the `cotal_run` tool:
+
+```bash
+cotal run start --file build.cotal.js               # validate, start on the manager, print the run id
+cotal run ps                                        # list runs and their state
+cotal run journal <runId>                           # the step journal, with each open question
+cotal run answer <runId> <stepKey> --value '"yes"'  # resolve the checkpoint
+cotal run resume <runId>                            # the manager takes the run back
+```
+
+The guide is [docs/workflows.md](docs/workflows.md). The language is defined in
+[spec/cotal-lang.md](spec/cotal-lang.md) and the wire footprint in
+[SPEC §14](SPEC.md#14-workflow-runs-v05).
 
 ## The web dashboard
 
@@ -215,8 +255,9 @@ concrete mechanism you can check against the code.
 ### Identity and access
 
 - **Sender authenticity.** The sender rides the subject
-  (`cotal.<space>.inst.<target>.<sender>`), policed by the server against the agent's
-  JWT, not self-asserted. Identity claims in the payload are rejected, fail-closed.
+  (`cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>`), policed by
+  the server against the agent's JWT, not self-asserted. Identity claims in the payload
+  are rejected, fail-closed.
 - **Per-agent ACLs.** Decentralized JWT auth, account = space and user = agent. The
   `agent`, `observer`, and `admin` profiles are default-deny allow-lists (`manager` is
   privileged and not user-mintable); `cotal mint` writes a creds file.
@@ -224,6 +265,16 @@ concrete mechanism you can check against the code.
   ACL-gated by subject, and replay is gated because each agent's inbox is a pre-created,
   bind-only consumer it cannot re-create. (DMs are plaintext and ACL-gated, not
   encrypted.)
+- **Per-user sign-in.** Every identity is an `owner.actor` pair: the owner is the person or
+  organization, the actor is the agent acting for it. On a mesh started with
+  `cotal up --user-auth --idp <auth base URL>`, each person runs `cotal login --idp <url>` once
+  per machine and the operator grants their agents with
+  `cotal actor grant <actor> --sub <their id> --full`. No creds file is handed out, and every
+  connect is checked live against the grant, so a revoke takes effect at the next connect. See
+  [per-user authentication](docs/identity-and-auth.md#per-user-authentication).
+- **Model policy.** A role's `modelPolicy` entry in the Cotal config lists the models, and
+  optionally the variants, its seats may launch on. `cotal spawn` and the manager refuse a spawn
+  outside it before anything is minted or launched. See [model policy](docs/config.md#model-policy).
 
 ### Delivery and history
 
@@ -255,9 +306,15 @@ concrete mechanism you can check against the code.
 | Package | What it is |
 |---|---|
 | [`@cotal-ai/core`](packages/core) | Endpoint, subjects, message types, the NATS client layer, and the `Connector`/`Command` contracts. |
-| [`@cotal-ai/cli`](implementations/cli) | Mesh CLI: `up`, `down`, `join`, `console`, `spawn`, `mint`, `channels`, `history`, and the operator extension loader. |
+| [`@cotal-ai/workspace`](packages/workspace) | Machine-local operator layer over `~/.cotal`: the mesh registry, target resolution, and preflight. |
+| [`@cotal-ai/lang`](packages/lang) | Cotal Lang, the workflow language: validator, interpreter, step journal, and a simulator and dry run that need no broker. |
+| [`@cotal-ai/cli`](implementations/cli) | Mesh CLI: `setup`, `up`, `down`, `join`, `console`, `spawn`, `send`, `mint`, `status`, `doctor`, `channels`, `history`, and `ext`, the operator extension loader. |
 | [`@cotal-ai/manager`](implementations/manager) | Agent supervisor: spawns and manages nodes via a pluggable runtime (pty / tmux / cmux / Orca / Herdr), with `start`/`stop`/`ps`/`attach`. |
 | [`@cotal-ai/delivery`](implementations/delivery) | Server-side Plane-3 delivery daemon: the durable backstop (fan-out writer + trusted reader + membership/ACL authority), co-located with the broker. |
+| [`@cotal-ai/runtime`](implementations/runtime) | Hosts Cotal Lang runs on the mesh (journal store, effect handler, run driver) and adds `cotal run`. |
+| [`@cotal-ai/auth`](implementations/auth) | Per-user sign-in: `login`, `logout`, `actor`, and the auth-callout service, which a host platform can also embed, with a readiness read and the platform control door. |
+| [`@cotal-ai/web`](implementations/web) | The `cotal web` dashboard, shipped inside `cotal-ai` as a seeded extension. |
+| [`@cotal-ai/seat`](packages/seat) | Local PTY seat custody: a detached custodian per seat and the local protocol a manager uses to adopt it (Linux). |
 | [`@cotal-ai/connector-core`](extensions/connector-core) | Shared MCP-bridge runtime: the mesh agent and the `cotal_*` tools the agent connectors above are thin clients over. |
 
 Plus the six agent connectors above and installable [`@cotal-ai/cmux`](extensions/cmux),
@@ -347,7 +404,7 @@ We're looking for more design partners building multi-agent systems.
 [Reach out](#team).
 
 Contributions are welcome: implement the contract in your language, build a connector,
-or open an issue.
+or open an issue. See [Running the smoke gate](bin/smoke/README.md) for local and CI testing.
 
 ## Team
 

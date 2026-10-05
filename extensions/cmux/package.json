@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/cmux",
   "description": "Cotal cmux integration: a cmux Runtime and TerminalLayout provider for spawning agents into cmux tabs.",
-  "version": "0.54.0",
+  "version": "0.65.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -19,7 +19,7 @@
   },
   "scripts": {
     "test": "tsx smoke.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build"
   },

@@ -388,8 +388,12 @@ try {
     const deathRoot = join(root, "process-death");
     mkdirSync(deathRoot);
     const runDeath = (stage: "crash" | "recover"): Promise<number | null> => new Promise((done, reject) => {
+      const childEnv = { ...process.env };
+      for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
+      Object.assign(childEnv, { COTAL_PI_EXPECTED_SESSION: "", COTAL_PI_FRESH_SESSION: "",
+        PI_EVENTS_DEATH_STAGE: stage, PI_EVENTS_DEATH_ROOT: deathRoot, PI_EVENTS_TEST_SERVER: server });
       const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url)], {
-        env: { ...process.env, COTAL_PI_EXPECTED_SESSION: "", COTAL_PI_FRESH_SESSION: "", PI_EVENTS_DEATH_STAGE: stage, PI_EVENTS_DEATH_ROOT: deathRoot, PI_EVENTS_TEST_SERVER: server },
+        env: childEnv,
         stdio: ["ignore", "pipe", "pipe"],
       });
       let output = "";

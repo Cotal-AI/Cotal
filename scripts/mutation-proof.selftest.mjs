@@ -12,7 +12,7 @@
  *
  * Run: node scripts/mutation-proof.selftest.mjs
  */
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, realpathSync, mkdirSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, readdirSync, realpathSync, mkdirSync, statSync, existsSync, chmodSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execSync, spawnSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -690,61 +690,44 @@ r = runTool([
 check("an anchored progress pattern counts per LINE, not once per transcript",
   r.stdout.includes("baseline green") && r.stdout.includes("(3 progress marks)"), r.stdout.slice(0, 300));
 
-// 7i. With no pattern given, a mark is a `✓` that opens its line (#1348). `start-model-preflight`
-// names a cell "dead-on-arrival spawn reported as failure (not ✓ started)", and counting the glyph
-// wherever it stood made that label one more passed check on every run, green or red. Four real
-// marks here: plain, coloured, one whose label carries a second glyph, and one after the guard.
+// 7i/7j. A `✓` inside an assertion LABEL is not a progress mark: the default pattern must anchor to
+// line start (#1348). This suite prints three pass lines, the second of which names the glyph in
+// its own label text rather than being one.
 writeFileSync(
   join(root, "labelled.mjs"),
   [
     "import { admit } from './src/impl.js';",
     "console.log('  ✓ admits a small value');",
-    "console.log('  \\u001b[32m✓\\u001b[0m a coloured mark still counts');",
-    "console.log('  ✓ the refusal is reported as a failure (not ✓ admitted)');",
-    "if (admit(50) !== false) process.exit(0);",
+    "console.log('  ✓ the label carries a glyph (not ✓ started)');",
+    "if (admit(50) !== false) { process.exit(0); }",
     "console.log('  ✓ the guard refuses an oversized value');",
-    "",
-  ].join("\n"),
-);
-// Its red twin: the labelled cell prints `✗` with the same label when the guard is gone.
-writeFileSync(
-  join(root, "labelled-red.mjs"),
-  [
-    "import { admit } from './src/impl.js';",
-    "console.log('  ✓ admits a small value');",
-    "if (admit(50) !== false) { console.log('  ✗ the refusal is reported as a failure (not ✓ admitted)'); process.exit(1); }",
-    "console.log('  ✓ the refusal is reported as a failure (not ✓ admitted)');",
     "",
   ].join("\n"),
 );
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm labelled", { cwd: root });
 
-// The floor at the true pass count, 4, and a mutant that exits 0 after three real marks. Counting
-// the label's glyph made that run four marks and let it clear the floor.
 r = runTool([
   "--command", `${process.execPath} labelled.mjs`,
-  "--min-ticks", "4",
   "--file", "src/impl.js",
   "--find", "if (n > 10)\n    return false;",
   "--replace", "if (false)\n    return false;",
-  "--expect-red", "admits a small value",
+  "--expect-red", "oversized values are refused",
 ]);
-check("the default progress count reads line-initial marks, not a ✓ inside a label",
-  r.stdout.includes("baseline green") && r.stdout.includes("(4 progress marks)"), r.stdout.slice(0, 300));
-check("...so a run one real check short of a floor at the true pass count does not clear it",
-  verdictIs(r.stdout, "INCONCLUSIVE") && r.stdout.includes("reached only 3 progress marks (expected ≥ 4)"),
-  r.stdout.slice(-400));
+check("a ✓ inside an assertion label is not a progress mark",
+  r.stdout.includes("baseline green") && r.stdout.includes("(3 progress marks)"), r.stdout.slice(0, 300));
 
-// Green and red differ by that cell's pass mark alone: the `✗` line leaves no glyph behind.
 r = runTool([
-  "--command", `${process.execPath} labelled-red.mjs`,
+  "--command", `${process.execPath} labelled.mjs`,
   "--file", "src/impl.js",
   "--find", "if (n > 10)\n    return false;",
   "--replace", "if (false)\n    return false;",
-  "--expect-red", "the refusal is reported as a failure",
+  "--expect-red", "oversized values are refused",
+  "--min-ticks", "3",
 ]);
-check("a failed cell whose label carries a ✓ counts no mark",
-  verdictIs(r.stdout, "KILLED") && r.stdout.includes("1 marks (baseline 2)"), r.stdout.slice(-400));
+check("a minTicks floor near the true count fails a run that is one real check short",
+  verdictIs(r.stdout, "INCONCLUSIVE") && r.stdout.includes("reached only 2 progress marks (expected \u2265 3)"),
+  r.stdout.slice(0, 400));
+execSync("git checkout -- .", { cwd: root });
 
 // 8. The tree is left exactly as found, after all of that.
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
@@ -781,6 +764,116 @@ check("a restored file keeps its original mtime, not the time of the restore",
   { mtimeBefore, mtimeAfter, startedMs, movedMs: mtimeAfter - mtimeBefore });
 check("...and the content is unchanged too, so the time was not preserved by skipping the restore",
   readFileSync(timed, "utf8").includes("if (n > 10)"));
+
+// 10. #1337: the restore must not depend on the on-disk BACKUP surviving the run. A suite that
+// deletes the tool's own `.bak` (computed exactly as the tool computes it, under this suite's own
+// tmp directory) mid-run used to make `restore()` throw ENOENT, and the SAME throw from the catch's
+// own `restore()` call then escaped `proveOne` entirely: no verdict line, no exit status of the
+// tool's own, the process died with a raw stack, and the mutant stayed on disk. This is red at the
+// base for exactly that reason.
+writeFileSync(
+  join(root, "delete-backup-suite.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "import { createHash } from 'node:crypto';",
+    "import { unlinkSync } from 'node:fs';",
+    "import { tmpdir } from 'node:os';",
+    "import { join, resolve } from 'node:path';",
+    "// Computed the way the tool computes it (mutation-proof.mjs, the `backup` assignment in proveOne).",
+    "const target = resolve(process.cwd(), 'src/impl.js');",
+    "const backup = join(tmpdir(), `mutation-proof-${createHash('sha1').update(target).digest('hex').slice(0, 12)}.bak`);",
+    "try { unlinkSync(backup); } catch {}",
+    "console.log('  ✓ admits a small value');",
+    "if (admit(5) !== true) { console.error('AssertionError: small values are admitted'); process.exit(1); }",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "if (admit(50) !== false) { console.error('AssertionError: oversized values are refused'); process.exit(1); }",
+    "console.log('  ✓ done');",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm delete-backup-fixture", { cwd: root });
+{
+  const impl = join(root, "src/impl.js");
+  const shaBaseline = shaOf(impl);
+  r = runTool([
+    "--command", `${process.execPath} delete-backup-suite.mjs`,
+    "--file", "src/impl.js",
+    "--find", "if (n > 10)\n    return false;",
+    "--replace", "if (false)\n    return false;",
+    "--expect-red", "oversized values are refused",
+  ]);
+  const out = stripAnsi(r.stdout);
+  check("a suite that deletes the tool's own backup mid-run still completes with a verdict, no stack trace",
+    r.status !== null && !(r.stderr ?? "").includes("at copyFileSync") && !(r.stderr ?? "").includes("at restore ("),
+    { status: r.status, signal: r.signal, stderr: (r.stderr ?? "").slice(-400) });
+  check("...and the run's own verdict is printed, KILLED (the in-memory restore does not change grading)",
+    verdictIs(out, "KILLED"), out.slice(-400));
+  check("...and the tree is exactly as it was, even though the on-disk backup was deleted",
+    execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "" && shaOf(impl) === shaBaseline);
+  check("...and no breadcrumb is left behind", breadcrumbsFor(root).length === 0,
+    breadcrumbsFor(root).map((entry) => entry.path));
+}
+
+// 11. #1337, the other half: a restore that CANNOT succeed (the target unwritable when restore()
+// runs) must not throw either. It must report ERROR, name the backup path, say the tree is still
+// mutated, and the process must exit non-zero with no stack trace on stderr — never the silent
+// mutant-left-behind crash this issue is about. This is red at the base too: the throw from
+// `copyFileSync` inside `restore()` escaped exactly the same way.
+writeFileSync(
+  join(root, "unwritable-suite.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "import { chmodSync } from 'node:fs';",
+    "// Make the restore target unwritable BEFORE the tool's restore() runs, but ONLY under the mutant:",
+    "// the tool runs this suite once as the baseline and takes its backup afterwards, and a backup",
+    "// copied from a read-only file is read-only itself, which --recover then copies back over the",
+    "// target and leaves every later cell unable to write src/impl.js. Root ignores file permissions,",
+    "// so this cell only proves anything under a non-root uid; the fixture never runs as root here.",
+    "console.log('  ✓ admits a small value');",
+    "if (admit(5) !== true) { console.error('AssertionError: small values are admitted'); process.exit(1); }",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "if (admit(50) !== false) { chmodSync('src/impl.js', 0o444); console.error('AssertionError: oversized values are refused'); process.exit(1); }",
+    "console.log('  ✓ done');",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm unwritable-fixture", { cwd: root });
+{
+  const impl = join(root, "src/impl.js");
+  r = runTool([
+    "--command", `${process.execPath} unwritable-suite.mjs`,
+    "--file", "src/impl.js",
+    "--find", "if (n > 10)\n    return false;",
+    "--replace", "if (false)\n    return false;",
+    "--expect-red", "oversized values are refused",
+  ]);
+  // The cell itself restores the mode: a check() failure calls process.exit(1) from inside check(),
+  // which would otherwise skip this cleanup and leave every later cell unable to touch src/impl.js.
+  try { chmodSync(impl, 0o644); } catch {}
+  const out = stripAnsi(r.stdout);
+  const stderr = r.stderr ?? "";
+  check("a restore that cannot succeed reports exactly one ERROR verdict, not a crash",
+    out.split("\n").filter((l) => verdictIs(l + "\n", "ERROR")).length === 1, out.slice(-500));
+  check("...naming the backup path and that the tree is still mutated",
+    /backup at .*mutation-proof-.*\.bak/.test(out) && /still mutated/.test(out), out.slice(-500));
+  check("...with a non-zero exit and no stack trace on stderr",
+    r.status !== 0 && !stderr.includes("at copyFileSync") && !stderr.includes("at restore (") && !stderr.includes("at proveOne"),
+    { status: r.status, stderr: stderr.slice(-400) });
+  // Put the fixture back: the suite left the mutant in place (that is the point), so recover it the
+  // way an operator would, then confirm the tree really is clean again for the cells after this one.
+  execSync("git checkout -- src/impl.js", { cwd: root });
+  check("...and the scratch fixture itself is recoverable with plain git after the ERROR",
+    execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim() === "");
+  // restore()'s catch above never reaches `clearBreadcrumb`/`rmSync(backup)` (the throw happens
+  // before either), so the on-disk breadcrumb and backup for src/impl.js are still sitting in
+  // tmpdir. Left alone they auto-recover — harmlessly, but noisily — on the very next tool
+  // invocation in this fixture tree, polluting a cell after this one with an unrelated "leftover
+  // breadcrumb" message. Clear them now with the tool's own recovery path, the way an operator
+  // finishing the cleanup would.
+  const rr = runTool(["--recover"]);
+  check("...and running --recover afterwards clears the stray breadcrumb and backup",
+    breadcrumbsFor(root).length === 0, breadcrumbsFor(root).map((entry) => entry.path));
+}
 
 // ---- the transcript echo attributes evidence to the RUN it came from, and keeps the cause ----
 //

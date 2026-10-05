@@ -18,8 +18,8 @@
     {
       "name": "dirty-root refusal no longer names the clean root requirement",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "    console.error(\"mutation reproof: UNMEASURED — root must be clean and checked out at the requested head before comparison\");",
-      "replace": "    console.error(\"mutation reproof: UNMEASURED — root check failed\");",
+      "find": "    console.error(\"mutation reproof: UNMEASURED \u2014 root must be clean and checked out at the requested head before comparison\");",
+      "replace": "    console.error(\"mutation reproof: UNMEASURED \u2014 root check failed\");",
       "expectRed": "the dirty-root refusal output is unchanged",
       "cell": "the dirty-root refusal output is unchanged"
     },
@@ -114,7 +114,7 @@
     {
       "name": "pre-red attribution ignores the same command's base-to-head transition",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "      const transition = compareSnapshots(headRun, baseRun);",
+      "find": "      const transition = compareSnapshots(fixtureCommand, headRun, baseRun);",
       "replace": "      const transition = { kind: \"inherited\", baseStatus: baseRun.status };",
       "expectRed": "a changed configured suite that becomes red FAILS and names exactly that fixture without selecting its sibling",
       "cell": "a changed configured suite that becomes red FAILS and names exactly that fixture without selecting its sibling"
@@ -258,7 +258,7 @@
     {
       "name": "runCommand drops its SIGKILL timeout while the constant survives elsewhere",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "    cwd, shell: true, encoding: \"utf8\", timeout: COMMAND_TIMEOUT_MS,\n    maxBuffer: 64 * 1024 * 1024, killSignal: \"SIGKILL\",",
+      "find": "    cwd, shell: true, encoding: \"utf8\", timeout: commandTimeoutMs(),\n    maxBuffer: 64 * 1024 * 1024, killSignal: \"SIGKILL\",",
       "replace": "    cwd, shell: true, encoding: \"utf8\",\n    maxBuffer: 64 * 1024 * 1024,",
       "expectRed": "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)",
       "cell": "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)"
@@ -266,7 +266,7 @@
     {
       "name": "runProof loses its SIGKILL timeout",
       "file": "scripts/mutation-reproof.mjs",
-      "find": "    cwd, encoding: \"utf8\", timeout: PROOF_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,\n    killSignal: \"SIGKILL\", env,",
+      "find": "    cwd, encoding: \"utf8\", timeout: proofTimeoutMs(), maxBuffer: 64 * 1024 * 1024,\n    killSignal: \"SIGKILL\", env,",
       "replace": "    cwd, encoding: \"utf8\", maxBuffer: 64 * 1024 * 1024,\n    env,",
       "expectRed": "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)",
       "cell": "root and snapshot mutation-proof children share a SIGKILL budget under the 145-minute job step (a missing timeout hung shard 10/12 for 145m after WRONG-RED; 900s on the child killed mutation-reproof.json at 901s)"
@@ -358,6 +358,30 @@
       "find": "${unable.length ? `; not attributable to (could not discriminate): ${unable.join(\", \")}` : \"\"}",
       "replace": "",
       "expectRed": "the ordinary arm names the fixtures it is not attributing the miss to, disjoint from the ones it expected"
+    },
+    {
+      "name": "the instability probe never re-runs the command, so an unstable signature is called contamination",
+      "cell": "an unstable per-run failure signature is UNMEASURED with the instability reason, never contamination",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "    entry = runCommand(command, snapshots.head.path, snapshotComparisonEnv());\n    repeatHeadRuns.set(command, entry);",
+      "replace": "    return undefined;",
+      "expectRed": "an unstable per-run failure signature is UNMEASURED with the instability reason, never contamination"
+    },
+    {
+      "name": "the instability probe checks only that the repeat run is still red, so a token-carrying red with equal statuses reads as stable",
+      "cell": "an unstable per-run failure signature is UNMEASURED with the instability reason, never contamination",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  return repeatHash === undefined || repeatHash !== firstHash\n    ? unstableSignatureReason(command)\n    : undefined;",
+      "replace": "  return entry.status === 0 ? unstableSignatureReason(command) : undefined;",
+      "expectRed": "an unstable per-run failure signature is UNMEASURED with the instability reason, never contamination"
+    },
+    {
+      "name": "the instability probe skips its cache, so every mismatch re-runs the command",
+      "cell": "the repeat run happens only on a mismatch: the stable command keeps its execution count, the unstable one gains exactly one",
+      "file": "scripts/mutation-reproof.mjs",
+      "find": "  let entry = repeatHeadRuns.get(command);\n  if (!entry) {",
+      "replace": "  let entry;\n  {",
+      "expectRed": "the repeat run happens only on a mismatch: the stable command keeps its execution count, the unstable one gains exactly one"
     }
   ]
 }

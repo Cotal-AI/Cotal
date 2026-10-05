@@ -34,6 +34,250 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Workflow programs that bind `once` in 0.65.0
+
+`once` is now a scope of the workflow language, so it is a reserved name. A program that declares
+its own `once` binding (`const once = ...`, a parameter or a function named `once`) is refused at
+validation with L2002. Nothing else about a running mesh changes.
+
+### What stops working
+
+A run whose recorded program binds `once` cannot be resumed after the upgrade, because a resume
+validates the recorded program again. A new `cotal run start` of such a program is refused before
+anything is recorded.
+
+### Before the upgrade
+
+List the runs with `cotal run ps` and check each program that is still running or held for a
+binding named `once`. Let those runs finish on the old version before you upgrade the manager, and
+rename the binding in the program before you start it again.
+
+## From 0.58.0 to 0.59.0
+
+Every connector now publishes a failed run's `RUN_ERROR` on `events.<owner>.<actor>` with the fixed
+message `run failed` and no `code` or `rawEvent`. The error text and error kind a harness reports
+can echo a prompt, a peer message or tool output, and that channel has a different read ACL. A
+reader that showed the message or branched on `code` gets neither after the upgrade. Where a
+connector reports the error kind as the agent's presence condition, that is unchanged.
+
+### Settle pending event frames before the upgrade
+
+Each session's events are frozen in its event write-ahead log before they are published. A session
+restarted on 0.59.0 whose log still holds an unacknowledged frame with an older `RUN_ERROR` does not
+republish it: its event emitter halts with `egress-run-error` and publishes nothing further for that
+session. The broker may or may not already hold that frame, so the halt cannot settle it.
+
+1. Stop the seats cleanly on 0.58.0, with the broker still up.
+2. List the logs that still hold a pending frame. The logs live under the events state root
+   (`COTAL_WORKSPACE_ROOT`). Empty output means there is nothing to settle.
+
+   ```sh
+   find "$COTAL_WORKSPACE_ROOT/.cotal/events" -name wal.json \
+     -exec jq -r 'select(.pending != null) | input_filename' {} +
+   ```
+
+3. For each session listed, start it again on 0.58.0 while the broker is reachable, let it recover,
+   stop it, and run step 2 again. Recovery publishes the frame as 0.58.0 would have, error text
+   included, so it only finishes what 0.58.0 had already started.
+
+   If that start halts with `cas-loss` instead, the agent's subject is no longer at the sequence this
+   log expects, and no restart settles that log, on 0.58.0 or later. A lost acknowledgement is one
+   cause: the broker stored the frame, so it and its error text are already on the channel, and every
+   retry halts the same way because the stream checks the frozen expectation before it deduplicates.
+   The halt message names the other causes, such as a second emitter for the same agent under a
+   different state root, a restored stream or frontier record, or a purged channel. With those the
+   pending frame may never have reached the broker, so a `cas-loss` does not tell you whether it
+   landed. Find and stop any second writer and rule out a restored state first. Clearing the halt
+   then means purging the agent's event channel and removing the agent's directory under the events
+   state root whole (see [Event plane](connect-claude.md#event-plane)). That abandons the pending
+   frame whether or not the broker has it, and the purge also drops the earlier frames of every
+   session of that agent.
+4. Upgrade once step 2 prints nothing.
+
+If a session halts with `egress-run-error` after the upgrade, go back to step 3 for that session on
+0.58.0. Do not edit or delete `wal.json` on its own to get past either halt: clearing the pending
+frame abandons that epoch, an event the broker never received is lost, and removing part of the
+directory leaves a state the next start refuses.
+
+## Explicit actor grants in 0.59.0
+
+`cotal actor grant` no longer fills an omitted ACL flag with its wide default. A grant names
+`--scope`, `--allow-subscribe` and `--allow-publish`, or passes `--full` to give the ones it leaves
+off their wide defaults (`spawn,role:default`, `>` read, `>` post). Any other grant is refused. The
+break is in the CLI on the machine that holds the actor ledger, the one that ran
+`cotal up --user-auth --idp <url>`. No stored row, credential or wire message changes.
+
+### What keeps working
+
+Existing actor ledger rows keep the authority they were granted, and their users and agents connect
+as before. `actor revoke`, `actor list` and a `grant` that names all three ACL flags behave as they
+did on 0.58.0. Nothing on disk is converted.
+
+### What stops working
+
+A grant that leaves off any of the three flags without `--full` exits 1 with
+`refusing to grant "<actor>" with --scope, --allow-subscribe, --allow-publish left off`, naming the
+flags it is missing, and then prints both accepted forms. It writes no row and does not retire the
+actor's current lifecycle. An existing row stays as it was, and an actor granted for the first time
+stays out until the grant is run again. This includes the bare grant printed on 0.58.0 by
+`cotal login`, `cotal status`, `actor list` and the not-granted refusal. Look for it in provisioning
+scripts, onboarding runbooks and anything that pastes those hints.
+
+### Upgrade order
+
+Change the scripts before the ledger machine is upgraded, and make each grant name all three flags.
+0.58.0 and 0.59.0 both accept that form. To keep a wide row, write its defaults out:
+
+```sh
+cotal actor grant <actor> --sub <IdP subject> \
+  --scope spawn,role:default --allow-subscribe '>' --allow-publish '>'
+```
+
+Switch to `--full` only once the ledger machine runs 0.59.0. 0.58.0 refuses it with
+`Unknown option '--full'` before it reads the ledger. Brokers, managers and participant machines
+need nothing for this break, so their order is the one the section above gives.
+
+### The window
+
+This break has no outage. No process restarts for it, and a refused grant changes nothing. The
+exposure is a grant script that runs against 0.59.0 before it was changed: it fails and grants
+nothing.
+
+### Snapshot this first
+
+Nothing is rewritten, so this break has no state to back up. On the ledger machine, save the output
+of `cotal actor list` to compare rows after the changed scripts run, and list the scripts that call
+`cotal actor grant`.
+
+### The upgrade end to end
+
+```sh
+# on the ledger machine, still on 0.58.0
+cotal actor list > actors-before.txt
+grep -rn 'actor grant' <your provisioning scripts>
+# make every grant name --scope, --allow-subscribe and --allow-publish, run them, then upgrade
+npm i -g cotal-ai@0.59.0
+cotal actor list | diff actors-before.txt -
+```
+
+Both refusals quoted here were run on 0.58.0 and on the 0.59.0 code. That brokers, managers and stored
+rows need nothing is read from the change, which touches only the CLI and its hints, and was not run
+on a live split deployment.
+
+## Repeated flags refused in 0.59.0
+
+A `cotal` flag given more than once is now a usage error unless the command declares it repeatable.
+On 0.58.0 the last value won with no message, so `cotal down web --space a --space b` acted on `b`
+while a wrapper that checked the first `--space` verified `a`. The break is in the command-line
+parser on the machine that runs the command, including commands added with `cotal ext add`. No
+stored state, credential or wire message changes.
+
+### What keeps working
+
+A command line that gives each flag once parses as it did on 0.58.0, in any order and in the
+`--flag=value` form. Flags whose help says repeatable, such as `--opt` and `down --session-store`,
+still collect every value. A flag-shaped word after `--` is still a positional. The daemons, units
+and agents that `cotal` starts for itself are given each flag once, so a fleet driven only by `cotal`
+commands typed by hand needs no action.
+
+### What stops working
+
+A command line that repeats any other flag exits 1 before the command runs. It prints
+`Option '--space' cannot be repeated`, or `Option '-f, --file' cannot be repeated` for a flag with a
+short form, followed by the command's help. `-f` and `--file` count as the same flag. Look for it in
+scripts, aliases and wrappers that append a flag to override one set earlier, such as a fixed
+`--space` followed by `"$@"`.
+
+### Upgrade order
+
+Change those scripts first so each flag is given once. 0.58.0 and 0.59.0 both accept that form.
+Brokers, managers and participant machines need nothing for this break, and each machine's CLI
+applies it when that machine is upgraded, so their order is the one the sections above give.
+
+### The window
+
+This break has no outage. No process restarts for it, and a refused command does nothing. The
+exposure is a script that still repeats a flag when it runs on 0.59.0: it exits 1 instead of acting on
+the last value.
+
+### Snapshot this first
+
+Nothing is rewritten, so this break has no state to back up. List the scripts, aliases and wrappers
+that call `cotal` so each one can be checked.
+
+### The upgrade end to end
+
+```sh
+# still on 0.58.0
+grep -rn 'cotal ' <your scripts and wrappers>
+# give each non-repeatable flag once, then upgrade
+npm i -g cotal-ai@0.59.0
+# run each changed script; a repeat left behind exits 1 with the usage error and does nothing
+```
+
+The refusal and its messages were run against the 0.59.0 parser and `cotal topology view`. That the
+argument lists `cotal` builds for its own processes give each flag once is read from the code, and
+was not run on a live split deployment.
+
+## Detached spawns from a seat's shell in 0.62.0
+
+On a static or open mesh, `cotal spawn --detach` run inside a managed seat's shell now launches as
+that seat. On 0.61.0 it minted a one-shot operator instrument, so the manager recorded that
+instrument as the spawner and the seat's own `cotal_despawn` of the child was refused with
+`not authorized: <seat> was not spawned by <caller> (admin tier required)`. The break is in the CLI
+on the machine where the seats run. No stored state, credential or wire message changes.
+
+### What keeps working
+
+`cotal spawn --detach` from an operator terminal or from a script outside any seat launches as
+before, and so does any call with `--creds`, one aimed at a space other than the seat's own, or a raw
+open target named with `--server` and an unregistered `--space`. A user-auth mesh is unchanged. A seat with
+`capabilities: [spawn]` still spawns from its shell, and can now stop that child with
+`cotal_despawn`. `--on <instance>` from a seat's shell still lands on that manager instance, now as
+the seat.
+
+### What stops working
+
+- On a static mesh, a seat without `capabilities: [spawn]` can no longer spawn from its shell. Its
+  own credential holds no spawn subject, so the broker refuses the request and the command exits 1.
+- A child launched from a seat's shell is now that seat's child, so the manager stops it when the
+  seat exits, as it does for a `cotal_spawn` child. A child that has to outlive the seat that
+  started it now goes with the seat.
+- A seat launched without `COTAL_SPACE` is placed by its static credential. Every connector sets
+  that variable, so this only reaches a hand-built launch: from such a seat's shell, a spawn aimed at
+  a static space that holds no credential for the seat is refused instead of running as the operator.
+
+### Upgrade order
+
+Only the CLI that seats run from their shell changes, which is the one installed on the host where
+the seats run. Brokers and managers need nothing for this break, so their order is the one the
+sections above give.
+
+### The window
+
+This break has no outage. No process restarts for it. A child already running when you upgrade
+keeps the spawner the manager recorded at its launch.
+
+### Snapshot this first
+
+Nothing is rewritten, so this break has no state to back up. List the agent files whose seats run
+`cotal spawn --detach` from their shell, note which of them lack `capabilities: [spawn]`, and note
+which of their children must outlive the seat.
+
+### The upgrade end to end
+
+```sh
+# still on 0.61.0: find the seats that spawn from their shell
+grep -rln 'cotal spawn' .cotal/agents
+# add `capabilities: [spawn]` to each of those agent files that lacks it, and launch any child
+# that must outlive its seat from an operator terminal instead
+npm i -g cotal-ai@0.62.0
+```
+
+The attribution, the despawn, the refusal of a seat without `spawn`, the stop on seat exit and a
+seat's `--on` spawn were run on a local static mesh, and the attribution and the despawn on a local
+open mesh.
+
 ## From 0.53.0 to 0.54.0
 
 Manager calls now borrow an instance-bound `manager-caller` credential. Followed mutations require

@@ -15,6 +15,7 @@ import {
   personaDir,
   pinnedFetch,
   preflightTarget,
+  PREFLIGHT_CONFIRM_TIMEOUT_MS,
   recordMesh,
   setCurrent,
   userAuthStateDir,
@@ -224,9 +225,6 @@ export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "op
 
 // ---- the user arm: supplied pinned trust ----------------------------------------------------
 
-/** What a remote user-auth registration supplies: the pins nothing on this machine could derive.
- *  Exported where the mesh runs; carried by `--user-auth-file`, or served at the space's
- *  `/.well-known/cotal-mesh` for `--from`. */
 /** The issuer a space's exchange answers /health with — the auth daemon's own token issuer, a
  *  stable URN derived from the space (auth's `spaceIssuer`), deliberately NOT the IdP issuer:
  *  the IdP names who vouches for humans, this names the exchange minting for the space. The cli
@@ -345,6 +343,8 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
       return `✗ the credentials for "${space}" under ${authDir(root)} have EXPIRED - re-mint them where the mesh runs (the broker itself is up)`;
     case "tls-trust":
       return `✗ the broker at ${server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, then re-run`;
+    case "slow-link":
+      return `✗ the broker at ${server} answered TCP but the credentialed connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s - nothing was registered; retry, or raise the connect budget if this link is consistently slow`;
   }
 }
 

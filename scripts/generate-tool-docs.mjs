@@ -53,7 +53,7 @@ const ANNOTATIONS = {
     effect: "clears only the messages it returns (nothing at all when peek is true)",
     availability: "always",
     notes:
-      "One call carries at most a receivable window; what does not fit stays buffered, is named in the reply, and comes back on the next call. OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is what this call returns and clears. In focus mode, normal channel recall is also shown read-only (replay-gated) and is never cleared by the read.",
+      "One call carries at most a receivable window; what does not fit stays buffered, is named in the reply, and comes back on the next call. A message larger than the window comes back in parts, one per call, and is cleared with its last part. A message with an empty id is tracked as itself, so it is held, named and read in parts like any other. OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is what this call returns and clears. In focus mode, normal channel recall is also shown read-only (replay-gated) and is never cleared by the read; an oversized recall message comes back in parts the same way, and later recall waits behind it until its last part goes out.",
   },
   cotal_send: {
     effect: "publishes to a channel",
@@ -245,6 +245,12 @@ for (const s of specs) {
     lines.push("");
   } else {
     lines.push("No arguments.");
+    lines.push("");
+  }
+  if (s.name === "cotal_dm") {
+    lines.push(
+      "On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the status reads `recipient had no roster row at send`. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.",
+    );
     lines.push("");
   }
 }

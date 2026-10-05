@@ -32,7 +32,6 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { createServer as createNetServer } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -40,16 +39,7 @@ import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { MeshAgent, type InboxItem } from "@cotal-ai/connector-core";
 import { createWakePolicy } from "../src/hooks.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-
-async function freePort(): Promise<number> {
-  const srv = createNetServer();
-  srv.listen(0, "127.0.0.1");
-  await once(srv, "listening");
-  const port = (srv.address() as { port: number }).port;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PORT = await freePort();
@@ -98,7 +88,7 @@ const waitFor = async (what: string, cond: () => boolean, ms = 8_000): Promise<v
 const stillPending = (text: string): boolean => agent.peekInbox("all").some((i: InboxItem) => i.text.includes(text));
 
 try {
-  for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   await pub.start();
   agent.start();
@@ -156,7 +146,7 @@ try {
     await sleep(ACTIVATION_SETTLE_MS);
     check(
       "activating claude/channel re-fires the ack-dropped focus mention",
-      nudges.length === mentionNudgesBefore + 1 && nudges.at(-1)?.includes("pull it with cotal_inbox"),
+      nudges.length === mentionNudgesBefore + 1 && nudges.at(-1)?.includes("pull it with cotal_inbox") === true,
       nudges,
     );
     wake.setChannelActive(true);

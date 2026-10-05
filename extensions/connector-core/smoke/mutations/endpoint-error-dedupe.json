@@ -12,7 +12,8 @@
       "find": "    const fingerprint = error.message.replace(/oc_[A-Za-z0-9]+_\\d+/g, \"oc_*\");",
       "replace": "    const fingerprint = error.message;",
       "expectRed": "rotating ordered-consumer errors are logged once per fault family",
-      "cell": "rotating ordered-consumer errors are logged once per fault family"
+      "cell": "rotating ordered-consumer errors are logged once per fault family",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     },
     {
       "name": "orientation hides the concrete connection failure again",
@@ -20,7 +21,8 @@
       "find": "${issue ? `; last error: ${issue.slice(0, 300)}` : \"; connection is still starting\"}",
       "replace": "; connection is still starting",
       "expectRed": "orientation names the live connection fault",
-      "cell": "orientation names the live connection fault"
+      "cell": "orientation names the live connection fault",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     },
     {
       "name": "recoverable warnings are mislabeled as endpoint errors",
@@ -28,7 +30,8 @@
       "find": "    this.logEndpointNotice(\"warning\", error);",
       "replace": "    this.logEndpointNotice(\"error\", error);",
       "expectRed": "MeshAgent's own warning listener reaches its operator log",
-      "cell": "MeshAgent's own warning listener reaches its operator log"
+      "cell": "MeshAgent's own warning listener reaches its operator log",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     },
     {
       "name": "recoverable warnings become false connection issues",
@@ -36,7 +39,8 @@
       "find": "  private handleEndpointWarning(error: Error): void {\n    this.logEndpointNotice(\"warning\", error);\n  }",
       "replace": "  private handleEndpointWarning(error: Error): void {\n    this.lastConnectionError = error.message;\n    this.logEndpointNotice(\"warning\", error);\n  }",
       "expectRed": "a recoverable endpoint warning does not become a connection issue",
-      "cell": "a recoverable endpoint warning does not become a connection issue"
+      "cell": "a recoverable endpoint warning does not become a connection issue",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     }
   ]
 }

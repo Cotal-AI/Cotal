@@ -31,14 +31,23 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import net, { type AddressInfo } from "node:net";
+import net from "node:net";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams, type CotalMessage } from "@cotal-ai/core";
+import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   activityBackfill, AGGREGATION_DEADLINE_MS, type ActivitySource,
 } from "../src/web.js";
 import { throttledWriter } from "./slow-link-throttle.js";
+
+type ActivityJsonBody = {
+  error?: string;
+  partial?: boolean;
+  of?: number;
+  read?: number;
+  missing?: string[];
+  deadlineMs?: number;
+};
 
 let cells = 0;
 let failed = 0;
@@ -52,11 +61,6 @@ const ok = (name: string, cond: boolean, detail?: unknown): void => {
   console.log(`  x FAIL  ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = async (): Promise<number> =>
-  new Promise((res) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 
 /** The link between the dashboard process and the broker: `oneWayMs` of delay each way plus a
  *  throughput cap each way. A single TCP flow at a high RTT is bandwidth-delay-product limited and
@@ -376,7 +380,6 @@ try {
   // without timing or load: the shipped entry point still owns the HTTP response, while its endpoint
   // methods reject immediately with the exact bare reason that previously escaped as a 500.
   {
-    const WEB_PORT = await freePort();
     let log = "";
     // STRIP `COTAL_` BEFORE THE SPREAD. Whatever runs this suite may be a managed agent session, so
     // an unfiltered `...process.env` hands the child a live credential and a live broker URL — the
@@ -386,18 +389,22 @@ try {
     const childEnv: NodeJS.ProcessEnv = { ...process.env };
     for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
     childEnv.COTAL_WEB_SMOKE_REJECT_HISTORY = "1";
-    rejectingWebChild = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", SERVER, "--space", SPACE, "--port", String(WEB_PORT), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
-    rejectingWebChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-    rejectingWebChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-
     let launchUrl: string | undefined;
-    for (let i = 0; i < 200 && launchUrl === undefined; i++) {
-      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-      await wait(50);
-    }
+    const WEB_PORT = await onFreePort(async (port) => {
+      rejectingWebChild = spawn(process.execPath, [
+        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+        "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
+      ], { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
+      rejectingWebChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
+      rejectingWebChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
+      const taken = `Port ${port} is in use`;
+      for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
+        launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+        await wait(50);
+      }
+      if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
+      return port;
+    });
     const exchange = launchUrl === undefined
       ? undefined
       : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
@@ -410,40 +417,43 @@ try {
       exchange?.status === 302 && session !== undefined && ready?.status === 200, log.slice(-400));
 
     const dRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/dms?limit=1`, { headers: authed });
-    const dBody = await dRes.json().catch(() => undefined);
+    const dBody = await dRes.json().catch(() => undefined) as ActivityJsonBody | undefined;
     ok("5.1 `/api/dms` names a read that REJECTS instead of returning the bare 500",
       dRes.status === 503 && /direct messages: the read failed: timeout/.test(String(dBody?.error)),
       { status: dRes.status, body: dBody });
 
     const hRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/team00/history?limit=1`, { headers: authed });
-    const hBody = await hRes.json().catch(() => undefined);
+    const hBody = await hRes.json().catch(() => undefined) as ActivityJsonBody | undefined;
     ok("5.2 `/api/channels/<name>/history` names a read that REJECTS instead of returning the bare 500",
       hRes.status === 503 && /#team00: the read failed: timeout/.test(String(hBody?.error)),
       { status: hRes.status, body: hBody });
 
-    rejectingWebChild.kill("SIGKILL");
+    rejectingWebChild?.kill("SIGKILL");
     rejectingWebChild = undefined;
 
     // The outer route deadline is independent of any timeout inside one history window. A sparse
     // subject can complete many windows successfully while walking toward sequence 1, so this arm
     // gives dmHistory no ending at all and proves the HTTP route still owns a finite refusal.
-    const HANG_PORT = await freePort();
     let hangLog = "";
     const hangEnv: NodeJS.ProcessEnv = { ...process.env };
     for (const key of Object.keys(hangEnv)) if (key.startsWith("COTAL_")) delete hangEnv[key];
     hangEnv.COTAL_WEB_SMOKE_HANG_DMS = "1";
-    hangingWebChild = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", SERVER, "--space", SPACE, "--port", String(HANG_PORT), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"], env: hangEnv });
-    hangingWebChild.stdout?.on("data", (d: Buffer) => { hangLog += d.toString(); });
-    hangingWebChild.stderr?.on("data", (d: Buffer) => { hangLog += d.toString(); });
-
     let hangLaunch: string | undefined;
-    for (let i = 0; i < 200 && hangLaunch === undefined; i++) {
-      hangLaunch = hangLog.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-      await wait(50);
-    }
+    const HANG_PORT = await onFreePort(async (port) => {
+      hangingWebChild = spawn(process.execPath, [
+        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+        "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
+      ], { stdio: ["ignore", "pipe", "pipe"], env: hangEnv });
+      hangingWebChild.stdout?.on("data", (d: Buffer) => { hangLog += d.toString(); });
+      hangingWebChild.stderr?.on("data", (d: Buffer) => { hangLog += d.toString(); });
+      const taken = `Port ${port} is in use`;
+      for (let i = 0; i < 200 && hangLaunch === undefined && !hangLog.includes(taken); i++) {
+        hangLaunch = hangLog.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+        await wait(50);
+      }
+      if (hangLaunch === undefined && hangLog.includes(taken)) throw new PortInUseError(port, hangLog);
+      return port;
+    });
     const hangExchange = hangLaunch === undefined
       ? undefined
       : await fetch(hangLaunch, { redirect: "manual" }).catch(() => undefined);
@@ -460,7 +470,7 @@ try {
       headers: hangAuthed, signal: AbortSignal.timeout(CEILING_MS),
     }).catch((e) => e as Error);
     const hangMs = Date.now() - hangStarted;
-    const hangBody = hangRes instanceof Error ? undefined : await hangRes.json().catch(() => undefined);
+    const hangBody = hangRes instanceof Error ? undefined : await hangRes.json().catch(() => undefined) as ActivityJsonBody | undefined;
     ok("5.4 `/api/dms` REFUSES at its own deadline when the inner read never ends",
       !(hangRes instanceof Error) && hangRes.status === 503,
       { status: hangRes instanceof Error ? 0 : hangRes.status, hangMs });
@@ -468,7 +478,7 @@ try {
       /did not finish within 8000ms/.test(String(hangBody?.error)), hangBody);
     ok("5.6 the never-ending read is bounded in wall time, not only in prose",
       hangMs < AGGREGATION_DEADLINE_MS + 5000, hangMs);
-    hangingWebChild.kill("SIGKILL");
+    hangingWebChild?.kill("SIGKILL");
     hangingWebChild = undefined;
   }
 
@@ -486,25 +496,29 @@ try {
   // when a read does not finish, not the speed at which it stops finishing: on the link in the issue
   // the same route took 16.59s against a real backlog, which is a 200 nobody is still waiting for.
   {
-    const WEB_PORT = await freePort();
     const SLOWER = await freePort();
     link2 = slowLink({ listen: SLOWER, target: PORT, oneWayMs: ONE_WAY_MS, bytesPerSec: 48 * 1024 });
     await wait(200);
     let log = "";
-    webChild = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", `nats://127.0.0.1:${SLOWER}`, "--space", SPACE, "--port", String(WEB_PORT), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-    webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
 
     // Wait for the launch link, spend it ONCE, then carry the session it mints through every route
     // assertion. Re-presenting the single-use link would test its refusal instead of aggregation.
     let launchUrl: string | undefined;
-    for (let i = 0; i < 200 && launchUrl === undefined; i++) {
-      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-      await wait(250);
-    }
+    const WEB_PORT = await onFreePort(async (port) => {
+      webChild = spawn(process.execPath, [
+        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+        "--server", `nats://127.0.0.1:${SLOWER}`, "--space", SPACE, "--port", String(port), "--no-open",
+      ], { stdio: ["ignore", "pipe", "pipe"] });
+      webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
+      webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
+      const taken = `Port ${port} is in use`;
+      for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
+        launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+        await wait(250);
+      }
+      if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
+      return port;
+    });
     const exchange = launchUrl === undefined
       ? undefined
       : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
@@ -520,7 +534,7 @@ try {
     // to a LARGE read on this link, and none of it means anything if the link cannot serve the
     // dashboard at all. It runs before the big reads because their abandoned work outlives them.
     const cRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels`, { headers: authed }).catch((e) => e as Error);
-    const cBody = cRes instanceof Error ? undefined : await cRes.json().catch(() => undefined);
+    const cBody = cRes instanceof Error ? undefined : await cRes.json().catch(() => undefined) as unknown;
     ok("6.1 CONTROL: a small route answers 200 across this link", !(cRes instanceof Error) && cRes.status === 200 && Array.isArray(cBody),
       cRes instanceof Error ? cRes.message : cRes.status);
 
@@ -535,7 +549,7 @@ try {
       headers: authed, signal: AbortSignal.timeout(CEILING_MS),
     }).catch((e) => e as Error);
     const aMs = Date.now() - t0;
-    const aBody = aRes instanceof Error ? undefined : await aRes.json().catch(() => undefined);
+    const aBody = aRes instanceof Error ? undefined : await aRes.json().catch(() => undefined) as ActivityJsonBody | undefined;
     const status = aRes instanceof Error ? 0 : aRes.status;
     ok("6.2 `/api/activity` ANSWERS 200 where the shipped route answered 500", status === 200, { status, aMs });
     ok("6.3 the body the browser receives is the aggregation's page, MARKED PARTIAL", aBody?.partial === true && aBody?.of === SOURCES,
@@ -552,7 +566,7 @@ try {
       headers: authed, signal: AbortSignal.timeout(CEILING_MS),
     }).catch((e) => e as Error);
     const dMs = Date.now() - t1;
-    const dBody = dRes instanceof Error ? undefined : await dRes.json().catch(() => undefined);
+    const dBody = dRes instanceof Error ? undefined : await dRes.json().catch(() => undefined) as ActivityJsonBody | undefined;
     const dStatus = dRes instanceof Error ? 0 : dRes.status;
     ok("6.6 `/api/dms` REFUSES at its deadline rather than answering long after the reader left", dStatus === 503, { dStatus, dMs });
     // WHICH ending wins here is the runner's call, not this suite's: the inner read's own timeout
@@ -572,7 +586,7 @@ try {
     const nRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, {
       headers: authed, signal: AbortSignal.timeout(CEILING_MS),
     }).catch((e) => e as Error);
-    const nBody = nRes instanceof Error ? undefined : await nRes.json().catch(() => undefined);
+    const nBody = nRes instanceof Error ? undefined : await nRes.json().catch(() => undefined) as ActivityJsonBody | undefined;
     const nStatus = nRes instanceof Error ? 0 : nRes.status;
     ok("6.9 the request following a cancelled read answers instead of being starved by abandoned work",
       nStatus === 200 && nBody?.partial !== undefined,

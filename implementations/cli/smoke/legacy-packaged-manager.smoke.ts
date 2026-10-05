@@ -1,12 +1,11 @@
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { countedAssert, emitSentinel, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
@@ -64,7 +63,6 @@ const fixtureCotal = join(fixtureBin, "cotal");
 writeFileSync(fixtureCotal, "#!/bin/sh\necho fixture cotal must not run >&2\nexit 97\n");
 chmodSync(fixtureCotal, 0o755);
 const cleanEnv = { ...ambient, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, TMPDIR: tmp, PATH: `${fixtureBin}:${dirname(pnpm)}:/usr/bin:/bin`, NO_COLOR: "1" };
-const freePort = (): Promise<number> => new Promise((resolve, reject) => { const s = createServer(); s.on("error", reject); s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => resolve(p)); }); });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (predicate: () => boolean, timeout = 30_000) => { const end = Date.now() + timeout; while (!predicate() && Date.now() < end) await wait(50); return predicate(); };
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -239,7 +237,13 @@ try {
   // correct and stays silent. Membership is keyed on the workspace set rather than on an
   // `@cotal-ai/` name prefix, because the entry point `cotal-ai` carries no scope and a prefix test
   // would exempt the one package the closure is rooted at.
-  const packedTarballs = new Set(tarballs.map((path) => basename(path)));
+  // Provenance is keyed on the exact tarball: `resolved` is `file:` plus a path relative to the
+  // install prefix, so it is resolved against `current` and compared to the absolute paths this
+  // run packed. A same-named tarball elsewhere on disk must NOT satisfy the check, or the property
+  // proved degrades to "a file of this name resolved locally" (#1319).
+  const packedTarballs = new Set(tarballs);
+  const provenanceOf = (resolved: string | undefined): string | undefined =>
+    resolved?.startsWith("file:") ? resolve(current, resolved.slice("file:".length)) : undefined;
   const lock = JSON.parse(readFileSync(join(current, "node_modules", ".package-lock.json"), "utf8")) as { packages?: Record<string, { resolved?: string }> };
   let checked = 0;
   for (const [path, entry] of Object.entries(lock.packages ?? {})) {
@@ -247,8 +251,10 @@ try {
     if (!workspacePackages.has(name)) continue;
     checked += 1;
     // A missing `resolved` fails. An unrecorded source is an unanswered question, not a clean bill.
-    assert.ok(entry.resolved?.startsWith("file:") && packedTarballs.has(basename(entry.resolved)),
-      `${name} resolved from ${entry.resolved ?? "an unrecorded source"} rather than from a tarball packed by this run: it came from the registry, so the packed closure is incomplete`);
+    assert.ok(entry.resolved !== undefined && packedTarballs.has(provenanceOf(entry.resolved) ?? ""),
+      entry.resolved?.startsWith("file:")
+        ? `${name} resolved from the local file ${provenanceOf(entry.resolved)} rather than from a tarball this run packed under ${packs}: provenance is not the packed closure`
+        : `${name} resolved from ${entry.resolved ?? "an unrecorded source"} rather than from a tarball packed by this run: it came from the registry, so the packed closure is incomplete`);
   }
   // Without this the guard goes vacuous the day npm moves the hidden lockfile or reshapes its keys:
   // nothing would match, zero packages would be checked, and the loop above would pass in silence.

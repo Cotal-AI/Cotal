@@ -1,5 +1,63 @@
 # @cotal-ai/connector-jcode
 
+## 0.65.0
+
+## 0.64.0
+
+## 0.63.0
+
+## 0.62.0
+
+## 0.61.0
+
+## 0.60.0
+
+### Patch Changes
+
+- 74cb5a0: A Jcode seat that ends on a second private Harness disconnect, or on a recovery that fails, now names the Harness error its last failed turn reported on that final connector line as `last turn error: <message>`, when no turn has succeeded since. A turn the TUI owns counts both ways: its error is kept, and its success clears it. On a failed recovery the line reads `private Harness connection closed and recovery failed; last turn error: <message>; recovery error: <message>`, with the turn error first because the manager keeps only the first 240 characters of the line. The manager's `seat reaped:` line carries only the seat's last connector line, so a seat that died after a provider error used to be reaped with `private Harness connection closed after its one recovery attempt` alone, and finding the error meant reading the seat's private connector log.
+
+## 0.59.0
+
+### Patch Changes
+
+- e8b54de: The provider-disconnect and permanent-refusal smokes now give each bridge-recovery step the host's own 60 second recovery window, read from the host source instead of copied. They used to allow 20 seconds per step, so a loaded CI runner could red the first replacement attach while the host was still inside its window. Host behaviour is unchanged.
+- 569cb6f: The Jcode connector checks a resumed session's counts by how they are spelled, the way Jcode reads a u64: a count written with a fraction or an exponent (`1e20`, `1.0`) or as `-0` is refused before the seat launches instead of being forked as a number Jcode cannot load, and every other number is copied into the fork byte for byte. A source whose title is longer than the 1024 characters the manager records with the fork is refused before launch by name, rather than forking and leaving the seat's provenance off its resume document.
+- 569cb6f: The Jcode connector accepts `cotal spawn --resume <id>`. It forks the named session from the operator's Jcode home into the seat's private home before the seat's instance starts: a new session id whose parent is the source, carrying the source's messages, compaction state, system prompt and model. The source files are only read. A session with no readable transcript, or with a message, content block or compaction state that does not match Jcode's schema, is refused before the seat launches, naming the field. A live source is read until two reads agree and its journal is newer than its snapshot, so a checkpoint caught mid-way is neither lost nor applied twice. A seat relaunched under the same name continues its fork without reading the source again, and a first launch that fails after forking still briefs the seat on its next launch.
+- b4c69bf: A seat whose turn died on a harness-reported error now shows it on every operator surface. A Jcode seat relays the Harness error code, such as a provider `rate_limit`, as its presence `condition`, both for a turn the host drives and for one the TUI owns. `cotal ps` now carries that condition: the human row reads `waiting (rate_limit)` and `--json` rows include the `condition` object, alongside the roster, `cotal status` and `cotal endpoints`. The next turn clears the condition when it starts. Before, the seat read a bare `waiting` and the error was recorded only in its private connector log.
+
+  Presence gains an optional `activeAt`: the epoch ms of the last work event the harness reported, carried on the next heartbeat. A Jcode seat records every token and tool event of its session there. `cotal ps`, `cotal status`, `cotal endpoints` and `cotal_roster` now print a condition with its age and the age of the last work event, such as `waiting (rate_limit for 40m) · active 40m ago`, and `cotal ps --json` rows carry `activeAt`. A turn that stopped advancing while its process keeps heartbeating no longer reads like one that is still working.
+
+- 569cb6f: A `--resume` seat's fork provenance is recorded on the manager. `LaunchSpec` gains `resumeRecordPath`, where a connector whose seat forks after launch has it record the source session id, the source title and a SHA-256 of the transcript it read; the Hermes and Jcode connectors declare it. The manager reads that record once the seat has written it, keeps it on the seat's resume document (an optional `resumed` field, so earlier documents still resume), and adds a `resume` object to the `ps`/`inspect` row (manager cluster revision 20). `cotal ps --wide` prints `forked from <id>` with the title and hash, and the Hermes and Jcode seats print the same facts when they fork. The Jcode fork now carries a count above 2^53 byte for byte instead of rounding it, refuses a count outside the u64 range by name, and refuses a fork record that is not an object by name.
+
+## 0.58.0
+
+### Patch Changes
+
+- 7e1bc61: Wait for the observed post-join kickoff turn boundary in the provider-disconnect smoke fixture. Presence alone can precede that boundary, routing the test marker through a soft interrupt instead of the intended ordinary-turn disconnect trigger. Add a delayed-turn mutation and restored native checks. Connector behavior is unchanged.
+
+## 0.57.0
+
+### Patch Changes
+
+- e7c702a: The jcode connector now reports the provider route serving a seat's model to presence, and `cotal ps --wide`/`--json` surface it as `provider`.
+- ad809a2: Keep Jcode seats alive when session checkpoints interrupt tool observations or temporarily remove the journal. Validate the session snapshot, preserve pending journal reads, restore tool brackets from the event WAL, and publish explicit discontinuities without weakening event validation.
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+
+## 0.56.0
+
+## 0.55.0
+
+### Patch Changes
+
+- 40e7428: Give a Jcode seat launched with no spawn `--prompt` a scheduled turn after join: the post-join notice is now delivered as the seat's first driven turn instead of a no-reply append, so a persona subscribed to nothing is never parked on an unread append.
+- 67bbcc5: Report a Jcode session-journal fold as a terminal event without stopping the seat.
+- d284ee6: A manifest or spawn prompt on a connector that cannot deliver one is refused at preflight (including `up -f --dry-run`), at spawn and in the manager, the way an unsupported model variant is: connectors now declare `supportsPrompt`, and claude, opencode, codex, jcode and pi declare it; hermes keeps its launch-time throw as the second line of defence.
+
 ## 0.54.0
 
 ## 0.53.0

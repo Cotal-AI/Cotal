@@ -1,6 +1,8 @@
 node_modules/
 .pnpm-store/
 dist/
+# The committed Claude Code plugin tree carries its built bundles (scripts/materialize-claude-plugin.mjs).
+!/claude-plugin/*/dist/
 .cotal/
 # pi-CLI task transcripts: per-developer working state, never committed
 .pi/

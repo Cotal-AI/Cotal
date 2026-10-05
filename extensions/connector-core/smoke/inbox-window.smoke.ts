@@ -280,9 +280,16 @@ try {
 
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
     check("an oversized message does not blow the window it advertises", text.length <= INBOX_WINDOW_CHARS, text.length);
-    check("...and is NOT consumed: still buffered, never acked", agent.inboxCount() === 1 && acked === 0, { held: agent.inboxCount(), acked });
-    check("...and the reply names it rather than leaving it silently stuck",
-      text.includes("cannot be delivered by this tool at all") && text.includes("Ada"), text.slice(0, 400));
+    check("...and is NOT consumed by its first part: still buffered, never acked", agent.inboxCount() === 1 && acked === 0, { held: agent.inboxCount(), acked });
+    check("...and the reply is the first part of it, naming the sender",
+      text.startsWith("Part of a message larger than one response") && text.includes("Ada") && text.includes("characters 1-"), text.slice(0, 400));
+
+    // #613: the rest arrives on the next call, inside the window, and only then is it cleared.
+    const rest = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("...and the next call delivers the rest, inside the window, and only then clears it",
+      rest.length <= INBOX_WINDOW_CHARS && (text + rest).split("z").length - 1 === 60_000 && rest.includes("last part") &&
+        agent.inboxCount() === 0 && acked === 1,
+      { chars: rest.length, held: agent.inboxCount(), acked });
   }
 
   // ── 9) ...and holding it wedges nothing: the rest of the buffer still flows past it ────────────
@@ -321,6 +328,24 @@ try {
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
     check("a buffer holding only undeliverable mail does not report an empty inbox",
       !text.includes("Inbox empty") && text.includes("stays buffered and uncleared"), text.slice(0, 200));
+
+    // Focus recall is read in parts too: an oversized recall item with nothing else to show is the
+    // next part of it, and the mark moves past it only with its last part.
+    const focused = new MeshAgent(cfg);
+    focused.on("error", () => {});
+    Object.defineProperty(focused, "attention", { get: () => "focus" });
+    (focused as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items: [{ id: "R-big", recvKey: "R-big", ts: 20_000, fromId: "peer", fromName: "Peer", kind: "channel", channel: "general", mentionsMe: false, historical: false, text: "r".repeat(60_000) }],
+      droppedChannels: [],
+    });
+    const recallText = textOf(await inboxSpec().run(focused, cfg, {}));
+    const recallRest = textOf(await inboxSpec().run(focused, cfg, {}));
+    const recallAfter = textOf(await inboxSpec().run(focused, cfg, {}));
+    check("an oversized recall item with nothing else to show is read in parts, then cleared",
+      recallText.startsWith("Part of a message larger than one response") && recallText.length <= INBOX_WINDOW_CHARS &&
+        (recallText + recallRest).split("r").length - 1 >= 60_000 && recallRest.includes("last part") &&
+        recallAfter.startsWith("Inbox empty"),
+      { first: recallText.slice(0, 200), rest: recallRest.slice(0, 200), after: recallAfter.slice(0, 120) });
   }
 
   // ── 12) THE NOTE ABOUT UNDELIVERABLE MAIL IS ITSELF BOUNDED ───────────────────────────────────
@@ -336,11 +361,11 @@ try {
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
     const named = (text.match(/chars\)/g) ?? []).length;
     check("twelve undeliverable messages do not produce twelve lines of metadata",
-      named <= 3 && text.includes("and 9 more"), { named, tail: text.slice(-200) });
+      named <= 3 && text.includes("and 8 more"), { named, tail: text.slice(-200) });
     check("...and the reply stays inside the window while nothing is cleared",
       text.length <= INBOX_WINDOW_CHARS && agent.inboxCount() === 12, { chars: text.length, held: agent.inboxCount() });
-    check("...and it does not promise that calling again will deliver them",
-      text.includes("calling again will not produce them") && !text.includes("next batch"), text.slice(-240));
+    check("...and it says they come in parts rather than promising them in the next batch",
+      text.includes("next part") && !text.includes("next batch"), text.slice(-240));
   }
 
   // ── 13) THE RECALL WARNING IS PART OF THE RESPONSE, SO IT IS PART OF THE BUDGET ───────────────
@@ -524,7 +549,7 @@ try {
     agent.ep.emit("message", dmMsg("band", "q".repeat(47_500)), noop(), dmMeta);
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
     check("a message that fits when rendered is delivered, not called impossible",
-      text.includes("qqqq") && !text.includes("cannot be delivered by this tool at all"), text.slice(0, 160));
+      text.includes("qqqq") && !text.includes("larger than one response"), text.slice(0, 160));
     check("...and it went out inside the window, and was cleared because it went out",
       text.length <= INBOX_WINDOW_CHARS && agent.inboxCount() === 0, { chars: text.length, left: agent.inboxCount() });
   }
@@ -683,7 +708,7 @@ try {
   //   TOTAL PROGRESS  every item that any response could carry is eventually delivered
   //   NO DUPLICATES   nothing is delivered twice
   //   IN BOUND        every response fits the window
-  //   HONEST          what is never delivered is exactly what no response could carry, and is named
+  //   WHOLE           what no response could carry is delivered in parts, once, and the mark waits for it
   //
   // A budget-skipped TAIL is not a stall: when nothing was shown behind the skip the mark does not
   // move that call, and the next call leads with the skipped item. The assertion is eventual.
@@ -754,15 +779,17 @@ try {
         const seen = new Map<string, number>();
         let calls = 0;
         let progressed = true;
+        let parts = ""; // the parts of an oversized item so far, counted once the last one is in
         // The late pair lands after call one, so a scenario whose first call delivers nothing (four
         // giants) must still take a second call rather than reporting a stall before they arrive.
-        while (calls < 12 && (progressed || calls < 2)) {
+        while (calls < 16 && (progressed || calls < 2)) {
           const before = new Map(seen);
           const text = textOf(await inboxSpec().run(agent, cfg, {}));
           if (calls === 0)
             items.push(
               ...late.map((size, n) => ({
                 id: `L-${n}`,
+                recvKey: `L-${n}`,
                 ts: 20_500 + n,
                 fromId: "peer",
                 fromName: "Peer",
@@ -777,21 +804,26 @@ try {
             text.length <= INBOX_WINDOW_CHARS,
             `${UNIVERSE} :: [${shape.join(",")}${tied ? ",tied" : ""}${ahead ? ",ahead" : ""}] call ${calls} returned ${text.length} chars`,
           );
+          const part = text.startsWith("Part of a message larger than one response");
+          // A part's body runs from its own indented line to the held-note, and a cut can land inside
+          // a marker, so the marks of an oversized item are counted on its reassembled parts.
+          if (part) parts += text.slice(text.indexOf("\n  ") + 3).split("\n\n… ")[0];
+          const counted = part ? (text.includes("This was its last part") ? parts : "") : text;
+          if (part && counted) parts = "";
           for (let n = 0; n < items.length; n++) {
-            const hits = (text.match(new RegExp(` MARK_${n}(?![0-9])`, "g")) ?? []).length;
+            const hits = (counted.match(new RegExp(` MARK_${n}(?![0-9])`, "g")) ?? []).length;
             if (hits) seen.set(`MARK_${n}`, (seen.get(`MARK_${n}`) ?? 0) + hits);
           }
           calls++;
-          progressed = seen.size > before.size;
+          progressed = seen.size > before.size || part;
         }
 
         const label = `[${shape.join(",")}${tied ? ",tied" : ""}${ahead ? ",ahead" : ""}]`;
         const all: Size[] = [...shape, ...late];
         for (let n = 0; n < all.length; n++) {
-          const deliverable = all[n] !== "giant"; // a giant cannot ride any response of its own
           const count = seen.get(`MARK_${n}`) ?? 0;
           assert.ok(
-            deliverable ? count === 1 : count === 0,
+            count === 1,
             `${UNIVERSE} :: ${label} MARK_${n} (${all[n]}) was delivered ${count} times after ${calls} calls`,
           );
           deliveries += count;
@@ -933,7 +965,7 @@ try {
       text.includes("BAND_MARK") && text.length <= INBOX_WINDOW_CHARS, { chars: text.length });
     check("...and the mail it displaced is held, uncleared, and named by the next reply",
       acked.has("band") && !acked.has("stuck2") &&
-        textOf(await inboxSpec().run(agent, cfg, {})).includes("cannot be delivered by this tool at all"),
+        textOf(await inboxSpec().run(agent, cfg, {})).startsWith("Part of a message larger than one response"),
       { acked: [...acked] });
   }
 

@@ -2,10 +2,11 @@
  * Fail-closed safety policy for the mutation tools. Two rules, both about blast radius.
  *
  * RULE 1 — what a config may EXECUTE. Discovery can be broad; execution cannot. A config whose
- * command resolves to a live-named suite, or to a suite whose source declares real infrastructure
- * (REAL Manager, REAL agent processes, REAL pty children, REAL broker), is refused before any child
- * is spawned. The `:live` / `-live` suffix is not enough on its own: several broker-starting suites
- * carry no such marker in the script name.
+ * command resolves to a live-named suite, to a suite whose source declares real infrastructure
+ * (REAL Manager, REAL agent processes, REAL pty children, REAL broker), or to a suite whose
+ * resolved source starts a stack by invoking the CLI's `up` verb, is refused before any child
+ * is spawned. A name is not behaviour: several stack-starting suites carry no live marker in
+ * the script name, and the only safe question is what the resolved file calls (#1410).
  *
  * Unresolvable `smoke:*` tokens refuse rather than run. A command with no smoke token and no
  * inspectable suite source is allowed only when it also lacks a live-shaped name.
@@ -32,7 +33,36 @@ export const INFRASTRUCTURE_MARKERS = Object.freeze([
 ]);
 
 const SMOKE_TOKEN = /\bsmoke:[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*/g;
-const LIVE_NAMED = /(?::live|-live)$/;
+// A `live` SEGMENT, not only a suffix: `smoke:evict-live:auth` is as live as `smoke:foo:live`. The
+// first segment after `smoke` names the area (`smoke:live-suite`), so a leading `live` is not one.
+const LIVE_NAMED = /(?<=smoke:[A-Za-z0-9_-]*[:\-])live(?=$|[:\-])/;
+// A resolved source file whose basename ends `-live.smoke.<ext>` is live by file, with or without a
+// live-named script pointing at it (`smoke:up-tls-routes` -> `up-tls-routes-live.smoke.ts`).
+const LIVE_SOURCE_FILE = /-live\.smoke\.[cm]?[jt]s$/;
+// The stack-starting invocation: an argv array whose FIRST element is the string "up" — `cotal(["up",
+// "--detach"])` in every suite that boots a mesh. `["setup"]`, `["upstream"]` or a bare `up` word do
+// not match. Shape alone cannot tell `cotal(["up"])` from `completionOut(["up"])` (a tab-completion
+// query in command-kernel.smoke.ts), so the ENCLOSING CALL NAME is the rule, recorded here: a hit on
+// a line that opens a `completionOut(` call is a query about argv, not an invocation of the CLI.
+const UP_ARGV = /\[\s*"up"\s*(?:,|\])/;
+const COMPLETION_QUERY = /completionOut\s*\(/;
+const basename = (file) => file.split(/[\\/]/).pop() ?? "";
+
+/**
+ * Whether a suite source invokes the CLI's `up` verb (starts a stack). Every completionOut call in
+ * the tree opens and closes on one line, so a hit sharing a line with a `completionOut(` open is
+ * inside that query's argument list and exempt; any other `["up", ...]` hit is an invocation.
+ *
+ * @param {string} source
+ * @returns {boolean}
+ */
+function invokesCliUp(source) {
+  if (typeof source !== "string") return false;
+  return source
+    .split(/\r?\n/)
+    .some((line) => UP_ARGV.test(line) && !COMPLETION_QUERY.test(line));
+}
+
 const TOKEN = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;|&]+/g;
 const SOURCE_FILE = /[\\/]|\.(?:[cm]?[jt]s|tsx)$/;
 const EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print"]);
@@ -66,6 +96,10 @@ export function smokeTokens(command) {
 
 export function isLiveNamedToken(token) {
   return typeof token === "string" && LIVE_NAMED.test(token);
+}
+
+export function isLiveNamedSourceFile(file) {
+  return typeof file === "string" && LIVE_SOURCE_FILE.test(basename(file));
 }
 
 export function infrastructureMarkerIn(source) {
@@ -200,6 +234,8 @@ export function liveShapedCommandReason(command, options = {}) {
     }
     const marker = infrastructureMarkerIn(source);
     if (marker !== undefined) return `${file} declares ${marker}`;
+    if (isLiveNamedSourceFile(file)) return `${file} is a live suite source`;
+    if (invokesCliUp(source)) return `${file} invokes cotal up`;
   }
 
   return null;

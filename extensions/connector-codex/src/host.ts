@@ -332,11 +332,17 @@ function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
 class BoundStartSource<T> implements DurableSource<T> {
   readonly kind: string;
 
+  /** The boundary this wrapper captured, exposed so its OWNER can persist the boundary the SOURCE
+   *  itself substitutes rather than a copy captured beside it (#705). Two sources of truth would
+   *  drift exactly when one of them is removed. */
+  readonly start: string;
+
   constructor(
     private readonly inner: DurableSource<T>,
-    private readonly start: string,
+    start: string,
   ) {
     this.kind = inner.kind;
+    this.start = start;
   }
 
   read(cursor: string | undefined): Promise<SourceRead<T>> {
@@ -401,6 +407,12 @@ export async function runCodexHost(): Promise<void> {
     const ms = Number(process.env.COTAL_EVENTS_TEST_START_DELAY_MS ?? "");
     return Number.isFinite(ms) && ms > 0 ? ms : 0;
   })();
+  // Test-only: holds the window between the persist and the first pump open so a fixture can
+  // read the log there. Unset is no wait and no call.
+  let postStartHoldMs = ((): number => {
+    const ms = Number(process.env.COTAL_EVENTS_TEST_POST_START_HOLD_MS ?? "");
+    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+  })();
   let events: AguiEmitterHolder<CodexRecord> | undefined;
   let mapper: CodexMapper | undefined;
   /** The adopted rollout path. A holder binds to ONE path and dies on a second, so every flush
@@ -413,6 +425,8 @@ export async function runCodexHost(): Promise<void> {
     // into another artificial setup-window proof.
     const holderStartDelayMs = startDelayMs;
     startDelayMs = 0;
+    const holderPostStartHoldMs = postStartHoldMs;
+    postStartHoldMs = 0;
     return new AguiEmitterHolder<CodexRecord>(
       async (rolloutPath: string) => {
         // The test-only widening of this setup, at the top of it so a fixture's write lands in the
@@ -436,16 +450,36 @@ export async function runCodexHost(): Promise<void> {
         // a pending terminal closes the WAL's run without passing through this new mapper.
         const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
         mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
-        return AguiEmitter.start<CodexRecord>({
-          endpoint: agent.ep,
-          wal,
-          subjectFrontier,
-          // `startCursor` is the boundary this bind captured before it announced itself. Nothing
+        // `startCursor` is the boundary this bind captured before it announced itself. Nothing
           // above writes it into the log: see `BoundStartSource` for what that buys and what it
-          // costs.
-          source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),
-          map: mapper.map,
-        });
+          // costs. The wrapper is held in a variable rather than inlined because the persist below
+          // keys on IT (#705), so removing the boundary substitution removes the persist with it
+          // instead of leaving an outer copy that keeps writing the same value.
+          const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor);
+          const em = await AguiEmitter.start<CodexRecord>({
+            endpoint: agent.ep,
+            wal,
+            subjectFrontier,
+            source,
+            map: mapper.map,
+          });
+          // #705: persist the boundary THE SOURCE SUBSTITUTES into the log right after a successful
+          // start, and only when the log still has no cursor. Keyed on the wrapper itself, never on
+          // the outer `startCursor`, because the invariant that matters is "what the emitter will
+          // read is what the log now says", and only the source object knows the first half.
+          // Before start would leave a resume behind if start then failed (the fixture at L9 fences
+          // exactly that); after start is safe because `AguiEmitter.start` awaits `recover()`, which
+          // settles any pending frame before returning, so `advanceCursorOnly` never races a pending
+          // write. Without this, a host killed between this line and the emitter's first pump leaves
+          // a virgin log, and the next bind takes its boundary at the file's later end, dropping
+          // whatever the thread appended in between.
+          if (source instanceof BoundStartSource && wal.frontier.sourceCursor === undefined)
+            await wal.advanceCursorOnly(source.start);
+          // Test-only: holds the window between the persist above and the first pump open so a
+          // fixture can read the log there. Unset is no wait and no call.
+          if (holderPostStartHoldMs > 0)
+            await new Promise<void>((r) => setTimeout(r, holderPostStartHoldMs));
+          return em;
       },
       // Required, and not defaulted to a swallow. The holder is terminal on error and does not
       // retry, so this line is the whole record of why events stopped.
@@ -643,9 +677,10 @@ export async function runCodexHost(): Promise<void> {
     try {
       for (;;) {
         const surfacedSet = new Set(surfaced);
+        // `surfaced` holds receive keys, so an empty-id item already in the turn is not steered twice.
         const items = agent
           .peekInbox("automatic")
-          .filter((i) => !surfacedSet.has(i.id) && (i.kind !== "channel" || i.mentionsMe));
+          .filter((i) => !surfacedSet.has(i.recvKey) && (i.kind !== "channel" || i.mentionsMe));
         if (items.length === 0 || !driver.busy) return;
         const inj = formatInjection(items);
         if (!inj) return;
@@ -819,7 +854,7 @@ export async function runCodexHost(): Promise<void> {
       // (the file is created by the primer inject and bound immediately after). On a late bind it
       // is the turns that ran while the file did not exist, and a reader comparing the panel to the
       // terminal deserves to know why they differ rather than to guess.
-      log(`AG-UI: publishing thread ${threadId} from ${path} (the stream starts here, anything already written is not republished)`);
+      log(`AG-UI: publishing thread ${threadId} from ${JSON.stringify(path)} (the stream starts here, anything already written is not republished)`);
     } finally {
       binding = false;
       const retry = missedBind;

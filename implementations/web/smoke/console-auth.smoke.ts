@@ -27,10 +27,9 @@ import { spawn } from "node:child_process";
 import { closeSync, fchmodSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import net, { type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
 import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, UNAUTHENTICATED, makeAuthGate, openDetachedLog, webProcess } from "../src/web.js";
@@ -43,13 +42,6 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const freePort = (): Promise<number> => new Promise((resolve) => {
-  const server = net.createServer();
-  server.listen(0, "127.0.0.1", () => {
-    const port = (server.address() as AddressInfo).port;
-    server.close(() => resolve(port));
-  });
-});
 
 const PORT = 7799;
 const q = (s = "") => new URLSearchParams(s);
@@ -82,7 +74,7 @@ const req = (headers: Record<string, string | undefined> = {}, url = "/"): Req =
   check("replaying the SAME launch token is refused as `launch-token-already-used`, not accepted",
     replay !== undefined && "refuse" in replay && replay.refuse === LAUNCH_TOKEN_ALREADY_USED, replay);
   check("…and that condition is DISTINCT from `unauthenticated` (a replayed link is a different fact)",
-    LAUNCH_TOKEN_ALREADY_USED !== UNAUTHENTICATED);
+    (LAUNCH_TOKEN_ALREADY_USED as string) !== UNAUTHENTICATED);
 
   const forged = gate.check(req({ cookie: "cotal_web_session=not-a-real-session" }) as never, q());
   check("an unknown session cookie is refused, not trusted for looking like one",
@@ -386,7 +378,7 @@ const runGateBlock = (verdict: unknown, path = "/api/roster", method = "GET"): R
   ).outputText;
   const ctx: Record<string, unknown> = {
     gate: { check: () => verdict },
-    req: { method }, query: q(), path, res,
+    req: { method, headers: {} as Record<string, string | undefined> }, query: q(), path, res,
     CROSS_ORIGIN, SESSION_COOKIE: "cotal_web_session",
     __routeReached: () => { rec.routeReached = true; },
     globalThis: undefined, console,
@@ -755,14 +747,15 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     !(webProcess.artifacts ?? []).includes("web.session.not-declared"), webProcess.artifacts);
 }
 
-// ── 8. A LAUNCH TOKEN NEVER ENTERS THE ERROR LOG ─────────────────────────────────────────────────
+// ── 8. A LAUNCH TOKEN NEVER ENTERS A LOGGED REQUEST TARGET ───────────────────────────────────────
 // Drive the shipped process and route. A session is minted first, because the session-first gate is
 // what lets the same request carry `k` onward to a route that can throw. The second request spells
 // the parameter name and every token byte with percent escapes, so a literal-only redactor cannot
-// satisfy the cell.
+// satisfy the cell. The guarantee is no contiguous live token in the logged target. A token split
+// across two parameters is not contiguous and stays visible in halves, and the refusal reason printed
+// after the target is outside it.
 {
   const brokerPort = await freePort();
-  const webPort = await freePort();
   const server = `nats://127.0.0.1:${brokerPort}`;
   const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
   const broker = spawn("nats-server", ["-p", String(brokerPort), "-js", "-sd", store, "-a", "127.0.0.1"], { stdio: "ignore" });
@@ -778,19 +771,23 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     await setupSpaceStreams({ servers: server, space: "consoleauthlog" });
 
     let output = "";
-    child = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", server, "--space", "consoleauthlog", "--port", String(webPort), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
-    child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
-
     let token = "";
-    for (let i = 0; i < 200; i++) {
-      token = output.match(/\?k=([A-Za-z0-9_-]{32,})/)?.[1] ?? "";
-      if (token) break;
-      await wait(50);
-    }
+    const webPort = await onFreePort(async (port) => {
+      child = spawn(process.execPath, [
+        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+        "--server", server, "--space", "consoleauthlog", "--port", String(port), "--no-open",
+      ], { stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
+      child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
+      const taken = `Port ${port} is in use`;
+      for (let i = 0; i < 200 && !output.includes(taken); i++) {
+        token = output.match(/\?k=([A-Za-z0-9_-]{32,})/)?.[1] ?? "";
+        if (token) break;
+        await wait(50);
+      }
+      if (!token && output.includes(taken)) throw new PortInUseError(port, output);
+      return port;
+    });
     check("LOG-LEAK FIXTURE: the real process printed a real launch token", token.length >= 32, output.slice(-300));
 
     const exchanged = await fetch(`http://127.0.0.1:${webPort}/?k=${token}`, { redirect: "manual" });
@@ -832,6 +829,24 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
       pathAttack.status === 400 && output.includes("limit=bad")
         && !output.includes(token) && !output.toLowerCase().includes(encodedToken.toLowerCase()),
       { status: pathAttack.status, log: output });
+
+    // Each byte may arrive raw or escaped on its own. The cells above send only the fully escaped
+    // token, which a matcher for the whole raw OR the whole escaped token also passes. Send the raw
+    // token and both parities of a mixed spelling, to the query and to the path.
+    const mixedToken = (parity: number) => [...token]
+      .map((ch, i) => (i % 2 === parity ? ch : `%${ch.charCodeAt(0).toString(16).padStart(2, "0")}`)).join("");
+    const spellings = [token, encodedToken, mixedToken(0), mixedToken(1)].map((s) => s.toLowerCase());
+    for (const [form, value] of [["raw", token], ["mixed raw-first", mixedToken(0)], ["mixed escaped-first", mixedToken(1)]]) {
+      for (const [where, target] of [["query", `/api/activity?note=${value}&limit=bad`], ["path", `/api/channels/${value}/history?limit=bad`]]) {
+        output = "";
+        const attack = await fetch(`http://127.0.0.1:${webPort}${target}`, { headers: { cookie } });
+        await attack.text();
+        await wait(150);
+        check(`a ${form} live launch token in a request ${where} is redacted from the real malformed-route diagnostic`,
+          attack.status === 400 && output.includes("limit=bad") && !spellings.some((s) => output.toLowerCase().includes(s)),
+          { form, where, status: attack.status, log: output });
+      }
+    }
   } finally {
     child?.kill("SIGTERM");
     broker.kill("SIGTERM");
@@ -856,7 +871,6 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
   rmSync(dir, { recursive: true, force: true });
 
   const brokerPort = await freePort();
-  const webPort = await freePort();
   const server = `nats://127.0.0.1:${brokerPort}`;
   const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
   const broker = spawn("nats-server", ["-p", String(brokerPort), "-js", "-sd", store, "-a", "127.0.0.1"], { stdio: "ignore" });
@@ -873,18 +887,22 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
     let output = "";
     const childEnv = { ...process.env };
     for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
-    child = spawn(process.execPath, [
-      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-      "--server", server, "--space", "consoleauthdetached", "--port", String(webPort), "--no-open",
-    ], { env: { ...childEnv, COTAL_WEB_DETACHED_LOG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
-    child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
     let served = false;
-    for (let i = 0; i < 200; i++) {
-      const response = await fetch(`http://127.0.0.1:${webPort}/api/meta`).catch(() => undefined);
-      if (response?.status === 401) { served = true; break; }
-      await wait(50);
-    }
+    await onFreePort(async (port) => {
+      child = spawn(process.execPath, [
+        "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+        "--server", server, "--space", "consoleauthdetached", "--port", String(port), "--no-open",
+      ], { env: { ...childEnv, COTAL_WEB_DETACHED_LOG: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout?.on("data", (data: Buffer) => { output += data.toString(); });
+      child.stderr?.on("data", (data: Buffer) => { output += data.toString(); });
+      const taken = `Port ${port} is in use`;
+      for (let i = 0; i < 200 && !output.includes(taken); i++) {
+        const response = await fetch(`http://127.0.0.1:${port}/api/meta`).catch(() => undefined);
+        if (response?.status === 401) { served = true; break; }
+        await wait(50);
+      }
+      if (!served && output.includes(taken)) throw new PortInUseError(port, output);
+    });
     await wait(100);
     check("the real detached child writes startup diagnostics but no live launch URL to its persisted stream",
       served && output.includes("Cotal web") && !/\?k=[A-Za-z0-9_-]{32,}/.test(output), output);

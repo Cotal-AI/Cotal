@@ -37,15 +37,21 @@ function cfg(over: Partial<AgentConfig> = {}): AgentConfig {
   } as AgentConfig;
 }
 
-// A minimal MeshAgent stub — buildOrientation only reads id/status/attention/roster/inboxCount.
-function agentStub(over: { roster?: any[]; unread?: number } = {}): MeshAgent {
+// A minimal MeshAgent stub — buildOrientation only reads id/status/attention/roster/inboxCount
+// (plus presenceView since #1229: rendering consults the roster's trust state).
+function agentStub(
+  over: { roster?: any[]; unread?: number; presenceWriteFailure?: unknown; presenceView?: any } = {},
+): MeshAgent {
   return {
     id: "ALICEID0000000000000000000000000000000000000",
     status: "working",
     attention: "open",
     connected: true,
+    transportConnected: true,
+    presenceWriteFailure: over.presenceWriteFailure,
     roster: () => over.roster ?? [],
     inboxCount: () => over.unread ?? 0,
+    presenceView: () => over.presenceView ?? { state: "current", fresh: true },
   } as unknown as MeshAgent;
 }
 
@@ -75,13 +81,94 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.ok(open.map((s) => s.name).includes("cotal_run"), "open mode ⇒ cotal_run shown");
 }
 
+// 4b — a stuck presence writer makes orientation and roster say the view is not live.
+{
+  const failure = {
+    bucket: "cotal_presence_demo",
+    since: 1,
+    forMs: 6_500,
+    error: "timeout",
+    consecutiveFailures: 4,
+    stuck: true,
+  };
+  const agent = agentStub({
+    roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker")],
+    presenceWriteFailure: failure,
+  });
+  const text = renderOrientation(buildOrientation(agent, cfg({ creds: "CREDS" }), [], 1));
+  assert.match(text, /presence view: NOT LIVE/,
+    "orientation says the peer snapshot is not live once consecutive presence failures cross one TTL");
+  const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
+  const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
+  assert.match(result.text, /Presence view is NOT LIVE/,
+    "cotal_roster labels its rows as last-known while this endpoint's presence writer is stuck");
+}
+
+// 4c — #1229: the roster's trust state is part of the rendering. An `unpopulated` view is a
+// reconnect refill in progress: rows are partial and a missing name is not an absence verdict.
+{
+  const agent = agentStub({
+    roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker")],
+    presenceView: { state: "unpopulated", fresh: false },
+  });
+  const o = buildOrientation(agent, cfg({ creds: "CREDS" }), [], 1);
+  assert.equal(o.presence.live, false, "orientation does not call a not-yet-populated view live");
+  assert.ok(typeof o.presence.detail === "string" && o.presence.detail.length > 0, "the detail names the observer's condition");
+  assert.match(renderOrientation(o), /presence view: NOT LIVE/,
+    "orientation says the peer snapshot is not live while the presence watch has not replayed its initial snapshot (#1229)");
+  const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
+  const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
+  assert.match(result.text, /initial snapshot/i,
+    "cotal_roster says the presence watch has not completed its initial snapshot under an unpopulated view (#1229)");
+  assert.match(result.text, /not.*absence verdict/i,
+    "cotal_roster says a missing name is not an absence verdict while the roster refills (#1229)");
+  assert.match(result.text, /bob/, "the partial row is still shown — rendering never refuses (#1229)");
+}
+
+// 4d — a `stale` view renders last-known rows and names the instant the view went silent.
+{
+  const staleSince = 1_700_000_000_000;
+  const agent = agentStub({
+    roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker")],
+    presenceView: { state: "stale", fresh: false, staleSince },
+  });
+  const o = buildOrientation(agent, cfg({ creds: "CREDS" }), [], 1);
+  assert.equal(o.presence.live, false, "orientation does not call a stale view live");
+  assert.ok((o.presence.detail ?? "").includes(new Date(staleSince).toISOString()),
+    "the stale detail names the silent-since instant as an ISO timestamp (#1229)");
+  assert.match(renderOrientation(o), /presence view: NOT LIVE/, "orientation renders a stale view as not live (#1229)");
+  const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
+  const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
+  assert.match(result.text, new RegExp(new Date(staleSince).toISOString().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    "cotal_roster names the staleSince instant under a stale view (#1229)");
+  assert.match(result.text, /last-known/i, "cotal_roster labels stale rows as last-known (#1229)");
+  assert.match(result.text, /bob/, "the last-known row is still shown (#1229)");
+}
+
+// 4e — control: a `current` view renders exactly as before, with no view preface.
+{
+  const agent = agentStub({
+    roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker")],
+    presenceView: { state: "current", fresh: true },
+  });
+  const o = buildOrientation(agent, cfg({ creds: "CREDS" }), [], 1);
+  assert.equal(o.presence.live, true, "a current view is live");
+  assert.equal(o.presence.detail, undefined, "a current view carries no detail");
+  assert.doesNotMatch(renderOrientation(o), /NOT LIVE/, "a current view renders as live (#1229)");
+  const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
+  const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
+  assert.doesNotMatch(result.text, /initial snapshot|last-known/i,
+    "a current roster render carries none of the view-preface sentences (#1229)");
+  assert.match(result.text, /bob/, "the row is shown");
+}
+
 // 2 — identity + access mapping, and auth vs open.
 {
   const authCfg = cfg({ creds: "CREDS", subscribe: ["general"], allowSubscribe: ["general", "incident"], allowPublish: [] });
   const visible = cotalToolSpecs(authCfg).map((s) => ({ name: s.name, title: s.title }));
   const o = buildOrientation(agentStub(), authCfg, visible, 1_700_000_000_000);
 
-  assert.deepEqual(o.identity, { name: "alice", role: "reviewer", space: "demo", id: "ALICEID0000000000000000000000000000000000000", cotalVersion: DOCS_VERSION });
+  assert.deepEqual(o.identity, { name: "alice", role: "reviewer", space: "demo", id: "ALICEID0000000000000000000000000000000000000", cotalVersion: DOCS_VERSION } as typeof o.identity);
   assert.equal(o.access.authMode, true);
   assert.deepEqual(o.access.read, ["general"]);
   assert.deepEqual(o.access.readAcl, ["general", "incident"]); // read ACL wider than active read

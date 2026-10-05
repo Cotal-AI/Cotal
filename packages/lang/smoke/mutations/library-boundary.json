@@ -19,8 +19,8 @@
     {
       "name": "free join stops gating its elements",
       "file": "packages/lang/src/library.ts",
-      "find": "    [\"join\", fn(\"join\", (_f, a) => {\n      for (const el of a[0] as unknown[]) noCoerce(\"join\", el);\n      return (a[0] as unknown[]).join(a[1] as string);\n    }, { any: [0] })],",
-      "replace": "    [\"join\", fn(\"join\", (_f, a) => (a[0] as unknown[]).join(a[1] as string), { any: [0] })],",
+      "find": "    [\"join\", fn(\"join\", (_f, a) => {\n      const xs = listArg(\"join\", a[0]);\n      for (const el of xs) noCoerce(\"join\", el);\n      return xs.join(a[1] as string);\n    }, { any: [0] })],",
+      "replace": "    [\"join\", fn(\"join\", (_f, a) => listArg(\"join\", a[0]).join(a[1] as string), { any: [0] })],",
       "expectRed": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
       "completionMarker": "ok every admitted node type is classified against the key guard: coercing (exercised above) or inert, no type unclassified",
       "cell": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",

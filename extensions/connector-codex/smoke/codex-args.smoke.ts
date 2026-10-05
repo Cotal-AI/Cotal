@@ -137,6 +137,7 @@ try {
     role: "coder",
     id: "UAID",
     lifecycleUid: "lc-1",
+    backfillFloor: 42,
     servers: "nats://x:1",
     prompt: "greet the operator",
   });
@@ -147,6 +148,7 @@ try {
       full.env?.COTAL_LIFECYCLE_UID === "lc-1" &&
       full.env?.COTAL_CODEX_PROMPT === "greet the operator",
   );
+  check("backfill floor forwarded", full.env?.COTAL_BACKFILL_FLOOR === "42", full.env?.COTAL_BACKFILL_FLOOR);
   // The broker URL is NOT one of them: it rides the launch material, so a suite or a tool this seat
   // runs cannot resolve its "default" broker out of an inherited variable and silently dial ours.
   check(

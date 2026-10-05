@@ -6,9 +6,10 @@
  * residue through the shipped gate APIs and requires holder1 to be skipped only from a cursor bound
  * to the exact registration op, frozen-gate KV revision, and sorted holder set.
  *
- * It also proves the freeze-holder liveness guard runs on every attempt, each completed holder is
- * persisted before the next verification, a mismatched later freeze restarts from zero, failed
- * cleanup cannot authorize that later freeze, and the executor grant names one exact repair key.
+ * It also proves the freeze-holder liveness guard runs on every attempt, the holders a shared sweep
+ * verified are persisted even when another holder in it is not, an interrupted sweep persists none,
+ * a mismatched later freeze restarts from zero, failed cleanup cannot authorize that later freeze,
+ * and the executor grant names one exact repair key.
  *
  * Run: pnpm smoke:gate-reconcile-resume
  */
@@ -146,9 +147,16 @@ async function attempt(
   probe: (principal: string) => Promise<{ state: "gone"; detail: string }>,
   evict: (principal: string) => Promise<boolean>,
 ) {
+  // The repair verify-evicts its holders as one set. This fake answers that set one principal at a
+  // time, so a throw for any of them interrupts the whole sweep, as a dropped link does.
+  const evictHolders = async (holders: readonly string[]) => {
+    const verified: boolean[] = [];
+    for (const h of holders) verified.push(await evict(h));
+    return verified;
+  };
   try {
     return { ok: true as const, report: await reconcileEndpointGate({
-      kv, space: SPACE, endpoint: ENDPOINT, instanceId, probeHolder: probe, evict, log: () => {},
+      kv, space: SPACE, endpoint: ENDPOINT, instanceId, probeHolder: probe, evictHolders, log: () => {},
       recordsKv: kv,
     }) };
   } catch (error) {
@@ -158,7 +166,7 @@ async function attempt(
   }
 }
 
-console.log("A. interruption persists holder1 before holder2 is attempted");
+console.log("A. a partial sweep persists its verified holders; an interrupted sweep persists none");
 {
   const kv = memKv();
   const instanceId = mintLifecycleUid();
@@ -177,18 +185,30 @@ console.log("A. interruption persists holder1 before holder2 is attempted");
     async (principal) => { probes++; return { state: "gone", detail: `affirmed ${principal}` }; },
     async (principal) => {
       firstCalls.push(principal);
-      if (principal === holder2) throw new Error("simulated link drop during holder2 verification");
+      if (principal === holder2) throw new Error("simulated link drop during the shared sweep");
       return true;
     },
   );
   check("the interrupted attempt is a named eviction-unverified refusal", !first.ok && first.condition === "eviction-unverified", first);
-  check("holder1 completed before holder2 interrupted the pass", JSON.stringify(firstCalls) === JSON.stringify([holder1, holder2]), firstCalls);
   check("the gate remains frozen after the interruption", gateState(kv, instanceId) === "frozen", gateState(kv, instanceId));
-  check("the refusal reports durable completed and remaining counts", !first.ok && /1 completed, 3 remaining/.test(first.message), first);
+  check("an interrupted sweep verifies nothing, so no holder is reported completed", !first.ok && /0 completed, 4 remaining/.test(first.message), first);
+  const restarted = await loadEndpointRepairCursor(kv, ENDPOINT, instanceId);
+  check("the cursor is bound to this freeze and records no verified holder", restarted?.cursor.freezeToken === freezeToken && restarted.cursor.opId === opId &&
+    JSON.stringify(restarted.cursor.holders) === JSON.stringify(expectedHolders) && restarted.cursor.verified.length === 0, restarted);
 
+  const partialCalls: string[] = [];
+  const partial = await attempt(
+    kv,
+    instanceId,
+    async (principal) => { probes++; return { state: "gone", detail: `re-affirmed ${principal}` }; },
+    async (principal) => { partialCalls.push(principal); return principal !== holder2; },
+  );
+  check("one sweep answers every required holder", JSON.stringify(partialCalls) === JSON.stringify(expectedHolders), partialCalls);
+  check("an unverified holder refuses and names the durable counts", !partial.ok && partial.condition === "eviction-unverified" &&
+    /3 completed, 1 remaining/.test(partial.message) && partial.message.includes(holder2), partial);
   const stored = await loadEndpointRepairCursor(kv, ENDPOINT, instanceId);
-  check("holder1 was persisted before holder2 was attempted", stored?.cursor.freezeToken === freezeToken && stored.cursor.opId === opId &&
-    JSON.stringify(stored.cursor.holders) === JSON.stringify(expectedHolders) && JSON.stringify(stored.cursor.verified) === JSON.stringify([holder1]), stored);
+  check("the verified holders of the partial sweep are persisted", stored?.cursor.freezeToken === freezeToken && stored.cursor.opId === opId &&
+    JSON.stringify(stored.cursor.verified) === JSON.stringify([holder1, holder3, freezeHolder].sort()), stored);
 
   const retryCalls: string[] = [];
   const retry = await attempt(
@@ -197,11 +217,11 @@ console.log("A. interruption persists holder1 before holder2 is attempted");
     async (principal) => { probes++; return { state: "gone", detail: `re-affirmed ${principal}` }; },
     async (principal) => { retryCalls.push(principal); return true; },
   );
-  check("the freeze-holder liveness probe ran on both attempts", probes === 2, probes);
-  check("retry skips only durable holder1 and verifies every remaining holder", JSON.stringify(retryCalls) === JSON.stringify([holder2, holder3, freezeHolder]), retryCalls);
-  check("retry reports one completed before, three completed now, and zero remaining", retry.ok &&
-    JSON.stringify(retry.report.holdersVerifiedBeforeAttempt) === JSON.stringify([holder1]) &&
-    JSON.stringify(retry.report.holdersVerifiedThisAttempt) === JSON.stringify([holder2, holder3, freezeHolder]) &&
+  check("the freeze-holder liveness probe ran on every attempt", probes === 3, probes);
+  check("retry skips the durable holders and verifies only the remaining one", JSON.stringify(retryCalls) === JSON.stringify([holder2]), retryCalls);
+  check("retry reports three completed before, one completed now, and zero remaining", retry.ok &&
+    JSON.stringify(retry.report.holdersVerifiedBeforeAttempt) === JSON.stringify([holder1, holder3, freezeHolder].sort()) &&
+    JSON.stringify(retry.report.holdersVerifiedThisAttempt) === JSON.stringify([holder2]) &&
     retry.report.holdersRemaining.length === 0, retry);
   check("the gate reopens only after all current holders verify", retry.ok && gateState(kv, instanceId) === "open", retry);
   check("successful cleanup leaves no live repair cursor", retry.ok && retry.report.repairCursorCleanup === "deleted" &&
@@ -259,7 +279,7 @@ console.log("C. cursor binding and executor authority are exact");
   check("the executor has no wildcard or sibling repair-key grant", !publish.includes(foreign) && !publish.some((row: string) => row.includes("eprepair") && row.includes(">")), publish);
 }
 
-const EXPECTED = 21;
+const EXPECTED = 23;
 check(`every cell ran (${EXPECTED} before the sentinel)`, passed + failed === EXPECTED, { passed, failed });
 console.log(`\nGATE-RECONCILE RESUME SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
 if (failed) process.exitCode = 1;

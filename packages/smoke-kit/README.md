@@ -1,0 +1,62 @@
+# Smoke kit
+
+Private helpers for the repository's smoke suites. Shipped code must not import this package.
+
+Use `freePort()` when a suite or its child needs a loopback port. Ports come from 20000-26383,
+below the kernel's ephemeral range, so no bind of port 0 and no outgoing connection on the host can
+be given one. A lock listener held until the process exits keeps every other caller of the kit, in
+this process or another, from getting the same port, so an address a suite keeps as dead stays
+dead. A call that throws closes its lock and leaves nothing listening. On Linux the kit reads the
+ephemeral range and throws when it overlaps 20000-32767. macOS and Windows default to 49152-65535.
+
+The probe listener is closed before the number is returned, so a process that binds the number
+itself, without asking the kit, can still take the port first. Start the listener with
+`onFreePort(start)` so that loss starts it again on a new port, up to five times. `start` rejects
+with `EADDRINUSE`: `listenOn` does for a listener in the suite's own process, and a child that
+reports the collision in its output is rejected with a `PortInUseError`. Ask for every port this
+way; a number derived from another port was never checked by the OS.
+
+Use `SMOKE_BROKER_TOKEN` as the prefix for a broker's temporary directory and register the child
+with `teardownOnSignal`. The token records its owning process. Normal-path cleanup still belongs
+to the suite.
+
+Suites spawn the bare `nats-server` name, so the server under test is whichever one the spawn's
+PATH reaches first. `teardownOnSignal` names it: it reads each running child's binary from
+`/proc/<pid>/exe`, runs that link with `--version`, and for a nats-server prints
+`smoke broker: nats-server <version> at <path>` to stderr. Every broker gets its own line, so a
+server started under another name, or from a binary replaced since the last broker, is still
+recorded. A binary unlinked or replaced while its broker runs still answers through the link, and
+its path prints with the kernel's ` (deleted)` suffix. A child whose binary cannot be run or does
+not answer `--version` within ten seconds, or that was started under a name beginning with
+`nats-server` and whose binary reports no nats-server version, makes `teardownOnSignal` throw, so
+a run cannot pass without saying which server it ran on. The probe runs in its own process group,
+which is killed when the probe returns, so a process it forks dies with it unless it leaves the
+group. A wrapper script named `nats-server` that has not yet started the server is still its
+interpreter, so it throws too. Off Linux there is no `/proc/<pid>/exe`, and each child started
+under a `nats-server` name prints
+`smoke broker: nats-server binary not recorded: <platform> has no /proc/<pid>/exe` instead.
+
+`recordSmokeSandbox` also owns every process that works inside the recorded root. The first
+record starts a small `sh` watchdog that outlives the suite. When the suite's process ends, however
+it ends, SIGKILL included, the watchdog kills whatever still works in a recorded root, including the
+broker, manager and delivery daemon that `cotal up --detach` starts detached. A stack the suite
+already stopped leaves nothing to kill. A hook inside the suite cannot do this: tsx turns a signal
+the suite does not acknowledge within a few tens of milliseconds into SIGKILL, and a suite waiting
+in `spawnSync` cannot acknowledge one. The watchdog finds processes through Linux procfs, so
+nothing is watched on other platforms. It reads one root per line, so on Linux a root whose path
+contains a newline is refused.
+
+The CI shard runner also assigns each suite a `SMOKE_BROKER_SCOPE`. This non-secret test marker
+is separate from `COTAL_*` connection settings, so their normal scrub leaves it intact. The token
+carries a compact digest of the scope; Linux descendants can also recover it from ancestor
+environments if their own environment was cleared. The post-suite reaper checks only that scope and still refuses to kill a broker whose
+owner is alive. A foreign owner exiting during a suite does not make its broker that suite's leak.
+Standalone suites without a scope retain the unscoped token. The pre-run sweep remains global.
+
+This does not enable concurrent scheduling or change seat custodian markers. Ancestor recovery
+uses Linux procfs. On other platforms, the broker-owning process must inherit the scope in its
+environment. The reaper reports when its platform cannot enumerate brokers.
+
+The serial shard runner sets the scope before launching each suite. Existing environment
+inheritance stays unchanged, including caller-supplied test pins, budgets and private paths.
+Each suite remains responsible for isolating the environments of its own children.

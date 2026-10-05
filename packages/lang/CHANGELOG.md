@@ -1,5 +1,69 @@
 # @cotal-ai/lang
 
+## 0.65.0
+
+### Minor Changes
+
+- 8577576: Add `once`, an at-most-once scope for cotal-lang steps that write to a far side. A resume that finds a step inside `once` begun and never settled does not dispatch it again: it opens a hold, a checkpoint minted under `holdRequestId` of the step's recorded request id, and the answer becomes the step's result, while an expired hold fails the step with the catchable L4027. A hold the host refuses leaves the step pending rather than refused, so no later host writes again, and its L5025 says so. A hold whose checkpoint answers an outcome other than `resolved` or `expired` fails the step as a handler fault. Only `ask` runs inside `once`; every other effect is refused before it begins (L4028), and a write from the body to a binding outside it is refused (L2032). The journal entry gains a `hold` field for the hold's own binding. The hosted runtime ends the held `ask`'s open attempt pause before the hold binds, and `cotal run answer`, `cotal run amend` and `cotal run journal` read a held step at its hold. A fork may cut inside `once`, and a migration ignores an orphaned `once`. `once` becomes a reserved name, so a program that declares its own `once` binding is refused (L2002). The design record is `docs/design/at-most-once-external-effect.md`.
+
+## 0.64.0
+
+### Patch Changes
+
+- eb2b2d5: A journal append the store refuses now crosses the worker effect bridge as the real `JournalAppendRejected` (or `EffectResultTooLarge`) in both directions. Before, the bridge flattened it into a plain `Error`, so when a host handler's `ctx.bind` was refused and the handler rethrew, the compiled engine settled the step `failed` as an L5010 handler fault and a program `try`/`catch` could catch it. The bridged route now matches the in-process interpreter: the entry stays pending, nothing is settled on top of it, and the run stops on the uncatchable L5010 path.
+
+## 0.63.0
+
+## 0.62.0
+
+### Patch Changes
+
+- 1b3ba08: A host stack overflow in a cotal-lang run is no longer catchable. A builtin that ran out of stack (for example `json.stringify` on an array nested a few thousand deep) used to raise a catchable L4016, so a program could branch on how much stack its host had, and a journal recorded on one host was refused with L5001 when resumed on a host with a larger stack. Both the tree-walker and the compiled engine now unwind the run through it, the same as the other faults a program cannot catch: a `finally` does not run past it, a `parallel`, `race` or other scope it fails inside settles nothing, even when another branch failed first, the overflow itself cancels no sibling, and a `conclave` whose body overflowed does not close. A resume on a host with more stack then proceeds instead of replaying a recorded scope failure.
+
+## 0.61.0
+
+## 0.60.0
+
+## 0.59.0
+
+### Patch Changes
+
+- acb713e: Keep the simulator in step with a program running behind the worker bridge. The bridge now reports when the thread has reacted to every message it was sent, and `SimHandler` waits for that before delivering its next wake, so a bridged simulation settles a `race` on the arm that finished first instead of the one declared first. Handlers gain an optional `useQuiescence` hook for this, and `RecordingHandler` forwards it, so a wrapped simulator keeps the same pacing. It returns a release that the bridge calls when it closes, including when the worker fails to start, so a `SimHandler` used for one bridged run can be reused for another run afterwards.
+- 77e2654: The record and array builtins refuse an argument of another kind in the language, so a program can no longer branch on an answer the host made up for a value it was never meant to take.
+
+  Each of these builtins read its record or array argument through a host operation that answers for any kind. Measured before the fix, on both engines: `map(5, f)` and `keys(5)` answered `[]`, `every(5, f)` answered true, `pick(5)` answered undefined, `has(f, "length")` answered true off the implementation's function wrapper, `keys("ab")` answered index strings, `concat("a", [1])` answered `"a1"` past L4018, and `keys(null)` refused with the host's error text.
+
+  `keys`, `values`, `entries`, `has` and both arguments of `merge` now take a record, and `map`, `filter`, `find`, `some`, `every`, `sort`, `slice`, `join`, `reverse`, `unique`, `sum`, `pick` and the first argument of `concat` take an array. Every other kind, a string, `null` and `undefined` included, is refused with L4016 naming the builtin and the kind, before the host is reached, as `len` already was. The refusal is catchable. The second argument of `concat` keeps the method's meaning. The spec's library-failure section, its replay posture and its change log carry the rule in the same change.
+
+- 608f5f4: Re-attach doc comments that had drifted away from the declarations they document. A `/** */` block followed directly by another one documented nothing, so editor hovers and the published type declarations showed no doc for the intended declaration (for example `Manager`, the `plane3` field and `AclResolver`). Each such block now sits above its declaration, is merged into the block it duplicated, or is removed when its declaration no longer exists. A new `pnpm check:doc-comments` check, run as part of `check:docsbundle`, refuses a doc block followed directly by another in shipped source.
+- 7b39a0b: `spawn` in a workflow program accepts `events`, the workflow form of `cotal spawn --no-events`. `events: false` starts the seat without its AG-UI event plane, so a hosted run can now start a connector that publishes none, such as Hermes. Before this the option was refused as an unknown key (L3011), and the same spawn without it was refused by the manager because an omitted `events` arms the plane. A value that is not a boolean is refused at the spawn. Like `supervise`, the option is launch policy and is not part of the step's input hash.
+
+## 0.58.0
+
+### Patch Changes
+
+- 4229e53: Forward `observe` through the worker bridge, so a `waitUntil` run hosted by a manager completes instead of failing with "host.options.handler.observe is not a function".
+
+## 0.57.0
+
+### Minor Changes
+
+- ae90f5d: The scripted turn no longer asks for a timestamp it discards: `SimScript`'s turn entries drop the unused `at` field, so a script author's previously valid `at` literal now fails to typecheck (#729). The simulator grades a scripted wait's delivered value and a scripted ask's two-minute clock instead of taking them on faith (#724). `EffectHandler`'s docblock and the docs now state the handler failure contract: a `bind` failure is a throw (#735).
+
+## 0.56.1
+
+## 0.56.0
+
+### Patch Changes
+
+- 493eef5: The tree-walker's `++` and `--` refuse an operand that is not already a number with L4018, the same sentence the compiled engine's `case "update"` throws, instead of reading it through a bare `Number(...)`: a record no longer decays to NaN and a numeric string no longer silently becomes a number, so `x++`, `x + 1` and `x += 1` agree (#646). The two declared divergences this covered are retired.
+
+## 0.55.0
+
+### Patch Changes
+
+- 2b28653: A `RunDivergence` raised inside a concurrency scope is no longer recorded as the scope's own outcome: `performScope`'s ladder rethrows it and settles nothing, so the scope entry stays pending and a resume re-enters it and diverges again at the step that broke, instead of replaying a recorded `L4000` scope-fault a program's `try`/`catch` can swallow. A divergence among a `race`'s settled arms is hoisted ahead of the winner scan beside a refused append and a held arm, so a losing arm's divergence is never discarded behind a winning sibling and the winner's value is never handed back over it. A divergence also cancels no sibling: `parallel`, `fanOut` and the `race` settle treat it like a release or a refused append, leave every other arm to run to its own boundary and rethrow bare, so a resume of the original source completes the run instead of replaying a cancellation the divergence recorded.
+
 ## 0.54.0
 
 ## 0.53.0

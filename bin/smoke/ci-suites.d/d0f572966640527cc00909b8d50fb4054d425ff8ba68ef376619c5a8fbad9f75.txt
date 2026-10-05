@@ -1,0 +1,5 @@
+# Triaged 2026-10-01, when the UNGATED entry reading only "UNTRIAGED" hit its recheckBy date and
+# reddened the inventory gate. Ran it: SELF-SERVE-JOIN COVERAGE SMOKE OK (17 passed, 0 failed).
+# Gated rather than re-explained, which is the exit the gate asks for and the one that takes the
+# untriaged count down instead of resetting its clock.
+smoke:self-serve-join-coverage:auth

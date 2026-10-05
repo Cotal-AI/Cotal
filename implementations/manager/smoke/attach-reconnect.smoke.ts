@@ -63,7 +63,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, connect as netConnect, type AddressInfo, type Server, type Socket } from "node:net";
+import { createServer, connect as netConnect, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,7 +76,7 @@ import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { attachRefusal, heldSessionNotice, reconnectNotice } from "../../cli/src/commands/agents.js"; // dev-only cross-impl smoke import
 import { isTransportEnd } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import
 import { Manager } from "../src/manager.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -92,12 +92,6 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? String(JSON.stringify(extra)).slice(0, 600) : ""); }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 
 // --- live-space guard: this suite only ever runs against its own ephemeral loopback broker ------
 const LIVE_HOST = "broker.cotal.ai";

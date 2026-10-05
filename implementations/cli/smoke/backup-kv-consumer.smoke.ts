@@ -6,7 +6,6 @@
  * Run: pnpm smoke:backup-kv-consumer
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { createServer } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,17 +26,9 @@ import {
   writeMaintenanceResumeDocument,
 } from "@cotal-ai/workspace";
 import { backup } from "../src/commands/backup.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const freePort = (): Promise<number> => new Promise((resolve, reject) => {
-  const server = createServer();
-  server.once("error", reject);
-  server.listen(0, "127.0.0.1", () => {
-    const address = server.address();
-    server.close((error) => error ? reject(error) : resolve((address as { port: number }).port));
-  });
-});
 const awaitExit = (proc: ChildProcess, timeoutMs = 5_000): Promise<void> => new Promise((resolve) => {
   if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
   proc.once("exit", () => resolve());

@@ -46,6 +46,7 @@ export function renderTopology(p: PreparedManifest): string {
       .join(" · ");
     out.push(`  ${c.bold(a.name)}  ${c.dim(meta + " · " + src)}`);
     if (a.cwd !== undefined) out.push(`      ${c.dim("cwd (manager host):")} ${JSON.stringify(a.cwd)}`);
+    if (a.continuity === "exact") out.push(`      ${c.dim("continuity:")} exact (reopens its last session)`);
     out.push(`      ${c.dim(LABEL.subscribe + ":")}      ${list(a.policy.subscribe)}`);
     out.push(`      ${c.dim(LABEL.allowSubscribe + ":")}    ${list(a.policy.allowSubscribe)}`);
     out.push(`      ${c.dim(LABEL.allowPublish + ":")}      ${list(a.policy.allowPublish)}`);
@@ -136,6 +137,7 @@ export function renderSpawnPlan(
   for (const e of agents.willCreate) {
     out.push(`  ${c.green("+")} ${c.bold(e.agent.name)} ${c.dim(`${e.agent.agentType} - will launch`)}`);
     if (e.agent.cwd !== undefined) out.push(`      ${c.dim("cwd (manager host):")} ${JSON.stringify(e.agent.cwd)}`);
+    if (e.agent.continuity === "exact") out.push(`      ${c.dim("continuity:")} exact (reopens its last session)`);
   }
   for (const e of agents.alreadyOwned) out.push(`  ${c.dim("=")} ${c.bold(e.agent.name)} ${c.dim(`(already running as ${e.prior?.name} - no-op)`)}`);
   for (const e of agents.stale)

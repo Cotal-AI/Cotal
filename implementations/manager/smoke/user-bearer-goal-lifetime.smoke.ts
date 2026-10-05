@@ -23,7 +23,6 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ClosedConnectionError, type NatsConnection } from "@nats-io/transport-node";
-import { createServer, type AddressInfo } from "node:net";
 import {
   CotalEndpoint,
   EpEnvelopeError,
@@ -64,17 +63,7 @@ import {
 } from "../../auth/src/index.js";
 import { Manager } from "../src/manager.js";
 import { saveSpaceAuth } from "../../../packages/workspace/src/auth-paths.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
-
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 
 let pass = 0;
 let fail = 0;

@@ -391,6 +391,95 @@ async function completionOut(positionals: string[]): Promise<string> {
   );
 }
 
+// --- #2158: a remote user mesh is skipped before the manager-caller mint ------------------------
+{
+  const { readManagerContinuity } = await import("../src/commands/update.js");
+  const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  const realHome = process.env.COTAL_HOME;
+  const tmpHome = mkdtempSync(join(realpathSync(tmpdir()), "cotal-2158-"));
+  const tmpRoot = mkdtempSync(join(realpathSync(tmpdir()), "cotal-2158-root-"));
+  process.env.COTAL_HOME = tmpHome;
+  try {
+    recordMesh({
+      space: "hosted",
+      server: "nats://127.0.0.1:9",
+      mode: "user",
+      origin: "manual",
+      root: tmpRoot,
+      tlsRequired: false,
+      userAuth: {
+        provider: "cotal",
+        remote: true,
+        idp: { url: "http://127.0.0.1:9/idp", issuer: "http://127.0.0.1:9/idp", audience: "cotal-mesh" },
+        endpoints: { url: "http://127.0.0.1:9/" },
+        sentinelCredsPath: join(tmpRoot, "sentinel.creds"),
+      },
+      ts: new Date().toISOString(),
+    });
+
+    let out = "";
+    const realLog = console.log;
+    console.log = (s?: unknown) => void (out += `${s}\n`);
+    let verdict: "none" | "legacy" | undefined;
+    let thrown: unknown;
+    const started = Date.now();
+    try {
+      verdict = await readManagerContinuity({ space: "hosted" });
+    } catch (e) {
+      thrown = e;
+    } finally {
+      console.log = realLog;
+    }
+    const elapsedMs = Date.now() - started;
+
+    assert.equal(thrown, undefined, "#2158: a remote user mesh is skipped before the manager-caller mint");
+    assert.equal(verdict, "none", "#2158: a remote user mesh is skipped before the manager-caller mint");
+    assert.ok(
+      out.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
+      "#2158: the skip names the mesh and says its manager runs elsewhere",
+    );
+    assert.ok(!out.includes("manager-caller"), "#2158: the skip names the mesh and says its manager runs elsewhere");
+    assert.ok(
+      !out.includes("running manager continuity check"),
+      "#2158: the skip names the mesh and says its manager runs elsewhere",
+    );
+    assert.ok(elapsedMs < 1_000, "#2158: the skip reaches no exchange");
+
+    // A remote entry among several running meshes contributes none and does not clear a legacy verdict.
+    function ambiguous2158(): never {
+      throw new MeshTargetError("ambiguous-target", "multiple meshes running: alpha (/a), hosted (/h)", {
+        available: ["alpha (/a)", "hosted (/h)"],
+        spaces: ["alpha", "hosted"],
+      });
+    }
+    let out2 = "";
+    const realLog2 = console.log;
+    console.log = (s?: unknown) => void (out2 += `${s}\n`);
+    let verdict2: "none" | "legacy";
+    try {
+      verdict2 = await reportRunningManagers({}, async (flags) => {
+        if (typeof flags.space !== "string") ambiguous2158();
+        return flags.space === "hosted" ? readManagerContinuity(flags) : "legacy";
+      });
+    } finally {
+      console.log = realLog2;
+    }
+    assert.equal(
+      verdict2,
+      "legacy",
+      "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
+    );
+    assert.ok(
+      out2.includes("hosted: this mesh's manager runs elsewhere; no custody on this machine"),
+      "#2158: a remote entry among several running meshes contributes none and does not clear a legacy verdict",
+    );
+  } finally {
+    if (realHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = realHome;
+    removeMesh("hosted");
+  }
+}
+
 // --- #1620: update observes the running manager BEFORE it rewrites the global seed store ----------
 // `rt.reconcile()` is `runSeed({force: true})` — it rewrites the operator-global seed store,
 // manifest and npm prefix. Running it before the continuity check meant an `update --self` against

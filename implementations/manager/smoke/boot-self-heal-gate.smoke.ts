@@ -37,7 +37,7 @@ import {
   mintMembershipObserverCreds, mintConnectionEvictorCreds,
   principalKey, standaloneConnectOpts, epAuthBucket, DEV_OWNER,
   endpointRegistrationBarrier, epgateKey, parseEndpointGate, mintLifecycleUid,
-  observePrincipalLivenessWithCreds, evictDeniedPrincipalWithCreds,
+  observePrincipalLivenessWithCreds, evictDeniedPrincipalWithCreds, evictDeniedPrincipalsWithCreds,
   CotalEndpoint, CONTROL_DELIVERY_ADMIN,
   type ControlReply,
 } from "@cotal-ai/core";
@@ -117,11 +117,22 @@ const startDaemon = async (): Promise<CotalEndpoint> => {
   });
   ep.on("error", () => {});
   await ep.start();
+  // The manager's #1694 binding requires the answer to name a real holder of the delivery
+  // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
+  // `holdsDeliveryLease` below is truthful.
+  await ep.acquireDeliveryLease(0).catch(() => {});
   ep.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
     const principal = String((req.args as { principal?: unknown })?.principal ?? "");
     if (req.op === "evictPrincipal") {
       const result = await evictDeniedPrincipalWithCreds({
         servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
+      });
+      return { ok: true, data: result };
+    }
+    if (req.op === "evictPrincipals") {
+      const principals = (req.args as { principals?: string[] })?.principals ?? [];
+      const result = await evictDeniedPrincipalsWithCreds({
+        servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principals,
       });
       return { ok: true, data: result };
     }
@@ -131,8 +142,14 @@ const startDaemon = async (): Promise<CotalEndpoint> => {
       });
       return { ok: true, data: result };
     }
-    if (req.op === "reloadStoreIdentity")
-      return { ok: true, data: { kind: "fs", root: resolve(workspaceRoot) } };
+    if (req.op === "reloadStoreIdentity") {
+      let holds = false;
+      try {
+        const own = await ep.readDeliveryLeaseEntry(0);
+        holds = own !== undefined && ep.ownsDeliveryLease(own.info);
+      } catch { holds = false; }
+      return { ok: true, data: { identity: { kind: "fs", root: resolve(workspaceRoot) }, responder: ep.card.id, holdsDeliveryLease: holds } };
+    }
     return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
   }, { boundReply: true });
   return ep;
@@ -292,6 +309,11 @@ try {
   // ── CELL 3: no delivery-admin oracle → named unestablishable, gate stays frozen ──
   {
     await freezeRegisteredGate(iid, serveActor);
+    // Release the shard before stopping: an unreleased row still names this fixture as the
+    // holder, and the manager's #1694 absence settlement then reads that as an undetermined
+    // "no responder while a holder is live" rather than a genuinely absent daemon.
+    const fixtureRev = (await daemon.readDeliveryLeaseEntry(0))?.revision;
+    await daemon.releaseDeliveryLease(0, fixtureRev);
     await daemon.stop();
     daemon = undefined;
     await wait(200);

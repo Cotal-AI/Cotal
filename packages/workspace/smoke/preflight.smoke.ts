@@ -35,6 +35,8 @@ const {
   removeMesh,
   loadMeshes,
   renderWorkspaceError,
+  reachableOrThrow,
+  ConnectRefusal,
 } = await import("@cotal-ai/workspace");
 
 // The canonical preflight copy now comes from the renderer (workspace's optional, command-agnostic
@@ -98,6 +100,13 @@ check("stale-auth preflight copy names `cotal doctor auth` (the repair surface)"
   const msg = renderWorkspaceError({ kind: "preflight", failure: "stale-auth", target: t, pruned: false });
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
 })());
+// TIMEOUT (#851 cell c): a probe that ran out of its own budget is never a stale-entry signal,
+// whatever the source — a slow or jittery link is not a dead broker.
+for (const s of [...REGISTRY, ...NON_REGISTRY])
+  check(`timeout + ${s} → NO prune + 'slow-link'`, (() => {
+    const r = classifyPreflightFailure(s, "timeout", true);
+    return r.prune === false && r.kind === "slow-link";
+  })());
 check("stale-auth raw-probe copy names `cotal doctor auth`", (() => {
   const msg = renderWorkspaceError({ kind: "reachable", reason: "stale-auth", server: "nats://x:1", hasAuth: true });
   return msg.includes("doctor auth") && msg.includes("EXPIRED");
@@ -232,17 +241,24 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
 })());
 
 // ── S10 delayed-INFO confirm: first 1s INFO read misses; second longer read must still save. ─────
-// A TCP peer that greets with INFO {tls_required:true} only after 1.5s. probeConnect fails
-// (not a real NATS TLS handshake) → unreachable; without the confirm budget this would prune.
+// A TCP peer that greets with INFO {tls_required:true} only after 1.5s and then answers the TLS
+// client hello with a non-TLS byte string, so the handshake fails CONCLUSIVELY (a protocol error,
+// not a timeout). probeConnect → unreachable; without the confirm budget on the INFO read this
+// would prune. A peer that never answers the hello is a pure timeout, which #851 routes to
+// slow-link before INFO is consulted at all (S11 below); this peer must not be that shape.
 {
   const { createServer } = await import("node:net");
   const delayed = await new Promise<{ port: number; close: () => void }>((resolve) => {
     const srv = createServer((sock) => {
+      sock.on("error", () => { /* client tears down on its own error; not a test failure */ });
       setTimeout(() => {
         try {
           sock.write('INFO {"server_id":"s10","tls_required":true,"version":"2"}\r\n');
         } catch { /* client gone */ }
       }, 1_500);
+      sock.once("data", () => {
+        try { sock.write("-ERR not a tls record\r\n"); } catch { /* client gone */ }
+      });
     });
     srv.listen(0, "127.0.0.1", () => {
       const port = (srv.address() as { port: number }).port;
@@ -288,6 +304,154 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     loadMeshes(),
   );
   delayed.close();
+}
+
+// ── S11 held-open TLS peer (#851 cell a): accepts TCP, greets INFO {tls_required:true}, then never
+// answers the TLS client hello. This is the issue's exact shape — the earlier collapse to
+// `unreachable` made the classifier re-read the same INFO and misreport `tls-trust` (a CA hint) for
+// a pure timeout. The fix must discriminate the timeout and never consult INFO for it. ──────────
+{
+  const { createServer } = await import("node:net");
+  const held = await new Promise<{ port: number; close: () => void }>((resolve) => {
+    const srv = createServer((sock) => {
+      sock.on("error", () => { /* client resets when its own probe budget expires; not a test failure */ });
+      sock.write('INFO {"server_id":"s11","tls_required":true,"version":"2"}\r\n');
+      // Hold the socket open; never answer the TLS client hello, never close.
+    });
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as { port: number }).port;
+      resolve({ port, close: () => srv.close() });
+    });
+  });
+  const heldServer = `nats://127.0.0.1:${held.port}`;
+  recordMesh({
+    space: "s11-held",
+    server: heldServer,
+    root: "/tmp/s11-held",
+    mode: "open",
+    tlsRequired: true,
+    origin: "up",
+    ts: new Date(0).toISOString(),
+  });
+  const heldT: MeshTarget = {
+    ...T,
+    space: "s11-held",
+    server: heldServer,
+    root: "/tmp/s11-held",
+    mode: "open",
+    tlsRequired: true,
+    source: "registry",
+    origin: "up",
+  };
+  const heldR = await preflightTarget(heldT);
+  check(
+    "S11 held-open TLS peer: preflightTarget → slow-link, prune:false (#851 cell a)",
+    !heldR.ok && heldR.kind === "slow-link" && heldR.prune === false,
+    heldR,
+  );
+  check(
+    "S11 held-open TLS peer: registry entry still present (#851 cell a)",
+    loadMeshes().some((m) => m.space === "s11-held"),
+    loadMeshes(),
+  );
+  check(
+    "S11 held-open TLS peer: rendered sentence names no CA (#851 cell d)",
+    (() => {
+      const msg = preflightMessage("slow-link", heldT, false);
+      return !/CA|certificate|trust/i.test(msg) && msg.includes("registry entry was kept");
+    })(),
+    preflightMessage("slow-link", heldT, false),
+  );
+  held.close();
+}
+
+// ── S12 raw off-registry preflight (#709): reachableOrThrow re-probes at the confirm budget ────────
+// before condemning a slow-but-live broker, and the timeout sentence names a budget actually spent.
+{
+  const { createServer } = await import("node:net");
+  const slowRawSrv = createServer((sock) => {
+    sock.on("error", () => { /* client tears down on its own error; not a test failure */ });
+    setTimeout(() => {
+      try {
+        sock.write('INFO {"server_id":"s12","version":"2.12.0","proto":1,"headers":true,"max_payload":1048576}\r\n');
+      } catch { /* client gone */ }
+    }, 1_500);
+    sock.on("data", (chunk: Buffer) => {
+      if (chunk.includes("PING")) {
+        try { sock.write("PONG\r\n"); } catch { /* client gone */ }
+      }
+    });
+  });
+  const slowRawPort = await new Promise<number>((resolve) => {
+    slowRawSrv.listen(0, "127.0.0.1", () => resolve((slowRawSrv.address() as { port: number }).port));
+  });
+  const slowRaw = `nats://127.0.0.1:${slowRawPort}`;
+
+  const t12a0 = Date.now();
+  let s12aOk = false;
+  try {
+    await reachableOrThrow(slowRaw, {});
+    s12aOk = true;
+  } catch { /* checked below */ }
+  const s12aElapsed = Date.now() - t12a0;
+  check(
+    "S12 delayed-INFO plain peer: reachableOrThrow resolves through the confirm probe (#709)",
+    s12aOk,
+  );
+  check(
+    "S12 delayed-INFO plain peer: took >1s (the confirm probe engaged, #709)",
+    s12aElapsed >= 1_400,
+    { s12aElapsed },
+  );
+  slowRawSrv.close();
+
+  const heldRawSrv = createServer((sock) => {
+    sock.on("error", () => { /* client resets when its own probe budget expires; not a test failure */ });
+    // Accept TCP; never write, never close.
+  });
+  const heldRawPort = await new Promise<number>((resolve) => {
+    heldRawSrv.listen(0, "127.0.0.1", () => resolve((heldRawSrv.address() as { port: number }).port));
+  });
+  const heldRaw = `nats://127.0.0.1:${heldRawPort}`;
+
+  const t12b0 = Date.now();
+  let s12bMsg: string | undefined;
+  try {
+    await reachableOrThrow(heldRaw, {});
+  } catch (e) {
+    s12bMsg = e instanceof ConnectRefusal ? e.message : undefined;
+  }
+  const s12bElapsed = Date.now() - t12b0;
+  check(
+    "S12 held-open plain peer: a peer that never greets is the unreachable sentence, not the timeout one (#2156: the gate now requires the greeting on a socket it owns)",
+    s12bMsg !== undefined && s12bMsg.includes("is it running") && !s12bMsg.includes("did not complete within"),
+    s12bMsg,
+  );
+  check(
+    "S12 held-open plain peer: elapsed at least 8s (the confirm budget was spent inside the gate, #709)",
+    s12bElapsed >= 8_000,
+    { s12bElapsed },
+  );
+  heldRawSrv.close();
+
+  const t12c0 = Date.now();
+  let s12cMsg: string | undefined;
+  try {
+    await reachableOrThrow(DEAD, {});
+  } catch (e) {
+    s12cMsg = e instanceof ConnectRefusal ? e.message : undefined;
+  }
+  const s12cElapsed = Date.now() - t12c0;
+  check(
+    "S12 dead port: the raw refusal still says is-it-running and spends no confirm budget (#709)",
+    s12cMsg !== undefined && s12cMsg.includes("is it running"),
+    s12cMsg,
+  );
+  check(
+    "S12 dead port: elapsed under 2s (#709)",
+    s12cElapsed < 2_000,
+    { s12cElapsed },
+  );
 }
 
 rmSync(home, { recursive: true, force: true });

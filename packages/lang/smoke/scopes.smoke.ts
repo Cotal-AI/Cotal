@@ -12,10 +12,11 @@
  * concurrency works. Section 4 is the one that matters: it hands the interpreter a journal where
  * both arms succeeded and requires the same winner every time.
  */
-import { run, resume } from "../src/interpret.js";
+import { run, resume, RunDivergence } from "../src/interpret.js";
 import { validate } from "../src/grammar.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
+import { resolvePins, WALKER_LANGUAGE_VERSION } from "../src/pins.js";
 import type { EffectHandler } from "../src/effects.js";
 
 let pass = 0;
@@ -1022,6 +1023,278 @@ log("win", r.index, r.value);
     journal.entries().map((e) => `${e.name}:${e.status ?? e.state}`));
   ok("and the race records the winner that overtook it",
     logged.some((l) => l[0] === "win" && l[1] === "a"), logged);
+}
+
+// ---- 12) a divergence inside a scope is not the scope's own outcome --------------------------------
+//
+// A `RunDivergence` is the journal saying this program is not the one that wrote it. The
+// interpreter treats it as uncatchable; `performScope`'s catch ladder treats `RunReleased`,
+// `RunHeld` and `Cancelled` as "not this scope's outcome, settle nothing". Until the ladder entry
+// existed, a divergence raised inside a live or resumed scope fell through to the generic settle
+// and was DURABLY recorded as the scope failing for a reason of its own (`L4000` scope-fault), so
+// the next resume replayed a scope-fault — an `EffectError` a program's `try` could swallow —
+// instead of the divergence, and the loudness the class exists for was spent before anyone saw it
+// (#1176). The cells below pin both sites: the ladder, and the `race` winner scan that used to
+// discard a losing arm's divergence behind a winning sibling.
+//
+// The same deadline shape section 5's neighbours use in the migrate suite: a cell whose
+// implementation regresses to "wait forever" must fail on a clock, not on the runner's patience.
+const deadline = async (label: string, p: Promise<unknown>, ms = 2_000) => {
+  let t: ReturnType<typeof setTimeout>;
+  const timer = new Promise<"HUNG">((res) => { t = setTimeout(() => res("HUNG"), ms); });
+  const outcome = await Promise.race([p.then(() => null, (e: unknown) => e as Error), timer]);
+  clearTimeout(t!);
+  return outcome === "HUNG" ? new Error(`HUNG: ${label} did not return within ${ms}ms`) : outcome;
+};
+
+// The shape the issue's triage measured: a `parallel` stopped after one branch effect (scope
+// pending), resumed with edited source whose recorded sleep duration differs inside the scope.
+{
+  const P = `
+await parallel({
+  a: async () => { await sleep("1m", { name: "a-work" }); return 1; },
+  b: async () => { await sleep("2m", { name: "b-work" }); return 2; },
+}, { name: "both" });
+await sleep("1m", { name: "tail" });
+`;
+  const runId = "r-div-scope";
+  const journal = new Journal({ run: runId });
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  let effects = 0;
+  let released: unknown;
+  try {
+    await run(P, { runId, pins, journal, handler: new SimHandler({}), shouldStop: () => (effects++ === 1 ? "host stop" : undefined) });
+  } catch (e) { released = e; }
+  ok("the recorded prefix stopped inside a pending parallel", released !== undefined
+    && scopeOf(journal, "parallel")?.state === "pending", journal.entries().map((e) => `${e.kind}:${e.name}/${e.state}`));
+
+  const EDITED = P.replace('sleep("1m", { name: "a-work" })', 'sleep("9m", { name: "a-work" })');
+  ok("the edit landed inside the scope", EDITED !== P);
+  const j2 = new Journal({ run: runId, entries: journal.entries() });
+  const first = await deadline("the diverging resume", resume(EDITED, j2, { runId, pins, handler: new SimHandler({}) }));
+  ok("(1) a resume whose edit diverged inside the pending parallel throws the divergence",
+    first instanceof RunDivergence, `${(first as Error)?.name}: ${(first as Error)?.message?.slice(0, 90)}`);
+  // The journal's own shape, not a message match: under the defect this entry is `settled` with
+  // `status: "failed"` and `error.code: "L4000"`, exactly what the `RunReleased` cell above guards.
+  const scope = scopeOf(j2, "parallel");
+  ok("(1) and the scope entry stays PENDING rather than recording the divergence as its outcome",
+    scope !== undefined
+      && scope.state === "pending"
+      && (scope as { status?: string }).status === undefined
+      && (scope as { error?: unknown }).error === undefined,
+    scope === undefined ? "no scope entry at all" : { state: scope.state, status: (scope as { status?: string }).status, error: (scope as { error?: { code?: string } }).error?.code });
+
+  // (2) THE CONSEQUENCE: the same journal resumed again must diverge again, not replay a
+  // scope-fault. Under the defect the second resume threw `EffectError` carrying `L4000`, and a
+  // program with `try/catch` around the scope swallowed it and performed NEW effects against the
+  // journal it had just diverged from.
+  const j3 = new Journal({ run: runId, entries: j2.entries() });
+  const second = await deadline("the second resume", resume(EDITED, j3, { runId, pins, handler: new SimHandler({}) }));
+  ok("(2) a second resume of that journal diverges again, at the step that broke",
+    second instanceof RunDivergence
+      && (second as Error).message.includes("/parallel:both#0/b:a/sleep:a-work#0"),
+    `${(second as Error)?.name}: ${(second as Error)?.message?.slice(0, 90)}`);
+
+  // (3) and the try/catch half of the same claim: the interpreter's uncatchable set already holds
+  // `RunDivergence`; this proves the SCOPE path does not launder it into a catchable scope-fault.
+  const CAUGHT = `try {\n${EDITED}\n} catch (e) { log("caught", e.code ?? "none"); }\nawait sleep("1s", { name: "after-catch" });`;
+  const j4 = new Journal({ run: runId, entries: journal.entries() });
+  logged.length = 0;
+  // `deadline` hands a rejection back as a value, so reading the outcome (rather than wrapping
+  // the await in try/catch, which cannot see it) is what makes this cell say anything at all.
+  const caughtOutcome = await deadline("the try/catch resume", resume(CAUGHT, j4, { runId, pins, handler: new SimHandler({}), onLog: sink }));
+  ok("(3) a divergence inside a scope the program wrapped in try/catch is NOT caught",
+    caughtOutcome instanceof RunDivergence && logged.length === 0,
+    `${(caughtOutcome as Error)?.name}; logs: ${JSON.stringify(logged)}`);
+  ok("(3) and no effect after the catch runs against the journal it diverged from",
+    !j4.entries().some((e) => e.name === "after-catch"), j4.entries().map((e) => e.name));
+}
+
+// (4) the race winner scan: a divergence in a losing arm must outrank the winner, not be discarded
+// by the tie-break. The journal is built by hand in the pending-race shape the scan reads: the
+// losing arm's sleep is BEGUN (pending, recorded 9s hash) and the winner is a pure arm declared
+// first, so its settle clock ties or beats the loser and the scan must pick it — unless the
+// divergence is hoisted above the scan. Under the defect the run COMPLETED with the winner's
+// value and the divergence never surfaced at all.
+{
+  const R = `
+const r = await race({
+  pure: async () => { return "pure"; },
+  sleepy: async () => { await sleep("9s", { name: "slow-work" }); return "slow"; },
+}, { name: "either" });
+log("win", r.index, r.value);
+`;
+  const runId = "r-div-race";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const harvest = new Journal({ run: runId });
+  await run(R, { runId, pins, journal: harvest, handler: new SimHandler({}) });
+  const h = harvest.entries();
+  const sleepy = h.find((e) => e.name === "slow-work") as JournalEntry;
+  ok("the harvest holds the loser's sleep under its recorded 9s hash", sleepy !== undefined, h.map((e) => e.name));
+  const seeded = new Journal({ run: runId, entries: [
+    // The scope entry and the loser's effect, both back to `pending`: the race re-enters, replays
+    // the pure winner, and re-enters the loser whose edited duration no longer hashes to the entry.
+    { ...(h.find((e) => e.kind === "race") as JournalEntry), state: "pending", status: undefined, endedAt: undefined, result: undefined, cancel: undefined, branchDigest: undefined, branches: undefined },
+    { ...sleepy, state: "pending", status: undefined, endedAt: undefined, result: undefined, cancel: undefined },
+  ] });
+  const EDITED = R.replace('sleep("9s", { name: "slow-work" })', 'sleep("7s", { name: "slow-work" })');
+  ok("the race edit landed on the losing arm", EDITED !== R);
+  logged.length = 0;
+  const outcome = await deadline("the race resume", run(EDITED, { runId, pins, journal: seeded, handler: new SimHandler({}), onLog: sink }));
+  ok("(4) a divergence in a losing race arm surfaces as RunDivergence",
+    outcome instanceof RunDivergence, `${(outcome as Error)?.name}: ${(outcome as Error)?.message?.slice(0, 90)}`);
+  ok("(4) and the winner's value is not returned",
+    !logged.some((l) => l[0] === "win"), logged);
+  ok("(4) and the race entry settles nothing over the discarded arm",
+    scopeOf(seeded, "race")?.state === "pending"
+      && (scopeOf(seeded, "race") as { status?: string }).status === undefined,
+    seeded.entries().map((e) => `${e.kind}:${e.name}/${e.state}${e.status ? `:${e.status}` : ""}`));
+}
+
+// (5) THE CONTROLS. An ordinary branch throw on the same path is still the scope's own failure —
+// the ladder entry must not widen into "nothing a branch throws is an outcome" — and a later
+// resume replays that recorded failure. `Cancelled` and `RunReleased` inside scopes keep their
+// existing cells above (section 5 and the release cells in the interpret suite); this is the
+// third member of the set that must keep recording.
+{
+  const P = `
+await parallel({
+  ok: async () => { await sleep("5m"); return 1; },
+  bad: async () => { null.length; },
+}, { name: "both" });
+`;
+  const runId = "r-div-control";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const j = new Journal({ run: runId });
+  let threw: unknown;
+  try {
+    await run(P, { runId, pins, journal: j, handler: new SimHandler({}) });
+  } catch (e) { threw = e; }
+  const scope = scopeOf(j, "parallel");
+  ok("(5) control: an ordinary branch throw still fails the scope with the branch's own code",
+    threw !== undefined && scope?.state === "settled" && scope?.status === "failed"
+      && (scope as { error?: { code?: string; kind?: string } }).error?.code === "L4010"
+      && (scope as { error?: { code?: string; kind?: string } }).error?.kind === "runtime",
+    { name: (threw as Error)?.name, status: scope?.status, error: (scope as { error?: unknown }).error });
+  const j2 = new Journal({ run: runId, entries: j.entries() });
+  let replayed: unknown;
+  try {
+    await resume(P, j2, { runId, pins, handler: new SimHandler({}) });
+  } catch (e) { replayed = e; }
+  ok("(5) and a later resume replays that recorded failure as an EffectError",
+    (replayed as { name?: string; code?: string })?.name === "EffectError"
+      && (replayed as { code?: string }).code === "L4010",
+    `${(replayed as Error)?.name}: ${(replayed as { code?: string }).code}`);
+}
+
+// (6)-(8) the round-2 blocker, the reviewer's exact input: a scope whose arms have BOTH begun,
+// resumed with one arm's recorded sleep duration changed. The ladder entry from (1) keeps the
+// scope entry pending, but the `parallel`/`fanOut` catches and the race `onSettle` non-candidate
+// set used to treat the divergence as a branch failure anyway: every sibling was cancelled — a
+// durable `settled/cancelled` on a run the program had no standing to speak for — and a resume
+// of the ORIGINAL source then threw `Cancelled` (or settled the scope `cancelled`) instead of
+// completing. A divergence is a fact about the program, not an outcome the run reached, so it
+// cancels no sibling and the healthy source must be able to finish the run.
+//
+// The seed is the harvest shape cell (4) already uses: a completed run's entries reset to
+// pending, so both arms' effects are recorded under their original hashes and the race
+// re-enters each arm against them.
+// Re-entry seed shared by (6)-(8): a settled entry back to pending, so both arms are recorded
+// under their original hashes and the scope re-enters each arm against them.
+const pend = (e: JournalEntry): JournalEntry => ({ ...e, state: "pending", status: undefined, endedAt: undefined, result: undefined, cancel: undefined, branchDigest: undefined, branches: undefined });
+
+{
+  const P6 = `
+await parallel({
+  a: async () => { await sleep("1m", { name: "a-work" }); return 1; },
+  b: async () => { await sleep("2m", { name: "b-work" }); return 2; },
+}, { name: "both" });
+await sleep("1m", { name: "tail" });
+`;
+  const runId = "r-div-parallel-sib";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const harvest = new Journal({ run: runId });
+  await run(P6, { runId, pins, journal: harvest, handler: new SimHandler({}) });
+  const h = harvest.entries();
+  const seeded = new Journal({ run: runId, entries: [
+    pend(h.find((e) => e.kind === "parallel") as JournalEntry),
+    pend(h.find((e) => e.name === "a-work") as JournalEntry),
+    pend(h.find((e) => e.name === "b-work") as JournalEntry),
+  ] });
+  const EDITED = P6.replace('sleep("1m", { name: "a-work" })', 'sleep("9m", { name: "a-work" })');
+  ok("the parallel seed edit landed", EDITED !== P6);
+  const diverged = await deadline("the diverging parallel", run(EDITED, { runId, pins, journal: seeded, handler: new SimHandler({}) }));
+  ok("(6) a divergence in one arm of a both-begun parallel still surfaces as RunDivergence",
+    diverged instanceof RunDivergence, `${(diverged as Error)?.name}: ${(diverged as Error)?.message?.slice(0, 90)}`);
+  const sibling = seeded.entries().find((e) => e.name === "b-work");
+  ok("(6) and the sibling arm's entry settles ok, not cancelled",
+    sibling !== undefined && sibling.state === "settled" && (sibling as { status?: string }).status === "ok",
+    sibling === undefined ? "no sibling entry" : { state: sibling.state, status: (sibling as { status?: string }).status });
+  const j6 = new Journal({ run: runId, entries: seeded.entries() });
+  const orig = await deadline("the original-source resume", resume(P6, j6, { runId, pins, handler: new SimHandler({}) }));
+  ok("(6) and a resume of the original source completes both arms and settles the scope ok",
+    orig === null && scopeOf(j6, "parallel")?.state === "settled" && (scopeOf(j6, "parallel") as { status?: string }).status === "ok",
+    `${(orig as Error)?.name ?? "COMPLETED"}; ${j6.entries().map((e) => `${e.kind}:${e.name}/${e.state}${e.status ? `:${e.status}` : ""}`)}`);
+}
+
+{
+  const F7 = `
+await fanOut(["x", "y"], async (lens) => { await sleep(lens === "x" ? "1m" : "2m", { name: "w-" + lens }); return lens; }, { name: "fan", key: (lens) => lens });
+await sleep("1m", { name: "tail" });
+`;
+  const runId = "r-div-fanout-sib";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const harvest = new Journal({ run: runId });
+  await run(F7, { runId, pins, journal: harvest, handler: new SimHandler({}) });
+  const h = harvest.entries();
+  const seeded = new Journal({ run: runId, entries: [
+    pend(h.find((e) => e.kind === "fanOut") as JournalEntry),
+    pend(h.find((e) => e.name === "w-x") as JournalEntry),
+    pend(h.find((e) => e.name === "w-y") as JournalEntry),
+  ] });
+  const EDITED = F7.replace('lens === "x" ? "1m"', 'lens === "x" ? "9m"');
+  ok("the fanOut seed edit landed", EDITED !== F7);
+  const diverged = await deadline("the diverging fanOut", run(EDITED, { runId, pins, journal: seeded, handler: new SimHandler({}) }));
+  ok("(7) a divergence in one branch of a both-begun fanOut still surfaces as RunDivergence",
+    diverged instanceof RunDivergence, `${(diverged as Error)?.name}: ${(diverged as Error)?.message?.slice(0, 90)}`);
+  const sibling = seeded.entries().find((e) => e.name === "w-y");
+  ok("(7) and the sibling branch's entry settles ok, not cancelled",
+    sibling !== undefined && sibling.state === "settled" && (sibling as { status?: string }).status === "ok",
+    sibling === undefined ? "no sibling entry" : { state: sibling.state, status: (sibling as { status?: string }).status });
+  const j7 = new Journal({ run: runId, entries: seeded.entries() });
+  const orig = await deadline("the original-source resume", resume(F7, j7, { runId, pins, handler: new SimHandler({}) }));
+  ok("(7) and a resume of the original source completes both branches and settles the scope ok",
+    orig === null && scopeOf(j7, "fanOut")?.state === "settled" && (scopeOf(j7, "fanOut") as { status?: string }).status === "ok",
+    `${(orig as Error)?.name ?? "COMPLETED"}; ${j7.entries().map((e) => `${e.kind}:${e.name}/${e.state}${e.status ? `:${e.status}` : ""}`)}`);
+}
+
+{
+  const R8 = `
+const r = await race({
+  fast: async () => { await sleep("1m", { name: "fast-work" }); return "fast"; },
+  slow: async () => { await sleep("2m", { name: "slow-work" }); return "slow"; },
+}, { name: "either" });
+log("win", r.index, r.value);
+`;
+  const runId = "r-div-race-sib";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const harvest = new Journal({ run: runId });
+  await run(R8, { runId, pins, journal: harvest, handler: new SimHandler({}) });
+  const h = harvest.entries();
+  const seeded = new Journal({ run: runId, entries: [
+    pend(h.find((e) => e.kind === "race") as JournalEntry),
+    pend(h.find((e) => e.name === "fast-work") as JournalEntry),
+    pend(h.find((e) => e.name === "slow-work") as JournalEntry),
+  ] });
+  const EDITED = R8.replace('sleep("1m", { name: "fast-work" })', 'sleep("9m", { name: "fast-work" })');
+  ok("the race seed edit landed", EDITED !== R8);
+  const diverged = await deadline("the diverging race", run(EDITED, { runId, pins, journal: seeded, handler: new SimHandler({}) }));
+  ok("(8) a divergence in one arm of a both-begun race still surfaces as RunDivergence",
+    diverged instanceof RunDivergence, `${(diverged as Error)?.name}: ${(diverged as Error)?.message?.slice(0, 90)}`);
+  const other = seeded.entries().find((e) => e.name === "slow-work");
+  ok("(8) and the other arm's entry settles ok, not cancelled",
+    other !== undefined && other.state === "settled" && (other as { status?: string }).status === "ok",
+    other === undefined ? "no other-arm entry" : { state: other.state, status: (other as { status?: string }).status });
 }
 
 console.log(`scopes.smoke: ${pass} checks passed`);

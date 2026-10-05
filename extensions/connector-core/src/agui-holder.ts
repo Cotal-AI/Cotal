@@ -17,7 +17,7 @@
  * `start()` reaches the broker — work that must not run for a session that never emits. First
  * `adopt` is the earliest moment the emitter is both constructible and needed.
  */
-import type { AguiEmitter } from "./agui.js";
+import type { AguiEmitter, CotalMeta } from "./agui.js";
 
 /**
  * Holds at most one {@link AguiEmitter}, started on first adopt.
@@ -79,18 +79,26 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    *   connectors' `MeshAgent`-adjacent wiring owns: the holder knows WHEN to publish, the caller
    *   knows HOW to observe liveness. Without it, a rebuild window between two pumps reads
    *   `max_payload` off a connection that is not there and kills the seat (#1868).
+   * @param runMeta The Cotal metadata for the run {@link closeRun} is about to close, such as its
+   *   stop reason or usage, put on whichever terminal closes it. Asked inside the queued close
+   *   rather than taken at call time, because the hook calls `closeRun` before the flush queued
+   *   ahead of it has mapped the turn's last records, and those are what the metadata comes from.
+   *   Keyed on the run id, so a provider that only knows a different run answers `undefined`
+   *   instead of attributing its numbers to this one.
    */
   constructor(
     private readonly startEmitter: (path: string, context: StartContext | undefined) => Promise<AguiEmitter<T>>,
     private readonly onError: (e: Error) => void,
     private readonly onRunClosed?: (runId: string) => void,
     private readonly waitLive?: () => Promise<void>,
+    private readonly runMeta?: (runId: string) => CotalMeta | undefined,
   ) {}
 
   /** True once an emitter is running here. False while a start is still in flight — it reports what
-   *  IS, never what is about to be. */
+   *  IS, never what is about to be. A dead holder is not running: after {@link die} what IS, is
+   *  that this holder is finished, whatever its unstopped emitter still says. */
   get running(): boolean {
-    return this.emitter !== undefined && !this.emitter.stopped;
+    return this.dead === undefined && this.emitter !== undefined && !this.emitter.stopped;
   }
 
   /** The failure that killed this holder, if one did. */
@@ -163,12 +171,6 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
   }
 
   /**
-   * Start at most once, bind the path once.
-   *
-   * Returns `undefined` when there is nothing to run against — a dead holder or a path this holder
-   * cannot take — rather than throwing, so a caller cannot mistake "no emitter" for "pumped".
-   */
-  /**
    * Close the open run at a turn boundary the record stream cannot see.
    *
    * Same contract as {@link adopt} and {@link flush}: synchronous, non-throwing, work on the chain,
@@ -190,13 +192,21 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       const emitter = this.emitter;
       if (this.dead || !emitter || emitter.stopped) return;
       await this.holdForLive();
-      const runId = await emitter.closeRun({ timestamp, ...(error ? { error } : {}) });
+      const open = emitter.openRunId;
+      const cotal = open === undefined ? undefined : this.runMeta?.(open);
+      const runId = await emitter.closeRun({ timestamp, ...(cotal ? { cotal } : {}), ...(error ? { error } : {}) });
       // Reported for EITHER terminal. The mapper's job here is to stop attributing records to a run
       // the published stream has closed, and an error close closes it exactly as a finish does.
       if (runId !== null) this.onRunClosed?.(runId);
     });
   }
 
+  /**
+   * Start at most once, bind the path once.
+   *
+   * Returns `undefined` when there is nothing to run against — a dead holder or a path this holder
+   * cannot take — rather than throwing, so a caller cannot mistake "no emitter" for "pumped".
+   */
   private async ensureStarted(path: unknown, context?: StartContext): Promise<AguiEmitter<T> | undefined> {
     if (this.dead) return undefined;
     if (typeof path !== "string" || path.length === 0) return undefined;

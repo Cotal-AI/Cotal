@@ -238,12 +238,6 @@ export class RunJournalReplayRaced extends Error {
 }
 
 /**
- * The replayed prefix does not start at the run's beginning.
- *
- * Its counts were consistent and its last sequence may well be the subject's true head — that is
- * exactly why this check exists separately from {@link RunJournalReplayIncomplete}.
- */
-/**
  * A takeover was attempted under a lease token older than the one the run is already held under.
  *
  * Terminal for this driver: it does not hold the lease, and the fix is not to try again but to stop
@@ -293,6 +287,12 @@ export class ActivationNotAuthorized extends Error {
   }
 }
 
+/**
+ * The replayed prefix does not start at the run's beginning.
+ *
+ * Its counts were consistent and its last sequence may well be the subject's true head — that is
+ * exactly why this check exists separately from {@link RunJournalReplayIncomplete}.
+ */
 export class RunJournalPrefixTruncated extends Error {
   constructor(
     readonly run: string,
@@ -750,14 +750,6 @@ export interface ActivateOptions {
 }
 
 /**
- * Take a run over: replay its journal, then claim the subject with an activation record.
- *
- * Returns the appender that is now the run's single authorized writer, carrying the replayed prefix.
- * Throws {@link ActivationRaced} when the journal kept moving — the caller has driven nothing and
- * may try again while it holds the lease. It never throws {@link RunSuperseded}: not having won the
- * subject yet is not the same as having lost it.
- */
-/**
  * May this takeover activate over the activation the journal already holds?
  *
  * The fencing token orders LEASES, and by itself that is not the whole authority: two takeovers can
@@ -810,6 +802,14 @@ function lastActivation(records: readonly StoredRunJournalRecord[]): RunJournalA
   return undefined;
 }
 
+/**
+ * Take a run over: replay its journal, then claim the subject with an activation record.
+ *
+ * Returns the appender that is now the run's single authorized writer, carrying the replayed prefix.
+ * Throws {@link ActivationRaced} when the journal kept moving — the caller has driven nothing and
+ * may try again while it holds the lease. It never throws {@link RunSuperseded}: not having won the
+ * subject yet is not the same as having lost it.
+ */
 export async function activateRun(
   js: JetStreamClient,
   jsm: JetStreamManager,

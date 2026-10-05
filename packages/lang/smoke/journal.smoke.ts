@@ -35,7 +35,7 @@ const H = (v: unknown) => digest(v);
 
   ok("a fresh key misses", live.lookup(k, h).verdict === "miss");
   await live.begin(k, h, 1000);
-  await live.settle(k, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await live.settle(k, { status: "ok", result: { status: "done" } }, 1100);
 
   // Resume: re-run from the top, so a NEW KeyScope allocates the same key again.
   const resumed = new Journal({ run: "r-1", entries: live.entries() });
@@ -115,7 +115,7 @@ const H = (v: unknown) => digest(v);
   const h1 = H({ agent: "warmer" });
   const h2 = H({ agent: "builder" });
   await j.begin(first, h1, 1000);
-  await j.settle(first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(first, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(second, h2, 1000);
   await j.bind(second, { goalId: "g-88" });
 
@@ -189,7 +189,7 @@ const H = (v: unknown) => digest(v);
   const second = s.nextEffect("turn", "build");
   const h = H({ agent: "builder" });
   await j.begin(first, h, 1000);
-  await j.settle(first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(first, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(second, h, 1200);
   await j.bind(second, { goalId: "g-second" });
 
@@ -224,7 +224,7 @@ const H = (v: unknown) => digest(v);
   const cp = s.nextEffect("checkpoint", "build");
   const h = H({ agent: "builder" });
   await j.begin(turn, h, 1000);
-  await j.settle(turn, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(turn, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(cp, h, 1200);
   await j.bind(cp, { goalId: "g-checkpoint" });
 
@@ -260,7 +260,7 @@ const H = (v: unknown) => digest(v);
   const second = s.branch("parallel", "review", secondRun, "left").nextEffect("turn", "build");
   const h = H({ agent: "builder" });
   await j.begin(first, h, 1000);
-  await j.settle(first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(first, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(second, h, 1200);
   await j.bind(second, { goalId: "g-second-run" });
 
@@ -302,7 +302,7 @@ const H = (v: unknown) => digest(v);
   const keys = nested(new KeyScope());
   const h = H({ agent: "builder" });
   await j.begin(keys.first, h, 1000);
-  await j.settle(keys.first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(keys.first, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(keys.second, h, 1200);
   await j.bind(keys.second, { goalId: "g-inner-second" });
 
@@ -340,7 +340,7 @@ const H = (v: unknown) => digest(v);
   const keys = rows(new KeyScope());
   const h = H({ agent: "builder" });
   await j.begin(keys.review, h, 1000);
-  await j.settle(keys.review, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(keys.review, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(keys.audit, h, 1200);
   await j.bind(keys.audit, { goalId: "g-audit" });
 
@@ -375,7 +375,7 @@ const H = (v: unknown) => digest(v);
   const keys = rows(new KeyScope());
   const h = H({ agent: "builder" });
   await j.begin(keys.par, h, 1000);
-  await j.settle(keys.par, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(keys.par, { status: "ok", result: { status: "done" } }, 1100);
   await j.begin(keys.race, h, 1200);
   await j.bind(keys.race, { goalId: "g-race" });
 
@@ -423,7 +423,7 @@ const H = (v: unknown) => digest(v);
   await j.settle(k0, { status: "failed", error: { code: "L4002", kind: "agent-down", message: "died" } }, 1100);
   const k1 = s.nextEffect("turn", "build");
   await j.begin(k1, H({ agent: "b2" }), 1200);
-  await j.settle(k1, { status: "ok", result: { status: "done", at: 1300 } }, 1300);
+  await j.settle(k1, { status: "ok", result: { status: "done" } }, 1300);
 
   const r = new Journal({ run: "r-5", entries: j.entries() });
   const s2 = new KeyScope();
@@ -520,7 +520,7 @@ const H = (v: unknown) => digest(v);
   ok("a begin reaches the store", trace[0] === "store:pending:turn:build", trace);
   await j.bind(k, { goalId: "g-1" });
   ok("a bind reaches the store, so a crash finds what the handler learned", trace[1] === "store:pending:turn:build");
-  await j.settle(k, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.settle(k, { status: "ok", result: { status: "done" } }, 1100);
   ok("a settle reaches the store", trace[2] === "store:settled:turn:build", trace);
   ok("every write went to the store, none silently skipped", trace.length === 3, trace);
 
@@ -552,7 +552,7 @@ const H = (v: unknown) => digest(v);
       order.push(`append:${e.state}:${e.kind}`);
     },
   };
-  const sim = new SimHandler({ turns: { build: [{ status: "done", at: 0 }] } });
+  const sim = new SimHandler({ turns: { build: [{ status: "done" }] } });
   // Built method by method rather than spread: a class instance's methods live on its prototype,
   // so a spread wrapper is an object with none of them.
   const watched: EffectHandler = {
@@ -1093,7 +1093,7 @@ await sleep("3h", { name: "after-the-catch" });
   // THE WRITE SIDE, ON THE REAL PATH: a handler calling its own `ctx.bind` from inside its dispatch,
   // which is how every shipped binder reaches it (sim.ts binds on spawn, turn, ask and checkpoint;
   // the mesh handler binds a chat sequence). Not a hand-built context.
-  const sim = new SimHandler({ turns: { build: { status: "done", at: 0 } } });
+  const sim = new SimHandler({ turns: { build: { status: "done" } } });
   // Object.create, NOT a spread: spreading a class instance drops its prototype methods and the run
   // dies on `options.handler.now is not a function`, measured twice within an hour on two sides, and
   // once with a zero that agreed with the hypothesis under test.
@@ -1135,7 +1135,7 @@ await sleep("3h", { name: "after-the-catch" });
   // scope's own context, so this is a real program reaching the second wrapper, not a hand-built
   // ctx. Before this cell, that wrapper was executed by NOTHING in the corpus in either direction:
   // 275 reaches of the effect wrapper across the lang suites, 0 of this one.
-  const sim = new SimHandler({ turns: { huddle: { status: "done", at: 0 } } });
+  const sim = new SimHandler({ turns: { huddle: { status: "done" } } });
   const binder = Object.create(sim) as EffectHandler;
   binder.openConclave = async (req, ctx) => {
     await ctx.bind({ when: new Date(0) });
@@ -1396,7 +1396,7 @@ await sleep("3h", { name: "after-the-catch" });
 {
   // THE SCOPE SITE. Its own guard, because a fix at the effect site alone leaves this one open,
   // the same half-fence the two bind wrappers had.
-  const sim = new SimHandler({ turns: { huddle: { status: "done", at: 0 } } });
+  const sim = new SimHandler({ turns: { huddle: { status: "done" } } });
   const thrower = Object.create(sim) as EffectHandler;
   thrower.openConclave = async () => {
     throw new EffectError("L6002", "handler-fault", "the room refused", { cb: () => 1 });

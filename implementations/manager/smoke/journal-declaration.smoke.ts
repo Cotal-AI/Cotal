@@ -40,7 +40,7 @@ const pending = (what: string): void => console.log(`  ⏳ PENDING (blocked on t
 const doc = managerClusterDocument();
 const byName = new Map(doc.commands.map((r) => [r.name, r]));
 const ACTIONS = ["spawn", "launch"];
-const READ_ONLY = ["status", "ps", "inspect", "models"];
+const READ_ONLY = ["status", "ps", "slots", "inspect", "models"];
 
 console.log("\n── the document exists and carries the commands this suite reasons about ──");
 // Asserted before anything reads a field off them: every cell below is an absence-or-value claim

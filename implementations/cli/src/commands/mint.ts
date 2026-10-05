@@ -1,8 +1,9 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import {
   CotalEndpoint,
   agentFilePath,
+  identityFromCreds,
   loadAgentFile,
   mintCreds,
   mintLifecycleUid,
@@ -40,6 +41,9 @@ export async function mint(args: ParsedArgs): Promise<void> {
     role?: string;
     space?: string;
     server?: string;
+    "expires-in"?: string;
+    "expires-at"?: string;
+    identity?: string;
   };
   const cwdRoot = cotalRoot();
   const cwdStore = workspaceSecretStore(cwdRoot);
@@ -76,6 +80,58 @@ export async function mint(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
+  // A credential's LIFETIME and its IDENTITY, validated before anything is minted or written. The
+  // seam (`mintCreds` → `userValidDates`) already takes exactly one of `expiresInSeconds` /
+  // `expiresAt` and refuses the pair, a non-integer, and a non-positive value — the CLI holds the
+  // same line so a bad flag is one red sentence at the command surface, not a stack from the seam
+  // after the operator thought the mint was underway. Bare seconds, the seam's own unit (and the
+  // form the issue typed: `--expires-in 3600`); no second duration parser is added for it.
+  if (values.signer && (values["expires-in"] !== undefined || values["expires-at"] !== undefined || values.identity !== undefined)) {
+    console.error(c.red("--expires-in, --expires-at and --identity mint a credential - --signer writes account-signing material instead; pass one or the other"));
+    process.exit(1);
+  }
+  if (values["expires-in"] !== undefined && values["expires-at"] !== undefined) {
+    console.error(c.red("--expires-in and --expires-at are mutually exclusive - pass only one (the mint seam takes a single lifetime)"));
+    process.exit(1);
+  }
+  let expiresInSeconds: number | undefined;
+  if (values["expires-in"] !== undefined) {
+    const n = Number(values["expires-in"]);
+    if (!Number.isInteger(n) || n <= 0) {
+      console.error(c.red(`--expires-in must be a positive integer number of seconds (got "${values["expires-in"]}")`));
+      process.exit(1);
+    }
+    expiresInSeconds = n;
+  }
+  let expiresAt: number | undefined;
+  if (values["expires-at"] !== undefined) {
+    const n = Number(values["expires-at"]);
+    if (!Number.isInteger(n) || n < 0) {
+      console.error(c.red(`--expires-at must be a non-negative integer unix timestamp in seconds (got "${values["expires-at"]}")`));
+      process.exit(1);
+    }
+    expiresAt = n;
+  }
+  // `--identity` re-mints for an EXISTING nkey so the credential's principal is unchanged and every
+  // durable keyed to it survives — the act the renewal seam's own error names ("mint with a
+  // lifetime"), which had no CLI form. The seed is read the way the endpoint loads a creds file
+  // (`identityFromCreds`: the USER NKEY SEED block, cross-checked against the JWT subject), never
+  // by a second parser; a file that carries no seed is refused BY NAME.
+  let existingIdentity: Identity | undefined;
+  if (values.identity !== undefined) {
+    const path = resolve(values.identity);
+    if (!existsSync(path)) {
+      console.error(c.red(`--identity file not found: ${path}`));
+      process.exit(1);
+    }
+    try {
+      existingIdentity = identityFromCreds(readFileSync(path, "utf8"));
+    } catch {
+      console.error(c.red(`--identity file carries no user nkey seed: ${path} - pass a creds file (JWT + USER NKEY SEED) minted by cotal`));
+      process.exit(1);
+    }
+  }
+
   // `--signer`: no identity, no name — strip this space's auth.json to its account signing material.
   if (values.signer) {
     const auth = await getSoleSpaceAuth(cwdStore, cwdAuthDir);
@@ -97,7 +153,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
 
   const name = positionals[0];
   if (!name) {
-    console.error(c.red("usage: cotal mint <name> [--profile <agent|observer|admin>] [--out <path>]  (agent profile also: [--allow-subscribe a,b] [--allow-publish a,b] [--role <role>] [--provision])"));
+    console.error(c.red("usage: cotal mint <name> [--profile <agent|observer|admin>] [--out <path>] [--expires-in <s>|--expires-at <unix-s>] [--identity <creds>]  (agent profile also: [--allow-subscribe a,b] [--allow-publish a,b] [--role <role>] [--provision])"));
     process.exit(1);
   }
   const splitList = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
@@ -149,9 +205,9 @@ export async function mint(args: ParsedArgs): Promise<void> {
   }
   // For agents, derive the read/post ACLs AND role from the agent file if one exists (flags
   // override): allowSubscribe (read; defaults to subscribe) and allowPublish (post; default-deny);
-  // role scopes the TASK-queue consumer to svc_<role>. Only the agent profile reaches this: all
-  // three are REFUSED above off that profile, so there is no arm here that reads them and discards
-  // them.
+  // role scopes the TASK-queue consumer to svc_<role>. Only the agent profile takes the
+  // `profile === "agent"` branch below: the three flags are REFUSED above off that profile, so
+  // there is no arm here that reads them and discards them.
   // NOTE: this mints CREDS only — the bind-only chat/DM/TASK durables are pre-created separately by
   // a privileged provisioner (`cotal up` / manager / `cotal spawn`), as for DM/TASK already.
   let allowSubscribe: string[] | undefined;
@@ -174,10 +230,11 @@ export async function mint(args: ParsedArgs): Promise<void> {
     role = values.role ?? def?.role;
     lifecycleUid = mintLifecycleUid();
   }
-  const identity = newIdentity();
+  const identity = existingIdentity ?? newIdentity();
+  const lifetime = { expiresInSeconds, expiresAt };
   const creds = target
-    ? await provisionForMint(auth, identity, { allowSubscribe, allowPublish, role, lifecycleUid: lifecycleUid! }, target)
-    : await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role, lifecycleUid });
+    ? await provisionForMint(auth, identity, { allowSubscribe, allowPublish, role, lifecycleUid: lifecycleUid!, ...lifetime }, target)
+    : await mintCreds(auth, identity, profile, { allowSubscribe, allowPublish, role, lifecycleUid, ...lifetime });
   let out: string;
   if (values.out) {
     // An operator-directed EXPORT to an explicit path — outside the canonical kind location,
@@ -210,15 +267,6 @@ export async function mint(args: ParsedArgs): Promise<void> {
   console.log(c.dim(`  creds: ${out}`));
 }
 
-/**
- * Where `--provision` connects, and whose trust it may mint under. The mesh is resolved the way
- * every other command resolves it (registry, `--space`, `--server`), then held to THIS folder's
- * auth: same space, and the same account key. Without that last check two roots that each ran
- * `cotal up` for a space of the same name would let `--provision` mint under whichever one the
- * registry resolved, and the flag would silently change the minting authority `cotal mint` has
- * always taken from the folder it runs in (measured: a mint from root A signed by root B's key).
- * Every refusal here fires before anything is minted or connected.
- */
 /**
  * The root whose `.cotal/agents` holds the persona card this mint reads its ACLs from: the
  * RESOLVED MESH's, honouring `--space`/`--server`, the same root `cotal spawn` and `cotal personas`
@@ -258,6 +306,15 @@ export function resolveMintTarget(values: { space?: string; server?: string }): 
   }
 }
 
+/**
+ * Where `--provision` connects, and whose trust it may mint under. The mesh is resolved the way
+ * every other command resolves it (registry, `--space`, `--server`), then held to THIS folder's
+ * auth: same space, and the same account key. Without that last check two roots that each ran
+ * `cotal up` for a space of the same name would let `--provision` mint under whichever one the
+ * registry resolved, and the flag would silently change the minting authority `cotal mint` has
+ * always taken from the folder it runs in (measured: a mint from root A signed by root B's key).
+ * Every refusal here fires before anything is minted or connected.
+ */
 async function provisionTarget(auth: SpaceAuth | undefined, flags: { space?: string; server?: string }, resolved?: MeshTarget): Promise<MeshTarget> {
   const target = resolved ?? await resolveTargetOrExit({ space: flags.space ?? auth?.space, server: flags.server });
   if (auth && target.space !== auth.space) {
@@ -306,7 +363,7 @@ async function provisionTarget(auth: SpaceAuth | undefined, flags: { space?: str
 async function provisionForMint(
   auth: SpaceAuth,
   identity: Identity,
-  opts: { allowSubscribe?: string[]; allowPublish?: string[]; role?: string; lifecycleUid: string },
+  opts: { allowSubscribe?: string[]; allowPublish?: string[]; role?: string; lifecycleUid: string; expiresInSeconds?: number; expiresAt?: number },
   target: MeshTarget,
 ): Promise<string> {
   await preflightOrExit(target); // one sentence if the mesh is down or refuses, never a raw NATS trace

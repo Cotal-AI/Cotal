@@ -34,8 +34,10 @@
  *   F. Origin rejection, JSON-only content-type and the 64 KB body bound hold VERBATIM on the
  *      public face (they are inherited by sharing handleExchange, and this proves the sharing).
  *   G. per-peer isolation, the throttling claim: peer A floods the public face with refusals until
- *      it is throttled (429), and in that same window peer B still exchanges successfully AND the
- *      loopback face's own budget is untouched. Public throttling never consumes loopback budgets.
+ *      it is throttled (429), and in that same window a refusal from peer B AND a refusal on the
+ *      loopback face still get their own 401 sentence, not 429. Public throttling never consumes
+ *      loopback budgets. Those probes are refusals because a valid credential mints even from a
+ *      full bucket (#802), so only a refusal shows which budget it landed in.
  *      Successful exchanges stay unthrottled (matching the existing stance): a long run of
  *      SUCCESSES never trips the limiter.
  *   H. refresh across expiry: an agent-bearer-style re-exchange with a short ttlSec yields a
@@ -109,7 +111,7 @@ const { deviceAuthorization } = await import("better-auth/plugins/device-authori
 const { bearer: baBearer } = await import("better-auth/plugins/bearer");
 const { toNodeHandler } = await import("better-auth/node");
 
-const { createSpaceAuth, epAuthBucket, isReachable, mintCreds, newIdentity, recordSpecKey, recordStatusKey,
+const { createSpaceAuth, epAuthBucket, isReachable, managedRetirementOpId, mintCreds, newIdentity, recordSpecKey, recordStatusKey,
   recordsBucket, RECORD_KINDS, remoteManagerActors, serverConfig, setupSpaceStreams, standaloneConnectOpts, mintLifecycleUid } =
   await import("@cotal-ai/core");
 const { Kvm } = await import("@nats-io/kv");
@@ -274,8 +276,9 @@ try {
   const wk = await get(`${PUBLIC}/.well-known/cotal-mesh`);
   const publicJwks = await get(`${PUBLIC}/jwks`);
   const verifyPublicBearer = createLocalJWKSet(publicJwks.body as { keys: import("jose").JWK[] });
-  const idpPin = wk.body.userAuth.idp as { url?: string; issuer?: string; audience?: string } | undefined;
-  const eps = wk.body.userAuth.endpoints as { url?: string; managerAuthorityUrl?: string } | undefined;
+  const userAuth = wk.body.userAuth as { idp?: { url?: string; issuer?: string; audience?: string }; endpoints?: { url?: string; managerAuthorityUrl?: string } };
+  const idpPin = userAuth.idp;
+  const eps = userAuth.endpoints;
   check("bundle serves 200 on the public face", wk.status === 200, wk.body);
   check("bundle carries the space + server it actually serves", wk.body.space === SPACE && wk.body.server === SERVER, wk.body);
   check("bundle states tlsRequired", wk.body.tlsRequired === true, wk.body);
@@ -486,12 +489,135 @@ try {
   check("GET /jwks is served on the public face", publicJwks.status === 200);
   check("…with the exact cache contract max-age=300", publicJwks.headers.get("cache-control") === "max-age=300");
   let notFound = 0;
-  for (const p of ["/", "/exchange/", "/manager-service-authority/", "/interactive-lifecycle/retire", "/admin", "/views", "/actor", "/ledger", "/health/", "/.well-known/", "/..%2f", "/toString", "/constructor"]) {
+  for (const p of ["/", "/exchange/", "/manager-service-authority/", "/manager-service-authority/verify-enrollment", "/interactive-lifecycle/retire", "/managed-lifecycle/retire", "/admin", "/views", "/actor", "/ledger", "/health/", "/.well-known/", "/..%2f", "/toString", "/constructor"]) {
     if ((await get(`${PUBLIC}${p}`)).status === 404) notFound++;
   }
-  check("every non-route path 404s on the public face (13/13, incl. private retirement + prototype-chain probes)", notFound === 13, { notFound });
+  check("every non-route path 404s on the public face (15/15, incl. all three private host doors + prototype-chain probes)", notFound === 15, { notFound });
+  // The public face must refuse the enrollment door for a POST too, not only the GET the census
+  // above sent: a route table closed to one verb and open to another is not closed.
+  check("the enrollment-verification door 404s on the public face for POST as well",
+    (await post(`${PUBLIC}/manager-service-authority/verify-enrollment`, { owner: OWNER, request: {} })).status === 404);
   check("GET at /exchange is refused (POST only)", (await get(`${PUBLIC}/exchange`)).status === 405);
+  // The loopback managed-retire door (#2070): the same request guards as the interactive door, on
+  // the loopback face only. Its outcome table runs against the real plane in managed-retire-door.smoke.ts.
+  const MRD = `${LOOPBACK}/managed-lifecycle/retire`;
+  const mrdProbe = { owner: "u_" + "a".repeat(26), actor: "ghost", lifecycleUid: "a".repeat(26) };
+  const capHdr = { authorization: `Bearer ${info!.cap}` };
+  check("managed-retire door: GET is refused (POST only)", (await get(MRD)).status === 405);
+  check("managed-retire door: a browser Origin is refused (403)", (await post(MRD, mrdProbe, { ...capHdr, origin: "https://evil.example" })).status === 403);
+  check("managed-retire door: a non-JSON content type is refused (415)", (await post(MRD, JSON.stringify(mrdProbe), { ...capHdr, "content-type": "text/plain" })).status === 415);
+  check("managed-retire door: a missing capability is refused (401)", (await post(MRD, mrdProbe)).status === 401);
+  check("managed-retire door: a wrong capability is refused (401)", (await post(MRD, mrdProbe, { authorization: "Bearer wrong" })).status === 401);
+  check("managed-retire door: an unknown extra field is refused (400)", (await post(MRD, { ...mrdProbe, takeover: true }, capHdr)).status === 400);
+  check("managed-retire door: a missing field is refused (400)", (await post(MRD, { owner: mrdProbe.owner, actor: mrdProbe.actor }, capHdr)).status === 400);
+  const mrdOk = await post(MRD, mrdProbe, capHdr);
+  check("POSITIVE CONTROL: a well-formed capped request reaches the plane (no head, so notStarted)",
+    mrdOk.status === 200 && mrdOk.body.notStarted === true && mrdOk.body.retired === false, mrdOk);
   check("POST at /jwks is refused (GET only)", (await post(`${PUBLIC}/jwks`, {})).status === 405);
+
+  // ---------- the #1972 enrollment-verification door, on the loopback face only ----------
+  // This is the door a host platform calls for the DECISION while it owns every write. Its request
+  // guards match the managed-retire door's; what is unique here is that the caller's capability
+  // scope is derived from THIS machine's ledger and never read from the body.
+  console.log("A'') the enrollment-verification door is loopback-only and derives its own scope");
+  const VED = `${LOOPBACK}/manager-service-authority/verify-enrollment`;
+  const vedInstance = mintLifecycleUid();
+  const vedServe = remoteManagerActors(vedInstance).serve;
+  await putManager({ instanceId: vedInstance, principal: `${OWNER}.${vedServe}`, owner: OWNER, epoch: 3 });
+  const vedIdentities = Object.fromEntries(["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].map((n) => [n, { id: newIdentity().id }]));
+  const vedRequest = (overrides: Record<string, unknown> = {}) => ({
+    v: 1, kind: "manager-managed-agent-enrollment", space: SPACE, actor: "cli",
+    instanceId: vedInstance, managerLifecycleUid: mintLifecycleUid(),
+    requestId: `enroll${mintLifecycleUid()}`,
+    // A deliberately WRONG proof: the door must reach the proof check (403), which is what proves it
+    // got past the cap, the parser, and its own internal scope derivation. The proof itself is
+    // exercised against the real plane in managed-agent-enrollment.smoke.ts, where the harness holds
+    // the signing seed; this daemon's seed is its own and is never handed out, which is the point.
+    registrationProof: `sha256:${"f".repeat(64)}`,
+    serveEpoch: 3,
+    target: { actor: "enrolled", tokenHash: newActorToken().tokenHash, allowSubscribe: ["general"] },
+    identities: vedIdentities,
+    ...overrides,
+  });
+  check("enrollment door: GET is refused (POST only)", (await get(VED)).status === 405);
+  check("enrollment door: a browser Origin is refused (403)",
+    (await post(VED, { owner: OWNER, request: vedRequest() }, { ...capHdr, origin: "https://evil.example" })).status === 403);
+  check("enrollment door: a non-JSON content type is refused (415)",
+    (await post(VED, JSON.stringify({ owner: OWNER, request: vedRequest() }), { ...capHdr, "content-type": "text/plain" })).status === 415);
+  check("enrollment door: a missing capability is refused (401)", (await post(VED, { owner: OWNER, request: vedRequest() })).status === 401);
+  check("enrollment door: a wrong capability is refused (401)",
+    (await post(VED, { owner: OWNER, request: vedRequest() }, { authorization: "Bearer wrong" })).status === 401);
+  // THE SCOPE-DERIVATION CELL. A caller that hands the door a scope array gets its request refused
+  // as malformed rather than honoured: the body is closed to { owner, request }, so there is no
+  // field through which a platform bug could forward a participant-supplied `supervise`.
+  const vedScope = await post(VED, { owner: OWNER, request: vedRequest(), scope: ["supervise"] }, capHdr);
+  check("enrollment door: a caller-supplied scope field is refused (400) - scope is derived, never accepted",
+    vedScope.status === 400 && /unknown field "scope"/.test(String(vedScope.body.error)), vedScope);
+  const vedKind = await post(VED, { owner: OWNER, request: { ...vedRequest(), kind: "manager-service-authority" } }, capHdr);
+  check("enrollment door: a foreign request kind is refused (400)", vedKind.status === 400, vedKind);
+  const vedUngranted = await post(VED, { owner: `u_${"q".repeat(26)}`, request: vedRequest() }, capHdr);
+  check("enrollment door: an owner with no interactive ledger row is refused (403) by the derived scope read",
+    vedUngranted.status === 403 && /not granted/.test(String(vedUngranted.body.error)), vedUngranted);
+  // `cli` holds spawn+supervise+admin at this point in the run, so this request passes the derived
+  // scope check and is refused on the PROOF instead — the cell that proves the door reaches the
+  // plane's real gate and proof verification rather than stopping at its own request validation.
+  const vedProof = await post(VED, { owner: OWNER, request: vedRequest() }, capHdr);
+  check("POSITIVE CONTROL: a capped, well-formed request reaches the plane's proof check (403 on the forged proof)",
+    vedProof.status === 403 && /does not match current host registration/.test(String(vedProof.body.error)), vedProof);
+  const vedStale = await post(VED, { owner: OWNER, request: vedRequest({ serveEpoch: 2 }) }, capHdr);
+  check("enrollment door: a stale serve epoch maps the envelope conflict to 409",
+    vedStale.status === 409 && /is stale/.test(String(vedStale.body.error)), vedStale);
+  const vedFrozenInstance = mintLifecycleUid();
+  await putManager({ instanceId: vedFrozenInstance, principal: `${OWNER}.${remoteManagerActors(vedFrozenInstance).serve}`, owner: OWNER, state: "frozen" });
+  const vedFrozen = await post(VED, { owner: OWNER, request: vedRequest({ instanceId: vedFrozenInstance, serveEpoch: 1 }) }, capHdr);
+  check("enrollment door: a frozen manager gate maps the failed precondition to 412",
+    vedFrozen.status === 412 && /no current open manager gate/.test(String(vedFrozen.body.error)), vedFrozen);
+  const vedPrepare = await post(VED, { owner: OWNER, request: {
+    v: 1, kind: "manager-managed-agent-prepare-retirement", space: SPACE, actor: "cli",
+    instanceId: vedInstance, managerLifecycleUid: mintLifecycleUid(), requestId: `prepare${mintLifecycleUid()}`,
+    registrationProof: `sha256:${"f".repeat(64)}`, serveEpoch: 3,
+    target: { owner: OWNER, actor: "enrolled", lifecycleUid: agentLifecycleUid },
+    opId: managedRetirementOpId(agentLifecycleUid), identities: vedIdentities,
+  } }, capHdr);
+  check("enrollment door: the SAME door serves prepare-retirement and reaches its proof check (403)",
+    vedPrepare.status === 403 && /does not match current host registration/.test(String(vedPrepare.body.error)), vedPrepare);
+  // The dispatch refusal, on the wire: the same enrollment request through the manager-authority
+  // route is refused as unimplemented rather than answered as a manager-lifecycle phase.
+  const dispatched = await post(`${LOOPBACK}/manager-service-authority`, { idpToken: idpJwt, request: vedRequest() }, capHdr);
+  check("the typed manager-authority route refuses an enrollment kind (host interception owns it)",
+    dispatched.status === 403 && /must be handled by host platform interception/.test(String(dispatched.body.error)), dispatched);
+  // The hosted runtime kinds share this door. Each must reach the plane's own ledger read, gate, and
+  // proof check (the 403 on the forged proof proves it passed the parser and the ledger read), and a
+  // provider reference must never reach the plane at all.
+  const vedRuntime = (kind: string, overrides: Record<string, unknown> = {}) => ({
+    v: 1, kind, space: SPACE, actor: "cli", instanceId: vedInstance, managerLifecycleUid: mintLifecycleUid(),
+    requestId: `runtime${mintLifecycleUid()}`, registrationProof: `sha256:${"f".repeat(64)}`, serveEpoch: 3,
+    target: { owner: OWNER, actor: "enrolled", lifecycleUid: agentLifecycleUid }, identities: vedIdentities, ...overrides,
+  });
+  const vedCreate = await post(VED, { owner: OWNER, request: vedRuntime("manager-managed-agent-runtime-create") }, capHdr);
+  check("enrollment door: runtime-create reaches the plane's proof check (403 on the forged proof)",
+    vedCreate.status === 403 && /runtime-create proof does not match current host registration/.test(String(vedCreate.body.error)), vedCreate);
+  const vedStatus = await post(VED, { owner: OWNER, request: vedRuntime("manager-managed-agent-runtime-status") }, capHdr);
+  check("enrollment door: runtime-status reaches the plane's proof check (403 on the forged proof)",
+    vedStatus.status === 403 && /runtime-status proof does not match current host registration/.test(String(vedStatus.body.error)), vedStatus);
+  const vedProviderRef = await post(VED, { owner: OWNER, request: vedRuntime("manager-managed-agent-runtime-create", { providerRef: "prov-123" }) }, capHdr);
+  check("enrollment door: a runtime-create carrying a providerRef is refused 400 bad-request",
+    vedProviderRef.status === 400 && /unknown field "providerRef"/.test(String(vedProviderRef.body.error)), vedProviderRef);
+  const vedRuntimeStale = await post(VED, { owner: OWNER, request: vedRuntime("manager-managed-agent-runtime-status", { serveEpoch: 2 }) }, capHdr);
+  check("enrollment door: a runtime-status at a stale serve epoch maps to 409",
+    vedRuntimeStale.status === 409 && /is stale/.test(String(vedRuntimeStale.body.error)), vedRuntimeStale);
+  const runtimeDispatched = await post(`${LOOPBACK}/manager-service-authority`, { idpToken: idpJwt, request: vedRuntime("manager-managed-agent-runtime-create") }, capHdr);
+  check("the typed manager-authority route refuses a runtime kind (host interception owns it)",
+    runtimeDispatched.status === 403 && /runtime create and status must be handled by host platform interception/.test(String(runtimeDispatched.body.error)), runtimeDispatched);
+  // The SHIPPED client: the registered provider resolves this space's endpoint, mints a fresh IdP JWT
+  // from the cached login, and posts over the real transport. A stock host answers unimplemented, and
+  // the client surfaces that refusal rather than returning a body.
+  let clientRefusal = "";
+  try {
+    await cotalAuthProvider.requestRemoteManagedAgentRuntime!({ store, dir, request: vedRuntime("manager-managed-agent-runtime-status") as never });
+  } catch (e) { clientRefusal = e instanceof Error ? e.message : String(e); }
+  check("the shipped provider client reaches the stock route and surfaces its unimplemented refusal",
+    /signed in, but managed agent runtime status was refused: .*runtime create and status must be handled by host platform interception/.test(clientRefusal), clientRefusal);
 
   // ---------- G. per-peer isolation + budget separation ----------
   console.log("G) per-peer failure isolation; public throttling never touches loopback");
@@ -508,12 +634,16 @@ try {
     if (r.status === 429) { aThrottled = true; break; }
   }
   check("peer A's refusal flood throttles peer A (429)", aThrottled);
-  // In that same window: peer B is untouched.
-  const bOk = await post(`${PUBLIC}/exchange`, agentBody2, asPeer("198.51.100.9"));
-  check("PER-SOURCE ISOLATION: peer B still exchanges while peer A is throttled", bOk.status === 200, bOk.body);
+  // In that same window: peer B is untouched. Both probes below are REFUSALS on purpose. Since #802 a
+  // valid credential mints even from a full bucket, so a valid probe stays green when every peer
+  // shares one bucket; only a refusal shows which budget it landed in (its own 401 sentence, or 429).
+  const bRefused = await post(`${PUBLIC}/exchange`, { ...agentBody2, actorToken: newActorToken().actorToken }, asPeer("198.51.100.9"));
+  check("PER-SOURCE ISOLATION: a refused exchange from peer B still gets its own 401 sentence while peer A is throttled",
+    bRefused.status === 401 && bRefused.body.error === wrongSecret.body.error, { status: bRefused.status, body: bRefused.body });
   // …and so is the loopback face of that same daemon (separate budgets entirely).
-  const loopbackBudgetOk = await post(`${LOOPBACK}/exchange`, agentBody2, { authorization: `Bearer ${info!.cap}` });
-  check("BUDGET SEPARATION: the loopback face is unaffected by the public flood", loopbackBudgetOk.status === 200, loopbackBudgetOk.body);
+  const loopbackRefused = await post(`${LOOPBACK}/exchange`, { ...agentBody2, actorToken: newActorToken().actorToken }, { authorization: `Bearer ${info!.cap}` });
+  check("BUDGET SEPARATION: a refused loopback exchange still gets its own 401 sentence after the public flood",
+    loopbackRefused.status === 401 && loopbackRefused.body.error === wrongSecret.body.error, { status: loopbackRefused.status, body: loopbackRefused.body });
   // Successes stay unthrottled — the existing stance, now on the public face.
   let successes = 0;
   for (let i = 0; i < 40; i++) {
@@ -580,7 +710,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 67;
+const EXPECTED = 95;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

@@ -22,11 +22,12 @@ import { epRequestGrantRows, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT 
  * The run-stable caller triple used by durable actions. Actor and uid derive from the run id;
  * the trusted host supplies the admitted owner. Omitting owner preserves the static/local caller.
  * This validates the owner's grammar, not its authority: a program cannot choose its owner here.
+ * A platform `p_…` owner is admitted for the platform control manager's own runs (SPEC 13.1).
  * Goal facts key on this triple, so grants and effects must use the same original owner on resume.
  * Grammar: actor is `[A-Za-z0-9_]+` and uid is `[a-z0-9]{26,32}`, both satisfied by digest slices.
  */
 export function runDriverCaller(runId: string, owner: string = DEV_OWNER): EpCaller {
-  assertPrincipalOwnerToken(owner, { allowLocal: true });
+  assertPrincipalOwnerToken(owner, { allowLocal: true, allowPlatform: true });
   const h = createHash("sha256").update(assertIdToken(runId, "runId"), "utf8").digest("hex");
   return { owner, actor: `wf_${h.slice(0, 12)}`, uid: h.slice(12, 38) };
 }
@@ -53,7 +54,7 @@ export interface RunDriverGrantArgs {
 export function runDriverGrants(space: string, args: RunDriverGrantArgs, connId: string): { publish: string[]; subscribe: string[] } {
   const endpoint = endpointToken(args.endpoint);
   const run = assertIdToken(args.runId, "runId");
-  if (args.owner !== undefined) assertPrincipalOwnerToken(args.owner, { allowLocal: true });
+  if (args.owner !== undefined) assertPrincipalOwnerToken(args.owner, { allowLocal: true, allowPlatform: true });
   assertLifecycleToken(args.instanceId, "instanceId");
   if (!Number.isSafeInteger(args.epoch) || args.epoch < 0) throw new Error(`epoch ${args.epoch} is not an unsigned integer`);
   const records = recordsBucket(space);

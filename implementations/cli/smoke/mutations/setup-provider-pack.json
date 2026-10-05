@@ -12,7 +12,8 @@
       "find": "async function runSkillsOnly(): Promise<void> {\n  await reconcileConnectorSkills();",
       "replace": "async function runSkillsOnly(): Promise<void> {\n  void \".claude-plugin\";\n  await reconcileConnectorSkills();",
       "expectRed": "generic CLI compiled setup ships no harness-native invocation or asset path",
-      "cell": "generic CLI compiled setup ships no harness-native invocation or asset path"
+      "cell": "generic CLI compiled setup ships no harness-native invocation or asset path",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
 }

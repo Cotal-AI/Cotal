@@ -59,8 +59,8 @@
     {
       "name": "CONTROL and invariant: explicit withAgents shutdown leaves every agent running",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (options.withAgents) await this.teardownManagedAgents();",
-      "replace": "      if (options.withAgents) this.agents.clear();",
+      "find": "      if (withAgents) await this.teardownManagedAgents();",
+      "replace": "      if (withAgents) this.agents.clear();",
       "expectRed": "CONTROL: the explicit withAgents stop path stops the child",
       "cell": "CONTROL: the explicit withAgents stop path stops the child (instrument fires)",
       "note": "Positive control for the stops counter and the explicit destructive policy."

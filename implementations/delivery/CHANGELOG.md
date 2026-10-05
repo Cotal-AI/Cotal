@@ -1,5 +1,258 @@
 # @cotal-ai/delivery
 
+## 0.65.0
+
+### Patch Changes
+
+- Updated dependencies [ba5468d]
+- Updated dependencies [451ffee]
+- Updated dependencies [f01aa7c]
+- Updated dependencies [2cef9e6]
+  - @cotal-ai/core@0.65.0
+  - @cotal-ai/workspace@0.65.0
+
+## 0.64.0
+
+### Patch Changes
+
+- Updated dependencies [6c79419]
+- Updated dependencies [d121d21]
+  - @cotal-ai/core@0.64.0
+  - @cotal-ai/workspace@0.64.0
+
+## 0.63.0
+
+### Patch Changes
+
+- Updated dependencies [62ebc6b]
+- Updated dependencies [22e210a]
+- Updated dependencies [cb6a0bf]
+- Updated dependencies [5738154]
+- Updated dependencies [101c9b0]
+- Updated dependencies [9d5cc09]
+- Updated dependencies [c975258]
+  - @cotal-ai/core@0.63.0
+  - @cotal-ai/workspace@0.63.0
+
+## 0.62.0
+
+### Patch Changes
+
+- Updated dependencies [bcf66d6]
+- Updated dependencies [97a2382]
+- Updated dependencies [877909b]
+- Updated dependencies [5ef9a67]
+- Updated dependencies [565036c]
+- Updated dependencies [9236a12]
+- Updated dependencies [b36bebf]
+  - @cotal-ai/core@0.62.0
+  - @cotal-ai/workspace@0.62.0
+
+## 0.61.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.61.0
+- @cotal-ai/workspace@0.61.0
+
+## 0.60.0
+
+### Minor Changes
+
+- 6ca4d8e: Add the platform control authority: a closed `platform-control` view, beside the unchanged human `manager-service` view, that lets a host platform run one pooled control manager per assigned account without a human session (SPEC §13.1, §13.6, §13.9). `startAuthService` takes an optional `platformControl: { observeAssignment }` input, and the returned handle then carries `platformControlAuthority`, a typed in-process door served on no listener. It issues the existing manager-service request family under a host-derived `p_` platform owner (`platformControlOwner`), reads the backend's assignment fresh on every call, reuses the registration proof, process epoch and all-duty renewal unchanged, confines maintenance to the assigned instance, and refuses `prepare` and `activate` while a named predecessor manager is still registered. It refuses IdP tokens, another account, a stale assignment, another owner's instance, unknown fields (a nested `session` field included) and the managed-agent kinds. `@cotal-ai/core` adds the `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult` and `PlatformControlAssignment` types, the `p_` owner grammar, and an opt-in `allowPlatform` on the principal owner checks and on CONNZ attribution (`principalFromConnz`). Only the platform family's own boundaries opt in: the issuance gate row, the credential holder row, the eviction and liveness sweeps with the delivery daemon's executors, the manager goal-index scanner, the run driver caller, and, for the platform holder only, the retirement target, retained-validation target and admin caller parsers. The membership feed and the message drop guards still refuse a `p_` owner. Presence has no owner check, so a platform endpoint's roster card appears under its `p_` owner. `startAuthService` also forwards a trusted-host `standingRenewableTtlSeconds` to the authority plane. The human remote-supervision path is unchanged.
+
+### Patch Changes
+
+- Updated dependencies [3b616a2]
+- Updated dependencies [6ca4d8e]
+  - @cotal-ai/core@0.60.0
+  - @cotal-ai/workspace@0.60.0
+
+## 0.59.0
+
+### Patch Changes
+
+- b669a73: `cotal deliver` takes `--root <dir>` to name the workspace root it serves instead of inheriting it from the working directory. Without the flag, a workstation daemon started from a directory with no `.cotal/` above it now refuses at start and names the directory it searched from. It used to read its credential and registry from that directory, dial the broker, and only then refuse on a missing `$SYS` observer. `@cotal-ai/workspace` adds `requireCotalRoot`, the same walk as `findCotalRoot` without the fallback to the start directory.
+- 972a76d: The delivery daemon now writes `• delivery: received SIGTERM, exiting (space <space>, shard <n>)` (or `SIGINT`) to its log before it tears down on a signal. A stop from `cotal down`, a service stop or Ctrl-C used to leave the log ending on routine work, which looked the same as a silent death. Every other deliberate exit already logged its reason. A SIGKILL, including the kernel OOM killer, still leaves no line.
+- 350c87b: The delivery daemon no longer exits when a credential adoption arrives while it is still starting. Its lease turns ready before the membership feed, the timer writer and the lease watch are up, so a manager's boot-time `reloadCreds` could land in that window and reconnect the daemon's connection under the lease watch it was still creating, which then timed out and stopped the daemon. Until start-up finishes, `reloadCreds` is now refused with nothing adopted, and the renewal owner records that refusal. The next renewal pass or the daemon's own 75% re-read adopts the re-signed credentials.
+- 06f48f4: CLI output is plain text when stdout is not a terminal or `NO_COLOR` is set to a non-empty value. The shared color helpers used to wrap every string in ANSI escapes, so `cotal --help`, `cotal status`, `cotal meshes` and the red error lines on stderr carried escapes into pipes and log files. The manager's and the delivery daemon's own always-on copies are gone; `cotal supervise` and `cotal feedback-intake` now print through the same helpers. The guided `cotal setup` and `cotal meshes add` prompts follow the same rule, so `FORCE_COLOR` now reaches them too. `FORCE_COLOR` turns color back on even when output is piped, unless it is `0` or `false`, and it takes precedence over `NO_COLOR`, the order Node uses.
+- fb1bc26: Let a credentialed peer ask which plane is broken, instead of guessing at its own credentials
+
+  The subjects that answer "is the manager alive" are owner-only, so a peer holding perfectly valid
+  credentials could not ask. When its join or its send failed, that peer could not tell a credential
+  problem from a dead manager, an unbound delivery daemon, or a broker that was entirely healthy, so
+  every failure presented as a credential failure, because that was the only hypothesis it was able to
+  form. A reporter running a 30-agent deployment for a week recorded six independent surfaces that each
+  reported success over a failure, including a `pgrep` that matched its own command line and therefore
+  failed in both directions. In every case diagnosis cost hours rather than minutes, and in every case
+  the missing piece was the same: nothing could be asked whether it was alive by anyone who did not own
+  it.
+
+  A read-only liveness surface now answers that question. A peer sends a presence probe on
+  `live.<plane>.<owner>.<actor>` and learns whether the manager and the delivery daemon have bound
+  responders for the space. It is shaped like the Synadia micro protocol's `$SRV.INFO`, a well-known,
+  read-only, presence-only request/reply probe, but it rides a Cotal subject inside the space rather
+  than the literal `$SRV` tree, which sits outside per-space account isolation and outside every grant
+  builder and subject audit the system already enforces.
+
+  Presence is the whole answer. The reply carries the plane, one responder verdict and an opaque
+  per-bind responder token (below), and nothing else: no holder, no pid, no workspace root, no
+  runtime, no roster, and no instance id, since the token is minted from nothing and names no
+  instance. That is why the probe is a
+  request rather than a lease read: the manager's lease row carries the operator's filesystem path and
+  a process id, so the responder reduces it to a single enum and the row never crosses the wire. A peer
+  gains no read of either lease bucket, cannot probe under another principal's identity, and cannot
+  subscribe the responder's serve filter to answer for a plane it does not own.
+
+  Unknown stays first class, reusing the classifier `cotal status` already grades by. Only the broker's
+  own no-responders answer becomes "unbound"; a timeout, a permission refusal or an unreadable reply
+  all become "unknown", because each is a failure to find out, and reporting a failure to find out as
+  health is the defect this surface exists to remove. A responder that cannot determine its own state
+  says so rather than guessing, and a reply is never counted as health merely for having arrived.
+
+  The reply also names which responder answered it, as an opaque per-bind token and not an identity.
+  Manager instances coexist per instance id, each responder answers only about itself, and the queue
+  group hands one probe to one arbitrary member, so two instances holding opposite verdicts made
+  identical probes alternate with nothing in the answer to say a second instance existed. With the
+  token a caller that probes more than once can tell two responders apart from one responder that
+  changed state. One probe still samples one responder and cannot report a split by itself.
+
+  SPEC §6.1 defines the `live` subjects, the `LivenessAnswer` reply and its grading, and the
+  message-flow docs page describes them.
+
+  A remote manager can now answer the probe it already binds. It runs the same start path as a local
+  supervisor, so it binds the manager plane's responder, and its credential carried neither the serve
+  subscription nor the bounded reply row. The subscription was denied and a peer asking about the
+  manager plane received the broker's own no-responders answer, which grades "unbound": a definite
+  verdict about a plane that was in fact bound, produced by a gap in a credential. Both rows are now
+  on that profile, pinned to the supervisor actor that does the serving.
+
+  The responder's rejection notice for a reply target outside the sender's own subtree now travels on
+  the endpoint's non-fatal warning channel. It was emitted on the `error` channel, and Node's
+  `EventEmitter` rethrows an `error` emitted with no listener attached, so an embedder that had not
+  attached one ended its process when a peer sent a probe naming such a target. The plane was then
+  genuinely unbound and the next probe reported it as such, so the notice manufactured the state it
+  described. The guard's behaviour is unchanged: the frame is dropped and the responder keeps serving.
+
+- 438e9ed: Close the pid record publish window. A launcher that died between removing the old identity pin and publishing the new pidfile left the old pid with no pin, which teardown signalled with only a legacy warning, even when the removed pin had been refusing a reused pid. The publish now renames a bridge pin holding the old and the new record's lines before the pidfile commit, and teardown checks the pidfile's pid against its own line, so every crash point leaves the old or the new complete record. Publishes of one pidfile are serialized by a lock, so a launcher and the daemon it starts can no longer overwrite each other's bridge or settled pin. A publish that cannot read a start token for the new process gives it a `-` pin line, so a crash after the commit reads the legacy record it was publishing, never the new pid beside the old pin. Replacing a legacy record carries its line as `-`, so an interrupted replace leaves it legacy, never torn. Teardown and a daemon's exit cleanup remove a record under the same lock, and only while the pidfile still names the pid they stopped, so a stop that races a publish can no longer leave the new pidfile with no pin. `removeIdentityPin` is deprecated in favor of `removePidPair` and stays exported unchanged for one minor line.
+- aa12a1a: Gate reconciliation no longer scales with credential family size. `cotal reconcile-gate`, manager boot self-heal and remote manager maintenance revoke the family's ledger rows 16 at a time, then verify-evict every distinct holder in one shared scan, KICK and verify sweep through the new `evictPrincipals` delivery-admin verb instead of one connection and one sweep per holder. The sweep keeps up to 16 KICK requests in flight, so a family whose holders are still connected no longer pays one broker round trip per connection. Holders a sweep verifies are still recorded durably when another holder is not verified, and an interrupted sweep records none.
+- Updated dependencies [70bcfe3]
+- Updated dependencies [1cf7f72]
+- Updated dependencies [5bec8b2]
+- Updated dependencies [6c01470]
+- Updated dependencies [cfc3b95]
+- Updated dependencies [b669a73]
+- Updated dependencies [350c87b]
+- Updated dependencies [608f5f4]
+- Updated dependencies [43c4179]
+- Updated dependencies [4a12111]
+- Updated dependencies [569cb6f]
+- Updated dependencies [b4c69bf]
+- Updated dependencies [f485c49]
+- Updated dependencies [5f13124]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [c389563]
+- Updated dependencies [06f48f4]
+- Updated dependencies [eb2681e]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [438e9ed]
+- Updated dependencies [446ed23]
+- Updated dependencies [15c16ff]
+- Updated dependencies [8ce6be3]
+- Updated dependencies [08194ec]
+- Updated dependencies [aa12a1a]
+- Updated dependencies [d90f9f2]
+- Updated dependencies [499bd8a]
+- Updated dependencies [569cb6f]
+- Updated dependencies [d0b1da3]
+- Updated dependencies [37075a2]
+- Updated dependencies [8d8d69a]
+- Updated dependencies [c7bfc2d]
+- Updated dependencies [6145abc]
+  - @cotal-ai/workspace@0.59.0
+  - @cotal-ai/core@0.59.0
+
+## 0.58.0
+
+### Patch Changes
+
+- 4aa8cf1: Add native-transport delivery health detection with explicit credential-expiry classification and regression coverage before replacing the daemon's periodic authenticated probe.
+- 59a7e64: Expose an account-scoped delivery service handle with explicit store identity and per-context close while retaining the CLI daemon runner. Close membership connections after disconnected drains so stopped contexts cannot reconnect when the broker returns. Keep health failures during asynchronous delivery startup local to that context and close resources returned after a failed start.
+- 576f622: A process's pidfile and its identity pin now publish as one rename-based transition, so a crash between the two writes never leaves a torn pair (old pid beside a new pin, or a new pid beside an old one). A crash still leaves one of the legacy shapes teardown already handles.
+- 59672dd: Register the remaining hosted-runtime smoke entrypoints in stable CI fragments and report native assertion counts through canonical completion markers. Refresh the explicit-TLS call-site census. Make the resume fixture retain its first successful held-slot observation or require durable completion with a new epoch, and exercise completion before the probe as a separate regression gate.
+- Updated dependencies [0589316]
+- Updated dependencies [59a7e64]
+- Updated dependencies [95ae645]
+- Updated dependencies [fba1537]
+- Updated dependencies [576f622]
+- Updated dependencies [2457692]
+- Updated dependencies [ee6de5d]
+- Updated dependencies [e9ef5b3]
+- Updated dependencies [7c54825]
+- Updated dependencies [2c31f95]
+- Updated dependencies [397bc60]
+- Updated dependencies [7b3924c]
+- Updated dependencies [1721738]
+  - @cotal-ai/core@0.58.0
+  - @cotal-ai/workspace@0.58.0
+
+## 0.57.0
+
+### Patch Changes
+
+- 15b4664: Restore the handover scenario cell F of the delivery starvation suite is about. Since the daemon began acting on the lease-watch event rather than waiting for its renew tick, a running holder re-took a deleted row before the replacement had finished starting, so there was no loser and three cells passed by reading the holder's own lease. F now freezes the holder across the handover the way cell G already did. Two matching repairs alongside it: the four wordings a losing daemon uses are one constant, since the lease-watch exit says the key was read `as held by` someone where the cells matched only `is held by`; and the suite waits for `close` rather than `exit` before grading a transcript, because a losing daemon's last line is the one naming who took its shard.
+- 42448fa: A DM send now reports the stored sequence and the recipient's status at send instead of a bare success, and `cotal deliver pending <name>` reads a recipient's held DMs from the broker.
+- Updated dependencies [e7c702a]
+- Updated dependencies [6f64bcc]
+- Updated dependencies [42448fa]
+- Updated dependencies [33357d9]
+  - @cotal-ai/core@0.57.0
+  - @cotal-ai/workspace@0.57.0
+
+## 0.56.1
+
+### Patch Changes
+
+- Updated dependencies [6b76946]
+  - @cotal-ai/core@0.56.1
+  - @cotal-ai/workspace@0.56.1
+
+## 0.56.0
+
+### Patch Changes
+
+- Updated dependencies [e506040]
+- Updated dependencies [8dc7c92]
+- Updated dependencies [99cad7b]
+- Updated dependencies [1218786]
+- Updated dependencies [ef8889d]
+  - @cotal-ai/core@0.56.0
+  - @cotal-ai/workspace@0.56.0
+
+## 0.55.0
+
+### Patch Changes
+
+- 065717c: `cotal deliver` now resolves the broker for `--space` through the mesh registry: a registered space is dialed at its recorded broker (with the record's TLS requirement), a mismatching `--server` or a record for another workspace root is refused before any dial, and an unreachable recorded broker is reported with its URL and the remedy that fits the record's origin. Spaces with no record keep the local-mesh default, and the hosted (injected-store) daemon still learns its target from argv alone.
+- 3e95455: `cotal deliver` no longer reports a refused lease write as "a live lease already exists". A CAS
+  conflict against a genuinely live lease still gets that message; a permission denial on the lease
+  write now names the refused operation and subject and says to use a credential holding the
+  `delivery` profile. Any other acquire failure is reported by shard and message, distinct from both.
+- Updated dependencies [888e9bc]
+- Updated dependencies [810814b]
+- Updated dependencies [8472dc3]
+- Updated dependencies [f272f71]
+- Updated dependencies [a83dd80]
+- Updated dependencies [db9a969]
+- Updated dependencies [d284ee6]
+- Updated dependencies [4f48629]
+- Updated dependencies [2e13607]
+- Updated dependencies [d3d6742]
+- Updated dependencies [fd58782]
+- Updated dependencies [357af9f]
+  - @cotal-ai/core@0.55.0
+  - @cotal-ai/workspace@0.55.0
+
 ## 0.54.0
 
 ### Patch Changes

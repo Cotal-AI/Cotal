@@ -22,21 +22,31 @@ it; stopping preserves it so an operator can inspect why the session never conne
 |---|---|---|---|---|---|---|
 | Maturity | stable | beta | beta | alpha | beta | alpha |
 | Binds via | installed plugin + MCP server | in-process plugin (native runtime) | host-mode peer driving `codex app-server` | native Python plugin, socket-bridged | host-mode peer driving Jcode Harness API | native pi extension, in-process |
-| Install | `cotal setup` | none, just `opencode` on PATH | seeded with the CLI; needs an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` 0.18 to 0.21; Unix only | seeded with the CLI; needs `jcode` 0.78.1+ on PATH | pi 0.79.10 (one copied file for interactive/SDK) |
+| Install | `cotal setup` | none, just `opencode` on PATH (1.x or 2.x) | seeded with the CLI; needs an authenticated `codex` on PATH | BYO `uv` + `hermes-agent` 0.18 to 0.21; Unix only | seeded with the CLI; needs `jcode` 0.78.1+ on PATH | pi 0.79.10 (one copied file for interactive/SDK) |
 | Watch the real TUI | ✓ | ✓ | ✓ (attached to the mesh-driven thread) | ✗ (headless gateway) | ✓ (attached to the managed Jcode session) | ✓ |
 | Inbound delivery | hook drain at turn start + idle-wake nudge | injected as a turn | wakes a turn; directed messages steer the live turn | fresh agent per message | injected as a Harness API turn; directed messages steer the live session | steered into the live turn |
 | Mid-turn steering | ✗ | ✗ | ✓ (directed messages) | none | ✓ (directed messages) | ✓ |
-| Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (a resumed thread has no MCP tools upstream) | ✗ | ✗ (private Harness API instance) | ✓ (forks) |
-| Tool-sharing (`--share-tools`) | ✓ (scoped opt-in) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ (private MCP configuration) | ✗ |
-| Models | `--model` | `--model` + catalog (`cotal models`) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` + `--variant` (reasoning effort) | `--model` |
-| Event plane (default on; `--no-events` opts out) | ✓ | ✓ | ✓ | ✗ (requires `--no-events`) | ✓ | ✓ (completed messages) |
+| Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (a resumed thread has no MCP tools upstream) | ✓ (forks) | ✓ (forks) | ✓ (forks) |
+| Tool-sharing (`--share-tools`) | ✓ (setup shares your servers; narrow per spawn) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ (private MCP configuration) | ✗ |
+| Models | `--model` | `--model` + catalog (`cotal models`) (1.x) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` + `--variant` (reasoning effort) | `--model` |
+| Event plane (default on; `--no-events` opts out) | ✓ | ✓ (1.x); 2.x needs `--no-events` | ✓ | ✗ (requires `--no-events`) | ✓ | ✓ (completed messages) |
+| Local listener | stdio MCP, no listener | loopback, per-launch Basic secret | loopback MCP, per-host bearer | Unix socket, control token on the first frame | Unix socket, per-instance token | in-process, no listener |
 | Containers ([deploy](deploy.md)) | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
+
+**Resume provenance.** The manager records the session a `--resume` seat forked on the seat's resume
+document, and `cotal ps --wide` and `--json` show it. Hermes and Jcode seats fork after they launch,
+so they also record the source title and a SHA-256 of the transcript they read, which the manager
+picks up once the fork exists. Each of those seats also prints the three facts in its own output
+when it forks.
 
 **Native vs. bridged.** OpenCode and pi expose real plugin runtimes, so the connector runs
 inside the host process; pi most directly: peer messages steer the live turn instead of
 waiting for it to end. Claude Code has no in-process plugin runtime; the connector composes
 three sanctioned surfaces (an MCP server for tools, lifecycle hooks for presence and delivery
-at turn boundaries, and a research-preview channel that only wakes an idle session). Codex has
+at turn boundaries, and a research-preview channel that only wakes an idle session). Presence
+writes issued by one agent land in the order they were made, and departure is published after
+every write already in flight; a write admitted after departure began is refused rather than
+reordered behind it. Codex has
 no plugin runtime either and its MCP client cannot wake an idle session, so the connector runs
 a host-mode peer over Codex's own app-server protocol (the one the Codex TUI runs on): real
 wake, mid-turn steer, and the `cotal_*` tools served from the host over a loopback MCP endpoint

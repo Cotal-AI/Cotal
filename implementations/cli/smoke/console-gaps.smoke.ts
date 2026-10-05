@@ -23,20 +23,13 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, type AddressInfo } from "node:net";
 import { CotalEndpoint, isReachable, setupSpaceStreams } from "@cotal-ai/core";
 import { recordMesh } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { ConsoleSession, clean, wait } from "./_console-pty.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, extra?: unknown) => { if (c) { pass++; console.log("  ✓ " + n); } else { fail++; console.log("  ✗ FAIL: " + n, extra ?? ""); } };
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 
 const space = `gaps-${randomUUID().slice(0, 8)}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));

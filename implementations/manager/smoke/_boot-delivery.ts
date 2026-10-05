@@ -10,9 +10,15 @@
  * Nothing here re-implements a step of the barrier; a stub that answered `verifiedGone` would be a
  * stub of the very thing the barrier trusts.
  *
- * What is NOT reproduced from `runDelivery`: its CLI arg surface, its `.cotal`-root scan-target
- * admission check (the smoke mints the $SYS pair directly from the space auth it already holds),
- * and the singleton delivery lease. Those guard an operator deployment, not the eviction contract.
+ * What is NOT reproduced from `runDelivery`: its CLI arg surface and its `.cotal`-root scan-target
+ * admission check (the smoke mints the $SYS pair directly from the space auth it already holds).
+ * Those guard an operator deployment, not the eviction contract.
+ *
+ * The delivery lease IS held for the fixture's whole life, renewed at half of `LEASE_TTL_MS` as
+ * the shipped daemon renews it. The manager's store challenge requires the answering responder to
+ * hold that lease, and the lease bucket expires an unrenewed row after `LEASE_TTL_MS`. A fixture
+ * that only acquired it answered `holdsDeliveryLease: false` to any manager that started more than
+ * one TTL after boot, and that manager correctly refused to start.
  *
  * The caller must hold the space's `SpaceAuth` WITH its in-memory system-account signing seed —
  * i.e. the auth object `createSpaceAuth` just returned, since the $SYS seed is never persisted.
@@ -22,7 +28,9 @@
  */
 import {
   CotalEndpoint,
+  LEASE_TTL_MS,
   evictDeniedPrincipalWithCreds,
+  evictDeniedPrincipalsWithCreds,
   mintConnectionEvictorCreds,
   mintCreds,
   mintMembershipObserverCreds,
@@ -46,6 +54,9 @@ export async function bootDeliveryDaemon(opts: {
   servers: string;
   auth: SpaceAuth;
   reloadStoreIdentity: SecretStoreIdentity;
+  /** How often the lease is renewed. Defaults to half of `LEASE_TTL_MS`, as the shipped daemon
+   *  renews; the fixture's own smoke shortens it to observe renewal without waiting a TTL. */
+  renewIntervalMs?: number;
 }): Promise<DeliveryDaemon> {
   const { space, servers, auth, reloadStoreIdentity } = opts;
   // The $SYS pair the eviction executor connects with: an observer that can CONNZ-scan the account
@@ -75,15 +86,39 @@ export async function bootDeliveryDaemon(opts: {
         servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
         options: { maxVerifyRounds: 12 },
       }),
+    evictPrincipals: (principals) =>
+      evictDeniedPrincipalsWithCreds({
+        servers, observerCreds, evictorCreds, accountId: auth.account.pub, principals,
+        options: { maxVerifyRounds: 12 },
+      }),
     reloadStoreIdentity: () => reloadStoreIdentity,
   });
-  await ep.markDeliveryLeaseReady(0, dlvRevision);
+  let revision: number | undefined = await ep.markDeliveryLeaseReady(0, dlvRevision);
+  // A failed renew drops the revision and stops renewing. The row then lapses on its TTL and the
+  // manager's challenge refuses, which is the fail-closed outcome a suite should see.
+  let renewing: Promise<void> | undefined;
+  const renew = setInterval(() => {
+    if (revision === undefined || renewing) return;
+    renewing = ep.renewDeliveryLease(0, revision)
+      .then((next) => { revision = next; }, () => { revision = undefined; clearInterval(renew); })
+      .finally(() => { renewing = undefined; });
+  }, opts.renewIntervalMs ?? Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
+  renew.unref?.();
   let stopped = false;
   return {
     ep,
     stop: async () => {
       if (stopped) return;
       stopped = true;
+      clearInterval(renew);
+      await renewing;
+      // The manager's no-responder challenge (`absentByLeaseRow`) reads the lease row off the
+      // bucket, not the rail; a row this fixture left behind still names a holder that no longer
+      // answers, so release it the way the daemon does before tearing the endpoint down.
+      try {
+        const own = await ep.readDeliveryLeaseEntry(0);
+        if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(0, own.revision);
+      } catch { /* the broker may already be gone; the bucket TTL is the crash-safe release */ }
       await ep.stop().catch(() => {});
     },
   };

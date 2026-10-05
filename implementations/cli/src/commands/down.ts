@@ -5,6 +5,7 @@ import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   abortMaintenanceCut,
   assertManagerCanSpare,
+  type ManagerSpareSeats,
   armManagerShutdownIntent,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
@@ -66,7 +67,7 @@ import {
 import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { parsePid, probeLiveness, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removeIdentityPin, verifyIdentityPin } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -203,6 +204,7 @@ export async function down(args: ParsedArgs): Promise<void> {
   const managerComponent = selected.find((component) => component.name === "manager");
   const managerContext = managerComponent ? contextFor(managerComponent) : undefined;
   let spared: SpareSeatRow[] | undefined;
+  let spareSeats: ManagerSpareSeats | undefined;
   let legacyManagerSpareUnverified = false;
   if (!values["with-agents"] && managerComponent && managerContext && processRecorded(managerComponent, managerContext)) {
     const managerPidPath = localProcessPath(managerComponent.pidFile, managerContext);
@@ -234,7 +236,7 @@ export async function down(args: ParsedArgs): Promise<void> {
                   console.error(c.dim("could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility"));
               }
               if (values["with-agents"]) armManagerShutdownIntent(context, attempt);
-              else if (attempt.target.token !== undefined) assertManagerCanSpare(context, undefined, attempt.target);
+              else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);
             },
           });
         } catch (e) {
@@ -293,7 +295,7 @@ export async function down(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
-  else if (spared) printSparedAgents(spared);
+  else if (spared) printSparedAgents(spared, spareSeats);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -354,27 +356,9 @@ export interface StopLocalProcessOptions {
   }) => void;
 }
 
-/** Stop one recorded process and await its actual exit before the next dependency is stopped. */
-export async function stopLocalProcess(
-  component: LocalProcess,
-  context: LocalProcessContext,
-  options: StopLocalProcessOptions = {},
-): Promise<boolean> {
-  const pidPath = localProcessPath(component.pidFile, context);
-  const found = processRecorded(component, context);
-  if (!existsSync(pidPath)) return found;
-
-  const rawPid = readFileSync(pidPath, "utf8").trim();
-  if (rawPid.startsWith("removing:")) {
-    const owner = parsePid(rawPid.slice("removing:".length));
-    throw new Error(
-      owner && isAlive(owner)
-        ? `${component.name} extension removal is in progress (pid ${owner})`
-        : `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`,
-    );
-  }
-  const pid = parsePid(rawPid);
-  const marker = `${pidPath}.stopping`;
+/** Take a stop reservation at `marker` for this process, refusing while another live stop holds it.
+ *  The caller removes `marker` when its stop is over. */
+export function reserveStop(name: string, marker: string): void {
   let markerFd: number | undefined;
   for (;;) {
     // ATOMIC publish (the pid-slot pattern): fill a private temp inode with our pid FIRST, then
@@ -412,11 +396,35 @@ export async function stopLocalProcess(
       // owner or a valid pid PROVEN dead (ESRCH); refuse only a valid pid that is alive or whose
       // liveness we cannot confirm.
       if (owner !== undefined && probeLiveness(owner) !== "dead")
-        throw new Error(`${component.name} is already being stopped by another \`cotal down\` (pid ${owner})`);
+        throw new Error(`${name} is already being stopped by another process (pid ${owner})`);
       rmSync(marker, { force: true });
     }
   }
   closeSync(markerFd);
+}
+
+/** Stop one recorded process and await its actual exit before the next dependency is stopped. */
+export async function stopLocalProcess(
+  component: LocalProcess,
+  context: LocalProcessContext,
+  options: StopLocalProcessOptions = {},
+): Promise<boolean> {
+  const pidPath = localProcessPath(component.pidFile, context);
+  const found = processRecorded(component, context);
+  if (!existsSync(pidPath)) return found;
+
+  const rawPid = readFileSync(pidPath, "utf8").trim();
+  if (rawPid.startsWith("removing:")) {
+    const owner = parsePid(rawPid.slice("removing:".length));
+    throw new Error(
+      owner && isAlive(owner)
+        ? `${component.name} extension removal is in progress (pid ${owner})`
+        : `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`,
+    );
+  }
+  const pid = parsePid(rawPid);
+  const marker = `${pidPath}.stopping`;
+  reserveStop(component.name, marker);
 
   let stopped = false;
   try {
@@ -489,10 +497,9 @@ export async function stopLocalProcess(
     // a throw that must PRESERVE the record - an unattributable pidfile, a process we could not
     // signal, or a death we could not confirm (`unknown`). The old `|| !isAlive(pid)` clause treated
     // `unknown` as gone and deleted a live process's record; it is gone.
-    if (stopped) {
-      removeIdentityPin(pidPath); // proven death: the pin goes with the pidfile (#969)
-      rmSync(pidPath, { force: true });
-    }
+    // The pin goes with the pidfile (#969), and only while the pidfile still names the stopped pid: a
+    // publish that committed a successor meanwhile is left whole (#1238).
+    if (stopped) removePidPair(pidPath, rawPid);
     rmSync(marker, { force: true });
   }
 }
@@ -657,27 +664,40 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
         "any",
         60_000,
       );
-      if (!prepared.ok) throw new Error(prepared.error ?? "manager preservation prepare failed");
-      const plan = prepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } | undefined;
-      if (!plan?.inventory || (plan.failures?.length ?? 0) !== 0 || (plan.state !== "prepared" && plan.state !== "preserved"))
-        throw new Error("manager returned an invalid or incomplete preservation plan");
-      const retainedPrincipals = retainedPrincipalKeys(plan.inventory);
-      let observed = await readPresenceWithoutConsumer(mesh.space, mesh.server);
-      retainedPrincipals.add(observed.managerId);
-      let unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
-      if (unmanaged.length) {
-        await sleep(11_000); // Let stopped predecessor presence and manager leases expire before refusing.
-        observed = await readPresenceWithoutConsumer(mesh.space, mesh.server);
+      let plan: { inventory?: unknown; failures?: unknown[]; state?: string } | undefined;
+      try {
+        if (!prepared.ok) throw new Error(prepared.error ?? "manager preservation prepare failed");
+        plan = prepared.data as { inventory?: unknown; failures?: unknown[]; state?: string } | undefined;
+        if (!plan?.inventory || (plan.failures?.length ?? 0) !== 0 || (plan.state !== "prepared" && plan.state !== "preserved"))
+          throw new Error("manager returned an invalid or incomplete preservation plan");
+        const retainedPrincipals = retainedPrincipalKeys(plan.inventory);
+        let observed = await readPresenceWithoutConsumer(mesh.space, mesh.server);
         retainedPrincipals.add(observed.managerId);
-        unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
+        let unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
+        if (unmanaged.length) {
+          await sleep(11_000); // Let stopped predecessor presence and manager leases expire before refusing.
+          observed = await readPresenceWithoutConsumer(mesh.space, mesh.server);
+          retainedPrincipals.add(observed.managerId);
+          unmanaged = observed.roster.filter((presence) => !retainedPrincipals.has(presence.card.id));
+        }
+        if (unmanaged.length)
+          throw new Error(`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId})`);
+        // A seat that cannot be checkpointed is refused HERE, at prepare time, while every child is
+        // still running. This reads only the prepared inventory, so it needs nothing that stopping
+        // would provide, and refusing after the stack is down would cost the operator a running mesh
+        // to tell them the cut was never going to complete.
+        assertSeatsCheckpointable(plan.inventory);
+      } catch (cause) {
+        // A refused prepare (or a live-unmanaged / uncheckpointable refusal) must not leave the
+        // manager fenced in "preserving" mode with no running preservation to finish: abort the
+        // attempt (best effort, the same shape as the stale-inventory retry above) and clear the
+        // intent, so the operator is left with a running, unfenced mesh and the refusal reason.
+        try {
+          await askManager(target.space, target.server, "abortPreservation", { attemptId }, target.auth, "any", 30_000);
+        } catch { /* best effort - the fence dies with the manager */ }
+        clearPreservationPrepareIntent(lock);
+        throw cause;
       }
-      if (unmanaged.length)
-        throw new Error(`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId})`);
-      // A seat that cannot be checkpointed is refused HERE, at prepare time, while every child is
-      // still running. This reads only the prepared inventory, so it needs nothing that stopping
-      // would provide, and refusing after the stack is down would cost the operator a running mesh
-      // to tell them the cut was never going to complete.
-      assertSeatsCheckpointable(plan.inventory);
       resume = writeMaintenanceResumeDocument(lock, {
         version: MAINTENANCE_RESUME_DOCUMENT_VERSION,
         inventory: plan.inventory as JsonValue,
@@ -945,8 +965,9 @@ async function assertControlPlaneQuiesced(space: string, server: string): Promis
   }
 }
 
-/** Read current KV subjects by Direct Get so the cut check leaves no ephemeral/native consumer. */
-/** Exported for the gated tombstone cell. A regression test for the lease walk has to run through
+/** Read current KV subjects by Direct Get so the cut check leaves no ephemeral/native consumer.
+ *
+ *  Exported for the gated tombstone cell. A regression test for the lease walk has to run through
  *  THIS function, not a transcription of it: a copy carries its own `allowEmpty` parameter, so it
  *  stays green when the argument at the real call site is removed and proves nothing about the fix. */
 export async function readPresenceWithoutConsumer(space: string, server: string): Promise<{ roster: Presence[]; managerId: string }> {

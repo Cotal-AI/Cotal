@@ -89,7 +89,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
 // ---- 1) the capture instrument sees what it claims to see ---------------------------------------
 
 {
-  const sim = new SimHandler({ turns: { probe: { status: "done", at: 0 } } });
+  const sim = new SimHandler({ turns: { probe: { status: "done" } } });
   const { handler, seen } = capturing(sim);
   await run('const a = await spawn("p", { name: "a", role: "r" });\nawait turn(a, { name: "probe", deadline: "5m" });\n', {
     runId: "o-0",
@@ -113,7 +113,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
       // `PRIMITIVES.spawn.options` and this program was not updated beside it, so the audit reported
       // `spawn.placement` dropped and THIS SUITE WAS RED at a108a8ad8 — the option list and the
       // fixture are the two correct-looking lists the header warns about, one gap further along.
-      src: 'const t = channel("c");\nconst a = await spawn("p", { name: "a", cwd: "/prepared/writer", placement: { endpoint: "manager", instanceId: "i1" }, worktree: "wt-1", join: [t], role: "r", permits: { turns: 3 }, supervise: { restart: "on-fail" }, onFork: "adopt" });\n',
+      src: 'const t = channel("c");\nconst a = await spawn("p", { name: "a", cwd: "/prepared/writer", placement: { endpoint: "manager", instanceId: "i1" }, worktree: "wt-1", join: [t], role: "r", permits: { turns: 3 }, supervise: { restart: "on-fail" }, onFork: "adopt", events: false });\n',
       method: "spawn",
     },
     turn: {
@@ -144,7 +144,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   };
 
   const script = {
-    turns: { go: { status: "done", at: 0 } },
+    turns: { go: { status: "done" } },
     asks: { q: { days: 3 } },
     checkpoints: { approve: { status: "resolved", value: true, by: "sim" } },
     events: { w: [null] },
@@ -177,7 +177,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
 {
   // The claim worth holding is the one the catalog makes: a primitive that parses runs. The check
   // that catches a regression is that no primitive reaches the interpreter's not-implemented default.
-  const { handler, seen } = capturing(new SimHandler({ turns: { h: { status: "done", at: 0 } } }));
+  const { handler, seen } = capturing(new SimHandler({ turns: { h: { status: "done" } } }));
   const r = await run(
     'const a = await spawn("a", { name: "a" });\nawait conclave([a], (ch) => turn(a, { name: "h" }), { name: "t", channel: "war-room" });\n',
     { runId: "o-c", handler },
@@ -351,7 +351,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   ];
 
   const script = {
-    turns: { go: { status: "done", at: 0 } },
+    turns: { go: { status: "done" } },
     asks: { q: { days: 3 } },
     // Resolved on the first mint, so no probe accidentally depends on an escalation hop.
     checkpoints: { gate: { status: "resolved", value: true, by: "sim" } },

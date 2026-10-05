@@ -139,6 +139,20 @@ over it that binds to its host's native mechanism: an installed plugin + MCP ser
 [pi](connect-pi.md) (alpha). The [connectors matrix](connectors.md) compares them
 feature-by-feature.
 
+Replies carry their correlation ([SPEC §5](../SPEC.md#5-envelopes)). A `cotal_dm` to a peer
+answers the message its `replyTo` argument names, which must be one that peer sent you and no DM
+back has answered yet. The argument wins over a message the connector bound the call to. Without
+the argument it answers the oldest such message, but only while all
+of that peer's waiting messages belong to one conversation (`contextId`). When they belong to more
+than one, the DM is refused with their ids, so an answer is never put in a conversation by guess.
+The reply names the message in `replyTo` and copies its `contextId`, which belongs to the asker.
+The message counts as answered once the reply is published, so a failed send leaves it for the
+retry. Until then it is still waiting, and a DM without `replyTo` sent meanwhile is refused if
+another conversation is waiting too. With nothing to answer, a DM carries the connector's own
+`contextId`, if it sets one. A connector that runs several host sessions on one seat (Hermes)
+stamps each question with a `contextId` of its own, and routes an answer back to the session that
+asked only when the answer copies it and comes from the peer the question went to.
+
 The endpoint underneath self-heals: when the transport connection dies terminally, a
 supervisor rebuilds it (rebuilds are serialized and coalesced), and unacked in-flight
 messages redeliver on the rebound durables, so nothing is lost across the gap. A failed
@@ -160,9 +174,9 @@ laterally; the manager only births and configures them.
   through presence, so a bring-your-own-terminal agent it never spawned still shows up in
   `ps`.
 - **Pluggable runtimes.** Spawning is abstracted behind a `Runtime` contract (like pm2 or
-  docker for agent TUIs): **`pty`** ships built-in (a detached per-seat custodian owns the
-  pseudo-terminal on Linux; watch or type via `cotal attach`; other platforms still spawn
-  in-process, and `adopt` throws until their transport lands); **`tmux`**, **`cmux`**, **`orca`**, and **`herdr`** are
+  docker for agent TUIs): **`pty`** ships built-in (the manager owns the pseudo-terminal
+  in-process on every platform; watch or type via `cotal attach`; on Linux it still adopts
+  seats an earlier manager left under a detached custodian, and elsewhere `adopt` throws); **`tmux`**, **`cmux`**, **`orca`**, and **`herdr`** are
   extensions that put each teammate in its own native terminal surface (explicit opt-ins
   that throw when the extension isn't loaded, never a silent fallback); **byo** is the
   floor (a human's own terminal, tracked via presence); **host** (Agent SDK, true mid-turn
@@ -183,7 +197,8 @@ laterally; the manager only births and configures them.
 - **Bounded spawn.** A gate caps concurrent and in-flight agents and a minimum-lifetime
   floor bounds spawn/despawn churn, so a capability-holding but compromised peer cannot
   fork-bomb the host. The gate runs at goal acceptance, before any identity is minted or
-  process launched, so a refused spawn leaves nothing behind.
+  process launched, so a refused spawn leaves nothing behind. A refusal states what holds the
+  slots and whether waiting can free one.
 - **Declared environment boundary.** A spawned agent receives a fixed OS allow-list (PATH/HOME/
   locale, including PATH entries connector binaries live in), the machine-wide `COTAL_*` operator
   knobs, connector-declared provider inputs, explicitly shared MCP references, and names
@@ -195,18 +210,22 @@ laterally; the manager only births and configures them.
   logical instance id across restarts and advances its process epoch when it comes back, so
   peers address a specific manager without caring which process currently serves it. `cotal
   spawn <persona> --detach --on <instance>` pins one instance (`ps`, `stop` and `attach` take
-  the same flag); an untargeted spawn rides class anycast and the acceptance records which
+  the same flag), and MCP `cotal_spawn` accepts the equivalent `instance` argument. An untargeted spawn rides class anycast and the acceptance records which
   instance took it. `ps` and `status` scatter across every registered instance and label a
   non-answering one as registered with no answer within the deadline, never dropping it.
-- **A manager holds a liveness lease, and nothing about it ends the process.** Each instance
-  keeps its own key in the space's manager bucket and refreshes it several times over inside the
-  key's TTL. A refresh that fails is a question, not a verdict, so the manager re-reads the key
-  before deciding what to do. If the key is still its own it adopts the broker's revision and
-  carries on. If the key is gone (it expired during a stall) it puts it back. If another process
-  holds it, it says so and keeps serving; which of the two goes is the operator's call. If the
-  broker cannot be asked at all it keeps serving and asks again, for as long as that takes. A
-  manager that cannot reach its broker gains nothing by ending itself, and the seats it holds
-  lose everything. Each change of state is one line in the manager's log, not one line per tick.
+- **A manager holds a liveness lease, and only losing it to another process ends the process.**
+  Each instance keeps its own key in the space's manager bucket and refreshes it several times
+  over inside the key's TTL. A refresh that fails is a question, not a verdict, so the manager
+  re-reads the key before deciding what to do. If the key is still its own it adopts the broker's
+  revision and carries on. If the key is gone (it expired during a stall) it puts it back. If
+  another process holds it, that process took the instance over during the stall, so this one
+  says so and exits without releasing the lease or the registration, which are the successor's
+  now. If the broker cannot be asked at all it keeps serving and asks again, for as long as that
+  takes. A manager that cannot reach its broker gains nothing by ending itself, and the seats it
+  holds lose everything. Each change of state is one line in the manager's log, not one line per
+  tick.
+  A clean stop waits for a renew already in flight and then releases the key at the broker's own
+  revision, so a same-root restart never waits out the bucket TTL.
 - **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on

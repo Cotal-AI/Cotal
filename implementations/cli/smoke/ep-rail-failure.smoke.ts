@@ -25,7 +25,7 @@ import {
 } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { askManager, epRailFailure } from "../src/lib/control.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 const c = (name: string, cond: boolean, extra?: unknown) => {
@@ -242,7 +242,7 @@ try {
   }
   await nc.drain();
 } finally {
-  broker.kill("SIGTERM");
+  await killAndAwaitExit(broker);
   rmSync(sd, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

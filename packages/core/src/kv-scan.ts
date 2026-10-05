@@ -1,6 +1,6 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
-import type { MsgRequest, NextMsgRequest } from "@nats-io/jetstream";
+import type { ConsumerInfo, MsgRequest, NextMsgRequest } from "@nats-io/jetstream";
 
 /**
  * The ONE sanctioned way to read every live entry of a KV bucket.
@@ -98,6 +98,18 @@ export class IncompleteKvScan extends Error {
   }
 }
 
+export interface LiveKvEntriesOptions {
+  signal?: AbortSignal;
+  /** Runs each delete of the scan's own consumer, for a caller that must recognise a refused one: a
+   *  profile without the delete row is refused by design (#691), and the endpoint keeps that
+   *  refusal's connection-status echo off its `error` event. */
+  deleteOwnConsumer?: (stream: string, name: string, del: () => Promise<boolean>) => Promise<boolean>;
+  /** Runs with the scan's consumer before its first delivery. nats.js rebuilds that consumer after a
+   *  stall or a sequence gap and deletes the predecessor itself, with no hook before the send, so a
+   *  caller that must recognise that refused delete (#691) learns the consumer's name here. */
+  onConsumer?: (info: ConsumerInfo) => void;
+}
+
 /**
  * Every currently-live entry of `kv`, in ONE pass, with values.
  *
@@ -108,7 +120,25 @@ export class IncompleteKvScan extends Error {
  * Throws {@link IncompleteKvScan} if the pass is cut short. Returns `[]` for a bucket that is
  * genuinely empty (proven at bind time, not inferred from silence).
  */
-export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise<KvEntry[]> {
+export async function liveKvEntries(
+  kv: KV,
+  filterOrOptions?: string | string[] | LiveKvEntriesOptions,
+  options?: LiveKvEntriesOptions,
+): Promise<KvEntry[]> {
+  let filter: string | string[] | undefined;
+  // The three-argument form may deliberately omit the filter: (kv, undefined, options).
+  let opts: LiveKvEntriesOptions | undefined = options;
+  if (typeof filterOrOptions === "string" || Array.isArray(filterOrOptions)) {
+    filter = filterOrOptions;
+    opts = options;
+  } else if (filterOrOptions && typeof filterOrOptions === "object") {
+    opts = filterOrOptions;
+  }
+
+  if (opts?.signal?.aborted) {
+    throw opts.signal.reason ?? new Error("scan aborted");
+  }
+
   // OWN THE PASS. This deliberately does NOT call `kv.history()`. That helper hides the consumer's
   // bind-time `num_pending`, and without it an empty result is ambiguous: a genuinely empty bucket
   // and a pass that died before its first message look identical. For a FILTERED scan that ambiguity
@@ -142,32 +172,95 @@ export async function liveKvEntries(kv: KV, filter?: string | string[]): Promise
   let sawTerminal = false;
   let bucketName = bucket.bucket;
   let expected = 0;
+  let activeConsumerName: string | undefined;
+  let initialName: string | undefined;
   try {
     // THE BIND-TIME PROOF, continued: zero here is the only thing that yields an empty result.
-    expected = (await oc.info(true)).num_pending;
-    if (expected === 0) return [];
+    const initialInfo = await oc.info(true);
+    opts?.onConsumer?.(initialInfo);
+    initialName = initialInfo.name;
+    activeConsumerName = initialInfo.name;
+    expected = initialInfo.num_pending;
 
-    // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is
-    // what makes concurrent rewrites and drifted `history` settings both correct.
-    const iter = await oc.consume();
-    try {
-      for await (const m of iter) {
-        const e = bucket.jmToWatchEntry(m, false);
-        received++;
-        bucketName = e.bucket;
-        const prior = latest.get(e.key);
-        if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
-        // The ONLY completion signal accepted: a delivered message that says nothing is left behind
-        // it. Unlike `history()`, an idle heartbeat is NOT treated as "we got everything" — that
-        // shortcut is precisely how a stalled pass returns a short list wearing a clean end.
-        if (m.info.pending === 0) { sawTerminal = true; break; }
+    if (opts?.signal?.aborted) {
+      throw opts.signal.reason ?? new Error("scan aborted");
+    }
+
+    // Keep the empty path inside this try/finally too. Returning here would commit [] before
+    // cleanup finishes, even if a caller aborts while the consumer delete is pending.
+    if (expected !== 0) {
+      // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is
+      // what makes concurrent rewrites and drifted `history` settings both correct.
+      const iter = await oc.consume();
+      const statusIter = typeof iter.status === "function" ? iter.status() : undefined;
+      if (statusIter) {
+        (async () => {
+          try {
+            for await (const s of statusIter) {
+              if (s.type === "ordered_consumer_recreated" && "name" in s && typeof s.name === "string") {
+                activeConsumerName = s.name;
+              }
+            }
+          } catch {
+            /* status iterator closed */
+          }
+        })();
       }
-    } finally {
-      iter.stop();
+
+      const onAbort = () => {
+        iter.stop(opts?.signal?.reason ?? new Error("scan aborted"));
+      };
+      opts?.signal?.addEventListener("abort", onAbort, { once: true });
+
+      try {
+        for await (const m of iter) {
+          if (opts?.signal?.aborted) break;
+          const e = bucket.jmToWatchEntry(m, false);
+          received++;
+          bucketName = e.bucket;
+          const prior = latest.get(e.key);
+          if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
+          // The ONLY completion signal accepted: a delivered message that says nothing is left behind
+          // it. Unlike `history()`, an idle heartbeat is NOT treated as "we got everything" — that
+          // shortcut is precisely how a stalled pass returns a short list wearing a clean end.
+          if (m.info.pending === 0) { sawTerminal = true; break; }
+        }
+      } finally {
+        opts?.signal?.removeEventListener("abort", onAbort);
+        if (typeof (iter as { close?: () => Promise<unknown> }).close === "function") {
+          await (iter as { close: () => Promise<unknown> }).close().catch(() => {});
+        } else {
+          iter.stop();
+        }
+      }
     }
   } finally {
-    await oc.delete().catch(() => { /* already gone, or denied: nothing to reclaim */ });
+    // Delete ONLY this scan's own consumer in finally. If rotation occurred, delete the rotated consumer too.
+    // TTL (inactive_threshold) remains the crash/deletion-failure backstop.
+    const deleteOwn = opts?.deleteOwnConsumer ?? ((_stream, _name, del) => del());
+    const targetName = (oc as unknown as { name?: string }).name ?? activeConsumerName;
+    if (targetName && initialName && targetName !== initialName) {
+      for (let i = 0; i < 20; i++) {
+        let deleted = false;
+        try {
+          deleted = await deleteOwn(bucket.stream, targetName, () => bucket.jsm.consumers.delete(bucket.stream, targetName));
+        } catch {
+          // in-flight creation or already deleted
+        }
+        if (deleted) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    } else {
+      // The client sets `name` on every push consumer it returns; the cast above only hides it from the type.
+      await deleteOwn(bucket.stream, targetName!, () => oc.delete()).catch(() => { /* deletion failure: TTL is the backstop */ });
+    }
   }
+  if (opts?.signal?.aborted) {
+    throw opts.signal.reason ?? new Error("scan aborted");
+  }
+  // No original scan error was caught or replaced; only a successful empty result waits for
+  // cleanup and this final abort check before it can be returned.
+  if (expected === 0) return [];
   // Fell out without the terminal message: the connection dropped, the consumer was removed, or the
   // stream stalled past the heartbeat. Whatever the cause, this is a PARTIAL view and saying so is
   // the whole point. Filtered and unfiltered obey the same rule, including zero-received.
@@ -243,10 +336,11 @@ export async function walkKvEntries(kv: KV, filter: string): Promise<KvEntry[]> 
 export async function liveKvValues<T>(
   kv: KV,
   decode: (e: KvEntry) => T | undefined,
-  filter?: string | string[],
+  filterOrOptions?: string | string[] | LiveKvEntriesOptions,
+  options?: LiveKvEntriesOptions,
 ): Promise<T[]> {
   const out: T[] = [];
-  for (const e of await liveKvEntries(kv, filter)) {
+  for (const e of await liveKvEntries(kv, filterOrOptions, options)) {
     const v = decode(e);
     if (v !== undefined) out.push(v);
   }

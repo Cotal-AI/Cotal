@@ -129,24 +129,46 @@ const watchdogFiredDuring = async (yieldEvery: number): Promise<boolean> => {
  *
  * Three programs, one variable each. The watchdog is what distinguishes "returned" from "hung", and
  * it is real: with the cut removed the second program does not resolve inside its budget window.
+ *
+ * The watchdog counts event-loop turns. The walk yields once every `yieldEvery` dispatches through
+ * a zero-delay timer, and the watchdog re-arms on the same primitive, so both advance one turn per
+ * pass of the timer queue however slow the host is, and a budget that ends the walk ends it within
+ * `stepBudget / yieldEvery` turns on a fast host and a starved one alike. An 8 s deadline used to
+ * stand here, and it measured the host: a loaded runner that needed longer than 8 s to walk those
+ * turns reported HUNG for a run that went on to throw L4013.
  */
 {
+  const YIELD_EVERY = 64;
+  const STEP_BUDGET = 40_000;
+  /** Twice the turns the budget allows: a run still going after that many has outlived its budget. */
+  const HUNG_AFTER_TURNS = 2 * Math.ceil(STEP_BUDGET / YIELD_EVERY);
   const raceUntil = async (source: string, runId: string): Promise<{ verdict: string; logs: unknown[] }> => {
     const logs: unknown[] = [];
     const raced = run(source, {
       runId,
-      handler: new SimHandler({ turns: { quick: { status: "done", at: 0 } } }),
-      yieldEvery: 64,
-      stepBudget: 40_000,
+      handler: new SimHandler({ turns: { quick: { status: "done" } } }),
+      yieldEvery: YIELD_EVERY,
+      stepBudget: STEP_BUDGET,
       onLog: (l) => logs.push(l.values[0]),
     });
-    const verdict = await Promise.race([
-      raced.then(() => "returned").catch((e) => `threw ${(e as Error).message.slice(0, 40)}`),
-      new Promise<string>((r) => {
-        setTimeout(() => r("HUNG"), 8_000);
-      }),
-    ]);
-    return { verdict, logs };
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const verdict = await Promise.race([
+        raced.then(() => "returned").catch((e) => `threw ${(e as Error).message.slice(0, 40)}`),
+        new Promise<string>((r) => {
+          let turns = 0;
+          const turn = () => {
+            turns += 1;
+            if (turns > HUNG_AFTER_TURNS) r("HUNG");
+            else watchdog = setTimeout(turn, 0);
+          };
+          watchdog = setTimeout(turn, 0);
+        }),
+      ]);
+      return { verdict, logs };
+    } finally {
+      clearTimeout(watchdog);
+    }
   };
 
   // (b) the spinner CANNOT win: equal clocks (neither arm awaits an effect), and it is declared second.
@@ -226,10 +248,10 @@ log(votes.a.status);
     runId: "f-5",
     handler: new SimHandler({
       turns: {
-        plan: { status: "done", at: 0 },
-        build: { status: "done", at: 0 },
-        review: { status: "done", at: 0 },
-        check: { status: "done", at: 0 },
+        plan: { status: "done" },
+        build: { status: "done" },
+        review: { status: "done" },
+        check: { status: "done" },
       },
     }),
     onLog: (l) => logs.push(l.values[0]),

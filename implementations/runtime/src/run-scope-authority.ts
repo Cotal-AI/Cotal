@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { Journal, digest, journalEntryKeyString, stepKeyString, type EffectContext, type JournalEntry } from "@cotal-ai/lang";
-import { replayRunJournal, type RunHostPlanes, type RunHostLease, type RunJournalActivation } from "@cotal-ai/core";
+import { Journal, atMostOnce, digest, holdRequestId, journalEntryKeyString, stepKeyString, type EffectContext, type JournalEntry } from "@cotal-ai/lang";
+import type { RunHostPlanes, RunHostLease, RunJournalActivation } from "@cotal-ai/core";
+import { replayOwnJournal } from "./journal-store.js";
 
 interface RunScopeSnapshot {
   readonly entries: readonly JournalEntry[];
@@ -15,13 +16,61 @@ export function createRunScopeAuthority(
 ): RunScopeAuthority {
   const pinned = structuredClone(lease);
   return new RunScopeAuthority(runId, async () => {
-    const replay = await replayRunJournal(broker.js, broker.jsm, broker.space, runId, pinned.takeoverId);
+    const replay = await replayOwnJournal(broker.js, broker.jsm, broker.space, runId, pinned.takeoverId);
     const last = replay.records.findLast(({ record }) => record.kind === "activation")?.record;
     return {
       entries: replay.records.flatMap(({ record }) => record.kind === "step" ? [record.entry as JournalEntry] : []),
       activation: last?.kind === "activation" ? last : undefined,
     };
   }, pinned);
+}
+
+/** True when `runId` minted the entry: its request id re-derives from this run. A fork prefix keeps
+ *  the parent's ids, so a copied entry is never the child's. */
+export function ownsEntry(runId: string, entry: JournalEntry): boolean {
+  if (entry.requestId === undefined) return false;
+  const attempt = entry.attempt ?? 0;
+  if (!Number.isSafeInteger(attempt) || attempt < 0) return false;
+  const hash = digest([runId, journalEntryKeyString(entry), entry.inputHash, attempt]);
+  const expected = Buffer.from(hash.slice("sha256:".length), "hex").toString("base64url");
+  return entry.requestId === expected;
+}
+
+/**
+ * The spawns a completed run releases: its own, whatever their status, because a spawn that failed
+ * catchably can still hold a live process and the goal's terminal decides whether a seat is up. A
+ * spawn marked `onFork: "adopt"` is left up: a fork may share that seat, and no run can see whether
+ * another still uses it. A spawn whose seat a migration handed to a later spawn is left to that
+ * spawn: the receiver names it in `adoptedFrom` and holds the same goal. The receiver keeps the seat
+ * up when any spawn the seat passed through was marked `onFork: "adopt"`, because a fork taken
+ * before the migration may still share it.
+ */
+export function releasableSeats(runId: string, entries: readonly JournalEntry[]): JournalEntry[] {
+  const spawns = new Map<string, JournalEntry>();
+  const handedOver = new Set<string>();
+  for (const e of entries) {
+    if (e.kind !== "spawn") continue;
+    spawns.set(journalEntryKeyString(e), e);
+    if (typeof e.external?.adoptedFrom === "string") handedOver.add(e.external.adoptedFrom);
+  }
+  const from = (e: JournalEntry) => typeof e.external?.adoptedFrom === "string" ? spawns.get(e.external.adoptedFrom) : undefined;
+  const shared = (e: JournalEntry): boolean => {
+    const seen = new Set<JournalEntry>();
+    for (let s: JournalEntry | undefined = e; s !== undefined && !seen.has(s); s = from(s)) {
+      if (s.external?.onFork === "adopt") return true;
+      seen.add(s);
+    }
+    return false;
+  };
+  return entries.filter((e) => e.kind === "spawn" && ownsEntry(runId, e) && !shared(e)
+    && !handedOver.has(journalEntryKeyString(e)));
+}
+
+/** A hold (spec/cotal-lang.md §7.8): a checkpoint at an at-most-once step's key, at attempt 0, under
+ *  the hold id the step's recorded request id derives. Read from the journal, never from the caller. */
+export function isHold(kind: string, entry: JournalEntry, ctx: Pick<EffectContext, "key" | "requestId" | "attempt">): boolean {
+  return kind === "checkpoint" && atMostOnce(ctx.key.scope) && entry.requestId !== undefined
+    && ctx.requestId === holdRequestId(entry.requestId) && ctx.attempt === 0;
 }
 
 export type PauseOperation = "read" | "mint" | "attach" | "rearm" | "heartbeat" | "claim" | "fire";
@@ -64,12 +113,7 @@ export class RunScopeAuthority {
   /** Fork prefixes keep settled parent ids as history. Such an entry can be replayed but
    *  cannot authorize this child to operate on a parent's checkpoint or wait consumer. */
   private owns(entry: JournalEntry): boolean {
-    if (entry.requestId === undefined) return false;
-    const attempt = entry.attempt ?? 0;
-    if (!Number.isSafeInteger(attempt) || attempt < 0) return false;
-    const hash = digest([this.runId, journalEntryKeyString(entry), entry.inputHash, attempt]);
-    const expected = Buffer.from(hash.slice("sha256:".length), "hex").toString("base64url");
-    return entry.requestId === expected;
+    return ownsEntry(this.runId, entry);
   }
 
   async journal(): Promise<readonly JournalEntry[]> {
@@ -79,9 +123,9 @@ export class RunScopeAuthority {
   async effect(kind: string, ctx: Pick<EffectContext, "key" | "requestId" | "attempt">): Promise<JournalEntry> {
     const entries = await this.entries();
     const entry = entries.find((candidate) => journalEntryKeyString(candidate) === stepKeyString(ctx.key));
-    if (entry === undefined || entry.kind !== kind || entry.requestId !== ctx.requestId
-      || (entry.attempt ?? 0) !== ctx.attempt || entry.state !== "pending"
-      || this.cleanup(entries).has(journalEntryKeyString(entry)))
+    if (entry === undefined || entry.state !== "pending" || this.cleanup(entries).has(journalEntryKeyString(entry))
+      || !(isHold(kind, entry, ctx)
+        || (entry.kind === kind && entry.requestId === ctx.requestId && (entry.attempt ?? 0) === ctx.attempt)))
       throw new RunScopeDenied(this.runId, ctx.requestId, `perform ${kind}`);
     return entry;
   }
@@ -104,6 +148,11 @@ export class RunScopeAuthority {
     const entries = await this.entries();
     const owed = this.cleanup(entries);
     return entries.filter((entry) => this.owns(entry) && owed.has(journalEntryKeyString(entry)));
+  }
+
+  /** Release authority covers the seats {@link releasableSeats} names for this attempt's run. */
+  async releaseEntries(): Promise<readonly JournalEntry[]> {
+    return releasableSeats(this.runId, await this.entries());
   }
 
   async pause(token: string, operation: PauseOperation): Promise<JournalEntry> {
@@ -150,10 +199,16 @@ export class RunScopeAuthority {
   }
 }
 
-/** Identities a step can own. An ask's old attempt drops out as soon as the next bind lands. */
+/** Identities a step can own. An ask's old attempt drops out as soon as the next bind lands. A
+ *  held step also owns its hold id, whatever its kind, once the hold's bind lands. */
 function pauseTokens(entry: JournalEntry): string[] {
   const id = entry.requestId;
   if (id === undefined) return [];
+  const own = kindPauseTokens(entry, id);
+  return entry.hold === undefined ? own : [...own, holdRequestId(id)];
+}
+
+function kindPauseTokens(entry: JournalEntry, id: string): string[] {
   if (entry.kind === "sleep" || entry.kind === "checkpoint" || entry.kind === "turn") return [id];
   if (entry.kind === "wait") return [id, derive(id, "wait-timeout")];
   if (entry.kind !== "ask") return [];

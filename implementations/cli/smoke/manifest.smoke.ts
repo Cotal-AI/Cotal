@@ -8,7 +8,10 @@ import type { AgentDef } from "@cotal-ai/core";
 import { resolveManifest } from "../src/lib/manifest/resolve.js";
 import { ManifestError } from "../src/lib/manifest/errors.js";
 import { prepareAgent } from "../src/lib/manifest/prepare.js";
-import { buildLaunchSpec, hashAgent } from "../src/lib/manifest/apply.js";
+import { buildLaunchSpec, hashAgent, preflightConnectors } from "../src/lib/manifest/apply.js";
+import { preparePersonas } from "../src/lib/manifest/preflight.js";
+import { registry } from "@cotal-ai/core";
+import type { Connector } from "@cotal-ai/core";
 import { renderTopology } from "../src/lib/manifest/render.js";
 import type { ResolvedAgent, ResolvedManifest } from "../src/lib/manifest/model.js";
 
@@ -341,6 +344,31 @@ const declared = new Set(["general", "review"]);
   fails(source(""), "cwd");
   fails(source("bad\0path"), "cwd");
   fails(`${HEAD}agents:\n  worker: { model: opus, cwd: 42 }\nchannels: {}\n`, "cwd");
+}
+
+// --- connector preflight: a prompt on a connector without supportsPrompt is refused (#315) ------
+// preflightConnectors materializes each agent type from the in-process registry first, so a fake
+// registered connector (empty requires) reaches the capability gates with no broker and no
+// installed-extension manifest.
+{
+  const register = (name: string, caps: Partial<Connector>): void =>
+    registry.register({ kind: "connector", name, requires: [], ...caps } as Connector);
+  const manifest = (agent: string): string =>
+    `apiVersion: cotal/v1\nkind: Mesh\nspace: pf\nagent: ${agent}\nagents:\n  kickoff:\n    model: test/model\n    prompt: BEGIN\nchannels: {}\n`;
+  register("pf-no-prompt", {});
+  register("pf-prompt", { supportsPrompt: true });
+  register("pf-variant-only", { supportsModelVariant: true });
+  const preflight = async (agent: string): Promise<string> =>
+    preflightConnectors(preparePersonas(ok(manifest(agent))));
+  assert.equal(
+    await preflight("pf-no-prompt"),
+    "pf-no-prompt does not support a kickoff prompt (used by kickoff)",
+  );
+  assert.equal(await preflight("pf-prompt"), "");
+  assert.equal(
+    await preflight("pf-variant-only"),
+    "pf-variant-only does not support a kickoff prompt (used by kickoff)",
+  );
 }
 
 console.log("manifest pipeline smoke ok");

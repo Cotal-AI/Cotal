@@ -22,7 +22,7 @@
  *
  * Run: pnpm smoke:subject-frontier
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync, linkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync, linkSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileSubjectFrontier, SubjectFrontierCorruptError, SubjectFrontierMovedError } from "../src/subject-frontier.js";
@@ -213,6 +213,22 @@ try {
   {
     const d = dir();
     const p = join(d, "subject.json");
+    writeFileSync(p, JSON.stringify({ v: 1, space: SPACE, principal: P, tip: Number.MAX_SAFE_INTEGER }));
+    await threw("corrupt:a-MAX_SAFE_INTEGER-tip-is-refused-at-open",
+      () => FileSubjectFrontier.open(p, { space: SPACE, principal: P }), /below Number.MAX_SAFE_INTEGER/);
+  }
+  {
+    const d = dir();
+    const p = join(d, "subject.json");
+    const f = await FileSubjectFrontier.open(p, { space: SPACE, principal: P });
+    await threw("advance:MAX_SAFE_INTEGER-is-refused-before-the-write",
+      () => f.advance(Number.MAX_SAFE_INTEGER), /seq must be a safe non-negative integer below Number.MAX_SAFE_INTEGER/);
+    c("advance:MAX_SAFE_INTEGER-refusal-left-the-record-absent",
+      (() => { try { readFileSync(p); return false; } catch { return true; } })());
+  }
+  {
+    const d = dir();
+    const p = join(d, "subject.json");
     writeFileSync(p, Buffer.from([0x7b, 0x22, 0xff, 0x22, 0x7d]));
     await threw("corrupt:invalid-UTF-8-is-refused-rather-than-substituted",
       () => FileSubjectFrontier.open(p, { space: SPACE, principal: P }), /valid UTF-8/);
@@ -235,6 +251,54 @@ try {
     symlinkSync(outside, join(d, "t-linked"));
     await threw("recover:a-SYMLINKED-thread-directory-is-refused-not-followed",
       () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /never a symlink/);
+  }
+  {
+    const d = dir();
+    const p = join(d, "subject.json");
+    const outside = join(root, `record-target-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(outside, JSON.stringify({ v: 1, space: SPACE, principal: P, tip: 5 }));
+    symlinkSync(outside, p);
+    await threw("corrupt:a-SYMLINKED-record-is-refused-at-open-by-the-PORTABLE-check",
+      () => FileSubjectFrontier.open(p, { space: SPACE, principal: P }), /never a symlink/);
+    await threw("corrupt:a-SYMLINKED-record-is-refused-at-open-by-the-PORTABLE-check",
+      () => FileSubjectFrontier.open(p, { space: SPACE, principal: P }), /writer never wrote a symlink/);
+    c("corrupt:the-symlinked-record-refusal-left-the-link-untouched", lstatSync(p).isSymbolicLink());
+    c("corrupt:the-symlinked-record-target-bytes-are-unchanged", readFileSync(outside, "utf8") === JSON.stringify({ v: 1, space: SPACE, principal: P, tip: 5 }));
+  }
+  {
+    const d = dir();
+    const p = join(d, "subject.json");
+    const outside = join(root, `swap-target-${Math.random().toString(36).slice(2)}.json`);
+    const f = await FileSubjectFrontier.open(p, { space: SPACE, principal: P });
+    await f.advance(1);
+    writeFileSync(outside, JSON.stringify({ v: 1, space: SPACE, principal: P, tip: 1 }));
+    rmSync(p);
+    symlinkSync(outside, p);
+    await threw("advance:a-record-SWAPPED-for-a-link-after-open-is-refused-at-the-re-read",
+      () => f.advance(2), /never a symlink/);
+    c("advance:the-swapped-link-survives-the-refused-advance", lstatSync(p).isSymbolicLink());
+    c("advance:the-swapped-target-bytes-are-unchanged", readFileSync(outside, "utf8") === JSON.stringify({ v: 1, space: SPACE, principal: P, tip: 1 }));
+  }
+  {
+    const d = dir();
+    const p = join(d, "subject.json");
+    const outside = join(root, `reset-target-${Math.random().toString(36).slice(2)}.json`);
+    const f = await FileSubjectFrontier.open(p, { space: SPACE, principal: P });
+    writeFileSync(outside, JSON.stringify({ v: 1, space: SPACE, principal: P, tip: 9 }));
+    symlinkSync(outside, p);
+    await threw("write:a-link-at-the-record-path-is-refused-before-the-rename",
+      () => f.reset(), /never a symlink/);
+    c("write:the-link-at-the-record-path-survives-the-refused-write", lstatSync(p).isSymbolicLink());
+    c("write:the-refused-writes-target-bytes-are-unchanged", readFileSync(outside, "utf8") === JSON.stringify({ v: 1, space: SPACE, principal: P, tip: 9 }));
+  }
+  {
+    const d = dir();
+    const p = join(d, "subject.json");
+    writeFileSync(p, JSON.stringify({ v: 1, space: SPACE, principal: "local.AAA", tip: 3 }));
+    const f = await FileSubjectFrontier.open(p, { space: SPACE, principal: "local.AAA" });
+    c("parse:the-principal-compare-is-a-byte-compare-exact-spelling-opens", f.tip === 3, f.tip);
+    await threw("parse:the-principal-compare-is-a-byte-compare",
+      () => FileSubjectFrontier.open(p, { space: SPACE, principal: "local.aaa" }), /principal matches/);
   }
   {
     const d = dir();

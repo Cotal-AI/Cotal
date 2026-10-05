@@ -88,13 +88,13 @@ No arguments.
 
 *read incoming messages*
 
-Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is never consumed either: it is named with its sender and size and stays buffered, since delivering it is impossible and clearing it would lose it. In focus mode it also pulls back the channel chatter held since you entered focus.
+Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus.
 
 **Connector variants:** Claude Code exposes the `peek` argument and otherwise reads the whole local inbox, one receivable window per call. OpenCode, Codex, Hermes, and Pi expose no arguments: the call pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only. On every variant the call clears only what that response actually carried.
 
 - **Side-effect:** clears only the messages it returns (nothing at all when peek is true).
 - **Available:** always.
-- One call carries at most a receivable window; what does not fit stays buffered, is named in the reply, and comes back on the next call. OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is what this call returns and clears. In focus mode, normal channel recall is also shown read-only (replay-gated) and is never cleared by the read.
+- One call carries at most a receivable window; what does not fit stays buffered, is named in the reply, and comes back on the next call. A message larger than the window comes back in parts, one per call, and is cleared with its last part. A message with an empty id is tracked as itself, so it is held, named and read in parts like any other. OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is what this call returns and clears. In focus mode, normal channel recall is also shown read-only (replay-gated) and is never cleared by the read; an oversized recall message comes back in parts the same way, and later recall waits behind it until its last part goes out.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -129,6 +129,9 @@ Send a private message to one specific peer, by name (or instance id).
 |---|---|---|---|
 | `to` | string | yes | The peer's name (or instance id). |
 | `text` | string | yes | The message. |
+| `replyTo` | string | no | The id of the peer's message this DM answers. Omit it to answer the peer's oldest unanswered message; when that peer's waiting messages belong to more than one conversation, the DM is refused with their ids. |
+
+On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the status reads `recipient had no roster row at send`. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.
 
 ## `cotal_anycast`
 
@@ -241,12 +244,13 @@ Ask the manager to start a new peer endpoint in your space. It joins the mesh as
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | yes | Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name. |
+| `instance` | string | no | Optional manager instance id for a multi-manager space. Omitted uses class anycast. A pin that cannot be resolved is refused without falling back to another manager. |
 | `role` | string | no | Optional role for the new peer (e.g. worker, reviewer); overrides the persona file's role. A role of `manager` requires the persona to carry capabilities: [spawn]: a seat that presents as a manager but cannot spawn is refused at spawn time. Ask an operator to add the grant to the persona file (a persona you defined with cotal_persona cannot declare it itself). |
 | `agent` | string | no | Optional harness the new peer runs on: the agent/connector type (claude, jcode, opencode, hermes), NOT the persona to spawn (that's `name`). Resolution order: this explicit agent > the persona's agent: pin > the caller's COTAL_DEFAULT_AGENT > the manager's COTAL_DEFAULT_AGENT > the product default (Claude). |
 | `model` | string | no | Optional model override (e.g. opus, sonnet); it wins over the persona file's model:. The spawn fails if the manager does not record this pin. The result names the recorded model; do not treat a spawn as cross-vendor unless that name matches what you requested. |
 | `variant` | string | no | Optional model variant override (connector-defined; for OpenCode, a model variant such as high/max/low). |
 | `launchOptions` | record | no | Optional connector-specific launch options: an opaque key→value map the chosen connector forwards raw to its own host form (claude CLI flags, OpenCode agent config); a connector with no option surface (Hermes) rejects any, and malformed keys are refused. |
-| `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. |
+| `cwd` | string | no | Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. A directory that does not exist on the serving manager's host is refused before launch, with the host named; in a multi-manager space pin the manager with instance. |
 | `prompt` | string | no | Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted. |
 | `events` | boolean | no | Event planes are on by default for connectors that publish one. Pass false to opt out; true only restates the default. |
 
@@ -296,7 +300,7 @@ Report the outcome of a workflow turn assigned to you. Use this only when your c
 
 Usually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{"status":"blocked","note":"<what prevents progress>"}`. To hand the assigned turn to another agent, call `{"status":"handoff","to":"<agent-name>","note":"<handoff context>"}`.
 
-When you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.
+When you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded, and neither can one the run already settled, such as a turn whose deadline elapsed: that refusal names the turn and its deadline. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.
 
 - **Side-effect:** settles one run turn via the manager (done / blocked / handoff).
 - **Available:** always; only meaningful while a run turn is pending on you.

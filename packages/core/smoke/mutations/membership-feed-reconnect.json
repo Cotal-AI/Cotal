@@ -8,7 +8,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
   "why": [
     "The live pre-fix reproduction proves the stale membership-feed cache fails after reconnect; the pinned client aborts that path after the named read failure, so it is not misreported as a mutation kill.",
-    "Four isolated mutations cleanly grade watch rearm, early consumer-identity ownership, closed-epoch cleanup deferral, and permanent-shutdown termination. Direct real-broker cells separately exercise quiet caller stop, predecessor cleanup after terminal self-heal, endpoint ownership during asynchronous cancellation, and rejected-chain recovery; their attempted mutations were removed because they hung, failed before the named cell, or were behaviorally redundant rather than clean named kills.",
+    "Eight isolated mutations cleanly grade watch rearm, early consumer-identity ownership, closed-epoch cleanup deferral, permanent-shutdown termination, and the delivery durable's lease warning. Direct real-broker cells separately exercise quiet caller stop, predecessor cleanup after terminal self-heal, endpoint ownership during asynchronous cancellation, rejected-chain recovery, and the ready, missing, and not-ready delivery lease states; their other attempted mutations were removed because they hung, failed before the named cell, or were behaviorally redundant rather than clean named kills.",
     "The manager-lease mutation restores the rebuild that kept `managerLeaseKv` bound to the drained connection: every renew and re-read after a reconnect then times out, and under the old fail-close that alone ended the manager ten seconds after any reconnect. The two lease cells are the only ones that see it."
   ],
   "mutations": [
@@ -19,7 +19,8 @@
       "replace": "",
       "expectRed": "the membership feed watch stays live across reconnect",
       "cell": "the membership feed watch stays live across reconnect",
-      "note": "The old iterator is retired and the intent never gets a successor, so the post-reconnect membership-rw write produces no callback."
+      "note": "The old iterator is retired and the intent never gets a successor, so the post-reconnect membership-rw write produces no callback.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "public stop/close race forgets consumer identity before fresh cleanup",
@@ -28,7 +29,8 @@
       "replace": "    let pending = info.num_pending;\n",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
       "cell": "public stop concurrent with terminal close resolves after fresh cleanup",
-      "note": "The consumer identity must survive its closed connection so the endpoint-owned public stop can finish only after fresh-epoch deletion."
+      "note": "The consumer identity must survive its closed connection so the endpoint-owned public stop can finish only after fresh-epoch deletion.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "closed epoch delete rejects public stop instead of deferring cleanup",
@@ -37,7 +39,8 @@
       "replace": "          throw err;\n",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
       "cell": "public stop concurrent with terminal close resolves after fresh cleanup",
-      "note": "A closed epoch is deferred cleanup, not deletion success and not a caller-visible stop failure."
+      "note": "A closed epoch is deferred cleanup, not deletion success and not a caller-visible stop failure.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "endpoint shutdown leaves public membership stop pending while broker is down",
@@ -46,7 +49,8 @@
       "replace": "      watch.resolveStop = undefined;\n      watch.rejectStop = undefined;\n",
       "expectRed": "endpoint shutdown while broker is down settles the public membership stop",
       "cell": "endpoint shutdown while broker is down settles the public membership stop",
-      "note": "Permanent endpoint shutdown has no possible fresh cleanup epoch; it must terminate a pending public stop rather than hanging the process."
+      "note": "Permanent endpoint shutdown has no possible fresh cleanup epoch; it must terminate a pending public stop rather than hanging the process.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "the rebuild keeps the manager-lease KV handle bound to the drained connection",
@@ -55,7 +59,48 @@
       "replace": "",
       "expectRed": "the manager lease renews after reconnect",
       "cell": "the manager lease renews after reconnect (managerLeaseKv reopened on the fresh connection)",
-      "note": "The shipped rebuild, restored: every other Plane-3 handle is dropped and this one is not. The renew CASes through a JetStream client whose connection was drained."
+      "note": "The shipped rebuild, restored: every other Plane-3 handle is dropped and this one is not. The renew CASes through a JetStream client whose connection was drained.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "delivery durable bind drops the plane lease read",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const lease = await this.readDeliveryLease(0);\n    const liveDeliveryPlane = lease?.ready === true;\n    if (!liveDeliveryPlane) this.emit(\"warning\", new Error(\n      `delivery durable \"${durable}\" for space \"${this.space}\" bound while the plane this connection reaches has no ready delivery lease, so the durable delivers nothing until a delivery daemon serves this plane. If a daemon serves this space on another plane, reconnect against it, which re-binds the durable there.`,\n    ));\n",
+      "replace": "",
+      "expectRed": "a delivery durable binds and warns when the plane has no ready delivery lease",
+      "cell": "a delivery durable binds and warns when the plane has no ready delivery lease",
+      "note": "Without the liveness read the stale durable binds silently, restoring the reported unnamed empty-inbox behavior.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "delivery durable bind inverts ready lease acceptance",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const liveDeliveryPlane = lease?.ready === true;\n    if (!liveDeliveryPlane) this.emit(\"warning\", new Error(\n",
+      "replace": "    const liveDeliveryPlane = lease?.ready !== true;\n    if (!liveDeliveryPlane) this.emit(\"warning\", new Error(\n",
+      "expectRed": "a quiet delivery durable binds while the plane holds a ready lease",
+      "cell": "a quiet delivery durable binds while the plane holds a ready lease without raising a warning",
+      "note": "A ready live plane is the positive control and must remain the only lease state that binds silently.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "delivery durable bind treats a missing lease row as live",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const liveDeliveryPlane = lease?.ready === true;\n",
+      "replace": "    const liveDeliveryPlane = lease === undefined || lease.ready === true;\n",
+      "expectRed": "a delivery durable binds and warns when the plane has no ready delivery lease",
+      "cell": "a delivery durable binds and warns when the plane has no ready delivery lease",
+      "note": "A missing lease is the stale-plane signal and must not collapse into a healthy quiet plane without a warning.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "watch iterator close drops the caller's onClosed notification",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      watch.onClosed?.(err);\n",
+      "replace": "",
+      "expectRed": "a watch iterator closed under a live connection reaches the caller's closed callback",
+      "cell": "a watch iterator closed under a live connection reaches the caller's closed callback",
+      "note": "Without the onClosed call, only the generic endpoint error event fires and the caller never learns its own watch closed.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }

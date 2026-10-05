@@ -155,6 +155,7 @@ The **sender** of every delivery is a principal (§2), carried as **two adjacent
 | Unicast | `cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>` | 5–6 | §4 unicast |
 | Anycast | `cotal.<space>.svc.<role>.<owner>.<actor>` | 4–5 | §4 anycast |
 | Endpoint rails | `cotal.<space>.ep.<one\|all\|inst\|reply>.…`, `cotal.<space>.ep<c\|e\|f\|j\|r\|t\|w\|s>.…` | see §13.2 | §13 control surface |
+| Plane liveness | `cotal.<space>.live.<plane>.<owner>.<actor>` | 4-5 | §6.1 request/reply |
 | Trace | `cotal.<space>.trace.<instance>` | n/a | reserved |
 
 Token indexing is zero-based on `subject.split(".")`: `cotal` = 0, `<space>` = 1,
@@ -182,7 +183,9 @@ surfacing boundary (§9). Reference implementation: `parseSubject` in
 **Channel tokens.** A channel is dotted; each segment is sanitized. The literal wildcards
 `*` and `>` are preserved only as whole segments for subscription and allow-list patterns;
 `>` is valid only as the final segment. A publish target MUST be concrete, with no `*` or
-`>`; a subscription MAY be wildcard.
+`>`; a subscription MAY be wildcard. A channel is at most 4096 characters in total
+(`MAX_CHANNEL_LENGTH`): every grant line a channel mints rides the minted credential's
+CONNECT line (§13.9), so an unbounded channel is an unbounded connect.
 
 **Reserved prefixes.** Application messages MUST NOT use subjects beginning with `$JS.`,
 `$KV.`, `$SYS.`, `$O.`, or `_INBOX.`. (`$O.` is the Object Store data/meta subject prefix
@@ -343,6 +346,9 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `condition` | `PresenceCondition` | MAY | harness-reported structured condition. Missing means nothing was reported. A connector relays the harness signal and MUST NOT infer a condition itself |
 | `environment` | string | MAY | opaque reference whose meaning belongs to the provider that issued it. Core MUST NOT parse it |
 | `activity` | string | MAY | freeform current activity |
+| `statusSince` | number | MAY | epoch ms when the instance entered its current `status` and `activity`. A change to either moves it; a heartbeat or a repeated report does not, so `ts` dates liveness and `statusSince` dates the report. An offline record MUST NOT carry it: an observer that derives `offline` from a stale `ts` does not know when the peer left |
+| `activitySince` | number | MAY | epoch ms when the current `activity` was set. A status change or a heartbeat does not move it, so an activity left behind while the status flips every turn still reads as old |
+| `activeAt` | number | MAY | epoch ms of the last work progress the harness reported, such as a token or a tool call. Missing means the connector reports none. `ts` is the heartbeat, so a live instance whose turn stopped advancing keeps a fresh `ts` and an old `activeAt`. A connector relays the harness's events and carries the value on its next heartbeat |
 | `attention` | `AttentionMode` | MAY | global attention mode: `open` \| `dnd` \| `focus`. Advisory observability; `open`/absent ⇒ receives everything. Reset: `open` published on `SessionStart`, removed on the offline sweep |
 | `lifecycleUid` | string | MUST in auth mode from v0.4 | the current managed-lifecycle UID (§13.1); distinguishes a live instance from a same-name successor. Advisory for display; authority checks use the trusted lifecycle mapping, not presence |
 | `channelModes` | `Record<string, ChannelMode>` | MAY | per-channel attention overrides (`ChannelMode` = `quiet` \| `muted`), keyed by concrete channel name. Advisory, **not** access control (the broker still authorises and delivers); a receive-side preference, reset on restart |
@@ -353,13 +359,13 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | Field | Type | Req | Notes |
 | --- | --- | --- | --- |
 | `id` | string | MUST | instance id (§2) |
-| `name` | string | MUST | display name |
+| `name` | string | MUST | display name; at most 128 characters (`MAX_NAME_LENGTH`, refused at the shared validator; an unbounded name rides the CONNECT line until the broker drops it silently, §13.9) |
 | `kind` | `agent` or `endpoint` | MUST | participation class |
 | `role` | string | MAY | service role |
 | `description` | string | MAY | one-line summary |
 | `tags` | string[] | MAY | capability tags |
 | `skills` | `AgentSkill[]` | MAY | `{ id, name, description? }` |
-| `meta` | object | MAY | free-form display metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`. All are advisory only |
+| `meta` | object | MAY | free-form display metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `provider` (effective provider serving the model, connector-reported), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, and `sessionId`. All are advisory only |
 | `protocolVersion` | string | MUST from v0.4 | wire version spoken (§11); `"0.4"` for this revision. Advertisement is the marker at the v0.4 reachability boundary (§13.11): a participant that omits it is pre-0.4 (omission means the pre-0.4 line, where the field was optional) and MUST NOT be addressed on the `ep` rails. A change signal, not negotiation |
 
 An instance MUST refresh its own presence entry on the heartbeat interval, default 2000 ms.
@@ -370,8 +376,11 @@ Live clients MUST NOT heartbeat as `offline`. A graceful disconnect MAY publish 
 `offline` presence record. Observers MUST also derive `offline` from stale timestamps and
 from KV delete/purge events. Offline peers MAY remain in local rosters for observability.
 An instance MUST write only its own presence key, and the key MUST equal `card.id`.
-Readers MUST drop a record whose `card.id` differs from its KV key and SHOULD report the
-rejection on their recoverable diagnostic path.
+Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.name` or
+`status` does not have the type given above, or whose `ts` is not a finite number, and SHOULD
+report the rejection on their recoverable diagnostic path. A reader that kept a record whose
+`ts` is missing or text such as `"nope"` could not age it past the liveness window, so it would
+show its peer live after the key expired.
 
 `PresenceCondition`:
 
@@ -381,6 +390,92 @@ rejection on their recoverable diagnostic path.
 | `source` | string | MAY | harness-native value, relayed verbatim |
 | `message` | string | MAY | free text from the harness |
 | `since` | number | MAY | epoch ms when the condition began |
+
+### 6.1 Plane liveness
+
+A credentialed peer MAY ask whether the manager plane or the delivery plane has a bound
+responder in its space. The question is presence only. It does not read either lease bucket,
+and the peer does not need to own the plane it asks about.
+
+**Planes.** The set of planes is closed: `manager` and `delivery`. A client MUST refuse any
+other plane before it publishes anything.
+
+**Subjects.**
+
+| Purpose | Subject |
+| --- | --- |
+| Request | `cotal.<space>.live.<plane>.<owner>.<actor>` |
+| Reply | `cotal.<space>.live.<plane>.<owner>.<actor>.reply.<nonce>` |
+| Responder serve filter | `cotal.<space>.live.<plane>.*.*`, queue group `live.<plane>` |
+| Responder reply grant | `cotal.<space>.live.<plane>.*.*.reply.>` |
+
+`<owner>.<actor>` is the asking principal (§2). The plane rides the subject so a credential can
+be scoped to one plane by the broker. A `live` subject is not a delivery: `parseSubject`
+recovers no sender from it, and a reader MUST NOT treat it as one.
+
+**Request.** The body is empty. The caller names a reply subject under its own request subject,
+`<request>.reply.<nonce>`, with a fresh nonce per probe. A responder MUST drop, without
+answering, any request whose reply target is absent or is not under `<request subject>.reply.`.
+It SHOULD report that drop on its recoverable diagnostic path. It MUST NOT report it on a
+channel that can end the process, and it keeps serving.
+
+**Reply.** `LivenessAnswer`, JSON:
+
+| Field | Type | Req | Notes |
+| --- | --- | --- | --- |
+| `plane` | `manager` \| `delivery` | MUST | the plane asked about; a caller MUST reject a reply whose `plane` differs from the plane it asked |
+| `responder` | `ResponderState` | MUST | `bound` \| `unbound` \| `stale` \| `unknown` |
+| `instance` | string | MAY | an opaque token naming the responder that answered. Non-empty when present |
+
+A responder MUST put nothing else in the reply. In particular it carries no lease holder, pid,
+workspace path, instance id, runtime or roster.
+
+`instance` is minted fresh each time a responder binds and is derived from nothing. It is not
+the endpoint's principal, the lease row's `instanceId`, a pid, a host or a path. It lets a
+caller that probes more than once tell two responders apart from one responder whose state
+changed. The queue group hands one probe to one member, so a single answer samples one
+responder and cannot report a split across instances.
+
+**Responder verdicts.** A responder grades only itself:
+
+- manager: `bound` while its v0.4 service endpoint (§13) is serving, otherwise `unbound`. A
+  closed service connection is not serving, including while the manager re-dials it. A
+  disconnected one is not serving either, including while the client reconnects it.
+- delivery: from its own shard lease row. Absent or not ready is `unbound`. A ready row held by
+  a different instance than the responder is `stale`. A ready row it holds is `bound`.
+- A responder that cannot determine its state answers `unknown`.
+
+**Rebinding.** A responder MUST bind its serve filter again on every broker connection that
+replaces the one it bound on. A filter left on a closed connection gets the broker's
+no-responders answer, which a caller grades `unbound` for a plane that is still served. Each
+new bind mints a new `instance`.
+
+**Caller grading.** The caller grades the outcome of asking:
+
+| Outcome | `responder` | `instance` |
+| --- | --- | --- |
+| a reply that parses as above | the reply's `responder` | the reply's `instance`, if any |
+| the broker's no-responders status (503) | `unbound` | absent |
+| timeout, permission refusal, transport failure | `unknown` | absent |
+| a reply that does not parse | `unknown` | absent |
+
+Only the broker's no-responders answer yields `unbound` without a reply. Every other failure
+to get a readable reply is `unknown`. A caller MUST NOT report `unknown` as either health
+state. A caller using the NATS binding MUST request without the muxed inbox, so a
+no-responders status reaches it rather than surfacing as a timeout.
+
+**Grants.** An agent may publish the request subject for each plane under its own principal
+and subscribe `<request subject>.>` for its replies. It holds neither serve filter, so it
+cannot answer for a plane. The `delivery` profile holds the delivery plane's serve filter and
+reply grant. The `supervisor` profile holds the manager plane's pair, and the remote-manager
+profile holds them only for its supervisor actor (`manager_<instanceId>`). No responder can
+publish a request subject, because its reply grant stops at the `.reply.` leaf. Appendix B
+lists the agent rows.
+
+Reference implementation: `livenessSubject`, `livenessServeFilter` and `livenessReplyGrant`
+in `packages/core/src/subjects.ts`; `LivenessAnswer`, `parseLivenessAnswer` and
+`responderFromProbe` in `packages/core/src/liveness.ts`; `CotalEndpoint.serveLiveness`,
+`serveDeliveryLiveness` and `probeLiveness` in `packages/core/src/endpoint.ts`.
 
 ---
 
@@ -447,6 +542,10 @@ Replay / catch-up on join:
 5. Deduplicate by `id` across the live tail, the backfill, and (on `durable` channels) the durable
    backstop, so a message surfaces once. Receiver deduplication MUST NOT coalesce copies solely
    because `id` is the empty string (§4).
+
+   Informative: an implementation preserving an incarnation across a local restart may start step
+   3's read from the sequence that incarnation had reached, rather than from the retained window's
+   start; a fresh joiner reads the window.
 
 `replay=false` is noise control, not confidentiality. CHAT history is readable only within an
 instance's read ACL (`allowSubscribe`, §9); confidential content MUST use DM or anycast.
@@ -555,7 +654,8 @@ differently as long as the §4 guarantee and the §9 checks hold.
 
 The absence of a usable receiver dedup key does not relax acknowledgement ownership: a
 JetStream-consumed copy with `id: ""` that is surfaced or handled MUST be acknowledged
-independently.
+independently. The reference fan-out and transfer publishes carry no `Nats-Msg-Id` for an
+`id: ""` message, so id-less messages are not publish-deduplicated on the durable plane.
 
 Publishers MUST publish channel, unicast, and anycast delivery messages through JetStream and set
 the JetStream message id to `CotalMessage.id` (`Nats-Msg-Id` on the wire). A JetStream publish is
@@ -773,9 +873,24 @@ every manager request to one exact live registered instance and is valid with no
 exchange selects from read-only observations of manager issuance gates and service registrations.
 It refuses zero or ambiguous candidates and refuses an unavailable owner-specific remote manager
 rather than falling through to a co-located manager. An explicit selector must name a live candidate.
-On a public exchange face, `channel-writer`, `channel-purger`, and `manager-caller` MAY be issued.
-`admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A managed-agent
-secret exchange MUST refuse every view other than `manager-caller`.
+The `session-caller` view carries a required `act.session` claim `{endpoint, sessionId, epoch, exp}`
+(exp in unix seconds) and is valid with no other view; `act.session` is valid only with it. It needs no
+ledger scope: the redeemed §13.6 session grant is the authority. The human exchange accepts it only
+together with a `sessionGrant` body (each without the other is a 400), and the trusted auth path MUST
+leader-read the `session.<sessionId>` row from the dedicated sessions store before it signs. It MUST
+refuse unless the row is `active`, `row.grantSig` equals the presented grant's signature, the row's
+holder principal and lifecycle are the bearer's owner, actor and `lifecycleUid`, the endpoint and
+serving epoch equal the presented ones, `row.exp` is in the future, and the serving manager's issuance
+gate is a candidate for this owner with a process epoch equal to the row's. The stamped `exp` is the
+row's, and the bearer TTL is bounded by it. The callout MUST re-run the same check, without the
+signature comparison, against a fresh read at connect. It mints the `session-caller` profile for that
+one session and binds the minted connection's expiry to the grant's, which is the static arm's
+expiry, rather than the bearer's. The auth service's host-issuer connection performs both reads and
+holds only `STREAM.INFO` and the leader-served `STREAM.MSG.GET` on `KV_cotal_sessions_<space>`: no
+Direct Get and no write on that store.
+On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, and `session-caller`
+MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
+managed-agent secret exchange MUST refuse every view other than `manager-caller`.
 
 ---
 
@@ -1167,10 +1282,11 @@ with the same row schema, mint protocol, gate discipline, and never-delete rules
 `cred.`/`gate.`. An interrupted endpoint registration repair MAY journal verified evictions
 under the disjoint cursor key `eprepair.<endpoint>.<instanceId>`. A cursor MUST bind the exact
 registration `opId`, the observed frozen-gate KV revision, and the sorted distinct holder set.
-Each holder is appended durably only after its eviction verifies and before the next holder is
-attempted. A retry MUST repeat the freeze-holder liveness precondition, MAY skip only holders in a
-cursor whose complete binding still matches, MUST restart from empty progress on any mismatch, and
-MUST reopen only after every current holder verifies. Cleanup occurs after reopen; a cursor that
+A holder is appended durably only after its eviction verifies, and the holders one eviction sweep
+verified are appended before the next sweep is attempted. A retry MUST repeat the freeze-holder
+liveness precondition, MAY skip only holders in a cursor whose complete binding still matches, MUST
+restart from empty progress on any mismatch, and MUST reopen only after every current holder
+verifies. Cleanup occurs after reopen; a cursor that
 cannot be deleted cannot authorize a later freeze because that freeze has a different gate revision.
 **`holderPrincipal` is ALWAYS a CONNZ-attributable `<owner>.<actor>` in
 BOTH families** (the barrier KICKs it; an endpoint NAME is not attributable and never sits
@@ -1221,6 +1337,43 @@ deregistration when its retained credential is not healthy. A restart MUST drive
 through the host operation before advancing its epoch. A registration blocked by a foreign frozen
 manager governance slot MAY request guarded host reconciliation and retry exactly once.
 
+The typed protocol also carries two host-owned MANAGED-AGENT operations,
+`manager-managed-agent-enrollment` and `manager-managed-agent-prepare-retirement`. Both name the
+authenticated owner's own managed agent and both require the caller's current `supervise` scope;
+`spawn` and `admin` never imply it. Both MUST be authorized against the caller instance's CURRENT
+open manager gate: the gate's principal MUST equal the server-derived serve principal, its process
+epoch MUST equal the request's `serveEpoch`, and the request's registration proof MUST match the
+proof the host issued for that registration revision and epoch. An enrollment request MUST carry the
+SHA-256 digest of the agent's standing actor token and never the token itself, and MUST NOT carry a
+lifecycle UID: the HOST selects it, because only the host can observe the retirement tombstones that
+make a UID permanently unusable. A prepare-retirement request MUST name a target owner equal to the
+authenticated owner, and its `opId` MUST equal `managedRetirementOpId(target.lifecycleUid)`,
+recomputed by the host rather than trusted, so one lifecycle never carries two terminal operations.
+
+These two operations mutate host-owned storage, so an implementation that owns no such storage MUST
+refuse them with `unimplemented` rather than answering a manager-lifecycle phase for them. A host
+platform that owns the writers MAY intercept them on its own authenticated route and obtain the
+decision alone from the auth service's loopback door
+`POST /manager-service-authority/verify-enrollment`, which carries the same loopback guards as the
+managed-retire door (POST only, no `Origin`, JSON, the per-start capability, a closed
+`{ owner, request }` body). That door MUST derive the caller's capability scope from its own ledger
+and MUST NOT accept a scope from the caller. It decides only: it mints nothing, writes nothing, and
+returns no secret.
+
+Two further host-owned kinds address the hosted runtime of an already-enrolled managed agent:
+`manager-managed-agent-runtime-create` and `manager-managed-agent-runtime-status`. Each carries the
+managed-agent envelope plus exactly `target: { owner, actor, lifecycleUid }`. Both schemas are closed:
+an unknown top-level or target field, including `providerRef`, `handle`, or `name`, MUST be refused as
+`bad-request` with no effect. There are no participant stop, adopt, or probe kinds. Both MUST be
+authorized with the same gate, epoch, and proof checks as enrollment, with a target owner equal to the
+authenticated owner, and with `supervise` read from the host's own ledger row for the manager actor.
+The decision yields only the verified owner, instance id, manager actor, and target. A status decision
+authorizes no effect. An implementation without host intent storage MUST refuse both with
+`unimplemented`. The answer carries `state` (`reserved`, `creating`, `bound`, `create-unknown`,
+`closing`, or `closed`), `readiness` (`ready`, `bound-not-ready`, or `none`), and an optional
+`retirementPhase`. An enrollment result MAY carry `runtimeIntent: { state: "reserved" }`, which is
+display-only and MUST NOT be treated as authority.
+
 The host, not the participant, issues every data-account credential requiring the account signing
 key. The only remote path is the lifecycle- and instance-bound typed protocol of §13.6; a broader
 bearer or a generic credential-mint endpoint is non-conformant. Its gate is frozen before staged
@@ -1231,6 +1384,54 @@ that its current owner equals the manager-service owner and the current manager 
 same-owner validation seam, not delegated signer authority. Revocation freezes the one family,
 rejects fresh material and new connections, and proceeds through the bounded renewal/verified
 revocation policy below. It MUST NOT silently substitute static or local authority.
+
+**Platform control authority (service view).** `platform-control` is a second CLOSED,
+server-authored manager authority view, beside and separate from `manager-service`. It lets a host
+platform run one control manager per assigned data account without any human's session. It is not a
+profile name, not an exchange view, and not a generic host profile: the public exchange, the
+loopback exchange, and every managed-agent secret exchange MUST refuse it as a view. Its holder is a
+platform principal. The holder's owner is a platform owner token, `p_` followed by 26 base32-lower
+characters, which the host derives from the space's owner secret, the space, and the assigned
+data-account public key. This extends the §2 owner-token format for this view's principals and
+their same-owner descendants only; everywhere else §2 stands. A platform owner token is disjoint
+from every `u_` derived owner, from `local`, from nkeys, and from the §13.2 mode words. The host
+MUST NOT derive it from, or bind it to, an IdP subject, and MUST NOT name a `u_` owner on this path.
+No human is authenticated, and no ledger `supervise` scope is read or synthesized.
+
+The view exists only while the host's current platform-control assignment names it. An assignment
+is one row `{ space, accountPublicKey, instanceId, lifecycleUid, predecessorInstanceId?,
+assignmentRevision, state }` that the platform backend alone writes. An account has at most one
+current row, so it has at most one platform control instance. The host MUST read it fresh for every
+request under this view
+and MUST refuse, writing nothing, when it is absent or `revoked`, or when it disagrees with the
+request's account, instance id, lifecycle UID, or assignment revision. A failed read MUST refuse
+rather than reuse an earlier answer. The instance id and lifecycle UID are the assignment's, not
+the caller's choice. They stay the same across the instance's restarts: a restart re-registers
+through the same-principal registration barrier at an advanced process epoch and is never a second
+instance. The actors are the same fixed functions of the instance id. When the assignment names a
+`predecessorInstanceId`, the host MUST refuse `prepare` and `activate` with `failed-precondition`,
+writing nothing, while that instance has a current `svc.manager` registration or a `frozen`
+issuance gate. The host only reads that instance's rows. It MUST NOT probe, freeze, evict, revoke,
+reopen, or deregister them. Apart from the
+holder's owner and this authorization source, the view is the `manager-service` family: the same
+`svc.manager.<instanceId>`, `epgate.manager.<instanceId>`, and
+`epcred.manager.<instanceId>.<credentialId>` rows, ledgered and gated as this section requires, with
+`holderPrincipal` the platform owner plus the fixed actor.
+
+The view MUST NOT reach an instance whose issuance gate names another principal, including an
+instance a signed-in human registered under `manager-service` and a manager registered under the
+`local` owner. There is no force or takeover path between the two views. Such an instance retires
+through its own owner's path before a platform instance may register. A re-registration never
+changes an instance's owner, so the view never binds to an existing instance registered under
+another owner. It registers its own assigned instance once that instance's predecessor has left
+through the predecessor's own path. Both registration proofs bind the owner, so a `manager-service` proof never
+validates under this view and a `platform-control` proof never validates under `manager-service`.
+
+A manager holding this view MUST run with no local signing trust and no local or custodial runtime
+(pooled control). The view confers no space signer, callout signer, owner secret, provisioner
+credential, or launch authority. It provisions, enrolls, retires, validates, and authorizes only
+same-owner descendants, whose owner is its own platform owner token, and grants nothing over a
+human owner's agents.
 
 **A read is never a fence; only a CAS write is.** JetStream `DIRECT.GET` may be served by a
 follower or mirror and gives NO read-your-writes guarantee (a mint that *reads* the gate can
@@ -1357,7 +1558,12 @@ free the alias, and a successor activates only with a freshly reserved UID. `ret
 the head therefore ASSERTS completed cleanup: replacing a retired predecessor needs no
 further proof, because nothing reaches `retired` without the barrier. Every boundary of
 this sequence is crash-resumable through the durable `op` intent, and only the same
-operation resumes it. Chat/DM/presence subjects stay
+operation resumes it. A **managed** lifecycle's terminal retirement has exactly one operation
+identity, `managedRetirementOpId(uid)`, whichever entry point requests it: the participant
+manager's `retire-lifecycle` rail request (§13.2) or the host's loopback managed-retire door, which
+finishes the retirement when that manager is gone and requires the managed grant to be revoked at
+that UID first. Both entry points create or resume the same durable operation, and one process
+never executes it twice concurrently. Chat/DM/presence subjects stay
 alias-keyed, so without the revoke-and-verified-evict step a still-connected stale process
 could keep speaking as the recycled alias. Where the deployment cannot revoke the credential
 or cannot verify eviction, alias reuse is **forbidden**: a same-name respawn fails loud.
@@ -1407,6 +1613,7 @@ per mode, zero to three pinned target tokens between the command and the caller:
 | Class, `owner`/`any` | `cotal.<space>.ep.one.<endpoint>.<command>.<authz>.<tOwner>.<owner>.<actor>.<uid>.<nonce>` | 12 |
 | Class, `child`/`ledger` | `cotal.<space>.ep.one.<endpoint>.<command>.<authz>.<tOwner>.<owner>.<actor>.<uid>.<nonce>` | 12 |
 | Class, `handle` | `cotal.<space>.ep.one.<endpoint>.<command>.handle.<tOwner>.<tActor>.<tUid>.<owner>.<actor>.<uid>.<nonce>` | 14 |
+| Class, `exact` | `cotal.<space>.ep.one.<endpoint>.<command>.exact.<tOwner>.<tActor>.<tUid>.<owner>.<actor>.<uid>.<nonce>` | 14 |
 | Scatter | as class forms with mode token `all` | 10-14 |
 | Instance | `cotal.<space>.ep.inst.<endpoint>.<instanceId>.<command>[.<authz>[.<target tokens per mode>]].<owner>.<actor>.<uid>.<nonce>` | 11-15 |
 | Reply | `cotal.<space>.ep.reply.<endpoint>.<instanceId>.<epoch>.<owner>.<actor>.<uid>.<nonce>` | 11 |
@@ -1470,7 +1677,7 @@ binding constraint; minted-credential size is, §13.9.)
 
 **The authorization-mode token** (`<authz>`) makes the authority gradient explicit and
 broker-enforced where it is statically expressible, and honestly validator-primary where it is
-not. Six modes:
+not. Seven modes:
 
 - `self`, the target IS the caller: the form carries **no target tokens and no body
   `target`** (a supplied one is `target-mismatch`, never ignored); the endpoint derives the
@@ -1494,6 +1701,15 @@ not. Six modes:
   capability, never wildcarded. Broker-confined on the full target triple; the validator
   re-checks only currency; a subject `<tUid>` that no longer matches the current mapping is
   `expired`.
+- `exact`, **privileged exact incarnation, minted only through its owning profile** (Cotal
+  #399): the target block is `exact.<tOwner>.<tActor>.<tUid>` (THREE target tokens), the same
+  literal-triple shape `handle` carries, minus the redemption promise. There is no issuer-signed
+  artifact, no redemption step, and no `sourceChain`; the row is built directly by the profile
+  that owns this command under root authority for one target it names, never a standing
+  capability, never wildcarded. Broker-confined on the full target triple, exactly as `handle`;
+  the validator re-checks only currency, and a subject `<tUid>` that no longer matches the
+  current mapping is `expired`. A generic reader of this mode infers precisely a privileged,
+  grant-pinned exact triple with a current-mapping check, and nothing more.
 - `child`, static-mesh own-child (`spawner == caller`): a **distinct trusted-validator form**.
   The grant means "may ask this validator", not "already authorized"; the handler MUST
   fresh-check the immutable spawner relation against durable state and fail closed. Its
@@ -1504,7 +1720,7 @@ not. Six modes:
   Its grants pin literal `<tOwner>` values named at mint; a wildcard target owner in `ledger`
   mode is mintable only for operator/admin profiles.
 
-`any`, `child`, `ledger`, and `handle` are never wildcard-reachable from a `self`/`owner`
+`any`, `child`, `ledger`, `handle`, and `exact` are never wildcard-reachable from a `self`/`owner`
 grant (distinct token ⇒ distinct subject ⇒ distinct grant row). A handler MUST resolve the target (the
 revision-pinned `(alias, lifecycleUid)` mapping, §13.1) immediately before effect and reject
 any request whose body target disagrees with the subject target tokens (`target-mismatch`) or
@@ -2247,6 +2463,49 @@ family expires or is revoked, the host's verified revocation path closes it; a l
 requires a new successful prepare/activate operation. Same-owner descendant provisioning is
 host-validated at every request, and loss of that validation also refuses a new start or restart.
 
+**Platform control registration.** A platform-run control manager registers, activates, renews,
+and retires through the same typed `prepare → activate → renew` protocol and operations as the
+remote manager service above: `session`, `retire`, `renewStandingBundle`, `renewRunDriver`, the
+host-owned maintenance operations, retained-agent validation, the goal-index scan, admin
+authorization, and run admission and attempt. Each request rides inside one closed
+`platform-control-authority` envelope that adds only the space, the assigned account, and the
+assignment revision. The envelope and every inner request are closed schemas. The envelope carries
+no profile name, permission set, subject, lifetime, claim, or identity assertion. An inner request
+keeps its existing operation-specific coordinates, such as the `session` operation's requested
+`exp`, which the host caps at its own bound, and the run admission's served `run.subject`, which
+the host re-parses and checks against the caller's issued ceiling. The host validates each one as it
+does under `manager-service`. No field of either selects a signing subject, permission set,
+profile, claim, or a credential lifetime past the host's bound, and an unknown kind or field MUST
+be refused as `bad-request` with no effect. The managed-agent enrollment, retirement-preparation, and
+runtime kinds are not carried; a host without its own storage for them MUST refuse them as
+`unimplemented`. The door is a typed in-process operation of the host's authority context. It
+exists only where the host supplies its assignment source, and no listener serves it. It needs no
+exchange capability: the host MUST NOT hand its loopback capability or account signer to a control
+manager, and a host that runs the control manager in another process carries the closed envelope
+over its own caller-bound channel. A request carrying a human IdP token MUST be refused. It is not a
+generic credential-mint surface and adds no daemon, listener, or protocol.
+
+Host-owned maintenance is narrower under this view than under `manager-service`. Under
+`platform-control`, a maintenance request's `targetInstanceId` MUST equal the assigned instance id
+for both `evict-family-principal` and `reconcile-registration`, and the host MUST observe that the
+target gate's principal is the platform owner plus that instance's fixed serve actor. Both checks
+run after the assignment check and before any liveness probe, revocation, eviction, or reopen. A
+failure is `permission-denied` with no effect. A foreign slot holder therefore blocks platform
+registration with the existing registration refusal, and it is repaired only through its own
+owner's `manager-service` maintenance or the host operator's guarded gate repair, neither of which
+this view reaches. `manager-service` maintenance, including its reconciliation of a foreign slot
+holder, is unchanged.
+
+Renewal and fencing are the remote manager service's, unchanged. `renewStandingBundle` returns the
+closed five-credential family for the same caller-held nkeys and the assigned account only when the
+current gate is open, its principal is the platform owner plus the fixed serve actor, its process
+epoch equals the request's, and the host-keyed current registration proof matches. A stale epoch
+is `conflict`. A revoked or advanced assignment refuses the next request, renewal included, so
+revocation never waits on a person and renewal never authenticates one. The remote manager
+service's degraded-state and fail-closed renewal rules apply with the assignment in place of the
+login and ledger scope. A start after revocation or expiry requires a fresh `prepare` and
+`activate` under a current assignment.
+
 **Virtual endpoints.** An endpoint MAY be virtual: registered (`spec.activation = on-demand`)
 with no live instance. A virtual endpoint's commands MUST be journal-class: the buffered
 ingress path is the ordinary submission plane (`epj` is durable and needs no live
@@ -2637,7 +2896,7 @@ unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, `obl
 | `govern` | `govern.<endpoint>`; the endpoint's **governance head**: a **single unsplit key** (NOT `.spec`/`.status`-split), value = the endpoint's MONOTONIC binding map, command to governed URN set, the NORMATIVE **admission-policy selector** `{ enforcedPolicyKey, enforcedPolicyRevision, pendingPolicyKey?, pendingPolicyRevision? }` (§13.6: `enforcedPolicyKey` is the exact records key of the immutable `policy` record currently governing admission and `enforcedPolicyRevision` its store revision, so any implementer selects the endpoint-wide enforced policy WITHOUT per-instance guesswork; a mutation stages `pendingPolicy…` and promotes it into `enforcedPolicy…` only after the endpoint's obligation drain, so the selector alone decides which revision governs during the drain window), plus whatever internal serialization state the provisioner's registration CAS needs (that state is non-normative: a second implementer may linearize registration with a different slot shape and conform, provided every registration contends on this head under its frozen gate through spec publication, the policy selector fields carry the meaning above, and the external guarantees hold). One of those external guarantees is LIVENESS of the linearization itself, and it is normative however the slot is shaped: an in-flight registration that stops before its spec publication MUST NOT block the endpoint's registrations permanently. Whatever state a registration holds on this head, an implementation MUST be able to decide that state ABANDONED from durable facts rather than from a liveness probe, and a later registration MUST then be able to take it. The reference implementation decides it by comparing the held state's recorded gate generation against the holder's live issuance gate: a gate that has reopened past it proves the hold can never complete, since completion requires that same generation still frozen. An implementation that cannot make that determination MUST refuse rather than take the hold, because an in-flight registration and an abandoned one are otherwise indistinguishable, and taking a live one would put two registrations through the linearization point at once. Enforcing the governed-attachment no-strip/no-downgrade mandate (Traits, below) is a HISTORY-bearing, ENDPOINT-WIDE property: a fresh instance, a remove-then-re-add, or a concurrent registration must not launder a governed binding away, so this head is also the endpoint's **registration linearization point**. Writer: the provisioner registration path ONLY (§13.9); NEVER-DELETED, per the `lifecycle`-head discipline |
 
 | `run` | `run.<endpoint>.<runId>`; a **workflow run's** last-value-wins state beside its append-only step journal (§14). `.spec`/`.status`-split, and the split is load-bearing: the spec is what the run IS, decided once at start and never rewritten (`{ v: 1, run, pins, createdAt }`, the resolved PIN SET of §14.3), the status is what it is DOING (`{ v: 1, observedSpecRevision, state, holder, epoch, fencingToken, journalHigh, at }`), so a lease renewal can never rewrite the pins. `<runId>` is an id token minted by the DRIVER, never caller-supplied and **never reused**: a run is never re-run under its own id (that is a fork, and a fork takes a new id), so a deleted `run` key staying closed is correct and no generation token is owed. A fork's child is a new run under a new id and this revision records no lineage on it (§14.3); a later revision that adds a parent field puts it on the SPEC half and never the status half, because parentage is decided at creation and a status-half lineage could name a different parent after a takeover. Writer: the run driver's commit path ONLY (§13.9) |
-| `answer` | `answer.<endpoint>.<token>.<answerId>`; a checkpoint's ANSWER payload beside its one-use settle fact (§13.6, `answerId`/`settledAnswerId`): a **single unsplit key**, create-only, never updated and never deleted, value `{ v: 1, token, answerId, value?, artifact?, by, at }`. **Keyed per answer rather than per presenter because a workflow checkpoint's holder is the run driver and every resolver reaches the checkpoint through it, so every presenter is the same principal**: a presenter-keyed slot collapses to one, two racing resolvers overwrite it, and the settlement then selects whichever answer was written last rather than the one that won. `<answerId>` is derived from the answer's own content (§14.5), so a retry after a crash lands on its own record with its own bytes. Writer: the run driver's commit path ONLY (§13.9) |
+| `answer` | `answer.<endpoint>.<token>.<answerId>`; a checkpoint's ANSWER payload beside its one-use settle fact (§13.6, `answerId`/`settledAnswerId`): a **single unsplit key**, create-only, never updated and never deleted, value `{ v: 1, token, answerId, value?, artifact?, by, at, supersedes? }` (`supersedes` only on an amendment, §14.5). **Keyed per answer rather than per presenter because a workflow checkpoint's holder is the run driver and every resolver reaches the checkpoint through it, so every presenter is the same principal**: a presenter-keyed slot collapses to one, two racing resolvers overwrite it, and the settlement then selects whichever answer was written last rather than the one that won. `<answerId>` is derived from the answer's own content (§14.5), so a retry after a crash lands on its own record with its own bytes; an amendment's is minted fresh per filing (§14.5). Writer: the run driver's commit path ONLY (§13.9) |
 | `notice` | `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>`; one bounded decision a workflow told one agent (`notify`, [`spec/cotal-lang.md`](spec/cotal-lang.md) §6.8), filed onto the run and rendered ahead of that agent's next turn, never a channel message. `.spec`/`.status`-split: the spec is the notice (`{ v: 1, run, step, addressee, fact, at }`) and is create-only, the status is its consumption (`{ v: 1, consumedAt, by, observedSpecRevision }`). **`<addresseeId>` is a digest of the agent's name and never the name, because an agent name is dotted and a dot is the key separator**: a raw name re-tokenizes the key into a key of another shape, and mangling it destroys the identity being keyed on; a reader holding the handle re-derives the same token (§14.5), so per-addressee enumeration stays one prefix scan. `<noticeId>` is derived from the step's request id and the addressee, so a `notify` re-run after a crash lands on the same records. Writer: the run driver's commit path ONLY (§13.9) |
 | `migration` | `migration.<endpoint>.<runId>.<migrationId>`; one run's move onto edited source ([`spec/cotal-lang.md`](spec/cotal-lang.md) §11.2): what the divergence-and-orphan check found, which refusals a person overrode, and who they were. `.spec`/`.status`-split: the spec is the REPORT (`{ v: 1, run, fromHash?, toHash, at, consumedThrough, orphans[], overrides[], actor }`) and is create-only, the status is the APPLICATION (`{ v: 1, appliedAt, by, observedSpecRevision }`) and names the driver that advanced the run. Its own kind because it is neither half of the run record: a migration is append-only history with an actor on it, and a run can migrate more than once, so the status half would let the second erase the first and the spec half cannot be written twice. **`<migrationId>` is a digest of the report's own content and never a counter**, because a migration is decided by a dry walk a crash can force to be re-run, so the same decision must land on the same record rather than filing a second one, and a counter would need a second arbiter for a fact the content already determines (§14.5). **The application is create-only for the same reason the notice's consumption is**: two drivers racing to advance one run both find no status and both write, and the store decides which one moved it. Writer: the run driver's commit path ONLY (§13.9) |
 
@@ -2733,7 +2992,10 @@ clusterDigests[], protocol: { v: 1 | 2 }, activation? }`, status = `{ epoch, sta
 observedSpecRevision, … }` (writer table §13.9). The spec key's **store revision is the
 instance's `registrationRevision`**, the value scatter freezes (§13.5): it advances only
 when the mediated registration path writes the spec key, so an advance during a scatter is
-exactly a re-registration. `describe` is a reserved untargeted
+exactly a re-registration. The `processEpoch` of the instance's issuance gate (§13.1) is 0 after
+the first registration of its `instanceId`, and each later registration of it commits the previous
+epoch plus one. Epoch 0 is open and serving like any later epoch, and a consumer or sweeper MUST NOT
+treat it as absent or not ready. `describe` is a reserved untargeted
 ephemeral command every endpoint MUST serve, returning the descriptor with clusters inline or
 by digest. **Authorization-scoped answers use a trusted authorization source only**: the
 answer is intersected against a fresh view of the caller's authority obtained from the
@@ -2793,7 +3055,12 @@ field exists to stop, so it refuses the document instead.
   declared horizon. Exactly-once is bounded honestly: delivery is at-least-once; Cotal
   guarantees idempotent submission/fact recording and fenced commits of Cotal-owned state; an
   external side effect is exactly-once only when the external API honors the propagated
-  idempotency key or fencing token, else the contract documents at-least-once effects.
+  idempotency key or fencing token, else the contract documents at-least-once effects. A
+  workflow step inside a `once` scope (`spec/cotal-lang.md` §7.8) is dispatched at most once per
+  step key whatever the far side honors, a dispatch being one call of its handler under its request
+  id that the handler does not refuse (the handler may retry inside that call): a resume that finds
+  it begun and unsettled opens a hold under a token derived from its recorded request id instead of
+  dispatching it again, trading the run's liveness for the bound.
 - **Repeat versus resubmission.** **A command that is idempotent by `id` is NOT thereby `read`:
   safe to resubmit is not safe to repeat.** That is the rule neither mechanism states alone, and
   declaring such a command `read` licenses a fresh-`id` retry that duplicates the effect. The two
@@ -3055,7 +3322,10 @@ every baseline grant plus capabilities on 3 endpoints x 12 commands each, each t
 command in both `self` and `owner` modes, plus journaled submissions and per-goal read
 scopes for all of them. Minting MUST fail loud before emitting a credential that exceeds the
 policy gate (reference: 16 KiB); the transport bound is the CONNECT control line
-(`max_control_line`, §13.12) and the policy gate MUST be the tighter of the two. The fixture
+(`max_control_line`, §13.12) and the policy gate MUST be the tighter of the two. The mint
+MUST also refuse, before any issuance record is written, a user JWT whose byte size exceeds the
+control line minus the CONNECT envelope (`MAX_MINTED_JWT_BYTES`), so a composition of individually
+valid grants can never produce a credential the broker drops silently. The fixture
 set additionally includes a **maximum-command serve credential** (a 12-command endpoint's
 per-command rows, below); the §13.12 operator assertion uses the largest encoded CONNECT
 line in the set.
@@ -3065,6 +3335,9 @@ The agent baseline includes the self-targeted manager command `run-answer`. Its 
 escalated checkpoint is named by a pending relay addressed to that exact caller incarnation, and
 MUST refuse every other run or pause. A caller holding the explicit `run` capability may use the
 same self-targeted form for ordinary run answers. The request never carries the answerer's name.
+The amend form of `run-answer` (§14.5) addresses a settled pause instead, and the manager MUST
+authorize it for a baseline managed seat only when the accepted answer it supersedes was recorded
+under that seat's own name.
 
 **Serve grants.** Serving is granted authority, dual to calling. On the **subscribe side**
 an instance's credential binds its registered service name, stable instance id, and
@@ -3104,6 +3377,28 @@ minting any child material. It is never a raw provisioner, stream, KV, consumer,
 cross-owner control grant. The registration and renewal operations are typed/idempotent as §13.6
 requires, and their stage records remain inaccessible to every ordinary agent, observer, admin,
 or managed-agent exchange.
+
+**Platform control grant.** The `platform-control` view's generated grant is the remote
+manager-service grant above with the platform owner token as owner: the union of the one assigned
+instance's serve rows, its one service registration/status mediator, its staged
+contract-publication row, `epgate.manager.<instanceId>`, and
+`epcred.manager.<instanceId>.<credentialId>`, with no wildcard spanning an instance, manager actor,
+owner, account, endpoint, record kind, contract digest, or credential id. Descendant provisioning
+MUST re-derive the requested agent's owner from the authenticated caller and require it to equal
+the platform owner token. Serve-time admin authorization answers `authorized: true` only for a
+caller whose owner equals that token; a human `admin` scope never authorizes against it. It is
+never a raw provisioner, stream, KV, consumer, signer, launch, or cross-owner control grant.
+
+**Platform readiness read.** A platform composition learns whether its assigned control manager
+instance is serving through the auth context's readiness read. The trusted auth process answers over
+its own self-minted reader connection and hands out neither that connection nor its credential. The
+reader's grant is the `describe` and `status` request rows on `ep.inst.manager.<instanceId>` for the
+one assigned instance under the reader's own caller triple, the subject-scoped contract-store Direct
+Get, its own reply rail, and its own `_INBOX_<connId>.>`. It holds no other command, instance, class
+or scatter route, no other store read, no KV write, and no signer. The read observes the current
+assignment on every call, refuses any other instance, and refuses an instance whose gate names
+another principal. The reader renews as the other self-minted authority connections do: a
+short-lived user JWT re-minted in process at half-life and presented on reconnect.
 
 **The ownership matrix (normative).** Every profile × resource × transition is classified
 **mediated** or **direct**, in an independently reviewed matrix from which grants are
@@ -3299,8 +3594,10 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Drain commit applier (§13.8 accepted-self recovery) | a per-op, per-repair principal (`local.epapl_<opId-hash>`, CONNZ principal-tagged) the retirement drain mints ONLY after the commit key passes the CLOSED self-commit class: the key's kind must resolve in the canonical frozen kind registry to a NON-authority definition whose targeted `spec`/`status` half is registered to the §13.8 commit-path writer, at exact arity (which structurally excludes every authority HEAD, including the 3-token lifecycle head) with every qualifier token validated; a key outside the class refuses BEFORE any credential exists (the confused-deputy closure: a forged accepted-self row cannot turn `oblig.`/`govern.`/`policy.`/`uid.`/`frontier.`/a lifecycle head/an unregistered kind into a granted coordinate) | exactly ONE `$KV.cotal_records_<space>.<commitKey>` publish row plus its connection-scoped reply inbox; NO reads, NO wildcards. It executes the mediator-validated command verbatim: the resolved, canonically digest-verified intent bytes at the pinned base revision, written by guarded CAS; a CAS loss reports the another-writer conflict and the drain's re-enumeration re-classifies (landed / superseded), never a blind retry. NAMED residual: KV subject permissions cannot distinguish CAS from overwrite or DEL/PURGE, so within its one granted key a compromised applier can overwrite or delete for the credential's short life — the confinement is the exact key, the closed class, and the op-bounded lifetime, never write semantics. RETIREMENT-FENCE residual (§13.1/§13.13): no credential-ledger row backs this bearer, so the retirement fence guarantees KILL-LIVE (cluster-verified eviction of any live connection before the frontier), never deny-new — the connection is minted non-reconnecting so a KICK is durable in one round, and a fresh connect with a still-unexpired held bearer+seed after that point-in-time scan is the accepted residual, dominated by data-account signing-seed compromise (signing-key rotation is the only true deny-new) | mediated |
 | Drain route reconciler (§13.8 accepted-pool repair) | a per-op, per-repair principal (`local.eprec_<opId-hash>`, CONNZ principal-tagged) the retirement drain mints only to execute a MEDIATOR-DERIVED closed repair command: the mediator reads the item's durable acceptance decision itself (a leader-served fencing read), binds it to the obligation row (fingerprint/sourceSeq/route/horizon), and derives the exact EPW item subject plus the canonical acceptance item bytes (§13.6); the executor re-validates the exact six-token item shape for its own space and holds NO derivation authority (row-supplied coordinates or bytes never reach a grant) | exactly ONE `cotal.<space>.epw.<endpoint>.<pool>.<cOwner>.<cActor>.<cUid>.<id>` create-only publish row plus its connection-scoped reply inbox; a lost create is benign (a concurrent enqueue won; the drain re-reads establishment either way, so a no-op executor still fails closed); the payload-blind enqueue residual is confined to the one item subject for the credential's short life. RETIREMENT-FENCE residual (§13.1/§13.13): no credential-ledger row backs this bearer, so the retirement fence guarantees KILL-LIVE (cluster-verified eviction of any live connection before the frontier), never deny-new — the connection is minted non-reconnecting so a KICK is durable in one round, and a fresh connect with a still-unexpired held bearer+seed after that point-in-time scan is the accepted residual, dominated by data-account signing-seed compromise (signing-key rotation is the only true deny-new) | mediated |
 | Drain effects canceller (§13.8 option-(i) retirement cancel) | a per-op, per-repair principal (`local.epcan_<opId-hash>`, CONNZ principal-tagged) the retirement drain mints only to execute a MEDIATOR-DERIVED effects-cancel repair: the mediator reads and row-binds the acceptance decision itself and derives the exact completion subject (the `eff` marker or the goal `result` coordinate; the executor re-validates that exact shape for its own space); the cancelled terminal is built by the CORE validated builders, which refuse a foreign or absent target — a retirement cancels only ITS OWN target's accepted work — and never fabricate success (the effects union's `cancelled` member, or the goal union's first-class `cancelled` state with the digest-bound retirement attribution) | exactly ONE completion-subject create-publish row plus its connection-scoped reply inbox; CREATE-ONLY, so first-terminal-wins is structural (a racing real completion that landed first wins and the cancel loses its create harmlessly; the drain re-reads the winner either way, so a no-op executor still fails closed); the payload-blind single-subject create residual is confined to the one marker for the credential's short life. RETIREMENT-FENCE residual (§13.1/§13.13): no credential-ledger row backs this bearer, so the retirement fence guarantees KILL-LIVE (cluster-verified eviction of any live connection before the frontier), never deny-new — the connection is minted non-reconnecting so a KICK is durable in one round, and a fresh connect with a still-unexpired held bearer+seed after that point-in-time scan is the accepted residual, dominated by data-account signing-seed compromise (signing-key rotation is the only true deny-new) | mediated |
-| Auth endpoint rail (the `auth` listener, §13.2) | the auth service's dedicated LISTENER credential: serve + derived replies on the `ep.one.auth` class rail, standing with the plane. The surface is GENERIC — "retire a lifecycle (owner, actor, lifecycleUid)" — never caller-specific; the TARGET rides the subject as the `handle` triple (`ep.one.auth.retire-lifecycle.handle.<tO>.<tA>.<tUid>.<cO>.<cA>.<cUid>.<nonce>`) and caller attribution is the SUBJECT-derived, broker-ACL-enforced caller triple. The reply target is DERIVED from the parsed request (responder instance + caller triple + nonce), so no caller- or payload-supplied reply target can arrive at all — the bound-reply rule became structural rather than a check. Serve-time authz is the RAIL-TIME serve-issuance-gate check, fresh per request: ONE leader-served `STREAM.MSG.GET` of `epgate.<serveEndpoint>.<serveInstanceId>` — coordinates the caller NAMES but which do NOT authorize — requiring (a) the row is present and not `retired`, (b) `row.principal == principalKey(callerOwner, callerActor)` (THE PRINCIPAL CROSS-CHECK: a caller may only be authorized by its OWN serve registration; naming a foreign row buys a refusal, never an authorization), and (c) `row.processEpoch == serveEpoch` (a superseded predecessor after a restart is refused). An absent or TTL-expunged row reads ABSENT and refuses fail-closed. This binding is ALIAS-LEVEL, not incarnation-level: the gate is keyed by the PERSISTED `instanceId` and its row carries no lifecycle uid, so a same-principal predecessor presenting the current epoch still passes — binding the publishing incarnation would require a gate-row schema change. The four-outcome idempotence table answers in operator vocabulary (already-retired = success; the same stable opId resumes; a foreign operation refuses naming it; a stale incarnation refuses naming the current one), and every refusal is a COMPLETE no-op stated as such | subscribe `ep.one.auth.>` QUEUE-QUALIFIED (queue group `auth`; §13.9 forbids a plain subscribe of the class rail) + publish `ep.reply.auth.<instanceId>.<epoch>.*.*.*.*` (REPLY PLANE ONLY: the request and reply planes are disjoint in the grammar, so the listener credential cannot express a request subject at all — the self-forge is closed structurally, not by carving replies out of a shared subtree) (replies ONLY: the handler only ever responds on the DERIVED reply subject, and the reply plane cannot express a request subject at all, so a request is unpublishable by the listener credential, closing the self-forge where a compromised listener publishes a request as an authorized caller and passes its own subject-derived check) + `$JS.API.INFO` + the ONE serve-issuance-gate read row + its connection-scoped inbox; NO store writes, NO consumer authority, NO scanner/plane reach — every executing right stays with the plane's own registry and retirement deps (the drain rides the plane's ONE sealed records scanner) | mediated **NOT YET A CONFORMING ENDPOINT (Cotal #399): this rail carries the endpoint SUBJECTS only.** It does not register a `svc.<endpoint>.<instanceId>` service record, does not serve the reserved `describe`, has no contract/cluster artifact, and still exchanges the pre-v0.4 `{op,args}` / `{ok,data,error}` bodies this document states are DELETED. **A generic endpoint client can therefore neither discover nor invoke this command**; only a caller that already knows the subject shape and speaks the legacy body can reach it. The acceptance-path hole is closed (the request carries an `id`, the reply echoes it, a non-echoing reply is refused); the conformance gap is tracked at #399. |
+| Auth endpoint rail (the `auth` listener, §13.2) | the auth service's dedicated LISTENER credential: serve + derived replies on the `ep.one.auth` class rail, standing with the plane. The surface is GENERIC — "retire a lifecycle (owner, actor, lifecycleUid)" — never caller-specific; the TARGET rides the subject as the `handle` triple (`ep.one.auth.retire-lifecycle.handle.<tO>.<tA>.<tUid>.<cO>.<cA>.<cUid>.<nonce>`) and caller attribution is the SUBJECT-derived, broker-ACL-enforced caller triple. The reply target is DERIVED from the parsed request (responder instance + caller triple + nonce), so no caller- or payload-supplied reply target can arrive at all — the bound-reply rule became structural rather than a check. Serve-time authz is the RAIL-TIME serve-issuance-gate check, fresh per request: ONE leader-served `STREAM.MSG.GET` of `epgate.<serveEndpoint>.<serveInstanceId>` — coordinates the caller NAMES but which do NOT authorize — requiring (a) the row is present and not `retired`, (b) `row.principal == principalKey(callerOwner, callerActor)` (THE PRINCIPAL CROSS-CHECK: a caller may only be authorized by its OWN serve registration; naming a foreign row buys a refusal, never an authorization), and (c) `row.processEpoch == serveEpoch` (a superseded predecessor after a restart is refused). An absent or TTL-expunged row reads ABSENT and refuses fail-closed. This binding is ALIAS-LEVEL, not incarnation-level: the gate is keyed by the PERSISTED `instanceId` and its row carries no lifecycle uid, so a same-principal predecessor presenting the current epoch still passes — binding the publishing incarnation would require a gate-row schema change. The four-outcome idempotence table answers in operator vocabulary (already-retired = success; the same stable opId resumes; a foreign operation refuses naming it; a stale incarnation refuses naming the current one), and every refusal is a COMPLETE no-op stated as such | subscribe `ep.one.auth.>` QUEUE-QUALIFIED (queue group `auth`; §13.9 forbids a plain subscribe of the class rail) + publish `ep.reply.auth.<instanceId>.<epoch>.*.*.*.*` (REPLY PLANE ONLY: the request and reply planes are disjoint in the grammar, so the listener credential cannot express a request subject at all — the self-forge is closed structurally, not by carving replies out of a shared subtree) (replies ONLY: the handler only ever responds on the DERIVED reply subject, and the reply plane cannot express a request subject at all, so a request is unpublishable by the listener credential, closing the self-forge where a compromised listener publishes a request as an authorized caller and passes its own subject-derived check) + `$JS.API.INFO` + the ONE serve-issuance-gate read row + its connection-scoped inbox; NO store writes, NO consumer authority, NO scanner/plane reach — every executing right stays with the plane's own registry and retirement deps (the drain rides the plane's ONE sealed records scanner) | mediated **NOW A CONFORMING ENDPOINT (Cotal #399, closed): the plane registers `svc.auth.<instanceId>`, publishes contract artifacts, and serves the reserved `describe`, so a generic client discovers and invokes this command the way it would any other registered endpoint (the two rows immediately below). The rail answers the v1 envelope; a legacy `{op,args}`/`{ok,data,error}` body is refused `unsupported-version`.** |
 | Retirement requester (per-despawn, §13.2) | an EPHEMERAL one-shot credential the space manager mints per despawn (`retirement-requester` profile, five-minute window): request + reply ONLY, for exactly ITS OWN caller triple AND exactly ONE grant-pinned TARGET incarnation (the `handle` triple is literal in the grant; the per-request nonce is the only wildcard token), so a leaked requester cannot be re-aimed at another lifecycle. The manager derives a STABLE opId from the retiring lifecycleUid, so a despawn retry, a same-name-spawn nudge, and the auth service's boot resume all drive the SAME operation. The requester holds no executing right — a leaked credential can only ask the rail to retire a lifecycle, and the rail's fresh serve-issuance-gate check (including the principal cross-check) + idempotence table bound what that ask can do | publish exactly `ep.one.auth.retire-lifecycle.handle.<tO>.<tA>.<tUid>.<cO>.<cA>.<cUid>.*` (its minting manager's own caller triple, its one target) + subscribe its own reply-plane filter `ep.reply.*.*.*.<cO>.<cA>.<cUid>.*` and its connection-scoped inbox; nothing else | mediated **`handle`-MODE DEVIATION, stated explicitly (Cotal #399): this row is NOT redemption-minted.** `handle` is normatively redemption-minted only - its triple pinned at redemption from an issuer-signed capability artifact, carrying attenuation, conferral through the trusted auth service, and ledgered `sourceChain` lineage. **This path has NO issuer-signed artifact, NO redemption step and NO `sourceChain`**: the row is built directly from the minting manager's own coordinates under root authority. `handle` is used because it is the ONLY mode with arity 3 (every other mode resolves against the CURRENT mapping, the wrong semantics for retiring a NAMED incarnation), and the reader-facing invariant - the validator re-checks only currency - IS honoured by the serve-time mapping check. What is absent is delegation lineage and artifact revocation; there is no independent issuer/holder boundary on this one-shot path whose revocation would change this requester's authority. Genuine redemption-shaping is tracked at #399. |
+| Registered auth instance (Cotal #399, the M4 conformance closure) | the auth service's own boot registration, over the plane's registration credential (§13.1) | the plane registers `svc.auth.<instanceId>` through the standard `registerServiceInstance` path (the same record shape and registration barrier every other endpoint uses), publishes its `retire-lifecycle` contract artifacts to the content-addressed contract store, and serves the reserved `describe` alongside the command: a generic client's `resolveService` now discovers this endpoint, its closure digests, and its current instance/epoch the way it would any other registered service, closing the round-8 `#399` gap named in the two preceding rows | subscribe `ep.one.auth.>` QUEUE-QUALIFIED (queue group `auth`) + describe reply on the same reply-plane rows as any other registered endpoint + the registration-barrier and contract-artifact publish rows shared by every `registerServiceInstance` caller; no additional store authority beyond that shared registration path | mediated |
+| Retirement requester, describe + registered-endpoint call (Cotal #399, the M4 conformance closure) | the same `retirement-requester` profile above, now calling through the generic client (`resolveService` + `invokeCommand`) instead of a hand-built subject | in addition to the exact-mode `retire-lifecycle` request row already granted above, the profile carries the baseline wildcard-endpoint `describe` row (`epDescribeAllGrantRow`, pinned to this caller's own triple) and a bounded contract-store direct-get row (`$JS.API.DIRECT.GET.<EPC stream>.<space>.epc.>`) so the requester can resolve the endpoint's registered contract digests before it calls; the request itself is still minted in `exact` mode, target-pinned to the one incarnation named at mint time | publish the same exact-mode request row as above + the describe wildcard row + the contract-store direct-get row; subscribe its own reply-plane filter and connection-scoped inbox; nothing else | mediated |
 | Governance head (registration linearization) | the provisioner-registration principal | the **unsplit** governance head `$KV.cotal_records_<space>.govern.<endpoint>` (§13.7): it reads the head FRESH under the frozen registration gate (a FENCING read, read service above: leader-served `$JS.API.STREAM.MSG.GET.KV_cotal_records_<space>` last-by-subject on the head key, never the follower-served `DIRECT.GET` the records bucket would allow) and is the head's ONLY writer (slot-take CAS in phase 1, promote CAS after the spec publish); the SAME principal holds the write on `$KV.cotal_records_<space>.policy.<endpoint>.>` (each immutable policy version is published exactly once, before the stage CAS that names it). The immutability of a policy version is a TRUSTED-WRITER INVARIANT, not a broker-enforced subtraction: KV create/update/delete all publish to the one `$KV.…policy.<endpoint>.<digest>` subject, and NATS subject permissions cannot distinguish the create-CAS header or the `KV-Operation` header, so a subject grant cannot forbid an overwrite or DEL. The invariant is upheld by the writer's create-only CAS plus every reader's SELF-CERTIFICATION (§13.7: the value must digest to the key), so a changed-byte overwrite is REFUSED on read; the residual, confined to this prefix, is that a buggy or compromised provisioner could still DEL or same-byte-overwrite an enforced version and (history 1) destroy its availability, at which point admission pauses fail-closed rather than admitting under a lost policy. No agent, endpoint, observer, admin, or host profile holds any grant. The head is NEVER-DELETED (the `lifecycle`-head discipline): no grant permits DEL/PURGE on `govern.>`; a reader treats only TRUE ABSENCE as a virgin head, and a deletion marker refuses loudly as corruption (§13.12 retention floor), never as absence | mediated |
 
 Terminal pool cleanup settlement is lease-fenced across the two profiles above: the executor
@@ -3776,6 +4073,24 @@ one source shape this revision issues against is a static incarnation's credenti
 `retired`; a lifecycle terminal retires every issuance indexed to that family
 (`bysource.v1.…`), so a retired incarnation's generations refuse to resolve afterwards.
 
+**User-auth issuance.** On a user-auth space the issuer of an interactive actor's `manager-caller`
+view connection is the auth service, at its callout, and the material is the user JWT the callout
+returns. The callout issues that view when the bearer's actor-ledger row is an interactive row, and
+the issued view carries the per-key accepted-row read beside its instance-pinned rows. It chooses
+the generation, persists evidence whose permissions are the set it signs and whose one source is
+that row, `{ space, bucket: "cotal_actors_<space>", key: "actor.<owner>.<actor>.<lifecycleUid>" }`,
+releases it, and writes the accepted row, all before it returns the JWT. The accepted token is the
+first 32 lowercase hex characters of SHA-256 over `"cotal.accepted.v1\0"` followed by the
+connection's inbox nonce: the client chose the nonce and derives the token from it, and no token is
+read from a request body. The source is live while the auth service's actor ledger holds a row for
+that owner and actor carrying that lifecycle UID; a revoked row, or a re-grant under another UID, is
+a dead source at the next resolution. Only the auth service attests this shape; every other host
+refuses it as a coordinate it cannot attest. A reconnect under the same nonce finds the existing
+accepted row. When the row names the same triple and the ceiling being minted is byte-identical to
+the recorded evidence, the callout renews that generation; otherwise it refuses the connect, and the
+client adopts a fresh generation only through a new connection under a new nonce. A managed row's
+view, the `agent` profile and every other view keep the legacy rail.
+
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`,
 §14.8) MUST refuse a legacy-rail request with `permission-denied` carrying the detail kind
 `ai.cotal.ep.unbound-caller-authority` naming the caller triple, never route it through the
@@ -3783,6 +4098,216 @@ host's own authority. Every other command serves both rails unchanged. Origin (t
 a generation-pinned subject was published by the grant holder) is a property of the grant set,
 not of this section: no peer-held profile pairs a write with a raw stream read on one stream, and
 mediated reads remain the remedy.
+
+### 13.16 Delegated user intent
+
+A host platform that runs a `platform-control` service view MAY let that view's manager (the
+holder) execute one launch or one retirement that a signed-in user asked for, while the intent and
+the resulting agent stay the user's. This subsection adds no exchange view, profile, holder grant or
+standing delegation, and changes no other clause. A host that does not implement the
+`platform-control` service view, or holds no intent store, MUST refuse both requests below as
+`unimplemented`, and stock dispatch MUST refuse both kinds as `unimplemented`.
+
+**Admission.** A user admits an intent with one closed `delegated-user-intent` request on the host's
+authenticated human route, the transport the `manager-service` typed requests use. The host MUST
+verify the user's IdP token, derive the owner from the verified subject as it does for a signed-in
+human, and read the named actor's ledger row fresh; the row MUST carry `spawn`. The host MUST NOT
+store, forward or record the token, and MUST NOT read, require, synthesize or write `supervise`. The
+request carries the space, the assigned account public key, the user's actor, one platform control
+instance id, a request id, and one operation: `launch` with one managed-agent enrollment target
+minus its token digest, or `retire` with one `{ owner, actor, lifecycleUid }`. An unknown field,
+including an owner, IdP token, scope, serve epoch or token digest, MUST be refused as `bad-request`
+with no effect. For a launch, the host MUST read the account's platform-control assignment and that
+instance's manager gate fresh and refuse unless the assignment is `assigned` for this account and
+names that instance and the gate is open under the platform serve principal, and the requested scope and channel lists MUST lie within
+the user's actor row under the managed-agent envelope rule. For a retirement, the target owner MUST
+equal the derived owner, and the target lifecycle MUST be one that the host's own record shows a
+delegated launch on that instance produced and enrolled, for a launch target whose actor equals the
+retirement target's actor; the host MUST compare the launch's target actor, never the user actor
+that admitted the launch. Any other lifecycle MUST be refused. The host generates
+the intent id from at least 128 bits of entropy, never from caller input. It binds the account, the
+instance id, the assignment's lifecycle UID and revision, the gate's process epoch (null for a
+retirement whose launching holder is gone), the one target, the user's principal `<owner>.<actor>`
+as parent, and an expiry at most 300 seconds ahead, and creates the record create-only.
+
+**Execution.** The holder executes an intent with one closed
+`manager-delegated-user-intent-execution` request on the host platform's own route for that holder;
+the `platform-control` envelope does not carry this kind and refuses it as an unknown kind. The
+request names the intent id, the space, the fixed `cli` actor constant that keys the registration
+proof, the account, the assignment revision, the instance id, the manager lifecycle UID, the serve
+epoch, the registration proof, the identities, and one target: the launch target's actor with the
+SHA-256 digest of an actor token the holder generated, or the retirement's `{ owner, actor,
+lifecycleUid }`. The host MUST read the record fresh and refuse as `failed-precondition` an absent
+record, an admitted record past its expiry, and a consumed record unless the request is a retry of
+the execution that consumed it (below). It MUST refuse as `permission-denied` any difference from
+the record in account, instance id, manager lifecycle UID, assignment revision, operation, serve
+epoch or target. It MUST re-read the assignment and refuse as `permission-denied` one that is
+absent, revoked, or differs from the record in space, account, instance id, manager lifecycle UID or
+assignment revision. It MUST re-read the gate, refuse a gate whose principal is not the platform
+serve principal, refuse a gate epoch other than the request's as `conflict`, and require the
+host-keyed current registration proof. Every check completes before any effect. The host then MUST
+CAS the record from `admitted` to `consumed` at the revision it read, and that same write MUST pin
+the execution: the request id, the serve epoch, the lifecycle UID (host-selected before the CAS for
+a launch, the target's for a retirement), the launch's token digest or the retirement's
+operation id, and the host incarnation `{ instanceId, processEpoch }` that executes it. A lost CAS is `conflict` and nothing is enrolled or retired. Because the reads are not
+fences (§13.1), the host MUST repeat the assignment and gate checks for a launch after the CAS and
+before any effect, and on a refusal MUST compensate the launch (below) before it ends the record
+`aborted`; a change that lands after that second read is ordered after the execution. An intent
+executes at most once and confers nothing after it executes.
+
+**Recovery.** From the CAS on, the host owns the pinned execution, whoever presented it. It MUST
+drive every consumed record to one outcome, `enrolled`, `retired` or `aborted`, at the pinned
+lifecycle UID, including after a restart or a lost answer. For a launch, the host's first effect
+after the post-CAS checks MUST be the issuance activation of the alias at the pinned lifecycle UID
+(§13.1), before any ledger row or durable, so that UID has an active head and an open issuance gate
+before anything is granted under it. Every launch that ends without `enrolled` after its consuming
+CAS MUST be compensated before it is marked `aborted`, whichever flight observed the refusal,
+because a flight that resumes the execution cannot tell whether an earlier flight began the
+activation: the retirement sequence below at that UID, with that UID's activation completed or
+adopted immediately before the terminal barrier. Before that activation the compensator MUST read
+the head and the issuance gate at that UID. Once a retirement there has begun, because the head is
+retiring or retired at that UID or the gate is frozen or retired by `managedRetirementOpId` of that
+UID, the compensator MUST NOT run or adopt an activation and MUST go to the terminal barrier, which
+resumes that operation from its durable intent.
+Only the barrier's answer that the lifecycle is retired at that UID is terminal confirmation; a
+not-started answer MUST NOT be read as one. When that activation is refused because the alias is
+active or retiring at another UID, the record MUST keep no outcome and the compensation MUST be
+retried. A request
+whose request id and serve epoch, and a launch's token digest, equal the pin is a retry of that
+execution: it passes the same checks except the consumed state, writes no second CAS, and MUST
+receive that execution's answer. The alias stays held until the record has an outcome, and after a
+sweeper's claim until the release below.
+The host MUST run each execution in one in-process flight keyed by the intent id, and a retry MUST
+join that flight or read the record's outcome; a retry MUST NOT run the post-CAS checks, the
+enrollment writer or the retirement sequence itself. Every record write after the consuming CAS
+MUST be a revision-pinned CAS, and a flight MUST answer only from an outcome its own write set or
+from the outcome it reads after that write lost, never with material it did not commit. Recovery
+follows the executor and sweeper roles of §13.7. Only the pinned incarnation is the executor, and
+only the executor MAY run the enrollment writer for the record. Any other incarnation, including
+the same instance after a restart advanced its process epoch, is a sweeper. A sweeper MAY act only
+on a consumed record with no outcome whose executor it believes gone, because that instance's
+serving issuance gate is absent, not open or at another process epoch. It MUST first claim the
+record with a revision-pinned CAS that names its own incarnation and changes nothing else, and
+MAY then take only the terminal edge that removes authority: the compensation above, then
+`aborted`, for a launch, or the retirement sequence below, then `retired`, for a retirement. The
+sequence's terminal barrier freezes the issuance gate at that UID before it retires the lifecycle
+(§13.1), so an executor that a wrong belief left running can mint nothing there and cannot set the
+outcome. A consumed record holds its target alias `(owner, actor)` from the consuming CAS, and an
+outcome its executor writes releases it. After a sweeper's claim the alias MUST stay held after the
+outcome until the executor's own flight, having stopped before any further effect and revoked any
+grant at the pinned UID, records the release, or until an operator releases it by hand; no door
+releases it. Before each effect and before its outcome write, the executor MUST re-read the record
+and stop on a claim it did not write. While an alias is held, the host MUST refuse a launch
+admission for it and MUST refuse, from either enrollment door, any enrollment of it other than the
+holding execution's own, as `failed-precondition` with no write.
+
+**Ownership.** A delegated launch MUST be enrolled under the record's owner with the record's
+parent, through the same writer, managed-agent envelope walk, lifecycle-keyed durables and
+membership the host uses for that user's own managed-agent enrollment, with the host selecting the
+lifecycle UID. It MUST NOT be enrolled under a platform owner token or any owner other than the
+record's, and the manager MUST refuse material naming another owner. The holder is not on the
+agent's delegation chain and gains no ledger row, scope or grant from the launch.
+
+**Retirement.** A delegated retirement runs in order: revoke the managed grant at the target
+lifecycle UID only and complete the resumable release with that UID unchanged; close the provider
+handle the host's runtime record holds for that UID, holding the alias while that record is
+`create-unknown`; run the auth-owned terminal barrier with `managedRetirementOpId(lifecycleUid)`
+through the same operation the host's managed retirement door runs; free the alias only after
+terminal confirmation. The launching holder is gone when its assignment is absent, revoked or at
+another revision, its gate is not open, or its gate epoch is not the launch's. A retirement admitted
+while the launching holder is gone is bound to no live epoch, and the host MUST execute it itself
+through the same sequence; a retirement bound to a holder that is gone before it executes expires
+unexecuted. Once a holder's execution has consumed a record, the host MUST finish the sequence
+whether or not the holder remains. A failed or uncertain step keeps the alias held, and a retry is
+the same operation.
+
+**What stays.** Under the `platform-control` view itself the holder still enrolls, retires,
+validates and authorizes only same-owner descendants, and a `u_` principal's spawn request or admin
+authorization against a platform manager is refused as before. A spawn the holder starts without a
+consumed intent is not delegated and gains nothing from this subsection. A delegated agent is not
+preserved across a holder restart and is never restarted, because a restart would re-present a
+consumed intent.
+
+### 13.17 Managed lifecycle handoff
+
+This section is additive. It covers one case: a managed
+agent already enrolled through the §13.1 managed-agent enrollment operation, whose child runs where
+the enrolling manager's filesystem is not visible (a sandbox, a container, another host).
+
+**One enrollment.** The child MUST NOT request enrollment, agent provisioning, or an enrollment
+redeem, and MUST NOT mint an actor token or a lifecycle UID. It presents the lifecycle UID the host
+selected at enrollment. A launch that needs any other UID or token is a new enrollment, not a
+handoff.
+
+**Custody.** The raw actor token stays in the custody of the manager that generated it until that
+manager releases it to the lifecycle's own child, and only to that child. The manager MUST NOT send
+it to the host or to any party other than the runtime transport that delivers it into that child,
+and the host's ledger keeps only its SHA-256 digest. The manager MUST NOT copy, link, or name any
+file from its own workspace, secret store, launch material, or temporary directory into the child.
+
+**The handoff.** The manager releases one closed handoff document, `kind`
+`cotal-managed-handoff/v1`, carrying by value: `space`, `owner`, `actor`, `lifecycleUid`, `server`,
+`tlsRequired`, `authProvider`, `idp { url, issuer, audience }`, `exchangeUrl` (the enrollment's pinned
+exchange base), `sentinelCreds`, `actorToken`, `subscribe`, `allowSubscribe`, `allowPublish`, and an
+optional `policy { events: "required" }`. It MUST NOT carry a signing seed or key, an issuer or
+callout record, the auth service's loopback capability, the owner-derivation secret, a provisioner,
+deprovisioner, delivery, membership, supervisor, or other manager credential, a control token, or a
+path on the manager's filesystem. A reader MUST refuse an unknown field. The runtime delivers the
+document into the child as one private (0600) file named by `COTAL_MANAGED_HANDOFF_FILE`, never in
+argv or in an inherited environment value. The child's entry point MUST read the file into memory,
+remove it, and drop the variable before it does anything else, including parsing or refusing its
+own arguments, printing help, loading extensions, or refusing an unsupported runtime version, so
+every outcome leaves no file. It MUST NOT forward the variable or the file into any process it starts.
+
+**Refusal before any plane.** The runtime passes the expected `space`, `owner`, `actor`, and
+`lifecycleUid` beside the file. The child MUST refuse, before any broker connection and before any
+exchange request, when the handoff's values differ from them or the document is malformed. A
+refusal MUST NOT echo the document's contents.
+
+**Launch choices.** The manager MUST refuse, before enrollment, a spawn choice that only its own host
+can honour, such as resuming a session held on that host, a working directory on its filesystem, or
+a tool server it runs. Such a choice is never dropped silently.
+
+**Exchange.** The child obtains bearers only through the existing pinned HTTPS agent-bearer exchange
+at `exchangeUrl`, presenting the raw actor token. The service matches its SHA-256 digest against the
+ledger as for any managed agent. Nothing about the exchange changes.
+
+**Readiness.** Readiness is observed from mesh presence of the exact principal and incarnation, as
+for any managed launch. A runtime create whose acknowledgement is lost or ambiguous MUST leave the
+launch held and reported as uncertain. It MUST NOT be reported as exited without an observed exit or
+close, and MUST NOT be retried into a second create, enrollment, or handoff for that lifecycle. A
+provider answer that no resource exists is not an observed exit or close. A lifecycle is handed off
+at most once.
+
+**Fenced close.** The child's runtime resource is keyed by lifecycle: `cotal-` followed by the first
+32 lowercase hex characters of the SHA-256 of the UTF-8 bytes of the compact JSON array
+`["<space>","<owner>","<actor>","<lifecycleUid>"]`, with no whitespace. For space `s2420`, owner
+`u_aaaaaaaaaaaaaaaaaaaaaaaaaa`, actor `probe` and lifecycle UID `aaaaaaaaaaaaaaaaaaaaaaaaaa` the key is
+`cotal-ffa44aae523faeee4ab7689a699b392e`. A close by that key completes only when no create for that
+lifecycle can still materialize: the create was answered before the close, or the close fences the
+key so a later create is refused. Until then the close stays pending and the launch is not exited.
+A runtime MAY issue the create as a durable provider operation keyed by that key and close the
+resource through the identifier the provider returned in its authenticated response to that create,
+kept in a durable record the host can read without the enrolling manager. Only that response binds
+an identifier to the key: an identifier derived from the key, or found by name or by listing
+resources, MUST NOT be closed or adopted as the lifecycle's resource. While the create's response is
+unknown, no identifier is bound, the launch stays held as under Readiness, and a close completes only
+as above.
+
+**Retirement.** A handed-off lifecycle retires only through the existing managed path, in this order:
+the host-owned prepare-retirement for the UID-exact target with the operation id
+`managedRetirementOpId(lifecycleUid)`; the fenced close of the child's runtime resource through the
+handle known for that lifecycle; then the auth-owned terminal barrier with the same operation id.
+After the enrolling manager is gone, the host runs the same three steps itself, ending at the managed
+retirement door. There is no participant stop kind and no second retirement protocol, and no runtime
+close or adopt may be keyed on the agent name alone. A runtime MAY host a handed-off child only where
+the host can perform the fenced close by lifecycle without the enrolling manager. A failed or
+uncertain step keeps the alias held. A manager preservation cut that holds a handed-off lifecycle is
+refused before any child stops, because a later manager never resumes it, and a manager stop after
+a refused cut retires that lifecycle through these steps.
+
+**Owner form.** A handoff serves whatever owner the enrollment returned. It neither requires nor
+excludes any owner form.
 
 ---
 
@@ -3848,10 +4373,11 @@ split, mediated, written by the driver's commit path only.
   it, a released run has none, because its driver stopped holding it (`spec/cotal-lang.md` §9.2,
   L5012). `holder`, `epoch` and `fencingToken` name the driver that holds the run and the lease
   (§13.6 work pool) it holds it under. `journalHigh` is the highest journal ordinal (§14.4) the run
-  is KNOWN to have reached, written at each activation: it is the one anchor OUTSIDE the journal, so
-  a replay whose last ordinal is below it has lost records from the journal's tail, which nothing
-  inside the journal can see, and the driver MUST refuse to resume it. It covers truncation back
-  past the last activation and no further; interior loss is the journal's own ordinal chain's.
+  is KNOWN to have reached, written at each activation and after each append the driver makes
+  while the run is `running`, before that append resolves to the interpreter: it is the one anchor
+  OUTSIDE the journal, so a replay whose last ordinal is below it has lost records from the
+  journal's tail, which nothing inside the journal can see, and the driver MUST refuse to resume it.
+  Interior loss is the journal's own ordinal chain's.
 
 ### 14.4 The step journal on the wire
 
@@ -3940,6 +4466,23 @@ characters**, which is an id token by construction. The reference implementation
   presenting principal (the driver, for every answer) and never a field in the answer request. A
   baseline managed seat reaches the answer door only through the self-targeted row above, after the
   manager has matched its exact caller incarnation to the pending relay for this open pause.
+  An **amendment** is an answer filed after the pause settled: same key grammar under the token
+  the pause settled under, with `supersedes` naming the `answerId` the settle accepted. It is filed
+  through the same door and credential pinning as an answer, and nothing is presented, so the pause
+  stays settled, the one-use settle is untouched, and the run never reads the record. Its
+  `answerId` is minted fresh for each filing (32 random bytes, base64url, the first 43 characters)
+  and is never derived from its content: a participant who returns to an earlier position files
+  what an earlier filing said, and a content id would make the create-only write take it for a
+  retry of that filing and record nothing. A step that is still open, or that settled
+  without accepting an answer, has nothing to amend and is refused. The run surface lists a settled
+  step's amendments beside its accepted answer in the order the records bucket committed them (each
+  record's revision); `at` is the filer's clock and never decides the order. The last one listed is
+  the step's current recorded position, and the accepted answer remains what the program acted on.
+- A held `once` step (`spec/cotal-lang.md` §7.8) is answered like a checkpoint, addressed by its
+  step key; the driver presents the hold id (`spec/cotal-lang.md` §7.8) as the token, whatever kind
+  the step is, and reads the step's accepted answer and amendments under the same id once it
+  settles. The run's pause authority covers that id only while the step is pending with its hold
+  bound.
 - **`notice`**, `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>`, split: spec `{ v: 1, run,
   step, addressee, fact, at }` (create-only; `fact` is the language's bounded decision record and
   is checked against its bound BEFORE any record is written), status `{ v: 1, consumedAt, by,
@@ -4050,6 +4593,32 @@ admitted from operator evidence named on the command line (the read and publish 
 the run, program and journal state they authorize; a restore that lacks them recreates them empty,
 and no run is taken back under authority the host cannot read.
 
+**User-auth runs.** A user-auth run is hosted by a signerless participant manager, and its issuing
+host writes the admission. The issuing host admits a run-start whose caller has a derived user owner
+only when that owner is the manager's registered owner, the owner whose `supervise` grant registered
+the instance, so every user-admitted run on a participant manager belongs to that one owner. A
+caller-requested resume and every principal answer or amendment ride the versioned rail. The manager
+forwards the request subject it served with the attempt or operator issuance it asks for, and the
+issuing host re-parses that subject, requires a user caller's owner to be the run's admitted owner
+for a resume and the registered owner for an answer, resolves the caller's own issuance as live, and
+requires its publish ceiling to permit that subject. The issuing host subscribes to those resume and
+answer request subjects itself and never replies on them, and it issues for a forwarded subject only
+when it observed a caller publish that request and has not issued for it before, so a manager cannot
+forward a request its caller never sent. It reads what that request's envelope asked for and issues
+only that: a resume attempt for the run its `runId` names, and an answering issuance for the
+endpoint the answer names, the manager's own when it names none, that amends when the request set
+`amend: true` and answers when it did not. When the request carries a `bind` (§13.2) naming
+another instance or epoch than the manager's current registration, it issues nothing, since that
+manager refuses the request unrun. It issues nothing either for a request whose `class` or pinned
+`inputDigest` and `outputDigest` differ from the command's declaration in the manager's registered
+cluster (§13.7), which that manager also refuses unrun. An answering operator issuance always carries
+the served subject. An amendment's issuance marks its pause with `amend: true`, and the issuing host
+then requires that pause settled `resumed` with an accepted answer instead of waiting. A legacy-rail
+answer is accepted only from a
+managed seat of that owner whose actor-ledger row is live, on the relay path of §14.5. A boot
+reconcile forwards no subject and continues under the original admission. This revision hosts no
+user-auth run on the signer-holding host's own manager.
+
 ---
 
 ## Appendix A: Reference implementation map
@@ -4077,6 +4646,7 @@ placeholders:
 - `DLV = <Plane-3 per-member delivery stream>`; `INBOX = <mixed pre-auth fan-out stream>` (the durable-backstop handoff, §8): fan-out writes `INBOX` (`dinbox.<owner>.<actor>.<uid>`; lifecycle-bound from v0.4, so an inactive-gap or predecessor entry can never migrate to a same-name successor), the trusted reader re-authorizes and transfers to `DLV` (`dlv.<owner>.<actor>.<uid>`, same binding), and the agent binds its own `DLV` DELIVER consumer (filter pinned to its own triple). An agent gets **no** grant on `INBOX` (the mixed pre-auth store).
 - `KV = KV_cotal_presence_<space>`
 - `CHKV = KV_cotal_channels_<space>`; `DLVKV = <delivery lease/readiness KV>`
+- `MEMKV = KV_cotal_membership_<space>` (the derived channel-membership feed, §8)
 - `<owner>.<actor> = the authenticated principal` (§2): `<owner>` and `<actor>` are its two tokens; the dot-form is the wire/KV form, the dash-form `<owner>-<actor>` is the durable-name form
 - `connId = the authenticated connection id` (the connection nkey in static mode; the client-chosen nonce in user mode); distinct from the principal, and keys ONLY the reply inbox
 - `role = authenticated agent role`
@@ -4090,6 +4660,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 `sub.allow`:
 
 - `inbox`
+- `P.live.<manager|delivery>.<owner>.<actor>.>` (replies to its own plane liveness probes, §6.1)
 - `P.ep.reply.*.*.*.<owner>.<actor>.<uid>.*` (exact arity; the agent's own endpoint reply rail: every endpoint's replies to THIS caller triple + nonce, §13.2; replies never ride the per-connection `inbox`)
 - `P.epe.…`; the exact fully-qualified event subtrees of every minted read capability
   (§13.9 event-read row), incl. the caller's own per-goal subtree
@@ -4102,6 +4673,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `P.chat.<owner>.<actor>.<ch>` for every `allowPublish` channel (post ACL; none by default)
 - `P.inst.*.*.<owner>.<actor>` (DM any recipient, forge-locked to me as sender)
 - `P.svc.*.<owner>.<actor>` (anycast any role, as me)
+- `P.live.<manager|delivery>.<owner>.<actor>` (plane liveness probe, as me, §6.1; the agent holds no `live` serve filter)
 - endpoint request forms per minted capability (§13.9): every agent gets the baseline set
   (`describe` on all endpoints; the delivery endpoint's durable join/leave/list commands;
   self-targeted manager commands with authz-mode `self`, including `run-answer`, which the manager
@@ -4172,20 +4744,36 @@ Application publish is denied. `pub.allow` contains only read/control verbs need
 CHAT history, presence, and channel registry:
 
 - `$JS.API.INFO`
-- `$JS.API.STREAM.INFO.<CHAT|KV|CHKV>`
+- `$JS.API.STREAM.INFO.<CHAT>`
+- `$JS.API.STREAM.INFO.<KV>`
 - `$JS.API.CONSUMER.CREATE.<CHAT>`
 - `$JS.API.CONSUMER.CREATE.<CHAT>.>`
 - `$JS.API.CONSUMER.INFO.<CHAT>.>`
 - `$JS.API.CONSUMER.MSG.NEXT.<CHAT>.>`
-- `$JS.API.CONSUMER.DELETE.<CHAT>.>`
 - `$JS.ACK.<CHAT>.>`
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
+- `$JS.API.STREAM.INFO.<CHKV>`
 - `$JS.API.STREAM.MSG.GET.<CHKV>`
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
-- `$JS.API.CONSUMER.DELETE.<CHKV>.>`
+- `$JS.API.STREAM.INFO.<MEMKV>`
+- `$JS.API.STREAM.MSG.GET.<MEMKV>`
+- `$JS.API.CONSUMER.CREATE.<MEMKV>.>`
+- `$JS.API.CONSUMER.INFO.<MEMKV>.>`
+- `$JS.API.STREAM.INFO.<DLVKV>`
+- `$JS.API.STREAM.MSG.GET.<DLVKV>`
 - `$JS.FC.>`
+
+The membership feed (`MEMKV`) is read-only for this profile and, per §8's membership-feed
+paragraph, display-only and not part of the contract a client must implement.
+
+The profile holds **no** `CONSUMER.DELETE` on any of these streams. Its consumers are client-named
+ordered consumers (`oc_<nuid>_<serial>`, renamed on every rebuild), so the only expressible delete
+grant is stream-wide, and a stream-wide grant lets one holder delete another principal's watch
+cursors and the delivery daemon's `fanout` durable. The broker removes these consumers at their
+inactive threshold (five minutes after the last interest), and a client MUST treat a refused delete
+of its own ephemeral consumer as that outcome rather than as a failure.
 
 ### Admin
 
@@ -4201,7 +4789,6 @@ frame; §13.2, §13.11). Plus DM history read grants:
 - `$JS.API.CONSUMER.CREATE.<DM>.>`
 - `$JS.API.CONSUMER.INFO.<DM>.>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DM>.>`
-- `$JS.API.CONSUMER.DELETE.<DM>.>`
 - `$JS.ACK.<DM>.>`
 
 Admin still has no application publish grants.
@@ -4220,7 +4807,13 @@ single-function profiles, each granting only the verbs its function needs and no
 - `deprovisioner`: target-pinned teardown of ONE retired lifecycle's footprint, minted per
   teardown with the target's `(principal, lifecycleUid)` in every exact-name grant; it can
   delete only lifecycle-keyed names, so it structurally cannot reach a same-name successor
-  (§13.1).
+  (§13.1). The footprint is the `dm_`/`dlv_` durables, the read-ACL row, and the durable
+  membership row for each concrete channel the teardown names (one exact `memberKey` grant per
+  channel). A wildcard channel is refused at mint. The manager names the launch's concrete read
+  channels plus the channels the delivery daemon's read-only `lifecycleMemberships` admin verb
+  lists for that exact `(principal, lifecycleUid)`. When that inventory cannot be read, rows on
+  other channels stay retained, the teardown logs the inventory as incomplete, and retirement
+  remains held pending retry rather than releasing the alias.
 - `supervisor`: the always-on agent-lifecycle daemon (the manager process's own connection). It
   is the manager endpoint's serve credential (§13.9) and the ONLY holder of the capabilities for
   the delivery endpoint's admin commands (below).
@@ -4250,7 +4843,17 @@ single-function profiles, each granting only the verbs its function needs and no
   `evictPrincipal` on each revoked credential's `holderPrincipal` (§13.1) as their eviction
   step; agents are broker-denied. `evictPrincipal` is
   wired into those barriers, not
-  a standalone admin convenience. Its READ-ONLY twin `principalLiveness` answers whether one
+  a standalone admin convenience. `evictPrincipals` is the same eviction for a set of at most 256
+  distinct principals in ONE shared sweep: one CONNZ scan for the set, a KICK for every matching
+  connection with at most 16 KICK requests in flight, and one re-scan per verify round covering
+  every principal still pending. Every KICK settles before the re-scan that verifies it. Its reply
+  is one `EvictionResult` per principal in request order, each read as `evictPrincipal`'s
+  (an under-reported scan leaves every principal it would have decided `verifiedGone:false,
+  scanComplete:false`). Frozen-gate reconciliation and an endpoint re-registration (§13.1) each
+  verify-evict their whole holder set through it, so neither costs one sweep per family holder,
+  and KICKing a live family costs one broker round trip per 16 live connections. A
+  daemon that does not serve it refuses the verb, and the repair or re-registration then leaves
+  the gate frozen. Its READ-ONLY twin `principalLiveness` answers whether one
   principal still holds a live connection (the same CONNZ sweep, observer credential only — the
   KICK credential is never opened on that path), reporting `live` / `gone` / `unknown` with scan
   completeness as a separate field and a reply bound to the exact principal queried. It exists
@@ -4272,6 +4875,11 @@ single-function profiles, each granting only the verbs its function needs and no
   staged manager registration, contract, status, gate, credential, and same-owner descendant
   provisioning family; public exchange, managed-agent secret exchange, plain user bearers, and all
   other instances are refused.
+- `platform-control` is NOT a generic host profile either. It is the §13.1 service view a host
+  issues, through its authority context's in-process door only, to one platform-run control
+  manager per assigned account, under a `p_` platform owner and the host's current assignment. It
+  reaches the same one-instance family as `manager-service` and same-owner descendants only. It
+  never carries a human identity, never reads or implies `supervise`, and every exchange refuses it.
 
 Standing host credentials are **bounded and renewed**: one-shot profiles carry minutes-scale
 expiry; `supervisor`/`delivery`/`membership-rw` carry a 24h expiry with the manager as the named
@@ -4316,6 +4924,11 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-04 | **Managed lifecycle handoff (§13.17), additive.** A managed agent already enrolled through §13.1 may run where the enrolling manager's filesystem is not visible. The manager releases one closed `cotal-managed-handoff/v1` document by value into that one child, carrying the issued owner, actor, lifecycle UID, sentinel, pinned exchange base, and the raw actor token, which the host never receives. The child's entry point removes the handoff file and its variable before it parses its arguments or does anything else, refuses a mismatched owner, actor, or lifecycle UID before any plane opens, never enrolls or mints, and uses the existing agent-bearer exchange unchanged. The manager refuses a spawn choice only its own host can honour before enrolling. Readiness stays presence-observed, a lost create acknowledgement stays held as uncertain and is never retried, a provider's answer that no resource exists is not an exit, and a close by the lifecycle-derived key is fenced against a create that could still land. A provider resource is bound to that key only by the provider's authenticated answer to its create, never by a derived identifier, a name or a listing. Retirement reuses prepare-retirement, then the known runtime handle's fenced close, then the terminal barrier, including after the manager is gone. A preservation cut that holds a handed-off lifecycle is refused, and a manager stop after a refused cut retires it. |
+| 2026-10-04 | **Platform control authority (§13.1, §13.6, §13.9), additive.** A closed server-authored `platform-control` view, beside the unchanged human `manager-service` view, lets a host run one pooled control manager per assigned account. Its holder's owner is a host-derived `p_` platform owner token, disjoint from every `u_` owner. The host's fresh platform-control assignment authorizes it in place of a ledger `supervise` scope. One closed envelope carries the existing typed manager requests through an in-process door of the host's authority context, served on no listener. The unchanged registration proof, process epoch, and all-duty renewal renew and fence it. Its host-owned maintenance reaches only the assigned instance under its own gate. An account has one assignment and so one control instance, which keeps its instance id and lifecycle UID across restarts and enters a deployment only after the assignment's named predecessor manager has left through its own path, read and never written by the host. It refuses human tokens, takeover of another owner's instance, local or custodial runtime, generic signing, exchange issuance, and cross-owner descendants. The reference host is `startAuthService` in `@cotal-ai/auth`. |
+| 2026-10-02 | **Plane liveness (§6.1), additive.** A credentialed peer can ask whether the manager or delivery plane has a bound responder, on `live.<plane>.<owner>.<actor>` with the reply under `<request>.reply.<nonce>`. The reply is `LivenessAnswer`: `plane`, a `ResponderState` verdict, and an optional opaque per-bind `instance` token that distinguishes responders without identifying them. Only the broker's no-responders answer grades `unbound`; every other failure to get a readable reply grades `unknown`. Agents gain the per-plane request and reply rows; the `delivery`, `supervisor` and remote-manager supervisor credentials gain their plane's serve filter and bounded reply grant. A responder binds again on every connection that replaces the one it bound on, and the manager is not `bound` while its service connection is closed or disconnected. |
+| 2026-09-28 | **The `auth` endpoint becomes a conforming registered endpoint (Cotal #399), closing the two gaps the prior two rounds named.** The plane's boot registers `svc.auth.<instanceId>` through the standard `registerServiceInstance` path and publishes its `retire-lifecycle` contract artifacts to the content-addressed contract store, so the endpoint now serves the reserved `describe` and answers the v1 envelope (`ep.v1`) instead of the legacy `{op,args}`/`{ok,data,error}` body this document states are deleted; a legacy body is refused `unsupported-version` as envelope validation, never an ACL denial. The requester side moves from a hand-built subject to the generic client (`resolveService` + `invokeCommand`), still minted in `exact` mode target-pinned to one incarnation at mint time, and gains the baseline `describe` row plus a bounded contract-store direct-get row so it can resolve the endpoint's registered digests before it calls; a body target that disagrees with the exact subject triple is refused `target-mismatch`. Two new §13.9 rows record the registered instance and the requester's describe/store-read grants. |
+| 2026-09-27 | **Id-less messages are not publish-deduplicated on the durable plane (§8).** The reference Plane-3 fan-out writer and membership-transfer frame publish carry no `Nats-Msg-Id` for a message whose `id` is `""`, so two distinct id-less posts on a durable channel both reach a member and a redelivery of one id-less post may surface twice; a message with a real id keeps its idempotent publish key unchanged. Classification: reference-binding behaviour, no wire-envelope or schema change, protocolVersion unchanged. |
 | 2026-09-09 | **Issued authority and run admission (§13.15, §14.8).** A caller's request may ride a versioned rail (`ep.v1`) that pins the credential's issuer-accepted **generation** beside its triple; the issuer persists the generation's immutable permission ceiling as evidence before returning material, and a client learns its generation from an issuer-written accepted row. A hosted workflow run is admitted under the caller's resolved ceiling, recorded once per run in a dedicated store the driver cannot write, checked before every channel effect, and revoked by an independent marker; resume, takeover and reconcile continue under the original admission, a fork is a new admission, and a local run is admitted from operator evidence named on the command line. `run-start` on the legacy rail is refused by name. Three new per-space stores, two new one-shot profiles (`issuer`, `run-admitter`), and an admission read on the run mediator and operator profiles. **Breaking pre-1.0 authority change: minor.** |
 | 2026-08-24 | **Remote user manager authority.** A closed server-authored `manager-service` view permits one registered user-auth participant to operate one opaque manager instance only when their live actor-ledger row carries the dedicated `supervise` scope. `supervise` is distinct from `spawn` and `admin`; public and managed-agent exchanges refuse the view, and plain user bearers remain unprivileged. The host, never the participant, issues public-nkey JWT material through a lifecycle- and instance-bound, typed, replay-safe `prepare → activate → renew` protocol. The family is confined to one derived owner, fixed server-selected manager actor, lifecycle UID, instance registration/contracts/status, gate, and credential rows; descendant provisioning is host-validated for the same owner only. Revocation and renewal deny new material and unsafe restarts fail-closed while retaining live agents only within their independently valid authority. **Breaking pre-1.0 authority change: minor.** |
 | 2026-08-19 | **Receiver deduplication MUST NOT use the empty string as a key (§4), and id-less deliveries are individually addressable (§8).** Two distinct received messages MUST NOT be treated as one logical delivery solely because both carry `id: ""`; each remains independently deliverable, and copies that cannot be correlated by wire identity may surface more than once on an at-least-once path. The publisher's §5 obligation to supply a unique string id is unchanged; an absent or non-string id remains a malformed envelope, now enforced at each delivery pump (durable terminate, live drop, history and recall skip). §8 adds that the absence of a usable receiver dedup key does not relax acknowledgement ownership: a JetStream-consumed copy with `id: ""` that is surfaced or handled MUST be acknowledged independently, and the reference implementation realizes that through a per-delivery receive key (never wire identity, never dedup authority) at its drain and in-flight seams. Plane-3 durable fan-out still derives its publish msgID from `CotalMessage.id`, so distinct `id: ""` messages can be collapsed inside the broker's duplicate window on a durable channel before the receiver sees them; that path is its own tracked change and this revision's guarantee is scoped to the receiver. Classification: normative receive-side semantics, no wire-envelope or schema change, `protocolVersion` unchanged. |

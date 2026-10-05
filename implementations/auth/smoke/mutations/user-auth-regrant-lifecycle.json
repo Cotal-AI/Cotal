@@ -41,16 +41,16 @@
     {
       "name": "R4 a retired predecessor is treated as a foreign conflict for an unused successor row",
       "file": "implementations/auth/src/service.ts",
-      "find": "        if (head.mapping.state === \"retired\")\n          return { retired: false, lifecycleUid, notStarted: true };",
-      "replace": "",
+      "find": "        if (head.mapping.state === \"retired\")\n          return { retired: false, lifecycleUid, notStarted: true };\n        throw new EpEnvelopeError(\"conflict\", `interactive lifecycle retirement for",
+      "replace": "        throw new EpEnvelopeError(\"conflict\", `interactive lifecycle retirement for",
       "expectRed": "an unused successor can be re-granted again after its predecessor retired",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
     },
     {
       "name": "R5 the private retirement route accepts a browser-origin request",
       "file": "implementations/auth/src/service.ts",
-      "find": "  if (req.headers.origin !== undefined) return send(res, 403, { error: \"browser-origin requests are not served here\" });\n  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\" });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
-      "replace": "  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\" });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
+      "find": "async function handleInteractiveLifecycleRetirement(\n  req: IncomingMessage,\n  res: ServerResponse,\n  ctx: HandlerCtx,\n): Promise<void> {\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\" });\n  if (req.headers.origin !== undefined) return send(res, 403, { error: \"browser-origin requests are not served here\" });\n  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\" });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
+      "replace": "async function handleInteractiveLifecycleRetirement(\n  req: IncomingMessage,\n  res: ServerResponse,\n  ctx: HandlerCtx,\n): Promise<void> {\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\" });\n  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\" });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
       "expectRed": "interactive lifecycle retirement refuses browser-origin requests",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
     },

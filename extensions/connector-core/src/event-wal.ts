@@ -519,6 +519,9 @@ export class EventWal {
   get frontier(): WalFrontier { return { ...this.doc.frontier }; }
   get pending(): WalPending | null { return this.doc.pending ? { ...this.doc.pending } : null; }
 
+  /** Bound by {@link bindSubjectFrontier}; absent for a WAL nothing publishes from. */
+  private subject?: SubjectFrontier;
+
   /**
    * Load an existing WAL, or start a virgin one.
    *
@@ -528,9 +531,6 @@ export class EventWal {
    * and guessing `E := 0` either CAS-halts forever or appends under a stale expectation. Recovery
    * from that state is an explicit operator act, never a startup heuristic.
    */
-  /** Bound by {@link bindSubjectFrontier}; absent for a WAL nothing publishes from. */
-  private subject?: SubjectFrontier;
-
   static async open(
     path: string,
     opts: { space: string; threadId: string; principal: string; subjectMayExist: boolean },

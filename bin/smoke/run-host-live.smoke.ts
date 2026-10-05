@@ -17,10 +17,9 @@
 import { execFile as execFileProc, spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-runhost-home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
@@ -32,7 +31,7 @@ const {
   probeConnect, resolveService, invokeCommand, DEV_OWNER, LANG_PROBLEM_DETAIL_KIND, principalKey,
   openRecordsBucket, readCheckpointAnswer, recordCheckpointAnswer, newTakeoverId, RUN_ACTIVATION_WAIT_MS, RUN_LAUNCH_DEADLINE_MS,
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
-  issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel,
+  issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
 } = await import("@cotal-ai/core");
 const { jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
@@ -54,15 +53,11 @@ const { bootBroker } = await import("../../implementations/manager/smoke/_boot-b
 // The delivery daemon: the liveness oracle a manager restart on an auth mesh verify-evicts through
 // (SPEC 13.1), and the timer writer a checkpoint's deadline schedule is armed by.
 const { bootDeliveryDaemon } = await import("../../implementations/manager/smoke/_boot-delivery.js");
+const { recordOwnedSeat, awaitSeatsExited, killVerifiedSeats } = await import("./_owned-seats.js");
+type OwnedSeatT = import("./_owned-seats.js").OwnedSeat;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const execFile = promisify(execFileProc);
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 
 let pass = 0, fail = 0;
 const c = (name: string, cond: boolean, extra?: unknown) => {
@@ -92,6 +87,10 @@ const FUNCTION_OPTIONS_PLACEMENT = 'function options() { return { placement: { e
 const kids: ChildProcess[] = [];
 const scratch: string[] = [home];
 let rc = 1;
+
+// Seat processes this suite's managers spawned, each recorded with its start identity from the
+// managers' own handles. `_owned-seats.ts` judges them by the shipped identity rule.
+const ownedSeats: OwnedSeatT[] = [];
 
 // ── Phase A: JWT-auth broker, the `run` capability alone ─────────────────────────────────────
 const spaceA = `runhost-${Math.random().toString(36).slice(2, 8)}`;
@@ -130,6 +129,7 @@ try {
     space: spaceA, servers: brokerA.servers, auth,
     reloadStoreIdentity: { kind: "fs", root: resolve(wsA) },
   });
+  const deliveryBootAt = Date.now();
   mgr = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
   await mgr.start();
 
@@ -316,7 +316,11 @@ try {
       return pendingStep(v, "/ask:size#0") ? v : undefined;
     }, 30_000);
     c("the ask parks after both baseline seats are spawned", pendingStep(parked, "/ask:size#0") !== undefined, parked?.journal);
-    const managed = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string; issued?: { generation: string; acceptedToken: string } }> };
+    const managed = mgr as unknown as { agents: Map<string, { id: string; lifecycleUid: string; issued?: { generation: string; acceptedToken: string }; handle: { pid?: number } }> };
+    for (const name of ["asked", "other"]) {
+      const pid = managed.agents.get(name)?.handle.pid;
+      if (pid !== undefined) ownedSeats.push(recordOwnedSeat(name, pid));
+    }
     const seatCall = async (name: string, command: string, args?: Record<string, unknown>, self = true) => {
       const a = managed.agents.get(name)!;
       const creds = readFileSync(agentLifecycleSecretFilePaths(wsA, spaceA, name, a.lifecycleUid).creds, "utf8");
@@ -416,8 +420,24 @@ try {
     const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
     const parked = await until(async () => { const v = await status(runId); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
     c("a second checkpoint program parks under epoch 1", parked?.status?.epoch === 1 && stateOf(parked) === "running", parked?.status);
-    await mgr.stop();
+    // The default pty runtime runs seats in this process and cannot hand them to a successor, so a
+    // sparing stop is refused. The restart takes the predecessor's seats down with it.
+    await mgr.stop({ withAgents: true });
     mgr = undefined;
+    const leftBehind = await awaitSeatsExited(ownedSeats, 5_000);
+    c("the stopped predecessor took its own seat processes down with it",
+      ownedSeats.length === 2 && ownedSeats.every((s) => s.token !== undefined)
+        && leftBehind.running.length === 0 && leftBehind.unverifiable.length === 0,
+      { seats: ownedSeats.map((s) => ({ name: s.name, identity: s.token !== undefined })), leftBehind });
+    // A restart more than one delivery-lease TTL after the daemon came up is the ordinary case on a
+    // real mesh. The successor challenges the daemon before it remints, and only the lease holder
+    // may answer, so the daemon must still hold its lease then. Reaching this point takes about one
+    // TTL, so wait past it rather than let the host's load decide which case runs.
+    await wait(Math.max(0, deliveryBootAt + LEASE_TTL_MS + LEASE_TTL_MS / 4 - Date.now()));
+    const leaseRow = await delivery!.ep.readDeliveryLeaseEntry(0).catch(() => undefined);
+    c("more than one delivery-lease TTL after it came up, the delivery daemon still holds its lease",
+      Date.now() - deliveryBootAt > LEASE_TTL_MS && leaseRow !== undefined && delivery!.ep.ownsDeliveryLease(leaseRow.info),
+      { sinceBootMs: Date.now() - deliveryBootAt, rowPresent: leaseRow !== undefined });
     const t0 = Date.now();
     mgrB = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
     await mgrB.start();
@@ -607,6 +627,12 @@ try {
 } catch (e) {
   fail++;
   console.log("  ✗ FAIL: phase A threw", (e as Error).stack ?? String(e));
+  // Phase B reuses `mgr`, so a phase-A manager a throw left running must stop here, seats with it,
+  // or it keeps driving runs and logging into phase B's captured output.
+  try { await mgr?.stop({ withAgents: true }); } catch { /* reported by the teardown census */ }
+  try { await mgrB?.stop({ withAgents: true }); } catch { /* reported by the teardown census */ }
+  mgr = undefined;
+  mgrB = undefined;
 }
 
 // ── Phase B: open broker, the shipped `cotal run` client ─────────────────────────────────────
@@ -667,16 +693,32 @@ try {
   console.log("  ✗ FAIL: phase B threw", (e as Error).stack ?? String(e));
 }
 
-const EXPECTED_CELLS = 67;
+// Teardown runs on the failing path too, so a phase that threw with seats up still takes them down.
+// Phase A's own catch already stopped `mgrB`; `mgr` here is phase B's.
+try { await nc?.drain(); } catch { /* teardown */ }
+try { await mgr?.stop({ withAgents: true }); } catch { /* teardown */ }
+try { await delivery?.stop(); } catch { /* teardown */ }
+{
+  // An unverifiable seat is a failure here, never an exit: the cell cannot claim a clean teardown
+  // for a process whose identity it could not check.
+  const leftBehind = await awaitSeatsExited(ownedSeats, 5_000);
+  c("teardown: no seat process this suite's managers spawned outlives the managers' own stop",
+    leftBehind.running.length === 0 && leftBehind.unverifiable.length === 0, leftBehind);
+  // Bounded fallback for a red run: SIGKILL only a recorded seat whose start identity still
+  // verifies. An unverifiable one is refused and reported, never signalled.
+  const { signalled, refused } = killVerifiedSeats(ownedSeats);
+  if (signalled.length) console.log(`  ! SIGKILLed verified seat processes left running: ${signalled.join(", ")}`);
+  if (refused.length) console.log(`  ! refused to signal seats with unverifiable identity: ${JSON.stringify(refused)}`);
+  const stillUp = await awaitSeatsExited(ownedSeats, 5_000);
+  if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
+}
+
+const EXPECTED_CELLS = 70;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
 }
 rc = fail === 0 ? 0 : 1;
-try { await nc?.drain(); } catch { /* teardown */ }
-try { await mgr?.stop(); } catch { /* teardown */ }
-try { await mgrB?.stop(); } catch { /* teardown */ }
-try { await delivery?.stop(); } catch { /* teardown */ }
 for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* gone */ } }
 await brokerA.stop().catch(() => undefined);
 for (const d of scratch) rmSync(d, { recursive: true, force: true });

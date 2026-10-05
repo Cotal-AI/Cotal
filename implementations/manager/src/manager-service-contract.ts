@@ -201,11 +201,31 @@ const AGENT_ROW_SCHEMA = {
     status: { type: "string" },
     uptimeMs: { type: "integer", minimum: 0 },
     mesh: { type: "string" },
+    // The roster's harness-reported condition beside `mesh` (SPEC §6), its four fields projected. Optional:
+    // absent when the connector reported none, and on rows from managers that predate it.
+    condition: {
+      type: "object",
+      additionalProperties: false,
+      required: ["code"],
+      properties: {
+        code: { type: "string" },
+        source: { type: "string" },
+        message: { type: "string" },
+        since: { type: "number" },
+      },
+    },
+    // The roster's `activeAt` (SPEC §6): epoch ms of the seat's last harness-reported work progress.
+    // Optional: absent when the connector reports none, and on rows from managers that predate it.
+    activeAt: { type: "number" },
     // The observing manager's presence-view state at the time of the read: `current` (the mesh
     // column is a verdict), `stale` (its watch has been silent past TTL; `mesh` is last-known),
     // or `unpopulated` (its watch has not replayed the bucket yet; `absent` means nothing).
     // Optional so a v0.47 manager's rows still validate; a reader treats absence as `current`.
     meshView: { type: "string", enum: ["current", "stale", "unpopulated"] },
+    // Epoch ms of the seat's last presence heartbeat, present only when `mesh` is `offline` and
+    // `meshView` is `current`: when the offline verdict began (#1208). Optional so an older
+    // manager's rows still validate.
+    offlineSince: { type: "integer", minimum: 0 },
     lifecycleUid: { type: "string" },
     authHealth: { type: "string" },
     authReason: { type: "string" },
@@ -219,15 +239,57 @@ const AGENT_ROW_SCHEMA = {
     // itself a managed seat - not carried here, the manager does not hold it).
     model: { type: "string" },
     variant: { type: "string" },
+    // The connector-reported provider from presence (#785): absent when the connector reported none.
+    provider: { type: "string" },
     cwd: { type: "string" },
     pid: { type: "integer", minimum: 1 },
     spawner: { type: "string" },
     instanceId: { type: "string" },
     host: { type: "string" },
+    // #1500: present only on a `--resume` seat. `source` is the session it forked; `title` and
+    // `transcriptSha256` appear once the seat has recorded its fork, and `title` only when the source
+    // has one.
+    resume: {
+      type: "object",
+      additionalProperties: false,
+      required: ["source"],
+      properties: { source: { type: "string" }, title: { type: "string" }, transcriptSha256: { type: "string" } },
+    },
   },
 } as const;
 
 const PS_OUTPUT_SCHEMA = { type: "array", items: AGENT_ROW_SCHEMA } as const;
+
+// One durable static-slot observation row (the `StaticSlotObservationDetail` fields minus
+// `kind`, plus this manager's live/identity facts). Closed: never a raw StaticManagedSlotRow,
+// never a credential id.
+const SLOT_ROW_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["name", "owner", "actor", "slotLifecycleUid", "slotPhase", "slotRevision", "readOrder", "consistency", "live", "managerInstanceId"],
+  properties: {
+    name: { type: "string" },
+    owner: { type: "string" },
+    actor: { type: "string" },
+    slotLifecycleUid: { type: "string" },
+    slotPhase: { type: "string", enum: ["provisioning", "active", "terminalizing", "retired"] },
+    cleanupComplete: { type: "boolean" },
+    slotRevision: { type: "integer", minimum: 0 },
+    headState: { type: "string", enum: ["active", "retiring", "retired"] },
+    headOp: {
+      type: "object", additionalProperties: false, required: ["opId", "kind"],
+      properties: { opId: { type: "string" }, kind: { type: "string", enum: ["retirement"] } },
+    },
+    headLifecycleUid: { type: "string" },
+    headRevision: { type: "integer", minimum: 0 },
+    readOrder: { type: "array", items: { type: "string", enum: ["slot", "head"] }, minItems: 2, maxItems: 2 },
+    consistency: { type: "string", enum: ["ordered-not-atomic"] },
+    live: { type: "boolean" },
+    managerInstanceId: { type: "string" },
+  },
+} as const;
+const SLOTS_OUTPUT_SCHEMA = { type: "array", items: SLOT_ROW_SCHEMA } as const;
+
 const INSPECT_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name"],
   properties: { name: { type: "string", minLength: 1 } },
@@ -269,6 +331,11 @@ const SPAWN_INPUT_SCHEMA = {
     },
   },
 } as const;
+
+/** The `start` op's argument vocabulary as the served contract declares it: every property name
+ *  `SPAWN_INPUT_SCHEMA` accepts. Exported so a parity check reads the vocabulary from here rather
+ *  than carrying a second, driftable copy of it. */
+export const SPAWN_INPUT_KEYS: readonly string[] = Object.keys(SPAWN_INPUT_SCHEMA.properties);
 
 /** `spawn` success output (P2 item 2): the ACTION ACCEPTANCE floor — the ALLOCATED agent identity
  *  (name + the owner/actor/uid addressing triple item 1 addresses by) plus the goal coordinates
@@ -361,9 +428,6 @@ const INPUT_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, bytes: { type: "integer", minimum: 0 } },
 } as const;
 
-/** `models` output, NORMALIZED: always the full catalog list ({@link ManagerServiceHandlers}
- *  wraps the ctl op's single-or-array reply). Catalog rows stay OPEN — a connector's catalog may
- *  carry host-specific fields beyond the core `ConnectorModelCatalog` shape. */
 /** `turn` (workflow runs, cotal-lang §5.3): wake the TARGET seat for one turn on behalf of a
  *  workflow run. The manager relays and stays run-ignorant: `payload` is an opaque bounded string
  *  the seat pulls back verbatim through `turn-pending` — its shape is the runtime↔connector
@@ -449,6 +513,9 @@ const MODELS_INPUT_SCHEMA = {
   type: "object", additionalProperties: false,
   properties: { agent: { type: "string" }, refresh: { type: "boolean" } },
 } as const;
+/** `models` output, NORMALIZED: always the full catalog list ({@link ManagerServiceHandlers}
+ *  wraps the ctl op's single-or-array reply). Catalog rows stay OPEN — a connector's catalog may
+ *  carry host-specific fields beyond the core `ConnectorModelCatalog` shape. */
 const MODELS_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["catalogs"],
   properties: {
@@ -629,10 +696,17 @@ const RUN_ROW_SCHEMA = {
     holder: { type: "string" },
     epoch: { type: "integer", minimum: 0 },
     journalHigh: { type: "integer", minimum: -1 },
+    startedAt: { type: "number" },
+    programHash: { type: "string" },
     forkedFrom: {
       type: "object", additionalProperties: false, required: ["run", "step"],
       properties: { run: { type: "string" }, step: { type: "string" } },
     },
+    revoked: {
+      type: "object", additionalProperties: false, required: ["by", "reason"],
+      properties: { by: { type: "string" }, reason: { type: "string" } },
+    },
+    revocationUnreadable: { type: "string" },
   },
 } as const;
 const RUN_PS_OUTPUT_SCHEMA = { type: "array", items: RUN_ROW_SCHEMA } as const;
@@ -655,10 +729,18 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
           epoch: { type: "integer", minimum: 0 },
           replayedTo: { type: "integer", minimum: 0 },
           step: { type: "string" },
+          effect: { type: "string" },
+          name: { type: "string" },
           state: { type: "string", enum: ["pending", "settled"] },
           outcome: { type: "string" },
+          status: { type: "string" },
+          errorCode: { type: "string" },
+          startedAt: { type: "number" },
+          endedAt: { type: "number" },
           asks: { type: "string" },
           addressee: { type: "string" },
+          deadlineAt: { type: "number" },
+          onExpiry: { type: "string" },
           answer: {
             type: "object", additionalProperties: false, required: ["answerId"],
             properties: {
@@ -669,13 +751,28 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
               at: { type: "number" },
             },
           },
+          amendments: {
+            type: "array",
+            items: {
+              type: "object", additionalProperties: false, required: ["answerId", "supersedes", "by", "at"],
+              properties: {
+                answerId: { type: "string" },
+                supersedes: { type: "string" },
+                value: {},
+                by: { type: "string" },
+                artifact: { type: "string" },
+                at: { type: "number" },
+              },
+            },
+          },
         },
       },
     },
   },
 } as const;
 /** No `by`: the answerer is the caller as the manager knows them, decided from the authenticated
- *  principal at the serve layer (SPEC 14.5), so a request cannot name someone else. */
+ *  principal at the serve layer (SPEC 14.5), so a request cannot name someone else. `amend` files a
+ *  later answer beside a SETTLED pause's accepted one instead of answering an open pause. */
 const RUN_ANSWER_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId", "stepKey"],
   properties: {
@@ -684,11 +781,14 @@ const RUN_ANSWER_INPUT_SCHEMA = {
     stepKey: { type: "string", minLength: 1 },
     value: {},
     artifact: { type: "string", minLength: 1 },
+    amend: { type: "boolean" },
   },
 } as const;
+/** An answer names its `settle`; an amendment names the accepted answer it `supersedes` and
+ *  presents nothing. */
 const RUN_ANSWER_OUTPUT_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["token", "answerId", "settle"],
-  properties: { token: { type: "string" }, answerId: { type: "string" }, settle: { type: "object" } },
+  type: "object", additionalProperties: false, required: ["token", "answerId"],
+  properties: { token: { type: "string" }, answerId: { type: "string" }, settle: { type: "object" }, supersedes: { type: "string" } },
 } as const;
 
 // ---- the command table (ONE source for the document, the defs, the caller contracts, AND the
@@ -711,6 +811,7 @@ const ROWS: CommandRow[] = [
   { name: "status", capability: "manager.read", input: VOID_SCHEMA, output: STATUS_OUTPUT_SCHEMA, targeted: false, handler: "status" },
   { name: "ps", capability: "manager.read", input: VOID_SCHEMA, output: PS_OUTPUT_SCHEMA, targeted: false, handler: "ps" },
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
+  { name: "slots", capability: "manager.read", input: VOID_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
   { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
@@ -880,7 +981,16 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  directory before a placed workflow spawn launches there.
  *
  *  18 = `goal-result` mediates a caller's own canonical terminal through the manager's trusted
- *  goal-writer, so a result remains observable after the caller's connection is replaced. */
+ *  goal-writer, so a result remains observable after the caller's connection is replaced.
+ *
+ *  19 = `run-answer` input grows `amend` (file a later answer beside a settled pause's accepted
+ *  one), its output names `supersedes` for that form, and `run-status` journal rows carry
+ *  `amendments`. Changed input and output contracts are a changed described surface even though
+ *  the command names are unchanged.
+ *
+ *  20 = the `ps`/`inspect` row adds `resume`: the session a `--resume` seat forked, its title and
+ *  its transcript hash. A changed output contract is a changed described surface even though the
+ *  command names are unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -898,7 +1008,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 18,
+    revision: 20,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -924,17 +1034,17 @@ export function managerShippedSurface(): { revision: number; commandCount: numbe
   return { revision: document.revision, commandCount: names.length, names };
 }
 
-/** The two-digest §13.7 content addressing for the manager document: the registered CLOSURE digest
- *  names a `{v:1, root:<artifactDigest>, members:[]}` manifest whose root names the DOCUMENT. Both
- *  artifacts are published to the `epc` store at their own digest; `clusterDigests` in the service
- *  spec carries the closure digest. Returned together so the manager publishes both then registers
- *  under the closure digest. */
 /** Public, immutable source artifacts used by both local registration and the remote
  * host-registration protocol. Exporting the same values avoids a second manager contract dialect. */
 export function managerAuthorityContractSource(): { document: ReturnType<typeof managerClusterDocument>; artifacts: unknown[] } {
   return { document: managerClusterDocument(), artifacts: managerContractArtifactValues() };
 }
 
+/** The two-digest §13.7 content addressing for the manager document: the registered CLOSURE digest
+ *  names a `{v:1, root:<artifactDigest>, members:[]}` manifest whose root names the DOCUMENT. Both
+ *  artifacts are published to the `epc` store at their own digest; `clusterDigests` in the service
+ *  spec carries the closure digest. Returned together so the manager publishes both then registers
+ *  under the closure digest. */
 export function managerClusterArtifacts(): {
   document: ReturnType<typeof managerClusterDocument>;
   rootDigest: string;
@@ -957,6 +1067,7 @@ export interface ManagerServiceHandlers {
   status(ctx: EpServeContext): ManagerStatus | Promise<ManagerStatus>;
   ps(ctx: EpServeContext): unknown | Promise<unknown>;
   inspect(ctx: EpServeContext): unknown | Promise<unknown>;
+  slots(ctx: EpServeContext): unknown | Promise<unknown>;
   models(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveCwd(ctx: EpServeContext): unknown | Promise<unknown>;
   spawn(ctx: EpServeContext): unknown | Promise<unknown>;

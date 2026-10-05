@@ -80,13 +80,39 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
 
    Pick the affected packages plus the semver bump (patch / minor / major), and write a
    one-line summary. Commit the generated `.changeset/<name>.md` file alongside your code
-   change.
-3. Merge to `main`.
+   change. On a branch that has been open for a long time, check that `main` has not already
+   shipped the change before you trust its changeset. Merge conflicts in the code the changeset
+   describes are the usual sign that it has.
+3. Merge to `main`. The only status check `main` requires is `attribution`. The CI aggregate
+   jobs `ci-ok`, `windows-ok` and `installer-ok` are advisory: a red one reports and does not
+   block the merge, so read them before you merge. `attribution` also refuses the PR until a
+   paragraph `Approved-at: <sha>` in its body names the PR's current head by its full sha. Add it
+   after you review that head, with a blank line before and after. A line in a code block or an
+   HTML comment does not count. A push moves the head, so review the new head and update the line.
+   Editing the body re-runs the check. Re-running the job does not, because it replays the old event.
 4. The `Changesets` workflow runs:
    - If there are pending changesets, it opens (or updates) a PR titled `chore(release):
-     version packages` that bumps versions and updates `CHANGELOG.md` files.
+     version packages` that bumps versions and updates `CHANGELOG.md` files. The same step
+     (`pnpm ci:version`) rebuilds the Claude connector and runs
+     `scripts/materialize-claude-plugin.mjs`, which rewrites the committed Claude Code plugin tree
+     under `claude-plugin/` with the new bundles and stamps both plugin manifests with the new
+     version. Claude Code updates an installed plugin only when that version changes, so a release
+     is what delivers a new plugin to installs from the repo's marketplace or a pinned commit.
+     The bundles carry the docs, so `scripts/operator-literal-allowlist.json` lists them with the
+     same example counts as `docs/cli.md` and `docs/run-a-mesh.md`. A release that changes those
+     counts updates the bundle entries in the release PR.
+     The workflow rewrites the PR body each time it updates the PR, so add its `Approved-at` line
+     after the last update, just before you merge.
    - When **that** PR is merged, the same workflow detects the bumped versions, runs `pnpm
      build`, and `pnpm publish`es each changed package to npm with provenance.
+
+## Correcting a released changelog entry
+
+Changesets only prepends new `## <version>` sections, so an entry in a released section stays as
+written unless someone edits it. When a released entry is wrong, add a `**Correction:**` paragraph
+under the same bullet, indented two spaces, in every `CHANGELOG.md` that carries the bullet. Keep the
+original text, since the GitHub Release for that version already published it. Use the same
+wording in each file, because `scripts/release-notes-detail.mjs` dedupes summaries by their text.
 
 ## Publication workflow
 
@@ -99,16 +125,51 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
   a direct `npm publish` Allowed action on THIS repository's `changesets.yml` publisher;
 - only after those checks, the workspace build, native assembly, and recursive publish.
 
-The census prints every package, version, OIDC result, and direct-publish result before it refuses.
-If every exact version already exists, the preflight reports a no-op and exits successfully before
-credential checks. A mixed census, incomplete fixed group, failed OIDC exchange, or stage-only
-package exits before `pnpm publish`.
+The preflight first refuses npm access-token environment variables, before invoking pnpm to
+enumerate workspace packages. The registry census prints each package, version, OIDC result and
+direct-publish result. If every exact version already exists, the preflight reports a no-op before
+OIDC requests. A mixed census, incomplete fixed group, failed OIDC exchange, or stage-only package
+exits before `pnpm publish`.
 
 The post-publish closure gate checks every package in the fixed group. Registry observations cannot
 distinguish a partial publish from slow propagation: clean 404s and repeated non-404 failures both
 lack evidence that a package will never appear. The census therefore reports an incomplete or
 errored closure as `UNSETTLED` and never fails the job on its own. Exit 1 remains reserved for future
 positive publisher evidence.
+
+Presence on the per-version endpoint does not prove a version installs: `npm install` resolves
+through the packument, which can lag that endpoint. Before the GitHub Release is cut, the install
+gate installs `cotal-ai@<version>` from the registry into a scratch prefix with a fresh cache and
+runs `cotal --version`. A failed attempt before the deadline counts as unknown and is retried every
+15 seconds. Once less than two intervals remain, the gate waits half of the remaining time instead,
+so the last failed attempt is still retried before the deadline. A version that does not install
+and run within 10 minutes fails the job, and no Release is cut:
+
+```bash
+node scripts/verify-release-installable.mjs 0.52.0
+```
+
+The window in which npm's `latest` tag points at a version whose pinned siblings are not yet
+installable opens at publish time, so neither gate can close it. They only keep the announcement
+out of it.
+
+When both gates pass, the job cuts the GitHub Release and tag for that version. The Release
+targets the oldest commit on `main` whose `bin/package.json` carries the version, which is the
+tree the packages were built from. A version that was reverted and carried again keeps that first
+commit. A publishing run whose closure gate ends `UNSETTLED` skips the Release, and the next push
+that passes both gates cuts it with that same target. The step fails if it cannot read that history
+or cannot find that commit.
+
+After the `version` job, the `install-probe` job packs `cotal-ai` and each runtime sibling (every
+`workspace:` dependency of `cotal-ai`) and checks that each tarball contains its declared `main` and
+string `exports` targets. It then extracts the `cotal-ai` tarball and runs `cotal --version` and
+`cotal --help`. The binary runs against the workspace copies of its siblings, so the probe checks
+package shape only. It does not cover registry propagation or native assets. Nothing depends on the
+job, so a failure reds the workflow without gating the Release:
+
+```bash
+node scripts/post-publish-install-probe.mjs
+```
 
 Re-check a version that already shipped without publishing, tagging, or changing git:
 

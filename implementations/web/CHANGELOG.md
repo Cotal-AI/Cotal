@@ -1,5 +1,55 @@
 # @cotal-ai/web
 
+## 0.65.0
+
+### Patch Changes
+
+- d5cf1eb: `cotal web --detach` on the default host and port now comes up on hosts whose system resolver has no answer for `cotal.localhost`, such as WSL2. The detached parent probed the branded `http://cotal.localhost:7799/` for readiness through Node's resolver, so every probe failed while the child was already serving on 127.0.0.1:7799; after 30 seconds it reported `web dashboard did not become HTTP-ready`, stopped the healthy child, and left only the banner in `web.log`. The readiness probe now asks the bound host and port. The printed address is unchanged.
+
+## 0.64.0
+
+## 0.63.0
+
+### Patch Changes
+
+- d8c557c: The web dashboard now binds the account seed only inside the step that connects and mints its channel-purger cred. Before, the full connection, seed included, stayed in scope of the request handlers beside the narrowed copy they were meant to use, so a one-word edit in a handler could reach the seed and still compile. A handler that reaches for the seed now fails to typecheck.
+
+## 0.62.0
+
+## 0.61.0
+
+## 0.60.0
+
+## 0.59.0
+
+### Patch Changes
+
+- f5cbc2d: `docs/watch-a-mesh.md` now quotes the all-activity deadline reason as the server builds it, `the read did not finish within <deadline>ms`, and states the 8000 ms default in its prose. The page quoted the concrete `8000ms`, which no shipped source string holds, so the docs literal gate failed on every branch.
+- 5d98406: The dashboard's all-activity page now says why each missing source is missing. A partial page carries `reasons`, keyed by source, and the server's partial line and the page's stale marker repeat it. A read the deadline cut says it did not finish within the deadline, and a read that was refused says so with its error, so a chat read refused for exceeding the broker's `max_payload` no longer looks the same as one that ran out of time.
+- d5e20e0: The dashboard's all-activity backfill now records its ordering rule where the page is sorted and in the dashboard docs. The chat half is the newest messages by broker arrival, the merged page with direct messages is ordered by the sender's `ts` because that is the only key the two streams share, and messages with equal `ts` keep stream order with chat before direct messages. Behaviour is unchanged.
+- 608f5f4: Re-attach doc comments that had drifted away from the declarations they document. A `/** */` block followed directly by another one documented nothing, so editor hovers and the published type declarations showed no doc for the intended declaration (for example `Manager`, the `plane3` field and `AclResolver`). Each such block now sits above its declaration, is merged into the block it duplicated, or is removed when its declaration no longer exists. A new `pnpm check:doc-comments` check, run as part of `check:docsbundle`, refuses a doc block followed directly by another in shipped source.
+
+## 0.58.0
+
+## 0.57.0
+
+## 0.56.1
+
+## 0.56.0
+
+### Patch Changes
+
+- 99cad7b: A membership watch that closes after setup now reaches its caller through a second callback on `watchMembership`, instead of leaving the caller holding a stale snapshot with no signal. The dashboard broadcasts the existing membership-read-failed event and the console marks the feed unreadable, instead of both keeping the last snapshot silently (#485).
+- 03912bb: Close the connection an auth-gate refusal rides on when the request announced a body, so an unauthenticated caller cannot hold the dashboard reading an upload it refused (#2024)
+- 4f288bd: Move the two header reads that compute the announced-body fact below the auth gate, so the pre-gate prefix stays a parse and nothing else; refusal bytes and the no-body guard are unchanged (#2178)
+
+## 0.55.0
+
+### Patch Changes
+
+- e1351c2: Take a DM sender's display name and role from the roster by authenticated id instead of the message payload, so one peer cannot spoof another's name or role in the CLI DM lens or the web feed.
+- 8c037f5: Refuse announced request bodies on dashboard routes that do not read one before the server accepts the upload.
+
 ## 0.54.0
 
 ## 0.53.0

@@ -12,30 +12,25 @@
  *  3. `cotal down` stops all three: pid files gone, processes dead, port closed.
  *  4. #1307: Ctrl-C on a FOREGROUND `up` follows the same sparing rule as bare `down`. One managed
  *     seat (a shim `claude` on PATH: a real core-dist endpoint that joins presence and stays alive)
- *     survives the SIGINT, the manager and broker are gone, the spared block is printed with the
- *     reap route, and the process exits within a bounded time.
+ *     runs on the in-process pty runtime, so it cannot outlive the manager: after the SIGINT the
+ *     manager, broker and seat are gone, the report names the seat as stopped with the manager,
+ *     and the process exits within a bounded time.
  *
  * Sandboxes COTAL_HOME + a temp project root; tears down via `cotal down` + own-pid SIGTERM only —
  * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH.
  * Run: pnpm smoke:up-stack:live
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
-import { createConnection, createServer, type AddressInfo } from "node:net";
+import { createConnection } from "node:net";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { DEFAULT_SPACE } from "@cotal-ai/core";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const DEFAULT_SERVER = "nats://127.0.0.1:4222";
@@ -205,11 +200,49 @@ try {
   ok("the refusal names the `cotal down manager` remedy", /`cotal down manager` first, then `cotal up --no-manager`/.test(refusedOut), refusedOut);
   ok("the manager the refresh refused to touch is left running", alive(pidOf(recordName(MANAGER_PIDFILE))), recordName(MANAGER_PIDFILE));
 
+  // 2d) #883: a refresh that RESTORES a missing manager must say so, distinctly from a refresh that
+  //     finds everything already running — the two used to print the byte-identical summary line.
+  const managerPidFile = record(MANAGER_PIDFILE);
+  const preRestartPid = pidOf(recordName(MANAGER_PIDFILE));
+  process.kill(preRestartPid, "SIGTERM");
+  let managerDead = false;
+  for (let i = 0; i < 24 && !managerDead; i++) {
+    await sleep(500);
+    managerDead = !alive(preRestartPid);
+  }
+  ok("the manager is dead before the restore refresh", managerDead, preRestartPid);
+  const restored = cli("up", "--server", SERVER);
+  const restoredOut = plain(restored.stdout + restored.stderr);
+  ok("a refresh that restores a missing manager exits 0", restored.status === 0, restoredOut);
+  const restoreMatch = /✓ restored in the background: manager \(pid (\d+)\)/.exec(restoredOut);
+  ok("the refresh names the restored manager with a pid", restoreMatch !== null, restoredOut);
+  const restoredPid = Number(restoreMatch?.[1]);
+  ok("the restored pid is alive", alive(restoredPid), restoredPid);
+  ok("the restored pid matches the new pidfile", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, {
+    restoredPid,
+    pidfile: pidOf(recordName(MANAGER_PIDFILE)),
+  });
+  pids[pids.indexOf(preRestartPid)] = restoredPid;
+
+  // 2e) the SAME refresh, run again with nothing to heal, must print only the already-running line
+  //     and NOT the restore line - the no-op case this defect used to make indistinguishable from 2d.
+  const noop = cli("up", "--server", SERVER);
+  const noopOut = plain(noop.stdout + noop.stderr);
+  ok("a no-op refresh exits 0", noop.status === 0, noopOut);
+  ok("a no-op refresh does not print the restore line", !/✓ restored in the background: manager/.test(noopOut), noopOut);
+  ok(
+    "a no-op refresh prints the already-running line",
+    new RegExp(`✓ mesh "${DEFAULT_SPACE}" already running at`).test(noopOut),
+    noopOut,
+  );
+  ok("the manager pidfile is unchanged by the no-op refresh", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, managerPidFile);
+
   // 3) down stops the whole stack, symmetric with up. Poll: the SIGTERM'd manager/daemon shut
   //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down");
   ok("down exits 0", down.status === 0, down.stdout + down.stderr);
   let dead = false;
+
   for (let i = 0; i < 24 && !dead; i++) {
     await sleep(500);
     dead = pids.every((p) => !alive(p)) && !(await portOpen());
@@ -258,11 +291,13 @@ try {
   ok("broker-only down stops broker + delivery daemon", boDead, { boDeliveryPid });
   ok("broker-only down leaves no manager pidfile behind", !existsSync(record(MANAGER_PIDFILE)));
 
-  // 4) #1307: Ctrl-C on a FOREGROUND up spares and reports the managed seat, exactly like bare
-  //    down. The seat is a shim `claude` first on PATH (the manager resolves requires:["claude"]
-  //    at boot): a real core-dist endpoint that joins presence under the manager-minted creds, so
-  //    the detached spawn resolves readiness and ps lists it. Its env names ride the documented
-  //    spawn.env allow-list (the seat env is otherwise stripped to the fixed OS boundary).
+  // 4) #1307: Ctrl-C on a FOREGROUND up stops the stack and reports the managed seat, exactly like
+  //    bare down. The default pty runtime keeps the seat's PTY inside the manager process, so the
+  //    seat stops with the manager and is reported as stopped, never as spared (#2440). The seat is
+  //    a shim `claude` first on PATH (the manager resolves requires:["claude"] at boot): a real
+  //    core-dist endpoint that joins presence under the manager-minted creds, so the detached spawn
+  //    resolves readiness and ps lists it. Its env names ride the documented spawn.env allow-list
+  //    (the seat env is otherwise stripped to the fixed OS boundary).
   const fgPort = await freePort();
   const fgServer = `nats://127.0.0.1:${fgPort}`;
   const fgBin = mkdtempSync(join(tmpdir(), "cotal-upstack-fgbin-"));
@@ -337,11 +372,11 @@ try {
     for (let i = 0; i < 20 && alive(fgManagerPid); i++) await sleep(500);
     ok("the manager is gone after Ctrl-C", !alive(fgManagerPid), fgManagerPid);
     ok("the broker is gone after Ctrl-C", !(await portOpenAt(fgPort)));
-    ok("the seat SURVIVES the Ctrl-C teardown", fgSeatPid !== undefined && alive(fgSeatPid), fgSeatPid);
-    ok("the spared report names the seat and the reap route",
-      /left 1 managed agent running \(no longer managed\):/.test(plain(fgOutText)) &&
+    ok("the in-process seat stops with the manager on Ctrl-C", fgSeatPid !== undefined && !alive(fgSeatPid), fgSeatPid);
+    ok("the report names the seat as stopped with the manager and claims no spared agent",
+      /stopped 1 managed agent that ran inside the manager process:/.test(plain(fgOutText)) &&
       /bard/.test(plain(fgOutText)) &&
-      /to stop managed agents with the stack: cotal down --with-agents/.test(plain(fgOutText)),
+      !/left \d+ managed agents? running/.test(plain(fgOutText)),
       fgOutText);
   } finally {
     if (fgUp && alive(fgUp.pid ?? 0)) { try { fgUp.kill("SIGKILL"); } catch { /* gone */ } }

@@ -11,11 +11,11 @@
       "expectRed": "self-registers as connector jcode"
     },
     {
-      "name": "Jcode connector rejects unsupported resume",
+      "name": "Jcode connector refuses resume of an unreadable transcript before launch",
       "file": "extensions/connector-jcode/src/extension.ts",
-      "find": "if (opts.resume)\n      throw new Error(\"jcode connector: resuming an existing session is not supported — the private Harness API instance never shares a session with another seat\");",
-      "replace": "if (false) throw new Error(\"mutant\");",
-      "expectRed": "refuses resume"
+      "find": "if (opts.resume && !ownedJcodeFork(",
+      "replace": "if (false && !ownedJcodeFork(",
+      "expectRed": "refuses resume of a session with no readable transcript"
     },
     {
       "name": "Jcode connector carries the requested reasoning-effort tier",

@@ -180,8 +180,8 @@
     {
       "name": "a checkpoint binds nothing, so nothing records what it asks",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (ctx.resume?.asks === undefined)\n      await ctx.bind({ asks: req.prompt, deadlineAt: deadline, ...(req.to !== undefined ? { addressee: req.to } : {}) });",
-      "replace": "    if (false)\n      await ctx.bind({ asks: req.prompt, deadlineAt: deadline, ...(req.to !== undefined ? { addressee: req.to } : {}) });",
+      "find": "    if (ctx.resume?.asks === undefined)\n      await ctx.bind({ asks: req.prompt, deadlineAt: deadline, onExpiry: req.onExpiry ?? \"fail\", ...(req.to !== undefined ? { addressee: req.to } : {}) });",
+      "replace": "    if (false)\n      await ctx.bind({ asks: req.prompt, deadlineAt: deadline, onExpiry: req.onExpiry ?? \"fail\", ...(req.to !== undefined ? { addressee: req.to } : {}) });",
       "expectRed": "and the entry itself records what it asks, so the operator surface can show it",
       "cell": "and the entry itself records what it asks, so the operator surface can show it",
       "note": "The entry is what `cotal run journal` reads to print the question under the step key an answer is addressed by."

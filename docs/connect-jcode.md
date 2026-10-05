@@ -6,11 +6,11 @@
 creates one private Jcode Harness API instance per seat, one Jcode session inside it, and exposes
 the normal `cotal_*` tool surface through Jcode's documented stdio MCP configuration.
 
-**Beta** means the supported path is deliberately narrow: a fresh private session, prompt
-injection, presence, managed start/stop, requested reasoning effort, and an attached TUI work.
-Features that do not preserve that private session's mesh surface fail loud: `--resume`,
-exact-session continuation, `--share-tools`, and connector `--opt` values are not
-supported.
+**Beta** means the supported path is deliberately narrow: a fresh private session, a fork of one
+of your own sessions (`--resume`), prompt injection, presence, managed start/stop, requested
+reasoning effort, and an attached TUI work. Features that do not preserve that private session's
+mesh surface fail loud: exact-session continuation, `--share-tools`, and connector `--opt` values
+are not supported.
 
 ## Install
 
@@ -90,9 +90,31 @@ largest transcript, since that is the session carrying the memory a restart woul
 away. A seat spawned under a fresh name keys a different home and starts with an
 empty transcript, so keep the same name when you want a replacement seat to continue where the
 previous one stopped. This automatic continuation is a relaunch of the seat's own private session;
-it is separate from `--resume`, which names an outside session and stays unsupported. The short
+it is separate from `--resume`, which forks an outside session into the seat (below). The short
 socket alias the connector derives from that home is reclaimed at every launch, so a name a stopped
 seat used stays launchable.
+
+`cotal spawn --resume <id>` forks session `<id>` from your own Jcode home (`JCODE_HOME`, or the
+default Jcode home) into the seat's private home before the seat's instance starts. The Harness API
+has no fork call, so the connector does what Jcode's own split does: it writes a new session whose
+parent is the source and which carries the source's messages, compaction state, system prompt, and
+model. The seat gets a new session id and its briefing as the first turn after that history. The
+source files are only read, so the source transcript is never appended to. A session id with no
+readable transcript, or one whose snapshot or journal holds fields Jcode cannot load, is refused
+before the seat launches; every carried message, content block, and compaction state is checked
+against Jcode's own schema, and the refusal names the field. Jcode stores its counts as u64 and
+reads one only as a plain decimal integer, so a count above what a JavaScript number holds is copied
+byte for byte, and one above the u64 range or spelled with a fraction or an exponent (`1e3`, `1.0`)
+is refused. The source may be live: the connector
+reads it until two reads agree and every journal line is newer than the snapshot, so a Jcode
+checkpoint caught mid-way is neither lost nor applied twice, and a session that keeps changing is
+refused with a request to retry. A seat relaunched under the same name continues its
+fork rather than forking again, without reading the source, which may since have been deleted. The
+seat's briefing is recorded separately from the fork, so a first launch that fails after forking
+still briefs the seat on its next launch. The seat records the source session id, its title, and a
+SHA-256 of the snapshot and journal it read, prints them when it forks, and the manager reads that
+record into the seat's resume document, so `cotal ps --wide` shows them. The manager keeps a title
+of at most 1024 characters, so a source with a longer title is refused before the seat launches.
 
 Connector diagnostics are written both to the spawning terminal and to an owner-only
 `<private-home>/logs/connector-<timestamp>-<pid>.log`, so a failed launch remains inspectable after
@@ -122,14 +144,20 @@ current provider-login state rather than silently start with stale or partial au
 
 If a provider failure closes the private Harness API connection during a mesh-driven turn, the
 connector leaves that turn's inbox batch unacknowledged and opens one bounded recovery window for a
-private replacement connection to the same session. A transient launch or attach failure retries
+private replacement connection to the same session. The window lasts 60 seconds from the close, and
+stopping the broken private tree counts against it. A transient launch or attach failure retries
 inside that window, so a loaded host gets the same result as a fast one without creating an
 unbounded connector relaunch loop. The seat reports `waiting` while it reconnects, then redrives
 that unacknowledged batch only after the session attaches. Each failed replacement must be proven
 stopped before another launch. A permanent Harness refusal, including an invalid request, missing
 session, protocol mismatch, missing binary, or socket permission denial, ends the seat immediately;
 another launch cannot change it. An unprovable teardown, the recovery window expiring, or a second
-disconnect after a successful replacement also ends the seat. An unrecognized Harness SDK error
+disconnect after a successful replacement also ends the seat. When a turn failed on a Harness error
+and no turn has succeeded since, whether the host or the TUI owned it, the connector line that ends
+the seat this way also names that error as `last turn error: <message>`, so the manager's
+`seat reaped:` line carries it without a read of the seat's private log. The reap line keeps only the
+first 240 characters, so that field comes before the error of a failed recovery, which then reads
+`recovery error: <message>`. An unrecognized Harness SDK error
 code remains transient by default and retries inside the same bounded window; new permanent codes
 must be added to the explicit classifier and its exact-count regression.
 
@@ -170,14 +198,23 @@ solely because `turn_done` has not arrived. The manager's wait can still report 
 join itself is slow after a passing proof; that is not a cleanup verdict, and it is not the same
 as a host `readiness_timeout`. Use `cotal attach <name>` or `cotal ps` to inspect an `uncertain`
 launch. The
-host then waits for the mesh connection and presence bind to complete before it adds a no-reply
-notice that the bootstrap orientation predates the join and that a new orientation is live
-context. During a broker outage, it stays waiting and sends no connected notice.
+host then waits for the mesh connection and presence bind to complete before it delivers a notice
+that the bootstrap orientation predates the join and that a new orientation is live context. During
+a broker outage, it stays waiting and sends no connected notice.
 
-A refused post-join notice is logged without ending the joined session. The startup prompt stays
-pending while the native session is busy or its bridge reconnects. Once the host invokes the request,
-it consumes that prompt and does not retry it after an ambiguous error or close. This prevents a
-second submission; it cannot prove whether the first request executed.
+A seat launched with a spawn `--prompt` gets that notice as a no-reply append; the prompt is still
+the seat's first driven turn. A seat launched with no spawn `--prompt` has nothing else to schedule
+a turn after join, so the notice is delivered as the seat's first driven turn instead of a no-reply
+append: the same dispatch boundary and one-shot rule the startup prompt uses, so the seat's final
+startup state is never an unread append.
+
+A refused post-join notice sent as a no-reply append is logged without ending the joined session.
+When the notice is instead the startup turn (no spawn prompt), a refusal on that turn is handled
+the same way any other startup-prompt failure is: logged and retried, never fatal to the seat. The
+startup prompt (or, with no spawn prompt, the notice standing in for it) stays pending while the
+native session is busy or its bridge reconnects. Once the host invokes the request, it consumes
+that prompt and does not retry it after an ambiguous error or close. This prevents a second
+submission; it cannot prove whether the first request executed.
 
 The startup prompt excludes the automatic inbox. Messages buffered before it run in the following
 turn, including ordinary channel traffic held in `dnd`. Quiet-channel traffic remains available only
@@ -197,6 +234,18 @@ journal under the seat's private home. The journal supplies a durable byte curso
 the Jcode session id, which is also the AG-UI thread id. A restarted seat continues from the cursor
 stored in its event write-ahead log and does not republish records already acknowledged.
 
+If Jcode checkpoints its journal, the connector validates the saved session snapshot and ends the
+interrupted event observations with `RUN_ERROR`. Open tool observations end before this error; this
+does not claim that their executions completed. The seat stays up while the next journal is absent,
+including during a long tool call. The reader keeps its previous cursor until it can read the new
+journal from its beginning. It does not reconstruct missing output from the snapshot. A tool result
+whose start was not observed also ends the run with `RUN_ERROR`, not an invented tool start or an
+unpaired end. Like every published run error, both carry only the fixed message `run failed`: the
+connector's codes `jcode_journal_fold` and `jcode_tool_start_missing` do not leave the seat. On restart, open tools are restored from the event WAL.
+
+A missing journal without a valid snapshot for the same session remains an emitter failure.
+Malformed cursors, invalid complete records and filesystem access refusals are not checkpoints.
+
 When the seat's mesh connection drops and the endpoint is rebuilding it, event publishing waits
 until the connection is live again and then publishes the queued records in order. The seat stays up
 through the outage. If the seat is stopped before the connection returns, the wait ends and the
@@ -208,8 +257,6 @@ The journal records settled message blocks rather than live deltas. Text and rea
 arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
 blocks. User prompt text is not republished onto the event channel. The launcher sets
 `COTAL_EVENTS` by default; pass `--no-events` to opt out.
-On an open mesh, a default event-enabled Jcode seat uses its managed seat name as the stable actor
-token; with `--no-events`, open-mode identity keeps its ordinary self-minted behavior.
 
 
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,
@@ -221,7 +268,15 @@ soft-interrupt queue. Ambient channel traffic stays buffered for the next turn. 
 presence working while the session is busy, publishes `activity` naming automatic queue depth and age
 while anything remains uncommitted, and acknowledges every initial or soft-interrupted inbox id only
 after that containing turn succeeds. A failed Cotal-owned turn or private Harness replacement leaves
-those ids unacknowledged for mesh redelivery. `cotal_inbox` pulls only buffered quiet
+those ids unacknowledged for mesh redelivery. When the Harness reports the failure itself, such as a
+provider `rate_limit`, the host relays its error code as the presence `condition`, so the roster and
+`cotal ps` read `waiting (rate_limit for 2m)`. A turn the TUI owns is covered too: its failure arrives as an
+unsolicited Harness error frame, and the host relays that the same way. A code outside the closed
+vocabulary reads `failed` with the native code in `condition.source`. The next turn clears it when it
+starts, whether the host or the TUI owns that turn. The host also records every work event of its
+session, such as a token or a tool call, as presence `activeAt`, whether the host or the TUI owns the
+turn. A turn that stopped advancing therefore shows the age of its last event, `· active 40m ago`,
+beside a heartbeat that is still fresh. `cotal_inbox` pulls only buffered quiet
 ambient from that host-owned queue; its shared optional `peek` argument is supported, so `peek: true`
 shows those messages without clearing them.
 
@@ -229,8 +284,10 @@ shows those messages without clearing them.
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
 against the active provider, and an accepted selection becomes the session pin and the seat's model
-label. The connector does not require `RuntimeInfo.model` to echo that pin immediately because the
-runtime field can temporarily report the previous model after selection.
+label. The connector reports the provider route actually serving that model to presence, and
+`cotal ps --wide` and `--json` show it as `provider`. The connector does not require `RuntimeInfo.model`
+to echo that pin immediately because the runtime field can temporarily report the previous model
+after selection.
 
 Model startup refusals are named without exposing provider output: `model_prefix_rejected` means a
 `provider/model` value was supplied where the Harness API requires a bare id, `model_refused` means
@@ -290,8 +347,9 @@ connector-visible input without exposing private harness output.
 The following fail loud before a new session is provisioned where the manager can preflight them,
 or at connector launch as a backstop:
 
-- **Resume /continuation:** a Cotal seat owns a new private Jcode instance. Reusing a session from
-  an operator or another seat would violate that ownership boundary.
+- **Exact-session continuation:** a Cotal seat owns a new private Jcode instance. Attaching it to
+  a session an operator or another seat still owns would violate that ownership boundary. Use
+  `--resume`, which gives the seat its own fork.
 - **Tool sharing:** Jcode resolves its MCP configuration from several global and project sources.
   The connector owns a private configuration containing only `cotal`, rather than claim a chosen
   subset can be safely merged.

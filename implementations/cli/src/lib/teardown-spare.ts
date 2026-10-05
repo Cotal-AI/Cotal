@@ -7,7 +7,7 @@
  *  the two teardown verbs cannot drift apart again. */
 import { c } from "../ui.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
-import { loadMeshes, type LocalProcessContext } from "@cotal-ai/workspace";
+import { loadMeshes, probeLiveness, type LocalProcessContext, type ManagerSpareSeats } from "@cotal-ai/workspace";
 
 export type SpareSeatRow = {
   name: string;
@@ -20,11 +20,12 @@ export type SpareSeatRow = {
 
 /** Best-effort inventory for the operator-facing spare report. Detach safety is independently
  *  established by the exact-process capability marker, so a down broker cannot make the local
- *  manager unstoppable. */
+ *  manager unstoppable. A failure here is reported before that marker is read, so it promises
+ *  nothing about the seats: a `stop` manager stops its in-process seats either way. */
 export async function listManagerSeatsForSpare(context: LocalProcessContext): Promise<SpareSeatRow[] | undefined> {
   const mesh = loadMeshes().find((candidate) => candidate.root === context.root && candidate.space === context.space);
   if (!mesh) {
-    console.error(c.dim("could not list managed agents (this root has no recorded mesh); agents will still be spared"));
+    console.error(c.dim("could not list managed agents (this root has no recorded mesh)"));
     return undefined;
   }
   let target;
@@ -36,23 +37,32 @@ export async function listManagerSeatsForSpare(context: LocalProcessContext): Pr
       { onRefusal: "throw" },
     );
   } catch (e) {
-    console.error(c.dim(`could not list managed agents (${(e as Error).message}); agents will still be spared`));
+    console.error(c.dim(`could not list managed agents (${(e as Error).message})`));
     return undefined;
   }
   const reply = await askManager(target.space, target.server, "ps", undefined, target.auth, "any");
   if (!reply.ok || !Array.isArray(reply.data)) {
-    console.error(c.dim(`could not list managed agents (${reply.error ?? "invalid ps reply"}); agents will still be spared`));
+    console.error(c.dim(`could not list managed agents (${reply.error ?? "invalid ps reply"})`));
     return undefined;
   }
   return reply.data as SpareSeatRow[];
 }
 
-export function printSparedAgents(rows: SpareSeatRow[]): void {
-  console.log(c.dim(`left ${rows.length} managed agent${rows.length === 1 ? "" : "s"} running (no longer managed):`));
-  for (const row of rows) {
-    const facts = [row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, row.status].filter(Boolean);
-    console.log(`  ${facts.join("  ·  ")}`);
+/** Report the pre-signal inventory after the manager stopped. A manager whose capability says its
+ *  default stop also stops in-process seats (`stop`) has those seats reported as stopped when their
+ *  recorded pid is gone, without their pre-signal status; every other row is reported as left running. */
+export function printSparedAgents(rows: SpareSeatRow[], seats: ManagerSpareSeats = "release"): void {
+  const line = (row: SpareSeatRow, status: string | undefined) =>
+    `  ${[row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, status].filter(Boolean).join("  ·  ")}`;
+  const stopped = seats === "stop" ? rows.filter((row) => row.pid !== undefined && probeLiveness(row.pid) === "dead") : [];
+  const left = rows.filter((row) => !stopped.includes(row));
+  if (stopped.length) {
+    console.log(c.dim(`stopped ${stopped.length} managed agent${stopped.length === 1 ? "" : "s"} that ran inside the manager process:`));
+    for (const row of stopped) console.log(line(row, undefined));
+    if (!left.length) return;
   }
+  console.log(c.dim(`left ${left.length} managed agent${left.length === 1 ? "" : "s"} running (no longer managed):`));
+  for (const row of left) console.log(line(row, row.status));
   console.log(c.dim("to stop managed agents with the stack: cotal down --with-agents"));
 }
 

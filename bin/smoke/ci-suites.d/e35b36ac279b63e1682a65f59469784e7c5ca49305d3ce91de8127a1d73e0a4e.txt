@@ -1,0 +1,1 @@
+smoke:public-remote-authority

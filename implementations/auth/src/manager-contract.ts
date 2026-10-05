@@ -17,7 +17,17 @@ export function reconstructRemoteManagerServeGrant(
   observed: EpGateState,
 ) {
   const artifacts = request.contractArtifacts ?? [];
-  const cluster = artifacts.find((value) => value && typeof value === "object" && (value as { urn?: unknown }).urn === "ai.cotal.manager") as {
+  return remoteManagerServeGrantFromCluster(
+    request, owner,
+    artifacts.find((value) => value && typeof value === "object" && (value as { urn?: unknown }).urn === "ai.cotal.manager"),
+    observed,
+  );
+}
+
+/** The command declarations of the canonical manager cluster document, in the shape a serve grant
+ * pins. */
+export function remoteManagerSurface(document: unknown): Record<string, EpCommandAuthority> {
+  const cluster = document as {
     urn?: string;
     revision?: number;
     commands?: Array<{ name?: string; class?: string; targeted?: boolean; modes?: string[]; capability?: string; inputDigest?: string; outputDigest?: string; traits?: string[] }>;
@@ -41,6 +51,20 @@ export function reconstructRemoteManagerServeGrant(
       traits: command.traits ?? [],
     };
   }
+  return surface;
+}
+
+/** One grant derivation for activation (the submitted canonical document) and standing renewal
+ * (the document the registered service spec names in the content store). Renewal carries no
+ * artifacts, so the same surface is re-derived from registered state rather than from the request. */
+export function remoteManagerServeGrantFromCluster(
+  request: Pick<RemoteManagerAuthorityRequest, "space" | "instanceId">,
+  owner: string,
+  document: unknown,
+  observed: EpGateState,
+) {
+  const surface = remoteManagerSurface(document);
+  const cluster = document as Record<string, unknown>;
   const actors = remoteManagerActors(request.instanceId);
   void actors;
   return authorizeTrustedServeSnapshot({
@@ -56,7 +80,7 @@ export function reconstructRemoteManagerServeGrant(
     descriptor: {
       endpoint: "manager",
       owner,
-      clusters: [{ digest: contractDigest(cluster), commands: Object.keys(surface), document: cluster as Record<string, unknown> }],
+      clusters: [{ digest: contractDigest(cluster), commands: Object.keys(surface), document: cluster }],
       protocol: { v: 1 },
     },
   });

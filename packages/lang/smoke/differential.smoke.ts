@@ -299,12 +299,12 @@ const differences = (a: Arm, b: Arm): string[] => {
 
 const WORKFLOW_SCRIPT = {
   turns: {
-    "draft-plan": { status: "done", at: 0 },
+    "draft-plan": { status: "done" },
     build: [
-      { status: "blocked", at: 0 },
-      { status: "done", at: 0 },
+      { status: "blocked" },
+      { status: "done" },
     ],
-    unblock: { status: "done", at: 0 },
+    unblock: { status: "done" },
   },
   checkpoints: { "approve-plan": { status: "resolved", value: true, at: 0 } },
   clock: { start: 1_000_000 },
@@ -383,14 +383,19 @@ log("rounds", rounds, r.status);`,
     { asks: { look: [{ state: "pending" }, { state: "completed" }] } },
   ],
   [
+    "once: an ask inside it, its value read out of the scope",
+    'const a = await spawn("one");\nconst r = await once(async () => await ask(a, { name: "publish", schema: { commentId: "number" } }), { name: "publish-360" });\nlog(r.commentId);',
+    { asks: { publish: { commentId: 7 } } },
+  ],
+  [
     "a checkpoint that expires",
     'const c = await checkpoint("go", "Go?", { timeout: "1m", onExpiry: "proceed" });\nlog(c.status);',
-    { checkpoints: { go: { status: "expired", at: 0 } } },
+    { checkpoints: { go: { status: "expired" } } },
   ],
   [
     "an effect the handler faults",
     'try { const a = await spawn("one"); await turn(a, { name: "t" }); } catch (e) { log(e.code, e.kind); }',
-    { turns: { t: { status: "done", at: 0 } }, faults: [{ at: "turn:t#0", kind: "agent", code: "E_AGENT" }] },
+    { turns: { t: { status: "done" } }, faults: [{ at: "turn:t#0", kind: "agent", code: "E_AGENT" }] },
   ],
   [
     "effects before a refusal, so the journal is a prefix",
@@ -495,9 +500,9 @@ log("rounds", rounds, r.status);`,
   [
     "a fan-out over one agent",
     'const a = await spawn("one");\nconst rs = await fanOut([a], (m) => turn(m, { name: "t" }), { name: "f", key: (m) => m.agent });\nlog(len(rs));',
-    { turns: { t: { status: "done", at: 0 } } },
+    { turns: { t: { status: "done" } } },
   ],
-  ["a fan-out with no stable key", 'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });', { turns: { t: { status: "done", at: 0 } } }, "L3021"],
+  ["a fan-out with no stable key", 'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });', { turns: { t: { status: "done" } } }, "L3021"],
   // A MEMBER WRITE HAS TO TRAVEL THROUGH `set`, and until these two nothing in the corpus said so: a
   // native `o[k] = v` emission left every corpus program green and showed up only as a declared
   // divergence. Both refusals are the write path's own - the curated table on the key, the receiver
@@ -591,7 +596,7 @@ log("rounds", rounds, r.status);`,
   [
     "a fan-out whose key is awaited",
     'const a = await spawn("one");\nconst keyer = async () => { await sleep("1m", { name: "warm" }); return (m) => m.agent; };\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f", key: await keyer() });\nlog("done");',
-    { turns: { t: { status: "done", at: 0 } } },
+    { turns: { t: { status: "done" } } },
   ],
   // AND THE BODY IS EVALUATED INSIDE THE SCOPE. Both arms journal `fanOut:f` BEFORE `sleep:warm`,
   // which is what says the body travelled unevaluated: an eager one would have journalled its sleep
@@ -599,7 +604,7 @@ log("rounds", rounds, r.status);`,
   [
     "a fan-out whose body is awaited",
     'const a = await spawn("one");\nconst choose = async () => { await sleep("1m", { name: "warm" }); return (m) => turn(m, { name: "t" }); };\nawait fanOut([a], await choose(), { name: "f", key: (m) => m.agent });\nlog("done");',
-    { turns: { t: { status: "done", at: 0 } } },
+    { turns: { t: { status: "done" } } },
   ],
   [
     "a conclave",
@@ -651,6 +656,9 @@ log("rounds", rounds, r.status);`,
   ["an array's length is a member, not a prototype reach", "const xs = [1, 2]; log(xs.length);", {}],
   ["refusals: a method is not a value", "const xs = [1]; const m = xs.map; log(m);", {}, "L4020"],
   ["refusals: no implicit conversion", "const o = {}; log(o + 1);", {}, "L4018"],
+  ["refusals: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, "L4018"],
+  ["refusals: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, "L4018"],
+  ["refusals: an update's operand is null", "let n = null; n--; log(n);", {}, "L4018"],
   ["refusals: not iterable", "const o = {}; log([...o]);", {}, "L4015"],
 ];
 
@@ -844,14 +852,6 @@ const reachedKinds = new Set<string>();
  * suite the day it lands, so it is removed in the same change instead of being remembered.
  */
 const DIVERGENT: readonly (readonly [string, string, object, string, string])[] = [
-  // The one declared divergence, in both of its shapes. The walker reads an update's
-  // operand through a bare `Number(...)`, so a record is NaN and the string "5" increments to 6;
-  // the engine refuses L4018, because silent coercion is the class this language refuses
-  // everywhere else and rebuilding a wart for fidelity is not a goal. Filed as issue 646, and
-  // when it lands the walker starts refusing, these cells red, and the divergence is retired here
-  // rather than remembered.
-  ["issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018 logs [] shapes []"],
-  ["issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018 logs [] shapes []"],
   // A LOG LINE IS DATA ON THE ENGINE: its log sink refuses a function anywhere inside a logged value,
   // L4016 naming the value and the path, before the line reaches any transport (the worker cannot
   // even clone one - measured, it died on a host DataCloneError with the emitted module body in the
@@ -1094,7 +1094,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   ["the same effect twice", 'await sleep("1m", { name: "s" }); await sleep("2m", { name: "s" }); log(now());', {}],
   ["an effect in a loop", 'for (const n of ["a", "b", "c"]) { await sleep("1m", { name: n }); } log(now());', {}],
   ["an effect inside a function, called twice", 'const step = async (n) => { await sleep("1m", { name: n }); return now(); }; log(await step("one"), await step("two"));', {}],
-  ["two agents and a turn", 'const a = await spawn("one"); await turn(a, { name: "t" }); log(a.agent);', { turns: { t: { status: "done", at: 0 } } }],
+  ["two agents and a turn", 'const a = await spawn("one"); await turn(a, { name: "t" }); log(a.agent);', { turns: { t: { status: "done" } } }],
 ];
 
 {

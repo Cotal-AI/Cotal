@@ -17,13 +17,14 @@ import {
   endpointToken, assertBoundedOwner, assertLifecycleToken, assertCommandToken, assertPoolToken,
   type EpAuthzMode,
 } from "./endpoint-subjects.js";
-import { EpEnvelopeError, lifecycleBlocked, type EpClass } from "./endpoint-envelope.js";
+import { EpEnvelopeError, lifecycleBlocked, type EpClass, type EpErrorCode, type EpErrorDetail } from "./endpoint-envelope.js";
 import {
   RECORD_KINDS, GOVERN_HEAD, recordSpecKey, recordStatusKey, recordAtomicKey, readRecord, recordsBucket,
   createRecordEntry, updateRecordEntry, deleteRecordEntry, assertStatusValue,
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
+import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
 import type { EndpointRepairCursor } from "./lifecycle-state.js";
 
@@ -196,31 +197,6 @@ export async function assertServiceNameAuthority(endpoint: string, owner: string
 
 // ---- registration (spec writes, the `provisioner-registration` principal) ---------------------
 
-/** Register (or re-register) a service instance: authenticated-registrant binding, name
- *  authority, then the spec-key CAS. The returned `registrationRevision` is the spec key's
- *  store revision (§13.7) — a re-registration advances it, which is exactly what invalidates a
- *  frozen scatter slot (§13.5 `churn`). A concurrent registration race is a loud `conflict`
- *  (§13.8: re-read and re-decide).
- *
- *  `registrant` is the BROKER-AUTHENTICATED caller of the registration request (its subject
- *  principal, §13.9 — never a payload claim): the descriptor owner must BE that caller, so a
- *  privileged owner's descriptor cannot be registered by anyone else, and a re-registration can
- *  never change an instance's ownership. `instanceId` MUST be provisioner-minted and never
- *  reused (§13.1); the allocator that enforces non-reuse is the lifecycle registry (D13) — this
- *  seam enforces what is checkable at the record: grammar, ownership stability, and CAS.
- *
- *  ISSUANCE-GATE BARRIER (§13.1). A registration is a WRITER on the instance's issuance gate: to
- *  be linearizable against an in-flight serve mint it MUST run the barrier protocol on the SAME
- *  `gate.<lifecycleUid>` key, in order: freeze the gate (so a fresh mint observes `frozen` and
- *  refuses, and a staged-but-uncommitted mint loses its revision-pinned CAS), authorize the owner
- *  under the frozen gate, revoke + VERIFIED-evict the superseded credential family, THEN advance
- *  the spec, then reopen at the successor `registrationRevision`. Old authority dies before new
- *  authority is published. This is REQUIRED, not documented: core exports no bare spec-key advance
- *  that could leave a mint's observed `registrationRevision` permanently equal to its snapshot,
- *  win a never-frozen CAS, and silently release a superseded-surface credential. The gate is
- *  created by the provisioner at instance mint (D13); a missing gate is `failed-precondition`. The
- *  production `barrier` wires to the durable KV CAS (D13/D14); the D4 seam is the typed protocol
- *  and its faithful in-memory model, so the barrier's writes serialize with the mint's on one key. */
 /** Reconstruct a registered spec's command surface from trusted registry + content-addressed
  *  store state (§13.7): EVERY command name -> the set of governed URNs its verified cluster
  *  document declares (an empty set for an un-governed command; the full command set is needed so
@@ -378,6 +354,33 @@ function serializeGovernanceCommands(commands: Map<string, Set<string>>): Record
   return out;
 }
 
+/** Register (or re-register) a service instance: authenticated-registrant binding, name
+ *  authority, then the spec-key CAS. The returned `registrationRevision` is the spec key's
+ *  store revision (§13.7) — a re-registration advances it, which is exactly what invalidates a
+ *  frozen scatter slot (§13.5 `churn`). The returned `processEpoch` is the one its completing
+ *  reopen committed, never a later read of the gate, which a successor registration may already
+ *  have advanced. A concurrent registration race is a loud `conflict` (§13.8: re-read and
+ *  re-decide).
+ *
+ *  `registrant` is the BROKER-AUTHENTICATED caller of the registration request (its subject
+ *  principal, §13.9 — never a payload claim): the descriptor owner must BE that caller, so a
+ *  privileged owner's descriptor cannot be registered by anyone else, and a re-registration can
+ *  never change an instance's ownership. `instanceId` MUST be provisioner-minted and never
+ *  reused (§13.1); the allocator that enforces non-reuse is the lifecycle registry (D13) — this
+ *  seam enforces what is checkable at the record: grammar, ownership stability, and CAS.
+ *
+ *  ISSUANCE-GATE BARRIER (§13.1). A registration is a WRITER on the instance's issuance gate: to
+ *  be linearizable against an in-flight serve mint it MUST run the barrier protocol on the SAME
+ *  `gate.<lifecycleUid>` key, in order: freeze the gate (so a fresh mint observes `frozen` and
+ *  refuses, and a staged-but-uncommitted mint loses its revision-pinned CAS), authorize the owner
+ *  under the frozen gate, revoke + VERIFIED-evict the superseded credential family, THEN advance
+ *  the spec, then reopen at the successor `registrationRevision`. Old authority dies before new
+ *  authority is published. This is REQUIRED, not documented: core exports no bare spec-key advance
+ *  that could leave a mint's observed `registrationRevision` permanently equal to its snapshot,
+ *  win a never-frozen CAS, and silently release a superseded-surface credential. The gate is
+ *  created by the provisioner at instance mint (D13); a missing gate is `failed-precondition`. The
+ *  production `barrier` wires to the durable KV CAS (D13/D14); the D4 seam is the typed protocol
+ *  and its faithful in-memory model, so the barrier's writes serialize with the mint's on one key. */
 export async function registerServiceInstance(
   kv: KV,
   args: {
@@ -398,7 +401,7 @@ export async function registerServiceInstance(
      *  for. See the orphan predicate at the slot-take below. */
     observeHolderGeneration?: (holderInstanceId: string) => Promise<number> | number;
   },
-): Promise<{ registrationRevision: number }> {
+): Promise<{ registrationRevision: number; processEpoch: number }> {
   if (typeof args.readClusterArtifact !== "function")
     throw new EpEnvelopeError("failed-precondition", "registerServiceInstance requires a content-store reader (readClusterArtifact); governed-continuity is not an optional seam (SPEC 13.7)");
   spacePrefix(args.space); // up-front boundary guard on the space arg (mirrors authorizeServeGrant): usable as a subject token, throws on an absent/non-string space at an untyped caller. This is NOT the cross-space authority fence - that is the observed-gate `(space, endpoint, instanceId)` identity check below (trusted-context equality against the per-space KV bucket).
@@ -406,6 +409,11 @@ export async function registerServiceInstance(
   assertBoundedOwner(args.registrant.owner, "registrant owner");
   if (args.registrant.owner !== spec.owner)
     throw new EpEnvelopeError("permission-denied", `the registration's authenticated caller "${args.registrant.owner}" is not the descriptor owner "${spec.owner}" (SPEC 13.9: authenticated caller binding, never a payload claim)`);
+  const evictMax = args.barrier.evictMax ?? EVICT_PRINCIPALS_MAX;
+  // Checked before the freeze: a zero bound never ends the sweep loop and a NaN one ends it
+  // without evicting anyone.
+  if (!Number.isInteger(evictMax) || evictMax < 1)
+    throw new EpEnvelopeError("internal", `the issuance barrier's evictMax ${evictMax} is not a positive integer, so the superseded family could never be verify-evicted (SPEC 13.1)`);
   // The NAME-AUTHORITY decision is deferred until UNDER the frozen gate (phase 1): a transfer must
   // freeze this same gate, so authorizing while we hold the freeze serializes the decision with the
   // transfer — checking here (pre-freeze) would repeat the torn owner-vs-revision read the atomic
@@ -472,7 +480,7 @@ export async function registerServiceInstance(
         try { await args.barrier.progress?.clear(stored.revision); }
         catch { /* the gate is open; stale progress is freeze-bound and safe to retain */ }
       }
-      return { registrationRevision: finished.registrationRevision };
+      return { registrationRevision: finished.registrationRevision, processEpoch: finished.processEpoch };
     }
   }
 
@@ -600,15 +608,22 @@ export async function registerServiceInstance(
       }
     }
     const verified = new Set(progress?.verified ?? []);
-    for (const holderPrincipal of holders) {
-      if (verified.has(holderPrincipal)) continue;
-      if (!(await args.barrier.evict(holderPrincipal)))
-        throw new Error(`principal "${holderPrincipal}" is not verified evicted`);
-      if (args.barrier.progress && progress) {
-        progress = { ...progress, verified: [...verified, holderPrincipal].sort() };
+    const pending = holders.filter((h) => !verified.has(h));
+    // Each bounded sweep is recorded before the next starts, so a family whose sweeps outlast one
+    // registration executor still advances, and a refused later sweep keeps the earlier verdicts.
+    for (let i = 0; i < pending.length; i += evictMax) {
+      const sweep = pending.slice(i, i + evictMax);
+      const gone = await args.barrier.evict(sweep);
+      if (gone.length !== sweep.length)
+        throw new Error(`the evictor answered ${gone.length} verdict(s) for ${sweep.length} holder(s)`);
+      const evicted = sweep.filter((_, j) => gone[j] === true);
+      if (args.barrier.progress && progress && evicted.length > 0) {
+        progress = { ...progress, verified: [...progress.verified, ...evicted].sort() };
         progressRevision = await args.barrier.progress.save(progress, progressRevision);
       }
-      verified.add(holderPrincipal);
+      const unverified = sweep.filter((_, j) => gone[j] !== true);
+      if (unverified.length > 0)
+        throw new Error(`principal(s) ${unverified.map((h) => `"${h}"`).join(", ")} not verified evicted`);
     }
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `re-registration could not revoke + verify-evict the superseded serve family; the gate is left frozen for reconciliation, no new spec published (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
@@ -681,8 +696,9 @@ export async function registerServiceInstance(
   // outlived its own deregistration would still hold a current-epoch authority. TRUE ABSENCE (never
   // registered) is the only case that keeps the provisioned epoch.
   const isReRegistration = current !== undefined && current !== null;
+  const processEpoch = isReRegistration ? obs.processEpoch + 1 : obs.processEpoch;
   try {
-    if (!(await args.barrier.reopen(token, successorAt(newRev, isReRegistration ? obs.processEpoch + 1 : obs.processEpoch))))
+    if (!(await args.barrier.reopen(token, successorAt(newRev, processEpoch))))
       throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
@@ -693,7 +709,7 @@ export async function registerServiceInstance(
     try { await args.barrier.progress.clear(progressRevision); }
     catch { /* gate is already open; a stale freeze-bound cursor is safe to retain */ }
   }
-  return { registrationRevision: newRev };
+  return { registrationRevision: newRev, processEpoch };
 }
 
 /** Classify a lost spec-write ack. Sole writer under the freeze: proposed bytes at a revision
@@ -774,6 +790,24 @@ export async function completeFrozenRegistrationFromSpec(
   return { completed: true, registrationRevision: specEntry.revision, processEpoch };
 }
 
+/** `details[].kind` on every refusal of {@link assertForeignSlotIsOrphaned}. A caller that repairs the
+ *  holder decides on these facts, because the message is prose and the codes pair unlike cases. */
+export const EP_FOREIGN_SLOT_HELD = "ai.cotal.ep.foreign-slot-held";
+
+export type ForeignSlotCondition = "no-seam" | "unreadable" | "garbled" | "behind" | "in-flight";
+
+export interface EpForeignSlotHeldDetail extends EpErrorDetail {
+  kind: typeof EP_FOREIGN_SLOT_HELD;
+  holderInstanceId: string;
+  condition: ForeignSlotCondition;
+}
+
+/** The foreign-slot marker on a thrown registration refusal. */
+export function foreignSlotHeldFrom(e: unknown): EpForeignSlotHeldDetail | undefined {
+  if (!(e instanceof EpEnvelopeError)) return undefined;
+  return e.details?.find((d): d is EpForeignSlotHeldDetail => d.kind === EP_FOREIGN_SLOT_HELD);
+}
+
 /** THE FOREIGN-SLOT ORPHAN PREDICATE (§13.7). A registration whose endpoint governance slot is held
  *  by ANOTHER instance either waits for a live registration to finish or reclaims a dead one, and
  *  this decides which. It refuses unless the slot is PROVABLY dead.
@@ -814,20 +848,22 @@ async function assertForeignSlotIsOrphaned(
   observeHolderGeneration?: (holderInstanceId: string) => Promise<number> | number,
 ): Promise<void> {
   const held = `a concurrent registration for endpoint "${endpoint}" (instance "${slot.instanceId}") holds the governance slot through its spec publication`;
+  const refuse = (code: EpErrorCode, condition: ForeignSlotCondition, message: string) =>
+    new EpEnvelopeError(code, message, [{ kind: EP_FOREIGN_SLOT_HELD, holderInstanceId: slot.instanceId, condition }]);
   if (typeof observeHolderGeneration !== "function")
-    throw new EpEnvelopeError("conflict", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);
+    throw refuse("conflict", "no-seam", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);
   let observed: unknown;
   try {
     observed = await observeHolderGeneration(slot.instanceId);
   } catch (e) {
-    throw new EpEnvelopeError("unavailable", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
+    throw refuse("unavailable", "unreadable", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
   }
   if (!wireInt(observed))
-    throw new EpEnvelopeError("unavailable", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);
+    throw refuse("unavailable", "garbled", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);
   if (observed < slot.generation)
-    throw new EpEnvelopeError("unavailable", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);
+    throw refuse("unavailable", "behind", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);
   if (observed === slot.generation)
-    throw new EpEnvelopeError("conflict", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: cotal reconcile-gate --instance ${slot.instanceId}), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
+    throw refuse("conflict", "in-flight", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: cotal reconcile-gate --instance ${slot.instanceId}), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
   // observed > slot.generation: the holder's gate has reopened past the stamp, so the slot can
   // never satisfy the promote's generation equality. It is dead, and the slot-take replaces it.
 }
@@ -1778,12 +1814,19 @@ export interface EpIssuanceBarrier {
   enumerate: () => Promise<EpServeLedgerRow[]> | EpServeLedgerRow[];
   /** Flip one enumerated row `active`→`revoked` (§13.1: enforce revocation on the ledger). */
   revoke: (row: EpServeLedgerRow) => Promise<void> | void;
-  /** VERIFIED cluster-wide eviction of a revoked `holderPrincipal` (§13.1): enforce the
-   *  revocation on every server, evict the principal's live connections, and RE-SCAN — returning
-   *  `true` only when the principal is verified GONE. FAIL-CLOSED: `false` (or a throw) means the
-   *  barrier MUST NOT complete (no spec write, no reopen); the gate stays frozen for reconciliation
-   *  so old authority is never published-over while it is still live. */
-  evict: (holderPrincipal: string) => Promise<boolean> | boolean;
+  /** VERIFIED cluster-wide eviction of revoked holder principals (§13.1): enforce the revocation
+   *  on every server, evict the principals' live connections, and RE-SCAN — answering, per holder
+   *  in input order, `true` only when that principal is verified GONE. FAIL-CLOSED: a `false` (or a
+   *  throw) means the barrier MUST NOT complete (no spec write, no reopen); the gate stays frozen
+   *  for reconciliation so old authority is never published-over while it is still live. It takes
+   *  a set because a family keeps a row for every credential it ever staged, so evicting one holder
+   *  at a time makes every restart slower than the last; registration passes at most
+   *  {@link evictMax} holders per call and records the verdicts before the next call. */
+  evict: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[];
+  /** The most holders one {@link evict} call carries, {@link EVICT_PRINCIPALS_MAX} when absent. A
+   *  throwing call records none of its verdicts, so an evictor that runs one operation per holder
+   *  declares 1 and a refusal keeps every holder verified before it. */
+  evictMax?: number;
   /** Token-pinned CAS `frozen` → `open` at the successor coordinate (§13.1). TRUE iff the gate is
    *  still frozen at THIS barrier's `token`; FALSE if a reconciler/newer barrier superseded it (a
    *  stale reopen loses and never clobbers the newer gate). Advances the currency the barrier

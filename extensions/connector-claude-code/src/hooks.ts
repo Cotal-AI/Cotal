@@ -405,6 +405,14 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           return {};
       }
     } catch {
+      // The `{}` below carries nothing, but its write still yields a delivered verdict. Drop this
+      // frame's record first, or onReply would ack a batch the model never saw. The ids go back to
+      // ordinary backlog and surface on a later frame.
+      const rec = inFlight.get(ev);
+      if (rec) {
+        inFlight.delete(ev);
+        if (rec.ids.length) rec.agent.releaseInFlight(rec.ids);
+      }
       return {}; // never block the session
     }
   };

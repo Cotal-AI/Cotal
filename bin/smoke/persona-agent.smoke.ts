@@ -28,9 +28,8 @@
  * Run: pnpm smoke:persona-agent
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
@@ -59,15 +58,6 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✗ FAIL: ${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
 
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;

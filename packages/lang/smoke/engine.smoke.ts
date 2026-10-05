@@ -208,7 +208,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // lands with the step key the walker would have allocated.
 
 {
-  const h = harness({ script: { turns: { build: { status: "done", at: 0 } } } });
+  const h = harness({ script: { turns: { build: { status: "done" } } } });
   // What the transform emits, hand-written: `await turn(agent, { name: "build" })`.
   const module = `(ctx) => async () => {
     await ctx.fuel();
@@ -614,21 +614,13 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 }
 
 {
-  // A DECLARED DIVERGENCE, asserted rather than hidden.
-  //
-  // The walker reads the operand of `++` through `Number(...)`, so a string counts and a record
-  // settles as NaN, while `o + 1` on the very same values does something else entirely - the
-  // silent-coercion class, filed against the walker as Cotal-AI/Cotal#646. The engine refuses
-  // instead. Both halves are MEASURED here, so the day the walker's behaviour changes this cell
-  // reds and the divergence is re-decided rather than inherited.
-  const logs: unknown[][] = [];
-  const walker = await walkerRun(`let n = "5";\nn++;\nlog("n", n);\n`, {
-    runId: "upd-1",
-    handler: new SimHandler({}),
-    onLog: (l) => logs.push([...l.values]),
-  });
-  ok("the walker COUNTS a string operand, which is the divergence", JSON.stringify(logs) === '[["n",6]]', logs);
-  ok("and it completes rather than refusing", walker.journal.entries().length === 0);
+  // THE RETIRED DIVERGENCE (issue 646), asserted rather than left to drift back: the walker now
+  // refuses a non-number update operand the same way the engine's `unary("update")` always has,
+  // instead of reading it through a bare `Number(...)`.
+  const walker = await caught(() =>
+    walkerRun(`let n = "5";\nn++;\nlog("n", n);\n`, { runId: "upd-1", handler: new SimHandler({}) }),
+  );
+  ok("the walker refuses a string operand of `++` with L4018, the same as the engine", codeOf(walker) === "L4018");
   const h = harness();
   ok(
     "the engine refuses the same operand, by rule and not by accident",
@@ -929,7 +921,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // ---- 11) replay: a recorded effect returns its recorded result and dispatches nothing -----------
 
 {
-  const first = harness({ script: { turns: { build: { status: "done", at: 0 } } }, runId: "eng-replay" });
+  const first = harness({ script: { turns: { build: { status: "done" } } }, runId: "eng-replay" });
   const module = `(ctx) => async () => {
     const agent = await ctx.effect("spawn", ["builder", ctx.born({ name: "hire" })]);
     return await ctx.effect("turn", [agent, ctx.born({ name: "build" })]);
@@ -995,7 +987,7 @@ const MODULE = `(ctx) => async () => {
   const r = await ctx.effect("turn", [builder, ctx.born({ name: "build" })]);
   await ctx.free("log", ["status", ctx.get(r, "status")]);
 }`;
-const SCRIPT = { turns: { build: { status: "done" as const, at: 0 } } };
+const SCRIPT = { turns: { build: { status: "done" as const } } };
 
 {
   const logs: unknown[][] = [];
@@ -2330,20 +2322,19 @@ log("out", out);
     // THE OBLIGATION ITSELF.
     ok("no answer anywhere in the matrix carried an own CALLABLE `then`", carriedCallableThen.length === 0, carriedCallableThen);
 
-    // AND THE STATED REASON, CORRECTED BY MEASUREMENT. The rule said merge's "output keys derive
-    // from record arguments that already passed born()". They do not, quite: a non-record argument
-    // contributes index keys. The property that actually holds is the one asserted above - a minted
-    // key cannot carry a callable - and it is worth having the difference written down, because a
-    // reason nobody re-measured is how a struck door gets rebuilt.
+    // AND THE STATED REASON, RE-MEASURED. The rule said merge's "output keys derive from record
+    // arguments that already passed born()". They once did not, quite: a non-record argument
+    // contributed index keys. merge now refuses any argument that is not a record (L4016), so no
+    // index key is minted; the property asserted above - a minted key cannot carry a callable -
+    // still holds on its own, and it is worth having the difference written down, because a reason
+    // nobody re-measured is how a struck door gets rebuilt.
     ok(
-      "merge mints index keys from a NON-record argument, so the keys are not all born-derived",
-      JSON.stringify(await h.ctx.free("merge", [h.ctx.born({ a: 1 }), "zz"])) === '{"0":"z","1":"z","a":1}',
-      await h.ctx.free("merge", [h.ctx.born({ a: 1 }), "zz"]),
+      "merge refuses a NON-record argument, so it mints no index keys",
+      codeOf(await caught(() => h.ctx.free("merge", [h.ctx.born({ a: 1 }), "zz"]))) === "L4016",
     );
     ok(
-      "and from an array argument too",
-      JSON.stringify(await h.ctx.free("merge", [h.ctx.born({ a: 1 }), [9, 8]])) === '{"0":9,"1":8,"a":1}',
-      await h.ctx.free("merge", [h.ctx.born({ a: 1 }), [9, 8]]),
+      "and an array argument too",
+      codeOf(await caught(() => h.ctx.free("merge", [h.ctx.born({ a: 1 }), [9, 8]]))) === "L4016",
     );
 
     // WHAT KEEPS THE DOOR SHUT, both halves measured. The program cannot build the input:
@@ -2888,7 +2879,7 @@ let n = 1;
     // EVERY NAME BELOW IS THE DECLARED SIDE, never the found side: a cell that reports what it found
     // renames itself under exactly the mutant meant to red it, and the config can no longer name it.
     const KINDS = ["log", "result"];
-    const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "runId", "seed", "source", "stepBudget"];
+    const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "resultBytes", "runId", "seed", "source", "stepBudget"];
     const WORKER_DATA = ["bridge", "request", "stop"];
     const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();
     ok(`the thread posts exactly the ${KINDS.length} message kinds this table cells`, JSON.stringify(posted) === JSON.stringify(KINDS), { declared: KINDS, found: posted });
@@ -2898,8 +2889,8 @@ let n = 1;
     // the set is the union of the two directions, and a kind added to either side reds this cell
     // until it is declared here beside the cells that grade its behaviour.
     const bridgeSrc = readFileSync(fileURLToPath(new URL("../src/engine/bridge.ts", import.meta.url)), "utf8");
-    const BRIDGE_KINDS = ["answer", "append", "bind", "bind-answer", "cancel", "effect", "now"];
-    const bridgePosted = [...new Set([...bridgeSrc.matchAll(/postMessage\(\{\s*kind: "([\w-]+)"/g)].map((m) => m[1] as string))].sort();
+    const BRIDGE_KINDS = ["answer", "append", "bind", "bind-answer", "cancel", "effect", "idle", "now"];
+    const bridgePosted = [...new Set([...bridgeSrc.matchAll(/(?:postMessage|toThread)\(\{\s*kind: "([\w-]+)"/g)].map((m) => m[1] as string))].sort();
     ok(`the effect bridge speaks exactly the ${BRIDGE_KINDS.length} message kinds this table cells, both directions together`, JSON.stringify(bridgePosted) === JSON.stringify(BRIDGE_KINDS), { declared: BRIDGE_KINDS, found: bridgePosted });
     // AND THE HOST'S SIDE OF THE SAME AGREEMENT, reproduced rather than reasoned: a thread that
     // posts a kind this host does not know. That is only reachable FROM a thread, so the probe is

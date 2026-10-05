@@ -5,11 +5,12 @@ import { createServer, type Server } from "node:net";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
-import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
+import { hardenPrivate, loadAgentFile, type PresenceCondition, type PresenceConditionCode } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
-import { activeModelRoute, bareModelId, describeRoute } from "./route-identity.js";
+import { forkJcodeSession, jcodeSeatHome, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
+import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
 import {
   classifyReadinessProviderRefusal,
   installJcodeDiagnosticLog,
@@ -80,6 +81,12 @@ const RELAY_REBIND_POLL_MS = 1_000;
  *  released the moment the acknowledgement arrives, which is single-digit milliseconds on a healthy
  *  seat. A Harness that never acknowledges therefore costs one bounded wait, not a wedged gate. */
 const RUN_ACCEPT_WINDOW_MS = 10_000;
+/** One bridge recovery remains bounded, but it is bounded by time rather than one launch/attach
+ *  outcome. A loaded host can lose a transient replacement race without turning that into a
+ *  second provider close or an unbounded relaunch loop. The window opens at the close, so tearing
+ *  down the broken tree spends it too. Exported so a test waiting on a recovery step allows the
+ *  host the same window instead of a shorter guess. */
+export const BRIDGE_RECOVERY_WINDOW_MS = 60_000;
 
 function readinessTurnTimeoutMs(): number {
   const raw = process.env.COTAL_JCODE_READINESS_TIMEOUT_MS?.trim();
@@ -135,13 +142,26 @@ interface RelayEndpoint {
   token: string;
 }
 
+const PRESENCE_CONDITION_CODES: ReadonlySet<string> = new Set<PresenceConditionCode>([
+  "rate_limit", "overloaded", "auth", "billing", "budget", "context", "model", "request", "server", "retrying", "approval", "input", "failed",
+]);
+
+/** A failed turn's condition, relayed from the Harness's own error code. Only a `HarnessError` is
+ *  relayed: it is what the Harness reported. A code outside the closed set reads `failed`, with
+ *  the native code kept as `source`. Without this the seat read `waiting` with the error only in
+ *  its private log (#618). */
+export function jcodeTurnCondition(error: unknown, since = Date.now()): PresenceCondition | undefined {
+  if (!(error instanceof HarnessError)) return undefined;
+  const source = String(error.code);
+  const code = (PRESENCE_CONDITION_CODES.has(source) ? source : "failed") as PresenceConditionCode;
+  return { code, source, message: error.message, since };
+}
+
 function privateAgentHome(space: string, name: string): string {
   const root = process.env.COTAL_JCODE_HOME?.trim();
   if (!root) throw new Error("COTAL_JCODE_HOME is not set — the connector must pin the agent's Jcode home");
-  const slug = `${space}-${name}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
-  const key = createHash("sha256").update(`${space}\0${name}`).digest("hex").slice(0, 12);
   const managedRoot = join(root, ".cotal", "jcode");
-  const home = join(managedRoot, `${slug || "agent"}-${key}`);
+  const home = jcodeSeatHome(root, space, name);
   if (!resolve(home).startsWith(resolve(managedRoot) + sep)) throw new Error(`jcode home ${home} escapes ${managedRoot} — refusing`);
   for (const path of [join(root, ".cotal"), managedRoot, home]) {
     try {
@@ -408,8 +428,16 @@ export async function runJcodeHost(): Promise<void> {
   // The managed home stays in the workspace, but this private short alias keeps that fixed API
   // path below AF_UNIX's platform limit. Failure is fatal; a long-path fallback is the reported bug.
   let socketHome: ShortSocketHome;
+  const resumeSource = process.env.COTAL_JCODE_RESUME?.trim();
+  let fork: JcodeFork | undefined;
   try {
     mirrorJcodeCredentials(home);
+    // `cotal spawn --resume`: the fork is on disk before the seat's instance first reads its sessions.
+    if (resumeSource) {
+      const sourceHome = process.env.COTAL_JCODE_RESUME_HOME?.trim();
+      if (!sourceHome) throw new Error("COTAL_JCODE_RESUME_HOME is not set — the launch must name the home it validated the source in");
+      fork = forkJcodeSession({ sourceHome, sessionId: resumeSource, seatHome: home, cwd });
+    }
     socketHome = shortSocketHome(home);
   } catch (error) {
     // These refusals name local paths, which the public startup diagnostic never renders, so
@@ -450,8 +478,8 @@ export async function runJcodeHost(): Promise<void> {
           // no requested turn can append past an unacknowledged boundary. On restart an existing WAL
           // wins over the current journal end and replays everything appended after that cursor.
           await initializeJcodeEventBoundary(journalPath, wal);
-          const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
+          const resumeBrackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
+          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: resumeBrackets?.run, resumeTools: resumeBrackets?.tools });
           return AguiEmitter.start<PositionedJcodeJournalRecord>({
             endpoint: agent.ep,
             wal,
@@ -877,10 +905,21 @@ export async function runJcodeHost(): Promise<void> {
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let consecutiveFailures = 0;
-  /** One bridge recovery remains bounded, but it is bounded by time rather than one launch/attach
-   *  outcome. A loaded host can lose a transient replacement race without turning that into a
-   *  second provider close or an unbounded relaunch loop. */
-  const BRIDGE_RECOVERY_WINDOW_MS = 60_000;
+  /** Whether this host published a failed-turn condition that the next turn has to clear. */
+  let turnConditionPublished = false;
+  /** The Harness error the last failed turn reported, kept until a turn succeeds, whether this host or
+   *  the TUI owns it. The manager's `seat reaped:` line carries only the seat's last connector line,
+   *  so a line that ends the seat names this error rather than leave it on an earlier `turn failed`
+   *  line alone (#785). */
+  let lastTurnError: string | undefined;
+  /** Relay a failed turn's Harness error as the presence condition, or clear a relayed one. The next
+   *  turn clears it when it starts, whether this host or the TUI owns that turn. */
+  const relayTurnCondition = (condition: PresenceCondition | null): void => {
+    if (condition) lastTurnError = condition.message;
+    if (!condition && !turnConditionPublished) return;
+    turnConditionPublished = condition !== null;
+    void agent.setCondition(condition).catch(() => {});
+  };
   const BRIDGE_RECOVERY_RETRY_MS = 1_000;
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
   // pendingKickoff implies consecutiveFailures === 0: it is cleared before the only run() that can
@@ -1016,6 +1055,7 @@ export async function runJcodeHost(): Promise<void> {
     // inside the acceptance await, this boundary wipes the reservation, the selection above re-reads
     // the same item, and both deliveries land. Drop only what no live handover holds.
     releaseUnheldReservations();
+    relayTurnCondition(null);
     publishInboundHealth();
     let turnClient: JcodeClient | undefined;
     try {
@@ -1098,11 +1138,14 @@ export async function runJcodeHost(): Promise<void> {
       // rather than inheriting a penalty the seat has already recovered from.
       errorRetryMs = ERROR_RETRY_INITIAL_MS;
       consecutiveFailures = 0;
+      lastTurnError = undefined;
     } catch (error) {
       closeEventRun(error as Error);
       await events?.settled();
       surfacedIds = [];
       consecutiveFailures++;
+      const condition = jcodeTurnCondition(error);
+      if (condition) relayTurnCondition(condition);
       writeJcodeDiagnostic(
         `[cotal-jcode] turn failed (${consecutiveFailures} in a row): ${(error as Error).message}\n`,
       );
@@ -1560,6 +1603,15 @@ export async function runJcodeHost(): Promise<void> {
     }
   };
 
+  /** A connector line that ends the seat, naming the last turn error while no turn has succeeded
+   *  since it. The manager's `seat reaped:` line keeps only the first 240 characters of this line, so
+   *  that error goes ahead of the recovery error, whose length the Harness decides. */
+  const endingLine = (reason: string, recoveryError?: string): string =>
+    lastTurnError === undefined
+      ? `[cotal-jcode] ${reason}${recoveryError === undefined ? "" : `: ${recoveryError}`}\n`
+      : `[cotal-jcode] ${reason}; last turn error: ${lastTurnError}` +
+        `${recoveryError === undefined ? "" : `; recovery error: ${recoveryError}`}\n`;
+
   /**
    * A provider stall can take down Jcode's bridge while leaving the private session and its inbox
    * batch intact. Give that owned instance one clean replacement: the failed turn remains unacked,
@@ -1570,7 +1622,7 @@ export async function runJcodeHost(): Promise<void> {
   const recoverBridge = async (lost: JcodeClient): Promise<void> => {
     if (stopping || lost !== client || reconnecting) return;
     if (bridgeRecoveryUsed) {
-      writeJcodeDiagnostic("[cotal-jcode] private Harness connection closed after its one recovery attempt\n");
+      writeJcodeDiagnostic(endingLine("private Harness connection closed after its one recovery attempt"));
       await shutdown(1);
       return;
     }
@@ -1650,7 +1702,7 @@ export async function runJcodeHost(): Promise<void> {
       }
     } catch (error) {
       writeJcodeDiagnostic(
-        `[cotal-jcode] private Harness connection closed and recovery failed: ${((lastError ?? error) as Error).message}\n`,
+        endingLine("private Harness connection closed and recovery failed", ((lastError ?? error) as Error).message),
       );
       await shutdown(1);
     } finally {
@@ -1662,7 +1714,11 @@ export async function runJcodeHost(): Promise<void> {
   const watchClient = (connected: JcodeClient): void => {
     connected.on("close", () => void recoverBridge(connected));
     const flushNativeEvent = (event: ApiEvent): void => {
-      if (!events?.running || !eventJournal || !("session_id" in event) || event.session_id !== sessionId) return;
+      if (!("session_id" in event) || event.session_id !== sessionId) return;
+      // Every work event of this seat's session, host- or TUI-owned, is progress the Harness reported:
+      // presence `activeAt`, so a turn that stopped advancing shows its age beside a live heartbeat (#618).
+      agent.noteActivity();
+      if (!events?.running || !eventJournal) return;
       events?.flush(eventJournal);
     };
     // The live API is only a wake signal. The holder serializes every flush and the source rereads
@@ -1683,12 +1739,25 @@ export async function runJcodeHost(): Promise<void> {
       if (!("session_id" in event) || event.session_id !== sessionId || event.ev !== "session_status") return;
       // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.
       // steerPending keys off sessionBusy() (driving || turnActive) so that pulse cannot drop a DM.
+      const started = !turnActive && event.status !== "idle";
       turnActive = event.status !== "idle";
+      if (started && !driving) relayTurnCondition(null);
       if (!turnActive) void finishHostIdleTurn();
       else publishInboundHealth();
     });
+    // A turn the TUI owns fails only as an unsolicited error frame: no run() of this host is there to
+    // throw it. A host-owned turn reports the same frame through drive()'s catch. Scoped like the
+    // SDK's own run(): a frame naming another session is not this seat's.
+    connected.on("harness_error", (event: ApiEvent) => {
+      if (driving || event.ev !== "error" || ("session_id" in event && event.session_id !== sessionId)) return;
+      const condition = jcodeTurnCondition(new HarnessError(String(event.code ?? "internal"), String(event.message ?? "harness error")));
+      if (condition) relayTurnCondition(condition);
+    });
     connected.on("turn_done", (event: ApiEvent) => {
       if ("session_id" in event && event.session_id === sessionId) {
+        // The SDK's run() takes turn_done as a turn's success. drive() clears the kept error for a
+        // host-owned turn; a TUI-owned turn clears it here unless it relayed an error of its own.
+        if (!driving && !turnConditionPublished) lastTurnError = undefined;
         closeEventRun();
         turnActive = false;
         void finishHostIdleTurn();
@@ -1744,7 +1813,11 @@ export async function runJcodeHost(): Promise<void> {
     const sessionsPath = storedSessionsPath(socketHome.jcodeHome);
     const stored = inspectStoredSessions(socketHome.jcodeHome);
     let listingFailed = false;
-    if (isEmptyStoredSessionsDirectory(stored)) {
+    if (fork) {
+      // An operator fork names its session. It is never chosen by size among the home's others,
+      // which may be left from an earlier seat of the same name.
+      prior = { session_id: fork.forkId };
+    } else if (isEmptyStoredSessionsDirectory(stored)) {
       writeJcodeDiagnostic(
         `[cotal-jcode] stored sessions directory is empty (${stored.path}); starting fresh without listing\n`,
       );
@@ -1786,7 +1859,9 @@ export async function runJcodeHost(): Promise<void> {
       if (prior) {
         session = await client.attachSession(prior.session_id);
         writeJcodeDiagnostic(
-          `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
+          fork
+            ? `[cotal-jcode] ${fork.created ? "forked" : "continued its fork of"} session ${resumeSource}${fork.title ? ` ${JSON.stringify(fork.title)}` : ""} (transcript sha256:${fork.transcriptSha256}) as ${prior.session_id}\n`
+            : `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
         );
       } else {
         session = await client.createSession(cwd);
@@ -1805,7 +1880,9 @@ export async function runJcodeHost(): Promise<void> {
         boundStoredSessionCause(panic ?? `${(error as Error).message ?? ""}\n${bridgeStderr}`),
       );
     }
-    const resumed = prior !== undefined;
+    // A fork carries the source's history but not this seat's briefing until a launch has sent it.
+    // That is tracked on its own, because a first launch can fork and then fail before briefing.
+    const resumed = prior !== undefined && (fork ? fork.briefed : true);
     sessionId = session.session_id;
     agent.setContextId(sessionId);
     if (events) {
@@ -1842,7 +1919,11 @@ export async function runJcodeHost(): Promise<void> {
         "model_mismatch",
         `jcode connector: the Harness API did not identify the active provider route for model ${JSON.stringify(effectiveModel ?? "(the provider default)")} — refusing to apply launch settings to an unverified route`,
       );
-    if (effectiveModel && runtime) writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, effectiveModel)}\n`);
+    if (effectiveModel && runtime) {
+      writeJcodeDiagnostic(`[cotal-jcode] ${describeRoute(runtime, effectiveModel)}\n`);
+      const provider = effectiveProvider(runtime, effectiveModel);
+      if (provider) await agent.setModel(effectiveModel, undefined, provider);
+    }
     // The Cotal variant is Jcode's per-session reasoning effort. Apply it after model selection
     // and before any instructions or readiness turn, so no served turn uses an unrequested tier.
     // Jcode owns the provider/model ladder and validates the requested tier at this API boundary.
@@ -1861,6 +1942,7 @@ export async function runJcodeHost(): Promise<void> {
     // them would replay the whole briefing on every restart and grow the context without adding to it.
     if (!resumed) {
       await client.sendMessage(sessionId, instructions(config, def?.persona || undefined), { noReply: true });
+      if (fork) markJcodeForkBriefed(home, resumeSource!);
     }
     const useTui = tuiOverride ? /^(1|true|yes|on)$/i.test(tuiOverride) : Boolean(process.stdout.isTTY);
     // The viewer needs only the fresh session's socket. Start it before the readiness LLM turn so
@@ -2025,16 +2107,29 @@ export async function runJcodeHost(): Promise<void> {
     // not just a busy agent, because the thrown code is `internal` for every one of them.
     // drive() is gated on initialized. Leave that false until this notice has been attempted so a
     // turn_done from the still-open proof cannot dispatch the spawn kickoff first (#1440).
-    try {
-      await client.sendMessage(
-        sessionId,
-        `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,
-        { noReply: true },
-      );
-    } catch (notice) {
-      writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
+    const joinNotice = `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`;
+    if (bootPrompt) {
+      try {
+        await client.sendMessage(sessionId, joinNotice, { noReply: true });
+      } catch (notice) {
+        writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
+      }
+    } else {
+      // No spawn prompt means nothing else schedules a turn after join: a persona that subscribes
+      // to nothing would otherwise sit on this notice as an unread append forever, never woken
+      // except by a directed mesh message (#1199). Route it through the same pendingKickoff/
+      // drive() dispatch boundary the spawn prompt uses instead of a noReply append, so it gets
+      // exactly one scheduled turn under the same one-shot rule (consumed at the request, never
+      // retried on an ambiguous error) and the same initialized gate and steering rules. A resumed
+      // session that is legitimately busy at this moment fails this turn the same way any other
+      // turn fails (drive()'s own catch logs it and schedules a retry) rather than killing the seat.
+      pendingKickoff = joinNotice;
     }
     initialized = true;
+    // The startup kickoff is the first requested turn after the pre-join readiness boundary. Bind
+    // its durable journal before dispatch so its first output opens an AG-UI run rather than being
+    // adopted as retained history. A still-open readiness turn remains excluded above.
+    if (!readinessTurnOpen) await ensureEventsBound();
     // Kickoff is not the only work that can arrive during that gate: a restart DM is parked until
     // this drain, or the replacement never observes it (#1440 / #910).
     if (hasDriveWork()) await drive();

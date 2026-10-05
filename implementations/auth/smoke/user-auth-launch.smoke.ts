@@ -50,7 +50,7 @@ const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: confi
 // refusal fires, so a cell can pass on an operator's machine and fail in CI's clean env
 // (measured, PR #962 shard 3). The child sees only the sandbox's own pins.
 const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
-const childEnv = { ...inheritedEnv, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const childEnv: Record<string, string | undefined> = { ...inheritedEnv, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 // Follow-on assign so a concurrent isolation edit on the object literal does not collide.
 // `cotal send` now refuses without a complete identity in this process.
 childEnv.COTAL_NAME = "cli";
@@ -212,7 +212,7 @@ try {
     onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
   });
   check("device login established (sub = the signed-up user)", sub === userId, { sub, userId });
-  const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--label", "smoke human"]);
+  const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--label", "smoke human"]);
   check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("granted"), grant.out);
   const cliRow = loadActorLedger(stateDir).find((row) => row.kind === "interactive" && row.actor === "cli");
   const wrongLifecycleUid = cliRow?.lifecycleUid === "a".repeat(26) ? "b".repeat(26) : "a".repeat(26);
@@ -222,20 +222,20 @@ try {
     body: JSON.stringify({ owner: cliRow?.owner, actor: "cli", lifecycleUid: wrongLifecycleUid }),
   });
   check("interactive lifecycle retirement refuses a UID other than the current actor row", retireWrongUid.status === 409, await retireWrongUid.text());
-  // The flagless grant is the FULL one: all channels + spawn + the stock role (the golden path —
-  // login, grant, spawn just works; narrowing is the operator's explicit act).
-  check("flagless grant defaults to the full envelope", grant.out.includes("read [>]") && grant.out.includes("post [>]") && grant.out.includes("spawn"), grant.out);
+  // The --full grant is the whole envelope: all channels + spawn + the stock role (the golden path —
+  // login, grant --full, spawn just works; narrowing is the operator's explicit act).
+  check("--full grant takes the full envelope, scope spawn and role:default",grant.out.includes("read [>]") && grant.out.includes("post [>]") && grant.out.includes("scope [spawn, role:default]"), grant.out);
 
   // The ENVELOPE rule on the foreground CLI spawn path: NARROW the cli grant explicitly, then an
   // over-ask beyond it is refused at the grant write — before any broker footprint — and the
   // refusal names the exact widening re-grant for the operator. (`up` seeds no persona, so the
   // pin brings its own role-less probe — the refusal must be purely the read over-ask.)
-  const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
+  const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && narrow.out.includes("read [general]"), narrow.out);
   // The MECHANISM, executed rather than described: the upsert replaces the WHOLE row, so a re-grant
-  // that names only --scope resets the ACLs a narrow row just set back to the wide default. Two
-  // refusals used to print exactly this command as their remedy. Nothing here is a fixture: it is
-  // the real CLI writing the real ledger, and the row it leaves behind reads every channel.
+  // that names only --scope would reset the ACLs a narrow row just set back to the wide default.
+  // Two refusals used to print exactly this command as their remedy. Without --full the CLI now
+  // refuses it, and the narrow row is left as it was.
   //
   // On its OWN actor, never on `cli`: a re-grant rotates the row's lifecycle uid, and the elevated
   // views later in this suite hold bearers minted against `cli`'s. Demonstrating a footgun must not
@@ -243,10 +243,12 @@ try {
   const wNarrow = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn", "--allow-subscribe", "general", "--allow-publish", "general"]);
   check("a probe actor is granted narrow, both ACL flags named", wNarrow.status === 0 && wNarrow.out.includes("read [general]") && wNarrow.out.includes("post [general]"), wNarrow.out);
   const wWide = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn"]);
-  check("a re-grant naming ONLY --scope silently widens that narrow row back to the whole plane",
-    wWide.status === 0 && wWide.out.includes("read [>]") && wWide.out.includes("post [>]"), wWide.out);
+  check("a re-grant naming ONLY --scope is refused, naming the flags it left off",
+    wWide.status !== 0 && wWide.out.includes("--allow-subscribe, --allow-publish left off"), wWide.out);
+  const wList = await cotal(["actor", "list"]);
+  check("…and the narrow row is unchanged", /widenprobe .*read=\[general\]\s+post=\[general\]/.test(wList.out), wList.out);
   const wBack = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn", "--allow-subscribe", "general", "--allow-publish", "general"]);
-  check("re-narrowing restores it, so the widening above is the omitted flags and nothing else",
+  check("re-granting with every field named still succeeds",
     wBack.status === 0 && wBack.out.includes("read [general]"), wBack.out);
   await cotal(["actor", "revoke", "widenprobe", "--sub", sub]);
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
@@ -381,7 +383,7 @@ try {
   check("revoke reports the live-connection outcome (evict wired)", /verified gone|live-connection eviction/i.test(revoke.out), revoke.out);
   const denied = await cotal(["send", "msg", "general", "should be refused", "--space", SPACE]);
   check("revoked actor's send is refused with the ledger reason", denied.status !== 0 && /refused|not granted/i.test(denied.out), denied.out);
-  const regrant = await cotal(["actor", "grant", "cli", "--sub", sub]);
+  const regrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full"]);
   check("re-grant succeeds (upsert)", regrant.status === 0);
   deleteIdpSession(home, base);
   const loggedOut = await cotal(["send", "msg", "general", "no session", "--space", SPACE]);

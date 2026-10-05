@@ -40,6 +40,9 @@ export interface CachedCommand {
 export interface CachedConnector {
   readonly name: string;
   readonly requires: readonly string[];
+  /** The connector's declared setup provider, `null` when it declares none. Absent only in a
+   *  manifest written before this was cached. */
+  readonly setup?: ExtensionRef | null;
 }
 
 export interface InstalledExtension {
@@ -142,7 +145,19 @@ export function cacheCommand(cmd: Command): CachedCommand {
 }
 
 export function cacheConnector(connector: Connector): CachedConnector {
-  return { name: connector.name, requires: [...(connector.requires ?? [])] };
+  return {
+    name: connector.name,
+    requires: [...(connector.requires ?? [])],
+    setup: connector.setup ? { kind: connector.setup.kind, name: connector.setup.name } : null,
+  };
+}
+
+/** True when an entry's connector metadata predates what `cacheConnector` records now: an advertised
+ *  connector with no cached entry, or one cached before setup providers were. Never throws. */
+export function connectorMetadataStale(ext: InstalledExtension): boolean {
+  return extensionProvides(ext).some((ref) =>
+    ref.kind === "connector" && ext.connectors?.find((connector) => connector.name === ref.name)?.setup === undefined,
+  );
 }
 
 /** Connector boot metadata from one installed package. An older manifest that advertised a

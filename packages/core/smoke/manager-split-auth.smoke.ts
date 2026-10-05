@@ -67,6 +67,8 @@ import {
   epRequestSubject,
   BASELINE_LIFECYCLE_ENDPOINT,
   eprStreamName,
+  artifactBucket,
+  objectStoreStream,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -264,7 +266,13 @@ try {
   // The THIRD TTL'd bucket. Its behavioural reconcile is covered elsewhere, but the grant matrix is
   // what this suite is for, and a matrix missing one of the three streams it grants is not a matrix.
   check("STREAM.UPDATE the delivery-lease bucket ALLOWED (#286 TTL reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.KV_${deliveryBucket(space)}`, prov.id) === "allowed");
-  check("STREAM.UPDATE the DM stream DENIED (reconcile scoped to the 3 TTL'd buckets)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${DM}`, prov.id) === "denied");
+  // The artifact Object Store: `ensureArtifactStore` creates it at `max_bytes: -1` (reserving nothing
+  // against the broker's `max_file_store`) and UPDATES a store left at the legacy stock 4 GiB to -1, so
+  // an existing mesh releases that reservation. `Objm.create` cannot change an existing bucket's cap,
+  // so the reconcile needs this grant or the first `cotal up` after the upgrade dies on a permissions
+  // violation. It is the ONLY non-TTL, non-authority stream the provisioner may update.
+  check("STREAM.UPDATE the artifact object store ALLOWED (legacy cap reconcile)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${objectStoreStream(artifactBucket(space))}`, prov.id) === "allowed");
+  check("STREAM.UPDATE the DM stream DENIED (reconcile scoped to the 3 TTL'd buckets + the artifact store)", await tryPublish(provCreds, `$JS.API.STREAM.UPDATE.${DM}`, prov.id) === "denied");
   check("publish chat DENIED", await tryPublish(provCreds, chatSubject(space, DEV_OWNER, prov.id, "general"), prov.id) === "denied");
   check("acquire the manager lease DENIED (not the supervisor)", await tryPublish(provCreds, `$KV.${managerBucket(space)}.${managerLeaseKey("inst01")}`, prov.id) === "denied");
 
@@ -283,16 +291,14 @@ try {
       await tryPublish(agCreds, `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmDurable(DEV_OWNER, agId.id, otherUid)}`, agId.id) === "denied");
     check("bind the SAME alias's dlv durable under a LIED lifecycle uid DENIED",
       await tryPublish(agCreds, `$JS.API.CONSUMER.MSG.NEXT.${DLV}.${dlvDurable(DEV_OWNER, agId.id, otherUid)}`, agId.id) === "denied");
-    // A KV watch is a client-managed ordered consumer. The client deletes the current `oc_*`
-    // consumer when the watch resets or stops, so CREATE+INFO without DELETE is not a usable
-    // read grant: cleanup is broker-refused, the watcher rebuilds again, and consumers accumulate.
-    // The generated name cannot be pinned at mint time, so the narrow boundary is the two public
-    // read-only KV streams an agent actually watches — never another KV stream or a stream delete.
-    check("delete an ordered presence-watch consumer ALLOWED (watch reset/stop cleanup)",
-      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.${PKV}.oc_agent-presence-probe_1`, agId.id) === "allowed");
-    check("delete an ordered channel-registry-watch consumer ALLOWED (watch reset/stop cleanup)",
-      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.KV_${channelBucket(space)}.oc_agent-channels-probe_1`, agId.id) === "allowed");
-    check("delete a consumer on a different KV stream DENIED (cleanup grant is not KV-wide)",
+    // A KV watch's `oc_<nuid>_<serial>` name cannot be pinned at mint time, and a stream-wide
+    // delete would reach every peer's watch cursor (#691), so the agent holds none: the broker
+    // reaps a rebuilt watch's predecessor at its inactive threshold.
+    check("delete an ordered presence-watch consumer DENIED (a peer's watch cursor is not the agent's to remove)",
+      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.${PKV}.oc_agent-presence-probe_1`, agId.id) === "denied");
+    check("delete an ordered channel-registry-watch consumer DENIED",
+      await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.KV_${channelBucket(space)}.oc_agent-channels-probe_1`, agId.id) === "denied");
+    check("delete a consumer on a different KV stream DENIED",
       await tryPublish(agCreds, `$JS.API.CONSUMER.DELETE.KV_${membersBucket(space)}.oc_agent-escape-probe_1`, agId.id) === "denied");
     check("delete the presence STREAM itself DENIED (consumer cleanup is not bucket destruction)",
       await tryPublish(agCreds, `$JS.API.STREAM.DELETE.${PKV}`, agId.id) === "denied");

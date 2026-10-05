@@ -43,16 +43,22 @@ boundary. The Pi-local ledger commits those IDs through `MeshAgent.drainInboxIds
 only exact matches even when quiet ambient is physically interleaved or older IDs were overflow-
 evicted. Missing confirmed IDs are marked handled and tombstoned so late copies cannot resurface.
 
-Pi emits `agent_end` to extensions without exposing whether it will retry. Error, abort, unknown
-reasons, and zero/missing-output `length` therefore
-retain the delivery association in `waiting`; a later `agent_start` proves continuation. Non-aborted
-`stop`, `toolUse`, and positive-output `length` are locally provable terminal boundaries and may
-commit confirmed work.
+Pi emits `agent_end` to extensions without exposing whether it will retry. Error and unknown
+reasons, and zero/missing-output `length`, therefore retain the delivery association in `waiting`
+while the driver itself attempts the continuation: it re-dispatches the retained batch through the
+same send path, with a fixed backoff and a fixed attempt count, and each attempt's `agent_start`
+proves continuation the same way an externally-triggered one does. A clean terminal boundary on any
+attempt commits the retained work as usual. Once the attempts are spent, the driver holds with a
+presence that names the state as needing intervention, states the attempt count, and says what the
+intervention is: start a new turn in the session, or replace the seat. User abort never retries; it
+is identified from the `AbortSignal` captured while the turn is active and stays a plain hold, since
+the person who aborted is the party who continues. Non-aborted `stop`, `toolUse`, and positive-output
+`length` are locally provable terminal boundaries and may commit confirmed work.
+
 `session_before_compact { reason: "overflow", willRetry: true }` identifies the overflow path but is
-not itself a terminal decision. User abort is identified from the `AbortSignal` captured while the
-turn is active. An abort or dispatch watchdog blocks automatic replay. In managed headless use,
-restart is the safe recovery because it terminates any possibly-live provider call before durable
-redelivery.
+not itself a terminal decision. An abort or dispatch watchdog blocks automatic replay. In managed
+headless use, restart is the safe recovery because it terminates any possibly-live provider call
+before durable redelivery.
 
 `reload`, `new`, `resume`, and `fork` tear down Pi's extension runtime. The adapter keeps its mesh,
 control listener, delivery association, and ordered presence chain in a process-global identity map,
@@ -65,6 +71,9 @@ the exact current Pi session through the token-authenticated local control socke
 process exit reopens that session with the same Cotal identity, lifecycle UID, credentials and durable
 inbox. Three restarts are allowed in a rolling two-minute window; a fourth is a crash loop and retires
 the seat loud. A deliberate stop/despawn/maintenance cut never restarts it.
+
+A manifest agent declared `continuity: exact` is reopened with `pi --session <id>`, which
+fails when Pi no longer has that session instead of creating an empty one under the same id.
 
 ## Event plane
 

@@ -80,9 +80,9 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import net, { type AddressInfo } from "node:net";
+import net from "node:net";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams, type CotalMessage } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, listenOn, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   activityBackfill, AGGREGATION_CONCURRENCY, AGGREGATION_DEADLINE_MS, chatOnly,
   type ActivityPage, type ActivitySource,
@@ -101,11 +101,6 @@ const ok = (name: string, cond: boolean, detail?: unknown): void => {
   console.log(`  x FAIL  ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = async (): Promise<number> =>
-  new Promise((res) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 
 // ── the instrument ───────────────────────────────────────────────────────────────────────────────
 
@@ -222,7 +217,7 @@ async function fanOutBackfill(
       ...chans.map((ch) => ({
         name: `#${ch.channel}`,
         read: async () =>
-          (await ep.channelHistory(ch.channel, { limit, signal: abort.signal }))
+          (await (ep as unknown as CotalEndpoint).channelHistory(ch.channel, { limit, signal: abort.signal }))
             .map((msg) => ({ mode: "chat" as const, channel: ch.channel, msg })),
       })),
       {
@@ -259,6 +254,8 @@ async function fanOutBackfill(
       read: sources.length - missing.length,
       of: sources.length,
       missing,
+      // The pre-#1210 shape kept no reason for a missing source; this baseline is read for cost only.
+      reasons: Object.fromEntries(missing.map((m) => [m, "not recorded by the pre-#1210 shape"])),
       deadlineMs,
     };
   } finally {
@@ -540,11 +537,10 @@ try {
     // Counting on write COMPLETION rather than on write issue is what makes `counted <= received` a
     // safe invariant instead of a race against one in-flight chunk.
     {
-      const SINK = PROXY + 101;
-      const EDGE = PROXY + 102;
+      const EDGE = await freePort();
       let received = 0;
       const sink = net.createServer((sock) => { sock.on("data", (b: Buffer) => { received += b.length; }); });
-      await new Promise<void>((r) => { sink.listen(SINK, "127.0.0.1", () => r()); });
+      const SINK = await onFreePort((port) => listenOn(sink, port));
       const local = zero();
       const edge = countingLink({
         listen: EDGE, target: SINK, latency: { oneWayMs: 5, bytesPerSec: 20_000 }, cost: () => local,
@@ -586,14 +582,13 @@ try {
     // Same construction mirrored: the source pushes 64 KB the moment the proxy dials it, so the
     // bytes travel broker to client, and the link is cut once delivery has started.
     {
-      const SRC = PROXY + 103;
-      const EDGE = PROXY + 104;
+      const EDGE = await freePort();
       const CHUNK = 8_000;
       const PUSHED = CHUNK * 8;
       const src = net.createServer((sock) => {
         for (let i = 0; i < 8; i++) sock.write(Buffer.alloc(CHUNK, 0x62));
       });
-      await new Promise<void>((r) => { src.listen(SRC, "127.0.0.1", () => r()); });
+      const SRC = await onFreePort((port) => listenOn(src, port));
       const local = zero();
       const edge = countingLink({
         listen: EDGE, target: SRC, latency: { oneWayMs: 5, bytesPerSec: 20_000 }, cost: () => local,

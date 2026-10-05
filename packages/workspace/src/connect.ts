@@ -26,7 +26,7 @@ import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { findMesh, getCurrent, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
-import { preflightTarget, pruneStaleMeshes } from "./preflight.js";
+import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError } from "./render.js";
 
 /**
@@ -118,8 +118,9 @@ export interface Connection {
 /** The one way a command turns a {@link Connection} into endpoint auth options — spread this into
  *  `new CotalEndpoint({...})` instead of passing `creds:` directly, so a user-mode connection
  *  (bearer + sentinel) and a static/raw one (creds) ride the same call sites without each command
- *  re-learning the mode split. */
-/** The connect material for one resolved connection, spread straight into `CotalEndpoint` options
+ *  re-learning the mode split.
+ *
+ *  The connect material for one resolved connection, spread straight into `CotalEndpoint` options
  *  or a standalone helper.
  *
  *  `tls` rides along with the credentials DELIBERATELY. It used to be dropped here — this function
@@ -136,7 +137,7 @@ export function endpointAuth(conn: Connection): { creds?: string; bearer?: strin
 }
 
 /** The ledger actor a HUMAN CLI connect runs as on a user-auth space (v1: one well-known name).
- *  Grant it once per user: `cotal actor grant cli --sub <your IdP subject>`. */
+ *  Grant it once per user: `cotal actor grant cli --sub <your IdP subject> --full`. */
 export const CLI_USER_ACTOR = "cli";
 
 /** The auth material for one ELEVATED user-mode connection (a "view"): bearer + sentinel for the
@@ -202,6 +203,29 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
   const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
   const managerInstanceId = request.managerInstanceId;
   return { bearer, sentinelCreds, owner, actor, lifecycleUid, ...(managerInstanceId ? { managerInstanceId } : {}), source: () => mint().then((r) => r.bearer) };
+}
+
+/** #2312: exchange this machine's login for a `session-caller` bearer bound to ONE redeemed
+ *  session. The grant rides to the identity plane, which decides whether this principal holds that
+ *  session; nothing here decides it, and no seed is read or written. THROWS the provider's sentence. */
+export async function userSessionAuth(
+  target: { space: string; root?: string },
+  sessionGrant: unknown,
+): Promise<{ bearer: string; sentinelCreds: string }> {
+  if (target.root === undefined) throw new Error("userSessionAuth: a user-mode session needs the registered checkout root");
+  const entry = findMesh(target.space);
+  const ua = entry?.root === target.root ? entry.userAuth : undefined;
+  if (!ua) throw new Error(`userSessionAuth: space "${target.space}" has no registered user-auth entry at ${target.root}`);
+  const provider = registry.resolve<AuthProvider>("auth-provider", ua.provider);
+  const { bearer, sentinelCreds } = await provider.userCredentials({
+    store: workspaceSecretStore(target.root),
+    dir: userAuthStateDir(target.root, target.space),
+    space: target.space,
+    actor: CLI_USER_ACTOR,
+    view: "session-caller",
+    sessionGrant,
+  });
+  return { bearer, sentinelCreds };
 }
 
 /** {@link userViewAuth}, workstation-flavoured: colour the thrown sentence and exit. */
@@ -273,11 +297,20 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  * separated from the disposition (print and exit, or throw), and `connectOrExit` is now a thin
  * wrapper that supplies the exiting disposition. The two forms cannot drift in what they say
  * because there is only one place the sentence is written.
+ *
+ * `kind` says whether asking again can help. `transient` is a broker that did not answer in time
+ * or could not be reached, and nothing else: a caller that keeps going retries it. Every other
+ * refusal is `permanent` (missing seed, refused credentials, a user-auth mesh offered static
+ * creds), and a caller that keeps going must stop and say the sentence rather than retry it.
  */
+export type ConnectRefusalKind = "transient" | "permanent";
+
 export class ConnectRefusal extends Error {
-  constructor(readonly rendered: string, readonly hint?: string, options?: { cause?: unknown }) {
+  readonly kind: ConnectRefusalKind;
+  constructor(readonly rendered: string, readonly hint?: string, options?: { cause?: unknown; kind?: ConnectRefusalKind }) {
     super(rendered, options);
     this.name = "ConnectRefusal";
+    this.kind = options?.kind ?? "permanent";
   }
 }
 
@@ -479,6 +512,15 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
   return userConnectOrExit(target);
 }
 
+/** {@link connectUserControlOrExit} for a caller that must record a refusal before it fails, such
+ *  as `up`'s same-principal resume, which degrades its maintenance journal with the reason. */
+export async function connectUserControlOrThrow(flags: { server?: string; space?: string }): Promise<Connection> {
+  const target = await resolveTargetOrThrow(flags);
+  if (target.mode !== "user")
+    throw new ConnectRefusal(`✗ connectUserControlOrThrow requires a user-auth mesh (resolved mode is "${target.mode}")`);
+  return userConnectOrThrow(target);
+}
+
 /** The user-mode connect: resolve the space's auth provider from the registry (composition-root
  *  supplied — never imported here), exchange this machine's login session for a bearer, and hand
  *  back bearer + sentinel. The provider owns the failure copy for its own steps (not logged in,
@@ -490,59 +532,68 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
  *  (which refuses control-caller-* instruments). If a Profile is ever threaded into this function,
  *  the call sites that invented dummy roles are the defect. */
 async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
-  const ua = target.userAuth!; // mode "user" guarantees it (targetFromEntry throws otherwise)
-  let provider: AuthProvider;
   try {
-    provider = registry.resolve<AuthProvider>("auth-provider", ua.provider);
-  } catch {
-    console.error(
-      c.red(
-        `✗ space "${target.space}" uses the "${ua.provider}" auth provider, which this build does not register - user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
-      ),
-    );
-    process.exit(1);
-  }
-  try {
-    const { bearer, sentinelCreds } = await provider.userCredentials({
-      store: workspaceSecretStore(target.root),
-      dir: userAuthStateDir(target.root, target.space),
-      space: target.space,
-      actor: CLI_USER_ACTOR,
-    });
-    // The v0.4 caller triple (1c.2c): the callout mints the cli actor's ep-rail rows keyed on the
-    // LEDGER lifecycle claim the bearer carries - the same three tokens, read client-side, let
-    // askManager's ep path build its request subjects. A re-granted alias invalidates the triple
-    // at the next exchange, exactly when the rows change.
-    const p = principalFromBearer(bearer);
-    return {
-      server: target.server,
-      space: target.space,
-      tls: target.tlsRequired,
-      bearer,
-      sentinelCreds,
-      userAuth: ua,
-      root: target.root,
-      source: target.source,
-      mode: target.mode,
-      ...(target.policy ? { policy: target.policy } : {}),
-      epCaller: { owner: p.owner, actor: p.actor, uid: p.lifecycleUid },
-    };
+    return await userConnectOrThrow(target);
   } catch (e) {
     console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
     process.exit(1);
   }
 }
 
+async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
+  const ua = target.userAuth!; // mode "user" guarantees it (targetFromEntry throws otherwise)
+  let provider: AuthProvider;
+  try {
+    provider = registry.resolve<AuthProvider>("auth-provider", ua.provider);
+  } catch {
+    throw new Error(
+      `space "${target.space}" uses the "${ua.provider}" auth provider, which this build does not register - user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
+    );
+  }
+  const { bearer, sentinelCreds } = await provider.userCredentials({
+    store: workspaceSecretStore(target.root),
+    dir: userAuthStateDir(target.root, target.space),
+    space: target.space,
+    actor: CLI_USER_ACTOR,
+  });
+  // The v0.4 caller triple (1c.2c): the callout mints the cli actor's ep-rail rows keyed on the
+  // LEDGER lifecycle claim the bearer carries - the same three tokens, read client-side, let
+  // askManager's ep path build its request subjects. A re-granted alias invalidates the triple
+  // at the next exchange, exactly when the rows change.
+  const p = principalFromBearer(bearer);
+  return {
+    server: target.server,
+    space: target.space,
+    tls: target.tlsRequired,
+    bearer,
+    sentinelCreds,
+    userAuth: ua,
+    root: target.root,
+    source: target.source,
+    mode: target.mode,
+    ...(target.policy ? { policy: target.policy } : {}),
+    epCaller: { owner: p.owner, actor: p.actor, uid: p.lifecycleUid },
+  };
+}
+
 /** Reachability check for a RAW (off-registry) connection — one plain sentence, never a registry/
  *  stale-entry message and never a prune. Used by the `--creds` escape hatch and `join`'s explicit
  *  (link/token/creds) path, both of which connect to a broker the user named, not the registry. */
 export async function reachableOrThrow(server: string, auth: RawAuth = {}): Promise<void> {
-  const probe = await probeConnect(server, auth);
+  let probe = await probeConnect(server, auth);
+  // CONFIRM BEFORE CONDEMNING, same reason as the registry path's re-probe (preflight.ts:100-110):
+  // the default budget is 1s, a real link can need more, and the raw door never got the second try —
+  // #709. `timeout`/`unreachable` are both inconclusive misses; `auth-required`/`stale-auth` are
+  // answers (the broker responded, or a credential read locally) and get no second try. The
+  // renderer's `timeout` sentence names this confirm budget, so it must actually be spent first.
+  if (!probe.ok && (probe.reason === "timeout" || probe.reason === "unreachable"))
+    probe = await probeConnect(server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
   if (probe.ok) return;
   // Whether the caller actually presented anything to be rejected. `tls` is deliberately not part
   // of this: it is transport, not identity, and a TLS-only connection presents no credential.
   const hasAuth = Boolean(auth.creds ?? auth.token ?? (auth.user && auth.pass));
-  throw new ConnectRefusal(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth }));
+  const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
+  throw new ConnectRefusal(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth }), undefined, { kind });
 }
 
 /** {@link reachableOrThrow} with the exiting disposition. */
@@ -569,8 +620,13 @@ export async function resolveTargetOrThrow(flags: {
     target = resolveMeshTarget(process.cwd(), { ...flags, offline: sweep.offline });
   } catch (e) {
     // The target error rides as `cause`, so a caller that must tell "no mesh recorded at all" from
-    // every other refusal can read its `code` instead of matching the rendered sentence.
-    if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e });
+    // every other refusal can read its `code` instead of matching the rendered sentence. No mesh
+    // found is transient: the sweep keeps a crashed `up` mesh as offline, so it resolves again once
+    // its broker is back. A record that exists and is broken, or several that match, is not.
+    if (isWorkspaceTargetError(e)) {
+      const kind = e.code === "no-meshes" || e.code === "unknown-space" ? "transient" : "permanent";
+      throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e, kind });
+    }
     throw e;
   }
   // If a dangling `current` was silently bypassed — it named a mesh that's since gone (deleted,
@@ -596,7 +652,11 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
   // user target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    throw new ConnectRefusal(`✗ no mesh running at ${target.server} - mesh "${target.space}" is recorded at ${target.root} but not running; run \`cotal up\` there to restart`);
+    throw new ConnectRefusal(
+      `✗ no mesh running at ${target.server} - mesh "${target.space}" is recorded at ${target.root} but not running; run \`cotal up\` there to restart`,
+      undefined,
+      { kind: "transient" },
+    );
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
@@ -605,7 +665,8 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
   // `offline`; mismatch (creds rejected / mode flipped) still drops it. Manual never deletes.
   // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
   const pruned = r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
-  throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }));
+  const kind = r.kind === "unreachable" || r.kind === "slow-link" ? "transient" : "permanent";
+  throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }), undefined, { kind });
 }
 
 /** {@link preflightOrThrow} with the exiting disposition. */

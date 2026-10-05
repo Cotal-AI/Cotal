@@ -19,8 +19,9 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { processStartToken as posixStartToken } from "./advisory-lock.js";
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { acquireLock, processStartToken as posixStartToken } from "./advisory-lock.js";
 
 /** A Node/POSIX-signalable pid: a positive INTEGER within the signed 32-bit range `process.kill`
  *  accepts (it throws `ERR_INVALID_ARG_TYPE`/`ERR_OUT_OF_RANGE` outside it). Anything else -
@@ -46,6 +47,12 @@ export function livenessFromErrno(code: string | undefined): "alive" | "dead" | 
   return "unknown"; // ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE / anything else - cannot attribute
 }
 
+/** The liveness probe as a DEPENDENCY. `unknown` is only producible by kernel policy (a seccomp
+ *  `SECCOMP_RET_ERRNO` filter, an LSM answering `security_task_kill`), so no test input can reach it
+ *  and the branch that handles it would otherwise be guarded by nothing executable. Callers take
+ *  this so that branch can be driven directly. Production passes nothing and gets the real one. */
+export type LivenessProbe = (pid: number) => "alive" | "dead" | "unknown";
+
 /** Tri-state liveness against the real kernel.
  *
  *  CALLERS MUST PICK A DIRECTION, because the two questions pull opposite ways:
@@ -54,12 +61,6 @@ export function livenessFromErrno(code: string | undefined): "alive" | "dead" | 
  *  A presence check written as `!== "dead"` turns an `unknown` into a permanent, silent, retry-proof
  *  false-up. Reviewed against a repro that wedged three control-plane retries against an
  *  unreachable manager. */
-/** The liveness probe as a DEPENDENCY. `unknown` is only producible by kernel policy (a seccomp
- *  `SECCOMP_RET_ERRNO` filter, an LSM answering `security_task_kill`), so no test input can reach it
- *  and the branch that handles it would otherwise be guarded by nothing executable. Callers take
- *  this so that branch can be driven directly. Production passes nothing and gets the real one. */
-export type LivenessProbe = (pid: number) => "alive" | "dead" | "unknown";
-
 export function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
   try {
     process.kill(pid, 0);
@@ -331,8 +332,9 @@ export function identityLegacyWarning(label: string, pidfilePath: string): strin
  * clean, meshes, the web dashboard, smoke suites, and any operator script - keeps working, and a
  * bare-pid pidfile remains a LEGACY record this change must handle with a loud warning, not break. The creation
  * identity therefore lives in a SIBLING file `<pidfile>.identity` (the `manager.delivery-aware`
- * marker pattern), holding the {@link formatRecord} two-field pin. Missing sibling = legacy record;
- * present-but-garbled = torn write, refuse; pid mismatch inside the sibling = torn pairing, refuse.
+ * marker pattern), holding the {@link formatRecord} two-field pin, one line per record. Missing
+ * sibling = legacy record; present-but-garbled = torn write, refuse; no line for the pidfile's pid =
+ * torn pairing, refuse.
  */
 export function identityPinPath(pidfilePath: string): string {
   return `${pidfilePath}.identity`;
@@ -347,6 +349,120 @@ export function writeIdentityPin(pidfilePath: string, pid: number, tokenAt: Proc
   const rec = identityRecord(pid, tokenAt);
   if (!("token" in rec)) return; // no start could be established: leave the legacy bare-pid shape, loud
   writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));
+}
+
+/** One step of {@link writePidPair}'s publish, passed to `onStep` right after it completes. Production
+ *  passes no `onStep`; tests use it to plant a crash between two named steps and read what survives. */
+export type PidPairStep = "temporaries" | "bridge-pin" | "publish-pid" | "publish-pin";
+
+/** A pin's records, one per line. A settled pin holds one line; only {@link writePidPair}'s bridge
+ *  holds two, the old record's and the new one's. `undefined` when the pin is empty or any line is
+ *  not a record: a torn or tampered write. */
+function parsePinLines(raw: string): ProcessIdentityRecord[] | undefined {
+  const records: ProcessIdentityRecord[] = [];
+  for (const line of raw.split("\n")) {
+    if (line.trim() === "") continue;
+    const parsed = parseRecord(line);
+    if (parsed.kind !== "record") return undefined;
+    records.push(parsed.record);
+  }
+  return records.length === 0 ? undefined : records;
+}
+
+/** The token of a bridge line for a record in the legacy shape: a pid published with no start token,
+ *  or an old pidfile that had no pin. The line reads as legacy, never as a torn pairing. */
+const NO_START_TOKEN = "-";
+
+/** The pin line of the pid the pidfile names right now. A pidfile with no pin at all is a legacy
+ *  record, so its line carries {@link NO_START_TOKEN} and the bridge keeps it legacy. A pin that is
+ *  unreadable or has no line for that pid has nothing to carry. */
+function currentPinLine(pidfilePath: string): ProcessIdentityRecord | undefined {
+  let current: number | undefined;
+  try {
+    current = parsePid(readFileSync(pidfilePath, "utf8"));
+  } catch {
+    return undefined; // no pidfile: a first start, there is no old line to carry
+  }
+  if (current === undefined) return undefined;
+  let rawPin: string;
+  try {
+    rawPin = readFileSync(identityPinPath(pidfilePath), "utf8");
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT" ? { pid: current, token: NO_START_TOKEN } : undefined;
+  }
+  return parsePinLines(rawPin)?.find((r) => r.pid === current);
+}
+
+/** The lock that serializes every writer of one pid record: {@link writePidPair} and {@link removePidPair}. */
+function lockPidRecord(pidfilePath: string): { release(): void } {
+  return acquireLock(`${pidfilePath}.publish.lock`, { label: `the publish lock for ${pidfilePath}`, waitMs: 30_000, pollMs: 20 });
+}
+
+/** Publish the pidfile and its identity pin as ONE transition (issue #1238). The pidfile rename is the
+ *  single commit point. Just before it, a BRIDGE pin is renamed into place holding the old record's
+ *  line and the new one, so whichever pid the pidfile names at any instant, the pin carries that pid's
+ *  own line and {@link verifyIdentityPin} checks it as the complete record it belongs to. After the
+ *  commit, the settled pin (the new line alone) replaces the bridge.
+ *
+ *  Reachable on-disk states, in order: before `bridge-pin`, the OLD complete record (or nothing, on a
+ *  first start). After `bridge-pin`, the OLD pid checked against its own line, so a pin that was
+ *  refusing a reused pid keeps refusing it. After `publish-pid`, the NEW pid checked against its own
+ *  line. After `publish-pin`, the NEW complete record. No state is torn and none drops to the unpinned
+ *  legacy shape. A legacy old record (a pidfile with no pin) is carried as a {@link NO_START_TOKEN}
+ *  line, so it stays legacy until the commit. An old pin that is torn or has no line for the old pid
+ *  has nothing to carry, so until the commit it refuses as a torn pairing, as it already did.
+ *
+ *  When `identityRecord` cannot establish a token (ps-less host, or a pid whose start could not be
+ *  read - same rule as {@link writeIdentityPin}), the new line carries {@link NO_START_TOKEN} and
+ *  `publish-pin` removes the pin, leaving the legacy shape `writeIdentityPin` would have left. A crash
+ *  after the commit reads that same legacy record, never the new pid paired with the old pin.
+ *
+ *  Writers of one path are serialized by an advisory lock (`${path}.publish.lock`) held from the read
+ *  of the old line to the settled pin: the launcher and the daemon it starts both publish the same
+ *  record, and an unserialized bridge or settle could overwrite a newer publish. Teardown removes a
+ *  record under the same lock ({@link removePidPair}). A crashed holder's lock is reclaimed by the
+ *  next writer.
+ *
+ *  On any throw, the temporaries are removed (`finally`, best-effort) and the error rethrown; the
+ *  temporary names are never read by any reader (`${path}.publish.<pid>.<hex>`, the same claim-file
+ *  pattern {@link claimAuthPidSlot} uses for `.claim.`). */
+export function writePidPair(
+  pidfilePath: string,
+  pid: number,
+  opts: { tokenAt?: ProcessStartTokenReader; onStep?: (step: PidPairStep) => void } = {},
+): void {
+  const tokenAt = opts.tokenAt ?? defaultStartToken;
+  const onStep = opts.onStep ?? (() => {});
+  const pinPath = identityPinPath(pidfilePath);
+  const suffix = `${process.pid}.${randomBytes(4).toString("hex")}`;
+  const pidTemp = `${pidfilePath}.publish.${suffix}`;
+  const pinTemp = `${pinPath}.publish.${suffix}`;
+  const bridgeTemp = `${pinPath}.publish.${suffix}.bridge`;
+  const rec = identityRecord(pid, tokenAt);
+  const line: ProcessIdentityRecord = "token" in rec ? rec : { pid, token: NO_START_TOKEN };
+  try {
+    writeFileSync(pidTemp, String(pid));
+    if ("token" in rec) writeFileSync(pinTemp, formatRecord(rec));
+    const held = lockPidRecord(pidfilePath);
+    try {
+      const old = currentPinLine(pidfilePath);
+      writeFileSync(bridgeTemp, (old !== undefined && old.pid !== pid ? [old, line] : [line]).map(formatRecord).join("\n"));
+      onStep("temporaries");
+      renameSync(bridgeTemp, pinPath);
+      onStep("bridge-pin");
+      renameSync(pidTemp, pidfilePath);
+      onStep("publish-pid");
+      if ("token" in rec) renameSync(pinTemp, pinPath);
+      else rmSync(pinPath, { force: true });
+      onStep("publish-pin");
+    } finally {
+      held.release();
+    }
+  } finally {
+    rmSync(pidTemp, { force: true });
+    rmSync(pinTemp, { force: true });
+    rmSync(bridgeTemp, { force: true });
+  }
 }
 
 /** What {@link verifyIdentityPin} found for one pidfile. */
@@ -393,18 +509,46 @@ export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartToke
   // When the pid is ESRCH-dead there is nothing to signal, so the record is clearable whatever
   // state the pin is in: a torn pin must not wedge the cleanup of a process that no longer exists.
   const dead = probeLiveness(pidRead) === "dead";
-  const parsed = parseRecord(rawPin);
-  if (parsed.kind !== "record") return dead ? { kind: "gone" } : { kind: "torn-pin", raw: parsed.kind === "unattributable" ? parsed.raw : "" };
-  if (parsed.record.pid !== pidRead) return dead ? { kind: "gone" } : { kind: "torn-pairing", pinPid: parsed.record.pid };
-  const verdict = assertRecordIdentity(parsed.record, tokenAt);
-  if (verdict.kind === "match") return { kind: "match", record: parsed.record };
+  // The pidfile's pid is checked against its OWN line, so a bridge a crashed publish left behind
+  // adjudicates as the complete record whose pid the pidfile names (#1238).
+  const lines = parsePinLines(rawPin);
+  if (lines === undefined) return dead ? { kind: "gone" } : { kind: "torn-pin", raw: rawPin.trim() };
+  const own = lines.find((r) => r.pid === pidRead);
+  if (own === undefined) return dead ? { kind: "gone" } : { kind: "torn-pairing", pinPid: lines[0]!.pid };
+  if (own.token === NO_START_TOKEN) return dead ? { kind: "gone" } : { kind: "legacy" }; // a no-token publish's line
+  const verdict = assertRecordIdentity(own, tokenAt);
+  if (verdict.kind === "match") return { kind: "match", record: own };
   if (verdict.kind === "gone") return { kind: "gone" };
-  if (verdict.kind === "mismatch") return { kind: "mismatch", record: parsed.record, liveToken: verdict.liveToken };
+  if (verdict.kind === "mismatch") return { kind: "mismatch", record: own, liveToken: verdict.liveToken };
   return { kind: "unpinned" };
 }
 
-/** Remove the sibling pin together with a pidfile whose process is PROVEN gone. Never called on a
- *  refused stop: the preserved record keeps its pin so the next attempt re-adjudicates. */
+/** Remove a record whose process is PROVEN gone: the pin, then the pidfile. Never called on a refused
+ *  stop: the preserved record keeps its pin so the next attempt re-adjudicates. It holds the lock
+ *  {@link writePidPair} holds and removes only while the pidfile still reads `recorded` (trimmed), the
+ *  record the caller adjudicated. A publish that committed a successor meanwhile is left whole, never
+ *  stripped to a pidfile with no pin (#1238). With no pidfile, a stray pin is removed. */
+export function removePidPair(pidfilePath: string, recorded: string): void {
+  const pinPath = identityPinPath(pidfilePath);
+  if (!existsSync(pidfilePath) && !existsSync(pinPath)) return; // nothing recorded: take no lock, create no directory
+  const held = lockPidRecord(pidfilePath);
+  try {
+    let now: string | undefined;
+    try {
+      now = readFileSync(pidfilePath, "utf8").trim();
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+    if (now !== undefined && now !== recorded) return; // a successor's record: not this removal's
+    rmSync(pinPath, { force: true });
+    rmSync(pidfilePath, { force: true });
+  } finally {
+    held.release();
+  }
+}
+
+/** @deprecated Use {@link removePidPair}. Removes the sibling pin alone, with no lock and no check
+ *  for a successor's record. Kept for existing consumers for one minor line. */
 export function removeIdentityPin(pidfilePath: string): void {
   rmSync(identityPinPath(pidfilePath), { force: true });
 }

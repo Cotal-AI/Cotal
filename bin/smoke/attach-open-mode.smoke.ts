@@ -42,22 +42,11 @@
  * spawns, and stops the manager WITH its agents so no supervised child outlives the run.
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** An ephemeral, collision-safe loopback port (ask the OS for a free one, then release it). */
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
 /** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
 const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
   new Promise((r) => {
@@ -277,9 +266,9 @@ try {
   ok("ACCEPT: an open mesh redeems bare even when a seed is present on disk", openWithSeed.kind === "bare", openWithSeed);
   const userWithSeed = decideOn({ space: SPACE, server: SEALED_SERVER, root: rootOpenWithSeed, mode: "user", spaceAuth: seed, auth: { bearer: "x" } });
   ok(
-    "REFUSE (same present seed, mode `user`): a user mesh refuses rather than minting on the wrong identity plane",
-    userWithSeed.kind === "fatal" && /USER-AUTH mesh/.test(userWithSeed.message),
-    userWithSeed.kind === "fatal" ? userWithSeed.message : userWithSeed,
+    "REFUSE the mint (same present seed, mode `user`): a user mesh redeems through the identity plane and never mints from the seed (#2312)",
+    (userWithSeed as { kind: string }).kind === "redeem",
+    userWithSeed,
   );
 
   const sealedWithSeed = decideOn({ space: SPACE, server: SEALED_SERVER, root: rootOpenWithSeed, mode: "auth", spaceAuth: seed, auth: {} });

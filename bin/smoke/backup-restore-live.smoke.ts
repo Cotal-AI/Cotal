@@ -2,7 +2,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createServer, type AddressInfo } from "node:net";
 import { cpSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -28,16 +27,7 @@ import {
   createAttemptClone,
   startIsolatedBroker,
 } from "../../implementations/cli/src/lib/isolated-broker.js";
-import { assertSmokeSandboxDown, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
-
-const freePort = () => new Promise<number>((resolvePort, reject) => {
-  const server = createServer();
-  server.once("error", reject);
-  server.listen(0, "127.0.0.1", () => {
-    const port = (server.address() as AddressInfo).port;
-    server.close((error) => error ? reject(error) : resolvePort(port));
-  });
-});
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const occupy = async (port: number): Promise<ChildProcess> => {
   const child = spawn("nats-server", ["-p", String(port), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });

@@ -17,6 +17,8 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
+from .hooks import _material_token
+
 _BACKOFF_S = 2.0
 
 # How long ``reopen`` waits for a closed reader to finish unwinding. Bounded on purpose: a reader
@@ -28,6 +30,14 @@ _REOPEN_JOIN_SECONDS = 2.0
 class BridgeClient:
     def __init__(self, socket_path: str) -> None:
         self._path = socket_path
+        # Resolved once, the same pair `hooks.relay` reads: standalone mode exports
+        # COTAL_CONTROL_TOKEN directly; a managed launch carries it in the launch material only.
+        self._token = os.environ.get("COTAL_CONTROL_TOKEN") or _material_token()
+        if not self._token:
+            raise RuntimeError(
+                "no control token could be resolved (neither COTAL_CONTROL_TOKEN nor a readable "
+                "COTAL_LAUNCH_MATERIAL with one) — the bridge socket cannot be authenticated"
+            )
         self._sock: Optional[socket.socket] = None
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[threading.Event, dict]] = {}
@@ -79,7 +89,7 @@ class BridgeClient:
                     return
                 if self._sock is None:
                     continue
-                self._send({"t": "subscribe"})  # (re)subscribe after every (re)connect
+                self._send({"t": "subscribe", "token": self._token})  # (re)subscribe after every (re)connect
             # Read through a local handle. Re-reading `self._sock` here would race a concurrent
             # reassignment between the guard above and the recv below.
             sock = self._sock
@@ -177,24 +187,56 @@ class BridgeClient:
             except OSError:
                 self._sock = None
 
-    def delivered(self, msg_id: str) -> None:
-        """Ack a message on the stream — call only once it has been surfaced into a turn."""
-        self._send({"t": "delivered", "id": msg_id})
+    def delivered(self, recv_key: str) -> None:
+        """Ack a message on the stream — call only once it has been surfaced into a turn.
 
-    def reply(self, target: dict, text: str) -> None:
-        """Route a turn's reply back to its mesh origin (channel broadcast or DM to the sender)."""
-        self._send({"t": "reply", "target": target, "text": text})
+        The bridge matches the per-delivery receive key (``recvKey``), never the wire id: an
+        id-less message has wire id "", and a frame keyed any other way is silently ignored,
+        which leaves the bridge holding its in-flight slot until the next restart (#2237).
+        """
+        self._send({"t": "delivered", "recvKey": recv_key})
 
-    def call_tool(self, name: str, args: dict, timeout: float = 30.0) -> str:
+    def deferred(self, recv_key: str) -> None:
+        """Tell the sidecar delivery ``recv_key`` was not taken into a turn: it stays unacked, and
+        the sidecar offers it again later while the messages behind it keep flowing."""
+        self._send({"t": "deferred", "recvKey": recv_key})
+
+    def reply(
+        self, target: dict, text: str, reply_to: Optional[str] = None, context_id: Optional[str] = None
+    ) -> None:
+        """Route a turn's reply back to its mesh origin (channel broadcast or DM to the sender),
+        answering message ``reply_to`` in the asker's conversation ``context_id``."""
+        frame = {"t": "reply", "target": target, "text": text}
+        if reply_to:
+            frame["replyTo"] = reply_to
+        if context_id:
+            frame["contextId"] = context_id
+        self._send(frame)
+
+    def call_tool(
+        self,
+        name: str,
+        args: dict,
+        timeout: float = 30.0,
+        context_id: Optional[str] = None,
+        peer_id: Optional[str] = None,
+    ) -> str:
         """Invoke a cotal_* tool on the sidecar and block for its text result (raises on transport
         error/timeout). The sidecar runs the shared spec, so the text is already model-ready; an
-        in-tool logical error comes back flagged and is prefixed for the model."""
+        in-tool logical error comes back flagged and is prefixed for the model. ``context_id`` is
+        stamped on a question this one call asks; ``peer_id`` is the peer whose session the call
+        runs in, so a DM to it answers that peer rather than asking."""
         rid = uuid.uuid4().hex
         ev = threading.Event()
         box: dict = {}
         self._pending[rid] = (ev, box)
         try:
-            self._send({"t": "tool", "id": rid, "name": name, "args": args})
+            frame = {"t": "tool", "id": rid, "name": name, "args": args}
+            if context_id:
+                frame["contextId"] = context_id
+            if peer_id:
+                frame["peerId"] = peer_id
+            self._send(frame)
             if not ev.wait(timeout):
                 raise TimeoutError(f"cotal tool '{name}' timed out")
             if not box.get("ok"):

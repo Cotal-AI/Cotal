@@ -26,8 +26,8 @@ const myConnector: Connector = {
       env: { /* COTAL_* wiring from opts */ },
     };
   },
-  // optional: listModels, supportsModelVariant, supportsResume,
-  // supportsSessionContinuation, supportsToolListAnnounce, eventChannel, pluginRoot
+  // optional: listModels, supportsModelVariant, supportsPrompt, supportsResume,
+  // supportsSessionContinuation, supportsSessionReopen, supportsToolListAnnounce, eventChannel, pluginRoot
 };
 
 registry.register(myConnector);          // registration runs on import, making the connector available
@@ -36,7 +36,7 @@ registry.register(myConnector);          // registration runs on import, making 
 `buildLaunch(opts)` is the whole job: given a `LaunchOpts` (space, name, role, creds, channels,
 model, prompt…), return a `LaunchSpec` (the command, args, and environment) whose process connects to
 the broker as that mesh node. Everything else on the interface is optional and default-deny: declare
-`supportsModelVariant`/`supportsResume`/`supportsSessionContinuation`/`supportsToolListAnnounce` only if you honor them (a request for one you don't declare
+`supportsModelVariant`/`supportsPrompt`/`supportsResume`/`supportsSessionContinuation`/`supportsSessionReopen`/`supportsToolListAnnounce` only if you honor them (a request for one you don't declare
 fails loud before any provisioning), list `requires` so a missing CLI fails with a clear message, and
 implement `listModels` only if you want a selector catalog. Implement `eventChannel` only if your
 session publishes a structured event plane: it names the channel the manager grants that session
@@ -47,6 +47,49 @@ that omits it refuses a launch unless the caller explicitly opts out with `--no-
 the `Connector` interface in
 [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) and the OpenCode connector in
 [`extensions/connector-opencode/`](../extensions/connector-opencode/) for a complete worked example.
+
+### Private launch files
+
+Text the child should not see in argv, such as a persona or an MCP config that names shared servers,
+goes in a private file written with `writeLaunchArtifact` from `@cotal-ai/core`, with only its path
+passed to the child. Pass the same `artifacts` array to every call and return it on the `LaunchSpec`.
+The launcher owns those files: the manager and the foreground `cotal spawn` remove them once they
+have proved the child gone, so the child may read them at any point in its life. A launch refused
+before any process started removes them at once. Each directory name carries a random per-launch
+identity, so a stale path can never name a later launch's directory. Every runtime the manager
+creates, the default pty included, and the foreground `cotal spawn` start the child through
+`reclaimWithChild` from `@cotal-ai/core`: a POSIX shell starts a watcher and then runs the child in
+its own place, and the watcher removes the files once the child's process is gone, even when the
+launcher was killed. The watcher tries a failed removal again every five seconds until it succeeds.
+The pty runtime spawns the child in-process, and the manager removes the files on the exit it
+streams. On a runtime that cannot stream an exit (tmux, cmux, orca, herdr) the manager also polls
+the seat's status and waits for the runtime's exit proof. A failed removal is tried again until it
+succeeds. A runtime that fails before it has handed
+the child's command to its backend, because it refused the launch or could not write its own launch
+script, throws `SpawnRefused` from `@cotal-ai/core`, and the manager removes the files at once.
+Any other spawn that throws is not proof, so its files stay for the child's watcher, or for
+the OS temp reaper when no child started. Windows has no POSIX shell for the watcher, so there a
+killed launcher's files also stay for the OS temp reaper. A seat started under a custodian with
+`launchSeat` from `@cotal-ai/seat`, which the manager no longer does for a new launch, hands them to
+that custodian instead: it removes them when it sees the child exit, and if it cannot, or is killed
+first, the reap that proves the seat gone removes them from the temp dir the launch wrote them to.
+Run every check that can refuse the launch, and every conversion that can throw, before the
+first write. The file
+is 0600 in a 0700 directory, which is OS-user isolation: any process running as the same user can
+read it while it exists.
+
+### Local listeners
+
+A connector that carries the `cotal_*` surface over any local listener, loopback TCP or a Unix
+socket, authenticates every connection with a secret the child receives through the launch
+material or an environment variable and never through argv. It compares the presented secret to
+its own in constant time, bounds the request body and the pre-authentication frame, and drops an
+unauthenticated connection before it can reach a tool. State the same-uid limit rather than
+claiming it away: a bind address is not a boundary on a shared workstation, only the secret is.
+Copy one of the two shipped shapes rather than inventing a third: the Codex loopback MCP endpoint
+(`extensions/connector-codex/src/mcp.ts`) or connector-core's control server
+(`extensions/connector-core/src/control.ts`, exported for reuse by a sibling listener in the same
+process).
 
 ## Packaging rules (enforced at `ext add`)
 

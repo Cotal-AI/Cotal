@@ -27,13 +27,14 @@ import {
   ensureEventWalDir,
   resolveEventsStateRoot,
   controlFromEnv,
+  NO_TOOL_ARGS,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
 import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "./agui-map.js";
-import { createClaudeTranscriptSource } from "./agui-source.js";
+import { createBoundClaudeTranscriptSource } from "./agui-source.js";
 
 /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set in main()
  *  iff COTAL_EVENTS is on (buildLaunch sets it for managed sessions; a personal session never
@@ -45,12 +46,38 @@ let events: AguiEmitterHolder<ClaudeEntry> | undefined;
  *  half — an injected batch is acked only once its reply is confirmed delivered. */
 const claude = createClaudeHandle({ events: () => events });
 
+/** What a plain session's one tool says. Static: an unmanaged process knows nothing about any mesh. */
+const HOW_TO_JOIN =
+  "This Claude Code session is not on a Cotal mesh, so the cotal_* mesh tools are off. " +
+  "The Cotal plugin stays off the mesh unless the session was launched with a mesh identity " +
+  "(COTAL_NAME, COTAL_LINK or COTAL_AGENT_FILE in its environment). To work on a mesh, launch the " +
+  "session through Cotal: `cotal setup` once, `cotal up` to start a local mesh, then `cotal spawn` " +
+  "to start a Claude session that joins it (`cotal spawn <name> --detach` runs it under the manager). " +
+  "Docs: https://docs.cotal.ai/getting-started/";
+
+/** A plain `claude`: answer MCP with one static tool instead of closing stdio. Builds no MeshAgent
+ *  and no control server, so nothing reaches a broker or binds a socket. */
+async function serveUnmanaged(): Promise<void> {
+  const server = new McpServer({ name: "cotal", version: "0.0.0" });
+  server.registerTool(
+    "cotal_how_to_join",
+    {
+      title: "How to join a Cotal mesh",
+      description: "Explains why this session has no Cotal mesh tools and how to launch one that does.",
+      inputSchema: NO_TOOL_ARGS,
+    },
+    async () => ({ content: [{ type: "text" as const, text: HOW_TO_JOIN }] }),
+  );
+  await server.connect(new StdioServerTransport());
+}
+
 async function main(): Promise<void> {
   // No identity → this is a plain `claude`, not a launcher-spawned agent. Stay
-  // inert: never connect to the mesh, so an installed plugin can't make the
-  // operator's own sessions join as stray peers.
+  // off the mesh, so an installed plugin can't make the operator's own sessions
+  // join as stray peers, but still answer MCP so the client sees a working server.
   if (!hasIdentity()) {
     process.stderr.write("[cotal-connector] no COTAL_NAME — not a managed session; staying off the mesh\n");
+    await serveUnmanaged();
     return;
   }
   const config = configFromEnv();
@@ -72,6 +99,12 @@ async function main(): Promise<void> {
     // publishes to are computed from the identity the connection authenticates as.
     events = new AguiEmitterHolder<ClaudeEntry, unknown>(
       async (transcriptPath: string, sessionSource: unknown) => {
+        // Captured as the FACTORY'S FIRST ACT, before the mesh wait below and before anything else
+        // this bind does: a lazily-built source otherwise positions itself on its own first read,
+        // which happens only after the mesh wait, and anything the session writes to the transcript
+        // in that window is silently dropped. `fork` runs its own file-appear wait inside this same
+        // call and still substitutes its boundary exactly once. `startup` needs no boundary.
+        const source = await createBoundClaudeTranscriptSource(transcriptPath, sessionSource);
         const startEmitter = async () => {
           // The events state root throws rather than defaulting to the working directory: a WAL
           // written somewhere no later start looks is a silent loss.
@@ -107,7 +140,7 @@ async function main(): Promise<void> {
             endpoint: agent.ep,
             wal,
             subjectFrontier,
-            source: createClaudeTranscriptSource(transcriptPath, sessionSource),
+            source,
             map: mapper.map,
           });
         };

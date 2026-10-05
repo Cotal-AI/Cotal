@@ -1,9 +1,9 @@
 import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
-import { divergentCwdAnchor, loadMeshes, targetFlags } from "@cotal-ai/workspace";
+import { ConnectRefusal, divergentCwdAnchor, isWorkspaceTargetError, loadMeshes, renderWorkspaceError, targetFlags, userSessionAuth } from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { c } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
-import { attachClient, detachKey, holdTerminal, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
+import { c, presenceDetail } from "../ui.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
+import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
 /**
@@ -16,18 +16,14 @@ import { completingFlagValue } from "../lib/completion.js";
 const nameFlag = (what: string) =>
   ({ name: "name", type: "string", value: "<n>", description: what }) as const;
 
-/** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
- *  ps/stop/attach so the three cannot drift. For stop and attach it is the seat-locality escape
- *  hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily the
- *  one that wins the class queue. */
-const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast" } as const;
 // #651: the same rows, two richer presentations. `--wide` stays human (one dim facts line per
 // seat); `--json` is the machine form (one JSON object per line, exactly the row the manager
 // sent). Mutually exclusive because they are two answers to "how should I read this".
 const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: cwd, pid, spawner, lifecycle uid, host/instance" } as const;
 const jsonFlag = { name: "json", type: "boolean", description: "machine-readable: one JSON object per seat per line (instance headers go to stderr)" } as const;
+const slotsFlag = { name: "slots", type: "boolean", description: "list durable static slot rows instead of live seats (#1274); mutually exclusive with --wide" } as const;
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
-export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag] as const satisfies readonly FlagSpec[];
+export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag, slotsFlag] as const satisfies readonly FlagSpec[];
 /** `--no-reconnect`: one session, exit when it ends, whatever ended it. The default reconnects,
  *  which is right for a person at a terminal and wrong for a script that wants a single run with a
  *  single exit code. */
@@ -91,19 +87,28 @@ type AgentRow = {
   status: string;
   uptimeMs: number;
   mesh: string;
+  /** The harness-reported presence condition beside `mesh`; absent when none was reported. */
+  condition?: { code: string; source?: string; message?: string; since?: number };
+  /** Epoch ms of the seat's last reported work progress; absent when none was reported. */
+  activeAt?: number;
   /** The manager's own presence-view state when it built the row; absent from older managers. */
   meshView?: "current" | "stale" | "unpopulated";
+  /** Epoch ms of the seat's last heartbeat, only beside an `offline` verdict; absent from older managers. */
+  offlineSince?: number;
   authHealth?: string;
   authReason?: string;
   // #651 enrichment: present only when the manager recorded the fact (absent is real state:
   // no model pin; a runtime that owns no real process has no pid).
   model?: string;
   variant?: string;
+  provider?: string;
   cwd?: string;
   pid?: number;
   spawner?: string;
   instanceId?: string;
   host?: string;
+  /** A `--resume` seat's fork provenance (#1500); title and hash once the seat has recorded them. */
+  resume?: { source: string; title?: string; transcriptSha256?: string };
   lifecycleUid: string;
   id: string;
 };
@@ -287,6 +292,33 @@ function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanc
   return c.red("registered, no answer within the deadline") + c.dim(why);
 }
 
+/** The mesh column of one `ps` row. A verdict needs a fresh observer: when the manager reports its
+ *  own presence view as `stale` (its watch went silent past TTL) or `unpopulated` (its watch has not
+ *  replayed the bucket yet), `offline` and `absent` describe the manager's watch, not the seat. Print
+ *  "mesh unknown" with the reason instead of a liveness word an operator, or a watchdog, would act
+ *  on. A row from a manager that predates `meshView` carries no field and renders as before.
+ *  An offline verdict says how long it has stood when the row carries `offlineSince` (#1208), so a
+ *  seat that dropped a minute ago reads differently from one that dropped two days ago. */
+export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince">, now = Date.now()): string {
+  if (r.meshView === "stale") return c.yellow("mesh unknown") + c.dim(" (manager's presence view is stale)");
+  if (r.meshView === "unpopulated") return c.yellow("mesh unknown") + c.dim(" (manager's presence view not yet populated)");
+  // The harness-reported condition and the last work progress ride beside the status, as the roster
+  // renders them (#618): a turn that died upstream 40m ago reads `waiting (rate_limit for 40m) ·
+  // active 40m ago`, not a bare `waiting`, and a turn that stopped advancing shows the age of its
+  // last event.
+  const condition = presenceDetail(r, now);
+  const mesh = r.mesh === "absent"
+    ? c.yellow("not in roster")
+    : r.mesh === "offline"
+      ? c.dim(r.offlineSince === undefined ? "mesh offline" : `mesh offline for ${fmtUptime(now - r.offlineSince)}`)
+      : r.mesh === "working"
+        ? c.green("working · progress unknown")
+        : r.mesh === "waiting"
+          ? c.yellow("waiting")
+          : c.cyan(r.mesh);
+  return mesh + condition;
+}
+
 /** Render one managed-agent row (process fact, mesh fact, optional auth-health line), indented for
  *  the per-manager grouping a class scatter prints.
  *
@@ -297,25 +329,6 @@ function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanc
  *  entry as "starting…", both false. `mesh: absent` means exactly "not in the presence roster",
  *  so it prints as that; the process age next to it tells the reader whether it is a fresh start
  *  or a seat that never joined. */
-/** The mesh column of one `ps` row. A verdict needs a fresh observer: when the manager reports its
- *  own presence view as `stale` (its watch went silent past TTL) or `unpopulated` (its watch has not
- *  replayed the bucket yet), `offline` and `absent` describe the manager's watch, not the seat. Print
- *  "mesh unknown" with the reason instead of a liveness word an operator, or a watchdog, would act
- *  on. A row from a manager that predates `meshView` carries no field and renders as before. */
-export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView">): string {
-  if (r.meshView === "stale") return c.yellow("mesh unknown") + c.dim(" (manager's presence view is stale)");
-  if (r.meshView === "unpopulated") return c.yellow("mesh unknown") + c.dim(" (manager's presence view not yet populated)");
-  return r.mesh === "absent"
-    ? c.yellow("not in roster")
-    : r.mesh === "offline"
-      ? c.dim("mesh offline")
-      : r.mesh === "working"
-        ? c.green("working · progress unknown")
-        : r.mesh === "waiting"
-          ? c.yellow("waiting")
-          : c.cyan(r.mesh);
-}
-
 function printAgentRow(r: AgentRow, indent = ""): void {
   const proc =
     r.status === "running"
@@ -340,14 +353,19 @@ function printAgentRow(r: AgentRow, indent = ""): void {
 /** Extra operational facts for `--wide`. Model and requested variant are already in the compact
  *  identity row, so repeating them here would make wide output noisier without adding provenance.
  *  Only fields the manager actually recorded print; lifecycle uid is required on every row. */
-export function agentWideFacts(r: Pick<AgentRow, "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host">): string[] {
+export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume">): string[] {
   const facts: string[] = [];
+  if (r.provider) facts.push(`provider ${r.provider}`);
   if (r.cwd) facts.push(`cwd ${r.cwd}`);
   if (r.pid !== undefined) facts.push(`pid ${r.pid}`);
   if (r.spawner) facts.push(`spawner ${r.spawner}`);
   facts.push(`uid ${r.lifecycleUid}`);
   if (r.instanceId) facts.push(`instance ${r.instanceId}`);
   if (r.host) facts.push(`host ${r.host}`);
+  if (r.resume) {
+    const { source, title, transcriptSha256 } = r.resume;
+    facts.push(`forked from ${source}${title ? ` ${JSON.stringify(title)}` : ""}${transcriptSha256 ? ` sha256:${transcriptSha256}` : ""}`);
+  }
   return facts;
 }
 
@@ -366,16 +384,57 @@ function printSeat(r: AgentRow, opts: { wide: boolean; json: boolean }, indent =
   if (opts.wide) printWideFacts(r, indent);
 }
 
+/** One durable static slot row, the `slots` command's answer (#1274). Unlike `AgentRow` there is
+ *  no live/wide split: the row is already the full closed projection. */
+type SlotRow = {
+  name: string;
+  owner: string;
+  actor: string;
+  slotLifecycleUid: string;
+  slotPhase: "provisioning" | "active" | "terminalizing" | "retired";
+  cleanupComplete?: boolean;
+  slotRevision: number;
+  headState?: "active" | "retiring" | "retired";
+  headOp?: { opId: string; kind: "retirement" };
+  headLifecycleUid?: string;
+  headRevision?: number;
+  readOrder: ["slot", "head"];
+  consistency: "ordered-not-atomic";
+  live: boolean;
+  managerInstanceId: string;
+};
+
+/** `--slots` rendering, beside `printSeat`. `--json` prints the row unchanged; the human form is
+ *  one compact line naming phase, slot uid, cleanup, head and liveness. */
+function printSlot(r: SlotRow, opts: { json: boolean }, indent = ""): void {
+  if (opts.json) {
+    console.log(JSON.stringify(r));
+    return;
+  }
+  const cleanup = r.cleanupComplete === undefined ? "unknown" : String(r.cleanupComplete);
+  const head = r.headState === undefined ? "absent" : `${r.headState}${r.headOp ? ` op ${r.headOp.kind}:${r.headOp.opId}` : ""}`;
+  console.log(`${indent}${r.name}  ${r.slotPhase}  slot ${r.slotLifecycleUid}  cleanupComplete=${cleanup}  head=${head}  live=${r.live}  readOrder=slot,head consistency=${r.consistency}`);
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   // #651 presentations: the two forms are mutually exclusive because they answer "how do I read
   // this" two different ways;
   // inventing a precedence would be a silent fallback, so refuse instead.
-  const opts = { wide: v.wide === true, json: v.json === true };
+  const opts = { wide: v.wide === true, json: v.json === true, slots: v.slots === true };
   if (opts.wide && opts.json) {
     console.error(c.red("✗ --wide and --json are mutually exclusive: --wide is the human table, --json the machine form"));
     process.exit(1);
   }
+  if (opts.slots && opts.wide) {
+    console.error(c.red("✗ --slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts"));
+    process.exit(1);
+  }
+  const command = opts.slots ? "slots" : "ps";
+  const emptyLine = opts.slots ? "(no nonretired static slots)" : "(no managed agents)";
+  const print = opts.slots
+    ? (r: unknown, indent = ""): void => printSlot(r as SlotRow, { json: opts.json }, indent)
+    : (r: unknown, indent = ""): void => printSeat(r as AgentRow, opts, indent);
   const on = onInstanceOrExit(v.on, "cotal ps");
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
@@ -383,16 +442,16 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
   // single-manager view. Same path for both modes (no freeze; no scatter).
   if (on !== undefined) {
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, { instanceId: on });
+    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, { instanceId: on });
     failIfNotOk(reply);
-    const rows = (reply.data as AgentRow[]) ?? [];
+    const rows = (reply.data as unknown[]) ?? [];
     if (!rows.length) {
       // A JSON stream with zero rows is zero lines on stdout, not a prose line that would
       // corrupt a consumer reading JSONL.
-      if (!opts.json) console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim(emptyLine));
       return;
     }
-    for (const r of rows) printSeat(r, opts);
+    for (const r of rows) print(r);
     return;
   }
 
@@ -410,18 +469,18 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // unreachable (pin 3).
   if (t.auth.bearer) {
     // No explicit --on on this branch; askManager uses the issuer's concrete selection.
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
+    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, {});
     failIfNotOk(reply);
-    const rows = (reply.data as AgentRow[]) ?? [];
+    const rows = (reply.data as unknown[]) ?? [];
     if (!rows.length) {
-      if (!opts.json) console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim(emptyLine));
       return;
     }
-    for (const r of rows) printSeat(r, opts);
+    for (const r of rows) print(r);
     return;
   }
 
-  const scatter = await scatterManager(t.space, t.server, "ps", t.auth, t.spaceAuth);
+  const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth);
   if (!scatter.ok) {
     console.error(c.red(`✗ ${scatter.error}`));
     process.exit(1);
@@ -432,12 +491,12 @@ export async function ps(args: ParsedArgs): Promise<void> {
   );
   // A single-manager space is the common case — print a flat list, no per-manager grouping noise.
   if (instances.length === 1 && instances[0].reachable && !instances[0].error) {
-    const rows = (instances[0].data as AgentRow[]) ?? [];
+    const rows = (instances[0].data as unknown[]) ?? [];
     if (!rows.length) {
-      if (!opts.json) console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim(emptyLine));
       return;
     }
-    for (const r of rows) printSeat(r, opts);
+    for (const r of rows) print(r);
     return;
   }
   // Multi-manager: group under a per-instance header; unreachable instances are shown, never dropped.
@@ -474,15 +533,16 @@ export async function ps(args: ParsedArgs): Promise<void> {
       }
       continue;
     }
-    const rows = (inst.data as AgentRow[]) ?? [];
+    const rows = (inst.data as unknown[]) ?? [];
     header(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
-    for (const r of rows) printSeat(r, opts, "  ");
+    for (const r of rows) print(r, "  ");
   }
   if (mismatches.length)
     console.error(c.red(`✗ Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`));
   if (incomplete) {
     console.error(c.red("✗ Incomplete manager census: some instances did not return seats. Rows above are partial, not a complete list."));
     process.exitCode = 1;
+
   }
 }
 
@@ -568,6 +628,22 @@ export function attachRefusal(
 }
 
 /**
+ * A re-establishment that threw, classified. A connect refusal that asking again cannot fix (a
+ * missing seed, refused credentials, a user-auth mesh offered static creds) is `fatal`, so the loop
+ * exits with the refusal's own sentence and hint instead of retrying it in silence. The control
+ * resolver's mode peek rethrows a broken mesh record as a raw target error before the connect
+ * helper can wrap it, and it only rethrows the codes that are not "no mesh found", so that is fatal
+ * too. Anything else, including a broker that is not reachable yet, is transient.
+ */
+function thrownEstablishment(e: unknown): { ok: false; kind: "fatal" | "transient"; message: string } {
+  if (e instanceof ConnectRefusal && e.kind === "permanent")
+    return { ok: false, kind: "fatal", message: [e.rendered.replace(/^✗ /, ""), e.hint].filter(Boolean).join("\n") };
+  if (isWorkspaceTargetError(e))
+    return { ok: false, kind: "fatal", message: renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "") };
+  return { ok: false, kind: "transient", message: (e as Error).message };
+}
+
+/**
  * What a re-establishment TELLS the operator while it keeps trying, and what it keeps to itself.
  * Returns the line to print, or undefined for silence.
  *
@@ -618,8 +694,8 @@ async function establishAttachSession(
   // A reconnect must never cross a path that can END THE PROCESS. The mesh resolve and its
   // preflight are written to do exactly that ("no mesh running at X - run `cotal up`"), which is
   // the right answer for a person who just typed a command and the wrong one for a link that is
-  // coming back. So a RE-ESTABLISHMENT asks for the throwing form and treats the refusal as the
-  // transient it is.
+  // coming back. So a RE-ESTABLISHMENT asks for the throwing form, and the loop retries a refusal
+  // whose kind is transient and stops on a permanent one.
   //
   // Keyed off `first`, NOT off the reconnect flag, and the difference is user-visible. A refusal
   // that escapes as an exception is rendered by the dispatcher's generic handler, which prints
@@ -678,7 +754,20 @@ async function establishAttachSession(
   // a static mesh whose seed had gone missing, and every open attach was refused.
   const material = attachSessionMaterial(t);
   if (material.kind === "fatal") return { ok: false, kind: "fatal", message: material.message };
-  const link: RedeemLink =
+  let link: RedeemLink;
+  if (material.kind === "redeem") {
+    // #2312, USER mesh: present this login's identity together with the grant to the identity
+    // plane, which decides whether this principal holds the session and answers with a bearer the
+    // callout turns into the SAME session-caller rows and grant expiry the static arm mints. No seed
+    // is read or written, and nothing on this side decides who may hold the session.
+    let auth: { bearer: string; sentinelCreds: string };
+    try {
+      auth = await userSessionAuth(t, grant);
+    } catch (e) {
+      return { ok: false, kind: "fatal", message: e instanceof Error ? e.message : String(e) };
+    }
+    link = { mode: "session-bearer", tls, ...auth };
+  } else link =
     material.kind === "bare"
       // An open mesh has no credential system: the same bare connection the control round trip
       // already used opens the caller rail. Nothing is minted and nothing is invented.
@@ -701,8 +790,9 @@ async function establishAttachSession(
   // real repaint, instead of a restored socket over a session that ended without us.
   const nc = await dialerFor(t.server)({
     servers: t.server,
-    ...redeemConnectOpts(link),
     inboxPrefix: `_INBOX_${id.id}`,
+    // After the default: a bearer link's callout scopes the inbox on its own connect nonce.
+    ...redeemConnectOpts(link),
     maxReconnectAttempts: reconnect ? 0 : -1,
     // Detection latency is part of the defect, not a detail of it. A laptop waking from sleep does
     // not always get a socket error: the connection can sit half-open, and on the stock two-minute
@@ -718,19 +808,6 @@ async function establishAttachSession(
   return { ok: true, nc, grant, link, inbox: id.id, server: t.server };
 }
 
-/** Why attach cannot redeem a session grant, said in terms of what the command actually resolved.
- *
- *  Three distinct states, kept distinct because the remedy differs and a single sentence covering
- *  all three is the defect issue #722 opened on (its old text named an internal work item and no
- *  root at all). A USER-AUTH mesh holds no local seed by design. A REGISTERED static mesh has a
- *  root and it is named, so an operator can see which directory the command used rather than
- *  guessing at their cwd.
- *
- *  The third arm is an INVARIANT, not advice, and is written that way on purpose. A connection with
- *  no resolved root is what the type allows, and no supported route reaches redemption in that
- *  state: both off-registry routes are refused earlier, which `smoke:attach-auth-root` measures
- *  rather than assumes. So that arm says what its own existence would mean instead of offering a
- *  remedy for a situation that cannot currently arise. */
 /** The mesh contract that decides how attach redeems a session grant. The mode is the REGISTERED
  *  one (`MeshTarget.mode`), carried forward from the resolve. It is the only input to the decision:
  *  `spaceAuth` says whether a SEALED mesh's seed is present, and is never consulted to decide which
@@ -756,13 +833,18 @@ export type AttachSessionTarget = {
  */
 export type RedeemLink =
   | { mode: "bare"; tls: boolean }
-  | { mode: "session-caller"; tls: boolean; creds: string };
+  | { mode: "session-caller"; tls: boolean; creds: string }
+  // #2312: a user mesh. The identity plane minted the bearer for ONE session; the callout turns it
+  // into the session-caller rows. Never a seed.
+  | { mode: "session-bearer"; tls: boolean; bearer: string; sentinelCreds: string };
 
 /** The ONE place a {@link RedeemLink} becomes NATS connect options. Both connections on the redeem
  *  path (the session link and the abandoned-session hand-back) go through here, so neither can
  *  invent a credential for an open mesh or drop one on a sealed mesh, and a third caller gets the
  *  same two arms for free. */
 export function redeemConnectOpts(link: RedeemLink): ReturnType<typeof standaloneConnectOpts> {
+  if (link.mode === "session-bearer")
+    return standaloneConnectOpts({ bearer: link.bearer, sentinelCreds: link.sentinelCreds, tls: link.tls });
   return link.mode === "bare"
     ? standaloneConnectOpts({ tls: link.tls })
     : standaloneConnectOpts({ creds: link.creds, tls: link.tls });
@@ -782,16 +864,18 @@ export function redeemConnectOpts(link: RedeemLink): ReturnType<typeof standalon
 export function attachSessionMaterial(t: AttachSessionTarget):
   | { kind: "bare" }
   | { kind: "mint"; auth: SpaceAuth }
+  | { kind: "redeem" }
   | { kind: "fatal"; message: string } {
   switch (t.mode) {
     // An OPEN mesh: no credential system at all, so there is no seed to be missing and nothing to
     // mint. This is the arm issue #1205 did not have.
     case "open":
       return { kind: "bare" };
-    // A USER mesh: refused by name, and refused EVEN IF a seed is present, because the bearer plane
-    // is the control surface there and static material would be the wrong identity.
+    // A USER mesh: the identity plane redeems the grant for the bearer (#2312), EVEN IF a seed is
+    // present, because the bearer plane is the control surface there and static material would be
+    // the wrong identity. `spaceAuth` is never consulted on this arm.
     case "user":
-      return { kind: "fatal", message: attachNoSeedMessage(t) };
+      return { kind: "redeem" };
     // SEALED (`auth`) and unrecorded: the seed is required, and its absence is a refusal. A sealed
     // mesh must never be rescued by the open arm — that is the failure a fix for #1205 is most
     // likely to introduce, and `smoke:attach-open-mode` asserts the refusal by name against a live
@@ -801,14 +885,25 @@ export function attachSessionMaterial(t: AttachSessionTarget):
   }
 }
 
+/** Why attach cannot redeem a session grant, said in terms of what the command actually resolved.
+ *
+ *  Three distinct states, kept distinct because the remedy differs and a single sentence covering
+ *  all three is the defect issue #722 opened on (its old text named an internal work item and no
+ *  root at all). A USER-AUTH mesh holds no local seed by design. A REGISTERED static mesh has a
+ *  root and it is named, so an operator can see which directory the command used rather than
+ *  guessing at their cwd.
+ *
+ *  The third arm is an INVARIANT, not advice, and is written that way on purpose. A connection with
+ *  no resolved root is what the type allows, and no supported route reaches redemption in that
+ *  state: both off-registry routes are refused earlier, which `smoke:attach-auth-root` measures
+ *  rather than assumes. So that arm says what its own existence would mean instead of offering a
+ *  remedy for a situation that cannot currently arise. */
 function attachNoSeedMessage(t: AttachSessionTarget): string {
   const shadow = t.root === undefined ? undefined : divergentCwdAnchor(t.root, t.space);
   const shadowLine = shadow
     ? `\n  NOTE this directory resolves to ${shadow.cwdRoot}, which holds a DIFFERENT trust chain for "${t.space}"; it was NOT used.`
     : "";
   const head = `mesh attach needs this space's local seed to redeem the session grant, and the mesh resolved for "${t.space}" does not provide one.`;
-  if (t.auth.bearer)
-    return `${head}\n  broker ${t.server}\n  This is a USER-AUTH mesh, which holds no local seed by design; two-step user-mode redemption is not wired yet, so attach is unavailable on it from every directory, not just this one.${shadowLine}`;
   if (t.root === undefined)
     return `${head}\n  broker ${t.server}\n  This connection resolved NO checkout root, and no supported route reaches redemption in that state: an off-registry \`--server\` on an unregistered space is refused for missing credentials, and \`--creds\` is refused at the control surface, both before a session grant is asked for. Reaching this sentence means a route now exists that skips both refusals.${shadowLine}`;
   return `${head}\n  broker ${t.server}\n  resolved root ${t.root}\n  This is a static-auth mesh. Attach still needs this space's seed under ${t.root}/.cotal/auth. Restore the seed at that checkout. This mesh is not open, so attach will not connect without the seed.${shadowLine}`;
@@ -838,8 +933,8 @@ type Abandoned = { grant: SessionGrant; link: RedeemLink; inbox: string; server:
 async function releaseAbandonedSession(s: Abandoned): Promise<void> {
   const nc = await dialerFor(s.server)({
     servers: s.server,
-    ...redeemConnectOpts(s.link),
     inboxPrefix: `_INBOX_${s.inbox}`,
+    ...redeemConnectOpts(s.link),
     maxReconnectAttempts: 0,
     timeout: LINK_DEADLINE_MS,
     // The same short ping the reconnecting session uses. This connection exists BECAUSE a link died,
@@ -868,17 +963,19 @@ function watchDetachKey(byte: number): { pressed: Promise<void>; hit: () => bool
   let pressedYet = false;
   const pressed = new Promise<void>((r) => { fire = r; });
   const hit = () => { pressedYet = true; fire(); };
-  // Exactly one byte, and exactly the detach byte. A chunk carrying it alongside anything else is
-  // NOT a keypress: measured on a pty, a real keypress arrives in a read of its own even at 3ms
-  // spacing, and the only two ways the byte arrives with company are a paste and a reader that was
-  // not reading. Treating a paste that happens to contain 0x1d as a detach would turn data into a
-  // control action on input nobody typed; the reader that was not reading is the defect this
-  // watcher's new lifetime fixes, not a matching problem.
+  // The whole chunk must be exactly one press of the detach key: the legacy control byte, or the
+  // kitty keyboard protocol / xterm modifyOtherKeys encoding of the same press (see
+  // `isDetachPress`, #598). A chunk carrying it alongside anything else is NOT a keypress:
+  // measured on a pty, a real keypress arrives in a read of its own even at 3ms spacing, and the
+  // only two ways the byte arrives with company are a paste and a reader that was not reading.
+  // Treating a paste that happens to contain the byte (or the encoded sequence) as a detach would
+  // turn data into a control action on input nobody typed; the reader that was not reading is the
+  // defect this watcher's new lifetime fixes, not a matching problem.
   // Under the console, Ink has called `stdin.setEncoding("utf8")`, and an encoding persists on the
   // stream after Ink releases raw mode, so data arrives as a STRING there (the standalone command
   // gets Buffers). Normalize first: a one-character string is not the number 0x1d, and the compare
   // below would otherwise never match, making the key dead for as long as a reconnect takes.
-  const onData = (d: Buffer) => { if (d.length === 1 && d[0] === byte) hit(); };
+  const onData = (d: Buffer) => { if (isDetachPress(d, byte)) hit(); };
   const onChunk = (data: Buffer | string) => onData(Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8"));
   stdin.on("data", onChunk);
   stdin.resume();
@@ -1060,7 +1157,7 @@ async function runAttachLoop(
       // and a resumed stdin is a ref'd handle that would hold the command open after it has already
       // printed why it is giving up.
       if (first) { releaseStdin(); throw e; }
-      est = { ok: false, kind: "transient", message: (e as Error).message };
+      est = thrownEstablishment(e);
     }
     if (!est.ok) {
       // Nothing changes for the first attach: any refusal is the same loud exit as before.
@@ -1132,6 +1229,12 @@ async function runAttachLoop(
       return await done({ kind: "ended" });
     }
     console.error(c.dim("[cotal: connection lost, reconnecting]"));
+    // Raw from here on, whether or not the session that just ended reached ready. A first session
+    // whose link died inside its opening flush never ran `onReady`, so the terminal is still cooked:
+    // the line discipline would echo the detach key as `^]` and hold it until Enter, and the reader
+    // below would never see it (#1471). The attach has already said it is attached, so Ctrl-C at a
+    // cooked tty is no longer the way out; the detach key is.
+    hold.enterRaw();
   }
 }
 

@@ -146,7 +146,7 @@ signer allowlist after §6, never as `cotal-agent`.
 | `issuer` | `withIssuerSession` (`packages/core/src/issuer-session.ts`); any caller that already holds `SpaceAuth` |
 | `delivery` | `runDelivery` `--dev-mint` (`implementations/delivery/src/delivery.ts`); production delivery reads a pre-minted cred and does not load the signer |
 | `run-mediator` / `run-admitter` | local `cotal run` (`implementations/runtime/src/run-command.ts`) from `conn.auth` |
-| `channel-purger` | `web()` (`implementations/web/src/web.ts`); last use of `conn.auth` before the handler drops the seed |
+| `channel-purger` | `connectWithoutSeed` (`implementations/web/src/web.ts`), which returns the dashboard connection without `auth`, so no binding in `web()` holds the seed |
 | `session-serving` / `retirement-requester` / `endpoint-serve` / `remote-manager` / `goal-writer` / `session-ledger` | `mintPublicUserJwt` in `openAuthAuthorityPlane` (`implementations/auth/src/service.ts`): the `credential` helper at the `issueManagerServiceAuthority` arm, and the later session / retire / activate arms, each pass `{ space, account: { pub, signingSeed } }` |
 
 **Auth-service process.** It does not load the seed through `getSpaceAuth`. `runAuthService`
@@ -631,7 +631,8 @@ Measured on this filesystem: a `0040` file could not be read by its own owner
    `SCM_RIGHTS` anywhere in `packages/seat`, so the PTY master descriptor stays in the
    custodian and the manager drives the seat by frames over the socket it already
    connected.
-8. `reapSeat` signals only pids whose recorded start identity still matches, and
+8. `reapSeat` signals the custodian and the child only while their recorded start
+   identity still matches, then the child's process group by membership, and
    `kill(2)` across a uid boundary is `EPERM` for an unprivileged sender (measured
    against pid 1). A manager that must reap a `cotal-agent` custodian therefore goes
    back through the `cotal-seat-launch` helper, which is the only process that may

@@ -28,22 +28,13 @@
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer as createNetServer, type AddressInfo } from "node:net";
+import type { AddressInfo } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const freePort = (): Promise<number> =>
-  new Promise((resolve, reject) => {
-    const server = createNetServer();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const port = (server.address() as AddressInfo).port;
-      server.close(() => resolve(port));
-    });
-  });
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const awaitExit = (child: ChildProcess, ms = 5_000): Promise<void> =>
   new Promise((resolve) => {
@@ -94,7 +85,7 @@ const { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, probeConnect,
   await import("@cotal-ai/core");
 const { authDir, putSpaceAuth, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { MANAGER_ENDPOINT } = await import("../../implementations/manager/src/manager-service-contract.js");
-const { makeManagerEndpointEvictor } = await import("../../implementations/manager/src/endpoint-evict.js");
+const { makeManagerEndpointEvictionEvidence } = await import("../../implementations/manager/src/endpoint-evict.js");
 const { registerRemoteManagerAuthority } = await import("../../implementations/manager/src/remote-register.js");
 const { superviseTarget } = await import("../../implementations/manager/src/commands.js");
 const { runWorkflow } = await import("../../implementations/runtime/src/run-command.js");
@@ -130,7 +121,7 @@ const drive = async (target: { server: string; tlsRequired: boolean }): Promise<
       serveActor: remoteManagerActors(instanceId).serve,
       prepareCreds,
       tlsRequired: target.tlsRequired,
-      evict: makeManagerEndpointEvictor({ space, servers: target.server, auth, log: () => {} }),
+      evict: async (principal) => (await makeManagerEndpointEvictionEvidence({ space, servers: target.server, auth, log: () => {} })(principal)).verifiedGone,
     });
     return `registered epoch=${registered.processEpoch} revision=${registered.registrationRevision}`;
   } catch (error) {

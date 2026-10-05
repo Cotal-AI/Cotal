@@ -24,6 +24,11 @@ export interface AgentConfig {
    *  endpoint binds its lifecycle-keyed dm/dlv/chathist durables by it — the same exact names its
    *  credential pins, so a mismatch fails at the broker, never silently. */
   lifecycleUid?: string;
+  /** The CHAT stream sequence this incarnation had reached before its preservation cut
+   *  (`COTAL_BACKFILL_FLOOR`): the boot backfill reads only what came after it instead of the
+   *  whole retained window. Absent on a fresh launch or when the manager holds no local space
+   *  authority to read the frontier at the cut. */
+  backfillFloor?: number;
   /** The accepted-row token of a static credential's issuance (SPEC 13.15, `COTAL_ACCEPTED_TOKEN`):
    *  the endpoint reads the issuer-bound generation under it and pins its caller rails. */
   acceptedToken?: string;
@@ -72,6 +77,12 @@ export interface AgentConfig {
    *  connector itself, never from user config — it rides the {@link AgentCard.meta}.connector on
    *  the wire as display-only discovery metadata (which harness an agent uses). */
   connector?: string;
+  /** Buffer a live channel message that replies to another message (it carries `replyTo`) as
+   *  pull-only unless it `@mention`s this seat. Set by the connector itself, for a host that posts
+   *  every turn's output back to the channel the turn came from as a reply to the message that
+   *  started it (Hermes): without it, two such seats on one channel start a turn on each other's
+   *  output and never stop. */
+  channelRepliesPullOnly?: boolean;
   /** Model the host runs this agent on (e.g. `claude-opus-4`), from the agent file's `model:` or
    *  `COTAL_MODEL`. Rides {@link AgentCard.meta}.model as display-only discovery metadata; omitted
    *  when the operator didn't pin one (the harness default isn't knowable from here). */
@@ -332,6 +343,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // only die later at the endpoint's fail-before-presence gate with a worse operator signal.
   // Open mode stays uid-less here (the endpoint self-mints its per-session identity).
   const lifecycleUid = env.COTAL_LIFECYCLE_UID?.trim() || undefined;
+  const backfillFloorRaw = env.COTAL_BACKFILL_FLOOR?.trim() || undefined;
+  let backfillFloor: number | undefined;
+  if (backfillFloorRaw !== undefined) {
+    const n = Number(backfillFloorRaw);
+    if (!Number.isInteger(n) || n < 0)
+      throw new Error(`COTAL config: COTAL_BACKFILL_FLOOR must be a non-negative integer stream sequence, got "${backfillFloorRaw}" (a broken launcher, not a mode)`);
+    backfillFloor = n;
+  }
   const acceptedToken = env.COTAL_ACCEPTED_TOKEN?.trim() || undefined;
   const managerInstanceId = env.COTAL_MANAGER_INSTANCE?.trim() || undefined;
   if (managerInstanceId !== undefined) assertLifecycleToken(managerInstanceId, "COTAL_MANAGER_INSTANCE");
@@ -378,6 +397,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     space: env.COTAL_SPACE?.trim() || link?.space || "demo",
     id: credsId ?? declaredId,
     lifecycleUid,
+    backfillFloor,
     acceptedToken,
     managerInstanceId,
     creds: boundedCreds ? async () => readFileSync(credsPath!, "utf8") : initialCreds,

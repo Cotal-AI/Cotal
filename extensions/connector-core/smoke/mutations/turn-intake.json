@@ -44,11 +44,11 @@
     {
       "name": "a lifecycle idle is routed through the turn boundary",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "  async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {\n    await this.requireConnected();\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      this._status = status;\n    }\n  }",
+      "find": "  async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {\n    await this.inOrder(async () => {\n    await this.requireConnected();\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      this._status = status;\n    }\n    });\n  }",
       "replace": "  async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {\n    await this.setStatus(status, activity);\n  }",
       "expectRed": "a lifecycle idle mid-turn yields nothing: a compaction is not a turn ending",
       "cell": "a lifecycle idle mid-turn yields nothing: a compaction is not a turn ending",
-      "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 26 passed, 1 failed Named cell red: a lifecycle idle mid-turn yields nothing: a compaction is not a turn ending"
+      "note": "Measured 2026-09-03: KILLED. turn-intake.smoke: 26 passed, 1 failed Named cell red: a lifecycle idle mid-turn yields nothing: a compaction is not a turn ending. Re-anchored 2026-09-26 after the presence chain (#636/#2055) wrapped the whole body in `await this.inOrder(async () => { ... });`; the replace still delegates to setStatus unchanged."
     },
     {
       "name": "the status is assigned before its presence write, so a failed write swallows the boundary",

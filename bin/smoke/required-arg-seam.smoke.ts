@@ -356,7 +356,82 @@ const SEAMS: Seam[] = [
   // writer validates what it writes and a marker the reader CANNOT read has to be created past it.
   // That is what lets `run ps` be graded on the `unchecked` path, where the marker is unreadable
   // rather than absent. It states `tls` explicitly, so the seam itself is unchanged.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 157, untypecheckedSites: 117 },
+  // 157/117 -> 161/119: instance-pinned user control adds two typechecked calls, the user's
+  // control connection in extensions/connector-core/src/manager-call.ts (#1940) and its generated
+  // Hermes sidecar copy, both carrying the resolved transport decision; instance binding for user
+  // seats adds two smoke-side calls (implementations/auth/smoke/remote-agent-bearer.smoke.ts,
+  // implementations/auth/smoke/remote-exchange.smoke.ts), the second already-enrolled actor and
+  // the instance-bound executor dial the pin must refuse. All state `tls` explicitly.
+  // 161/119 -> 162/120: the manager instance caller gap reproduction
+  // (packages/core/smoke/inst-route-enforce.smoke.ts) adds one smoke-side instance-scoped
+  // executor connection. It states `tls: false`.
+  // 162/120 -> 166/123: remote manager registration recovery (#1960) adds one typechecked call,
+  // the one-shot reconciliation executor dial in implementations/auth/src/service.ts, and three
+  // smoke-side calls in implementations/manager/smoke/hosted-retirement-stock-supervise.acceptance.ts
+  // (readiness, eviction and reconciliation executor connections). All state `tls` explicitly.
+  // 166/123 -> 169/125: the managed-seat answer path (#1901, #1877) adds one typechecked call,
+  // the managed seat's connection in implementations/runtime/src/run-command.ts, and two
+  // smoke-side calls in bin/smoke/run-host-live.smoke.ts, the addressed baseline seat's answer
+  // connection and the run-operator read connection grading it. All state `tls` explicitly.
+  // 169/125 -> 175/131: caller-scoped goal mediation and its proof add six smoke-side calls:
+  // the user-callout pre-revoke read (implementations/auth/smoke/deny-new.smoke.ts), the foreign
+  // caller the mediated result refuses (implementations/manager/smoke/manager-service-invoke.smoke.ts),
+  // and four in implementations/manager/smoke/remote-manager-goal-reader.smoke.ts (provisioner,
+  // executors, responder, bearer read). All state `tls: false`.
+  // 175/131 -> 193/149: the goal-follow and manager-caller transport landings add eighteen
+  // smoke-side calls across five suites: manager-caller-transport.smoke.ts five,
+  // goal-follow-cancellation.smoke.ts three, goal-submit-order.smoke.ts two,
+  // user-bearer-goal-lifetime.smoke.ts one (the bearer rebind after a rebuild), and
+  // user-manager-transport.smoke.ts seven. All state `tls: false`.
+  // 193/149 -> 196/152: the artifact-store no-reserve landing (#2123) adds three smoke-side calls
+  // in packages/core/smoke/artifact-store-no-reserve.smoke.ts. All state `tls: false`.
+  // 196/152 -> 197/152: `cotal deliver pending` (#417) adds one typechecked call, the inspection
+  // read's own connection in implementations/delivery/src/pending.ts. States `tls` explicitly.
+  // 197/152 -> 198/152: the broker-version check (#2233) adds one typechecked call in
+  // implementations/cli/src/commands/up.ts. States `tls: false` explicitly.
+  // 198/152 -> 201/155: the scoped-consumer and scan-abort cells add three smoke-side calls in
+  // packages/core/smoke/manager-lease-grant.smoke.ts (the scoped delivery reader, the admin setup
+  // connection, and the supervisor). All state `tls: false`.
+  // 201/155 -> 220/172: hosted service/renewal and cleanup proofs add seventeen smoke calls:
+  // manager-standing-renewal (1), remote-run-attempt-route (4), remote-ef-continuity (4),
+  // remote-isolated-renewal (1), remote-run-renewal (2), remote-start-expiry-recovery (1),
+  // stock-process-restart (2), deprovision-agent-auth (2). Auth service preflight and run-hosting
+  // renewal add two production calls. The full reader verifies every added call states tls.
+  // 220/172 -> 225/176: attach session redemption on a user-auth mesh (#2320) adds one typechecked
+  // call, the session-bearer arm of redeemConnectOpts in implementations/cli/src/commands/agents.ts
+  // (5bec8b225f), carrying the link's resolved tls; its proof adds three smoke-side calls in
+  // implementations/auth/smoke/user-spawn.smoke.ts (00dbb33f07, net of the two 66c1f9dbe0 dropped):
+  // the bearer dial probe, the operator grant connection and the session-ledger reader. The
+  // memory-backed presence bucket fix (#2311, 15c16ffd80) adds one smoke-side teardown connection
+  // in packages/core/smoke/presence-ttl-refresh-cli.smoke.ts that deletes the presence stream so
+  // the provisioner can restage it file-backed. All smoke-side calls state `tls: false`. None of
+  // these landings moved the pin, so this cell was red from #2311 until this correction.
+  // 225/176 -> 227/178: two smoke-side connections in packages/core/smoke/liveness-peer.smoke.ts,
+  // both in the peer-readable liveness suite (#1577) and both under `smoke/`, so each of the two
+  // counts moves by the same two. Named individually, because a count that moves by the right
+  // amount for the wrong reason is the failure this pin exists to catch:
+  //   • `probeNc` — the fixture's own target control, which proves it is talking to ITS OWN broker
+  //     before it reports on anything (being pointed at another broker looks identical to being
+  //     refused by this one);
+  //   • `rawNc`  — the raw connection that reads a REAL reply frame's key set, since a TypeScript
+  //     type cannot stop a handler attaching an extra field.
+  // Both state `tls` explicitly, so the seam itself is unchanged. The `standaloneConnectOpts` near
+  // the top of that file is the IMPORT and is not a call site; this reader counts calls. The two
+  // are named by IDENTIFIER rather than by line, because a line number in a comment is stale the
+  // next time anything is inserted above it, and then it points a reader at the wrong call.
+  // 227/178 -> 228/178: one typechecked call that neither repin above counted, `recreateMemoryBuckets`
+  // in implementations/cli/src/commands/up.ts (ffdb45c345, #2335), the resumed up's dial that
+  // recreates the memory-backed presence bucket. It states `tls: false`. #2335 merged beside the
+  // 225/176 repin, whose branch did not contain it. 227/178 is the count of a tree WITHOUT the
+  // Hermes sidecar bundle, whose copy of the seam (counted since 161/119) offset the missed call.
+  // These counts are for a BUILT tree, the one `smoke:ci` scans after `pnpm build`; a tree that
+  // never ran the bundle finds 227/178.
+  // 228/178 -> 229/179: one smoke-side call, `reader` in
+  // implementations/manager/smoke/boot-delivery-lease.smoke.ts, a second `delivery` principal that
+  // reads the lease row back from the bucket and takes it over, so the fixture's renew and release
+  // are judged from the broker rather than from the fixture's own bookkeeping. Under `smoke/`, so
+  // both counts move by one. It states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 229, untypecheckedSites: 179 },
 ];
 
 /**
@@ -1301,8 +1376,9 @@ const nameFact = (id: ts.Identifier, consts: Map<string, string>): NameFact =>
 /** Can the OBJECT this name holds have changed since the declaration wrote it out?
  *
  *  Reading a member off the declaration's text is a statement about the value AT THE CALL, and four
- *  three ordinary things break that link: a property written afterwards, the object handed to a call
- *  that can keep it, and a second name for the same object. Through any of them, `const opts
+ *  ordinary things break that link: a property written afterwards, the object handed to a call
+ *  that can keep it, a second name for the same object, and the object kept in a literal (an array
+ *  element, the value of a property, a shorthand property). Through any of them, `const opts
  *  = { tls: undefined }; opts.tls = false;` would be reported as stating the key undefined while the
  *  program works, which is the untrue-assertion direction, and this reader flinches from that harder
  *  than from a miss: a miss fails to catch a broken program, an untrue assertion spends the
@@ -1313,9 +1389,15 @@ const nameFact = (id: ts.Identifier, consts: Map<string, string>): NameFact =>
  *  so no delete can turn one of its reds into a false one. A branch for it would have been dead
  *  weight with a cell that could not tell whether it ran.
  *
- *  Stated residual, since it is not a route this closes: the alias rule follows the name, not the
- *  object, so a second name taken in a shape not listed here (a property of something else, an
- *  element of an array) keeps its own mutations out of view. */
+ *  The same guard has a second cost, next to the one above: once a name is mutable, the reader
+ *  stops claiming from the declaration in BOTH directions, so a write that introduces `undefined`
+ *  into a good value is a miss rather than a red. Declining is the cheaper half of that trade, but
+ *  it is still a cost, and it is paid on every mutable name alike.
+ *
+ *  Stated residual, since these are not routes this closes: a holder returned from a function and a
+ *  holder stored into a class field are both out of view at the head, so their mutations are not
+ *  watched and their declarations are still declined from. A spread is NOT a keep: it hands over
+ *  a copy, so a write through it says nothing about the object here. */
 function mutableHere(id: ts.Identifier): boolean {
   const memberOf = (e: ts.Expression): boolean => {
     const x = unwrap(e);
@@ -1336,6 +1418,18 @@ function mutableHere(id: ts.Identifier): boolean {
     }
     if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && isName(n.initializer)) {
       found = true; return; // a second name for the same object, whose writes are not watched here
+    }
+    // KEPT somewhere is a second name too, and this rule followed the name rather than the object:
+    // `const arr = [opts]; arr[0].tls = false` reached the same object by a route with no name in
+    // it at all, and the declaration was then read as stating the key undefined about a program
+    // that does not throw. A SPREAD is not this: it hands over a copy, so a write through it says
+    // nothing about the object here, and shorthand `{ opts }` captures the value under a key, so it
+    // is a keep just like a named property.
+    if ((ts.isArrayLiteralExpression(n) && n.elements.some((e) => isName(e)))
+      || (ts.isObjectLiteralExpression(n) && n.properties.some((q) =>
+        (ts.isPropertyAssignment(q) && isName(q.initializer))
+        || ts.isShorthandPropertyAssignment(q) && q.name.text === id.text))) {
+      found = true; return;
     }
     ts.forEachChild(n, visit);
   };
@@ -2259,6 +2353,14 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const opts = { other: 1 } as any;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
   check("...and an ELEMENT access is the same read, spelled with brackets",
     one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts["tls"] });`) === "missing-key");
+  check("...and an OPTIONAL chain spells the same read, and is answered the same",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts?.tls });`) === "missing-key");
+  check("...while the same chain holding a real boolean is untouched",
+    one(`const opts = { tls: false };\nstandaloneConnectOpts({ creds: c, tls: opts?.tls });`) === "has-key");
+  check("...and a NON-NULL assertion is a spelling of the same read, not a different one",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts!.tls });`) === "missing-key");
+  check("...including the optional chain spelled with brackets",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts?.["tls"] });`) === "missing-key");
   check("...including through a folded const, the arithmetic every other key folds by",
     one(`const K = "tls";\nconst opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts[K] });`) === "missing-key");
   check("...while a member this file cannot NAME is refused, since any of them could be the key",
@@ -2292,6 +2394,16 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const opts = { tls: undefined as any };\nconst alias = opts;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
   check("...while an untouched holder still reds, so mutability did not become a blanket",
     one(`const opts = { tls: undefined as any };\nconst n = 1;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...nor one KEPT in an array, whose element has no name for the alias rule to see",
+    one(`const opts = { tls: undefined as any };\nconst arr = [opts];\narr[0].tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one KEPT as a property of another object, for the same reason",
+    one(`const opts = { tls: undefined as any };\nconst bag = { o: opts };\nbag.o.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one KEPT as a shorthand property, which captures the value under its own name",
+    one(`const opts = { tls: undefined as any };\nconst bag = { opts };\nbag.opts.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...while a SPREAD copy is not the object, so the holder is still answered from its declaration",
+    one(`const opts = { tls: undefined as any };\nconst copy = { ...opts };\ncopy.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...and an array spread of a holder that is never kept is the same copy",
+    one(`const opts = { tls: undefined as any };\nconst inner = [{ ...opts }];\nconst arr = [...inner];\narr[0].tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
   // The same text, reached through a NAME, is the same two facts spelled on two lines.
   check("a source NAMED and then taken apart is the text its declaration wrote",
     one(`const src = { tls: undefined as any };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
@@ -2476,7 +2588,7 @@ for (const seam of SEAMS) {
   const { sites, aliased, bad, untypechecked } = summarize(all);
   // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
   // instead of sending the next author into this file to find out what the floor should become.
-  console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} typechecked)`);
+  console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} outside smoke/)`);
   check(`\`${seam.fn}\`: every call site states \`${seam.key}\``, bad.length === 0,
     bad.map((s) => `${s.file}:${s.line} [${s.verdict}] ${s.detail}`));
 
@@ -2500,9 +2612,9 @@ for (const seam of SEAMS) {
   check(`\`${seam.fn}\`: the scan finds EXACTLY ${seam.sites} call sites (if you added or removed one, update this number deliberately)`,
     sites.length === seam.sites, { found: sites.length, expected: seam.sites });
 
-  // Split from the total on purpose. The half the compiler cannot see is the whole reason this file
-  // exists, and a bare "> 0" here would be satisfied by a single smoke site while the rest vanished.
-  check(`\`${seam.fn}\`: EXACTLY ${seam.untypecheckedSites} of them are under smoke/, which no tsconfig includes`,
+  // Keep the smoke subtree census separate: a bare "> 0" would miss disappearing sites.
+  // The legacy field name is not a typecheck coverage claim; packages now typecheck their smokes.
+  check(`\`${seam.fn}\`: EXACTLY ${seam.untypecheckedSites} of them are under smoke/`,
     untypechecked.length === seam.untypecheckedSites, { found: untypechecked.length, expected: seam.untypecheckedSites });
 }
 

@@ -20,7 +20,9 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection, type ConnectionOptions } from "@nats-io/transport-node";
-import { createSpaceAuth, isReachable, serverConfig, standaloneConnectOpts, mintLifecycleUid } from "@cotal-ai/core";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
+import { createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable, serverConfig, standaloneConnectOpts, mintLifecycleUid } from "@cotal-ai/core";
 import {
   calloutPermissions, createCalloutAuth, createUserTokenIssuer, deriveOwnerToken, generateSigningKey,
   grantManagedActor, ledgerAclResolver, newActorToken, openAuthAuthorityPlane, startAuthCallout,
@@ -81,10 +83,17 @@ async function tryConnect(bearer: string): Promise<"connected" | "denied"> {
 let plane: Awaited<ReturnType<typeof openAuthAuthorityPlane>> | undefined;
 let calloutNc: NatsConnection | undefined;
 let writer: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
+let streamsSetup: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`nats-server did not come up on ${PORT}`);
+
+  // The plane's own boot only ensures the AUTHORITY stores; the CONTRACT store (`EPC_<space>`,
+  // created by `createEndpointStreams`) is created by production space setup (`up`'s
+  // `postStart`) before the plane opens. This fixture stands in for that setup step.
+  streamsSetup = await openAuthorityClient({ server: SERVERS, space, dataAccount, label: `cotal:smoke-streams:${space}`, grants: (id) => (void id, { publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: quiet });
+  await createEndpointStreams(await jetstreamManager(streamsSetup.nc), new Kvm(streamsSetup.nc), space);
 
   plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet });
   const key = await generateSigningKey();
@@ -153,6 +162,7 @@ try {
 } finally {
   await plane?.close().catch(() => {});
   await writer?.close().catch(() => {});
+  await streamsSetup?.close().catch(() => {});
   await calloutNc?.close().catch(() => {});
   srv.kill();
   await awaitExit(srv);

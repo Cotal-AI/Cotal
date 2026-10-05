@@ -45,7 +45,7 @@ try {
   writeFileSync(`${pidPath}.identity`, `${process.pid} ${token}`);
   writeFileSync(markerPath, String(process.pid + 1));
 
-  publishManagerSpareCapability(context, true, tokens);
+  publishManagerSpareCapability(context, "release", tokens);
   assertManagerCanSpare(context, tokens, attempt.target as { pid: number; token: string });
   check("matching exact stop target accepts the manager spare capability", existsSync(capabilityPath));
   rmSync(capabilityPath);
@@ -65,7 +65,7 @@ try {
       !missingCapabilityRefusal.message.includes("or stop the agents explicitly"),
     missingCapabilityRefusal.message,
   );
-  publishManagerSpareCapability(context, true, tokens);
+  publishManagerSpareCapability(context, "release", tokens);
   let targetRefusal: Error | undefined;
   try {
     assertManagerCanSpare(
@@ -92,7 +92,7 @@ try {
   assert.ok(capabilityRefusal, "a successor capability record cannot authorize the predecessor target");
   assert.match(capabilityRefusal.message, /malformed, stale, or belongs to a different manager process/);
   check("a successor capability record cannot authorize the predecessor target", true);
-  publishManagerSpareCapability(context, true, tokens);
+  publishManagerSpareCapability(context, "release", tokens);
 
   armManagerShutdownIntent(context, attempt, tokens);
   check("arm publishes a regular one-shot intent", existsSync(intentPath));

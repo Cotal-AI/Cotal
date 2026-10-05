@@ -25,7 +25,6 @@
  * as an outcome would be writing down a conclusion about work it can no longer see.
  */
 import {
-  replayRunJournal,
   wfjStreamName,
   wfjSubject,
   EpEnvelopeError,
@@ -66,19 +65,22 @@ import {
   type RunResult,
 } from "@cotal-ai/lang";
 import { runOnHostedEngine } from "./engine-host.js";
-import { RunJournalStore } from "./journal-store.js";
+import { RunJournalStore, replayOwnJournal } from "./journal-store.js";
+import { releasableSeats } from "./run-scope-authority.js";
 
 /**
  * What an entry in the engine table is handed: everything `drive()` prepared, with the pieces the
  * two engines consume left whole. The walker takes the store-backed `journal`; the compiled engine
- * takes the `store` and the activated `entries` themselves, because its journal is rebuilt inside
- * the worker thread and only the durable half stays out here. Both read the same `options`.
+ * takes the `store`, the activated `entries` and the `resultBytes` bound themselves, because its
+ * journal is rebuilt inside the worker thread and only the durable half stays out here. Both read
+ * the same `options`.
  */
 interface HostedEngineRequest {
   readonly source: string;
   readonly journal: Journal;
   readonly store: RunJournalStore;
   readonly entries: readonly JournalEntry[];
+  readonly resultBytes?: number;
   readonly options: {
     readonly runId: string;
     readonly handler: EffectHandler;
@@ -107,6 +109,7 @@ const hostedEngineRun = (r: HostedEngineRequest): Promise<RunResult> =>
     handler: r.options.handler,
     store: r.store,
     entries: r.entries,
+    ...(r.resultBytes !== undefined ? { resultBytes: r.resultBytes } : {}),
     shouldStop: r.options.shouldStop,
     ...(r.options.file !== undefined ? { file: r.options.file } : {}),
     ...(r.options.seed !== undefined ? { seed: r.options.seed } : {}),
@@ -140,15 +143,6 @@ const ENGINES: readonly HostedEngine[] = [
 ];
 
 /**
- * The refusal for a recorded language no engine in this build serves, naming what it does serve.
- *
- * L5023 rather than L5008: L5008 is the same disagreement one layer in, where a record was handed to
- * a SPECIFIC engine whose version differs and the repair is to run it on the engine that matches.
- * Here there is no such engine to name, so it is a different sentence. The message carries the
- * recorded version AND the served set, because "this build cannot" is only actionable if it says
- * what it can.
- */
-/**
  * A record whose `languageVersion` is not the string the wire contract declares (SPEC §14.3,
  * core's run-record). Distinct from L5023 on purpose: L5023 says "a version this build does not
  * serve", and folding a malformed field into it produced the self-contradictory sentence
@@ -181,7 +175,7 @@ class RunRecordMalformed extends Error {
  * including on diagnostic paths.
  */
 async function noRecordToResume(js: JetStreamClient, jsm: JetStreamManager, req: DriveRequest): Promise<Error> {
-  const replay = await replayRunJournal(js, jsm, req.space, req.runId, req.lease.takeoverId);
+  const replay = await replayOwnJournal(js, jsm, req.space, req.runId, req.lease.takeoverId);
   const journalled = replay.records.length !== 0;
   if (!journalled) return new RunNotResumable(req.runId, wfjSubject(req.space, req.runId));
   return new Error(
@@ -192,6 +186,15 @@ async function noRecordToResume(js: JetStreamClient, jsm: JetStreamManager, req:
   );
 }
 
+/**
+ * The refusal for a recorded language no engine in this build serves, naming what it does serve.
+ *
+ * L5023 rather than L5008: L5008 is the same disagreement one layer in, where a record was handed to
+ * a SPECIFIC engine whose version differs and the repair is to run it on the engine that matches.
+ * Here there is no such engine to name, so it is a different sentence. The message carries the
+ * recorded version AND the served set, because "this build cannot" is only actionable if it says
+ * what it can.
+ */
 function unservedLanguage(version: string | undefined): RuntimeFault {
   // A RECORD MAY NAME NO VERSION AT ALL, and it reaches this branch by the same route: written
   // before the field existed, it matches no engine either. The two cases get different sentences
@@ -362,6 +365,29 @@ const dischargeOf = (handler: unknown): DischargingHandler | undefined =>
   typeof (handler as DischargingHandler | undefined)?.discharge === "function"
     ? (handler as DischargingHandler)
     : undefined;
+
+/**
+ * A handler that can release the seats a completed run spawned. Declared beside
+ * {@link DischargingHandler} for the same reason: the journal records the spawns, and ending them
+ * when the run completes is the driver's concern.
+ */
+export interface ReleasingHandler {
+  release(entries: readonly JournalEntry[]): Promise<unknown>;
+}
+
+/**
+ * Release every seat a completed run spawned. A seat belongs to the run that spawned it, so a run
+ * that completes despawns its seats, winners and plain spawns alike, through the same despawn its
+ * cancellation sweep uses for losers. {@link releasableSeats} picks them: never a fork parent's,
+ * never one a fork may share, and never one a migration handed to a later spawn. Idempotent: a seat
+ * already gone is tolerated, so a crash between this and the completed note is repaired by the next
+ * completion.
+ */
+export async function releaseSeats(runId: string, entries: readonly JournalEntry[], handler: unknown): Promise<void> {
+  if (typeof (handler as ReleasingHandler | undefined)?.release !== "function") return;
+  const seats = releasableSeats(runId, entries);
+  if (seats.length > 0) await (handler as ReleasingHandler).release(seats);
+}
 
 /**
  * Discharge every recorded cancellation whose flip is still owed: the second half of the design
@@ -535,7 +561,13 @@ async function drive(
   }
 
   const resumed = appender.steps() as readonly JournalEntry[];
-  const store = new RunJournalStore(appender);
+  // THE TAIL ANCHOR FOLLOWS EVERY APPEND once the run is noted `running`, so a record appended
+  // since this activation is covered before the program acts on it. Unset until then: the spec
+  // revision this write pins is read below, and the `running` note covers whatever came before it.
+  let anchor: ((journalHigh: number) => Promise<void>) | undefined;
+  const store = new RunJournalStore(appender, async (high) => {
+    if (anchor !== undefined) await anchor(high);
+  });
   let flipped: ReadonlySet<string>;
   try {
     // The explicit callback wins; otherwise a handler that declares `adopted` repairs its own state.
@@ -642,6 +674,20 @@ async function drive(
 
   try {
     statusRevision = await note(req, "running", appender.journalHigh, specRevision, statusRevision);
+    anchor = async (high) => {
+      try {
+        statusRevision = await note(req, "running", high, specRevision, statusRevision);
+      } catch (e) {
+        // A takeover is the journal fence's to detect, and the append this follows already passed
+        // it. A moved revision whose record still names this lease is not one, so write over it
+        // once; a record naming any other lease is a fact this driver does not hold the run.
+        if (!isStatusConflict(e)) throw e;
+        const now = (await readRunRecord(req.kv, req.endpoint, req.runId))?.status;
+        if (now === undefined || now.value.holder !== req.lease.holder || now.value.epoch !== req.lease.epoch
+          || now.value.fencingToken !== req.lease.fencingToken) throw e;
+        statusRevision = await note(req, "running", high, specRevision, now.revision);
+      }
+    };
   } catch (e) {
     // A LOST CAS HERE IS A FACT, not a store hiccup: the only principal entitled to write this
     // run's status is a driver that holds it, so someone moved the revision between this
@@ -653,12 +699,20 @@ async function drive(
   }
 
   try {
-    const engineReq: HostedEngineRequest = { source: req.source, journal, store, entries: seeded, options };
+    const engineReq: HostedEngineRequest = {
+      source: req.source,
+      journal,
+      store,
+      entries: seeded,
+      ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
+      options,
+    };
     const result = expect === "new" ? await engine.run(engineReq) : await engine.resume(engineReq);
     // The discharge BEFORE the completed note: `result.journal` is the final folded record on both
     // engines, and a crash between the two leaves `issued: false` for the next completion's sweep
     // rather than a completed run whose discharge silently never happened.
     await dischargeCancellations(result.journal.entries(), store, req.handler);
+    await releaseSeats(req.runId, result.journal.entries(), req.handler);
     await noteFinal(req, "completed", appender.journalHigh, specRevision, statusRevision);
     return { status: "completed", result };
   } catch (e) {
@@ -677,9 +731,9 @@ async function drive(
       await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };
     }
-    // A HELD run is released with its refusal already recorded: this host could not perform the
-    // next step (the entry is settled `refused`, L5025), the program has neither failed nor
-    // finished, and a capable host's resume performs the step live.
+    // A HELD run is released with its journal already saying why: this host could not perform the
+    // next step (its entry is settled `refused`, or a held step's stays `pending`, L5025), the
+    // program has neither failed nor finished, and a capable host's resume continues there.
     if (e instanceof RunHeld) {
       await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };

@@ -123,8 +123,9 @@ Flags: `--space` (default `main`), `--server` (the mesh's broker, resolved from 
 (run in the background), `--no-open` (skip auto-launching the browser), `--creds` (override the
 self-minted cred). Remote exposure requires an explicit concrete `--host`; wildcard addresses
 `0.0.0.0` and `::` are refused because neither is a browser destination. Detached mode waits for
-the real HTTP server at the selected host before returning, logs to `<mesh-root>/.cotal/web.log`, and is stopped by
-`cotal down web` or bare `cotal down`. It requires a recorded mesh root; after `cotal up` records the
+the real HTTP server at the bound host and port before returning, logs to `<mesh-root>/.cotal/web.log`, and is stopped by
+`cotal down web` or bare `cotal down`. On the default host it probes `127.0.0.1`, because a system
+resolver such as WSL2's may not answer the branded `cotal.localhost`. It requires a recorded mesh root; after `cotal up` records the
 mesh, it can be launched from any directory. The branded URL `http://cotal.localhost:7799/` resolves
 to loopback with no DNS setup in Chrome, Firefox, and Edge; Safari may not resolve `*.localhost`,
 so use `http://127.0.0.1:7799`. A custom `--port` uses the plain loopback address. An explicit
@@ -168,7 +169,8 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
   (working / waiting / idle / offline / oldest-unattended).
 - **Channel view**: one channel's message list, members shown in the header.
 - **Direct messages**: a per-peer roll-up (one row per peer, not the n² pair list); expand a peer
-  for its conversations.
+  for its conversations. Threads key on authenticated ids, and every shown name, role, and status
+  comes from the roster by id, never from the message payload.
 - **Agent Detail.** A per-agent drill-down rendered from the peer's card: name, role, the harness
   and model, capabilities, and what it's working on or blocked on.
 - **Graph view** (`/graph`, linked from the Monitor header): the same feed as a live
@@ -203,9 +205,20 @@ A single peer whose own heartbeat lapses while the watch is live still drops out
 shorter than TCP-level detection never reconnects, which is why this is a freshness gate on the
 watch rather than a `connection` event.
 
-The all-activity read is bounded, so on a slow link it can
+**How the all-activity page is ordered.** When the page loads, the dashboard reads the newest chat
+messages in the order the broker stored them and the newest direct messages, orders the two sets
+together by `ts`, the time each sender wrote into its message, and keeps the newest of them. Chat
+and direct messages are stored in separate streams with no arrival order in common, so `ts` is the
+one key both carry. Where a sender's clock disagrees with the broker, messages can appear in an
+order different from the one they arrived in. Messages with the same `ts` keep the order the broker
+stored them in, and chat comes before direct messages.
+
+The all-activity read is bounded by an 8000 ms deadline, so on a slow link it can
 come back SHORT rather than late: the header then says `partial: activity`, and the page reports how
-many sources answered out of how many were asked and names the ones that did not. A short page and a
+many sources answered out of how many were asked and names the ones that did not. Each missing source
+also carries its reason in the response's `reasons` and in the line the server prints: `the read did
+not finish within <deadline>ms` when the deadline cut it, or `the read failed:` and the error when it was
+refused, such as a chat read whose filter list exceeds the broker's `max_payload`. A short page and a
 complete one are never the same bytes. On a link too slow to finish anything the honest answer is
 zero sources answered, and you keep looking at the last good data with the marker up. When the
 deadline wins, Cotal also cancels the unfinished history pulls and removes their ephemeral consumers;
@@ -239,7 +252,10 @@ less than a machine can spend. A larger body is refused with a `413` naming the 
 stops reading it rather than taking it all in first and complaining afterwards, and the connection
 that body arrived on is closed so the rest of it cannot be sent. It is never shortened to fit: a
 trimmed name is a name you did not type, which is the thing the paragraph above exists to prevent.
-Ordinary requests keep their connection as usual.
+Every other route takes no request body. It refuses an announced body before reading it with the
+same `413` and closed connection. A request the gate refuses is closed the same way when it
+announced a body, so a caller without a session cannot hold the dashboard reading an upload.
+Ordinary bodyless requests keep their connection as usual.
 
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so

@@ -79,6 +79,7 @@ import {
   reasoningMessageEnd,
   reasoningMessageStart,
   runError,
+  RUN_ERROR_EGRESS_MESSAGE,
   runFinished,
   runStarted,
   textMessageContent,
@@ -246,7 +247,7 @@ type Raw =
   | { shape: "boolean"; value: "ALLOW" | "REFUSE" | "THROW"; detail?: string }
   | {
       shape: "three-way";
-      value: "clean" | "forbidden-kind" | "unreadable" | "extra-property" | "THROW" | "NON-VERDICT";
+      value: "clean" | "forbidden-kind" | "unreadable" | "extra-property" | "run-error-content" | "THROW" | "NON-VERDICT";
       detail?: string;
     };
 
@@ -259,7 +260,7 @@ type Raw =
  * comparison, because guessing publish would be worse, and counted so a named cell reds on it
  * rather than a reader having to notice a word in a log line.
  */
-const VERDICTS = new Set(["clean", "forbidden-kind", "unreadable", "extra-property"]);
+const VERDICTS = new Set(["clean", "forbidden-kind", "unreadable", "extra-property", "run-error-content"]);
 let nonVerdicts: string[] = [];
 
 /** Explicit publish mapping. Three-way is never folded into a boolean. */
@@ -291,7 +292,7 @@ const bindRole = (mod: Record<string, unknown>, ref: string): Arm => {
         try {
           const v = fn(body);
           if (typeof v === "string" && VERDICTS.has(v)) {
-            return { shape: "three-way", value: v as "clean" | "forbidden-kind" | "unreadable" | "extra-property" };
+            return { shape: "three-way", value: v as "clean" | "forbidden-kind" | "unreadable" | "extra-property" | "run-error-content" };
           }
           nonVerdicts.push(`${ref}: ${JSON.stringify(v)}`);
           return { shape: "three-way", value: "NON-VERDICT", detail: JSON.stringify(v)?.slice(0, 60) };
@@ -489,7 +490,9 @@ const eventOf = (type: string): AguiEvent => {
     case "RUN_FINISHED":
       return runFinished({ threadId: THREAD, runId: RUN, timestamp: ts });
     case "RUN_ERROR":
-      return runError({ message: MARK, timestamp: ts });
+      // The one RUN_ERROR shape this version publishes (#1431). The pre-fix free-text shape is a
+      // DIVERGENT row below.
+      return runError({ message: RUN_ERROR_EGRESS_MESSAGE, timestamp: ts });
     case "TEXT_MESSAGE_START":
       return textMessageStart({ messageId: "m1", timestamp: ts, role: "assistant" });
     case "TEXT_MESSAGE_CONTENT":
@@ -555,7 +558,7 @@ const inheritedFlip = (flip: number, clean: AguiEvent[], dirtyEvents: AguiEvent[
     },
   };
   const f = Object.create(proto) as ReturnType<typeof good>;
-  for (const [k, v] of Object.entries(good())) if (k !== "events") (f as Record<string, unknown>)[k] = v;
+  for (const [k, v] of Object.entries(good())) if (k !== "events") (f as unknown as Record<string, unknown>)[k] = v;
   return f;
 };
 const proxyFlip = (flip: number, clean: AguiEvent[], dirtyEvents: AguiEvent[]) => {
@@ -859,6 +862,13 @@ const DIVERGENT: DivergentRow[] = [
       return [f];
     },
     expected: { [PREDECESSOR]: "ALLOW", HEAD: "extra-property", [ADAPTER_FREE]: "ALLOW" },
+  },  // #1431: a RUN_ERROR frozen before the fix can carry upstream text in `message` or `code`. Every
+  // predecessor publishes it; HEAD withholds it by name.
+  {
+    name: "run error: a pre-#1431 RUN_ERROR carrying free text",
+    axis: "allowed-kind",
+    body: [frameOf([runError({ message: MARK, code: "fake", timestamp: 1 })])],
+    expected: { [PREDECESSOR]: "ALLOW", HEAD: "run-error-content", [ADAPTER_FREE]: "ALLOW" },
   },
 ];
 

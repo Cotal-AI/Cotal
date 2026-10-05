@@ -25,6 +25,14 @@ export interface SeatRecord {
    *  the same pid at the same tick after a reboot, and be signalled for it. Absent on a record
    *  written before boot binding; such a record is never signalled. */
   bootId?: string;
+  /** Private temporary directories the launch wrote for this seat's child to read (a persona
+   *  carrier, an MCP config file). The custodian removes them when its child exits and drops from the
+   *  record the ones it removed; any still listed belong to a custodian killed first or could not be
+   *  removed, and the reap that proves the seat gone removes them, keeping the record until it has. */
+  artifacts?: string[];
+  /** The temp dir of the launcher that wrote `artifacts`, which every entry must sit directly under.
+   *  Recorded because a reap may run in a successor whose own temp dir differs. */
+  artifactRoot?: string;
 }
 
 export function seatId(): string {
@@ -39,8 +47,13 @@ const SEAT_ID = /^[0-9a-f]{32}$/;
  *  record outside the root. Refuse rather than resolve: an unaddressable reference must not be
  *  reported as a seat that is already forgotten. */
 export function assertSeatId(id: string): string {
-  if (!SEAT_ID.test(id)) throw new Error(`seat id ${JSON.stringify(id)} is not 32 lowercase hex characters; it names a directory under the custody root`);
+  if (!isSeatId(id)) throw new Error(`seat id ${JSON.stringify(id)} is not 32 lowercase hex characters; it names a directory under the custody root`);
   return id;
+}
+
+/** Whether `id` has the shape {@link seatId} mints, so a directory entry can be told from a seat. */
+export function isSeatId(id: string): boolean {
+  return SEAT_ID.test(id);
 }
 
 export function capabilityToken(): string {
@@ -49,6 +62,11 @@ export function capabilityToken(): string {
 
 export function recordPath(root: string, id: string): string {
   return join(root, assertSeatId(id), "record.json");
+}
+
+/** Where a custodian records how its child ended, beside the custody record it names. */
+export function exitPath(recordFile: string): string {
+  return join(dirname(recordFile), "exit.json");
 }
 
 export function socketPath(root: string, id: string): string {
@@ -106,6 +124,10 @@ export function readRecord(path: string): SeatRecord {
     throw new Error("seat record childStart is not a start token");
   if (raw.bootId !== undefined && (typeof raw.bootId !== "string" || raw.bootId.length === 0))
     throw new Error("seat record bootId is not a boot identity");
+  if (raw.artifacts !== undefined && (!Array.isArray(raw.artifacts) || raw.artifacts.some((a) => typeof a !== "string" || a.length === 0)))
+    throw new Error("seat record artifacts is not a list of paths");
+  if (raw.artifactRoot !== undefined && (typeof raw.artifactRoot !== "string" || raw.artifactRoot.length === 0))
+    throw new Error("seat record artifactRoot is not a path");
   return {
     version: RECORD_VERSION,
     id: raw.id,
@@ -119,5 +141,7 @@ export function readRecord(path: string): SeatRecord {
     // Carried, not re-read from this process: a record read on another boot must still say which
     // boot its pids came from, which is the whole point of the stamp.
     ...(raw.bootId !== undefined ? { bootId: raw.bootId } : {}),
+    ...(raw.artifacts !== undefined ? { artifacts: raw.artifacts } : {}),
+    ...(raw.artifactRoot !== undefined ? { artifactRoot: raw.artifactRoot } : {}),
   };
 }

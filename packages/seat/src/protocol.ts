@@ -91,9 +91,17 @@ export type ClientRequest =
   | { id: number; op: "wait-exit" }
   | { id: number; op: "health" };
 
+/** How the child ended, as the custodian observed it: node-pty's exit code and signal, and the
+ *  last line the child printed under a connector's `[cotal-<name>]` or `[cotal-<name>/<part>]`
+ *  prefix, if it printed one. Only a line that starts with that prefix is kept, so a harness's own
+ *  output never leaves the seat through this field. */
+export type SeatExit = { code?: number; signal?: number; diagnostic?: string };
+
 export type ServerEvent =
   | { event: "output"; sub: number; data: string }
-  | { event: "exit"; sub?: number };
+  // `exit` is the status the custodian reaped, so a reader learns how the child ended from the
+  // event itself rather than only from a later hello or wait-exit round trip.
+  | { event: "exit"; sub?: number; exit?: SeatExit };
 
 export type ServerReply =
   | {
@@ -105,7 +113,7 @@ export type ServerReply =
       cols: number;
       rows: number;
       status: "running" | "exited";
-      exit?: { code?: number; signal?: number };
+      exit?: SeatExit;
     }
   | { id: number; ok: true; op: "snapshot"; data: string; cols: number; rows: number }
   | { id: number; ok: true; op: "subscribe-output"; sub: number }
@@ -114,7 +122,7 @@ export type ServerReply =
   | { id: number; ok: true; op: "resize" }
   | { id: number; ok: true; op: "interrupt" }
   | { id: number; ok: true; op: "stop" }
-  | { id: number; ok: true; op: "wait-exit"; exit?: { code?: number; signal?: number } }
+  | { id: number; ok: true; op: "wait-exit"; exit?: SeatExit }
   | {
       id: number;
       ok: true;

@@ -10,21 +10,15 @@
  * Needs `nats-server` on PATH. Run: pnpm smoke:up-manifest:live
  */
 import { spawnSync } from "node:child_process";
-import { createConnection, createServer, type AddressInfo } from "node:net";
+import { createConnection } from "node:net";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { canonicalLocalProcessPath, MANAGER_PIDFILE } from "@cotal-ai/workspace";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // Ephemeral free ports + a per-run space: repeated or concurrent runs never collide on a fixed port
 // nor contaminate each other's `supervise` scan (the old fixed 14311 / "upf-live" flaked locally).
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 const PORT = await freePort();
 const DECOY_PORT = await freePort(); // the manifest declares this; --server overrides it to PORT
 const SERVER = `nats://127.0.0.1:${PORT}`;

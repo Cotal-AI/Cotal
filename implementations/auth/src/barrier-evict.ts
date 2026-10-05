@@ -19,13 +19,40 @@
  * already have; a dedicated narrow delivery-admin infra profile is the cleaner target once the
  * ledgered infra-mint family (#30) lands — migrate there, do not invent it here.
  */
-import { CotalEndpoint, mintCreds, newIdentity, type EvictionResult, type SpaceAuth } from "@cotal-ai/core";
+import { CotalEndpoint, EVICT_PRINCIPALS_MAX, mintCreds, newIdentity, type EvictionResult, type SpaceAuth } from "@cotal-ai/core";
 import type { EvictPrincipal } from "./credential-ledger.js";
 
 /** The per-eviction credential's TTL (Security H3): one delivery-admin call runs in a 15s request
  *  budget; 60s covers connect + the call + teardown with margin, and bounds the blast radius of a
  *  copied supervisor credential to a minute rather than the profile's default 24h. */
 const EVICTOR_CRED_TTL_SECONDS = 60;
+
+/** Accept one daemon eviction result only when it verifiably describes `principal`; anything else
+ *  maps to `failClosed`, so it never authorizes. */
+function checkedEviction(principal: string, data: unknown, failClosed: (principal: string, note: string) => EvictionResult): EvictionResult {
+  const d = data as Partial<EvictionResult> | undefined;
+  if (
+    d === undefined || d === null || d.principal !== principal ||
+    typeof d.kicked !== "number" || !Number.isSafeInteger(d.kicked) || d.kicked < 0 ||
+    typeof d.remaining !== "number" || !Number.isSafeInteger(d.remaining) || d.remaining < 0 ||
+    typeof d.verifiedGone !== "boolean" || typeof d.scanComplete !== "boolean"
+  )
+    return failClosed(principal, `the delivery daemon returned a garbled or foreign eviction result (${JSON.stringify(data ?? null)}); a result that does not verifiably describe this principal never authorizes`);
+  // An internally CONTRADICTORY success never authorizes: the barriers gate on
+  // `verifiedGone === true` alone, so a tuple claiming verified-gone while admitting an
+  // incomplete scan or surviving connections would launder a partial answer into an epoch
+  // advance / head terminal. Verified-gone is conclusive only as (scan complete, none remain).
+  if (d.verifiedGone === true && (d.scanComplete !== true || d.remaining !== 0))
+    return failClosed(principal, `the delivery daemon claimed verifiedGone with scanComplete=${String(d.scanComplete)} and remaining=${d.remaining}; an internally contradictory eviction result never authorizes`);
+  return {
+    principal,
+    kicked: d.kicked,
+    remaining: d.remaining,
+    verifiedGone: d.verifiedGone,
+    scanComplete: d.scanComplete,
+    ...(typeof d.note === "string" ? { note: d.note } : {}),
+  };
+}
 
 /**
  * Build the barrier executor's `evictPrincipal` capability over the delivery daemon's
@@ -75,32 +102,66 @@ export function makeDeliveryAdminEvictor(opts: {
       await ep.start();
       const r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
       if (!r.ok) return failClosed(principal, `the delivery daemon refused the eviction: ${r.error ?? "(no error copy)"}`);
-      const d = r.data as Partial<EvictionResult> | undefined;
-      if (
-        d === undefined || d === null || d.principal !== principal ||
-        typeof d.kicked !== "number" || !Number.isSafeInteger(d.kicked) || d.kicked < 0 ||
-        typeof d.remaining !== "number" || !Number.isSafeInteger(d.remaining) || d.remaining < 0 ||
-        typeof d.verifiedGone !== "boolean" || typeof d.scanComplete !== "boolean"
-      )
-        return failClosed(principal, `the delivery daemon returned a garbled or foreign eviction result (${JSON.stringify(r.data ?? null)}); a result that does not verifiably describe this principal never authorizes`);
-      // An internally CONTRADICTORY success never authorizes: the barriers gate on
-      // `verifiedGone === true` alone, so a tuple claiming verified-gone while admitting an
-      // incomplete scan or surviving connections would launder a partial answer into an epoch
-      // advance / head terminal. Verified-gone is conclusive only as (scan complete, none remain).
-      if (d.verifiedGone === true && (d.scanComplete !== true || d.remaining !== 0))
-        return failClosed(principal, `the delivery daemon claimed verifiedGone with scanComplete=${String(d.scanComplete)} and remaining=${d.remaining}; an internally contradictory eviction result never authorizes`);
-      return {
-        principal,
-        kicked: d.kicked,
-        remaining: d.remaining,
-        verifiedGone: d.verifiedGone,
-        scanComplete: d.scanComplete,
-        ...(typeof d.note === "string" ? { note: d.note } : {}),
-      };
+      return checkedEviction(principal, r.data, failClosed);
     } catch (e) {
       return failClosed(principal, `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); eviction is UNKNOWN and the barrier fails closed`);
     } finally {
       await ep?.stop().catch(() => {});
     }
+  };
+}
+
+/**
+ * The gate repair's family evictor: verify-evict a SET of holders over ONE per-call connection, with
+ * one `evictPrincipals` request (one shared daemon sweep) per {@link EVICT_PRINCIPALS_MAX} holders.
+ * Answers `verifiedGone` per holder in input order, with the same fail-closed mapping: a refusal, an
+ * unreachable rail or an unusable reply leaves every holder it covers unverified.
+ */
+export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliveryAdminEvictor>[0]): (holderPrincipals: readonly string[]) => Promise<boolean[]> {
+  const auth: SpaceAuth = {
+    space: opts.space,
+    operator: { seed: "", jwt: "" },
+    account: { pub: opts.dataAccount.pub, seed: "", jwt: "", signingSeed: opts.dataAccount.signingSeed, signingPub: "" },
+    sys: { pub: "", jwt: "" },
+  };
+  const failClosed = (principal: string, note: string): EvictionResult => {
+    opts.log(`auth-barrier-evict: ${principal}: ${note}`);
+    return { principal, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note };
+  };
+  return async (principals) => {
+    const id = newIdentity();
+    let ep: CotalEndpoint | undefined;
+    const verified: boolean[] = [];
+    try {
+      const creds = await mintCreds(auth, id, "supervisor", { expiresInSeconds: EVICTOR_CRED_TTL_SECONDS });
+      ep = new CotalEndpoint({
+        space: opts.space,
+        servers: opts.server,
+        creds,
+        card: { id: id.id, name: "auth-barrier-evict", kind: "endpoint" },
+        channels: [],
+        consume: false,
+        watchChannels: false,
+        watchPresence: false,
+        registerPresence: false,
+      });
+      ep.on("error", () => {});
+      await ep.start();
+      for (let i = 0; i < principals.length; i += EVICT_PRINCIPALS_MAX) {
+        const chunk = principals.slice(i, i + EVICT_PRINCIPALS_MAX);
+        const r = await ep.requestDeliveryAdmin("evictPrincipals", { principals: chunk }, 15_000);
+        const results = r.ok && Array.isArray(r.data) && r.data.length === chunk.length ? (r.data as unknown[]) : undefined;
+        const why = !r.ok
+          ? `the delivery daemon refused the family eviction: ${r.error ?? "(no error copy)"}`
+          : `the delivery daemon answered a family eviction result set that does not match the ${chunk.length} holder(s) asked about`;
+        chunk.forEach((p, j) => verified.push((results ? checkedEviction(p, results[j], failClosed) : failClosed(p, why)).verifiedGone));
+      }
+    } catch (e) {
+      const note = `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); eviction is UNKNOWN and the barrier fails closed`;
+      for (const p of principals.slice(verified.length)) verified.push(failClosed(p, note).verifiedGone);
+    } finally {
+      await ep?.stop().catch(() => {});
+    }
+    return verified;
   };
 }

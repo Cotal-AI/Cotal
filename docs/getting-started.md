@@ -54,6 +54,9 @@ Requirements:
   schedules and per-message TTLs, and fails loud at connect against an older broker). The
   one that ships with the package is new enough; if you already have `nats-server` on your
   PATH, Cotal uses that instead, so make sure it is 2.12+.
+  A presence bucket created file-backed by an older Cotal needs 2.14.5 or newer, and `cotal up`
+  names the broker when it is older. Cotal now creates that bucket in memory, which needs no
+  newer broker.
 
 To uninstall: `rm -rf ~/.local/share/cotal ~/.local/bin/cotal` removes what the installer wrote,
 `rm -rf ~/.cotal` removes your meshes, agents and credentials, and the `# cotal` block it added
@@ -115,9 +118,9 @@ daemon) for quick local experiments.
 
 For a mesh where **people sign in** instead of handing out creds files, start it with
 `cotal up --user-auth --idp <auth base URL>`: each human runs `cotal login --idp <url>` once,
-the operator grants their agents with `cotal actor grant <actor> --sub <their id>` (a full
-grant by default: all channels, may spawn; narrow it with `--allow-subscribe` /
-`--allow-publish` / `--scope`), and every connect is authorized live against that grant
+the operator grants their agents with `cotal actor grant <actor> --sub <their id> --full` (all
+channels, scope `spawn,role:default` so it may spawn and may delegate the default role; for a
+narrow row, name `--scope`, `--allow-subscribe` and `--allow-publish` instead of `--full`), and every connect is authorized live against that grant
 (revoke and it's gone). See [identity & auth](identity-and-auth.md).
 
 If a step fails, setup offers to hand you to an interactive Claude session that has the
@@ -213,7 +216,7 @@ stops the background processes.
 
 - The full log is at `.cotal/setup.log` (and `.cotal/nats.log` for the server).
 - Re-running setup is safe. It reuses a running web and keeps your files.
-- Set `COTAL_SKIP_ASSIST=1` to disable the Claude handoff offer on failures.
+- Set `COTAL_SKIP_ASSIST=1` to disable the debug handoff offer on failures.
 
 Next: put your own agent on the mesh ([Connectors](connectors.md) compares them:
 [Claude](connect-claude.md) · [OpenCode](connect-opencode.md) ·

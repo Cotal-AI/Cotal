@@ -25,8 +25,8 @@ import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { connect, nanos } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
-import { mintCreds, newIdentity, standaloneConnectOpts, presenceBucket, deliveryBucket, managerBucket } from "../src/index.js";
+import { jetstreamManager, StorageType } from "@nats-io/jetstream";
+import { mintCreds, mintLifecycleUid, newIdentity, standaloneConnectOpts, presenceBucket, deliveryBucket, managerBucket, parseServerVersion } from "../src/index.js";
 import { getSpaceAuth, workspaceSecretStore } from "../../workspace/src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "./_ephemeral-only.js";
@@ -76,7 +76,7 @@ function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
     // This suite grades presence TTL refresh across restarts and never exercises the connector
     // seeder, so its CLI opts out of the seed reconcile the way `up` does for the daemons it
     // launches. On a cold npm cache that reconcile can spend the whole `cotal up` budget (#1245).
-    const options = { cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] as const };
+    const options = { cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: [...(["ignore", "pipe", "pipe"] as const)] };
     assertSmokeSandboxDown(sandbox, args, options);
     const child = spawn(TSX, [BIN, ...args], options);
     let out = "", timedOut = false, settled = false, exited = false;
@@ -93,6 +93,18 @@ function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
     child.on("close", (s, sg) => done({ status: s ?? status, out, timedOut, signal: sg ?? signal }));
   });
 }
+// #1356: independent of `up.ts`'s own comparison, so the cell proves what the CLI printed
+// against the real PATH broker rather than re-deriving the answer from the product's code.
+const pathBrokerBelow2145 = ((): boolean => {
+  const raw = execFileSync("nats-server", ["--version"], { encoding: "utf8" });
+  const m = /(\d+\.\d+\.\d+)/.exec(raw);
+  const v = m ? parseServerVersion(m[1]) : null;
+  if (!v) return false;
+  if (v.major !== 2) return v.major < 2;
+  if (v.minor !== 14) return v.minor < 14;
+  return v.patch < 5;
+})();
+
 /** A child that was killed, timed out or never launched produces the same `status` shape as a
  *  product failure. Refuse to grade those as either. */
 function mustHaveRun(r: Run, what: string): void {
@@ -127,8 +139,11 @@ try {
   mustHaveRun(up1, "`cotal up`");
   check("`cotal up` exits 0 — checked FIRST so a fixture failure is distinguishable from a product one", up1.status === 0, up1.out.slice(-700));
   if (up1.status !== 0) { process.exitCode = 1; throw new Error("FIXTURE FAILURE: no mesh came up, so the refresh path was never exercised."); }
+  // #1356: a fresh mesh's presence bucket is memory-backed, so there is no file store to latch.
+  check("a fresh mesh prints no below-2.14.5 presence line: its presence bucket is memory-backed",
+    !/below 2\.14\.5/.test(up1.out), up1.out.slice(-700));
 
-  console.log("\n2) stage the OLD-DEPLOYMENT shape: strip max_age from all three TTL'd buckets");
+  console.log("\n2) stage the OLD-DEPLOYMENT shape: a file-backed presence bucket, and no max_age on all three TTL'd buckets");
   const auth = await getSpaceAuth(workspaceSecretStore(root), SPACE);
   if (!auth) { process.exitCode = 1; throw new Error("FIXTURE FAILURE: no space auth under the fixture root."); }
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
@@ -136,8 +151,17 @@ try {
     const nc = await connect({ servers: SERVER, ...standaloneConnectOpts({ creds, tls: false }) });
     try {
       const jsm = await jetstreamManager(nc);
+      // Storage class is fixed at creation, so an older cotal's file-backed presence stream is
+      // staged by recreating it: only the teardown cred may delete it, the provisioner adds it back.
+      const presence = (await jsm.streams.info(`KV_${presenceBucket(SPACE)}`)).config;
+      const teardown = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+      const td = await connect({ servers: SERVER, ...standaloneConnectOpts({ creds: teardown, tls: false }) });
+      try { await (await jetstreamManager(td)).streams.delete(presence.name); } finally { await td.drain(); }
+      await jsm.streams.add({ ...presence, storage: StorageType.File });
       for (const b of [presenceBucket(SPACE), deliveryBucket(SPACE), managerBucket(SPACE)])
         await jsm.streams.update(`KV_${b}`, { max_age: 0 });
+      const storage = (await jsm.streams.info(`KV_${presenceBucket(SPACE)}`)).config.storage;
+      check("presence bucket is now file-backed, as an older cotal created it", storage === StorageType.File, storage);
     } finally { await nc.drain(); }
   }
   const drifted = await maxAges(creds);
@@ -158,6 +182,8 @@ try {
   check("presence max_age reconciled to 6s BY `cotal up` (not by calling the function)", after[presenceBucket(SPACE)] === nanos(PRESENCE_MS), after[presenceBucket(SPACE)] / 1e6);
   check("delivery-lease max_age reconciled to 30s by `cotal up`", after[deliveryBucket(SPACE)] === nanos(DELIVERY_MS), after[deliveryBucket(SPACE)] / 1e6);
   check("manager-lease max_age reconciled to 10s by `cotal up`", after[managerBucket(SPACE)] === nanos(MANAGER_MS), after[managerBucket(SPACE)] / 1e6);
+  check("the refresh over the file-backed presence bucket printed the below-2.14.5 presence line when, and only when, the PATH broker is below 2.14.5",
+    /below 2\.14\.5/.test(up2.out) === pathBrokerBelow2145, up2.out.slice(-700));
   // A config write on a running mesh that the operator cannot see is the silent behaviour this
   // change exists to remove — so the CLI must SAY it acted, not just act.
   check("...and the CLI SAID it reconciled, rather than writing silently", /reconciled .*TTL/.test(up2.out), up2.out.slice(-400));

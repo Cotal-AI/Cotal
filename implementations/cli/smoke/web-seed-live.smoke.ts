@@ -16,7 +16,6 @@ import { closeSync, mkdtempSync, writeFileSync, openSync, readFileSync, rmSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { createServer } from "node:net";
 import {
   CotalEndpoint,
   clearChannel,
@@ -28,17 +27,7 @@ import {
   serverConfig,
   setupSpaceStreams,
 } from "@cotal-ai/core";
-import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-
-async function freePort(): Promise<number> {
-  const socket = createServer();
-  socket.listen(0, "127.0.0.1");
-  await once(socket, "listening");
-  const address = socket.address();
-  if (address === null || typeof address === "string") throw new Error("free-port probe did not bind a TCP port");
-  await new Promise<void>((resolve) => socket.close(() => resolve()));
-  return address.port;
-}
+import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;

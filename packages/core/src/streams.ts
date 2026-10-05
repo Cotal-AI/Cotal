@@ -3,6 +3,7 @@ import {
   jetstreamManager,
   AckPolicy,
   DeliverPolicy,
+  StorageType,
   type ConsumerConfig,
   type JetStreamClient,
   type JetStreamManager,
@@ -29,6 +30,7 @@ import {
   channelBucket,
   membersBucket,
   aclBucket,
+  aclKey,
   membershipBucket,
   deliveryBucket,
   managerBucket,
@@ -40,11 +42,15 @@ import {
   readerDurable,
   DEV_OWNER,
   principalKey,
+  memberKey,
   deprovisionTargetPrincipal,
 } from "./subjects.js";
+import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
+import { requireBrokerFloor } from "./broker-floor.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
+import { openMembersRegistry, deleteMember } from "./members.js";
 import {
   BACKUP_MAX_MSGS_PER_SUBJECT,
   BACKUP_PLANE3_DEDUP_WINDOW_MS,
@@ -53,6 +59,13 @@ import {
 
 /** Default presence-bucket entry TTL (ms) — matches the endpoint's default liveness window. */
 const PRESENCE_TTL_MS = 6_000;
+
+/** #1356: the presence bucket is memory-backed. Its records are pure liveness that every endpoint
+ *  rewrites every heartbeat and republishes after a broker restart, so durability buys nothing, while
+ *  a file-backed store can latch a permanent write error that refuses every later write (and so every
+ *  registering bind) until the broker restarts. Storage class is fixed at stream creation, so a bucket
+ *  created file-backed by an older cotal stays file-backed until it is recreated. */
+export const PRESENCE_STORAGE = StorageType.Memory;
 
 /** Per-(sender,channel)-subject retention cap on the chat stream — the bound past which the
  *  oldest message on a subject is discarded (`DiscardPolicy.Old`). Also the horizon of focus
@@ -120,18 +133,12 @@ export const MANAGER_LEASE_ATTEMPT_MS = 2_000;
 export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Bucket-level `max_bytes` cap on the per-space artifact Object Store (`cotal_artifacts_<space>`).
- *
- *  THIS NUMBER IS THE ONLY THING BOUNDING ARTIFACT STORAGE, so it is a decision rather than a
- *  default. A fresh Object Store bucket ships `max_bytes: -1`, and the space account is provisioned
- *  `disk_storage: -1`, so nothing above it says no: without this cap an artifact flood grows until
- *  the disk does, starving the chat/DM/delivery streams that share it.
- *
- *  4 GiB is roughly sixteen artifacts at the 256 MiB per-artifact ceiling, which is generous for the
- *  transfer use case (screenshots, reports, build outputs) and small enough that filling it is a
- *  visible event rather than a silent disk exhaustion. `discard: new` on the bucket means hitting it
- *  REFUSES the write rather than evicting older artifacts — the loud failure, not the silent one
- *  where a reference published yesterday quietly stops resolving. */
-export const ARTIFACT_STORE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
+/** The `max_bytes` a per-space artifact Object Store carried before the reservation was removed:
+ *  4 GiB, the stock value every store created by that code holds. Kept for ONE purpose —
+ *  {@link ensureArtifactStore} recognizes it and reconciles it to `-1`, releasing the reservation.
+ *  It is not a cap this code sets on anything, and it is deliberately not exported: nothing outside
+ *  the reconcile has a use for a number that is only ever a legacy value to be migrated away from. */
+const LEGACY_ARTIFACT_STORE_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
 export interface ClearSpaceHistoryResult {
   chat: number;
@@ -465,19 +472,19 @@ export async function reconcileBucketTtl(
  *  Now a TTL'd bucket cannot be created without appearing here, so it cannot be missed on upgrade.
  *
  *  NOT mode-gated: an open mesh carries the same buckets and drifts identically. */
-export function ttlBuckets(space: string): ReadonlyArray<readonly [string, number]> {
+export function ttlBuckets(space: string): ReadonlyArray<readonly [string, number, StorageType]> {
   return [
     // Presence (liveness): dead agents' records must age out, or the roster reports a despawned
     // agent as live. Pre-created so agents, denied KV stream-create, can open it.
-    [presenceBucket(space), PRESENCE_TTL_MS],
+    [presenceBucket(space), PRESENCE_TTL_MS, PRESENCE_STORAGE],
     // Delivery-daemon single-flight lease + readiness: bucket-level TTL so a crashed holder's lease
     // auto-expires and a fresh daemon can re-acquire. Lease keys only, `delivery`-cred write,
     // world-readable (the non-gating delivery-health surface).
-    [deliveryBucket(space), LEASE_TTL_MS],
+    [deliveryBucket(space), LEASE_TTL_MS, StorageType.File],
     // Manager singleton lease, same shape as the delivery lease. Pre-created so the long-lived
     // supervisor can lease-bind OPEN-ONLY (closure (ii), residual 2) — it holds no STREAM.CREATE.
     // Config matches `managerLeaseRegistry()`'s create-first exactly, so that path stays idempotent.
-    [managerBucket(space), MANAGER_LEASE_TTL_MS],
+    [managerBucket(space), MANAGER_LEASE_TTL_MS, StorageType.File],
   ] as const;
 }
 
@@ -506,6 +513,9 @@ export async function reconcileSpaceTtls(opts: {
 }): Promise<TtlReconciled[]> {
   const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
   try {
+    // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
+    // fresh connection, including reconnects.
+    requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
     const js = jetstream(nc);
     const reconciled = await Promise.all(
@@ -526,21 +536,49 @@ export async function reconcileSpaceTtls(opts: {
  * options does the same.
  *
  * That makes create-alone actively dangerous here, because {@link setupSpaceStreams} is idempotent
- * and re-runs on every `cotal up`. A store that predates this cap, or that an operator widened by
- * hand, would be adopted forever: the code would look like it enforces a 4 GiB ceiling while the
- * broker enforced whatever was there first, and nothing would ever say so. The cap is the ONLY thing
- * bounding artifact storage (account disk is provisioned unlimited), so an unenforced cap is not a
- * smaller cap — it is no cap.
+ * and re-runs on every `cotal up`: a store an operator shaped by hand would be adopted forever while
+ * the code read as if it had configured it. So: create, then read the config back and refuse loudly
+ * on drift. Same create-or-verify discipline `ensureAuthorityStores` already uses, and the same
+ * reason: an idempotent setup path must either converge the resource or report that it cannot.
  *
- * So: create, then read the config back and refuse loudly on drift. Same create-or-verify discipline
- * `ensureAuthorityStores` already uses, and the same reason: an idempotent setup path must either
- * converge the resource or report that it cannot.
+ * THE STORE CARRIES NO BYTE CAP (`max_bytes: -1`), AND THAT IS THE POINT. A stream created with a
+ * positive `max_bytes` has that whole number RESERVED against the server's `max_file_store` the
+ * moment it is created, empty or not, and once the reservations would pass the cap nats-server
+ * refuses the next stream with JetStream error 10047 (`insufficient storage resources available`).
+ * Reproduced: under `max_file_store: 9 GiB`, two spaces provisioned, the third refused with 10047,
+ * `reserved_storage` 8.19 GiB and 0 bytes actually stored. A per-space quota that reserves 4 GiB
+ * therefore bounds how many SPACES a broker can hold rather than how many bytes a space can write.
+ *
+ * At `-1` the store reserves nothing and its writes are refused once the broker's REAL file-store
+ * usage reaches `max_file_store` — which is how the space's chat, DM, inbox and delivery streams are
+ * already bounded (`baseConfig` in `backup-config.ts` gives them `max_bytes: -1`). `discard: new`
+ * still means reaching that bound REFUSES the put rather than evicting an artifact whose reference
+ * is already published.
+ *
+ * A store at exactly the legacy stock 4 GiB is UPDATED to `-1` and read back, which is what releases
+ * the reservation on an existing mesh. Any OTHER positive `max_bytes` is somebody's deliberate
+ * decision and is still refused as drift: this path never silently widens a bound it did not set.
  */
 export async function ensureArtifactStore(nc: NatsConnection, space: string): Promise<void> {
   const bucket = artifactBucket(space);
   const stream = objectStoreStream(bucket);
-  await new Objm(jetstream(nc)).create(bucket, { max_bytes: ARTIFACT_STORE_MAX_BYTES });
-  const { config } = await (await jetstreamManager(nc)).streams.info(stream);
+  const jsm = await jetstreamManager(nc);
+  await new Objm(jetstream(nc)).create(bucket, { max_bytes: -1 });
+  let { config } = await jsm.streams.info(stream);
+  // LEGACY RECONCILE, and only the legacy value. A store created by the code that set a 4 GiB cap is
+  // still holding 4 GiB of the broker's `max_file_store` reserved against it, so leaving it alone
+  // would leave the defect in place on every existing mesh. Update it to -1 and READ IT BACK: an
+  // update the broker accepts without applying is the failure this path must not report as success.
+  if (config.max_bytes === LEGACY_ARTIFACT_STORE_MAX_BYTES) {
+    await jsm.streams.update(stream, { ...config, max_bytes: -1 });
+    ({ config } = await jsm.streams.info(stream));
+    if (config.max_bytes !== -1)
+      throw new Error(
+        `artifact store ${stream} is still at the legacy ${LEGACY_ARTIFACT_STORE_MAX_BYTES}-byte cap after ` +
+        `the reconcile (max_bytes read back as ${config.max_bytes}): the STREAM.UPDATE did not take, so the ` +
+        `broker is still reserving that capacity against its file store`,
+      );
+  }
   const drift: string[] = [];
   // SUBJECTS FIRST, because they decide whether this is an object store AT ALL. A stream created
   // under the right name with the right cap and the right discard, but bound to other subjects, is
@@ -553,8 +591,11 @@ export async function ensureArtifactStore(nc: NatsConnection, space: string): Pr
   // stream. Nothing about the cap would look wrong; the bytes would simply not be the space's own.
   if (config.mirror) drift.push("it is a MIRROR of another stream");
   if (config.sources?.length) drift.push(`it SOURCES ${config.sources.length} other stream(s)`);
-  if (config.max_bytes !== ARTIFACT_STORE_MAX_BYTES)
-    drift.push(`max_bytes is ${config.max_bytes}, expected ${ARTIFACT_STORE_MAX_BYTES}`);
+  // A positive cap that is NOT the legacy stock value was set deliberately by someone else, and the
+  // reconcile above has already converged the one value this code is entitled to change. Refuse it
+  // rather than widening it: a bound this code did not set is not a bound it may remove.
+  if (config.max_bytes !== -1)
+    drift.push(`max_bytes is ${config.max_bytes}, expected -1 (a deliberate cap is not widened by setup)`);
   // `discard: new` is what makes a full store REFUSE a put instead of evicting a live artifact whose
   // reference is already published. Drift here is silent data loss, not a capacity difference.
   if (String(config.discard) !== "new") drift.push(`discard is ${config.discard}, expected new`);
@@ -583,14 +624,14 @@ export async function ensureArtifactStore(nc: NatsConnection, space: string): Pr
   // sealed"), so a sealed store cannot arrive through the create path - only by a later update. That
   // narrows it to a deliberate operator action, which is exactly the drift worth naming.
   if (config.sealed === true) drift.push("the stream is SEALED (writes permanently refused)");
-  // The message-count and size limits must stay unbounded, because THE CAP IS SUPPOSED TO BE THE
-  // OPERATIVE BOUND. Reproduced: max_msgs=2 accepts setup, the first 1-byte object succeeds (chunk +
-  // meta = 2 messages), and the second fails "maximum messages exceeded" with 4 GiB still free. A
-  // hidden limit that overrides the advertised capacity makes the number this code reports a lie -
+  // The message-count and size limits must stay unbounded, because THE BROKER'S FILE STORE IS
+  // SUPPOSED TO BE THE OPERATIVE BOUND. Reproduced: max_msgs=2 accepts setup, the first 1-byte object
+  // succeeds (chunk + meta = 2 messages), and the second fails "maximum messages exceeded" with the
+  // whole file store free. A hidden limit that refuses artifacts long before the broker is full is
   // loud rather than silent, but still a bound nobody configured deliberately.
   for (const [field, value] of [["max_msgs", config.max_msgs], ["max_msgs_per_subject", config.max_msgs_per_subject],
                                 ["max_msg_size", config.max_msg_size]] as const)
-    if (value !== -1) drift.push(`${field} is ${value}, expected -1 (max_bytes is the only bound this store advertises)`);
+    if (value !== -1) drift.push(`${field} is ${value}, expected -1 (the broker's file-store cap is this store's only bound)`);
   if (drift.length)
     throw new Error(
       `artifact store ${stream} has drifted: ${drift.join("; ")} - refusing to adopt a store whose ` +
@@ -606,6 +647,9 @@ export async function setupSpaceStreams(opts: {
 }): Promise<void> {
   const nc = await connect({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
+    // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
+    // fresh connection, including reconnects.
+    requireBrokerFloor(nc);
     const jsm = await jetstreamManager(nc);
     await createSpaceStreams(jsm, opts.space);
     // KV buckets are streams too — pre-create them so agents (denied KV stream-create) can open
@@ -613,7 +657,7 @@ export async function setupSpaceStreams(opts: {
     // cannot be created on this path without also being reconciled on the upgrade path; the
     // channel/members/acl registries below are durable config and carry no TTL.
     const kvm = new Kvm(nc);
-    for (const [bucket, ttl] of ttlBuckets(opts.space)) await kvm.create(bucket, { ttl });
+    for (const [bucket, ttl, storage] of ttlBuckets(opts.space)) await kvm.create(bucket, { ttl, storage });
     await jsm.streams.add(canonicalBackupStreamConfig(opts.space, `KV_${channelBucket(opts.space)}`));
     // Durable-membership registry (Plane-3): privileged-write, no TTL (durable config, like the
     // channel registry). Pre-created so the delivery daemon (and open-mode self) can OPEN it; agents
@@ -708,6 +752,41 @@ export async function clearChannel(opts: {
   }
 }
 
+/**
+ * Bounded accounting for logical resources inspected, deleted, verified absent, or refused
+ * during agent lifecycle deprovisioning.
+ */
+export interface DeprovisionResourceAccounting {
+  /** Total count of distinct candidate resources examined across consumers, ACL and members. */
+  examined: number;
+  /** Uniquely attributable removals; null when a consumer disappeared without a native winner token. */
+  deleted: number | null;
+  /** Resources already absent at this attempt's first native observation of each resource. */
+  absent: number;
+  /** Number of resources that could not be deleted (broker errors). */
+  refused: number;
+  /** Native consumer DELETE success replies, not uniquely attributable removals. */
+  acknowledged: number;
+  /** Live resources observed gone without attributing removal to this call. */
+  disappeared: number;
+  /** Durable consumer accounting. */
+  consumers: { examined: number; deleted: number | null; absent: number; refused: number; acknowledged: number; disappeared: number };
+  /** Read-ACL entry accounting; disappeared means a competing purge won the native CAS. */
+  acls: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
+  /** Durable membership entry accounting; disappeared means a competing purge won the native CAS. */
+  members: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
+}
+
+/** Error raised when deprovisioning encounters an unexpected failure, retaining partial deletion accounting. */
+export class DeprovisionError extends Error {
+  public readonly accounting: DeprovisionResourceAccounting;
+  constructor(message: string, accounting: DeprovisionResourceAccounting, cause?: unknown) {
+    super(message, cause !== undefined ? { cause } : undefined);
+    this.name = "DeprovisionError";
+    this.accounting = accounting;
+  }
+}
+
 /** Delete a departed agent LIFECYCLE's provisioning footprint (#159 Part B) — the teardown counterpart
  *  to {@link provisionAgent}. Removes exactly what the provisioner minted for THIS incarnation: its two
  *  bind-only durables (`dm_<o>-<a>-<uid>`, `dlv_<o>-<a>-<uid>`) and its lifecycle-keyed read-ACL row.
@@ -727,8 +806,10 @@ export async function deprovisionAgent(opts: {
   space: string;
   targetId: string;
   lifecycleUid: string;
+  /** Concrete channels whose membership rows to purge; must equal the cred's `memberChannels`. */
+  memberChannels?: readonly string[];
   creds?: string;
-}): Promise<void> {
+}): Promise<DeprovisionResourceAccounting> {
   const nc = await connect({
     servers: opts.servers,
     ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
@@ -739,31 +820,204 @@ export async function deprovisionAgent(opts: {
     maxReconnectAttempts: 0,
     timeout: 5_000,
   });
+
+  const accounting: DeprovisionResourceAccounting = {
+    examined: 0,
+    deleted: 0,
+    absent: 0,
+    refused: 0,
+    acknowledged: 0,
+    disappeared: 0,
+    consumers: { examined: 0, deleted: 0, absent: 0, refused: 0, acknowledged: 0, disappeared: 0 },
+    acls: { examined: 0, deleted: 0, absent: 0, refused: 0, disappeared: 0 },
+    members: { examined: 0, deleted: 0, absent: 0, refused: 0, disappeared: 0 },
+  };
+
   try {
     // The target is a full principal dot-form (user-mode agent) or a bare static actor id under the
     // local owner, PLUS the exact lifecycle uid being torn down — the SAME resolution the
     // deprovisioner cred's permission pin used, so the delete names and the grant can't diverge.
-    const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid });
+    const t = deprovisionTargetPrincipal({ principal: opts.targetId, lifecycleUid: opts.lifecycleUid, memberChannels: opts.memberChannels });
     const jsm = await jetstreamManager(nc);
-    await deleteConsumerIdempotent(jsm, dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid));
-    await deleteConsumerIdempotent(jsm, dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid));
-    await deleteAcl(await openAclRegistry(nc, opts.space), principalKey(t.owner, t.actor).key, t.lifecycleUid);
+    const errors: Error[] = [];
+
+    // 1. Read-ACL entry. This CAS fences only this key's transition, not the other resources.
+    accounting.acls.examined++;
+    accounting.examined++;
+    let aclSafe = false;
+    try {
+      const aclsKv = await openAclRegistry(nc, opts.space);
+      const aclKeyStr = aclKey(principalKey(t.owner, t.actor).key, t.lifecycleUid);
+      const aclRes = await purgeKvKeyWithAccounting(jsm, aclsKv, aclBucket(opts.space), aclKeyStr);
+      aclSafe = true;
+      if (aclRes.outcome === "deleted") {
+        accounting.acls.deleted++;
+        if (accounting.deleted !== null) accounting.deleted++;
+      } else if (aclRes.outcome === "disappeared") {
+        accounting.acls.disappeared++;
+        accounting.disappeared++;
+      } else {
+        accounting.acls.absent++;
+        accounting.absent++;
+      }
+    } catch (e) {
+      accounting.acls.refused++;
+      accounting.refused++;
+      errors.push(e as Error);
+    }
+
+    // 2. Consumers (dm + dlv)
+    accounting.consumers.examined += 2;
+    accounting.examined += 2;
+    if (!aclSafe) {
+      // The key may still be live. Do not erase its consumers or invent absence.
+      accounting.consumers.refused += 2;
+      accounting.refused += 2;
+    } else for (const [stream, name] of [
+      [dmStream(opts.space), dmDurable(t.owner, t.actor, t.lifecycleUid)],
+      [dlvStream(opts.space), dlvDurable(t.owner, t.actor, t.lifecycleUid)],
+    ]) {
+      try {
+        const outcome = await deleteConsumerIdempotent(jsm, stream, name, () => {
+          accounting.consumers.acknowledged++;
+          accounting.acknowledged++;
+        });
+        if (outcome === "absent") {
+          accounting.consumers.absent++;
+          accounting.absent++;
+        } else if (outcome === "disappeared") {
+          accounting.consumers.disappeared++;
+          accounting.disappeared++;
+          accounting.consumers.deleted = null;
+          accounting.deleted = null;
+        } else {
+          throw new Error(`${stream}/${name} remains live after acknowledged DELETE`);
+        }
+      } catch (e) {
+        accounting.consumers.refused++;
+        accounting.refused++;
+        errors.push(e as Error);
+      }
+    }
+
+    // 3. Member rows
+    if (t.memberChannels.length > 0) {
+      if (!aclSafe) {
+        accounting.members.examined += t.memberChannels.length;
+        accounting.examined += t.memberChannels.length;
+        accounting.members.refused += t.memberChannels.length;
+        accounting.refused += t.memberChannels.length;
+      } else {
+        try {
+          const membersKv = await openMembersRegistry(nc, opts.space);
+          for (const ch of t.memberChannels) {
+            accounting.members.examined++;
+            accounting.examined++;
+            try {
+              const mKeyStr = memberKey(ch, principalKey(t.owner, t.actor).key, t.lifecycleUid);
+              const mRes = await purgeKvKeyWithAccounting(jsm, membersKv, membersBucket(opts.space), mKeyStr);
+              if (mRes.outcome === "deleted") {
+                accounting.members.deleted++;
+                if (accounting.deleted !== null) accounting.deleted++;
+              } else if (mRes.outcome === "disappeared") {
+                accounting.members.disappeared++;
+                accounting.disappeared++;
+              } else {
+                accounting.members.absent++;
+                accounting.absent++;
+              }
+            } catch (e) {
+              accounting.members.refused++;
+              accounting.refused++;
+              errors.push(e as Error);
+            }
+          }
+        } catch (e) {
+          for (let i = accounting.members.examined; i < t.memberChannels.length; i++) {
+            accounting.members.examined++;
+            accounting.examined++;
+            accounting.members.refused++;
+            accounting.refused++;
+          }
+          errors.push(e as Error);
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new DeprovisionError(
+        `deprovision refused on ${errors.length} resource(s): ${errors.map((e) => e.message).join("; ")}`,
+        accounting,
+        errors[0],
+      );
+    }
+
+    return accounting;
   } finally {
     await nc.drain();
   }
 }
 
-/** Delete a consumer, tolerating "already gone" (a 404 / not-found) as a no-op so deprovision stays
- *  idempotent — but re-throwing anything else (e.g. a permissions violation) so a mis-scoped cred fails
- *  loud rather than silently leaving the durable behind. */
-async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, name: string): Promise<void> {
+/** Purge one exact KV key with native revision fencing. A lost CAS never proves absence. */
+async function purgeKvKeyWithAccounting(
+  jsm: JetStreamManager,
+  kv: KV,
+  bucket: string,
+  key: string,
+): Promise<{ outcome: "deleted" | "absent" | "disappeared"; status: "won" | "raced-loss" | "already-tombstoned" | "missing" }> {
+  const stream = `KV_${bucket}`;
+  const subject = `$KV.${bucket}.${key}`;
+  const observe = async (): Promise<{ live: boolean; missing: boolean; seq?: number }> => {
+    try {
+      const msg = await jsm.direct.getMessage(stream, { last_by_subj: subject });
+      if (msg === null) return { live: false, missing: true };
+      const op = msg.header?.get("KV-Operation");
+      return { live: op !== "PURGE" && op !== "DEL", missing: false, seq: msg.seq };
+    } catch (e) {
+      if ([404, 10037].includes((e as { code?: number }).code ?? -1)) return { live: false, missing: true };
+      throw e;
+    }
+  };
+  const before = await observe();
+  if (before.missing) return { outcome: "absent", status: "missing" };
   try {
-    await jsm.consumers.delete(stream, name);
-  } catch (e) {
-    // Swallow ONLY "already gone" — a 404 code (the real NATS JS-API signal) or a codeless
-    // consumer/stream-not-found message. Anything else (a permissions violation, a broker error) is
-    // re-thrown so a mis-scoped cred fails loud. The message match is deliberately narrow (not a bare
-    // `/not found/i`) so an unrelated "…not found" error can't be mistaken for the idempotent case.
-    if ((e as { code?: number }).code !== 404 && !/(consumer|stream) not found/i.test((e as Error).message)) throw e;
+    await kv.purge(key, { previousSeq: before.seq });
+    return before.live ? { outcome: "deleted", status: "won" } : { outcome: "absent", status: "already-tombstoned" };
+  } catch (err: unknown) {
+    const m = (err as Error)?.message ?? "";
+    if ((err as { code?: number }).code === 10071 || m.includes("10071") || m.includes("wrong last sequence")) {
+      const after = await observe();
+      if (after.live) throw new Error(`CAS loss left a live ${bucket}/${key}`, { cause: err });
+      return { outcome: before.live ? "disappeared" : "absent", status: "raced-loss" };
+    }
+    throw err;
   }
+}
+
+/** Observe the exact consumer before and after a native DELETE. The boolean is an acknowledgment,
+ * not a unique-removal token; two simultaneous callers can both receive true. */
+async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, name: string, onAcknowledged: () => void): Promise<"disappeared" | "absent" | "still-live"> {
+  const present = async (): Promise<boolean> => {
+    try {
+      await jsm.consumers.info(stream, name);
+      return true;
+    } catch (e) {
+      if ((e as { code?: number }).code === 10014) return false;
+      throw e;
+    }
+  };
+  if (!(await present())) return "absent";
+  let acknowledged: boolean;
+  try {
+    acknowledged = await jsm.consumers.delete(stream, name);
+  } catch (e) {
+    // An overlapping deletion can return not-found after our pre-read. Native post-state settles
+    // disappearance, but cannot attribute that deletion or an acknowledgment to this caller.
+    if ((e as { code?: number }).code !== 10014) throw e;
+    if (!(await present())) return "disappeared";
+    throw e;
+  }
+  if (!acknowledged) throw new Error(`native DELETE did not acknowledge ${stream}/${name}`);
+  onAcknowledged();
+  return (await present()) ? "still-live" : "disappeared";
 }

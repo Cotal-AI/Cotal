@@ -78,9 +78,9 @@ export const SEAM_PROPOSED: Readonly<Record<string, string>> = Object.freeze({})
  * Every operator selector the emitter hands `unary`, and no other.
  *
  * `!` and `typeof` never reach here: neither can refuse, so both are emitted natively. `update` is
- * `UpdateExpression`'s operand read, and it carries the coercion refusal rather than the walker's
- * bare `Number(...)`. The walker's answer there (NaN for a record, 6 for `"5"++`) is the
- * silent-coercion class, filed as issue 646 and carried as a declared divergence with named cells.
+ * `UpdateExpression`'s operand read, and it carries the coercion refusal both engines share: the
+ * walker and the compiled engine each refuse a non-number update operand with the same L4018
+ * sentence (issue 646), and the transform's fast path still keeps a number native.
  * An op set is as much a contract as a member name, which is why it is written down here rather
  * than left implicit in the emitter.
  */

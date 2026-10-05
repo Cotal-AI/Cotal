@@ -18,7 +18,8 @@
  *
  * The exchange surface is LOCAL-V1, hardened: loopback bind only; `POST /exchange` requires the
  * per-start high-entropy capability (`Authorization: Bearer <cap>` — readable only from the 0600
- * discovery file, so same-user file ACL is the boundary); requests carrying an `Origin` header are
+ * discovery file, so same-user file ACL is the boundary, or from a hosted context's handle inside
+ * the host process); requests carrying an `Origin` header are
  * rejected (a browser page can reach loopback; it must not be able to drive the exchange); bodies
  * must be `application/json`; failed exchanges are rate-limited and logged. No CORS headers, ever.
  *
@@ -54,43 +55,52 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
-import { admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, mintCreds, mintPublicUserJwt, newIdentity, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, readSvcRecordLeader, reconcileEndpointGate, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, type ParsedArgs, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
-import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { Kvm, type KV } from "@nats-io/kv";
+import { contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, authorizeServeGrant, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, SERVICE_READY, writeServiceStatus, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
+import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
-import { deriveOwnerForIdpSubject } from "./derive.js";
+import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
+import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
-import { PUBLIC_EXCHANGE_VIEWS, type UserTokenView, type ValidatedUserToken } from "./token.js";
+import { PUBLIC_EXCHANGE_VIEWS, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
+import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
-import { calloutPermissions } from "./permissions.js";
-import { issueRemoteManagerAuthority } from "./manager-authority.js";
+import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
+import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
-import { reconstructRemoteManagerServeGrant } from "./manager-contract.js";
-import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, remoteManagerRegistrationProof, type AuthorityClient } from "./authority-client.js";
+import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface } from "./manager-contract.js";
+import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
-import { observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
 import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
-import { makeDeliveryAdminEvictor } from "./barrier-evict.js";
+import { makeDeliveryAdminEvictor, makeDeliveryAdminHolderEvictor } from "./barrier-evict.js";
 import { resumeAgentRetirement, runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
 import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
-import { openAuthAdminListener, type AuthAdminListener } from "./auth-admin.js";
+import type { DelegatedUserIntentIncarnation } from "./delegated-user-intent.js";
+import { joinOrStartRetirement, openAuthAdminListener, type AuthAdminListener, type RetirementFlights } from "./auth-admin.js";
+import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
   AGENT_BEARER_TTL_SEC,
   findInteractiveActor,
+  findManagedActor,
+  findActorUnified,
   ledgerAclResolver,
+  ledgerActorSourceIsLive,
   ledgerAuthorizeAgentExchange,
   ledgerAuthorizeConnect,
   ledgerAuthorizeGrant,
@@ -114,6 +124,15 @@ export const JWKS_MAX_AGE_SEC = 300;
 /** Loopback-only operator route used by `cotal actor grant/revoke` before rotating or deleting an interactive lifecycle. */
 export const INTERACTIVE_RETIRE_PATH = "/interactive-lifecycle/retire";
 
+/** Loopback-only host route that finishes a managed lifecycle's terminal retirement after the host
+ *  revoked its grant, when the remote manager that should have requested it is gone (#2070). */
+export const MANAGED_RETIRE_PATH = "/managed-lifecycle/retire";
+
+/** Loopback-only host route a platform calls BEFORE it enrolls or releases a managed agent for a
+ *  remote manager (#1972 §2.2). The platform owns the writers; this door owns the decision. It
+ *  derives the caller's scope from the local ledger and never accepts one from the caller. */
+export const VERIFY_ENROLLMENT_PATH = "/manager-service-authority/verify-enrollment";
+
 /** Failed-exchange rate limit: at most this many REFUSED exchanges per rolling minute; further
  *  attempts get 429 until the window drains. Successes are unthrottled (the CLI's normal path). */
 const FAILED_EXCHANGE_PER_MIN = 30;
@@ -130,6 +149,8 @@ const PUBLIC_FAILED_PER_MIN = 30; // per-PEER refused-exchange window (rolling m
 const PUBLIC_PEER_BUCKETS_MAX = 1024; // bounded LRU of per-peer failure buckets
 const PUBLIC_MAX_IN_FLIGHT = 64; // global concurrent-admission cap on the public listener
 const PUBLIC_DEADLINE_MS = 10_000; // hard wall-clock deadline per public request
+const HOST_FENCE_POLL_MS = 1_000; // how often awaitHostFence re-reads the host gate
+const OBSERVED_RUN_REQUEST_WINDOW_MS = 5 * 60_000; // how long an observed served resume or answer can still be forwarded
 
 type Values = Record<string, string | undefined>;
 
@@ -142,29 +163,78 @@ export interface AuthAuthorityPlane {
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
   selectManagerInstance: (owner: string, requested?: string) => Promise<string>;
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>;
+  /** The callout's issuance of an interactive user's `manager-caller` view (SPEC 13.15): one
+   *  issuer window that stages and releases evidence bound to the actor-ledger row and writes the
+   *  connection's accepted row, or renews the generation that row already names. */
+  issueUserCaller: UserCallerIssuer;
+  /** #2312: may this principal hold this one session? Leader-reads the redeemed `session.<id>` row
+   *  and the serving manager gate; returns the session claim (expiry from the row) or throws. */
+  verifySession: (
+    principal: { owner: string; actor: string; lifecycleUid?: string },
+    claim: { endpoint: string; sessionId: string; epoch: number; grantSig?: string },
+  ) => Promise<UserTokenSession>;
   retireInteractiveLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<{
     retired: boolean;
     lifecycleUid: string;
     notStarted?: boolean;
     alreadyRetired?: boolean;
   }>;
-  issueManagerServiceAuthority: (args: { owner: string; scope: string[]; request: RemoteManagerAuthorityRequest }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
-  maintainRemoteManager: (args: { owner: string; scope: string[]; request: RemoteManagerMaintenanceRequest }) => Promise<import("@cotal-ai/core").RemoteManagerMaintenanceResult>;
-  validateRetainedAgent: (args: {
-    owner: string;
-    scope: string[];
+  retireManagedLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
+  /** Activate a managed agent's lifecycle at the uid its grant carries, under the same minting
+   *  authority its first bearer exchange names, and mint nothing (SPEC 13.16). */
+  activateManagedLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<void>;
+  issueManagerServiceAuthority: (args: ManagerAuthorityHolder & { request: RemoteManagerAuthorityRequest }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
+  maintainRemoteManager: (args: ManagerAuthorityHolder & { request: RemoteManagerMaintenanceRequest }) => Promise<import("@cotal-ai/core").RemoteManagerMaintenanceResult>;
+  validateRetainedAgent: (args: ManagerAuthorityHolder & {
     request: RemoteRetainedAgentValidationRequest;
   }) => Promise<RemoteRetainedAgentValidationRequest>;
-  scanManagerGoalIndex: (args: {
+  /** Authorize one host-owned managed-agent enrollment (#1972). The plane reads the manager gate on
+   *  its own connection and verifies the proof against the data-account signing seed, so no secret
+   *  and no gate read ever crosses to the host platform that called the loopback door. */
+  verifyManagedAgentEnrollment: (args: {
     owner: string;
     scope: string[];
+    request: import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest;
+  }) => Promise<import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest>;
+  /** Authorize one host-owned managed-agent terminal release preparation (#1972 phase P0/P1). */
+  verifyManagedAgentPrepareRetirement: (args: {
+    owner: string;
+    scope: string[];
+    request: import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest;
+  }) => Promise<import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest>;
+  /** Decide one hosted runtime create or status read. The plane reads the manager actor's ledger
+   *  row, the gate, and the proof itself; it touches no provider and writes nothing. */
+  verifyManagedAgentRuntime: (args: {
+    owner: string;
+    request: import("@cotal-ai/core").RemoteManagedAgentRuntimeRequest;
+  }) => Promise<RemoteManagedAgentRuntimeDecision>;
+  scanManagerGoalIndex: (args: ManagerAuthorityHolder & {
     request: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest;
   }) => Promise<import("@cotal-ai/core").RemoteManagerGoalIndexScanResult>;
-  authorizeManagerAdmin: (args: {
-    owner: string;
-    scope: string[];
+  authorizeManagerAdmin: (args: ManagerAuthorityHolder & {
     request: RemoteManagerAdminAuthorizationRequest;
   }) => Promise<import("@cotal-ai/core").RemoteManagerAdminAuthorizationResult>;
+  /** First-run admission for one hosted run-start, asked by a registered signerless manager. The
+   *  plane authenticates the registration, resolves the caller's issued generation on its own issuer
+   *  connection with live sources, and creates the admission through a run-admitter credential
+   *  pinned to that one run. No ceiling, caller or profile is taken from the request. */
+  admitManagerRun: (args: ManagerAuthorityHolder & {
+    request: unknown;
+  }) => Promise<import("@cotal-ai/core").RemoteRunAdmissionResult>;
+  /** First-attempt/resume or operator issuance for one hosted run, asked by a registered signerless manager.
+   *  The plane authenticates the registration, derives coordinates from native admission/records/checkpoints,
+   *  and signs ONLY the returned fixed grant args. JWT responses contain no seeds. */
+  issueManagerRunAttempt: (args: ManagerAuthorityHolder & {
+    request: unknown;
+  }) => Promise<import("@cotal-ai/core").RemoteRunAttemptResult>;
+  /** Read-only view of one manager instance for the platform control door: whether its
+   *  `svc.manager` record is current, and its gate. It probes, freezes and writes nothing. */
+  observeManagerInstance: (instanceId: string) => Promise<{ registered: boolean; gate: EpGateState | null }>;
+  /** Register one instance of the platform host's endpoint through the §13.7 ceremony this plane
+   *  runs for `auth`, and return the process epoch that registration committed (SPEC 13.16). */
+  registerHostInstance: (host: NonNullable<PlatformControlInput["host"]>, instanceId: string) => Promise<number>;
+  /** The issuance gate of one instance of `endpoint`. It probes, freezes and writes nothing. */
+  observeEndpointGate: (endpoint: string, instanceId: string) => Promise<EpGateState | null>;
   /** Resolves with the state-3 copy when a mid-life scanner death FENCES the plane (SPEC 13.13):
    *  the plane is no longer whole, `authorizeConnect`/`mintConnectCredential` refuse from that
    *  moment, and the composition root must take the whole service DOWN loud (a fenced plane that
@@ -195,6 +265,57 @@ export function authorizeRemoteManagerRetirement(args: {
     throw new EpEnvelopeError("permission-denied", `manager-service retirement gate belongs to ${args.gate.principal}, not the server-derived serve principal ${servePrincipal}`);
   if (args.gate.processEpoch !== args.serveEpoch)
     throw new EpEnvelopeError("conflict", `manager-service retirement serve epoch ${args.serveEpoch} is stale; current is ${args.gate.processEpoch}`);
+}
+
+/** The §13.9 name authority in static mode: the plane holds the space signing seed, so it
+ *  self-authorizes exactly one endpoint name for exactly DEV_OWNER, as the manager does for
+ *  "manager". */
+function selfNameAuthority(endpoint: string): ServiceNameAuthority {
+  return { authorize: (name, owner) => ({ authorized: name === endpoint && owner === DEV_OWNER, revision: 0 }) };
+}
+
+/** Each contract artifact by its §13.7 content digest. */
+function contractArtifactReader(values: unknown[]): (digest: string) => unknown {
+  const store = new Map(values.map((v) => [contractDigest(v), v]));
+  return (digest) => store.get(digest);
+}
+
+/** The §13.7 registration ceremony for one instance of an endpoint this plane self-authorizes, on
+ *  a connection scoped to that instance. The contract artifacts are published before the
+ *  registration that advertises them. The issuance gate is provisioned open once, on first sight
+ *  (§13.1); on a restart it already exists and `registerServiceInstance` freezes and re-registers
+ *  it, which advances the process epoch and fences the predecessor. A first registration stays at
+ *  epoch 0. It returns the epoch this registration committed, and refuses when its confirming read
+ *  finds that a later registration of the same instance superseded it. */
+async function registerSelfAuthorizedInstance(nc: NatsConnection, args: {
+  space: string;
+  endpoint: string;
+  instanceId: string;
+  principal: string;
+  clusterDigest: string;
+  artifacts: unknown[];
+}): Promise<{ authKv: KV; recordsKv: KV; registrationRevision: number; processEpoch: number }> {
+  const { space, endpoint, instanceId } = args;
+  const authKv = await new Kvm(nc).open(epAuthBucket(space));
+  const recordsKv = await new Kvm(nc).open(recordsBucket(space));
+  const storeCtx = await contractStoreContext(nc, space);
+  for (const value of args.artifacts) await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
+  if ((await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe()) === null)
+    await provisionEndpointGateOpen(authKv, { endpoint, instanceId, principal: args.principal });
+  const barrier = endpointRegistrationBarrier(authKv, space, { endpoint, instanceId, opId: mintLifecycleUid() });
+  const spec = { endpoint, owner: DEV_OWNER, clusterDigests: [args.clusterDigest], protocol: { v: 1 as const } };
+  const { registrationRevision, processEpoch } = await registerServiceInstance(recordsKv, {
+    space, spec, instanceId, registrant: { owner: DEV_OWNER }, authority: selfNameAuthority(endpoint), barrier,
+    readClusterArtifact: contractArtifactReader(args.artifacts),
+  });
+  // A second start of the same instance can complete between this reopen and this read. Its epoch
+  // is not this start's to claim, and this start's epoch is already fenced. One that completes after
+  // the read leaves this start returning its own epoch, which the gate fences as it fences any
+  // restart's predecessor; no read can close that window.
+  const observed = await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe();
+  if (observed?.state !== "open" || observed.processEpoch !== processEpoch || observed.registrationRevision !== registrationRevision)
+    throw new EpEnvelopeError("conflict", `the issuance gate of ${endpoint}/${instanceId} is no longer open at this registration (process epoch ${processEpoch}, revision ${registrationRevision}); a later barrier fenced this start (SPEC 13.1)`);
+  return { authKv, recordsKv, registrationRevision, processEpoch };
 }
 
 /**
@@ -228,13 +349,74 @@ export async function openAuthAuthorityPlane(opts: {
    *  connections so a test can force the mid-life fencing path (a non-reconnecting connection has
    *  no natural failure to inject). Production compositions never set this. */
   probePlaneDeath?: (kill: { ledger: () => Promise<void>; records: () => Promise<void> }) => void;
+  /** The composition's local manager instance, read per selection. The plane never resolves a
+   *  workspace root itself: the CLI wrapper passes its root's persisted identity, and a hosted
+   *  context passes none, so only remote manager gates can be candidates. Absent means none. */
+  localManager?: () => ManagerInstanceIdentity | undefined;
+  /** Bounded trusted-host-only standing renewable credential TTL option for rehearsal (default 24h). */
+  standingRenewableTtlSeconds?: number;
 }): Promise<AuthAuthorityPlane> {
   const { server, space, dataAccount, log } = opts;
+  const standingTtl = opts.standingRenewableTtlSeconds ?? STANDING_RENEWABLE_TTL_SEC;
+  if (!Number.isSafeInteger(standingTtl) || standingTtl < 5 || standingTtl > STANDING_RENEWABLE_TTL_SEC) {
+    throw new Error(`standingRenewableTtlSeconds must be an integer between 5 and ${STANDING_RENEWABLE_TTL_SEC} seconds (got ${standingTtl})`);
+  }
   const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
   let registry;
   try {
     await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
     registry = await openLifecycleRegistry(writer.nc, space);
+  } catch (e) {
+    await writer.close();
+    throw e;
+  }
+  // #399 M2: register the auth plane itself as an ordinary `auth` service endpoint — the SAME
+  // §13.7 registration ceremony the manager runs (`manager.ts:6562-6690`), before the listener
+  // below serves a single request. The persisted instance id + serve nkey (under the plane's
+  // `dir`, hardened the way the manager's own instance identity is) so a restart re-registers the
+  // SAME instance: `registerServiceInstance` advances the process epoch on a re-registration and
+  // fences the predecessor; a first registration stays at epoch 0.
+  let authServeInstanceId: string;
+  let authServeGrant: EpServeGrant;
+  try {
+    const persisted = loadAuthInstanceIdentity(opts.dir, space);
+    const authIdentity = persisted ?? createAuthInstanceIdentity(opts.dir, space, {
+      instanceId: mintLifecycleUid(),
+      serveIdentity: newIdentity(),
+    });
+    const iid = authIdentity.instanceId;
+    const artifacts = authClusterArtifacts();
+    const values = [...authContractArtifactValues(), artifacts.document, artifacts.manifest];
+    const regClient = await openAuthorityClient({
+      server, space, dataAccount, label: `cotal:auth-registration:${space}`,
+      grants: (id) => registrationExecutorGrants(space, id, AUTH_SERVICE_ENDPOINT, iid),
+      log,
+    });
+    try {
+      const { authKv, recordsKv, registrationRevision, processEpoch } = await registerSelfAuthorizedInstance(regClient.nc, {
+        space, endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid,
+        principal: principalKey(DEV_OWNER, authIdentity.serveIdentity.id).key,
+        clusterDigest: artifacts.closureDigest, artifacts: values,
+      });
+      const readProcessEpoch = async (): Promise<number> => {
+        const g = await serveIssuanceGateKv(authKv, space, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid }).observe();
+        if (g === null) throw new Error(`no issuance gate for ${AUTH_SERVICE_ENDPOINT}/${iid}`);
+        return g.processEpoch;
+      };
+      const grant = await authorizeServeGrant(recordsKv, {
+        space, endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, epoch: processEpoch, holder: { owner: DEV_OWNER },
+        authority: selfNameAuthority(AUTH_SERVICE_ENDPOINT), readClusterArtifact: contractArtifactReader(values), readProcessEpoch,
+      });
+      await writeServiceStatus(recordsKv, {
+        endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, epoch: processEpoch,
+        status: { state: SERVICE_READY, epoch: processEpoch, observedSpecRevision: registrationRevision },
+        readProcessEpoch,
+      });
+      authServeInstanceId = iid;
+      authServeGrant = grant;
+    } finally {
+      await regClient.close();
+    }
   } catch (e) {
     await writer.close();
     throw e;
@@ -396,6 +578,9 @@ export async function openAuthAuthorityPlane(opts: {
     await writer.close();
     throw e;
   }
+  // ONE in-flight map for the rail and the loopback managed-retire door: both run the same
+  // `managedRetirementOpId(uid)` operation, and a process must never execute it twice at once.
+  const retirementFlights: RetirementFlights = new Map();
   // The AUTH CONTROL RAIL (#29 piece 3, SPEC 13.2 CONTROL_AUTH_ADMIN): serve the generic
   // "retire a lifecycle" op over a dedicated minimal listener credential. Every executing right
   // stays with the plane's own registry + retirement deps (the drain rides the ONE sealed records
@@ -403,7 +588,7 @@ export async function openAuthAuthorityPlane(opts: {
   // the FRESH space-manager-lease holder check) and dispatches.
   let authAdmin: AuthAdminListener | undefined;
   try {
-    authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, log });
+    authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, log });
   } catch (e) {
     closing = true;
     await recordsScanner.close();
@@ -417,9 +602,32 @@ export async function openAuthAuthorityPlane(opts: {
   }
   const fileArm = ledgerAuthorizeConnect(opts.dir);
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
-  const root = findCotalRoot();
+  const loadLocalManager = opts.localManager ?? (() => undefined);
+  // Standing renewal and a served resume or answer read the manager surface from the REGISTERED
+  // service spec at the gate's registration revision: spec (leader read) -> closure manifest -> root
+  // document, each verified against its content digest. The request never selects the surface.
+  const registeredManagerCluster = async (owner: string, instanceId: string, observed: { registrationRevision: number }): Promise<unknown> => {
+    const rec = await readSvcRecordLeader(recordsJsm, space, recordSpecKey(RECORD_KINDS.svc, ["manager", instanceId]));
+    if (!rec || "deleted" in rec || rec.revision !== observed.registrationRevision)
+      throw new EpEnvelopeError("failed-precondition", "found no manager service spec at the gate's registration revision");
+    const spec = parseServiceSpec(rec.value, { endpoint: "manager" });
+    if (spec.owner !== owner)
+      throw new EpEnvelopeError("permission-denied", "the manager service spec belongs to another owner");
+    const store = await contractStoreContext(remoteIssuer.nc, space);
+    const read = async (digest: string): Promise<unknown> => {
+      const bytes = await fetchContractArtifact(store, contractRefToHex(digest));
+      if (!bytes) throw new EpEnvelopeError("failed-precondition", `cannot read registered manager contract artifact ${digest}`);
+      return JSON.parse(new TextDecoder().decode(bytes));
+    };
+    for (const closure of spec.clusterDigests) {
+      const { root } = verifyClusterManifest(closure, await read(closure));
+      const document = await read(root);
+      if (verifyClusterRoot(root, document).urn === "ai.cotal.manager") return document;
+    }
+    throw new EpEnvelopeError("failed-precondition", "the manager service spec registers no manager cluster");
+  };
   const managerGate = async (owner: string, instanceId: string): Promise<"candidate" | "unknown" | "not open" | "not this owner's" | "not registered"> => {
-    const localManager = loadManagerInstanceIdentity(root, space);
+    const localManager = loadLocalManager();
     const gate = await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
     if (!gate) return "unknown";
     if (gate.state !== "open") return "not open";
@@ -448,7 +656,7 @@ export async function openAuthAuthorityPlane(opts: {
     const remoteInstances: string[] = [];
     const remoteLive: string[] = [];
     let localCandidate: string | undefined;
-    const localManager = loadManagerInstanceIdentity(root, space);
+    const localManager = loadLocalManager();
     for (const raw of await scanner.scanManagerGates()) {
       if (raw.op !== undefined) continue;
       const parts = raw.key.split(".");
@@ -481,6 +689,46 @@ export async function openAuthAuthorityPlane(opts: {
       throw new EpEnvelopeError("unavailable",
         `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
   };
+  // The issuer window's signer: the data account's signing key, the same `hostAuth` shape the run
+  // admission builds.
+  const issuerAuth = (): SpaceAuth => ({
+    space,
+    operator: { seed: "", jwt: "" },
+    account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
+    sys: { pub: "", jwt: "" },
+  });
+  // The source check the issuing host resolves with: an actor-ledger row is attested here, from the
+  // ledger this service owns; every other coordinate goes to core's check (SPEC 13.15).
+  const composedSourceIsLive = (session: IssuerSession) => (source: IssuedSourceRef): Promise<boolean> =>
+    parseActorLedgerSource(source) ? Promise.resolve(ledgerActorSourceIsLive(opts.dir)(source)) : session.sourceIsLive(source);
+  // A served resume or answer is issued only for a request this host saw its caller publish, only
+  // once, and only for what that request's envelope asked (SPEC 14.8): the forward's coordinates
+  // are the manager's word. The manager forwards from inside the handler serving the request, so an
+  // observation older than the window has no forward left to bind; the window also bounds the table.
+  const observedRunRequests = new Map<string, { expires: number; request: ObservedRunRequest }>();
+  for (const subject of servedRunRequestSubjects(space))
+    remoteIssuer.nc.subscribe(subject, {
+      callback: (_err, msg) => {
+        const now = Date.now();
+        for (const [seen, { expires }] of observedRunRequests) {
+          if (expires > now) break;
+          observedRunRequests.delete(seen);
+        }
+        const request = observedRunRequest(msg.subject, msg.data);
+        if (request === undefined) return;
+        // Re-inserting keeps the table in expiry order, which the prune above stops on.
+        observedRunRequests.delete(msg.subject);
+        observedRunRequests.set(msg.subject, { expires: now + OBSERVED_RUN_REQUEST_WINDOW_MS, request });
+      },
+    });
+  const takeObservedRunRequest = async (subject: string): Promise<ObservedRunRequest | undefined> => {
+    // The broker queued the request to this connection before the manager could read it, and a
+    // flush returns only after this connection has read everything its server queued before it.
+    await remoteIssuer.nc.flush();
+    const observed = observedRunRequests.get(subject);
+    observedRunRequests.delete(subject);
+    return observed !== undefined && observed.expires > Date.now() ? observed.request : undefined;
+  };
   return {
     authorizeConnect: async (t) => {
       refuseIfFenced();
@@ -496,6 +744,52 @@ export async function openAuthAuthorityPlane(opts: {
       refuseIfFenced();
       const verdict = await managerGate(owner, assertLifecycleToken(instanceId, "managerInstanceId"));
       if (verdict !== "candidate") throw new Error(`manager instance ${instanceId} is ${verdict} at the permission mint`);
+    },
+    issueUserCaller: async ({ t, connId, mint }) => {
+      refuseIfFenced();
+      const owner = assertDerivedOwnerToken(t.owner);
+      const actor = t.act.actor;
+      const uid = assertLifecycleToken(t.act.lifecycleUid ?? "", "lifecycleUid");
+      const acceptedToken = connectionAcceptedToken(connId);
+      return withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
+        // The row this connection's nonce names, read the way the client reads it.
+        const existing = await session.nc.request(acceptedReadGrant(space, acceptedToken), new Uint8Array(0), { timeout: 3000 });
+        const code = existing.headers?.code ?? 0;
+        const status = existing.headers?.get("Status") ?? "";
+        const missing = code === 404 || status.startsWith("404");
+        if (!missing && (code >= 400 || status !== ""))
+          throw new Error(`callout permissions: the accepted-row read for this connection failed (${code || status})`);
+        if (missing) {
+          const generation = mintGeneration();
+          const perms = mint({ generation, acceptedToken });
+          const ref = { space, owner, actor, uid, generation };
+          const prepared = await session.store.stage({
+            version: 1, ref, sources: [actorLedgerSource(space, owner, actor, uid)], permissions: importNativeSubjectPermissions(perms),
+          });
+          await session.store.release(prepared, async () => {});
+          await writeAcceptedRow(session.accepted, acceptedToken, ref);
+          return perms;
+        }
+        const row = JSON.parse(new TextDecoder().decode(existing.data)) as { version?: unknown; ref?: IssuedAuthorityRef };
+        const ref = row.ref;
+        if (row.version !== 1 || ref === undefined || ref.space !== space || ref.owner !== owner || ref.actor !== actor || ref.uid !== uid)
+          throw new Error("callout permissions: this connection's accepted row names another issued reference; reconnect under a new nonce");
+        const perms = mint({ generation: ref.generation, acceptedToken });
+        await session.store.confirm(ref, importNativeSubjectPermissions(perms));
+        return perms;
+      });
+    },
+    verifySession: async (principal, claim) => {
+      refuseIfFenced();
+      return verifySessionRedemption({
+        jsm: recordsJsm,
+        space,
+        managerGate: async (owner, instanceId) => {
+          const verdict = await managerGate(owner, assertLifecycleToken(instanceId, "serving.instanceId"));
+          const gate = await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
+          return { verdict, ...(gate ? { processEpoch: gate.processEpoch } : {}) };
+        },
+      }, principal, claim);
     },
     retireInteractiveLifecycle: async (args) => {
       refuseIfFenced();
@@ -525,12 +819,63 @@ export async function openAuthAuthorityPlane(opts: {
       }, retirement);
       return { retired: true, lifecycleUid };
     },
-    issueManagerServiceAuthority: async ({ owner, scope, request }) => {
+    retireManagedLifecycle: async (args) => {
       refuseIfFenced();
+      const owner = assertDerivedOwnerToken(args.owner);
+      const actor = assertValidOwnerToken(args.actor);
+      const lifecycleUid = assertLifecycleToken(args.lifecycleUid);
+      // The `prepareAgentRetirement` contract: the host revokes the managed grant FIRST. Only a
+      // grant still live AT THIS uid blocks; a row at another uid is a successor the head decides.
+      if (findManagedActor(opts.dir, owner, actor)?.lifecycleUid === lifecycleUid)
+        throw new EpEnvelopeError("conflict", `managed actor "${owner}/${actor}" is still granted at lifecycle ${lifecycleUid}; revoke the grant before retiring it`);
+      const head = await readLifecycleHeadForOperation(barrierReg, owner, actor);
+      if (head === undefined)
+        return { retired: false, lifecycleUid, notStarted: true };
+      if (head.mapping.lifecycleUid !== lifecycleUid) {
+        if (head.mapping.state === "retired")
+          return { retired: false, lifecycleUid, notStarted: true };
+        throw new EpEnvelopeError("conflict", `managed lifecycle retirement for "${owner}/${actor}" names ${lifecycleUid}, but the authority head is ${head.mapping.state} at ${head.mapping.lifecycleUid}`);
+      }
+      if (head.mapping.state === "retired")
+        return { retired: true, lifecycleUid, alreadyRetired: true };
+      // The rail's opId, not the interactive digest: a host door call and a late participant rail call
+      // create or resume ONE barrier operation and join ONE in-process flight.
+      const opId = managedRetirementOpId(lifecycleUid);
+      const flight = joinOrStartRetirement(retirementFlights, barrierReg, {
+        owner, actor, lifecycleUid, opId, frontierStreams: retirementFrontierStreams(space),
+      }, retirement);
+      if (flight === undefined)
+        throw new EpEnvelopeError("conflict", `managed retirement operation ${opId} is already in flight for different coordinates`);
+      await flight;
+      return { retired: true, lifecycleUid };
+    },
+    activateManagedLifecycle: async (args) => {
+      refuseIfFenced();
+      await activateLifecycleAtUid(registry, {
+        owner: assertDerivedOwnerToken(args.owner),
+        actor: assertValidOwnerToken(args.actor),
+        lifecycleUid: assertLifecycleToken(args.lifecycleUid),
+        managerInstance: `auth-service:${space}`,
+      });
+    },
+    issueManagerServiceAuthority: async (holder) => {
+      refuseIfFenced();
+      const { owner } = holder;
+      const observeManagerGate = async (instanceId: string) =>
+        (await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe()) ?? null;
       return issueRemoteManagerAuthority({
-        owner,
-        scope,
-        request,
+        ...holder,
+        authorizeRenewal: ({ owner: o, request: r }) => authorizeRemoteManagerRenewal({
+          request: r, owner: o, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed,
+          observeManagerGate,
+          observeRun: async (runId: string) => {
+            const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
+            return await observeHostedRunAttempt(recordsKv, "manager", runId, {
+              supervisorId: r.identities.supervisor.id,
+              instanceId: r.instanceId,
+            });
+          },
+        }),
         issue: async ({ actors, request: r }) => {
           const credential = async (
             key: keyof RemoteManagerAuthorityRequest["identities"],
@@ -544,6 +889,24 @@ export async function openAuthAuthorityPlane(opts: {
             { ...opts, principal: { owner, actor }, lifecycleUid: r.managerLifecycleUid },
           );
           const credentials: import("@cotal-ai/core").RemoteManagerAuthorityMaterial["credentials"] = {};
+          const siblingOn = (gate: ReturnType<typeof serveIssuanceGateKv>, observed: EpGateState) => async (key: "goalWriter" | "sessionLedger", profile: "goal-writer" | "session-ledger", actor: string) => {
+            const issued = await credential(key, profile, actor, profile === "goal-writer" ? { goalWriter: { endpoint: "manager" }, expiresInSeconds: standingTtl } : { expiresInSeconds: standingTtl });
+            await commitSiblingIssuance(gate, observed, {
+              credentialId: rawDigest(issued.jwt).replace("sha256:", "sha256-"),
+              credentialKey: r.identities[key].id,
+              holderPrincipal: `${owner}.${actor}`,
+              endpoint: "manager",
+              lifecycleUid: r.instanceId,
+              sourceChain: ["root"],
+              state: "active",
+              exp: issued.exp,
+              generation: observed.generation,
+              processEpoch: observed.processEpoch,
+              registrationRevision: observed.registrationRevision,
+              nameAuthorityRevision: observed.nameAuthorityRevision,
+            });
+            return issued;
+          };
           if (r.operation === "renew") {
             const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
             const observed = await gate.observe();
@@ -559,7 +922,7 @@ export async function openAuthAuthorityPlane(opts: {
           if (r.operation === "prepare" || r.operation === "renew") {
             credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
-              expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+              expiresInSeconds: standingTtl,
             });
             // The executor receives the exact instance-scoped registration/maintenance surface under
             // a separate nkey and bounded five-minute lifetime. The participant retains it for the
@@ -617,6 +980,78 @@ export async function openAuthAuthorityPlane(opts: {
             );
             return { credentials };
           }
+          if (r.operation === "renewStandingBundle") {
+            // authorizeRenewal fresh-checked account, owner, epoch and the current-registration proof
+            // (which binds the held nkeys and lifecycle). Re-observe so every row binds one revision.
+            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
+            const observed = await gate.observe();
+            if (!observed || observed.state !== "open" || observed.processEpoch !== r.processEpoch)
+              throw new EpEnvelopeError("conflict", "manager-service standing renewal gate moved before issuance");
+            credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
+              remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
+              expiresInSeconds: standingTtl,
+            });
+            credentials.executor = await credential("executor", "remote-manager", actors.executor, {
+              remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
+              expiresInSeconds: 5 * 60,
+            });
+            credentials.serve = await mintPublicUserJwt(
+              { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+              r.identities.serve.id,
+              "endpoint-serve",
+              {
+                principal: { owner, actor: actors.serve },
+                lifecycleUid: r.managerLifecycleUid,
+                expiresInSeconds: standingTtl,
+                endpointServe: remoteManagerServeGrantFromCluster(r, owner, await registeredManagerCluster(owner, r.instanceId, observed), observed),
+                serveIssuance: gate,
+              },
+            );
+            const sibling = siblingOn(gate, observed);
+            credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
+            credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
+            return { credentials };
+          }
+          if (r.operation === "renewRunDriver") {
+            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
+            const observed = await gate.observe();
+            if (!observed || observed.state !== "open" || observed.processEpoch !== r.processEpoch)
+              throw new EpEnvelopeError("conflict", "manager-service run renewal gate moved before issuance");
+
+            const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
+            const run = await observeHostedRunAttempt(recordsKv, "manager", r.run!.runId, {
+              supervisorId: r.identities.supervisor.id,
+              instanceId: r.instanceId,
+            });
+            if (!run || run.state !== "running" || run.instanceId !== r.instanceId ||
+                run.holder !== r.run!.holder || run.takeoverId !== r.run!.takeoverId ||
+                run.epoch !== r.run!.epoch || run.fencingToken !== r.run!.fencingToken)
+              throw new EpEnvelopeError("conflict", "manager-service run renewal authority moved before issuance");
+
+            const caller = runDriverCaller(r.run!.runId, owner);
+            const binding = {
+              endpoint: "manager",
+              runId: r.run!.runId,
+              takeoverId: r.run!.takeoverId,
+              instanceId: r.instanceId,
+              epoch: r.run!.epoch,
+              owner,
+            };
+            const auth = { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never;
+            credentials.runDriver = await mintPublicUserJwt(auth, r.run!.driverId, "run-driver", {
+              principal: { owner, actor: caller.actor },
+              lifecycleUid: r.managerLifecycleUid,
+              runDriver: binding,
+              expiresInSeconds: standingTtl,
+            });
+            credentials.runMediator = await mintPublicUserJwt(auth, r.run!.mediatorId, "run-mediator", {
+              principal: { owner, actor: caller.actor },
+              lifecycleUid: r.managerLifecycleUid,
+              runMediator: binding,
+              expiresInSeconds: standingTtl,
+            });
+            return { credentials };
+          }
           if (r.operation === "activate") {
             const expectedProof = remoteManagerRegistrationProof(owner, r);
             if (r.registrationProof !== expectedProof)
@@ -636,30 +1071,13 @@ export async function openAuthAuthorityPlane(opts: {
               {
                 principal: { owner, actor: actors.serve },
                 lifecycleUid: r.managerLifecycleUid,
-                expiresInSeconds: STANDING_RENEWABLE_TTL_SEC,
+                expiresInSeconds: standingTtl,
                 endpointServe: reconstructRemoteManagerServeGrant(r, owner, actors.serve, observed),
                 serveIssuance: gate,
               },
             );
             if (!observed) throw new EpEnvelopeError("failed-precondition", "manager-service activation found no issuance gate");
-            const sibling = async (key: "goalWriter" | "sessionLedger", profile: "goal-writer" | "session-ledger", actor: string) => {
-              const issued = await credential(key, profile, actor, profile === "goal-writer" ? { goalWriter: { endpoint: "manager" }, expiresInSeconds: STANDING_RENEWABLE_TTL_SEC } : { expiresInSeconds: STANDING_RENEWABLE_TTL_SEC });
-              await commitSiblingIssuance(gate, observed, {
-                credentialId: rawDigest(issued.jwt).replace("sha256:", "sha256-"),
-                credentialKey: r.identities[key].id,
-                holderPrincipal: `${owner}.${actor}`,
-                endpoint: "manager",
-                lifecycleUid: r.instanceId,
-                sourceChain: ["root"],
-                state: "active",
-                exp: issued.exp,
-                generation: observed.generation,
-                processEpoch: observed.processEpoch,
-                registrationRevision: observed.registrationRevision,
-                nameAuthorityRevision: observed.nameAuthorityRevision,
-              });
-              return issued;
-            };
+            const sibling = siblingOn(gate, observed);
             credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
             credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
             return {
@@ -674,14 +1092,13 @@ export async function openAuthAuthorityPlane(opts: {
         },
       });
     },
-    maintainRemoteManager: async ({ owner, scope, request }) => {
+    maintainRemoteManager: async (holder) => {
       refuseIfFenced();
+      const { owner } = holder;
       const gateKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
       const authorized = await authorizeRemoteManagerMaintenance({
-        owner,
-        scope,
+        ...holder,
         space,
-        request,
         scanner,
         observeManagerGate: async (instanceId) =>
           serveIssuanceGateKv(gateKv, space, { endpoint: "manager", instanceId }).observe(),
@@ -721,7 +1138,7 @@ export async function openAuthAuthorityPlane(opts: {
             const result = await principalOracle(principal);
             return { state: result.state, detail: result.note ?? `delivery-daemon principal sweep, sweepComplete=${String(result.sweepComplete)}` };
           },
-          evict: async (principal) => (await evict(principal)).verifiedGone,
+          evictHolders: makeDeliveryAdminHolderEvictor({ space, server, dataAccount, log }),
           log,
         });
       } finally {
@@ -729,9 +1146,21 @@ export async function openAuthAuthorityPlane(opts: {
       }
       return completeRemoteManagerMaintenance(authorized, owner, { reconciliation: report });
     },
-    validateRetainedAgent: async ({ owner, scope, request }) => {
+    validateRetainedAgent: async (holder) => {
       refuseIfFenced();
       return authorizeRemoteRetainedAgentValidation({
+        ...holder,
+        proofSecret: dataAccount.signingSeed,
+        space,
+        observeManagerGate: async (instanceId) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+      });
+    },
+    verifyManagedAgentEnrollment: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      return authorizeRemoteManagedAgentEnrollment({
         owner,
         scope,
         proofSecret: dataAccount.signingSeed,
@@ -743,10 +1172,41 @@ export async function openAuthAuthorityPlane(opts: {
         },
       });
     },
-    scanManagerGoalIndex: async ({ owner, scope, request }) => {
+    verifyManagedAgentPrepareRetirement: async ({ owner, scope, request }) => {
       refuseIfFenced();
+      return authorizeRemoteManagedAgentPrepareRetirement({
+        owner,
+        scope,
+        proofSecret: dataAccount.signingSeed,
+        space,
+        request,
+        observeManagerGate: async (instanceId) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+      });
+    },
+    verifyManagedAgentRuntime: async ({ owner, request }) => {
+      refuseIfFenced();
+      const args = {
+        owner,
+        dir: opts.dir,
+        proofSecret: dataAccount.signingSeed,
+        space,
+        observeManagerGate: async (instanceId: string) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+      };
+      return request.kind === "manager-managed-agent-runtime-status"
+        ? authorizeRemoteManagedAgentRuntimeStatus({ ...args, request })
+        : authorizeRemoteManagedAgentRuntimeCreate({ ...args, request });
+    },
+    scanManagerGoalIndex: async (holder) => {
+      refuseIfFenced();
+      const { owner } = holder;
       const authorized = await authorizeRemoteManagerGoalIndexScan({
-        owner, scope, proofSecret: dataAccount.signingSeed, space, request,
+        ...holder, proofSecret: dataAccount.signingSeed, space,
         observeManagerGate: async (instanceId) => {
           const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
           return gate.observe();
@@ -754,11 +1214,11 @@ export async function openAuthAuthorityPlane(opts: {
       });
       return completeRemoteManagerGoalIndexScan(authorized, owner, await recordsScanner.scanManagerGoalIndex(owner));
     },
-    authorizeManagerAdmin: async ({ owner, scope, request }) => {
+    authorizeManagerAdmin: async ({ request, ...holder }) => {
       refuseIfFenced();
       return authorizeRemoteManagerAdmin({
-        managerOwner: owner,
-        managerScope: scope,
+        managerOwner: holder.owner,
+        ...(holder.holder === "platform" ? { managerAssignment: holder.assignment } : { managerScope: holder.scope }),
         proofSecret: dataAccount.signingSeed,
         space,
         dir: opts.dir,
@@ -768,6 +1228,170 @@ export async function openAuthAuthorityPlane(opts: {
           return gate.observe();
         },
       });
+    },
+    admitManagerRun: async ({ request, ...holder }) => {
+      refuseIfFenced();
+      const { owner } = holder;
+      requireManagerAuthorityHolder(holder, String((request as { instanceId?: unknown })?.instanceId), 'manager run admission needs scope "supervise"; spawn/admin do not imply it');
+      const runId = parseRemoteRunAdmissionRequest(request).run.runId;
+      const hostAuth: SpaceAuth = {
+        space,
+        operator: { seed: "", jwt: "" },
+        account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
+        sys: { pub: "", jwt: "" },
+      };
+      return withIssuerSession({ servers: server, space, auth: hostAuth, tls: false }, async (session) => {
+        const admitterNc = await connect({
+          servers: server,
+          ...standaloneConnectOpts({
+            creds: await mintCreds(hostAuth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId }, expiresInSeconds: 60 }),
+            tls: false,
+          }),
+          maxReconnectAttempts: 0,
+        });
+        try {
+          return await admitRemoteRun({
+            request, owner, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
+            observeManagerGate: async (instanceId) => {
+              const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+              return gate.observe();
+            },
+            issued: session.store,
+            sourceIsLive: composedSourceIsLive(session),
+            admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
+          });
+        } finally {
+          await admitterNc.drain().catch(() => admitterNc.close());
+        }
+      });
+    },
+    issueManagerRunAttempt: async ({ request, ...holder }) => {
+      refuseIfFenced();
+      const { owner } = holder;
+      requireManagerAuthorityHolder(holder, String((request as { instanceId?: unknown })?.instanceId), 'manager run attempt needs scope "supervise"; spawn/admin do not imply it');
+      const req = parseRemoteRunAttemptRequest(request);
+      const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
+      const authorize = (session?: IssuerSession) => authorizeRemoteRunAttempt({
+        ...(session ? { issued: session.store, sourceIsLive: composedSourceIsLive(session) } : {}),
+        isLiveManagedActor: (owner, actor, lifecycleUid) => {
+          const row = findActorUnified(opts.dir, owner, actor);
+          return row?.kind === "managed-agent" && row.lifecycleUid === lifecycleUid;
+        },
+        takeObserved: takeObservedRunRequest,
+        registeredCommand: async (instanceId, registrationRevision, command) => {
+          const registered = remoteManagerSurface(await registeredManagerCluster(owner, instanceId, { registrationRevision }))[command];
+          if (registered === undefined) throw new EpEnvelopeError("failed-precondition", `the registered manager cluster declares no ${command}`);
+          return registered;
+        },
+        request,
+        owner,
+        space,
+        accountPublicKey: dataAccount.pub,
+        proofSecret: dataAccount.signingSeed,
+        endpoint: "manager",
+        observeManagerGate: async (instanceId) => {
+          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
+          return gate.observe();
+        },
+        readAdmission: (runId) => readRunAdmission(recordsJsm, space, "manager", runId),
+        readRunStatus: async (runId) => (await readRunRecord(recordsKv, "manager", runId))?.status?.value,
+        checkpointWaiting: async (token) => (await readCheckpointStatus(recordsKv, { endpoint: "manager", token }))?.value.state === "waiting",
+        checkpointSettled: async (token) => {
+          const status = (await readCheckpointStatus(recordsKv, { endpoint: "manager", token }))?.value;
+          return status?.state === "resumed" && status.settledAnswerId !== undefined;
+        },
+      });
+      // A served resume or answer resolves its caller's issuance, which needs one issuer window.
+      const grant = req.attempt?.served !== undefined || req.operator?.served !== undefined
+        ? await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, (session) => authorize(session))
+        : await authorize();
+      const hostAuth: SpaceAuth = {
+        space,
+        operator: { seed: "", jwt: "" },
+        account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
+        sys: { pub: "", jwt: "" },
+      };
+      if (grant.kind === "attempt") {
+        const caller = runDriverCaller(grant.driver.runDriver.runId, owner);
+        const driver = await mintPublicUserJwt(hostAuth, grant.driver.id, "run-driver", {
+          principal: { owner, actor: caller.actor },
+          lifecycleUid: req.managerLifecycleUid,
+          runDriver: grant.driver.runDriver,
+          expiresInSeconds: standingTtl,
+        });
+        const mediator = await mintPublicUserJwt(hostAuth, grant.mediator.id, "run-mediator", {
+          principal: { owner, actor: caller.actor },
+          lifecycleUid: req.managerLifecycleUid,
+          runMediator: grant.mediator.runMediator,
+          expiresInSeconds: standingTtl,
+        });
+        return {
+          v: 1 as const,
+          kind: "manager-run-attempt" as const,
+          space,
+          owner,
+          actor: req.actor,
+          instanceId: req.instanceId,
+          managerLifecycleUid: req.managerLifecycleUid,
+          requestId: req.requestId,
+          registrationProof: req.registrationProof,
+          accountPublicKey: req.accountPublicKey,
+          processEpoch: req.processEpoch,
+          identities: req.identities,
+          attempt: req.attempt,
+          credentials: { driver, mediator },
+        };
+      }
+      const operator = await mintPublicUserJwt(hostAuth, grant.operator.id, "run-operator", {
+        principal: { owner, actor: req.actor },
+        lifecycleUid: req.managerLifecycleUid,
+        runOperator: grant.operator.runOperator,
+        expiresInSeconds: 60,
+      });
+      return {
+        v: 1 as const,
+        kind: "manager-run-attempt" as const,
+        space,
+        owner,
+        actor: req.actor,
+        instanceId: req.instanceId,
+        managerLifecycleUid: req.managerLifecycleUid,
+        requestId: req.requestId,
+        registrationProof: req.registrationProof,
+        accountPublicKey: req.accountPublicKey,
+        processEpoch: req.processEpoch,
+        identities: req.identities,
+        operator: req.operator,
+        credentials: { operator },
+      };
+    },
+    observeManagerInstance: async (instanceId) => {
+      refuseIfFenced();
+      const gate = await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
+      const rec = await readSvcRecordLeader(recordsJsm, space, recordSpecKey(RECORD_KINDS.svc, ["manager", instanceId]));
+      return { registered: rec !== undefined && !("deleted" in rec), gate: gate ?? null };
+    },
+    registerHostInstance: async (host, instanceId) => {
+      refuseIfFenced();
+      const regClient = await openAuthorityClient({
+        server, space, dataAccount, label: `cotal:host-registration:${space}`,
+        grants: (id) => registrationExecutorGrants(space, id, host.endpoint, instanceId),
+        log,
+      });
+      try {
+        return (await registerSelfAuthorizedInstance(regClient.nc, {
+          space, endpoint: host.endpoint, instanceId,
+          // The host is minted no serve credential, so the gate binds a principal nothing holds.
+          principal: principalKey(DEV_OWNER, `host_serve_${instanceId}`).key,
+          clusterDigest: host.clusterDigest, artifacts: host.artifacts,
+        })).processEpoch;
+      } finally {
+        await regClient.close();
+      }
+    },
+    observeEndpointGate: async (endpoint, instanceId) => {
+      refuseIfFenced();
+      return await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint, instanceId }).observe();
     },
     fenced,
     close: async () => {
@@ -876,25 +1500,18 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   if (publicPort !== undefined && (!Number.isInteger(publicPort) || publicPort < 0 || publicPort > 65535))
     throw new Error(`auth-service: --exchange-public-port must be a port number, got "${publicPortRaw}"`);
   const publicUrlFlag = v["exchange-public-url"];
-  if (publicUrlFlag !== undefined && !/^https:\/\//.test(publicUrlFlag))
-    throw new Error(`auth-service: --exchange-public-url must be an https:// URL (TLS terminates at the reverse proxy), got "${publicUrlFlag}"`);
   const trustedProxy = v["exchange-trusted-proxy"] !== undefined;
   if (publicPort === undefined && (publicUrlFlag !== undefined || trustedProxy))
     throw new Error("auth-service: --exchange-public-url/--exchange-trusted-proxy require --exchange-public-port");
   const advertisedServer = v["advertised-server"];
   if (advertisedServer !== undefined && publicPort === undefined)
     throw new Error("auth-service: --advertised-server rides the public bundle - it requires --exchange-public-port");
-  if (advertisedServer !== undefined) {
-    const badAdvertised = checkAdvertisedServer(advertisedServer);
-    if (badAdvertised) throw new Error(badAdvertised);
-  }
   const agentProvisioningUrl = v["agent-provisioning-url"];
   if (agentProvisioningUrl !== undefined && publicPort === undefined)
     throw new Error("auth-service: --agent-provisioning-url rides the public bundle - it requires --exchange-public-port");
-  if (agentProvisioningUrl !== undefined) {
-    const badProvisioning = checkAgentProvisioningUrl(agentProvisioningUrl);
-    if (badProvisioning) throw new Error(badProvisioning);
-  }
+  const publicFace = publicPort === undefined ? undefined : { port: publicPort, url: publicUrlFlag, trustedProxy, advertisedServer, agentProvisioningUrl };
+  const badFace = publicFace && checkPublicFace(publicFace);
+  if (badFace) throw new Error(badFace);
 
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
@@ -918,6 +1535,201 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
       await new Promise((r) => setTimeout(r, hold));
     }
   }
+  const started = await startAuthContext({
+    space,
+    server,
+    port,
+    dir,
+    secrets,
+    hostedStore: store !== undefined,
+    ...(publicFace !== undefined ? { publicFace } : {}),
+    // The CLI composition's local manager is this workspace root's persisted instance, re-read per
+    // selection exactly as before. A hosted context passes no local manager at all.
+    localManager: () => loadManagerInstanceIdentity(root, space),
+  });
+
+  // All planes bound — NOW write the discovery file (its existence is the readiness signal).
+  const { url, publicUrl, cap } = started.handle;
+  saveAuthServiceInfo(dir, { url, pid: process.pid, cap, ...(publicUrl !== undefined ? { publicUrl } : {}) });
+  console.log(
+    `✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${url}${publicUrl !== undefined ? `, public exchange at ${publicUrl}` : ""}`,
+  );
+
+  // The CLI wrapper, not the context, owns process signals and exit codes.
+  const stop = async () => {
+    clearAuthServiceInfo(dir); // a dead service must not satisfy the next start's readiness poll
+    await started.handle.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void stop());
+  process.on("SIGTERM", () => void stop());
+
+  // A dropped broker connection is fatal-loud, not a zombie: the supervising `up`/`down` lifecycle
+  // owns restarts, and a callout that silently stopped answering would hang every user connect.
+  // A FENCED plane is equally fatal (SPEC 13.13): its scanners are no longer whole, every authority
+  // operation already refuses, and a daemon that stayed up would look healthy while a successor
+  // reclaims — down the whole service instead.
+  const ended = await started.ended;
+  clearAuthServiceInfo(dir);
+  if (ended.kind === "fenced") {
+    console.error(`✗ auth-service: ${ended.cause} - exiting`);
+    process.exit(1);
+  }
+  if (ended.cause !== undefined) {
+    console.error(`✗ auth-service: broker connection closed (${ended.cause}) - exiting`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+/** An embedded auth-service context: what `runAuthService` writes to `auth-service.json` (the
+ *  loopback URL, the public URL and the capability) plus the hosted lifecycle handle. */
+export interface AuthServiceHandle extends HostedServiceHandle {
+  readonly url: string;
+  readonly publicUrl?: string;
+  /** The per-start loopback capability. It alone authorizes the loopback host actions (lifecycle
+   *  retirement, managed-agent enrollment verification), so it stays in the authority process and
+   *  never reaches a control worker. */
+  readonly cap: string;
+  /** The platform control door (SPEC 13.1). Present only when `platformControl` was supplied to
+   *  {@link startAuthService}. In-process and typed: no route, no capability, and no signer or
+   *  capability in the result. */
+  platformControlAuthority?<R extends PlatformControlInnerRequest>(
+    request: PlatformControlAuthorityRequest<R>,
+  ): Promise<PlatformControlAuthorityResult<R>>;
+  /** The platform readiness read (SPEC 13.9). Present only with `platformControl`. Answers the
+   *  `status` of the currently assigned manager instance and refuses any other instance. It reads
+   *  over this context's own connection, whose grant is that instance's `describe` and `status`;
+   *  neither the connection nor its credential leaves the process. */
+  platformControlReadiness?(instanceId: string): Promise<EpAttributedReply>;
+  /** The manager gate the delegated user intent decisions read (SPEC 13.16). Present only with
+   *  `platformControl`. It reads over the context's own authority connection, so a host opens no
+   *  second data-account connection, and it returns the gate alone. */
+  observeManagerGate?: ObserveManagerGate;
+  /** The activation a delegated launch runs at its pinned uid before any row or durable, and its
+   *  compensation runs before the terminal barrier (SPEC 13.16). Present only with
+   *  `platformControl`. It refuses every state in which a retirement at that uid has begun, and
+   *  throws the activation saga's `EpEnvelopeError` unchanged. A retirement there has begun or
+   *  completed only when `lifecycleBlockedFrom(err)` is defined and its `headState` is `"retired"`
+   *  or its `blockedOp` is `"retirement"`. A gate frozen by a takeover or a registration is a
+   *  barrier in flight, and `already-exists`, `conflict`, `unavailable`, `not-found` and a
+   *  `permission-denied` without that detail are not retirement. */
+  activateManagedLifecycle?: AuthAuthorityPlane["activateManagedLifecycle"];
+  /** The host incarnation a delegated user intent pins as its executor (SPEC 13.16). Present only
+   *  with `platformControl.host`. It registers `instanceId` of the host endpoint in this context's
+   *  account through the §13.7 ceremony the auth plane runs for itself. The host calls it at every
+   *  start with its persisted instance id, before it admits or recovers any flight, so each start
+   *  fences its predecessor and advances the process epoch. It returns the epoch this registration
+   *  committed, a coordinate that a later start of the same instance can fence at any moment, even
+   *  before this call returns. A later start that registers before this registration's confirming
+   *  read of the gate makes it refuse with `conflict`; the host learns of every other through
+   *  `awaitHostFence`. */
+  registerHostIncarnation?(instanceId: string): Promise<DelegatedUserIntentIncarnation>;
+  /** A sweeper's point-in-time read of an executor's issuance gate on the host endpoint (SPEC
+   *  13.16). Present only with `platformControl.host`. Null is an absent gate. It reads over the
+   *  context's own authority connection and writes nothing. */
+  observeHostGate?(instanceId: string): Promise<EpGateState | null>;
+  /** Resolves with the gate once the issuance gate of `instanceId` on the host endpoint is no longer
+   *  open at `processEpoch`: a later registration moved the epoch, a barrier froze or retired it, or
+   *  it is absent (null). Present only with `platformControl.host`. The host arms it with the
+   *  incarnation `registerHostIncarnation` returned, before it admits or recovers any flight, and
+   *  stops serving when it resolves. It rejects once the context is no longer ready or a read
+   *  fails. */
+  awaitHostFence?(instanceId: string, processEpoch: number): Promise<EpGateState | null>;
+}
+
+/** The optional public exchange face: the CLI's `--exchange-public-*`, `--advertised-server` and
+ *  `--agent-provisioning-url` flags, or the hosted `publicFace` input. */
+export interface PublicFaceInput {
+  port: number;
+  url?: string;
+  trustedProxy: boolean;
+  advertisedServer?: string;
+  agentProvisioningUrl?: string;
+}
+
+/** The platform composition's input for the platform control door. */
+export interface PlatformControlInput {
+  /** The one current assignment for this account, or null. Read fresh on every door call. */
+  observeAssignment(space: string, accountPublicKey: string): Promise<PlatformControlAssignment | null>;
+  /** The host process that executes delegated user intents (SPEC 13.16): its reverse-DNS endpoint
+   *  name, the closure digest of the §13.7 cluster it registers, and every contract artifact that
+   *  closure needs. The auth plane self-authorizes this one name. Absent: the handle has no
+   *  `registerHostIncarnation` or `observeHostGate`. */
+  host?: { endpoint: string; clusterDigest: string; artifacts: unknown[] };
+}
+
+/** Start one account-scoped auth-service context. Every input is explicit: the state dir, the
+ *  injected store with its proved identity, the assigned data account and the broker. The context
+ *  installs no process signal handler, never exits the process, never selects a root from cwd,
+ *  and has no local manager. It returns only after the authority plane, the callout subscription
+ *  and the loopback listener are bound. A failed start releases what it acquired and throws. A
+ *  mid-life fence or broker loss makes only this context `unavailable` and closes its resources. */
+export async function startAuthService(inputs: HostedContextInputs & {
+  port?: number;
+  /** Absent: the handle has no `publicUrl` and nothing serves the discovery bundle. */
+  publicFace?: PublicFaceInput;
+  /** Present only in a platform composition. Absent: the handle has no platform control door. */
+  platformControl?: PlatformControlInput;
+  /** Trusted-host only. Forwarded unchanged to {@link openAuthAuthorityPlane}, which bounds it to
+   *  5..86400 seconds. Absent: the 24h default. No CLI flag and no request field sets it. */
+  standingRenewableTtlSeconds?: number;
+}): Promise<AuthServiceHandle> {
+  if (!inputs.context?.accountPublicKey || !inputs.context.lifecycleUid || !inputs.space || !inputs.servers || !inputs.stateDir)
+    throw new Error("auth-service: hosted context needs an account, lifecycle, space, server and stateDir");
+  if (inputs.store.identity === undefined)
+    throw new Error("auth-service: hosted SecretStore must declare a stable identity");
+  const actual = parseSecretStoreIdentity(inputs.store.identity);
+  if (actual.kind !== "injected" || !sameSecretStoreIdentity(actual, inputs.storeIdentity))
+    throw new Error("auth-service: hosted SecretStore identity does not match the assigned store identity");
+  const port = inputs.port ?? 0;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`auth-service: port must be a port number, got ${port}`);
+  if (inputs.platformControl !== undefined && typeof inputs.platformControl?.observeAssignment !== "function")
+    throw new Error("auth-service: platformControl requires an observeAssignment function");
+  const host = inputs.platformControl?.host;
+  if (host !== undefined) {
+    endpointToken(host.endpoint);
+    if (!host.endpoint.includes("."))
+      throw new Error(`auth-service: platformControl.host.endpoint "${host.endpoint}" must be a reverse-DNS name; single-label names are reserved (SPEC 13.2)`);
+  }
+  const badFace = inputs.publicFace && checkPublicFace(inputs.publicFace);
+  if (badFace) throw new Error(badFace);
+  const started = await startAuthContext({
+    space: inputs.space,
+    server: inputs.servers,
+    port,
+    dir: resolve(inputs.stateDir),
+    secrets: inputs.store,
+    hostedStore: true,
+    localManager: () => undefined,
+    context: inputs.context,
+    ...(inputs.publicFace !== undefined ? { publicFace: inputs.publicFace } : {}),
+    ...(inputs.platformControl !== undefined ? { platformControl: inputs.platformControl } : {}),
+    ...(inputs.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: inputs.standingRenewableTtlSeconds } : {}),
+  });
+  return started.handle;
+}
+
+type AuthContextEnd = { kind: "fenced"; cause: string } | { kind: "broker"; cause?: string };
+
+interface AuthContextOptions {
+  space: string;
+  server: string;
+  port: number;
+  dir: string;
+  secrets: SecretStore;
+  hostedStore: boolean;
+  publicFace?: PublicFaceInput;
+  localManager: () => ManagerInstanceIdentity | undefined;
+  /** Present only for a hosted context: the assigned account the loaded data account must match. */
+  context?: HostedContextKey;
+  /** Present only for a hosted platform composition: builds the platform control door. */
+  platformControl?: PlatformControlInput;
+  standingRenewableTtlSeconds?: number;
+}
+
+async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthServiceHandle; ended: Promise<AuthContextEnd> }> {
+  const { space, server, dir, secrets, port } = o;
   const keys = await loadServiceKeys(secrets, space);
   const callout = await loadCalloutAuth(secrets, space);
   const issuer = await loadIssuer(secrets, space);
@@ -932,11 +1744,13 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
       ...(idp ? [] : [`IdP pin under ${dir}`]),
     ];
     throw new Error(
-      `auth-service: user-auth material is missing (${missing.join(", ")}) - ${store ? "the hosted composition must provision the secret store before starting this daemon" : "enable it with `cotal up --user-auth --idp <url>`"}`,
+      `auth-service: user-auth material is missing (${missing.join(", ")}) - ${o.hostedStore ? "the hosted composition must provision the secret store before starting this daemon" : "enable it with `cotal up --user-auth --idp <url>`"}`,
     );
   }
   if (issuer.issuer !== spaceIssuer(space))
     throw new Error(`auth-service: issuer pin ${issuer.issuer} does not match space "${space}"`);
+  if (o.context !== undefined && keys.dataAccount.pub !== o.context.accountPublicKey)
+    throw new Error("auth-service: the store's data account does not match the assigned hosted context");
 
   if (!(await isReachable(server, { creds: callout.calloutCreds })))
     throw new Error(`auth-service: can't reach the broker at ${server} with the callout creds - is the mesh up (with the callout account preloaded)?`);
@@ -949,151 +1763,295 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     dir,
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     log: (l) => console.error(l),
+    localManager: o.localManager,
+    ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
   });
-
-  // ---- Plane 2: the callout, on its own callout-account connection ----
-  const nc: NatsConnection = await connect({
-    servers: server,
-    authenticator: credsAuthenticator(new TextEncoder().encode(callout.calloutCreds)),
-    name: `cotal:auth-service:${space}`,
-  });
-  startAuthCallout(nc as never, {
-    xkeySeed: callout.xkey.seed,
-    authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
-    dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
-    space,
-    token: { key: issuer.localKeySet(), issuer: issuer.issuer },
-    authorizeActor: plane.authorizeConnect,
-    permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller),
-    log: (l) => console.error(l),
-  });
-  // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
-  // usable user mesh while the SUB was still in flight would intermittently deny first connects.
-  await nc.flush();
-
-  // ---- Plane 1: the exchange + JWKS, loopback HTTP ----
-  const bridgeIdp = { issuer: idp.issuer, audience: idp.audience, key: pinnedJwksResolver(idp.jwksUri) };
-  const bridge = createIdpBridge({
-    idp: bridgeIdp,
-    space,
-    spaceSecret: ownerSecret,
-    issuer,
-    authorizeActor: ledgerAuthorizeGrant(dir),
-    mintConnectCredential: plane.mintConnectCredential,
-  });
-  const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
-  const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
-  const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
-  const ctx: HandlerCtx = {
-    issuer,
-    bridge,
-    bridgeIdp,
-    ownerSecret,
-    managerServiceAuthority: plane.issueManagerServiceAuthority,
-    maintainRemoteManager: plane.maintainRemoteManager,
-    validateRetainedAgent: plane.validateRetainedAgent,
-    scanManagerGoalIndex: plane.scanManagerGoalIndex,
-    authorizeManagerAdmin: plane.authorizeManagerAdmin,
-    secrets,
-    retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
-    cap,
-    failures,
-    badCaps,
-    space,
-    dir,
-    mintConnectCredential: plane.mintConnectCredential,
-    selectManagerInstance: plane.selectManagerInstance,
-  };
-  const http = createServer((req, res) => void handle(req, res, ctx));
-  await new Promise<void>((resolvePort, reject) => {
-    http.once("error", reject);
-    http.listen(port, "127.0.0.1", () => resolvePort());
-  });
-  const addr = http.address();
-  const boundPort = typeof addr === "object" && addr ? addr.port : port;
-  const url = `http://127.0.0.1:${boundPort}`;
-
-  // The optional PUBLIC face: its own server, its own closed route table, its own budgets — also
-  // loopback-bound (the operator's reverse proxy terminates TLS and forwards here).
+  let nc: NatsConnection | undefined;
+  let http: ReturnType<typeof createServer> | undefined;
   let publicHttp: ReturnType<typeof createServer> | undefined;
-  let publicUrl: string | undefined;
-  if (publicPort !== undefined) {
-    // The discovery bundle is GENERATED from the daemon's own recorded config — the pinned IdP,
-    // the flags, the callout material — so it cannot drift from what this process enforces.
-    // `endpoints.url` is finalized AFTER bind (the closure sees the mutation): with `--port 0`
-    // the pre-bind port would advertise an address nothing listens on.
-    const bundle = composeUserBundle({
-      space,
-      // What participants DIAL, not what the callout dials: the daemon reaches the broker on its
-      // loopback/LAN address (--server), which is meaningless off this machine. --advertised-server
-      // is the publicly dialable address (e.g. wss://… through the reverse proxy).
-      server: advertisedServer ?? server,
-      idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
-      sentinelCreds: callout.sentinelCreds,
-      ...(agentProvisioningUrl ? { agentProvisioningUrl } : {}),
-    });
-    publicHttp = createServer(makePublicHandler(ctx, makePublicPolicy(trustedProxy), bundle));
-    await new Promise<void>((resolvePort, reject) => {
-      publicHttp!.once("error", reject);
-      publicHttp!.listen(publicPort, "127.0.0.1", () => resolvePort());
-    });
-    const paddr = publicHttp.address();
-    const boundPublic = typeof paddr === "object" && paddr ? paddr.port : publicPort;
-    publicUrl = publicUrlFlag ?? `http://127.0.0.1:${boundPublic}`;
-    finalizeUserBundleEndpoint(bundle, publicUrl);
-  }
-
-  // All planes bound — NOW write the discovery file (its existence is the readiness signal).
-  saveAuthServiceInfo(dir, { url, pid: process.pid, cap, ...(publicUrl !== undefined ? { publicUrl } : {}) });
-  console.log(
-    `✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${url}${publicUrl !== undefined ? `, public exchange at ${publicUrl}` : ""}`,
-  );
-
-  const stop = async () => {
-    clearAuthServiceInfo(dir); // a dead service must not satisfy the next start's readiness poll
-    http.close();
-    publicHttp?.close();
-    await plane.close().catch(() => {});
-    await nc.close().catch(() => {});
-    process.exit(0);
+  // Stop admission, let accepted requests settle within the public request deadline, then cut
+  // whatever is still open so a stuck client cannot hold this context's close forever.
+  const closeServer = async (srv: ReturnType<typeof createServer> | undefined): Promise<void> => {
+    if (srv === undefined || !srv.listening) return;
+    const closed = new Promise<void>((r) => srv.close(() => r()));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([closed, new Promise<void>((r) => { timer = setTimeout(r, PUBLIC_DEADLINE_MS); })]);
+    clearTimeout(timer);
+    srv.closeAllConnections();
+    await closed;
   };
-  process.on("SIGINT", () => void stop());
-  process.on("SIGTERM", () => void stop());
+  try {
+    // ---- Plane 2: the callout, on its own callout-account connection ----
+    nc = await connect({
+      servers: server,
+      authenticator: credsAuthenticator(new TextEncoder().encode(callout.calloutCreds)),
+      name: `cotal:auth-service:${space}`,
+    });
+    startAuthCallout(nc as never, {
+      xkeySeed: callout.xkey.seed,
+      authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
+      dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+      space,
+      token: { key: issuer.localKeySet(), issuer: issuer.issuer },
+      authorizeActor: plane.authorizeConnect,
+      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller),
+      log: (l) => console.error(l),
+    });
+    // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
+    // usable user mesh while the SUB was still in flight would intermittently deny first connects.
+    await nc.flush();
 
-  // A dropped broker connection is fatal-loud, not a zombie: the supervising `up`/`down` lifecycle
-  // owns restarts, and a callout that silently stopped answering would hang every user connect.
-  // A FENCED plane is equally fatal (SPEC 13.13): its scanners are no longer whole, every authority
-  // operation already refuses, and a daemon that stayed up would look healthy while a successor
-  // reclaims — down the whole service instead.
-  await Promise.race([
-    (nc as { closed(): Promise<Error | void> }).closed().then((err) => {
-      clearAuthServiceInfo(dir);
-      if (err) {
-        console.error(`✗ auth-service: broker connection closed (${err.message}) - exiting`);
-        process.exit(1);
+    // ---- Plane 1: the exchange + JWKS, loopback HTTP ----
+    const bridgeIdp = { issuer: idp.issuer, audience: idp.audience, key: pinnedJwksResolver(idp.jwksUri) };
+    const bridge = createIdpBridge({
+      idp: bridgeIdp,
+      space,
+      spaceSecret: ownerSecret,
+      issuer,
+      authorizeActor: ledgerAuthorizeGrant(dir),
+      mintConnectCredential: plane.mintConnectCredential,
+    });
+    const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
+    const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
+    const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
+    const ctx: HandlerCtx = {
+      issuer,
+      bridge,
+      bridgeIdp,
+      ownerSecret,
+      managerServiceAuthority: plane.issueManagerServiceAuthority,
+      maintainRemoteManager: plane.maintainRemoteManager,
+      validateRetainedAgent: plane.validateRetainedAgent,
+      verifyManagedAgentEnrollment: plane.verifyManagedAgentEnrollment,
+      verifyManagedAgentPrepareRetirement: plane.verifyManagedAgentPrepareRetirement,
+      verifyManagedAgentRuntime: plane.verifyManagedAgentRuntime,
+      scanManagerGoalIndex: plane.scanManagerGoalIndex,
+      authorizeManagerAdmin: plane.authorizeManagerAdmin,
+      admitManagerRun: plane.admitManagerRun,
+      issueManagerRunAttempt: plane.issueManagerRunAttempt,
+      secrets,
+      retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
+      retireManagedLifecycle: plane.retireManagedLifecycle,
+      cap,
+      failures,
+      badCaps,
+      space,
+      dir,
+      mintConnectCredential: plane.mintConnectCredential,
+      selectManagerInstance: plane.selectManagerInstance,
+      verifySession: plane.verifySession,
+    };
+    const loopback = createServer((req, res) => void handle(req, res, ctx));
+    http = loopback;
+    await new Promise<void>((resolvePort, reject) => {
+      loopback.once("error", reject);
+      loopback.listen(port, "127.0.0.1", () => resolvePort());
+    });
+    const addr = loopback.address();
+    const boundPort = typeof addr === "object" && addr ? addr.port : port;
+    const url = `http://127.0.0.1:${boundPort}`;
+
+    // The optional PUBLIC face: its own server, its own closed route table, its own budgets — also
+    // loopback-bound (the operator's reverse proxy terminates TLS and forwards here).
+    let publicUrl: string | undefined;
+    if (o.publicFace !== undefined) {
+      const face = o.publicFace;
+      // The discovery bundle is GENERATED from the daemon's own recorded config — the pinned IdP,
+      // the flags, the callout material — so it cannot drift from what this process enforces.
+      // `endpoints.url` is finalized AFTER bind (the closure sees the mutation): with `--port 0`
+      // the pre-bind port would advertise an address nothing listens on.
+      const bundle = composeUserBundle({
+        space,
+        // What participants DIAL, not what the callout dials: the daemon reaches the broker on its
+        // loopback/LAN address (--server), which is meaningless off this machine. --advertised-server
+        // is the publicly dialable address (e.g. wss://… through the reverse proxy).
+        server: face.advertisedServer ?? server,
+        idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
+        sentinelCreds: callout.sentinelCreds,
+        ...(face.agentProvisioningUrl ? { agentProvisioningUrl: face.agentProvisioningUrl } : {}),
+      });
+      const pub = createServer(makePublicHandler(ctx, makePublicPolicy(face.trustedProxy), bundle));
+      publicHttp = pub;
+      await new Promise<void>((resolvePort, reject) => {
+        pub.once("error", reject);
+        pub.listen(face.port, "127.0.0.1", () => resolvePort());
+      });
+      const paddr = pub.address();
+      const boundPublic = typeof paddr === "object" && paddr ? paddr.port : face.port;
+      publicUrl = face.url ?? `http://127.0.0.1:${boundPublic}`;
+      finalizeUserBundleEndpoint(bundle, publicUrl);
+    }
+
+    const callNc = nc;
+    let state: HostedServiceState["state"] = "ready";
+    let cause: string | undefined;
+    let closePromise: Promise<void> | undefined;
+    // The readiness reader: one standing connection pinned to the assigned instance, replaced when
+    // the assignment names another instance.
+    let reader: { instanceId: string; caller: EpCaller; client: Promise<AuthorityClient> } | undefined;
+    const close = (): Promise<void> => {
+      if (closePromise !== undefined) return closePromise;
+      if (state === "ready") state = "draining";
+      closePromise = (async () => {
+        await Promise.all([closeServer(http), closeServer(publicHttp)]);
+        await reader?.client.then((c) => c.close(), () => {});
+        await plane.close().catch(() => {});
+        await callNc.close().catch(() => {});
+      })();
+      return closePromise;
+    };
+    const ended: Promise<AuthContextEnd> = Promise.race([
+      (callNc as { closed(): Promise<Error | void> }).closed().then((err): AuthContextEnd => ({ kind: "broker", ...(err ? { cause: err.message } : {}) })),
+      plane.fenced.then((reason): AuthContextEnd => ({ kind: "fenced", cause: reason })),
+    ]).then((end) => {
+      // A clean broker close after this context's own close() is the orderly end, not a failure.
+      if (end.kind === "fenced" || end.cause !== undefined || closePromise === undefined) {
+        state = "unavailable";
+        cause = end.kind === "fenced" ? end.cause : `broker connection closed${end.cause !== undefined ? ` (${end.cause})` : ""}`;
+        void close();
       }
-      process.exit(0);
-    }),
-    plane.fenced.then((reason) => {
-      clearAuthServiceInfo(dir);
-      console.error(`✗ auth-service: ${reason} - exiting`);
-      process.exit(1);
-    }),
-  ]);
+      return end;
+    });
+    const context = o.context ?? { accountPublicKey: keys.dataAccount.pub, lifecycleUid: "" };
+    const platformControl = o.platformControl;
+    const host = platformControl?.host;
+    // The human route's retained-validation composition, for the platform holder.
+    const validateRetainedForHolder = async (holder: Extract<ManagerAuthorityHolder, { holder: "platform" }>, request: RemoteRetainedAgentValidationRequest) => {
+      const retained = await plane.validateRetainedAgent({ ...holder, request });
+      const authority = await validateRetainedManagedAgent({
+        store: secrets,
+        dir,
+        space,
+        owner: retained.target.owner,
+        actor: retained.target.actor,
+        actorToken: retained.actorToken,
+        sentinelCreds: retained.sentinelCreds,
+      });
+      return completeRemoteRetainedAgentValidation(retained, holder.owner, authority);
+    };
+    const refuseUnlessReady = () => {
+      if (state !== "ready" || closePromise !== undefined)
+        throw new EpEnvelopeError("unavailable", "auth-service context is not ready");
+    };
+    const platformDeps = platformControl === undefined ? undefined : {
+      space,
+      accountPublicKey: keys.dataAccount.pub,
+      owner: platformControlOwner(ownerSecret, space, keys.dataAccount.pub),
+      observeAssignment: (s: string, a: string) => platformControl.observeAssignment(s, a),
+      observeManagerInstance: plane.observeManagerInstance,
+    };
+    const readStatus = (owner: string) => async (instanceId: string): Promise<EpAttributedReply> => {
+      refuseUnlessReady();
+      if (reader?.instanceId !== instanceId) {
+        void reader?.client.then((c) => c.close(), () => {});
+        const caller = { owner, actor: `manager_ready_${instanceId}`, uid: mintLifecycleUid() };
+        const client = openAuthorityClient({
+          server,
+          space,
+          dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
+          label: `cotal:platform-readiness:${space}`,
+          grants: (id) => platformReadinessGrants(space, id, caller, instanceId),
+          log: (l) => console.error(l),
+        });
+        // A failed open is not cached: the next read opens again.
+        client.catch(() => { if (reader?.client === client) reader = undefined; });
+        reader = { instanceId, caller, client };
+      }
+      const { caller, client } = reader;
+      const { nc: readerNc } = await client;
+      return await invokeCommand(readerNc, space, await resolveService(readerNc, space, "manager", caller, { instanceId }), "status", undefined, {});
+    };
+    const service: AuthServiceHandle = {
+      url,
+      ...(publicUrl !== undefined ? { publicUrl } : {}),
+      cap,
+      ...(platformDeps !== undefined ? {
+        platformControlAuthority: makePlatformControlAuthority({
+          ...platformDeps,
+          dispatch: (holder, request) => {
+            refuseUnlessReady();
+            switch (request.kind) {
+              case "manager-service-authority": return plane.issueManagerServiceAuthority({ ...holder, request });
+              case "manager-service-maintenance": return plane.maintainRemoteManager({ ...holder, request });
+              case "manager-goal-index-scan": return plane.scanManagerGoalIndex({ ...holder, request });
+              case "manager-admin-authorization": return plane.authorizeManagerAdmin({ ...holder, request });
+              case "manager-run-admission": return plane.admitManagerRun({ ...holder, request });
+              case "manager-run-attempt": return plane.issueManagerRunAttempt({ ...holder, request });
+              case "manager-retained-agent-validation": return validateRetainedForHolder(holder, request);
+            }
+          },
+        }),
+        platformControlReadiness: makePlatformControlReadiness({ ...platformDeps, readStatus: readStatus(platformDeps.owner) }),
+        observeManagerGate: async (instanceId: string) => {
+          refuseUnlessReady();
+          return (await plane.observeManagerInstance(instanceId)).gate;
+        },
+        activateManagedLifecycle: async (target) => {
+          refuseUnlessReady();
+          await plane.activateManagedLifecycle(target);
+        },
+      } : {}),
+      ...(host !== undefined ? {
+        registerHostIncarnation: async (instanceId: string) => {
+          refuseUnlessReady();
+          return { instanceId, processEpoch: await plane.registerHostInstance(host, instanceId) };
+        },
+        observeHostGate: async (instanceId: string) => {
+          refuseUnlessReady();
+          return await plane.observeEndpointGate(host.endpoint, instanceId);
+        },
+        awaitHostFence: async (instanceId: string, processEpoch: number) => {
+          if (!Number.isSafeInteger(processEpoch) || processEpoch < 0)
+            throw new EpEnvelopeError("bad-request", `processEpoch must be a non-negative integer, got ${String(processEpoch)}`);
+          // No runtime credential may create a consumer on the auth bucket (SPEC 13.9), so the
+          // gate cannot be watched; the hook polls its leader-served read.
+          for (;;) {
+            refuseUnlessReady();
+            const gate = await plane.observeEndpointGate(host.endpoint, instanceId);
+            if (gate?.state !== "open" || gate.processEpoch !== processEpoch) return gate;
+            await new Promise((r) => setTimeout(r, HOST_FENCE_POLL_MS));
+          }
+        },
+      } : {}),
+      readiness(): HostedServiceState {
+        if (state === "unavailable") return { state, context, cause: cause ?? "auth-service context is unavailable" };
+        return { state: closePromise === undefined ? "ready" : "draining", context };
+      },
+      drain: close,
+      close,
+    };
+    return { handle: service, ended };
+  } catch (e) {
+    // A failed start releases only what THIS context acquired, in reverse order.
+    await closeServer(publicHttp).catch(() => {});
+    await closeServer(http).catch(() => {});
+    await nc?.close().catch(() => {});
+    await plane.close().catch(() => {});
+    throw e;
+  }
 }
+
+/** The HTTP routes authenticate a human, so they only ever supply the human arm. */
+type HumanHolder = Extract<ManagerAuthorityHolder, { scope: string[] }>;
 
 interface HandlerCtx {
   issuer: UserTokenIssuer;
   bridge: IdpBridge;
   bridgeIdp: { issuer: string; audience: string; key: ReturnType<typeof pinnedJwksResolver> };
   ownerSecret: string | Uint8Array;
-  managerServiceAuthority: AuthAuthorityPlane["issueManagerServiceAuthority"];
-  maintainRemoteManager: AuthAuthorityPlane["maintainRemoteManager"];
-  validateRetainedAgent: AuthAuthorityPlane["validateRetainedAgent"];
-  scanManagerGoalIndex: AuthAuthorityPlane["scanManagerGoalIndex"];
-  authorizeManagerAdmin: AuthAuthorityPlane["authorizeManagerAdmin"];
+  managerServiceAuthority: (args: HumanHolder & { request: RemoteManagerAuthorityRequest }) => ReturnType<AuthAuthorityPlane["issueManagerServiceAuthority"]>;
+  maintainRemoteManager: (args: HumanHolder & { request: RemoteManagerMaintenanceRequest }) => ReturnType<AuthAuthorityPlane["maintainRemoteManager"]>;
+  validateRetainedAgent: (args: HumanHolder & { request: RemoteRetainedAgentValidationRequest }) => ReturnType<AuthAuthorityPlane["validateRetainedAgent"]>;
+  verifyManagedAgentEnrollment: AuthAuthorityPlane["verifyManagedAgentEnrollment"];
+  verifyManagedAgentPrepareRetirement: AuthAuthorityPlane["verifyManagedAgentPrepareRetirement"];
+  verifyManagedAgentRuntime: AuthAuthorityPlane["verifyManagedAgentRuntime"];
+  scanManagerGoalIndex: (args: HumanHolder & { request: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest }) => ReturnType<AuthAuthorityPlane["scanManagerGoalIndex"]>;
+  authorizeManagerAdmin: (args: HumanHolder & { request: RemoteManagerAdminAuthorizationRequest }) => ReturnType<AuthAuthorityPlane["authorizeManagerAdmin"]>;
+  admitManagerRun: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["admitManagerRun"]>;
+  issueManagerRunAttempt: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["issueManagerRunAttempt"]>;
   secrets: SecretStore;
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
+  retireManagedLifecycle: AuthAuthorityPlane["retireManagedLifecycle"];
   cap: string;
   failures: number[];
   badCaps: number[];
@@ -1104,11 +2062,12 @@ interface HandlerCtx {
    *  human arm stamps inside the bridge). */
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
   selectManagerInstance: AuthAuthorityPlane["selectManagerInstance"];
+  verifySession: AuthAuthorityPlane["verifySession"];
 }
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
-  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "scanManagerGoalIndex" | "authorizeManagerAdmin">,
+  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt">,
   owner: string,
   body: { request: unknown },
 ): Promise<unknown> {
@@ -1117,6 +2076,19 @@ export async function dispatchManagerAuthorityRequest(
   const request = body.request as { kind?: unknown; actor?: unknown };
   if (typeof request.actor !== "string") throw new Error("manager-service authority request requires an actor");
   const row = ledgerAuthorizeGrant(ctx.dir)(owner, request.actor);
+  // #1972: the managed-agent lifecycle operations mutate host storage (a database row, JetStream
+  // durables, a ledger grant), and stock holds none of that composition. A host platform intercepts
+  // these kinds on its own public route and calls the loopback verify-enrollment door for the
+  // decision. Refusing here keeps them from falling through to `managerServiceAuthority`, which
+  // would answer a manager-lifecycle phase for an agent-lifecycle request.
+  if (request.kind === "manager-managed-agent-enrollment" || request.kind === "manager-managed-agent-prepare-retirement")
+    throw new EpEnvelopeError("unimplemented", "managed agent enrollment and retirement preparation must be handled by host platform interception");
+  // The hosted runtime kinds read and drive host-owned intent state that stock does not hold.
+  if (request.kind === "manager-managed-agent-runtime-create" || request.kind === "manager-managed-agent-runtime-status")
+    throw new EpEnvelopeError("unimplemented", "managed agent runtime create and status must be handled by host platform interception");
+  // A delegated user intent creates and consumes a record in the host's intent store, which stock does not hold.
+  if (request.kind === "delegated-user-intent" || request.kind === "manager-delegated-user-intent-execution")
+    throw new EpEnvelopeError("unimplemented", "delegated user intent admission and execution must be handled by host platform interception");
   if (request.kind === "manager-retained-agent-validation") {
     const retained = await ctx.validateRetainedAgent({
       owner,
@@ -1138,6 +2110,10 @@ export async function dispatchManagerAuthorityRequest(
     return ctx.scanManagerGoalIndex({ owner, scope: row.scope ?? [], request: body.request as import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest });
   if (request.kind === "manager-admin-authorization")
     return ctx.authorizeManagerAdmin({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAdminAuthorizationRequest });
+  if (request.kind === "manager-run-admission")
+    return ctx.admitManagerRun({ owner, scope: row.scope ?? [], request: body.request });
+  if (request.kind === "manager-run-attempt")
+    return ctx.issueManagerRunAttempt({ owner, scope: row.scope ?? [], request: body.request });
   if (request.kind === "manager-service-maintenance")
     return ctx.maintainRemoteManager({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerMaintenanceRequest });
   return ctx.managerServiceAuthority({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAuthorityRequest });
@@ -1264,13 +2240,15 @@ const ROUTES = new Map<string, RouteHandler>([
   ["/exchange", (req, res, ctx) => handleExchange(req, res, ctx, LOOPBACK_POLICY)],
   ["/manager-service-authority", (req, res, ctx) => handleManagerServiceAuthority(req, res, ctx, LOOPBACK_POLICY)],
   [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
+  [MANAGED_RETIRE_PATH, handleManagedLifecycleRetirement],
+  [VERIFY_ENROLLMENT_PATH, handleVerifyManagedAgentEnrollment],
 ]);
 
 /** Route one HTTP request against the loopback route table. Errors are JSON `{ error }`. */
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
   try {
     const route = ROUTES.get(req.url ?? "");
-    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /interactive-lifecycle/retire" });
+    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /manager-service-authority/verify-enrollment, /interactive-lifecycle/retire, /managed-lifecycle/retire" });
     await route(req, res, ctx);
   } catch (e) {
     sendRequestError(res, e);
@@ -1308,6 +2286,142 @@ async function handleInteractiveLifecycleRetirement(
     return send(res, 409, { error: `interactive actor "${owner}/${actor}" is current at lifecycle ${row.lifecycleUid ?? "<missing>"}, not ${lifecycleUid}` });
   const result = await ctx.retireInteractiveLifecycle({ owner, actor, lifecycleUid });
   return send(res, 200, result);
+}
+
+/** The host's terminal step for a managed lifecycle whose remote manager is gone: the same request
+ *  guards as the interactive door, but it requires the managed grant to be REVOKED first (the
+ *  `prepareAgentRetirement` contract) and runs the rail's `managedRetirementOpId(uid)` operation. */
+async function handleManagedLifecycleRetirement(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: HandlerCtx,
+): Promise<void> {
+  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json" });
+  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
+    return send(res, 401, { error: "missing/invalid exchange capability - managed lifecycle retirement is a loopback host action" });
+  const body = await readJsonBody(req);
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return send(res, 400, { error: "managed lifecycle retirement needs { owner, actor, lifecycleUid }" });
+  for (const key of Object.keys(body))
+    if (!INTERACTIVE_RETIRE_KEYS.has(key))
+      return send(res, 400, { error: `managed lifecycle retirement carries the unknown field "${key}"` });
+  const raw = body as { owner?: unknown; actor?: unknown; lifecycleUid?: unknown };
+  if (typeof raw.owner !== "string" || typeof raw.actor !== "string" || typeof raw.lifecycleUid !== "string")
+    return send(res, 400, { error: "managed lifecycle retirement needs string { owner, actor, lifecycleUid }" });
+  const owner = assertDerivedOwnerToken(raw.owner);
+  const actor = assertValidOwnerToken(raw.actor);
+  const lifecycleUid = assertLifecycleToken(raw.lifecycleUid);
+  try {
+    return send(res, 200, await ctx.retireManagedLifecycle({ owner, actor, lifecycleUid }));
+  } catch (e) {
+    if (e instanceof EpEnvelopeError && e.code === "conflict") return send(res, 409, { error: e.message });
+    throw e;
+  }
+}
+
+/** The envelope-error to HTTP mapping this door answers with. A code the catalog grows but this
+ *  table does not name becomes 403 rather than a 500: a refusal is a refusal, and a door that
+ *  answered 500 to a new permission code would read as a host fault to the platform calling it. */
+const VERIFY_ENROLLMENT_STATUS: Partial<Record<string, number>> = {
+  "unauthenticated": 401,
+  "permission-denied": 403,
+  "conflict": 409,
+  "failed-precondition": 412,
+  "bad-request": 400,
+};
+
+const VERIFY_ENROLLMENT_KEYS = new Set(["owner", "request"]);
+
+/**
+ * #1972 §2.2 item 3: the host platform's decision door for a remote manager's managed-agent
+ * enrollment or terminal-release preparation.
+ *
+ * The platform that owns the database, the durables, and the ledger terminates its own public
+ * route, authenticates the human there, and POSTs the resulting owner token plus the participant's
+ * verbatim request here. This process answers because it is the only one holding the manager gate
+ * connection and the data-account signing seed: the proof check and the gate read happen inside it,
+ * and no secret crosses back.
+ *
+ * The caller supplies an OWNER and a REQUEST, and nothing else. The caller's scope is derived from
+ * this machine's ledger (`ledgerAuthorizeGrant`), never accepted from the body — a platform bug that
+ * forwarded a participant-supplied scope array could otherwise hand `supervise` to any caller.
+ */
+async function handleVerifyManagedAgentEnrollment(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: HandlerCtx,
+): Promise<void> {
+  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json" });
+  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
+    return send(res, 401, { error: "missing/invalid exchange capability - managed agent enrollment verification is a loopback host action" });
+  const body = await readJsonBody(req);
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return send(res, 400, { error: "managed agent enrollment verification needs { owner, request }" });
+  for (const key of Object.keys(body))
+    if (!VERIFY_ENROLLMENT_KEYS.has(key))
+      return send(res, 400, { error: `managed agent enrollment verification carries the unknown field "${key}"` });
+  const raw = body as { owner?: unknown; request?: unknown };
+  if (typeof raw.owner !== "string" || raw.request === null || typeof raw.request !== "object" || Array.isArray(raw.request))
+    return send(res, 400, { error: "managed agent enrollment verification needs a string owner and an object request" });
+  const request = raw.request as { kind?: unknown; actor?: unknown };
+  const runtimeKind = request.kind === "manager-managed-agent-runtime-create" || request.kind === "manager-managed-agent-runtime-status";
+  if (request.kind !== "manager-managed-agent-enrollment" && request.kind !== "manager-managed-agent-prepare-retirement" && !runtimeKind)
+    return send(res, 400, { error: 'managed agent enrollment verification serves only kind "manager-managed-agent-enrollment", "manager-managed-agent-prepare-retirement", "manager-managed-agent-runtime-create" or "manager-managed-agent-runtime-status"' });
+  if (typeof request.actor !== "string")
+    return send(res, 400, { error: "managed agent enrollment verification request requires an actor" });
+  try {
+    const owner = assertDerivedOwnerToken(raw.owner);
+    // The SCOPE DERIVATION, internal by construction: the interactive row for this exact
+    // (owner, actor) on this machine's ledger decides, so `supervise` cannot be asserted by the
+    // caller. An ungranted actor throws the ledger's own operator-exact sentence.
+    const row = ledgerAuthorizeGrant(ctx.dir)(owner, request.actor);
+    const scope = row.scope ?? [];
+    if (runtimeKind) {
+      // The plane re-reads the same ledger row itself: the runtime decision never takes a scope.
+      const decision = await ctx.verifyManagedAgentRuntime({
+        owner,
+        request: raw.request as import("@cotal-ai/core").RemoteManagedAgentRuntimeRequest,
+      });
+      return send(res, 200, { authorized: true, ...decision });
+    }
+    if (request.kind === "manager-managed-agent-enrollment") {
+      const verified = await ctx.verifyManagedAgentEnrollment({
+        owner,
+        scope,
+        request: raw.request as import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest,
+      });
+      return send(res, 200, {
+        authorized: true,
+        owner,
+        actor: verified.target.actor,
+        instanceId: verified.instanceId,
+        serveEpoch: verified.serveEpoch,
+      });
+    }
+    const verified = await ctx.verifyManagedAgentPrepareRetirement({
+      owner,
+      scope,
+      request: raw.request as import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest,
+    });
+    return send(res, 200, {
+      authorized: true,
+      owner,
+      actor: verified.target.actor,
+      instanceId: verified.instanceId,
+      serveEpoch: verified.serveEpoch,
+    });
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`auth-service: refused managed agent enrollment verification: ${reason}`);
+    const status = e instanceof EpEnvelopeError ? (VERIFY_ENROLLMENT_STATUS[e.code] ?? 403) : 403;
+    return send(res, status, { error: reason });
+  }
 }
 
 /** The exchange body, shared by every face; `policy` says how this face proves and attributes the
@@ -1350,7 +2464,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const peer = policy.peerKey(req);
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
-  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId } = body as {
+  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant } = body as {
     idpToken?: unknown;
     actor?: unknown;
     actorToken?: unknown;
@@ -1358,7 +2472,10 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     ttlSec?: unknown;
     view?: unknown;
     managerInstanceId?: unknown;
+    sessionGrant?: unknown;
   };
+  if ((view === "session-caller") !== (sessionGrant !== undefined))
+    return send(res, 400, { error: 'view "session-caller" and sessionGrant come together or not at all' });
   if (ttlSec !== undefined && typeof ttlSec !== "number") return send(res, 400, { error: "ttlSec must be a number" });
   if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
   if (managerInstanceId !== undefined && typeof managerInstanceId !== "string") return send(res, 400, { error: "managerInstanceId must be a string when present" });
@@ -1435,11 +2552,16 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
           managerInstanceId as string | undefined,
         )
       : undefined;
+    // #2312: a session-caller bearer is signed only once the identity plane has decided that THIS
+    // principal holds THAT redeemed session. The bridge's `verifySession` hook runs the decision on
+    // the principal it derived, before signing; the callout re-runs it at the mint.
+    const session = view === "session-caller" ? grantCoordinates(sessionGrant) : undefined;
     const r = await ctx.bridge.exchange(idpToken, {
       actor,
       ttlSec,
       view: view as UserTokenView | undefined,
       managerInstanceId: selectedManagerInstanceId,
+      ...(session ? { verifySession: (p: { owner: string; actor: string; lifecycleUid: string }) => ctx.verifySession(p, session) } : {}),
     });
     return send(res, 200, r);
   } catch (e) {
@@ -1456,7 +2578,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
 
 /** Loopback/operator-only typed manager authority exchange. The public route table never includes
  * this path, and the loopback capability is checked here in addition to the route separation. */
-async function handleManagerServiceAuthority(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
+export async function handleManagerServiceAuthority(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
   if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
@@ -1492,6 +2614,17 @@ export function checkAdvertisedServer(raw: string): string | undefined {
   if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
     return `auth-service: --advertised-server must be a broker URL (nats://, tls://, ws:// or wss://), got ${u.protocol}//`;
   return undefined;
+}
+
+/** The public face's value rules, one set for the CLI flags and the hosted input. A public face
+ *  without a port has no listener for the rest to apply to. */
+function checkPublicFace(face: PublicFaceInput): string | undefined {
+  if (!Number.isInteger(face.port) || face.port < 0 || face.port > 65535)
+    return `auth-service: a public face needs a port number, got ${face.port}`;
+  if (face.url !== undefined && !/^https:\/\//.test(face.url))
+    return `auth-service: --exchange-public-url must be an https:// URL (TLS terminates at the reverse proxy), got "${face.url}"`;
+  return (face.advertisedServer !== undefined ? checkAdvertisedServer(face.advertisedServer) : undefined)
+    ?? (face.agentProvisioningUrl !== undefined ? checkAgentProvisioningUrl(face.agentProvisioningUrl) : undefined);
 }
 
 /** Compose the user bundle the public face serves at /.well-known/cotal-mesh. ONE producer,

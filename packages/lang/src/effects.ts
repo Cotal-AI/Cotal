@@ -119,6 +119,9 @@ export interface SpawnRequest {
   readonly supervise?: Readonly<Record<string, unknown>>;
   /** What a fork does with this agent: spawn a fresh one, or reuse the original. Default respawn. */
   readonly onFork?: "respawn" | "adopt";
+  /** `false` starts the agent without its event plane, for a connector that publishes none.
+   *  Omitted, the host's default applies. */
+  readonly events?: boolean;
 }
 
 export interface TurnRequest {
@@ -329,9 +332,9 @@ export class EffectRefused extends Error {
  *
  * It travels like {@link RunReleased}: a workflow's `try` cannot catch it and `finally` does not
  * run on the way out (§9.2). The program is not at fault and has not failed; the run is exactly
- * where its journal says it is, holding one `refused` entry, and the repair is a capable host
- * rather than anything the program could do with one more effect. Like {@link RunReleased}, the
- * language raises it and never accepts it from outside.
+ * where its journal says it is, holding one `refused` entry or one held step still `pending`, and
+ * the repair is a capable host rather than anything the program could do with one more effect.
+ * Like {@link RunReleased}, the language raises it and never accepts it from outside.
  */
 export class RunHeld extends Error {
   readonly code = "L5025";
@@ -340,11 +343,20 @@ export class RunHeld extends Error {
     readonly step: string,
     /** The refusal's own message. Named `reason` so it crosses the worker boundary like {@link RunReleased.reason}. */
     readonly reason: string,
+    /**
+     * The refused effect was an at-most-once step's hold (spec/cotal-lang.md §7.8). That step was
+     * dispatched, so its entry stays `pending`, and saying it was never attempted would invite the
+     * second write the hold exists to prevent.
+     */
+    readonly pending = false,
   ) {
     super(
       `L5025 Effect refused; run held for a capable host\n\n  step  ${step}\n\n${reason}\n\n` +
-        `The step was never attempted: its entry is settled \`refused\`, and a resume on a host ` +
-        `that can perform it picks the run up exactly here.`,
+        (pending
+          ? `The step's outcome is unknown: it was dispatched and its entry stays \`pending\`, and a resume ` +
+            `on a host that can open a checkpoint reopens its hold without dispatching it again.`
+          : `The step was never attempted: its entry is settled \`refused\`, and a resume on a host ` +
+            `that can perform it picks the run up exactly here.`),
     );
     this.name = "RunHeld";
   }
@@ -417,7 +429,8 @@ export interface EffectContext {
    * Present when a previous attempt at this step started but never settled, carrying whatever it
    * passed to {@link EffectContext.bind}. The handler must RE-BIND to that resource and await its
    * terminal, not issue a fresh action: the goal already exists, the checkpoint token is already
-   * minted, and issuing a second one is how a crash turns into a duplicate side effect.
+   * minted, and issuing a second one is how a crash turns into a duplicate side effect. A step
+   * inside `once` is never re-dispatched with it: it holds (spec/cotal-lang.md §7.8).
    */
   readonly resume?: Readonly<Record<string, unknown>>;
   /**
@@ -431,6 +444,19 @@ export interface EffectContext {
   bind(external: Readonly<Record<string, unknown>>): Promise<void>;
 }
 
+/**
+ * An effect method that throws settles its journal entry `failed`, and a resume replays that
+ * failure without calling the handler again, no matter how healthy the handler is on the next
+ * attempt. For work that is in flight, call {@link EffectContext.bind} with the facts that
+ * identify it before awaiting the external result, and leave the entry pending if the host is
+ * interrupted there: a resume then calls the handler with those facts in {@link
+ * EffectContext.resume} so it can reattach rather than issue a second action. A bind followed
+ * by a throw is still a throw: the entry settles `failed` with the external attached, and a
+ * resume replays it, so report what happened rather than throwing it, the way
+ * {@link applyCheckpointPolicy} does for an expiry. Throw {@link EffectRefused} when the host
+ * has no substrate for the step at all, so a resume performs it live instead of replaying a
+ * failure for work that never happened.
+ */
 export interface EffectHandler {
   /**
    * The host clock, which the interpreter uses to stamp `startedAt` and `endedAt` on journal
@@ -463,4 +489,13 @@ export interface EffectHandler {
   monitor(req: MonitorRequest, ctx: EffectContext): Promise<null>;
   openConclave(req: ConclaveRequest, ctx: EffectContext): Promise<ChannelHandleValue>;
   closeConclave(req: ConclaveRequest, ctx: EffectContext): Promise<null>;
+  /**
+   * Optional. A host that runs the program in another realm (the worker bridge) calls this once
+   * with a function that resolves when the program has reacted to everything the handler has
+   * answered so far. A handler that schedules its own deliveries, as the simulator does, awaits
+   * it before each one; any other handler can leave it out. It returns a release the host calls
+   * when that realm is gone, or never started, after which the handler paces itself again. A
+   * handler that wraps another forwards it.
+   */
+  useQuiescence?(settled: () => Promise<void>): () => void;
 }

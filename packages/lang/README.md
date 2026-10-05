@@ -37,7 +37,7 @@ log(r.status)
 
 validate(source);                       // throws LangErrors, every refusal with code, cause, fix
 
-const script = { turns: { build: { status: "done", at: 1 } } };
+const script = { turns: { build: { status: "done" } } };
 const plan = await dryRun(source, script);   // what it would do, with no agent touched
 
 const first = await run(source, { runId: "r-1", handler: new SimHandler(script) });
@@ -52,7 +52,10 @@ const again = await run(source, {
 ```
 
 `run` performs effects through the `EffectHandler` you pass and records each in the `Journal`;
-hand the same journal and pins back and the same program resumes. `SimHandler` scripts turns, asks,
+hand the same journal and pins back and the same program resumes. A handler binds in-flight
+external work before awaiting it; a thrown failure replays on resume, while a pending bound
+effect can reattach. A pending step inside `once` is never dispatched again: it opens a hold under
+`holdRequestId` of its recorded request id, and the answer becomes its result. `SimHandler` scripts turns, asks,
 checkpoints and events and refuses anything unscripted (L6001), so a simulation cannot silently
 invent an answer. Time is discrete-event simulated on one virtual clock: timed effects park at
 their wake times and are delivered in wake order, so concurrent branches accumulate their own
@@ -68,3 +71,19 @@ interpret, fuel, dryrun, examples, options, notify-fact, migrate, semantics (the
 against node) and surface (the syntax table, the library tables, and that every example in the
 reference and the guide validates).
 `smoke/mutations/*.json` are the `pnpm mutation-proof` targets.
+
+`pnpm test` builds, then `smoke/_run.ts` runs the 20 declared `smoke/*.smoke.ts` files, each in
+its own process, in parallel. Each file's full output is printed in declared order, and a file
+passes only if it exits 0 and its output carries a non-zero tally with no failures. Every file
+runs even after one fails, and the run then fails. A `smoke/*.smoke.ts` file that is neither
+declared nor excluded, or a declared file that is missing, is refused. `wait-until.smoke.ts` is
+excluded on purpose: it was never part of this chain and CI runs it as its own suite.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `COTAL_TEST_JOBS` | `max(1, min(6, cpus - 1))` | Files run at once. `1` runs them one at a time. |
+| `COTAL_TEST_TIMEOUT_MS` | `120000` | Per-file limit. A file over it, and its child processes, are killed and it fails. |
+
+A malformed value for either is an error. Captured output is capped at 32 MiB per file; more than
+that fails the file. On Linux each file gets its own process group, so an interrupted run leaves no
+child behind. On Windows the process tree is killed with `taskkill`. That path has not been run.

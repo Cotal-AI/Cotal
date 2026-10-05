@@ -12,22 +12,18 @@
  * Run: pnpm smoke:manager-coexist   (needs nats-server + node on PATH; boots its own broker)
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, type AddressInfo } from "node:net";
-import { probeConnect } from "@cotal-ai/core";
-import { recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const home = mkdtempSync(join(tmpdir(), "cotal-coexist-home-"));
+process.env.COTAL_HOME = home;
+const { probeConnect } = await import("@cotal-ai/core");
+const { recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
@@ -74,6 +70,7 @@ try {
   await m2?.stop({ withAgents: true }).catch(() => {});
   await m1?.stop({ withAgents: true }).catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
+  rmSync(home, { recursive: true, force: true });
 }
 
 console.log(`\n${fail === 0 ? "MANAGER COEXIST SMOKE OK ✅" : "MANAGER COEXIST SMOKE FAILED (RED-FIRST until the lease is demoted to per-instance liveness)"}  (${pass} passed, ${fail} failed)`);

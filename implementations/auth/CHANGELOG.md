@@ -1,5 +1,236 @@
 # @cotal-ai/auth
 
+## 0.65.0
+
+### Patch Changes
+
+- ba5468d: A platform composition that hosts the auth context can now get the host incarnation that a delegated user intent pins as its executor (SPEC 13.16). `PlatformControlInput` takes an optional `host: { endpoint, clusterDigest, artifacts }`: the reverse-DNS endpoint of the host process that runs the intent flights, the closure digest of its §13.7 cluster and every contract artifact that closure needs. The auth plane self-authorizes that one name, and a single-label name is refused at start. With it, `AuthServiceHandle` gains `registerHostIncarnation(instanceId)`, which publishes the artifacts, registers that instance through the same ceremony the auth plane runs for its own `auth` endpoint, and returns `{ instanceId, processEpoch }` with the epoch that registration committed, `observeHostGate(instanceId)`, the sweeper's point-in-time read of that endpoint's issuance gate over the context's own connection, and `awaitHostFence(instanceId, processEpoch)`, which resolves with the gate once it is no longer open at that epoch, or with null once it is absent. A host that registers its persisted instance id at every start fences its predecessor and advances the process epoch, so a restarted host reads its earlier incarnation as gone. A start whose confirming read of the gate finds that a later start of the same instance registered is refused with `conflict`. The returned epoch stays current only until the next start registers, which can happen before the call returns, so the host arms `awaitHostFence` with it before it admits or recovers any flight and stops serving when the hook resolves. `docs/embedding.md` and `docs/design/delegated-user-launch-intent.md` describe all three members. Core's KV issuance gate adapters (`serveIssuanceGateKv`, `provisionEndpointGateOpen`, `endpointRegistrationBarrier` and `readEndpointGateGeneration`) tokenized the endpoint name twice, and the registration repair cursor rebuilt its key from the token, so every reverse-DNS endpoint threw before it reached its gate or partway through its registration. They now carry the name and leave the key builders to tokenize it. Single-label endpoints are unchanged. Core's `registerServiceInstance` also returns the `processEpoch` its completing reopen committed, so a caller no longer reads the epoch back from a gate that a later registration may already have advanced; the auth plane's own registration takes it from there.
+- Updated dependencies [ba5468d]
+- Updated dependencies [451ffee]
+- Updated dependencies [f01aa7c]
+- Updated dependencies [2cef9e6]
+  - @cotal-ai/core@0.65.0
+  - @cotal-ai/workspace@0.65.0
+
+## 0.64.0
+
+### Patch Changes
+
+- Updated dependencies [6c79419]
+- Updated dependencies [d121d21]
+  - @cotal-ai/core@0.64.0
+  - @cotal-ai/workspace@0.64.0
+
+## 0.63.0
+
+### Minor Changes
+
+- c975258: A logged-in user can now run hosted workflows on a user-auth space. The auth callout issues an interactive user's `manager-caller` view as an issuance (SPEC 13.15): it chooses the generation, records evidence whose one source is the user's actor-ledger row, and writes the accepted row under a token derived from the connection's inbox nonce, renewing that generation on a reconnect whose ceiling is unchanged. `cotal run` and the other manager calls read the generation back with the new `issuedUserCaller` and ride `ep.v1`, so `cotal run start` against a participant manager started with `cotal supervise` is admitted. The issuing host admits a run from a user caller only for the manager's registered owner, and a participant manager now forwards the served subject of every caller resume and answer, which the host checks against the run's owner and the caller's live issuance; a legacy-rail resume is refused. The issuing host subscribes to those resume and answer request subjects itself and issues for a forwarded one only when it observed that request, only once, and only for the run a resume's envelope names or the endpoint and amendment an answer's envelope names, and never for a request bound to another manager instance or epoch or declaring another class or pinning another contract than the manager registered for that command. Every answering operator issuance must carry that served subject, and an amendment's carries `answers.amend: true`, which the host accepts only for a pause settled with an accepted answer, so `cotal run amend` works on a participant manager. A user caller starts, resumes and answers runs only on the participant manager that user registered, and a static caller keeps its admission there. A managed seat's manager call keeps the legacy rail when the broker refuses its accepted-row read, which surfaces as a request error caused by the permission violation. Revoking or re-granting the actor makes its issuances dead at the next resolution. New exports: `connectionAcceptedToken`, `actorLedgerSource`, `actorLedgerSourceBucket`, `parseActorLedgerSource`, `issuedUserCaller` and `isDerivedOwner` in core, and `ledgerActorSourceIsLive` and `UserCallerIssuer` in auth. `manager-caller` joins the issuable profiles, and the `issuer` profile gains the per-key read of the accepted store. SPEC §13.15 gains a **User-auth issuance** paragraph and §14.8 a **User-auth runs** paragraph, both insertions; `docs/design/user-auth-run-start.md` records the path, and `docs/cli.md`, `docs/workflows.md` and `docs/run-a-mesh.md` describe it. `docs/run-a-mesh.md` also says the stock auth service refuses managed-agent enrollment and retirement preparation for a host platform to intercept.
+
+### Patch Changes
+
+- Updated dependencies [62ebc6b]
+- Updated dependencies [22e210a]
+- Updated dependencies [cb6a0bf]
+- Updated dependencies [5738154]
+- Updated dependencies [101c9b0]
+- Updated dependencies [9d5cc09]
+- Updated dependencies [c975258]
+  - @cotal-ai/core@0.63.0
+  - @cotal-ai/workspace@0.63.0
+
+## 0.62.0
+
+### Minor Changes
+
+- bcf66d6: Add a delegated user intent: SPEC §13.16, a design record, and the host decisions it needs. A signed-in user admits one launch or one retirement on the host's authenticated route, and a platform control holder consumes that intent once from its current registration, epoch, assignment revision and lifecycle. `@cotal-ai/core` adds the closed request types and parsers for the user's intent and the holder's execution, `parseRemoteDelegatedUserIntentExecutionResult`, and `resolveReadAcl`, the read-list resolution `provisionAgentDurables` already used. `@cotal-ai/auth` adds `authorizeDelegatedUserIntentAdmission` and `authorizeDelegatedUserIntentExecution`, the record, pin and flight types, `delegatedUserIntentHoldsAlias` and `joinOrStartDelegatedUserIntent`, `AuthServiceHandle.observeManagerGate`, which a platform composition's handle carries so the host reads the holder's gate over the context's own connection, and `AuthServiceHandle.activateManagedLifecycle`, which activates a delegated launch's lifecycle at its pinned UID before any row or durable and mints nothing, so a launch the host compensates or the user retires reaches the terminal barrier even when its agent never exchanged. Admission derives nothing from the request: it takes the owner the host derived from the verified IdP subject, requires `spawn` on the user's own fresh ledger row, binds the account's current platform assignment and the holder's open gate, and dry-runs the envelope walk from the user's principal over the read list the writer will provision. Execution compares the request with the record and with the fresh assignment, gate epoch and registration proof, and returns the user's owner and parent for the host's writers. The holder gains no grant, no decision reads `supervise`, and the `platform-control` view's same-owner rule is unchanged. Stock dispatch refuses both kinds as `unimplemented`; a host that owns an intent store and the enrollment and retirement writers composes the decisions on its own routes. `@cotal-ai/manager` adds `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent` and `Manager.retireDelegatedAgent`: a delegated launch takes the hosted enrollment arm with the intent's execution and refuses material under any owner but the intent's, and `retireDelegatedAgent` stops a delegated agent only after the host confirms `retired: true` for its exact target and operation id. A delegated agent's name, including one whose launch failed at any step after the host's enrollment answer, stays held until then.
+- 231d226: A platform composition can now ask whether its assigned control manager is serving. With the `platformControl` input, `startAuthService` returns a handle with `platformControlReadiness(instanceId)`, which answers that manager instance's `status` reply and refuses any instance the current assignment does not name, or one whose gate another owner holds. The auth context reads over its own connection, whose grant is that instance's `describe` and `status` and its own reply rail. The connection renews in process like the context's other connections and never leaves it, so a pooled control host no longer needs a human or operator credential, a per-read control instrument, or the manager's process id to tell whether the manager is up.
+
+### Patch Changes
+
+- Updated dependencies [bcf66d6]
+- Updated dependencies [97a2382]
+- Updated dependencies [877909b]
+- Updated dependencies [5ef9a67]
+- Updated dependencies [565036c]
+- Updated dependencies [9236a12]
+- Updated dependencies [b36bebf]
+  - @cotal-ai/core@0.62.0
+  - @cotal-ai/workspace@0.62.0
+
+## 0.61.0
+
+### Minor Changes
+
+- 1eca3e0: `startAuthService` takes an optional `publicFace` input with the CLI's public face settings (`port`, `url`, `trustedProxy`, `advertisedServer`, `agentProvisioningUrl`) and checks them by the CLI's rules. An embedded context can now serve the public exchange, JWKS and discovery bundle, and its handle carries `publicUrl`. The handle also carries the per-start `cap` that `runAuthService` writes to `auth-service.json`, so a host can call its own loopback host actions. A public face without a port refuses to start. The new `PublicFaceInput` type names the input.
+
+### Patch Changes
+
+- @cotal-ai/core@0.61.0
+- @cotal-ai/workspace@0.61.0
+
+## 0.60.0
+
+### Minor Changes
+
+- 6ca4d8e: Add the platform control authority: a closed `platform-control` view, beside the unchanged human `manager-service` view, that lets a host platform run one pooled control manager per assigned account without a human session (SPEC §13.1, §13.6, §13.9). `startAuthService` takes an optional `platformControl: { observeAssignment }` input, and the returned handle then carries `platformControlAuthority`, a typed in-process door served on no listener. It issues the existing manager-service request family under a host-derived `p_` platform owner (`platformControlOwner`), reads the backend's assignment fresh on every call, reuses the registration proof, process epoch and all-duty renewal unchanged, confines maintenance to the assigned instance, and refuses `prepare` and `activate` while a named predecessor manager is still registered. It refuses IdP tokens, another account, a stale assignment, another owner's instance, unknown fields (a nested `session` field included) and the managed-agent kinds. `@cotal-ai/core` adds the `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult` and `PlatformControlAssignment` types, the `p_` owner grammar, and an opt-in `allowPlatform` on the principal owner checks and on CONNZ attribution (`principalFromConnz`). Only the platform family's own boundaries opt in: the issuance gate row, the credential holder row, the eviction and liveness sweeps with the delivery daemon's executors, the manager goal-index scanner, the run driver caller, and, for the platform holder only, the retirement target, retained-validation target and admin caller parsers. The membership feed and the message drop guards still refuse a `p_` owner. Presence has no owner check, so a platform endpoint's roster card appears under its `p_` owner. `startAuthService` also forwards a trusted-host `standingRenewableTtlSeconds` to the authority plane. The human remote-supervision path is unchanged.
+
+### Patch Changes
+
+- 9f22cf0: The public exchange suite (`smoke:remote-exchange:live`) now has a mutation fixture, `implementations/auth/smoke/mutations/remote-exchange.json`, for its security cells: the capless loopback 401 that pairs the public 200, the per-peer refusal throttle, a valid credential still minting from a throttled key while a refusal's reason is withheld, and the one sentence an unknown agent and a wrong secret share. Its per-peer isolation and budget-separation cells now probe with a refused exchange and require its own 401 sentence. They probed with a valid credential, which mints even from a full bucket, so they stayed green with every peer sharing one bucket and with public refusals charging the loopback budget. Service behaviour is unchanged.
+- Updated dependencies [3b616a2]
+- Updated dependencies [6ca4d8e]
+  - @cotal-ai/core@0.60.0
+  - @cotal-ai/workspace@0.60.0
+
+## 0.59.0
+
+### Minor Changes
+
+- 70bcfe3: Breaking: `cotal actor grant` no longer turns an omitted ACL flag into the wide default, so a bare grant that used to succeed now needs `--full`. A grant must name `--scope`, `--allow-subscribe` and `--allow-publish`, or pass `--full` to take `spawn,role:default`, `>` and `>` for the ones left off. Otherwise it refuses, writes nothing, and prints both forms. Dropping one flag from a narrow event-plane reader grant used to mint a row that read or posted to every channel, or could spawn, with a success line as the only sign. The hints printed by `cotal login`, `cotal status`, `actor list` and the not-granted refusal now include `--full`.
+- c389563: Hosted runtime create and status for managed agents. Core adds the closed `manager-managed-agent-runtime-create` and `manager-managed-agent-runtime-status` kinds on the manager-service-authority transport, with parsers that refuse any unknown top-level or target field, including `providerRef`, `handle`, and `name`. Core also adds a result builder and binder whose `state`, `readiness`, and optional `retirementPhase` come from closed sets. The auth service adds `authorizeRemoteManagedAgentRuntimeCreate` and `authorizeRemoteManagedAgentRuntimeStatus`. Each applies the enrollment door's gate, epoch, and proof checks, reads `supervise` from the manager actor's own ledger row, and returns only `{ owner, instanceId, actor, target }`. The loopback verify-enrollment door serves both kinds, and stock dispatch refuses them with `unimplemented`. The manager client adds `remoteManagedAgentRuntimeRequest` and `remoteManagedAgentRuntimeState`. The enrollment result gains an optional, display-only `runtimeIntent: { state: "reserved" }`, which older hosts omit and the manager never treats as authority.
+
+### Patch Changes
+
+- 5bec8b2: `cotal attach` now opens a seat's session on a user-auth mesh. The CLI presents its bearer identity together with the session grant to the auth service's exchange, which issues a `session-caller` view bearer only after it confirms, against the redeemed `session.<id>` row and the serving manager gate, that this owner and actor hold that session. The callout re-checks the same row and mints the same `session-caller` rails with the grant's expiry that the static path mints. No local seed is read or written.
+- 608f5f4: Re-attach doc comments that had drifted away from the declarations they document. A `/** */` block followed directly by another one documented nothing, so editor hovers and the published type declarations showed no doc for the intended declaration (for example `Manager`, the `plane3` field and `AclResolver`). Each such block now sits above its declaration, is merged into the block it duplicated, or is removed when its declaration no longer exists. A new `pnpm check:doc-comments` check, run as part of `check:docsbundle`, refuses a doc block followed directly by another in shipped source.
+- efe37a9: A remote manager whose authority request is refused by an older host, for a field that host's auth service does not know, now reports version skew. After the host's reason, the refusal names the manager's Cotal version and the field, and says the manager needs a host at that version or later. This covers every manager-authority request, including the all-duty renewal and hosted-run admission. The field is still sent.
+- aa12a1a: Gate reconciliation no longer scales with credential family size. `cotal reconcile-gate`, manager boot self-heal and remote manager maintenance revoke the family's ledger rows 16 at a time, then verify-evict every distinct holder in one shared scan, KICK and verify sweep through the new `evictPrincipals` delivery-admin verb instead of one connection and one sweep per holder. The sweep keeps up to 16 KICK requests in flight, so a family whose holders are still connected no longer pays one broker round trip per connection. Holders a sweep verifies are still recorded durably when another holder is not verified, and an interrupted sweep records none.
+- Updated dependencies [70bcfe3]
+- Updated dependencies [1cf7f72]
+- Updated dependencies [5bec8b2]
+- Updated dependencies [6c01470]
+- Updated dependencies [cfc3b95]
+- Updated dependencies [b669a73]
+- Updated dependencies [350c87b]
+- Updated dependencies [608f5f4]
+- Updated dependencies [43c4179]
+- Updated dependencies [4a12111]
+- Updated dependencies [569cb6f]
+- Updated dependencies [b4c69bf]
+- Updated dependencies [f485c49]
+- Updated dependencies [5f13124]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [c389563]
+- Updated dependencies [06f48f4]
+- Updated dependencies [eb2681e]
+- Updated dependencies [fb1bc26]
+- Updated dependencies [438e9ed]
+- Updated dependencies [446ed23]
+- Updated dependencies [15c16ff]
+- Updated dependencies [8ce6be3]
+- Updated dependencies [08194ec]
+- Updated dependencies [aa12a1a]
+- Updated dependencies [d90f9f2]
+- Updated dependencies [499bd8a]
+- Updated dependencies [569cb6f]
+- Updated dependencies [d0b1da3]
+- Updated dependencies [37075a2]
+- Updated dependencies [8d8d69a]
+- Updated dependencies [c7bfc2d]
+- Updated dependencies [6145abc]
+  - @cotal-ai/workspace@0.59.0
+  - @cotal-ai/core@0.59.0
+
+## 0.58.0
+
+### Minor Changes
+
+- 95ae645: The auth retirement rail is a conforming registered endpoint with a describable contract. The requester calls it through the generic client in the exact target mode. A legacy body is refused as unsupported-version.
+
+### Patch Changes
+
+- 274c783: Start the bootstrap membership renewal fixture with a genuinely expired credential and verify broker refusal before renewal. This avoids depending on different JWT bytes when two fresh issuances occur in the same wall-clock second. Keep the native renewed-credential, stable-identity and broker-acceptance checks, with explicit mutation controls.
+- 2cb1d72: Add `startAuthService`, an account-scoped auth-service context with readiness, drain and close that installs no process signal handlers, never exits the process and never selects a root from the working directory. `openAuthAuthorityPlane` now takes its local manager identity as an explicit `localManager` input instead of reading it from the cwd-selected root.
+- 7c54825: Distinguish native consumer deletion acknowledgments and observed disappearance from uniquely attributable removals. Refuse live KV CAS successors, preserve exact-target INFO grants, and propagate unknown uniqueness through Manager reconciliation. Count ACL and membership rows removed by a competing purge as observed disappearances, not prior absence or this caller's deletion.
+- 397bc60: Deprovisioning returns truthful bounded resource accounting distinguishing deleted resources from absent no-ops across repeated teardown attempts. Key existence and tombstone state are verified through exact Direct Get checks before purging KV keys, ensuring repeated deprovisioning reports zero deleted entries. Partial broker failures record refused resources and raise DeprovisionError with partial accounting rather than discarding earlier progress.
+- 7b3924c: Retire a lifecycle's durable membership rows through target-pinned exact-key grants. Complete inventory derives channels from validated native keys, including wildcard-covered and unnamed channels, so unreadable values cannot hide rows from cleanup. An unavailable inventory retains undiscovered rows and holds retirement pending retry. Other principals and successor lifecycles remain untouched. Retirement fixtures now use complete zero-row responses only for empty synthetic inventories, and the user-mode test verifies held retirement until genuine delivery returns.
+- 59672dd: Register the remaining hosted-runtime smoke entrypoints in stable CI fragments and report native assertion counts through canonical completion markers. Refresh the explicit-TLS call-site census. Make the resume fixture retain its first successful held-slot observation or require durable completion with a new epoch, and exercise completion before the probe as a separate regression gate.
+- 1721738: Support signerless manager run hosting through typed host admission, initial-attempt and renewal operations. Renew the complete standing credential family while preserving held identities, serve epochs and last-good credentials on refusal. Keep pooled managers off local PTY launch paths and enforce the execution host boundary. Update the native lifecycle and mutation checks for these paths.
+- Updated dependencies [0589316]
+- Updated dependencies [59a7e64]
+- Updated dependencies [95ae645]
+- Updated dependencies [fba1537]
+- Updated dependencies [576f622]
+- Updated dependencies [2457692]
+- Updated dependencies [ee6de5d]
+- Updated dependencies [e9ef5b3]
+- Updated dependencies [7c54825]
+- Updated dependencies [2c31f95]
+- Updated dependencies [397bc60]
+- Updated dependencies [7b3924c]
+- Updated dependencies [1721738]
+  - @cotal-ai/core@0.58.0
+  - @cotal-ai/workspace@0.58.0
+
+## 0.57.0
+
+### Patch Changes
+
+- Updated dependencies [e7c702a]
+- Updated dependencies [6f64bcc]
+- Updated dependencies [42448fa]
+- Updated dependencies [33357d9]
+  - @cotal-ai/core@0.57.0
+  - @cotal-ai/workspace@0.57.0
+
+## 0.56.1
+
+### Patch Changes
+
+- Updated dependencies [6b76946]
+  - @cotal-ai/core@0.56.1
+  - @cotal-ai/workspace@0.56.1
+
+## 0.56.0
+
+### Patch Changes
+
+- ac53a09: `cotal update` no longer reads a remote user mesh's manager for continuity, since that manager runs
+  under another install and its exchange's answer cannot change the local install; the mesh is named
+  and skipped, and the install proceeds. A refused remote exchange that supplies no reason now says
+  the face withheld it instead of presenting the HTTP status as the reason (#2158).
+- Updated dependencies [e506040]
+- Updated dependencies [8dc7c92]
+- Updated dependencies [99cad7b]
+- Updated dependencies [1218786]
+- Updated dependencies [ef8889d]
+  - @cotal-ai/core@0.56.0
+  - @cotal-ai/workspace@0.56.0
+
+## 0.55.0
+
+### Minor Changes
+
+- 92ae52c: Add a loopback door, `POST /managed-lifecycle/retire` (`MANAGED_RETIRE_PATH`), that lets a host finish a managed agent's terminal retirement when the remote manager that should request it is gone. It carries the interactive door's guards, requires the managed grant to be revoked at that lifecycle first, and runs the rail's `managedRetirementOpId(uid)` operation. The rail and the door share one in-process flight, so they never execute the same retirement twice.
+- 2e13607: Let a remote participant supervisor spawn and terminally release a HOST-OWNED managed agent (#1972). A registered participant holds no ledger writer, no JetStream provisioner, and no signing seed, so `cotal spawn <actor> -d --on <instanceId>` previously failed in auth preflight and a despawn refused outright.
+
+  `@cotal-ai/core` adds the two closed wire operations and their parsers: `manager-managed-agent-enrollment` and `manager-managed-agent-prepare-retirement`. An enrollment carries the SHA-256 digest of the agent's standing actor token and never the token, and carries no lifecycle UID at all; a prepare-retirement's `opId` must be `managedRetirementOpId(target.lifecycleUid)`.
+
+  `@cotal-ai/auth` adds `authorizeRemoteManagedAgentEnrollment` and `authorizeRemoteManagedAgentPrepareRetirement`, which require `supervise` at the caller instance's current open manager gate with the host-issued registration proof, plus the loopback door `POST /manager-service-authority/verify-enrollment` (`VERIFY_ENROLLMENT_PATH`) that a host platform calls for the decision while it owns every write. The door derives the caller's scope from the local ledger rather than the request body. `dispatchManagerAuthorityRequest` refuses both kinds with `unimplemented`, since stock owns no such storage, and the provider gains the `enrollRemoteManagedAgent` and `prepareRemoteManagedAgentRetirement` clients.
+
+  `@cotal-ai/manager` adds the `remoteAuthority.enrollManagedAgent` hook and takes it in `provisionUserAgent`: the participant generates the actor token, writes it at 0600 before the request, sends only the digest, adopts the HOST's chosen lifecycle UID, and launches `agent-bearer --exchange-url`. `prepareAgentRetirement` now performs the host release instead of throwing.
+
+### Patch Changes
+
+- 84e0175: The bare-grant default is described as `spawn,role:default` everywhere it is described, and the launch smoke asserts the full scope.
+- e4f1d2d: A managed grant without a lifecycle uid is refused at the ledger instead of being minted one.
+- f7f23d3: The user-spawn smoke grades the remedy's route selector in its own cell, so the two remedy mutants are held by two cells.
+- Updated dependencies [888e9bc]
+- Updated dependencies [810814b]
+- Updated dependencies [8472dc3]
+- Updated dependencies [f272f71]
+- Updated dependencies [a83dd80]
+- Updated dependencies [db9a969]
+- Updated dependencies [d284ee6]
+- Updated dependencies [4f48629]
+- Updated dependencies [2e13607]
+- Updated dependencies [d3d6742]
+- Updated dependencies [fd58782]
+- Updated dependencies [357af9f]
+  - @cotal-ai/core@0.55.0
+  - @cotal-ai/workspace@0.55.0
+
 ## 0.54.0
 
 ### Patch Changes

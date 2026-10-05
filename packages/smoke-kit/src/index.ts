@@ -13,7 +13,7 @@
  * pointing straight at `.ts`, so there is no build step, no build ordering, and no second copy that
  * can disagree with this one.
  */
-export { SMOKE_BROKER_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal, teardownPathOnSignal } from "./broker-teardown.js";
+export { SMOKE_BROKER_PREFIX, SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal, teardownPathOnSignal } from "./broker-teardown.js";
 export { EXEMPT_MARKER, enumerateSpawnSites, inScope, isAdopted, type SpawnSite } from "./spawn-sites.js";
 export {
   assertSmokeSandboxDown,
@@ -22,6 +22,8 @@ export {
   type SmokeCommandOptions,
   type SmokeSandboxAnchor,
 } from "./sandbox-guard.js";
+export { checkSelection, defaultJobs, runFiles, type FileResult, type RunFilesOptions } from "./run-files.js";
+export { PortInUseError, freePort, listenOn, onFreePort } from "./free-port.js";
 export { memorySubjectFrontier, type MemorySubjectFrontier } from "./subject-frontier.js";
 export { SEAT_MAX_SOCKET_PATH, SEAT_SOCKET_OVERHEAD, makeSeatRoot, rootFits } from "./seat-root.js";
 export {

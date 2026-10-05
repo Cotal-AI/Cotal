@@ -23,22 +23,23 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removeIdentityPin, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, writeIdentityPin,
-  MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
+  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, writePidPair,
+  c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
   refreshRegistrationPolicy,
   type MeshEntry,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
-import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
+import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } from "./deregister-instance.js";
 import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
-import { c } from "./ui.js";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority } from "./remote-authority.js";
+import { custodyRoot } from "./runtime/custodial-pty.js";
+import { drainSeats } from "@cotal-ai/seat";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunAdmission, remoteRunAdmissionRequest, remoteRunAttemptCredentials, remoteRunAttemptRequest, remoteRunRenewalCredentials } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -78,18 +79,16 @@ export function recordManagerPid(root: string, space: string): () => void {
   const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx);
   const markerPath = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx);
   const mine = String(process.pid);
-  writeFileSync(pidPath, mine);
-  writeIdentityPin(pidPath, process.pid);
+  // #969/#1238: publish the pair by rename so a later teardown never sees a torn pairing.
+  writePidPair(pidPath, process.pid);
   // Written together and removed together: the marker proves the LIVE pid is a non-hosting build,
   // and it is only meaningful while it names that same pid.
   writeFileSync(markerPath, mine);
   return () => {
     for (const p of [markerPath, pidPath]) {
       try {
-        if (readFileSync(p, "utf8").trim() === mine) {
-          if (p === pidPath) removeIdentityPin(pidPath);
-          rmSync(p, { force: true });
-        }
+        if (p === pidPath) removePidPair(pidPath, mine);
+        else if (readFileSync(p, "utf8").trim() === mine) rmSync(p, { force: true });
       } catch {
         /* already gone, or unreadable: leaving a record we cannot prove is ours is the safe error */
       }
@@ -173,6 +172,21 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
   }
 }
 
+// The supervisor's output IS `.cotal/manager.<key>.log` when detached (manager-proc.ts opens that
+// file and redirects this process's stdio onto it), and a log whose only temporal information is
+// line order cannot say when a seat was reaped without opening every seat's private connector log
+// (#1423). Stamping here, once, covers every `console.log`/`console.error` call in this daemon
+// process, including the 100+ sites in manager.ts that already run through the global console. A
+// multi-line message (the `manager up` banner) stamps its first line only, since that is where the
+// event is. No environment switch, no TTY check, no flag: a foreground `cotal supervise` prints the
+// same stamps, and that is fine.
+function stampConsole(): void {
+  const originalLog = console.log.bind(console);
+  const originalError = console.error.bind(console);
+  console.log = (...args: unknown[]) => originalLog(new Date().toISOString(), ...args);
+  console.error = (...args: unknown[]) => originalError(new Date().toISOString(), ...args);
+}
+
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
  *  `pty` ships with the manager; every other runtime needs a registered provider. The published
  *  CLI lazy-loads installed providers, while library roots import their integrations explicitly.
@@ -184,6 +198,7 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
 // pty). `cmux` gives each teammate its own cmux tab — `cotal supervise --runtime cmux` is
 // the cmux-tab manager.
 async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promise<void> {
+  stampConsole();
   const v = args.values as Values;
   let runtime = defaultRuntime;
   if (defaultRuntime === "auto" && v.runtime) {
@@ -212,6 +227,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         throw new Error(`the registered auth provider "${provider.name}" does not implement the host-owned manager goal-index scan protocol`);
       if (!provider.authorizeRemoteManagerAdmin)
         throw new Error(`the registered auth provider "${provider.name}" does not implement the host-owned manager admin authorization protocol`);
+      if (!provider.requestRemoteRunAdmission || !provider.requestRemoteRunAttempt)
+        throw new Error(`the registered auth provider "${provider.name}" does not implement both closed hosted-run admission and issuance calls`);
       const request = remoteManagerAuthorityRequest(state, "cli", "prepare");
       const agentBearerExchangeUrl = target.agentBearerExchangeUrl;
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
@@ -259,13 +276,28 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
       });
       const retainedRegistrationProof = currentRegistrationProof(activate);
+      const supervisorCreds = materialCredential(material, "supervisor", state.identities.supervisor);
+      // The closed all-duty family renewal over the same registration, proof and store. Without it
+      // the manager renews its executor alone and the serve, goal-writer and session-ledger
+      // connections die at their expiry.
+      const standing = remoteStandingBundleRenewal({
+        state, owner: material.owner, registrationProof: retainedRegistrationProof, supervisorCreds,
+        call: (renewalRequest) => provider.managerServiceAuthority!({
+          store: workspaceSecretStore(findCotalRoot()),
+          dir: join(findCotalRoot(), ".cotal", "auth", space),
+          request: renewalRequest,
+        }),
+      });
+      const runCall = { store: workspaceSecretStore(findCotalRoot()), dir: join(findCotalRoot(), ".cotal", "auth", space) };
+      const runBase = () => ({ proof: retainedRegistrationProof, account: standing.accountPublicKey, epoch: registered.processEpoch });
       remoteAuthority = {
+        ...standing,
         owner: material.owner,
         actors,
         instanceId: state.instanceId,
         lifecycleUid: state.lifecycleUid,
         identities: state.identities,
-        supervisorCreds: materialCredential(material, "supervisor", state.identities.supervisor),
+        supervisorCreds,
         executorCreds: materialCredential(material, "executor", state.identities.executor),
         renewExecutor: async () => {
           const renewed = await provider.managerServiceAuthority!({
@@ -278,6 +310,42 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         serveCreds: materialCredential(activate, "serve", state.identities.serve),
         goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
         sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
+        runHosting: {
+          admitRun: async (run) => {
+            const { proof, account, epoch } = runBase();
+            const request = remoteRunAdmissionRequest(state, proof, account, epoch, { runId: run.runId, subject: run.subject });
+            const result = await provider.requestRemoteRunAdmission!({ ...runCall, request });
+            return remoteRunAdmission(result, request);
+          },
+          issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator, served }) => {
+            const base = runBase();
+            const request = remoteRunAttemptRequest(state, base.proof, base.account, base.epoch,
+              { attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id, ...(served !== undefined ? { served } : {}) } });
+            const result = await provider.requestRemoteRunAttempt!({ ...runCall, request });
+            const pair = remoteRunAttemptCredentials(result, request, material.owner, { driver, mediator });
+            if (!("driver" in pair)) throw new Error("host returned an operator instead of a run pair");
+            return pair;
+          },
+          issueOperator: async ({ identity, takeoverId, runId, answers, served }) => {
+            const { proof, account, epoch } = runBase();
+            const request = remoteRunAttemptRequest(state, proof, account, epoch,
+              { operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}), ...(served !== undefined ? { served } : {}) } });
+            const result = await provider.requestRemoteRunAttempt!({ ...runCall, request });
+            const credential = remoteRunAttemptCredentials(result, request, material.owner, { operator: identity });
+            if (!("operator" in credential)) throw new Error("host returned a run pair instead of an operator");
+            return credential.operator;
+          },
+          renewRun: async ({ runId, holder, takeoverId, epoch, fencingToken, driver, mediator }) => {
+            const base = runBase();
+            const request = {
+              ...remoteManagerAuthorityRequest(state, "cli", "renewRunDriver", base.proof),
+              accountPublicKey: base.account, processEpoch: base.epoch,
+              run: { runId, holder, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id },
+            };
+            const result = await provider.managerServiceAuthority!({ ...runCall, request });
+            return remoteRunRenewalCredentials(result, request, material.owner, driver, mediator);
+          },
+        },
         serveGrant: registered.serveGrant,
         agentBearerExchangeUrl,
         mintSessionServing: async (session) => {
@@ -318,11 +386,47 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             throw new Error("manager-service retirement material does not echo the requested target, operation, and serve epoch");
           return materialCredential(retirementMaterial, "retirementRequester", identity);
         },
-        prepareAgentRetirement: async () => {
-          // The stock remote participant path has no hosted storage lifecycle. A composition that
-          // manages hosted agents must inject its revoke + resumable-release operation here rather
-          // than letting consumer deprovision masquerade as terminal retirement.
-          throw new Error("remote participant supervision cannot terminally retire a hosted managed agent without a host release composition");
+        // #1972: the host-owned halves of the managed agent lifecycle. Both ride the one verified
+        // manager-authority transport, and both are present only when the registered provider
+        // implements them — a provider without the hosted storage composition leaves the hook absent,
+        // and the manager then refuses a detached user-mode spawn rather than authoring a local grant
+        // the host knows nothing about.
+        ...(provider.enrollRemoteManagedAgent
+          ? {
+              enrollManagedAgent: async ({ target }) => {
+                const request = remoteManagedAgentEnrollmentRequest(
+                  state,
+                  "cli",
+                  retainedRegistrationProof,
+                  registered.processEpoch,
+                  target,
+                );
+                const result = await provider.enrollRemoteManagedAgent!({
+                  store: workspaceSecretStore(findCotalRoot()),
+                  dir: join(findCotalRoot(), ".cotal", "auth", space),
+                  request,
+                });
+                return remoteManagedAgentEnrollmentMaterial(result, request);
+              },
+            }
+          : {}),
+        prepareAgentRetirement: async ({ target: retirementTarget, opId }) => {
+          if (!provider.prepareRemoteManagedAgentRetirement)
+            throw new Error(`the registered auth provider "${provider.name}" does not implement host-owned managed agent retirement preparation, so remote participant supervision cannot terminally retire a hosted managed agent`);
+          const request = remoteManagedAgentPrepareRetirementRequest(
+            state,
+            "cli",
+            retainedRegistrationProof,
+            registered.processEpoch,
+            retirementTarget,
+            opId,
+          );
+          const result = await provider.prepareRemoteManagedAgentRetirement({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request,
+          });
+          remoteManagedAgentRetirementPrepared(result, request);
         },
         validateRetainedAgent: async ({ owner: targetOwner, actor, lifecycleUid, actorToken, sentinelCreds }) => {
           const request = remoteRetainedAgentValidationRequest(
@@ -461,7 +565,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   const managerRoot = findCotalRoot();
   const releasePidRecord = recordManagerPid(managerRoot, space);
   const managerContext = { root: managerRoot, space };
-  publishManagerSpareCapability(managerContext, mgr.canSpareAgents);
+  publishManagerSpareCapability(managerContext, mgr.spareSeats);
   console.log(
     c.green("✓ manager up") +
       c.dim(` (space ${space} · ${mgr.runtimeKind})`) +
@@ -483,11 +587,12 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       process.exit(0);
     })
     .catch((e) => {
-      process.exitCode = 1;
-      // The record is NOT released here: the stop did not complete, so this process may still be
-      // running and still holding the control plane. A record removed under a failed stop is the
-      // orphan-the-process defect the pidfile contract exists to prevent.
+      // The record is NOT released here: the stop did not complete, so a seat may still be running
+      // under this instance's lease. A record removed under a failed stop is the orphan defect the
+      // pidfile contract exists to prevent. The process still exits: stop() has closed what it could,
+      // and the shuttingDown latch would otherwise leave it deaf to every later signal (#2290).
       console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
     });
   };
   process.on("SIGINT", shutdown);
@@ -596,7 +701,7 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
     const report = await reconcileEndpointGate({
       kv, space, endpoint, instanceId,
       probeHolder: makeManagerHolderLivenessProbe({ space, servers, auth, log: (l) => console.error(c.dim(`  ${l}`)) }),
-      evict: makeManagerEndpointEvictor({ space, servers, auth, log: (l) => console.error(c.dim(`  ${l}`)) }),
+      evictHolders: makeManagerEndpointHolderEvictor({ space, servers, auth, log: (l) => console.error(c.dim(`  ${l}`)) }),
       log: (l) => console.error(`  ${l}`),
       recordsKv,
     });
@@ -701,6 +806,27 @@ async function runDeregisterInstance(args: ParsedArgs): Promise<void> {
   }
 }
 
+/**
+ * `cotal seats`: the custody records an earlier Linux manager left when the pty runtime still
+ * started a detached custodian per seat (#1391). Read-only unless `--drain`, which retires each seat
+ * whose agent has exited and keeps every seat whose agent still runs. A refusal exits non-zero: it is
+ * a record nothing could prove safe to remove, so an operator has to look at it.
+ */
+async function runSeats(args: ParsedArgs): Promise<void> {
+  const root = custodyRoot();
+  const entries = await drainSeats(root, { drain: args.values.drain === true });
+  if (entries.length === 0) {
+    console.log(`no seat custody records under ${root}`);
+    return;
+  }
+  for (const e of entries) console.log(`${e.id}  ${e.state.padEnd(10)}  ${e.name ?? "-"}  ${e.detail}`);
+  const count = (state: string): number => entries.filter((e) => e.state === state).length;
+  console.error(
+    c.dim(`• ${entries.length} record(s) under ${root}: ${count("live-child")} live-child, ${count("childless")} childless, ${count("drained")} drained, ${count("refused")} refused`),
+  );
+  if (count("refused") > 0) process.exitCode = 1;
+}
+
 /** The manager's commands: the `supervise` daemon runner, and the guarded `reconcile-gate` repair.
  *  Self-registered on import; the `cotal` binary resolves them from the registry. */
 const managerCommands: Command[] = [
@@ -757,6 +883,15 @@ const managerCommands: Command[] = [
       { name: "instance", type: "string", value: "<id>", description: "instance id to deregister, the whole id as `cotal ps` prints it (default: this folder's persisted manager instance)" },
     ],
     run: runDeregisterInstance,
+  },
+  {
+    kind: "command",
+    name: "seats",
+    group: "Manager",
+    summary:
+      "list the pty seat custodians an earlier Linux manager left on this machine - [--drain] retires each seat whose agent has exited and never signals one whose agent still runs",
+    flags: [{ name: "drain", type: "boolean", description: "retire every seat whose agent has exited; a seat whose agent still runs is kept" }],
+    run: runSeats,
   },
 ];
 

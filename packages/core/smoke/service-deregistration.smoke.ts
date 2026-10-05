@@ -107,7 +107,7 @@ function barrierFor(instanceId: string): EpIssuanceBarrier {
     freeze: (rev) => { if (g.state !== "open" || g.revision !== rev) return null; g.state = "frozen"; g.revision++; return g.revision; },
     enumerate: () => [],
     revoke: () => {},
-    evict: () => true,
+    evict: (holderPrincipals) => holderPrincipals.map(() => true),
     reopen: (token, succ) => { if (g.state !== "frozen" || g.revision !== token) return false; g.state = "open"; g.generation = succ.generation; g.processEpoch = succ.processEpoch; g.registrationRevision = succ.registrationRevision; g.nameAuthorityRevision = succ.nameAuthorityRevision; g.revision++; return true; },
   };
 }

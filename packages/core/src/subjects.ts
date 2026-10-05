@@ -1,14 +1,27 @@
 /**
- * Subject naming — the routing half of the wire contract (v0).
+ * Subject naming — the routing half of the wire contract (v0). SPEC.md §3 is normative.
  *
- *   cotal.<space>.chat.<channel>      multicast to a channel (dotted + hierarchical: team.backend, subscribe team.>)
- *   cotal.<space>.svc.<service>       anycast to any one instance of a service (queue group)
- *   cotal.<space>.inst.<instance>     unicast to one specific instance
- *   cotal.<space>.ctl.<service>       control request/reply to a SERVER-SIDE service — the delivery
+ * Every principal rides the subject as two tokens, `<owner>.<actor>`. The builders below
+ * (chatSubject, anycastSubject, unicastSubject, controlServiceSubject) emit these shapes.
+ *
+ *   cotal.<space>.chat.<owner>.<actor>.<channel>
+ *                                     multicast to a channel (dotted + hierarchical: team.backend,
+ *                                     subscribe chat.*.*.team.>)
+ *   cotal.<space>.svc.<service>.<owner>.<actor>
+ *                                     anycast to any one instance of a service (queue group)
+ *   cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>
+ *                                     unicast to one principal; the sender is the last two tokens
+ *   cotal.<space>.ctl.<service>.<owner>.<actor>
+ *                                     control request/reply to a SERVER-SIDE service — the delivery
  *                                     daemon's delivery/delivery-admin carve-outs ONLY.
  *                                     The manager's ctl tiers were deleted in 1d, and the auth
  *                                     plane's rail moved to ep.one.auth in #350: both serve their
  *                                     control surface as v0.4 endpoints on the ep.* rails.
+ *   cotal.<space>.ep.<one|all|inst|reply>.…
+ *                                     v0.4 endpoint control surface; SPEC.md §13.2 defines each rail
+ *   cotal.<space>.ep.<generation>.<one|all|inst|reply>.…
+ *                                     the same rails for an issued caller; the generation segment is
+ *                                     spelled only by the builders in endpoint-subjects.ts (SPEC.md §13.15)
  *   cotal.<space>.trace.<instance>    ambient lifecycle trace (later)
  *
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
@@ -118,6 +131,11 @@ export function subjectMatches(pattern: string, subject: string): boolean {
  *  never named (and two distinct policy strings could collide on one token). Returns the channel
  *  unchanged when valid so callers can use it inline. */
 export function assertValidChannel(channel: string): string {
+  if (channel.length > MAX_CHANNEL_LENGTH)
+    throw new Error(
+      `invalid channel "${channel.slice(0, 32)}…": ${channel.length} characters exceeds the ` +
+        `${MAX_CHANNEL_LENGTH}-character limit (every grant line a channel mints rides the CONNECT line)`,
+    );
   const segs = channel.split(".");
   if (!channel.length || segs.some((s) => s.length === 0))
     throw new Error(`invalid channel "${channel}": empty segment (no leading/trailing/double dots)`);
@@ -135,6 +153,25 @@ export function assertValidChannel(channel: string): string {
   });
   return channel;
 }
+
+/** Maximum length of a policy channel, in UTF-16 code units (whole string, dots included).
+ *
+ *  Derived from the transport budget, not picked. A channel becomes at least one grant row in
+ *  every list it appears on (a `chatSubject`-shaped row per allowSubscribe/allowPublish
+ *  entry, plus the per-channel JetStream history-consumer create row on the subscribe side),
+ *  and those rows ride the user JWT inside the client's CONNECT line, which the broker caps at
+ *  `max_control_line` (`MAX_CONTROL_LINE_BYTES`, provision.ts). Measured on this repo (decoded
+ *  JWT, not the encoded credential): a channel on `allowSubscribe` alone contributes 2 grant
+ *  rows and ~11.1 KB per 4096 characters; the same channel on BOTH `allowSubscribe` and
+ *  `allowPublish` contributes a 3rd row and ~16.6 KB. This bound refuses the absurd single input
+ *  early with a message that names it - it is NOT what keeps a real credential under the cap.
+ *  The COMPOSITION is bounded at the mint (`MAX_MINTED_JWT_BYTES`, provision.ts): a caller may
+ *  legally list many channels each under this bound, and only the mint-time byte check on the
+ *  assembled JWT catches that (issue #375's review finding).
+ *  The bound is on the whole string; a single segment cannot exceed the whole, so the per-segment
+ *  charset rule needs no separate length arm.
+ */
+export const MAX_CHANNEL_LENGTH = 4096;
 
 /** Validate an **owner or actor token** of the owner+actor grammar (the per-user-auth cutover).
  *  Defined AHEAD of use: today this has no call sites — persisted owner-bearing keys
@@ -237,11 +274,6 @@ export function principalNameKey(owner: string, actor: string): string {
   return principalKey(owner, actor).name;
 }
 
-/** Inverse of {@link principalKey}'s dot-form `key`: split a principal `<owner>.<actor>` back into its
- *  two tokens, or `null` if it isn't a valid one. Owner/actor tokens are `[A-Za-z0-9_]+` (dot-free), so a
- *  single `.` separates them unambiguously — exactly two segments, both {@link assertValidOwnerToken}-valid.
- *  Used where a stored principal (a member/from.id dot-form) must be re-split to feed the owner+actor
- *  subject builders (e.g. fan-out → `dinboxSubject`). */
 /** A deprovision target is a LIFECYCLE, never an alias (SPEC §13.1 "the teardown credential is
  *  minted target-pinned to `(principal, lifecycleUid)` by exact name"): the principal dot-form
  *  (`u_….<actor>`, user-mode agents) or a bare static/dev actor id (an nkey pub — never contains a
@@ -253,15 +285,28 @@ export interface DeprovisionTarget {
   principal: string;
   /** The retired/target incarnation's lifecycle UID — the successor's differs by construction. */
   lifecycleUid: string;
+  /** Concrete channels whose durable membership rows (`memberKey(channel, principal, uid)`) this
+   *  teardown purges. Each becomes one exact-key grant, so the cred still names only this lifecycle. */
+  memberChannels?: readonly string[];
 }
 
 /** Resolve a deprovision target to its `(owner, actor, lifecycleUid)` triple. Shared by the
  *  deprovisioner permission pin and the teardown helper so they can't diverge. */
-export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: string; actor: string; lifecycleUid: string } {
+export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: string; actor: string; lifecycleUid: string; memberChannels: string[] } {
   const pr = parsePrincipalKey(target.principal) ?? { owner: DEV_OWNER, actor: target.principal };
-  return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid) };
+  const memberChannels = [...new Set(target.memberChannels ?? [])].map((ch) => {
+    assertValidChannel(ch);
+    if (!isConcreteChannel(ch)) throw new Error(`deprovision target: member channel "${ch}" must be concrete (membership rows are per concrete channel)`);
+    return ch;
+  });
+  return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid), memberChannels };
 }
 
+/** Inverse of {@link principalKey}'s dot-form `key`: split a principal `<owner>.<actor>` back into its
+ *  two tokens, or `null` if it isn't a valid one. Owner/actor tokens are `[A-Za-z0-9_]+` (dot-free), so a
+ *  single `.` separates them unambiguously — exactly two segments, both {@link assertValidOwnerToken}-valid.
+ *  Used where a stored principal (a member/from.id dot-form) must be re-split to feed the owner+actor
+ *  subject builders (e.g. fan-out → `dinboxSubject`). */
 export function parsePrincipalKey(key: string): { owner: string; actor: string } | null {
   if (typeof key !== "string") return null;
   const dot = key.indexOf(".");
@@ -314,7 +359,7 @@ export function principalTags(owner: string, actor: string): string[] {
  *  (it drops the connection rather than fall back to the ephemeral nkey — a tagless connection is not a
  *  principal we can attribute). Validates via {@link parsePrincipalKey} so a forged/garbled tag can't
  *  smuggle a non-principal string into the feed. */
-export function principalFromTags(tags: readonly string[] | undefined): string | null {
+export function principalFromTags(tags: readonly string[] | undefined, opts: { allowPlatform?: boolean } = {}): string | null {
   if (!tags) return null;
   const tag = tags.find((t) => t.startsWith(PRINCIPAL_TAG_PREFIX));
   if (!tag) return null;
@@ -324,7 +369,7 @@ export function principalFromTags(tags: readonly string[] | undefined): string |
   // `principal:<nkey>.team` tag would key a live feed entry on an nkey-shaped owner the surfacing path
   // rejects. Fail closed on anything else.
   const p = parsePrincipalKey(key);
-  return p && isPrincipalOwnerToken(p.owner) ? key : null;
+  return p && isPrincipalOwnerToken(p.owner, { allowLocal: true, allowPlatform: opts.allowPlatform ?? false }) ? key : null;
 }
 
 /** Inverse of {@link principalKey}'s `name` form (`<owner>-<actor>`): recover the principal dot-form
@@ -332,13 +377,13 @@ export function principalFromTags(tags: readonly string[] | undefined): string |
  *  tokens too — `-` is reserved as the name-form separator — so the FIRST `-` splits owner from actor
  *  unambiguously, and both halves must be {@link parsePrincipalKey}-valid with a real principal owner.
  *  An nkey (no `-`) or any other non-name-form returns null. */
-export function principalFromName(name: string | undefined): string | null {
+export function principalFromName(name: string | undefined, opts: { allowPlatform?: boolean } = {}): string | null {
   if (typeof name !== "string") return null;
   const dash = name.indexOf("-");
   if (dash <= 0 || dash >= name.length - 1) return null;
   const key = `${name.slice(0, dash)}.${name.slice(dash + 1)}`;
   const p = parsePrincipalKey(key);
-  return p && isPrincipalOwnerToken(p.owner) ? key : null;
+  return p && isPrincipalOwnerToken(p.owner, { allowLocal: true, allowPlatform: opts.allowPlatform ?? false }) ? key : null;
 }
 
 /** Recover a connection's principal dot-form from a `$SYS` CONNZ record, across BOTH credential
@@ -349,9 +394,11 @@ export function principalFromName(name: string | undefined): string | null {
  *     and does NOT surface `tags` at all (proven live on nats-server 2.10.22 + 2.14.2).
  *  So attribution must try the tag first, then the `authorized_user` name-form; anything else (an
  *  un-tagged nkey, open mode, infra) is `null` — unattributable, dropped fail-closed by callers.
- *  The membership feed and live eviction both key on this, so it lives here as the single source. */
-export function principalFromConnz(conn: { tags?: readonly string[]; authorized_user?: string }): string | null {
-  return principalFromTags(conn.tags) ?? principalFromName(conn.authorized_user);
+ *  The membership feed and live eviction both key on this, so it lives here as the single source.
+ *  `allowPlatform` also attributes a platform `p_…` owner (SPEC 13.1). Only the eviction and liveness
+ *  sweeps opt in, so they can fence the platform control family; the membership feed does not. */
+export function principalFromConnz(conn: { tags?: readonly string[]; authorized_user?: string }, opts: { allowPlatform?: boolean } = {}): string | null {
+  return principalFromTags(conn.tags, opts) ?? principalFromName(conn.authorized_user, opts);
 }
 
 /** The reserved owner token for the **no-login local/dev path** — the static-creds default when there
@@ -386,6 +433,25 @@ export function assertDerivedOwnerToken(owner: string): string {
   return owner;
 }
 
+/** True when `owner` is a derived user owner (`u_` plus its grammar); the predicate form of
+ *  {@link assertDerivedOwnerToken}, which throws on the same input. */
+export function isDerivedOwner(owner: string): boolean {
+  return typeof owner === "string" && /^u_[a-z2-7]{26}$/.test(owner);
+}
+
+/** Prefix of every **platform owner token** — see {@link assertPlatformOwnerToken}. */
+export const PLATFORM_OWNER_PREFIX = "p_";
+
+/** Validate the format of a **platform owner token**: `p_` + 26 lowercase base32 chars. The auth
+ *  service derives it for the one platform control manager assigned to an account (SPEC 13.1). It is
+ *  disjoint from `u_…` derived owners by prefix, from {@link DEV_OWNER} and from nkeys. A trust
+ *  boundary admits it only where it opts in with `allowPlatform`. */
+export function assertPlatformOwnerToken(owner: string): string {
+  if (typeof owner !== "string" || !/^p_[a-z2-7]{26}$/.test(owner))
+    throw new Error(`invalid platform owner token "${owner}": expected "${PLATFORM_OWNER_PREFIX}" + 26 lowercase base32 chars ([a-z2-7])`);
+  return owner;
+}
+
 /** Validate an owner token at a READ / persisted-owner TRUST boundary — STRICTER than
  *  {@link assertValidOwnerToken}, which (by design) still accepts nkey-shaped uppercase tokens and so does
  *  NOT by itself satisfy the flip's acceptance criterion 2. A *real* owner is EITHER a derived owner
@@ -397,14 +463,15 @@ export function assertDerivedOwnerToken(owner: string): string {
  *  for keying, surfacing, or authorization (membership feed re-key, history surfacing). Actors stay on
  *  {@link assertValidOwnerToken} — they are server-derived from the ledger, not disjointness-constrained.
  *  User-mode MINT boundaries (callout/bridge) use {@link assertDerivedOwnerToken} directly (no `local`). */
-export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean } = {}): string {
+export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean; allowPlatform?: boolean } = {}): string {
   if (opts.allowLocal && owner === DEV_OWNER) return owner;
+  if (opts.allowPlatform && /^p_[a-z2-7]{26}$/.test(owner)) return owner;
   try {
     return assertDerivedOwnerToken(owner);
   } catch {
     throw new Error(
       `invalid principal owner "${owner}" at a trust boundary: expected a derived owner (u_…)` +
-        `${opts.allowLocal ? ` or the reserved dev owner "${DEV_OWNER}"` : ""} - an nkey-shaped or arbitrary ` +
+        `${opts.allowLocal ? ` or the reserved dev owner "${DEV_OWNER}"` : ""}${opts.allowPlatform ? " or a platform owner (p_…)" : ""} - an nkey-shaped or arbitrary ` +
         `token is not a real owner (flip criterion 2: owners are nkey-disjoint).`,
     );
   }
@@ -415,9 +482,9 @@ export function assertPrincipalOwnerToken(owner: string, opts: { allowLocal?: bo
  *  this on `parsed.owner` alongside the `from.id === parsed.sender` check, so a structurally-valid old-shape
  *  alias (`chat.<nkey>.team.backend`, owner = an nkey) is DROPPED at read time — belt to cred death, not a
  *  dependency on it. `allowLocal` defaults true: the dev/static path is a legitimate live sender. */
-export function isPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean } = { allowLocal: true }): boolean {
+export function isPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolean; allowPlatform?: boolean } = { allowLocal: true }): boolean {
   try {
-    assertPrincipalOwnerToken(owner, { allowLocal: opts.allowLocal ?? true });
+    assertPrincipalOwnerToken(owner, { allowLocal: opts.allowLocal ?? true, allowPlatform: opts.allowPlatform ?? false });
     return true;
   } catch {
     return false;
@@ -663,6 +730,58 @@ export const CONTROL_DELIVERY = "delivery" as const;
  *  cred is default-denied — nats-server is the boundary);
  *  the `delivery` cred holds the serve + bounded-reply side. */
 export const CONTROL_DELIVERY_ADMIN = "delivery-admin" as const;
+
+// ---- the peer-readable liveness rail (#1577) ----
+
+/** The route token of the PEER-READABLE LIVENESS rail: `live.<plane>.<owner>.<actor>`.
+ *
+ *  ITS OWN TIER, and the choice is load-bearing in two directions.
+ *
+ *  NOT `ctl`. Since 1d `ctl.<service>` is ONLY the delivery daemon (`ctl.delivery` /
+ *  `ctl.delivery-admin`); the manager's control moved to its v0.4 `service` endpoint. Answering
+ *  MANAGER liveness on a `ctl` tier would re-introduce a manager ctl rail by accident — exactly what
+ *  that change deleted, and it would arrive spelled like a control rail while carrying none of its
+ *  authority, which is the worst of both.
+ *
+ *  NOT `ep`. The endpoint rails carry the typed command surface with its authz/target grammar and
+ *  its capability mints. A presence-only probe must not acquire that reach, and a reader auditing
+ *  the ep plane must not have to except one subject from every statement about it.
+ *
+ *  Its own token means it can be granted, denied, audited and reasoned about as ONE thing: a grep
+ *  for `.live.` finds the entire liveness surface. */
+export const LIVENESS_ROUTE = "live" as const;
+
+/** The liveness REQUEST subject: `live.<plane>.<owner>.<actor>` — the same four-token shape as a
+ *  control service subject, so the caller principal is pinned in the subject exactly as it is
+ *  everywhere else and the broker forge-locks the identity slots against the minted grant. A peer
+ *  publishes only its own principal's form; the responder subscribes the `*.*` caller form.
+ *
+ *  THE PLANE RIDES THE SUBJECT, NOT THE PAYLOAD, and that is a permissions decision rather than a
+ *  stylistic one: a subject token is what a credential can be scoped to, so a credential can be
+ *  granted "may ask about delivery" and nothing else, enforced by the broker. A plane carried in the
+ *  body would be invisible to nats-server and gradeable only by the responder — the weaker boundary,
+ *  since it would make the responder the only thing standing between a caller and a plane it was
+ *  never meant to ask about. */
+export function livenessSubject(space: string, plane: string, owner: string, actor: string): string {
+  return `${spacePrefix(space)}.${LIVENESS_ROUTE}.${routeToken(plane)}.${ownerToken(owner)}.${ownerToken(actor)}`;
+}
+
+/** The SERVE-side filter a responder subscribes for one plane: `live.<plane>.*.*` — every caller
+ *  principal, queue-grouped by the responder so a plane with several instances answers a probe once
+ *  rather than N times. Held by the plane's own credential and by nothing else: an agent that could
+ *  subscribe this could impersonate a responder and answer a peer's probe with a comforting lie. */
+export function livenessServeFilter(space: string, plane: string): string {
+  return `${spacePrefix(space)}.${LIVENESS_ROUTE}.${routeToken(plane)}.*.*`;
+}
+
+/** The responder's reply-PUBLISH grant for one plane, bounded to the `.reply.` leaf beneath a
+ *  caller's own request subject — the same shape as the delivery daemon's `ctl.delivery.*.*.reply.>`
+ *  and for the same two reasons: the responder can answer any requester without holding broad
+ *  inbox-publish, and because the row stops at the leaf it can NOT publish to the request subjects
+ *  themselves, so a responder cannot forge a probe that appears to come from a peer. */
+export function livenessReplyGrant(space: string, plane: string): string {
+  return `${spacePrefix(space)}.${LIVENESS_ROUTE}.${routeToken(plane)}.*.*.reply.>`;
+}
 // The AUTH service's rail is NO LONGER a `ctl` control service. §13.11 retires the v0 ctl rail in
 // full and "MUST NOT be handled"; the auth-admin rows that served on it were spec defects written
 // onto a deleted rail, and they are rewritten onto the v0.4 endpoint surface (Cotal #350). The

@@ -21,7 +21,47 @@
  * throws: the interpreter would carry on driving a run this process no longer speaks for.
  */
 import type { JournalEntry, JournalStore } from "@cotal-ai/lang";
-import { RunJournalAppender, RunSuperseded, RunJournalStalled } from "@cotal-ai/core";
+import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
+import {
+  RunJournalAppender,
+  RunSuperseded,
+  RunJournalStalled,
+  RunJournalReplayRaced,
+  replayRunJournal,
+  type RunJournalReplay,
+} from "@cotal-ai/core";
+
+/**
+ * How many replays a drive makes of its own journal before a lost round fails the read. It is the
+ * takeover's bound: `activateRun` tries three rounds by default, and the driver hands that loop no
+ * `beforeRetry`, so a lost round there is replayed at once with no pause in between.
+ */
+export const OWN_REPLAY_ATTEMPTS = 3;
+
+/**
+ * Replay a run's journal under the drive's own takeover id, replaying again after a lost round.
+ *
+ * `RunJournalReplayRaced` says another reader held the replay durable. Nothing is missing from the
+ * journal and the run is not lost, which is why `activateRun` replays again on it. A drive reads
+ * the same durable at every effect and at every poll of a parked pause, so its reads get the same
+ * bounded retry, and a lost round is not handed to the program as the step's own `L4000`. Any other
+ * failure, and the race on the last attempt, is raised unchanged.
+ */
+export async function replayOwnJournal(
+  js: JetStreamClient,
+  jsm: JetStreamManager,
+  space: string,
+  runId: string,
+  takeoverId: string,
+): Promise<RunJournalReplay> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await replayRunJournal(js, jsm, space, runId, takeoverId);
+    } catch (e) {
+      if (!(e instanceof RunJournalReplayRaced) || attempt >= OWN_REPLAY_ATTEMPTS) throw e;
+    }
+  }
+}
 
 /**
  * A run whose journal writer is finished, offered to the interpreter as a durability failure.
@@ -52,7 +92,18 @@ export class RunJournalUnavailable extends Error {
 }
 
 export class RunJournalStore implements JournalStore {
-  constructor(private readonly appender: RunJournalAppender) {}
+  private anchoring: Promise<void> = Promise.resolve();
+
+  /**
+   * `anchor`, when given, is called with the journal's head after every append and awaited before
+   * the append resolves, so the entry is covered by an anchor outside the journal before the
+   * language acts on it. The calls run one at a time in append order. A failed anchor fails this
+   * append and every later one, which the language reads as L5010.
+   */
+  constructor(
+    private readonly appender: RunJournalAppender,
+    private readonly anchor?: (journalHigh: number) => Promise<void>,
+  ) {}
 
   /** True once the underlying appender is finished. A driver polls this to stop early rather than
    *  discovering it on the next entry — the interpreter has no such concept and does not need one. */
@@ -79,6 +130,11 @@ export class RunJournalStore implements JournalStore {
         throw new RunJournalUnavailable(this.appender.run, e);
       }
       throw e;
+    }
+    const anchor = this.anchor;
+    if (anchor !== undefined) {
+      this.anchoring = this.anchoring.then(() => anchor(this.appender.journalHigh));
+      await this.anchoring;
     }
   }
 }

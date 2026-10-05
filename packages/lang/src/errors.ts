@@ -133,6 +133,11 @@ export const CATALOG = {
   // late, and the remedy differs (capacity for this host versus a broker that is behind). `L4000`
   // would send a reader to their own program for a condition in neither the program nor the effect.
   L4026: "Pause plane did not answer before the client deadline",
+  // An at-most-once step's hold expired (spec/cotal-lang.md §7.8). CATCHABLE, like L4003 and
+  // L4023: the write may or may not have happened, and the program decides what to do about that.
+  L4027: "At-most-once step's outcome was never settled",
+  // A program fault like L4011: the program put an effect inside `once` that a hold cannot bound.
+  L4028: "Effect not admitted inside `once`",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",
@@ -340,6 +345,22 @@ export class LangErrors extends Error {
   render(): string {
     return this.errors.map((e) => e.render(this.source)).join("\n\n");
   }
+}
+
+/**
+ * The host ran out of stack.
+ *
+ * How deep a run can go before this fires is a property of the host (its `--stack-size`, a worker
+ * thread's default, the Node version), not of the program. A program that could catch it would pick
+ * its next effect by the machine it ran on, and a journal recorded on one host would diverge on
+ * resume on another (L5001). So it is never a language refusal: `guarded` passes it through instead
+ * of mapping it to L4016, and both engines' catch paths rethrow it uncaught.
+ *
+ * V8 raises it as a plain `RangeError` and names it only by its message, so the message is what is
+ * matched. A `RangeError` with any other message (`"a".repeat(-1)`) stays an ordinary host refusal.
+ */
+export function isStackExhaustion(e: unknown): boolean {
+  return e instanceof RangeError && e.message === "Maximum call stack size exceeded";
 }
 
 /**

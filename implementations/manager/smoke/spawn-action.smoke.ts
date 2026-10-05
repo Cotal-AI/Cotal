@@ -21,32 +21,27 @@
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import {
-  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, epCall,
-  actionContext, readGoalResult, listGoalIndex, recordsBucket,
-  registry, firstFreeName,
-  type ActionContext, type Connector, type EpCaller, type GoalRef, type LaunchOpts, type LaunchSpec,
-} from "@cotal-ai/core";
-import { recordMesh } from "@cotal-ai/workspace";
+import type { ActionContext, Connector, EpCaller, GoalRef, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { censusCustodians, reapSeat, runMarker } from "@cotal-ai/seat";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
-import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
-import { SMOKE_BROKER_TOKEN, makeSeatRoot, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, makeSeatRoot, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-spawnact-ws-"));
+process.env.COTAL_HOME = join(workspaceRoot, "home");
+const {
+  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, epCall,
+  actionContext, readGoalResult, listGoalIndex, recordsBucket, registry, firstFreeName,
+} = await import("@cotal-ai/core");
+const { recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT, MANAGER_CONTRACTS } = await import("../src/manager-service-contract.js");
+const { launchEnv } = await import("@cotal-ai/connector-core"); // dev-only smoke import: the OS env allow-list a real connector supplies
 
 const dec = new TextDecoder();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
   new Promise((r) => { if (p.exitCode !== null || p.signalCode !== null) return r(); p.once("exit", () => r()); setTimeout(r, ms).unref?.(); });
 
@@ -62,7 +57,6 @@ const SPACE = "spawnact-open";
 const kids: ChildProcess[] = [];
 const conns: NatsConnection[] = [];
 
-const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-spawnact-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 // A DISPOSABLE custody root for this run's seats (the pty runtime reads COTAL_SEAT_ROOT at
 // construction, so it must be set before the first `new Manager`). The M5 crash stop below

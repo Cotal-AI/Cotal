@@ -1,5 +1,5 @@
 import { inspectCredHealth, startMembershipFeed, type MembershipFeedHandle, type SecretStore } from "@cotal-ai/core";
-import { CONNECTION_EVICTOR_CREDS_KIND, findCotalRoot, membershipRwCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, workspaceSecretStore } from "@cotal-ai/workspace";
+import { CONNECTION_EVICTOR_CREDS_KIND, membershipRwCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, workspaceSecretStore } from "@cotal-ai/workspace";
 import { loadSysPair, observerTenancyProblem, repairAdvice, tornRotationProblem, type SysCredsSource } from "./sys-creds.js";
 
 /**
@@ -28,18 +28,19 @@ import { loadSysPair, observerTenancyProblem, repairAdvice, tornRotationProblem,
 export type MembershipStart = { handle: MembershipFeedHandle; down?: undefined } | { handle?: undefined; down: string };
 
 export async function startMembership(
-  opts: { space: string; server: string; accountId: string },
+  opts: { space: string; server: string; accountId: string; root?: string },
   store?: SecretStore,
 ): Promise<MembershipStart> {
   // `injected` is the composition root's own fact, decided here before any I/O — never inferred by
   // probing the store or sniffing `.cotal/`, which would report "workstation" for a hosted daemon
-  // and emit a CLI repair the host cannot run (design §4.1). The workstation arm carries the root
-  // it resolved, because that is what lets `repairAdvice` ask whether the command it would name is
-  // one this root can actually run; a hosted composition has no root and names no command.
-  // Spelled as a branch, not a `??`, so the root is still resolved ONLY when no store was injected.
+  // and emit a CLI repair the host cannot run (design §4.1). The workstation arm carries the
+  // daemon's root, chosen once at its start (`--root` or the cwd walk) and never re-walked here,
+  // because that is what lets `repairAdvice` ask whether the command it would name is one this
+  // root can actually run; a hosted composition has no root and names no command.
   let source: SysCredsSource;
   if (store === undefined) {
-    const root = findCotalRoot();
+    if (opts.root === undefined) throw new Error("membership: a workstation feed needs the daemon's workspace root");
+    const root = opts.root;
     source = { secrets: workspaceSecretStore(root), space: opts.space, injected: false, root };
   } else {
     source = { secrets: store, space: opts.space, injected: true };

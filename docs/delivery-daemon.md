@@ -21,11 +21,22 @@ read checks it must apply. A conformant deployment may realize the backstop diff
   eligible member's private durable store. For an `@mention` on a *`live`* channel it also writes
   a copy for each mentioned peer authorized to read that channel, which is how a mention reaches
   an authorized peer who isn't currently joined ([SPEC §4](../SPEC.md#4-delivery-modes)). Fan-out
-  handles routing; authorization remains with the broker policy.
+  handles routing; authorization remains with the broker policy. A post with an empty id is copied
+  without a duplicate-suppression key, so two distinct id-less posts are both delivered and a
+  redelivery of one may surface twice.
 - **Trusted reader.** It pulls each pending entry, re-checks that the member is still allowed to
   read it, and hands the authorized copy to the member over an at-least-once channel (its inbox),
   keeping the entry pending until the member confirms it was surfaced. A crash between handing off
   and surfacing does not lose the message; the entry redelivers ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
+  An entry addressed to a retired lifecycle is dropped and removed from the store the first time
+  the reader meets it. Retirement leaves a tombstone on that lifecycle's read-ACL row, and a retired
+  lifecycle never comes back, so a later reader with a fresh cursor does not pay for it again. The
+  reader acks such an entry only after the delete succeeds. A failed delete leaves the entry pending,
+  so it is retried and given up after ten redeliveries, and an entry the stream no longer holds counts
+  as removed. A daemon that stops serving while the delete is in flight neither acks nor gives up the
+  entry, so the daemon that serves next retries it. An entry whose owner has no ACL row at all is
+  retried, then given up after ten redeliveries, and kept, because a missing row does not prove the
+  owner is gone.
 - **Membership registry.** A privileged-written record of who is a durable member of each
   channel, carrying per-member join and leave cursors so a post concurrent with a join or leave
   orders deterministically ([SPEC §7](../SPEC.md#7-channels)). It is broker-known truth, not
@@ -56,6 +67,28 @@ credential** co-located with the broker: never an allow-all cred, and it never h
 signing key. One daemon serves a space (a single-flight lease guards against a second binding the
 same durables).
 
+The manager needs this daemon while it starts. Its SecretStore challenge, its boot repair of a frozen
+registration gate, and the verified eviction a restart performs all go over the daemon's
+`ctl.delivery-admin` rail. A manager that starts while the daemon is still binding, or while the
+daemon re-checks who owns its lease, waits up to 60 seconds for the rail to answer. Only a request
+that times out or finds no responder is retried. Retries come closer together as the wait runs out,
+so a daemon that binds in its last seconds is still asked. The wait ends on time even while a retry
+is still connecting, and nothing is sent after it. A daemon that answers fails the start at once if
+it refuses or its reply cannot be read. One that stays silent for the whole wait fails it, and the
+manager log names the rail.
+
+A restart verify-evicts every holder in the manager's credential family, and the family keeps a
+ledger row for every credential an earlier incarnation was issued. The manager sends those holders
+as one `evictPrincipals` request per 256, and the daemon answers each request with one shared sweep
+of the broker. The manager records the holders each request verified before it sends the next, so a
+restart cut short by its executor window resumes after the last recorded request. A daemon that does
+not serve that verb refuses it, and the restart leaves the gate frozen.
+
+An agent binds its per-member delivery durable even when the plane reached by its connection has no
+ready delivery lease, so a daemon that starts later can deliver through it. A missing or not-ready
+lease emits a warning that names the durable, space, and condition. It tells the agent to reconnect
+against another plane if that plane serves the space, which re-binds the durable there.
+
 Before it constructs its endpoint or claims that lease, the daemon reads the account-scoped `$SYS`
 observer from the same source it will use for scans, whether that source is the workstation store or
 an injected hosted store. It refuses if the observer belongs to another account, is missing, or is
@@ -68,21 +101,59 @@ refuses a plaintext listener rather than upgrading on the server's unauthenticat
 holds a standing credential and reconnects unattended, so a downgrade here would repeat with nobody
 watching. See [transport.md](transport.md).
 
+The transport-health component can use the resident endpoint's NATS connection events, with no
+additional authenticated dial while it is healthy. It distinguishes broker disconnects from
+authentication-expiry errors and clears the corresponding failure on a proved credential adoption.
+Until this component is wired into the daemon, the current two-second authenticated broker probe
+remains its active broker watch.
+
+The daemon refuses a `reloadCreds` adoption until it has finished starting, which is after its lease
+watch is bound. Its lease turns ready earlier than that, so a renewal owner can ask before start-up
+is done. The refusal says the daemon has not finished starting and adopts nothing. The next renewal
+pass or the daemon's own 75% re-read adopts the re-signed credentials.
+
 `cotal up` reports the daemon **only when it is actually serving**. If a daemon it started exits
 without taking the single-flight lease because another daemon holds it, or because a crashed
-holder's lease has not expired yet. `up` says so and exits non-zero instead of printing a healthy control plane over a
+holder's lease has not expired yet. A lease write the credential is not allowed to make is reported
+as a denial naming the refused subject and operation, never as another daemon holding the lease.
+`up` says so and exits non-zero instead of printing a healthy control plane over a
 daemon that is not there. The daemon writes its own reason to `.cotal/delivery.<key>.log`, the log
 for the space it serves ([Config](config.md#project-files)). That path is project-local. Detached
 `up` redirects the daemon's stdout and stderr onto the file, so wrapping the launcher in a
-systemd unit does not put those lines in that unit's journal.
+systemd unit does not put those lines in that unit's journal. A daemon stopped by SIGTERM or
+SIGINT, which is what `cotal down`, a service stop and Ctrl-C send, writes `received <signal>,
+exiting` to that log before it releases its lease. A SIGKILL, including one from the kernel OOM
+killer, ends the daemon with no line.
+
+A foreground `cotal up` restarts a daemon it started when that daemon dies while the broker that
+`up` started is still running. It logs
+`delivery daemon exited (<cause>) while nats-server is running - restarting it`, then
+`delivery daemon running again` once the replacement's responder is bound. A replacement whose
+responder does not bind gets the same not-bound warning as at startup instead. The daemon ends
+itself when it cannot reach the broker, and a starved host can make a running broker look
+unreachable. Without the restart, every retirement that needs the daemon would fail until someone
+ran `cotal up` again. A failed restart is logged and retried after the 30-second lease TTL. A daemon
+that exits cleanly or on SIGTERM or SIGINT stays stopped. So does one that `cotal down delivery`
+stops, also when the daemon is too starved to exit on SIGTERM and `down` kills it, when it is a
+replacement that is still starting, and when the stop lands between two restart attempts. Detached
+`up` exits after launching and restarts nothing; a bare `cotal up` relaunches a missing daemon there.
 
 The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
 removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a
 container entrypoint, a systemd unit, or `cotal deliver --space <space>` typed by hand all reach one
-too, and a record written only by the launcher goes stale the moment any of those restarts it. The
+too, and a record written only by the launcher goes stale the moment any of those restarts it. Typed
+by hand on the workstation, the daemon dials the broker recorded for the space in the mesh registry
+(a mismatching `--server` is refused before any dial); with no record for the space it uses the
+local mesh default, and a daemon with an injected store never consults the registry at all. The
 write happens once the daemon holds the single-flight lease, because that is the point at which it is
 the space's daemon: one that loses the lease refuses to bind and exits, and must not overwrite the
 live holder's record on its way out.
+
+The daemon serves one workspace root, chosen at start: the one `cotal deliver --root <dir>` names,
+or the nearest `.cotal/` above its working directory. A workstation daemon with neither refuses at
+start and names the directory it searched from, before it reads a credential or dials a broker,
+because a directory nobody set up holds none of its credentials. A daemon with an injected store
+takes its credentials from that store and needs no `.cotal/`.
 
 Readers verify the record before believing it. A recorded pid is trusted only when the process behind
 it is alive **and** its command line names a delivery daemon, so a record that outlived its process

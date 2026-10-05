@@ -44,17 +44,22 @@ No client has compile-time knowledge of any endpoint's commands. `cotal describe
 `describe` command answers the registered contract digests, the schemas are fetched from the
 space's content-addressed contract store, recompiled, and verified against those digests.
 Each command prints with its capability class and targeting shape. `cotal invoke <endpoint>
-<command> --args '<json>'` then calls one command by name, validating the arguments against
-the fetched input schema before publish. A signed-in user invokes the same surface through their
-bearer, and the broker enforces each command's existing capability grant. A manager alias supplied
-through `--name` resolves through its name-keyed `inspect` command, so an authorized targeted call
-does not need the manager-wide `ps` enumeration grant. Every built-in manager command uses this
-same trust chain, so there is nothing the built-ins can reach that a described contract cannot.
+<command> --args '<json>'` then calls one command by name, validating the arguments as they
+will be sent (JSON drops a key whose value is undefined) against the fetched input schema before
+publish. A refusal at that check means nothing was sent, and it is marked `not-executed`. A
+signed-in user invokes the same surface through their bearer, and the broker enforces each
+command's existing capability grant. A manager alias supplied through `--name` resolves through
+its name-keyed `inspect` command, so an authorized targeted call does not need the manager-wide
+`ps` enumeration grant. Every built-in manager command uses this
+same trust chain, so there is nothing the built-ins can reach that a described contract cannot. The registered
+`auth` endpoint is describable the same way `manager` is: `cotal describe auth` lists
+`retire-lifecycle` and its exact-mode target shape.
 See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
 
 The manager's `resolve-cwd` command is in the `manager.spawn` capability class. It accepts an
 absolute path on that manager's host and returns its canonical directory plus the host name. It
 refuses a relative, missing or non-directory path with `failed-precondition`; it creates nothing.
+`spawn` applies the same check at admission, before any credentials or durables are minted.
 
 ### Inspecting a managed name
 
@@ -72,6 +77,13 @@ then carries the separate lifecycle head's `headState`, `headOp` when present,
 the lifecycle head yet.
 The error message carries the same diagnostic summary so string-only operator paths do not hide
 the structured detail.
+
+A slot row records the manager instance that owns it. In a space with more than one manager, the
+class queue can hand `inspect` to an instance that does not host the name. When the row names a
+different instance and is not `retired`, the miss returns `failed-precondition` with the same
+detail plus `ownerInstanceId`, which names the only manager that can act on it. The message names
+both instances, so a caller that reads only the string can tell it from `not-found`. A sibling's
+`retired` row remains `not-found`.
 
 The slot is read before the head. These records do not form one atomic snapshot, so the detail
 also carries `readOrder: ["slot", "head"]` and `consistency: "ordered-not-atomic"`. A head can
@@ -92,6 +104,16 @@ custodian exit can unlink its file without losing the recorded boot and process 
 If the file is missing, reaping uses that retained record and the existing kernel identity
 checks. An unknown reference without either record refuses cleanup. Reused process ids
 are never signalled on the strength of the old record.
+
+### Listing the durable slots
+
+Manager `slots` (`manager.read`, untargeted) lists the durable static slot rows this manager
+owns. Only static managers hold these rows: a user-mode or open manager answers
+`failed-precondition`, and a manager whose durable store is not standing answers `unavailable`.
+Each row carries the same `readOrder` and `consistency` fields `inspect` uses, because the list
+is read the same way: torn across rows as well as within each row's slot/head pair. A `retired`
+row is never listed. `live` reflects the manager's live roster at render time, not the durable
+row.
 
 ## Spawn is a goal
 
@@ -114,7 +136,11 @@ up, the manager accepts the goal and returns the allocated identity at once:
 
 The name is the one actually allocated: a persona-derived collision is auto-numbered
 (`reviewer`, then `reviewer-2`), while a hard-pinned `--name` that collides with a live
-agent is refused at accept, before anything is minted. The triple plus `goalId` let the
+agent is refused at accept, before anything is minted. Auto-numbering never hands out a numbered
+name it has already issued in that manager process, even after the agent holding it is gone, so
+a collision takes the next number. Only numbering consults that history: a hard-pinned `--name`,
+or a persona whose own name is a numbered string, takes that name whenever it is free, and
+numbering does not skip a string such a spawn held before. The triple plus `goalId` let the
 caller follow progress (connector handoff, process launched, presence join) and reconcile
 later against the exact instance that accepted. Presence within the manager's default
 30-second readiness window, or a connector's declared bounded window, settles the goal
@@ -146,12 +172,15 @@ state, not reporting a missing one.
 
 A space can run more than one manager. Each manager persists a stable logical instance id
 across restarts and advances its process epoch when it comes back, so callers address a
-specific manager without caring which process currently serves it. On a static or open mesh,
-an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did);
-`cotal spawn <persona> --detach --on <instance>` pins one instance by its exact id (a
-foreground spawn has no manager to pin and refuses the flag). There are no ordinal
+specific manager without caring which process currently serves it. A start serves only at the
+epoch its own registration committed, never at the epoch of a later start of the same instance.
+On a static or open mesh,
+an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
+`cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
+pin one instance by its exact id. A foreground CLI spawn has no manager to pin and refuses the
+flag. An MCP pin that does not resolve is refused without falling back to class anycast. There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
-the whole id, because `--on` takes nothing else.
+the whole id, because both surfaces take nothing else.
 
 On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
 exchange. It authorizes one concrete manager instance using the caller's current actor grant and
@@ -222,7 +251,9 @@ between a split and a duplicated spawn. Against a manager older than this fence 
 still after the fact, and its message says so. The re-issue is automatic only when the refusal
 states `not-executed` in its `outcome` field; a refusal that omits the field, or states
 `unknown`, is surfaced to the caller instead of repaired, because neither proves the command did
-not run.
+not run. The CLI's manager commands, `cotal invoke` and the manager row of `cotal status` re-describe
+and re-issue an unpinned call after each such refusal, up to 16 times, so a split reaches the
+operator only when every attempt split. A pinned call is never re-issued.
 
 A manager whose boot inventory marked every declared connector unavailable does not subscribe
 `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this
@@ -279,10 +310,10 @@ A manager that stops cleanly removes its own registration if it still owns the r
 so an ordinary shutdown leaves no stale row. It refuses that delete while this instance holds the
 endpoint governance slot at the live issuance-gate generation (a registration still completing
 its reopen). A leftover slot whose generation is behind that live generation is not in-flight and
-does not block the stop. Lease trouble is not an exit path. A manager that
-cannot renew or read its lease keeps serving, stays registered, and retries. If another process
-holds the same instance key, it logs the conflict and keeps serving until an operator stops one of
-them. The revision-pinned deregistration leaves a successor's registration alone.
+does not block the stop. A manager that cannot renew or read its lease keeps serving, stays
+registered, and retries. If another process holds the same instance key, that process has taken
+the instance over, so this one logs the conflict and exits without deregistering, leaving the
+successor's registration alone.
 
 A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under
 that op. The successor completes the dead registration on boot when the freeze-holder is
@@ -307,7 +338,12 @@ so reopening that gate is what separates them: the holder's own restart heals it
 [`cotal reconcile-gate`](cli.md#reconcile-gate) is the operator's route when the boot path cannot
 run. The registration path is the slot's only writer, and neither repair command writes it.
 A registration that cannot read the holder's gate at all refuses, because an unreadable gate does
-not distinguish the two states either.
+not distinguish the two states either. Each of these refusals carries
+`kind = ai.cotal.ep.foreign-slot-held` in `error.details[]` with the holder's instance id and the
+`condition` that refused: `in-flight` for a holder gate still at the stamp, or `no-seam`,
+`unreadable`, `garbled` or `behind` when the registration could not read that gate or read it below
+the stamp. A remote manager asks its host to reconcile the holder only on `in-flight`, the one
+condition a gate repair can clear.
 
 For the instance that cannot cooperate, an operator names it:
 `cotal deregister-instance --instance <id>` ([cli.md](cli.md#deregister-instance)). It removes the
@@ -329,7 +365,9 @@ instance id and epoch, and an expiry, and replies with a session id and expiry o
 and no secret in the reply. The CLI redeems the offer over the mesh (a second redeem is
 refused). On a registered open mesh that redeem is a bare connection, the same path other
 control commands already use; on a static-auth mesh it is still a session-caller credential
-minted from the resolved root's seed. Terminal bytes then stream on core-NATS session subjects
+minted from the resolved root's seed. On a user-auth mesh the CLI holds no seed: it exchanges its
+login and the grant for a `session-caller` view bearer, and the callout mints the same caller rails
+with the grant's expiry. Terminal bytes then stream on core-NATS session subjects
 scoped to the two parties. Backpressure is a bounded in-flight window with an explicit drop notice, never
 silent loss; a late attach still repaints the full screen from a replayed terminal
 snapshot. Close, expiry, target despawn, and a manager restart are distinct, surfaced end

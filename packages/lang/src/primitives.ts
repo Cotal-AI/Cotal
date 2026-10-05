@@ -24,6 +24,13 @@ export const EFFECT_KINDS = [
 ] as const;
 export type EffectKind = (typeof EFFECT_KINDS)[number];
 
+/**
+ * The effect kinds a `once` scope admits. Closed, so a kind added later is refused under `once`
+ * (L4028) until it is listed: every other kind calls its handler more than once at one key, builds
+ * run state a settled answer cannot, or writes nothing a hold could bound.
+ */
+export const HOLDABLE_KINDS: ReadonlySet<EffectKind> = new Set(["ask"]);
+
 /** Which of a call's inputs decide whether a recorded result is still valid (design doc 5.12). */
 export interface PrimitiveSpec extends CalleeDoc {
   /** The effect kind journalled, or null for a pure primitive that writes no entry. */
@@ -87,17 +94,18 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
   spawn: {
     kind: "spawn",
     nameRequired: false,
-    options: ["name", "cwd", "placement", "worktree", "join", "role", "permits", "supervise", "onFork"],
+    options: ["name", "cwd", "placement", "worktree", "join", "role", "permits", "supervise", "onFork", "events"],
     optionsAt: 1,
     // `placement` is HASHED, beside `cwd`: the target is half the answer to "where does this seat
     // live". A replay that edits the target must diverge as a migration, not silently reuse the
-    // resolution taken against the old instance (#1616 item 3).
+    // resolution taken against the old instance (#1616 item 3). `events` is launch policy, like
+    // `supervise`, so it is not hashed.
     hashedOptions: ["cwd", "placement", "worktree", "join", "role"],
     hashesSubject: true,
     opensScope: false,
     signature:
-      "spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork? }) -> AgentHandle",
-    doc: "Bring an agent into the run. Permits are budgets whose violation is catchable; supervise is a declarative restart policy.",
+      "spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events? }) -> AgentHandle",
+    doc: "Bring an agent into the run. Permits are budgets whose violation is catchable; supervise is a declarative restart policy; events: false starts the agent without an event plane.",
     example: 'const builder = await spawn("builder", { worktree: "wt-1", join: [team] })',
   },
   turn: {
@@ -277,6 +285,18 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     doc: "Open a scoped sub-team: create a conclave channel, join the members, run fn with that channel, then have them leave. It scopes the derived flowchart the same way it scopes the journal.",
     example:
       'await conclave([a, b], (ch) => turn(a, { name: "huddle" }), { name: "triage" })',
+  },
+  once: {
+    kind: null,
+    nameRequired: true,
+    options: ["name"],
+    optionsAt: 1,
+    hashedOptions: [],
+    hashesSubject: false,
+    opensScope: true,
+    signature: "once(fn, { name }) -> value",
+    doc: "Run fn so that each step inside it is dispatched at most once. A resume that finds a step begun and never settled does not dispatch it again: it opens a hold, a checkpoint under a token derived from the step's recorded request id, and the settler's answer becomes the step's result. fn returns what the program reads; a write from it to a binding outside it is refused (L2032). Only ask runs inside it; any other effect is refused before it begins (L4028).",
+    example: 'const r = await once(async () => await ask(builder, { name: "publish", schema: { commentId: "number" } }), { name: "publish-360" })',
   },
 });
 

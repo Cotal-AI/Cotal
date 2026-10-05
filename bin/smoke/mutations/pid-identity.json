@@ -75,6 +75,39 @@
       "note": "Restores the write skip that made every Windows record unpinned. F2 reds when the sibling is absent after a win32-capable launch.",
       "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
       "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M5 the bridge pin never reaches the pin path (the #1238 bridge-pin step removed)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "      renameSync(bridgeTemp, pinPath);\n      onStep(\"bridge-pin\");\n",
+      "replace": "      onStep(\"bridge-pin\");\n",
+      "expectRed": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
+      "cell": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
+      "note": "Without the bridge, the crash planted at bridge-pin leaves the OLD single-line pin, so G2's two-line check fails. The same mutant would commit the NEW pid beside the OLD pin, a torn pairing, which is what G3 would read next.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M6 the bridge pin drops the old record's line (#1238)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "(old !== undefined && old.pid !== pid ? [old, line] : [line])",
+      "replace": "[line]",
+      "expectRed": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
+      "cell": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
+      "note": "With only the NEW line in the bridge, the OLD pid the pidfile still names has no line of its own, so G2 reads torn-pairing instead of match: the old record would lose its check for the length of the window.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M7 the pidfile is written in place during temporaries, never to a temporary (#1238)",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "    writeFileSync(pidTemp, String(pid));\n",
+      "replace": "    writeFileSync(pidfilePath, String(pid));\n",
+      "expectRed": "G0 a first publish with no injection leaves a complete, matching record",
+      "cell": "G0 a first publish with no injection leaves a complete, matching record",
+      "note": "Hand-confirmed: G0 is the FIRST writePidPair call ever made against a fresh pidfile path, so it is the call that hits the mutant first (not G1): the pidfile is written directly, then renameSync(pidTemp, pidfilePath) throws ENOENT since pidTemp was never created. G0 is try/catch-wrapped so this is now a clean, named red rather than an uncaught crash.",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
     }
   ]
 }

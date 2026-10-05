@@ -16,6 +16,7 @@ import {
   CotalEndpoint,
   isReachable,
   createSpaceAuth,
+  credsClaims,
   credsFingerprint,
   mintCreds,
   mintLifecycleUid,
@@ -119,6 +120,7 @@ try {
   // renewable endpoint: it refuses dead material locally, then reconnects on the fresh cred.
   const expiring = newIdentity();
   let expiringReads = 0;
+  let expiringExpMs = 0;
   let failedRebuildLogStart = -1;
   let originalExpiryObservedBeforeReconnectWindow = false;
   const expiringErrors: string[] = [];
@@ -129,8 +131,11 @@ try {
   const expiringSource = async () => {
     expiringReads++;
     if (expiringReads <= 3) {
-      if (expiringReads === 1)
-        return mintCreds(auth, expiring, "supervisor", { expiresInSeconds: 3 });
+      if (expiringReads === 1) {
+        const first = await mintCreds(auth, expiring, "supervisor", { expiresInSeconds: 3 });
+        expiringExpMs = credsClaims(first).exp! * 1000;
+        return first;
+      }
       if (expiringReads === 3) {
         // The rebuild is triggered by the original connection's broker-auth-expiry close. Its log
         // line and the socket close are separate asynchronous deliveries, so the source read can run
@@ -143,6 +148,12 @@ try {
           10,
         );
         failedRebuildLogStart = brokerLog.length;
+        // The broker tests `exp` in whole seconds and still admits a JWT during the second it
+        // names, then expires that connection at once. A rebuild that dials inside that second
+        // presents the expired cred without a CONNECT denial, so whether a missing guard showed up
+        // here depended on where in that second the original wire closed. Hold this failed read
+        // until the second has passed: the dial that follows it is then denied at CONNECT.
+        await wait(expiringExpMs + 1_000 - Date.now());
       }
       throw new Error("fixture renewal source offline");
     }
@@ -176,8 +187,11 @@ try {
     recovered,
     { reads: expiringReads, errors: expiringErrors },
   );
+  // Only the CONNECT denial counts. `User Authentication Expired` closes a connection that already
+  // authenticated: the original wire ends that way when renewal stays down, and the hold above keeps
+  // every later dial out of the second in which the broker would still admit the expired cred.
   const expiredCredDenials = brokerLog.slice(failedRebuildLogStart).split("\n").filter((l) =>
-    /User JWT no longer valid.*claim is expired|cotal:expired-creds.*User Authentication Expired/.test(l),
+    /User JWT no longer valid.*claim is expired/.test(l),
   );
   check(
     "the original wire's expiry log lands before the reconnect-denial observation window opens",

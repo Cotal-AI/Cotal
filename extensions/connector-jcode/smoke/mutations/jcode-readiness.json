@@ -37,9 +37,9 @@
     {
       "name": "M4 omit the post-join correction for stale bootstrap context",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      `You are now connected to the Cotal mesh as \"${config.name}\". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`,",
-      "replace": "      `You are connected.`,",
-      "expectRed": "post-join context supersedes the pre-join orientation card"
+      "find": "    const joinNotice = `You are now connected to the Cotal mesh as \"${config.name}\". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`;",
+      "replace": "    const joinNotice = `You are connected.`;",
+      "expectRed": "a no-prompt seat's post-join notice is delivered as a driven turn, not a noReply append"
     },
     {
       "name": "M5 do not await the completed mesh join before notifying Jcode",

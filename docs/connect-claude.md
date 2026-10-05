@@ -21,7 +21,8 @@ cotal up         # brings up the mesh + delivery daemon + a detached manager
 ```
 
 `cotal setup` installs the cotal plugin (so the repo's Claude sessions get the `cotal_*`
-tools) and seeds one `default` persona; `cotal up` brings up the local stack so
+tools), shares your own MCP servers with spawned sessions on its first run (see
+[Sharing your MCP servers](#sharing-your-mcp-servers)), and seeds one `default` persona; `cotal up` brings up the local stack so
 `cotal spawn --detach` / `cotal_spawn` work right away. Re-running either is idempotent.
 The install mechanics and the invariants behind them are in
 [setup internals](setup-internals.md).
@@ -36,8 +37,8 @@ coordinating agent teams (today `team-topology`), from one canonical source, on 
   and uninstalls on its own with `claude plugin uninstall cotal-skills --scope user`. Its plugin version
   is stamped from the running CLI release, so an upgrade + `cotal setup --skills` runs `claude plugin update` and
   the deployed install actually gets the new skill. `cotal setup` installs it on first run and on repeat
-  runs, so upgraders are not left behind. `cotal status` points a stale or missing skills plugin at
-  `cotal setup --skills`.
+  runs, so upgraders are not left behind. The same provider reports the plugin and skills plugin rows
+  in `cotal status`, which point a stale or missing skills plugin at `cotal setup --skills`.
 - **Every other harness** (Codex, Cursor, OpenCode, Gemini CLI, Windsurf/Devin) reads the cross-vendor
   `~/.agents/skills/` directory convention, which has no remote index, so `cotal setup` **reconciles** it
   (and `cotal setup --skills` does only that):
@@ -104,22 +105,30 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 - **Persona privacy.** The persona body is written to a private file and Claude receives only
   `--append-system-prompt-file <path>`. The body never appears in the spawned process argv. The
   carrier is a 0600 file inside a 0700 directory on POSIX, with equivalent owner-only ACL hardening
-  on Windows.
-- **MCP isolation.** A spawned agent runs with **only** the cotal MCP server:
-  `--strict-mcp-config` ignores every other MCP source, crucially the operator's personal
-  `~/.claude.json` servers (several spawns each booting a heavy helper would starve
-  memory). Share your own servers deliberately (see below).
+  on Windows. That is OS-user isolation: any process running as your user can read it while it
+  exists. The manager or the foreground `cotal spawn` removes it, and the shared-server MCP config
+  file, once it has proved the `claude` process gone. If the launcher is killed first, a watcher
+  started beside `claude` removes them when `claude` exits.
+- **MCP servers.** `--strict-mcp-config` ignores every ambient MCP source, so a spawned agent
+  loads the cotal server plus the servers the cotal config shares. First-run `cotal setup`
+  fills that list with your own user-scope servers, so a spawned session has the tools you know
+  (see below).
 - **Installed plugin.** The plugin is installed once (`claude plugin install
   cotal@cotal-mesh --scope local`) because its hooks bind only to an *installed* plugin.
-  In a clone the marketplace is the repo's `.claude-plugin/marketplace.json`; `cotal setup`
-  (npx, no clone) materializes the same marketplace under `~/.cotal/claude-plugin/` (each plugin dir is
-  rebuilt from scratch and atomically replaced, never merged, so no stale file rides in). The
+  The repo's `.claude-plugin/marketplace.json` lists the committed plugin tree under
+  `claude-plugin/`, which each release regenerates with the built bundles, the skills and the
+  release version, so an install from the repo or from a pinned commit runs without a build
+  ([Release](release.md)). `cotal setup` (npx, no clone) materializes the same marketplace under
+  `~/.cotal/claude-plugin/` from the installed CLI (each plugin dir is rebuilt from scratch and
+  atomically replaced, never merged, so no stale file rides in). The
   `cotal-skills` plugin installs from that same marketplace at user scope (`claude plugin install
   cotal-skills@cotal-mesh --scope user`); its manifest and install behavior ship inside the Claude connector, and
   its version tracks the CLI release so updates land.
-- **Identity-gated.** Connector code requires `COTAL_NAME` *or* `COTAL_LINK`. A plain
-  `claude` with no `COTAL_*` env stays inert and never joins, so your own sessions in a
-  repo do not appear as stray peers.
+- **Identity-gated.** Connector code requires `COTAL_NAME`, `COTAL_LINK` or `COTAL_AGENT_FILE`.
+  A plain `claude` with none of them never joins, so your own sessions in a repo do not appear
+  as stray peers. Its MCP server still answers `initialize` and lists one static tool,
+  `cotal_how_to_join`, which explains how to launch a session on a mesh. It builds no mesh
+  agent, opens no broker connection and binds no control socket.
 - **Hands-free.** The dev-channels flag prints a one-time confirm prompt. The PTY runtime waits for
   the dialog title in normalized terminal output and presses Enter once when it appears, so startup
   speed does not affect a supervised launch. If the declared prompt never appears, the seat exits
@@ -152,6 +161,11 @@ delivers, the other only wakes:
   at-least-once rather than treating a confirmed write as a confirmed read. Acking when
   the reply was merely *formatted* meant a lost reply was a lost message: it was already marked
   handled, so its own redelivery was silently acked on arrival.
+  A hook whose handler throws still returns an empty reply so the session is never blocked, and
+  that reply carries nothing, so it commits nothing: the batch it had started to surface stays
+  un-acked and goes out on a later frame. The seat also drops any `turn-pending` row that breaks
+  the manager contract, such as one with no integer deadline, and says so once in its log. A reply
+  with no `turns` array changes nothing: the seat keeps the turns it already holds.
   This errs toward **at-least-once**: if a reply lands but its confirmation does not, the batch is
   surfaced again and flagged as a possible repeat. A duplicate injection is noise; a buried DM stops
   the peer answering at all.
@@ -201,17 +215,51 @@ connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-
 A pull is bounded too, and clears only what it hands over. One `cotal_inbox` call carries at most a
 receivable window (direct messages and role requests first, then channel traffic, replayed history
 last); whatever does not fit stays buffered, is named in the reply, and comes back on the next call.
-A message too large for one whole response is never consumed at all: it is named with its sender and
-size and left buffered, because clearing what cannot be delivered is the loss this bound exists to stop.
+A message too large for one whole response is delivered in parts: once no smaller mail is waiting,
+each call carries its next part, and it is cleared only after its last part goes out, because clearing
+what was not handed over is the loss this bound exists to stop.
 That matters most on the path where it is easiest to lose mail: reconnecting brings a channel-history
 replay with it, so the largest payload and the least expendable message arrive in the same read.
 
-The local inbox is bounded. On pathological overflow it evicts pull-only items before automatic
-traffic. If the bounded live/durable classification guard also fills, the connector fails closed:
+The local inbox is bounded. On pathological overflow it evicts pull-only items first, then other
+channel traffic, and a direct message or role request only when the whole buffer is directed mail.
+An evicted channel item is acknowledged. An evicted direct message or role request never is, and
+the broker redelivers it after the ack wait until a redelivery finds room. A direct message stays
+pending on the session's DM durable, where `cotal deliver pending <name>` counts it. A role request
+stays on its role's shared queue, which that command does not read. A full inbox therefore delays
+directed mail until the session drains it.
+If the bounded live/durable classification guard also fills, the connector fails closed:
 otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
 still take precedence. Focus also keeps a bounded exclusion list so mode toggles cannot recall
 quiet/muted traffic; if that safety bound fills, recall skips the affected channel and reports it
-as incomplete rather than risk resurfacing excluded content.
+as incomplete rather than risk resurfacing excluded content. Recall cannot tell one message with an
+empty id from an identical one with another disposition, so in focus such a message is held in the
+local inbox as pull-only instead of being dropped, and a mention of it still wakes the agent. When
+the session settles an id-less copy, it reads the chat stream's last sequence. Identical copies
+arrive in stream order, and those reads can answer out of order, so the first read that can see the
+copies binds them in arrival order, latest first, each to the latest unbound stream copy at or below
+the lowest sequence read for it or any later identical copy.
+While the connection stays up, every stream copy at or below that sequence reached the session
+first, so a later identical copy sent during a reconnect gap is above it and stays unbound. A copy
+that arrives while a read runs may not be in that read, so it binds nothing there and recall reads
+the channel again, up to three times; if it still could be a stream copy in the last read, recall
+leaves that stream copy in the stream and reports the channel as incomplete. A settled copy a
+complete read cannot bind is behind the focus start or out of retention, and is forgotten. Recall
+hands back into the inbox only the stream copies nothing is bound to, such as one sent during a
+reconnect gap or one the inbox evicted on overflow, and `cotal_inbox` hands each over once. Overflow
+frees only the evicted copy, held or quiet, and a copy no read has bound yet keeps its place in
+arrival order, so an identical muted copy stays out of recall. When
+the inbox is full, recall leaves them in the stream for a later call and reports the channel as
+incomplete. A history read that fails, or a channel with replay off, settles nothing and is reported
+as incomplete, and recall calls run one at a time. If the sequence read for a settled copy fails,
+or answers only after the connection dropped, recall skips that channel for the rest of the focus
+period and reports it as incomplete. Recall cannot tell a late copy of a message it handed back from
+a new identical message, so every copy takes its own disposition: a new identical quiet mention is
+still delivered automatically, and a late copy can surface a second time.
+A recalled message that already went out in part is read to its last part, even if an exclusion
+lands after its first part. One session reads its inbox one call at a time: a `cotal_inbox` call
+that overlaps another waits for it to finish, so neither decides from a view the other has already
+moved past.
 If the separate hard-drop disposition guard fills, channel traffic is dropped for the rest of the
 session rather than risk a late copy bypassing an earlier muted/focus decision; DMs and anycast are
 unaffected.
@@ -274,9 +322,10 @@ session with no launch material and no required-policy fallback keeps the generi
 
 A new session includes its first run even when Claude writes a positional startup prompt before the
 connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
-`source: "startup"`; resumed, forked, cleared, and compacted sessions adopt at the current transcript
-boundary and do not republish retained history. Crash recovery follows the cursor already stored in
-the event write-ahead log, regardless of the new process's startup label.
+`source: "startup"`; resumed, forked, cleared, and compacted sessions adopt at the transcript boundary
+captured at that adopt, before the mesh link connects, so nothing Claude appends while the connector
+is still starting up lands behind the cursor and is silently dropped. Crash recovery follows the
+cursor already stored in the event write-ahead log, regardless of the new process's startup label.
 
 Claude starts each hook in its own process, so a prompt or stop relay can reach Cotal before the
 `SessionStart` relay. The connector holds those event flushes and the terminal until `SessionStart`
@@ -327,10 +376,9 @@ On a **user-auth** mesh:
 cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe 'events.<owner>.<actor>' --allow-publish ''
 ```
 
-Every field, deliberately. `actor grant` is an upsert of the whole row, and an omitted flag is not
-"leave it alone": it is the wide default, `>` read, `>` post, and `spawn,role:default` scope. A bare
-`cotal actor grant <reader>` therefore grants a reader of every channel in the space, which is the
-opposite of what a scoped watcher is for.
+Every field, deliberately. `actor grant` is an upsert of the whole row, so it refuses a grant that
+leaves off any of the three ACL flags. Only `--full` turns an omitted flag into the wide default
+(`>` read, `>` post, `spawn,role:default` scope), which is the opposite of what a scoped watcher is for.
 
 On a **static** mesh there is no actor ledger for `actor grant` to write to, and the refusal says
 so; mint the reader instead:
@@ -345,14 +393,19 @@ non-zero and writes no creds file, because the observer profile carries a fixed 
 whole chat plane, which is the opposite of what a scoped watcher is for. The agent profile also prints the lifecycle uid the
 reader needs, since an authed consuming endpoint refuses to start without one.
 
+On an **open** mesh there is nothing to grant: the mesh has no credentials and no ACLs, so any peer
+that lists the channel reads it, and the refusal says so instead of naming a command. The
+own-channel rule still applies there, because a spawn is not the place to hand out a read on
+another agent's tool inputs and outputs.
+
 Two things a reader has to do that are not obvious, both on `CotalEndpoint`. It must pass the event
 channel in `channels`: an endpoint reads the channels it lists, so one constructed without
 the event channel joins nothing and the frames never arrive. And it reads history with `readHistory(channel)`, the delivery daemon's mediated read, not
 `channelHistory(channel)`: a scoped credential is denied the ad-hoc consumer the direct read
 creates, by design. `cotal console` and the web console already do both.
 
-The `<owner>.<actor>` pair is the session's principal, not its display name. On a user-auth mesh
-the actor half **is** the agent's name, so the channel is `events.<your-owner>.<agent-name>`. On a
+The `<owner>.<actor>` pair is the session's principal. On a user-auth mesh the actor half is the
+agent's own name, so the channel is `events.<your-owner>.<agent-name>`. On a
 static mesh the owner half is the literal `local` and the actor is a key the manager allocated, so
 the channel is `events.local.<key>`; the spawn reply carries that key as `id`. Note
 that `cotal console` and the web console keep event channels out of their channel lists on purpose,
@@ -366,11 +419,10 @@ grant any channel you name: that is the out-of-band grant, not a way around the 
 **Failed turns publish run errors.** Claude Code decides for itself
 whether a turn finished or died and fires one of two hooks accordingly, so the connector relays that
 decision rather than making one of its own: a turn that ended on an API error ends its run with
-`RUN_ERROR` carrying the harness's own error kind (`rate_limit`, `billing_error`, `server_error`,
-`max_output_tokens` and the rest) as the code, and whatever detail it reported as the message. If that
-detail cannot fit in the one closing frame, the shared close still publishes one `RUN_ERROR`
-that does fit: it keeps the code and says the original detail was omitted or shortened because of the
-bound, so a reader is never shown a truncated message as complete. A turn that ended normally still
+`RUN_ERROR` carrying the fixed message `run failed` and no code. Neither the detail Claude Code
+reported nor its error kind is published there: both are upstream values that can echo your prompt or
+tool output, and the events channel has a different read ACL. The error kind still reaches presence
+as the agent's condition (`rate_limit`, `auth`, `billing` and the rest). A turn that ended normally still
 ends with a run-finished event carrying no outcome, which says the turn ended and does not claim it
 succeeded.
 
@@ -414,6 +466,11 @@ spawning identity's own grant already covers the child's event channel. The refu
 exact `cotal actor grant` command that widens it. An operator launch, whose chain reaches an
 admin-scoped or roster row, is unaffected. Passing `events: false` is the explicit opt-out.
 
+Arming the event plane through a typed spawn request (`manager.spawn` with `events`, including
+the CLI's `cotal spawn --detach --events`) additionally requires the caller's admin tier on a
+user mesh. A non-admin caller that asks for the plane is refused before anything is provisioned,
+and one that stays silent gets a spawn without it, with the reply saying so.
+
 ## Resume a session
 
 `--resume <session-id>` pulls an existing Claude session, its context and transcript,
@@ -435,21 +492,33 @@ original is untouched.
 
 ## Sharing your MCP servers
 
-Isolation is the default, but a meshed teammate sometimes genuinely needs one of your own
-tools (say, web search). The opt-in is the cotal config file
-(`~/.config/cotal/config.json`, or a space-local `.cotal/config.json` layered on top):
-each entry the familiar `.mcp.json` shape, secrets written as `${VAR}` references, never
-literals ([full format](config.md)).
+A spawned session keeps your own MCP servers by default. On its first run, `cotal setup` copies
+the user-scope servers from your Claude Code config (`~/.claude.json`, or the one under
+`$CLAUDE_CONFIG_DIR`) into the cotal config file (`~/.config/cotal/config.json`) under
+`connectors.claude.mcpServers`, and names them in its output. With none to copy it writes an
+empty list. Each entry is the familiar `.mcp.json` shape ([full format](config.md)). A cotal
+config that already declares that list keeps it, and a later `cotal setup` never changes it.
+
+The cotal config holds secrets only as `${VAR}` references. Setup cannot tell literal text from
+a secret, so it leaves out a server with an `env` or `headers` value that is anything but `${VAR}`
+references (a `Bearer ${TOKEN}` header among them) and names it in its output. To share one,
+add it to the cotal config with each secret written as a `${VAR}` reference, and export that
+variable where you spawn. Setup also leaves out and names an entry no session can start, such as
+one with a missing or empty `command` or `url`, or one whose `command` is not a string.
 
 At launch the connector forwards *only* the named vars the chosen servers declare and
 passes the merged config as an owner-only temp file; `--strict-mcp-config` stays on, so
-only cotal + the explicitly shared servers load. Scope per spawn with
-`--share-tools tavily,figma` (or `--share-tools none`).
+only cotal + the shared servers load.
+
+For a lighter seat, share fewer. Remove an entry from the cotal config to drop it from every
+spawn, or scope one spawn with `--share-tools tavily,figma` (or `--share-tools none` for cotal
+alone). An empty list (`"mcpServers": {}`) in `~/.config/cotal/config.json` keeps every spawn
+isolated, and setup leaves it as it is.
 
 Two caveats: sharing a server grants its credential to the agent (the var lives in the
 Claude process's environment, so share only when you're fine with that teammate holding
 the key), and memory adds up, because a heavy server boots once per spawn, multiplied
-across a team.
+across a team, and can starve a small machine.
 
 ## Feedback
 

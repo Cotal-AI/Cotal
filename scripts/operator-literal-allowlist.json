@@ -5,6 +5,26 @@
       "reason": "CI runner home path fixtures"
     }
   },
+  "claude-plugin/cotal/dist/hook.cjs": {
+    "home-path": {
+      "count": 2,
+      "reason": "docs/cli.md macOS home path examples carried in the bundled docs"
+    },
+    "shared-ipv4": {
+      "count": 2,
+      "reason": "docs/run-a-mesh.md shared address examples carried in the bundled docs"
+    }
+  },
+  "claude-plugin/cotal/dist/mcp.cjs": {
+    "home-path": {
+      "count": 2,
+      "reason": "docs/cli.md macOS home path examples carried in the bundled docs"
+    },
+    "shared-ipv4": {
+      "count": 2,
+      "reason": "docs/run-a-mesh.md shared address examples carried in the bundled docs"
+    }
+  },
   "deploy/docker/Dockerfile": {
     "home-path": {
       "count": 2,

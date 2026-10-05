@@ -59,12 +59,12 @@
     {
       "name": "an ordinary step is exposed as an answered pause",
       "file": "implementations/runtime/src/run-host.ts",
-      "find": "  const answeredPause = (e.kind === \"checkpoint\" || e.kind === \"ask\")",
+      "find": "  const answeredPause = e.kind === \"checkpoint\"",
       "replace": "  const answeredPause = true",
       "expectRed": "a non-pause step cannot expose answer-shaped result fields",
       "completionMarker": "run-command:",
       "cell": "a non-pause step cannot expose answer-shaped result fields",
-      "note": "Only checkpoint and ask results are pause answers. A different effect may legitimately return a record with the same field names."
+      "note": "Only a checkpoint's settled result is read as a pause answer (an ask's answer is read off its pause record since #2363). A different effect may legitimately return a record with the same field names. Re-anchored for #2363, which narrowed the guard from checkpoint-or-ask to checkpoint; the mutant still removes the kind guard and nothing else."
     },
     {
       "name": "a local holder contains a forbidden owner-token separator",

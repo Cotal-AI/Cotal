@@ -18,32 +18,28 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { createServer, type AddressInfo } from "node:net";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import {
+import type { Connector, LaunchOpts, LaunchSpec, EpCaller } from "@cotal-ai/core";
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+process.env.COTAL_HOME = join(dir, "home");
+const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER,
-  openRecordsBucket, freezeExpectedSet, resolveService, scatterCommand,
-  registry, type Connector, type LaunchOpts, type LaunchSpec, type EpCaller,
-} from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+  openRecordsBucket, freezeExpectedSet, resolveService, scatterCommand, registry,
+} = await import("@cotal-ai/core");
+const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../.."); // the stub runs here so `@cotal-ai/core` resolves
 const STUB = join(here, "e2e-stub.mjs");
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -64,7 +60,6 @@ const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const SPACE = `mgrmulti-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(SPACE);
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const mkRoot = (tag: string, agentName: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });
@@ -74,7 +69,7 @@ const mkRoot = (tag: string, agentName: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection } };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -131,6 +126,10 @@ try {
   // for pin 3. Pin 3 is about the instance that leaves its registration behind, so its serving
   // connection is dropped under it: connections go, nothing is written, the record stays READY.
   // The manager object is kept for the teardown below, which still stops its agent.
+  // The manager treats any serve-connection close that is not its own stop() as a fault and
+  // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
+  // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
+  (m2 as unknown as MgrPriv).leaseStopping = true;
   await ((m2 as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   const scatter2 = await scatterCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 3_000 });

@@ -48,6 +48,7 @@ export * from "./acls.js";
 export * from "./membership-feed.js";
 export * from "./evict.js";
 export * from "./lease.js";
+export * from "./liveness.js";
 export * from "./agent-file.js";
 export * from "./launch.js";
 export * from "./fs-safe.js";
@@ -63,6 +64,7 @@ export {
   writeSecretFileCreateOnly,
 } from "./secret-fs.js";
 export * from "./launch-material.js";
+export * from "./launch-artifacts.js";
 export * from "./connector-config.js";
 export * from "./kv-scan.js";
 export * from "./endpoint.js";
@@ -71,6 +73,7 @@ export * from "./connector.js";
 export * from "./connector-setup.js";
 export * from "./command.js";
 export * from "./runtime.js";
+export * from "./managed-handoff.js";
 export * from "./environment.js";
 export * from "./terminal.js";
 export * from "./registry.js";

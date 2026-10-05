@@ -1,0 +1,23 @@
+{
+  "suite": [
+    "implementations/auth/smoke/remote-exchange.smoke.ts"
+  ],
+  "guard": "the shipped provider client posts runtime requests over the real manager-authority transport",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm exec tsx implementations/auth/smoke/remote-exchange.smoke.ts",
+  "completionMarker": "remote-exchange smoke:",
+  "mutations": [
+    {
+      "name": "shipped runtime client never posts to the transport",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "    return postManagerAuthority(endpoint, idpUrl, authorization, request, what) as Promise<RemoteManagedAgentRuntimeResult>;",
+      "replace": "    void postManagerAuthority; return { endpoint, idpUrl, authorization } as never;",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build",
+      "expectRed": "FAIL: the shipped provider client reaches the stock route and surfaces its unimplemented refusal",
+      "cell": "the shipped provider client reaches the stock route and surfaces its unimplemented refusal"
+    }
+  ],
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/managed-agent-runtime-transport.json",
+  "why": [
+    "The mutation returns without posting, so a manager would never reach the host. The suite drives the registered provider over the real daemon and names the refusal it must surface."
+  ]
+}

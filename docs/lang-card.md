@@ -14,7 +14,7 @@ resume on another with the recorded steps returning instantly.
 
 | Primitive | Call | Returns |
 |---|---|---|
-| `spawn` | `await spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork? })` | agent handle |
+| `spawn` | `await spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork?, events? })` | agent handle |
 | `turn` | `await turn(agent, { name, deadline? })` | `{ status: "done" \| "blocked" \| "handoff", to?, note?, at }` |
 | `ask` | `await ask(agent, { name, schema, deadline?, attempts? })` | the record the agent published |
 | `checkpoint` | `await checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? })` | see below |
@@ -23,12 +23,16 @@ resume on another with the recorded steps returning instantly.
 | `notify` | `await notify(agents, fact, { name? })` | `null` |
 | `monitor` | `await monitor(agent, { name? })` | `null` |
 
-`parallel`, `race`, `fanOut` and `conclave` are the four concurrency scopes (below). Step names
+`parallel`, `race`, `fanOut` and `conclave` are the four concurrency scopes (below).
+`await once(fn, { name })` runs `fn` so that the `ask` inside it is dispatched at most once: a
+resume that finds it begun and never settled opens a hold for a person to answer instead. Step names
 are kebab-case; where the reference says a name is required, it must be a string literal. Option
 bags are closed: an unknown key is refused (L3011) with the full signature in the answer.
 Durations are a whole number and one unit: `"30s"`, `"10m"`, `"4h"`, `"2d"`.
 `permits` meter `turns` and `wallClock` on this host; `supervise` is `{ restarts, window? }`
 (default window `10m`) and restarts the process in place until that budget is spent.
+`events: false` starts a seat without an event plane, which a connector that publishes none
+(Hermes) needs.
 
 ## Results you branch on
 
@@ -105,6 +109,10 @@ non-finite number inside one is L3041, a function is L3042. `json.stringify` is 
 form (sorted keys, no spaces), and it refuses what has no canonical form (L4016) rather than
 dropping it.
 
+A value nested deep enough to exhaust the host's stack (a `json.stringify` of an array nested
+thousands deep, or deep recursion) fails the run. A `catch` never sees it and a `finally` does not
+run past it, because the depth at which it happens depends on the host and not on the program.
+
 ## Top refusals
 
 | Code | What it refuses | Write instead |
@@ -116,7 +124,7 @@ dropping it.
 | L2011 | `Promise` | the four scopes |
 | L1025 | `==`, `!=` | `===`, `!==` |
 | L1001 | `class` | records and functions |
-| L4018 | a record, array or function where a primitive is needed | convert explicitly |
+| L4018 | a record, array or function where a primitive is needed; a non-number under `++`/`--` | convert explicitly |
 | L3013 | a computed step name where a literal is required | a string literal |
 | L3011 | an unknown option key | the signature in the refusal |
 

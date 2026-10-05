@@ -1,14 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  hardenPrivate,
   mkSecretDir,
   loadAgentFile,
   registry,
-  writeSecretFile,
+  writeLaunchArtifact,
   type Connector,
   type LaunchOpts,
   type LaunchSpec,
@@ -42,10 +40,12 @@ export const piConnector: Connector = {
   requires: ["pi"],
   supportsResume: true,
   supportsSessionContinuation: true,
+  supportsSessionReopen: true,
+  supportsPrompt: true, // pi takes the prompt as its positional initial message — see buildLaunch
   eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
-    if (opts.resume && opts.continueSession)
-      throw new Error("pi connector: resume (fork source) and continueSession (same session) are mutually exclusive");
+    if ([opts.resume, opts.continueSession, opts.reopenSession].filter(Boolean).length > 1)
+      throw new Error("pi connector: resume (fork source), continueSession and reopenSession (same session) are mutually exclusive");
     if (opts.variant) throw new Error("pi connector: model variants (variant) are not implemented");
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("pi connector: MCP tool-sharing is not implemented");
@@ -85,6 +85,7 @@ export const piConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.backfillFloor !== undefined) env.COTAL_BACKFILL_FLOOR = String(opts.backfillFloor);
     if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;
 
@@ -94,18 +95,32 @@ export const piConnector: Connector = {
     // exact already-meshed session rather than forking it again. A fresh managed seat gets an exact
     // UUID at launch, so even an idle/no-prompt Pi has a recoverable session identity before its
     // first turn (Pi otherwise creates no session until a turn starts).
-    const freshSessionId = !opts.resume && !opts.continueSession ? randomUUID() : undefined;
+    // A manifest `continuity: exact` reopen uses `--session`, which opens an existing session and
+    // exits when there is none; `--session-id` would create an empty session under the same id.
+    const freshSessionId = !opts.resume && !opts.continueSession && !opts.reopenSession ? randomUUID() : undefined;
     if (freshSessionId) env.COTAL_PI_FRESH_SESSION = "1";
     if (opts.resume) args.push("--fork", opts.resume);
+    else if (opts.reopenSession) args.push("--session", opts.reopenSession);
     else if (opts.continueSession) args.push("--session-id", opts.continueSession);
     else args.push("--session-id", freshSessionId!);
-    const expectedSessionId = opts.continueSession ?? freshSessionId;
+    const expectedSessionId = opts.reopenSession ?? opts.continueSession ?? freshSessionId;
     if (expectedSessionId) env.COTAL_PI_EXPECTED_SESSION = expectedSessionId;
+    // The auto-submitted first turn (`cotal spawn --prompt`). Pi takes it as its positional initial
+    // message, which its parser reads as any bare argument, so it goes LAST, after every flag that
+    // consumes a value. A message Pi's parser would misread cannot be delivered as a turn, so refuse
+    // the launch rather than start a seat whose first turn silently became a flag or a file ref. The
+    // refusal runs before the persona file is written, so a refused launch leaves none behind.
+    const prompt = opts.prompt?.trim();
+    if (prompt !== undefined) {
+      if (!prompt) throw new Error("pi connector: an initial prompt was given but it is empty, there is no first turn to submit");
+      if (prompt.startsWith("-") || prompt.startsWith("@"))
+        throw new Error("pi connector: an initial prompt cannot start with '-' or '@' (pi reads those as an option or a file reference); reword it");
+    }
+    // The persona rides a private file the launcher removes once the child has exited (core
+    // launch-artifacts). The extension also removes it at session start, once Pi has read it.
+    const artifacts: string[] = [];
     if (persona) {
-      const dir = mkdtempSync(join(tmpdir(), "cotal-persona-"));
-      hardenPrivate(dir, "dir");
-      const file = join(dir, "persona.md");
-      writeSecretFile(file, persona);
+      const file = writeLaunchArtifact(artifacts, "cotal-persona-", "persona.md", persona);
       env.COTAL_PI_PERSONA_FILE = file;
       args.push("--append-system-prompt", file);
     }
@@ -113,21 +128,18 @@ export const piConnector: Connector = {
       env.COTAL_MODEL = model;
       args.push("--model", model);
     }
-    // The auto-submitted first turn (`cotal spawn --prompt`). Pi takes it as its positional initial
-    // message, which its parser reads as any bare argument, so it goes LAST, after every flag that
-    // consumes a value. A message Pi's parser would misread cannot be delivered as a turn, so refuse
-    // the launch rather than start a seat whose first turn silently became a flag or a file ref.
-    if (opts.prompt !== undefined) {
-      const prompt = opts.prompt.trim();
-      if (!prompt) throw new Error("pi connector: an initial prompt was given but it is empty, there is no first turn to submit");
-      if (prompt.startsWith("-") || prompt.startsWith("@"))
-        throw new Error("pi connector: an initial prompt cannot start with '-' or '@' (pi reads those as an option or a file reference); reword it");
-      args.push(prompt);
-    }
+    if (prompt !== undefined) args.push(prompt);
 
     env.COTAL_CONTROL_SOCKET = control.path;
     if (sessionStatePath) env.COTAL_PI_SESSION_STATE = sessionStatePath;
-    return { command: opts.resolvedBinaries?.pi ?? "pi", args, env, control, sessionStatePath };
+    return {
+      command: opts.resolvedBinaries?.pi ?? "pi",
+      args,
+      env,
+      control,
+      sessionStatePath,
+      ...(artifacts.length > 0 ? { artifacts } : {}),
+    };
   },
 };
 

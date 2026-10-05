@@ -22,7 +22,6 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { createServer, type AddressInfo } from "node:net";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -53,16 +52,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { authDir, loadSoleSpaceAuth } from "@cotal-ai/workspace";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-
-const freePort = () => new Promise<number>((resolvePort, reject) => {
-  const server = createServer();
-  server.once("error", reject);
-  server.listen(0, "127.0.0.1", () => {
-    const port = (server.address() as AddressInfo).port;
-    server.close((error) => error ? reject(error) : resolvePort(port));
-  });
-});
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const waitUntil = async (
   predicate: () => boolean | Promise<boolean>,

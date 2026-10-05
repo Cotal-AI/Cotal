@@ -26,7 +26,7 @@
  * profile pairs a write with a raw stream read on one stream), guarded by the auth census, and
  * mediated reads stay the remedy.
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { DiscardPolicy, type JetStreamManager, type MsgRequest } from "@nats-io/jetstream";
 import type { KV, Kvm } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -35,6 +35,7 @@ import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { isCasLoss } from "./endpoint-records.js";
 import { assertGeneration, callerTokens, endpointToken, type EpCaller } from "./endpoint-subjects.js";
 export { assertGeneration, isIssuedCaller, EP_RAIL_V1, type IssuedCaller } from "./endpoint-subjects.js";
+import type { IssuedCaller } from "./endpoint-subjects.js";
 import { subjectMatches, token } from "./subjects.js";
 
 // ---- the reference -------------------------------------------------------------------------------
@@ -297,6 +298,33 @@ function evidenceSnapshot(value: IssuedEvidence): IssuedEvidence {
   return Object.freeze({ version: 1, ref, sources, permissions, ...(expiresAt !== undefined ? { expiresAt } : {}) });
 }
 
+/** The name the actor ledger carries as an issued source's bucket token: `cotal_actors_<space>`.
+ *  It names the auth service's actor ledger. It is not a KV bucket and no client opens it. */
+export function actorLedgerSourceBucket(space: string): string {
+  return `cotal_actors_${token(space)}`;
+}
+
+/** The source coordinate of one actor-ledger row:
+ *  `{ space, bucket: actorLedgerSourceBucket(space), key: "actor.<owner>.<actor>.<lifecycleUid>" }`. */
+export function actorLedgerSource(space: string, owner: string, actor: string, lifecycleUid: string): IssuedSourceRef {
+  const [o, a, u] = callerTokens({ owner, actor, uid: lifecycleUid });
+  return sourceSnapshot({ space, bucket: actorLedgerSourceBucket(space), key: `actor.${o}.${a}.${u}` });
+}
+
+/** The inverse of {@link actorLedgerSource}; `undefined` for any other coordinate. */
+export function parseActorLedgerSource(source: IssuedSourceRef): { owner: string; actor: string; lifecycleUid: string } | undefined {
+  if (source.bucket !== actorLedgerSourceBucket(source.space)) return undefined;
+  const parts = source.key.split(".");
+  if (parts.length !== 4 || parts[0] !== "actor") return undefined;
+  const [, owner, actor, lifecycleUid] = parts as [string, string, string, string];
+  try {
+    callerTokens({ owner, actor, uid: lifecycleUid });
+  } catch {
+    return undefined;
+  }
+  return { owner, actor, lifecycleUid };
+}
+
 export interface PreparedIssuance { readonly key: string }
 
 /** The store bound to one space over one KV handle. The KV is the ISSUER's (a `issuer` or a
@@ -552,6 +580,15 @@ export function acceptedReadGrant(space: string, acceptedToken: string): string 
   return `$JS.API.DIRECT.GET.KV_${bucket}.$KV.${bucket}.${acceptedKey(acceptedToken)}`;
 }
 
+/** The accepted-row token of one user-auth connection: the first 32 hex characters of
+ *  SHA-256("cotal.accepted.v1\0" + connId). The client chose `connId` and derives the token itself;
+ *  the issuer never takes a token from a request body. Reconnecting under the same nonce names the
+ *  same row, which is what makes a renewal findable. */
+export function connectionAcceptedToken(connId: string): string {
+  if (typeof connId !== "string" || connId.length === 0) throw new Error("connectionAcceptedToken: a connection nonce is required");
+  return createHash("sha256").update(`cotal.accepted.v1\0${connId}`).digest("hex").slice(0, 32);
+}
+
 /** Written by the issuer at release, create-only: a token is redeemed once. */
 export async function writeAcceptedRow(kv: KV, acceptedToken: string, ref: IssuedAuthorityRef): Promise<void> {
   await kv.create(acceptedKey(acceptedToken), bytes({ version: 1, ref: refSnapshot(ref) }));
@@ -573,8 +610,16 @@ export async function readAcceptedRow(nc: NatsConnection, space: string, accepte
   return ref;
 }
 
-/** The named refusal an endpoint returns for a legacy (unversioned) invocation of a command
- *  that requires issued authority (SPEC §13.15 compatibility). */
+/** Read this user-auth connection's accepted row (SPEC 13.15) and return the issued caller it names.
+ *  `connId` is the inbox nonce the connection presented; the token is derived from it, never read
+ *  from a file or a body. Refuses a row whose owner, actor or uid is not `expected`'s. */
+export async function issuedUserCaller(nc: NatsConnection, space: string, connId: string, expected: EpCaller): Promise<IssuedCaller> {
+  const ref = await readAcceptedRow(nc, space, connectionAcceptedToken(connId));
+  if (ref.owner !== expected.owner || ref.actor !== expected.actor || ref.uid !== expected.uid)
+    throw new EpEnvelopeError("permission-denied", `this connection's accepted row names ${ref.owner}.${ref.actor}/${ref.uid}, not the caller ${expected.owner}.${expected.actor}/${expected.uid}; refused (SPEC 13.15)`);
+  return { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation } as IssuedCaller;
+}
+
 /** `details[].kind` of the refusal a command requiring issued caller authority returns to a
  *  LEGACY arrival: the request rode the unversioned rail, so no generation binds it (SPEC 13.15). */
 export const EP_UNBOUND_CALLER_AUTHORITY = "ai.cotal.ep.unbound-caller-authority";

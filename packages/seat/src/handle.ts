@@ -1,5 +1,6 @@
 import { SeatClient } from "./client.js";
 import type { SeatRecord } from "./record.js";
+import type { SeatExit } from "./protocol.js";
 
 export interface SeatAttachSession {
   readonly cols: number;
@@ -18,7 +19,7 @@ export interface SeatHandle {
   readonly pid: number;
   readonly record: SeatRecord;
   status(): "running" | "exited";
-  exitInfo(): { code?: number; signal?: number } | undefined;
+  exitInfo(): SeatExit | undefined;
   stop(opts?: { graceful?: boolean }): void;
   release(): void;
   waitForExit(): Promise<void>;
@@ -32,7 +33,7 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
   const client = new SeatClient(record);
   const ready = client.connect();
   let status: "running" | "exited" = "running";
-  let exit: { code?: number; signal?: number } | undefined;
+  let exit: SeatExit | undefined;
   let cols = 120;
   let rows = 32;
   let helloGeometryApplied = false;
@@ -76,7 +77,7 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
     pid: record.childPid,
     record,
     status: () => status,
-    exitInfo: () => exit,
+    exitInfo: () => exit ?? client.exitInfo(),
     stop: (opts) => {
       later((c) => c.stop(opts?.graceful === false ? "hard" : "graceful"));
     },

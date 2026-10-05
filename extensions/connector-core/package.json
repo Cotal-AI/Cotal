@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-core",
   "description": "Shared MCP-bridge runtime for Cotal connectors: the mesh agent, cotal_* tools, and hook relay.",
-  "version": "0.54.0",
+  "version": "0.65.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -24,7 +24,7 @@
   "scripts": {
     "test": "tsx smoke/spawn-args.smoke.ts",
     "gen:docsbundle": "node ../../scripts/generate-docs-bundle.mjs",
-    "typecheck": "pnpm run gen:docsbundle && tsc -p tsconfig.json --noEmit",
+    "typecheck": "pnpm run gen:docsbundle && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "pnpm run gen:docsbundle && tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build"
   },

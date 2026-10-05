@@ -184,15 +184,23 @@ const TURN_OUTPUT = {
 } as const;
 
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
+// A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
+const DESPAWN_INPUT = { type: "object", additionalProperties: false, properties: { graceful: { type: "boolean" } } } as const;
+const DESPAWN_OUTPUT = {
+  type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
+  properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
+} as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
   turn: { input: cc(TURN_INPUT), output: cc(TURN_OUTPUT) },
+  despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
 };
 const DOCUMENT = {
   urn: "ai.cotal.test.turnmgr", revision: 1, attributes: [], events: [],
   commands: [
     { name: "spawn", class: "ephemeral" as const, targeted: false, capability: "manager.spawn", inputDigest: COMPILED.spawn.input.closureDigest, outputDigest: COMPILED.spawn.output.closureDigest },
     { name: "turn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.turn.input.closureDigest, outputDigest: COMPILED.turn.output.closureDigest },
+    { name: "despawn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.despawn.input.closureDigest, outputDigest: COMPILED.despawn.output.closureDigest },
   ],
 };
 const ROOT_DIGEST = contractDigest(DOCUMENT);
@@ -204,7 +212,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -384,6 +392,10 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
 const defs: EpCommandDef[] = [
   { command: "spawn", contract: COMPILED.spawn, handler: spawnHandler },
   { command: "turn", contract: COMPILED.turn, handler: turnHandler },
+  { command: "despawn", contract: COMPILED.despawn, handler: (ctx: EpServeContext) => {
+    const t = ctx.request.target as { owner: string; actor: string };
+    return { name: `${t.owner}.${t.actor}`, stopped: true, graceful: ((ctx.request.args ?? {}) as { graceful?: unknown }).graceful !== false };
+  } },
 ];
 const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
   resolveTarget: (t) => mappings.get(`${t.owner}.${t.actor}`),
@@ -611,7 +623,8 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
     const p = safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(T).ctx));
     await wait(1_200);
     if (alloc !== undefined) await presenceKv.delete(`local.${alloc.actor}`);
-    const got = await withDeadline(p, 20_000, "the orphaned turn");
+    // A lapsed row is the death only once it has stayed absent for the 30s confirmation window.
+    const got = await withDeadline(p, 60_000, "the orphaned turn");
     c("the client observes the death itself and throws L4002, naming the reason",
       (got as { code?: string })?.code === "L4002" && String((got as { message?: string })?.message).includes("lapsed"),
       JSON.stringify(got));

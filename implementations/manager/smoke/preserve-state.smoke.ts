@@ -27,7 +27,7 @@ import { admitSeatCheckpoints } from "../../cli/src/lib/seat-admission.js";
 import { restoreSeatCheckpoints } from "../../cli/src/lib/seat-restore.js";
 import { admitAndRestoreSeatCheckpoints } from "../../cli/src/lib/seat-resume.js";
 import { Manager, type ManagerResumeIdentity, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
-import { MAX_RESUME_CONTROL_BYTES } from "../src/resume.js";
+import { MAX_RESUME_CONTROL_BYTES, parseResumeControlArgs } from "../src/resume.js";
 
 let failures = 0;
 function check(label: string, condition: boolean, extra?: unknown): void {
@@ -167,6 +167,9 @@ function managerWith(
       status: "idle",
     })),
     waitForPresenceSnapshot: async () => {},
+    // The CHAT stream frontier this fake mesh has reached, for the preservation cut to record as
+    // each retained seat's backfillFloor (issue #545).
+    chatFrontier: async () => 4242,
     on: () => {},
     off: () => {},
     releaseManagerLease: async () => {},
@@ -346,6 +349,32 @@ registry.register(preserveAuth as unknown as AuthProvider);
   check("inventory records effective connector/runtime/cwd references", result.inventory.agents[0]?.launch.connector === "preserve-connector" && result.inventory.agents[0]?.launch.runtime === "fake" && result.inventory.agents[0]?.launch.cwd === root, result.inventory.agents[0]?.launch);
   check("inventory preserves .cotal/run dependencies", result.inventory.agents[0]?.dependencies.includes(join(runDir, "r1.json")) === true && result.inventory.agents[0]?.dependencies.includes(runPersonaPath) === true, result.inventory.agents[0]?.dependencies);
   check("inventory excludes seed and control token values", !json.includes("TOP-SECRET-SEED") && !json.includes("TOP-SECRET-CONTROL"), json);
+  check("inventory records the chat frontier as the seat's backfill floor", result.inventory.agents[0]?.backfillFloor === 4242, result.inventory.agents[0]?.backfillFloor);
+  // A --config spawn now records the identity name as its persona ref (the path rides configPath),
+  // the shape `parseResumeControlArgs` must accept at resume time.
+  const configSeatInventory = inventoryOf({
+    ...result.inventory.agents[0]!,
+    launch: {
+      ...result.inventory.agents[0]!.launch,
+      source: { kind: "persona", ref: "worker", configPath: join(root, "outside-catalog.md"), configSha256: "a".repeat(64) },
+    },
+  });
+  let configSeatAccepted = false;
+  try {
+    parseResumeControlArgs({ attemptId: "fence", inventory: configSeatInventory });
+    configSeatAccepted = true;
+  } catch { /* recorded below */ }
+  check("accepts a --config seat's inventory: the persona ref is the identity name, the path rides configPath", configSeatAccepted);
+  const pathRefInventory = inventoryOf({
+    ...result.inventory.agents[0]!,
+    launch: {
+      ...result.inventory.agents[0]!.launch,
+      source: { kind: "persona", ref: join(root, "outside-catalog.md"), configPath: join(root, "outside-catalog.md"), configSha256: "a".repeat(64) },
+    },
+  });
+  let pathRefError: string | undefined;
+  try { parseResumeControlArgs({ attemptId: "fence", inventory: pathRefInventory }); } catch (e) { pathRefError = (e as Error).message; }
+  check("a path-shaped persona ref is refused by the resume schema", /must be a safe token/.test(pathRefError ?? ""), pathRefError);
   check("same preservation attempt is idempotent", (await manager.preparePreservation("fence")).state === "preserved");
   let refusedDifferent = false;
   try { await manager.preparePreservation("different"); } catch { refusedDifferent = true; }
@@ -490,6 +519,7 @@ let openInventory: ManagerResumeAgent;
     dependencies: [join(runDir, "r1.json"), runPersonaPath],
     spawner: "local.manager",
     startedAt: new Date().toISOString(),
+    backfillFloor: 4242,
   };
   const manager = managerWith((name) => fakeHandle(name));
   resetCapturedLaunch();
@@ -500,6 +530,31 @@ let openInventory: ManagerResumeAgent;
   // The recovered incarnation uid MUST reach the child launch (never a fresh mint): its lifecycle-keyed
   // durables are named by it, and the readiness fence matches presence on it.
   check("open resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor("resume"), capturedLaunch?.lifecycleUid);
+  check("open resume threads the backfill floor into launch", capturedLaunch?.backfillFloor === 4242, capturedLaunch?.backfillFloor);
+}
+
+// The wire schema refuses a malformed backfillFloor and accepts an absent one (a pre-fx109
+// inventory, or a remote-authority manager that recorded no floor).
+{
+  const negativeArgs = { attemptId: "backfill-floor-negative", inventory: inventoryOf({ ...openInventory, backfillFloor: -1 }) };
+  let negativeRefused = false;
+  try { parseResumeControlArgs(negativeArgs); } catch (e) {
+    negativeRefused = /backfillFloor/.test((e as Error).message);
+  }
+  check("schema refuses a negative backfillFloor", negativeRefused);
+
+  const fractionalArgs = { attemptId: "backfill-floor-fractional", inventory: inventoryOf({ ...openInventory, backfillFloor: 1.5 }) };
+  let fractionalRefused = false;
+  try { parseResumeControlArgs(fractionalArgs); } catch (e) {
+    fractionalRefused = /backfillFloor/.test((e as Error).message);
+  }
+  check("schema refuses a fractional backfillFloor", fractionalRefused);
+
+  const { backfillFloor: _omit, ...noFloor } = openInventory;
+  const absentArgs = { attemptId: "backfill-floor-absent", inventory: inventoryOf(noFloor as ManagerResumeAgent) };
+  let absentAccepted = true;
+  try { parseResumeControlArgs(absentArgs); } catch { absentAccepted = false; }
+  check("schema accepts an inventory with no backfillFloor", absentAccepted);
 }
 
 // A manager replacement after the coordinator fsyncs commit evidence re-adopts the inventory,
@@ -718,6 +773,19 @@ let openInventory: ManagerResumeAgent;
   check("resume finalize is idempotent", finalizedAgain.ok, finalizedAgain.error);
   const released = await control(manager, "admin", "models", { agent: "preserve-connector" });
   check("ordinary lifecycle is active only after finalize", !/waiting for resume attempt/.test(released.error ?? ""), released.error);
+}
+
+// The shipped `--config <path>` start path (spawn.ts's `config: managerConfigRef`) must record the
+// persona's identity name as `launch.source.ref`, not the path, so the preservation cut it produces
+// round-trips through the resume schema (`label`, a safe token).
+{
+  const outsideCatalogPath = join(root, "outside-catalog.md");
+  writeFileSync(outsideCatalogPath, "---\nname: outside-worker\n---\nan outside-catalog persona\n");
+  const manager = managerWith((name) => fakeHandle(name));
+  const started = await manager.startAgent({ name: outsideCatalogPath, agent: "preserve-connector", config: outsideCatalogPath, events: false });
+  check("a --config start succeeds", started.ok, started.error);
+  const recorded = (manager as unknown as { agents: Map<string, { launch: { source: { kind: string; ref: string; configPath: string } } }> }).agents.get("outside-worker");
+  check("a --config start records the identity name as its persona ref", recorded?.launch.source.kind === "persona" && recorded.launch.source.ref === "outside-worker" && recorded.launch.source.configPath === outsideCatalogPath, recorded?.launch.source);
 }
 
 // A signal or singleton-lease loss after commit but before finalize remains non-destructive.

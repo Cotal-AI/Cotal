@@ -129,5 +129,195 @@ const proto = MeshAgent.prototype as unknown as {
   );
 }
 
+// ── #1229: send/dm consult the roster's TRUST state, not just the roster. A real MeshAgent over
+//    a stub endpoint, so the guard runs through the shipped send()/dm() paths. ──
+{
+  const cfg1229 = {
+    space: "demo",
+    name: "alice",
+    servers: "nats://127.0.0.1:4222",
+    subscribe: ["ch"],
+    allowSubscribe: ["ch"],
+    allowPublish: ["ch"],
+    kind: "agent",
+    tls: false,
+  } as AgentConfig;
+  const mkMsg = (channel = "ch") =>
+    ({ id: "m", ts: 1, space: "demo", from: { id: "a", name: "alice", kind: "agent" }, channel, parts: [] }) as never;
+  const OTTO = { card: { id: "OTTOID0000000000000000000000000000000000000", name: "otto", role: "worker" }, status: "idle" };
+
+  function agentOverEp(ep: Record<string, unknown>): MeshAgentType {
+    const a = new MeshAgent({ ...cfg1229 });
+    a.on("error", () => {});
+    (a as unknown as { _connected: boolean })._connected = true;
+    (a as unknown as { ep: Record<string, unknown> }).ep = ep;
+    return a;
+  }
+
+  // (d) unpopulated view, empty roster; the snapshot wait populates the roster — the send goes out.
+  {
+    const roster: unknown[] = [];
+    const view: { state: string; fresh: boolean; staleSince?: number } = { state: "unpopulated", fresh: false };
+    const multicast: { text: string; opts: { channel?: string; mentions?: string[] } }[] = [];
+    const agent = agentOverEp({
+      card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
+      getRoster: () => roster,
+      presenceView: () => view,
+      waitForPresenceSnapshot: async () => {
+        view.state = "current";
+        view.fresh = true;
+        roster.push(OTTO);
+        return "snapshot";
+      },
+      multicast: async (text: string, opts: { channel?: string; mentions?: string[] }) => {
+        multicast.push({ text, opts });
+        return mkMsg(opts?.channel);
+      },
+      unicast: async () => mkMsg("dm"),
+      unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
+    });
+    const msg = await agent.send("hi", "ch", ["otto"]);
+    check(
+      "1229:d send waits for the presence snapshot and then publishes the mention",
+      multicast.length === 1 && multicast[0]!.opts.mentions?.[0] === "otto" && msg.channel === "ch",
+      multicast,
+    );
+  }
+
+  // (e) unpopulated view that never populates: the refusal names the view, never "unknown mention".
+  {
+    const multicast: unknown[] = [];
+    const agent = agentOverEp({
+      card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
+      getRoster: () => [],
+      presenceView: () => ({ state: "unpopulated", fresh: false }),
+      waitForPresenceSnapshot: async () => "timeout",
+      multicast: async () => {
+        multicast.push("called");
+        return mkMsg();
+      },
+      unicast: async () => mkMsg("dm"),
+      unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
+    });
+    let threw = "";
+    try {
+      await agent.send("hi", "ch", ["otto"]);
+    } catch (e) {
+      threw = e instanceof Error ? e.message : String(e);
+    }
+    check(
+      "1229:e send under an unpopulated view that never populates refuses naming the view condition, not \"unknown mention\"",
+      threw.includes("unpopulated") && !threw.includes("unknown mention") && threw.includes("otto"),
+      threw,
+    );
+    check("1229:e the refused send never reached multicast", multicast.length === 0, multicast);
+  }
+
+  // (f) stale view, empty roster: dm refuses naming the stale view, never "no peer", and never sends.
+  {
+    const unicast: unknown[] = [];
+    const agent = agentOverEp({
+      card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
+      getRoster: () => [],
+      presenceView: () => ({ state: "stale", fresh: false, staleSince: 1_700_000_000_000 }),
+      waitForPresenceSnapshot: async () => "timeout",
+      multicast: async () => mkMsg(),
+      unicast: async () => {
+        unicast.push("called");
+        return mkMsg("dm");
+      },
+      unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
+    });
+    let threw = "";
+    try {
+      await agent.dm("otto", "x");
+    } catch (e) {
+      threw = e instanceof Error ? e.message : String(e);
+    }
+    check(
+      "1229:f dm under a stale view refuses naming the stale view, not \"no peer\"",
+      threw.includes("stale") && !threw.includes("no peer") && threw.includes("otto"),
+      threw,
+    );
+    check("1229:f the refused dm never reached unicast", unicast.length === 0, unicast);
+  }
+
+  // (g) control: a current view keeps the existing refusal — the guard added no permissiveness.
+  {
+    const agent = agentOverEp({
+      card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
+      getRoster: () => [],
+      presenceView: () => ({ state: "current", fresh: true }),
+      waitForPresenceSnapshot: async () => "timeout",
+      multicast: async () => mkMsg(),
+      unicast: async () => mkMsg("dm"),
+      unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
+    });
+    let threw = "";
+    try {
+      await agent.send("hi", "ch", ["otto"]);
+    } catch (e) {
+      threw = e instanceof Error ? e.message : String(e);
+    }
+    check("1229:g a current view still refuses an unobserved mention with the existing sentence", threw.includes("unknown mention"), threw);
+  }
+
+  // (h) stale view with the peer present: presence in a partial/last-known roster is still an
+  //     observation, so the DM goes out rather than being refused over view hygiene.
+  {
+    const unicast: { to: string; text: string }[] = [];
+    const agent = agentOverEp({
+      card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
+      getRoster: () => [OTTO],
+      presenceView: () => ({ state: "stale", fresh: false, staleSince: 1_700_000_000_000 }),
+      waitForPresenceSnapshot: async () => "timeout",
+      multicast: async () => mkMsg(),
+      unicast: async (to: string, text: string) => {
+        unicast.push({ to, text });
+        return mkMsg("dm");
+      },
+      unicastAttributed: async (to: string, text: string) => {
+        unicast.push({ to, text });
+        return { msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } };
+      },
+    });
+    const { peer, ack } = await agent.dm("otto", "x");
+    check("1229:h dm to a peer present in a stale-view roster still publishes", unicast.length === 1 && peer?.card.name === "otto", unicast);
+    check("1229:h dm passes through the attributed ack sequence", ack.seq === 7, ack);
+  }
+
+  // (i) M3 proof: recipientStatusAtSend reflects the roster snapshot at send for both an offline
+  //     and an idle card, the ack sequence passes through, and the cotal_dm tool text says
+  //     "stored as seq 7" and "delivery not confirmed" for both.
+  for (const status of ["offline", "idle"] as const) {
+    const peerCard = { card: { id: "OTTOID0000000000000000000000000000000000000", name: "otto", role: "worker" }, status };
+    const agent = agentOverEp({
+      card: { id: "ALICEID0000000000000000000000000000000000000", name: "alice" },
+      getRoster: () => [peerCard],
+      presenceView: () => ({ state: "current", fresh: true }),
+      waitForPresenceSnapshot: async () => "snapshot",
+      multicast: async () => mkMsg(),
+      unicast: async () => mkMsg("dm"),
+      unicastAttributed: async () => ({ msg: mkMsg("dm"), ack: { seq: 7, duplicate: false } }),
+    });
+    const dmResult = await agent.dm("otto", "x");
+    check(
+      `1229:i dm() reports recipientStatusAtSend ${status} from the roster snapshot`,
+      dmResult.ack.seq === 7 && dmResult.recipientStatusAtSend === status,
+      dmResult,
+    );
+    const cfgDm = cfg1229;
+    const specsDm = cotalToolSpecs(cfgDm, "smoke");
+    const dmTool = specsDm.find((s) => s.name === "cotal_dm")!;
+    (agent as unknown as { dm: MeshAgentType["dm"] }).dm = async () => dmResult;
+    const dmText = await Promise.resolve(dmTool.run(agent, cfgDm, { to: "otto", text: "x" }));
+    check(
+      `1229:i cotal_dm text for a ${status} recipient says stored seq and delivery not confirmed`,
+      dmText.text.includes("stored as seq 7") && dmText.text.includes("delivery not confirmed"),
+      dmText.text,
+    );
+  }
+}
+
 console.log(`\nSEND-CHANNEL-RECEIPT SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

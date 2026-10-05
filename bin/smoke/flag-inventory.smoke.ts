@@ -56,6 +56,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "rotate-sys:boolean",
       // `--max-file-store` (2026-09): the broker's JetStream file storage cap, fixed at start (#1888).
       "max-file-store:string",
+      // `--no-manager` (2026-09): broker-only boot, the broker and in auth mode the delivery daemon (#1856).
+      "no-manager:boolean",
       "store-dir:string", "tls-cert:string", "tls-key:string", "user-auth:boolean",
     ],
     positionals: false,
@@ -73,7 +75,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // warning was not a fence (stderr is unread by scripts, and it was not persisted).
   // Remote registration (2026-08): `--tls` records enforced TLS intent (a tls:// --server implies
   // it), and `--mode user` registers from supplied pinned trust via `--user-auth-file` or `--from`.
-  meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
+  // `--json` (2026-10, #2386): bare `meshes` / `meshes list` print one JSON object per mesh; add/rm refuse it.
+  meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "json:boolean", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
   // `--components` (2026-08): explicit fail-loud health across manager, delivery, web, and broker; bare status remains the recovery-oriented inventory.
   status: { flags: ["components:boolean", "server:string", "space:string"], positionals: false },
   // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
@@ -91,7 +94,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   endpoints: { flags: [...TARGET], positionals: false },
   // The generic v0.4 service surface (P2 item 1, 1c.2b): describe an endpoint's registered
   // command set off the wire; invoke one command by name with JSON args.
-  describe: { flags: [...TARGET], positionals: true },
+  describe: { flags: [...TARGET, "on:string"], positionals: true },
   invoke: {
     flags: [...TARGET, "admin:boolean", "args:string", "name:string", "self:boolean", "timeout:string"],
     positionals: true,
@@ -128,9 +131,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // `--role` / `--provision` / `--space` / `--server` (2026-08): an out-of-band mint can pre-create
     // the identity's bind-only durables so the credential can CONSUME, not only publish (issue #306's
     // second half); the target flags name the mesh that provisioning connects to.
+    // `--expires-in` / `--expires-at` / `--identity` (2026-09, #1992): bound the credential's lifetime
+    // (TTL seconds or absolute exp, mutually exclusive), and re-mint for the nkey an existing creds
+    // file already carries. All three are refused together with `--signer`.
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "force:boolean", "out:string", "profile:string",
-      "provision:boolean", "role:string", "server:string", "signer:boolean", "space:string",
+      "allow-publish:string", "allow-subscribe:string", "expires-at:string", "expires-in:string",
+      "force:boolean", "identity:string", "out:string", "profile:string", "provision:boolean",
+      "role:string", "server:string", "signer:boolean", "space:string",
     ],
     positionals: true,
   },
@@ -175,6 +182,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
   runtimes: { flags: [], positionals: false },
+  // #1391: the custody records an earlier Linux pty manager left. Read-only unless `--drain`,
+  // which retires only seats whose agent has exited. No `--force`: a live child is never signalled.
+  seats: { flags: ["drain:boolean"], positionals: false },
   // `service` (2026-09): the manager as a user service; the subcommand is the positional.
   service: { flags: ["json:boolean", "linger:boolean", "mesh:string"], positionals: true },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
@@ -182,7 +192,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
   // #651: `--wide` (human facts line) / `--json` (machine rows) enrich the SAME listing; bare
   // output is unchanged. Mutually exclusive by construction, refused rather than prioritized.
-  ps: { flags: [...TARGET, "on:string", "wide:boolean", "json:boolean"], positionals: false },
+  ps: { flags: [...TARGET, "on:string", "wide:boolean", "json:boolean", "slots:boolean"], positionals: false },
   // `--no-reconnect` (2026-08, lane A1): attach re-establishes its session when the LINK dies,
   // so the flag is the opt OUT, for scripts that want one session and one exit code. Named
   // `no-reconnect` rather than a negation of a `reconnect` flag for the reason `input` gives
@@ -197,8 +207,12 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     // `--tls` here is the daemon REQUIRING TLS to the broker, not offering it. Note that `join`
     // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped
     // long ago and the SERVER half did not, which is this whole feature in one line.
-    flags: ["creds:string", "dev-mint:boolean", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean"],
-    positionals: false,
+    // `--root` (2026-10): name the workspace root instead of inheriting it from the cwd walk.
+    flags: [
+      "creds:string", "dev-mint:boolean", "durable:string", "json:boolean", "limit:string",
+      "root:string", "server:string", "shard:string", "shards:string", "space:string", "tls:boolean",
+    ],
+    positionals: true,
   },
   "feedback-intake": {
     flags: [
@@ -210,9 +224,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   login: { flags: ["client-id:string", "idp:string"], positionals: false },
   logout: { flags: ["idp:string"], positionals: false },
   // Per-user auth (D4c): the actor-ledger operator surface + the auth-service daemon.
+  // `--full` (2026-10): a grant takes the wide ACL defaults only when asked; without it the
+  // grant must name --scope, --allow-subscribe and --allow-publish.
   actor: {
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "label:string", "owner:string",
+      "allow-publish:string", "allow-subscribe:string", "full:boolean", "label:string", "owner:string",
       "parent:string", "role:string", "scope:string", "space:string", "sub:string",
     ],
     positionals: true,
@@ -231,17 +247,26 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: false,
   },
   // Gate 1 (user-mode agent launch): the machine-facing bearer refresh a spawned agent execs.
+  // `--manager-call` / `--manager-instance` (2026-09): mint a token bound to one manager instance.
   "agent-bearer": {
-    flags: ["actor:string", "dir:string", "exchange-url:string", "health-file:string", "owner:string", "space:string", "token-file:string"],
+    flags: [
+      "actor:string", "dir:string", "exchange-url:string", "health-file:string", "manager-call:boolean",
+      "manager-instance:string", "owner:string", "space:string", "token-file:string",
+    ],
     positionals: false,
   },
   // `run` (2026-09): the workflow-run operator surface from @cotal-ai/runtime. The run id is
   // minted by the driver (the records table forbids a caller-supplied id), so `start` takes no id
   // flag; resume/journal/answer name an existing run positionally.
+  // `--adopt` / `--release` / `--discard-approvals` (2026-09, #1863): what a `migrate` commit does
+  // with an orphan or a recorded decision; the checking verb refuses them.
+  // `--json` (2026-10, #2369): `ps` and `journal` print one JSON object per row; any other verb
+  // refuses it.
   run: {
     flags: [
-      "admit-publish:string", "admit-read:string", "artifact:string", "by:string", "creds:string",
-      "endpoint:string", "file:string:f", "local:boolean", "reason:string", "server:string", "space:string",
+      "admit-publish:string", "admit-read:string", "adopt:string", "artifact:string", "by:string",
+      "creds:string", "discard-approvals:boolean", "endpoint:string", "file:string:f", "json:boolean",
+      "local:boolean", "reason:string", "release:string", "server:string", "space:string",
       "timeout:string", "value:string",
     ],
     positionals: true,

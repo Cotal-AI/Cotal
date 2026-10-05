@@ -3,7 +3,7 @@
   "guard": "a declared completion marker downgrades a KILLED to INCONCLUSIVE, and only for a suite that declared one",
   "command": "node scripts/mutation-proof.selftest.mjs",
   "progressPattern": "✓",
-  "why": "This file used to grade a failure-vocabulary constant that no longer exists. `main` replaced that whole approach with a baseline-transcript comparison, which answers the same question without a grader guessing a suite's output conventions, so the constant and its six mutations went with it. What remains is the one behaviour that survived the merge on its own merits. Note what this config does NOT set: a `completionMarker`. The suite it grades is fail-fast, so it has no line it prints on both outcomes, and pointing the check at its success banner made every genuine kill INCONCLUSIVE. The feature being graded here is one this config must not use on itself.",
+  "why": "This file used to grade a failure-vocabulary constant that no longer exists. `main` replaced that whole approach with a baseline-transcript comparison, which answers the same question without a grader guessing a suite's output conventions, so the constant and its six mutations went with it. What remains is the one behaviour that survived the merge on its own merits. Note what this config does NOT set: a `completionMarker`. The suite it grades is fail-fast, so it has no line it prints on both outcomes, and pointing the check at its success banner made every genuine kill INCONCLUSIVE. The feature being graded here is one this config must not use on itself. The progress-mark entry below lives here, not in its own fixture, because the tool's fixtures are grouped by the selftest command they run, and this file already grades that command.",
   "mutations": [
     {
       "name": "the completion check is disabled outright",
@@ -21,6 +21,15 @@
       "expectRed": "a killed mutation exits 0 and reports KILLED",
       "cell": "a killed mutation exits 0 and reports KILLED",
       "note": "With no marker declared this reads `includes(undefined)`, which is false, so EVERY suite starts grading INCONCLUSIVE and the self-test dies at its first cell. Re-aimed there from the opt-in control it was written for: the mutation is broader than that cell, and in a fail-fast file `no broader than the cell it names` is decided by ordering rather than by intent. The control cell still states which property is carrying the weight; this names where the harm actually lands first."
+    },
+    {
+      "name": "the default progress pattern goes back to matching any ✓, label included",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "const DEFAULT_PROGRESS_PATTERN = \"^[ \\t]*(?:\\x1b\\\\[[0-9;]*m)*\u2713\";",
+      "replace": "const DEFAULT_PROGRESS_PATTERN = \"\u2713\";",
+      "expectRed": "a \u2713 inside an assertion label is not a progress mark",
+      "cell": "a \u2713 inside an assertion label is not a progress mark",
+      "note": "The label glyph pays for a missing mark again: with the anchor gone, `labelled.mjs`'s baseline reads 4 marks instead of 3, and the 7i/7j cells that pin the true count go red first."
     }
   ],
   "suite": [

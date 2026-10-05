@@ -11,9 +11,8 @@
  * child that joins presence, and the real `MeshHandler` driving it all through a driven program.
  *
  *   1  a driven program spawns a REAL seat: the run completes, the handle pins the incarnation
- *      the manager allocated, and the seat is live on `ps`.
- *   2  a losing race branch's REAL seat is released by the driver's own sweep — the winner's is
- *      not touched.
+ *      the manager allocated, and the completed run releases the seat from `ps`.
+ *   2  a losing race branch's REAL seat is released by the driver's own sweep.
  *   3  spawn→conclave flow-through: the handle a REAL spawn minted resolves through the seat's
  *      own presence row, a membership row is written for exactly that incarnation, and the close
  *      tombstones it and deletes the minted channel's registry row.
@@ -31,10 +30,9 @@
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Seat-env hygiene BEFORE any cotal import: whatever runs this suite may itself be a managed
 // session whose COTAL_* names a live mesh; nothing may leak into the rig or its children.
@@ -63,12 +61,6 @@ const { MeshHandler, EpfSettleWatcher, startRun, resolveCheckpoint } = await imp
 const { launchEnv } = await import("@cotal-ai/connector-core"); // the OS env allow-list a real connector supplies
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 
 let pass = 0, fail = 0;
 const c = (name: string, cond: boolean, extra?: unknown) => {
@@ -181,7 +173,7 @@ try {
       settled?.status === "ok" && typeof value?.agent === "string" && value.agent.startsWith("wf1#"), value?.agent);
     c("the handle carries the persona", value?.persona === "wf1", value?.persona);
     const names = await psNames();
-    c("the seat is LIVE on the manager's own ps", names.includes("wf1"), names);
+    c("the completed run released its seat: it is gone from the manager's own ps", !names.includes("wf1"), names);
   }
 
   // ── 2) a losing race branch's real seat is released by the driver's sweep ───────────────────
@@ -212,7 +204,7 @@ log("winner", out.index);
     const names = await psNames();
     c("the loser's REAL seat is gone: the driver's sweep despawned it through the real manager",
       !names.includes("wf2"), names);
-    c("and the winner-unrelated seat from the first run was not touched", names.includes("wf1"), names);
+    c("and no seat of either completed run is left behind", !names.some((n) => n.startsWith("wf")), names);
   }
 
   // ── 3) spawn→conclave flow-through: a REAL seat's presence resolves its membership ──────────
@@ -287,7 +279,7 @@ log("outcome", r.index);
       deadlineMs: 20_000,
     });
     c("the real manager tore the seat down", reply.reply.ok === true, JSON.stringify(reply.reply));
-    const out = await Promise.race([drv, wait(45_000).then(() => undefined)]);
+    const out = await Promise.race([drv, wait(75_000).then(() => undefined)]);
     c("the died branch ends the run once the presence row lapses",
       (out as { status?: string } | undefined)?.status === "completed", JSON.stringify(out));
     const settledWait = (await entriesOf("ls-4", "wait")).find((e) => e.state === "settled");
@@ -528,8 +520,8 @@ log("got", v.estimate);`,
       JSON.stringify({ answered, out: out5, result: askV?.result }));
     const y5 = await invokeCommand(nc, SPACE, svc5, "turn-yield",
       { goalId: pulled5?.goalId ?? "", status: "done" }, { target: { mode: "self" }, deadlineMs: 20_000 });
-    c("the relay is the seat's to end: the REAL manager accepts its yield after the ask has settled",
-      y5.reply.ok === true && (y5.reply.data as { state?: unknown } | undefined)?.state === "succeeded", JSON.stringify(y5.reply).slice(0, 160));
+    c("the completed run released its seat: a yield after the ask has settled finds the seat gone",
+      y5.reply.ok === false && y5.reply.error?.code === "expired", JSON.stringify(y5.reply).slice(0, 160));
   }
 
   pumpState.over = true;

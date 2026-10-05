@@ -16,21 +16,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-
-/** An ephemeral, collision-safe loopback port (ask the OS for a free one, then release it). */
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Sandbox the registry BEFORE importing workspace — homeCotalDir() reads COTAL_HOME per call.
 //

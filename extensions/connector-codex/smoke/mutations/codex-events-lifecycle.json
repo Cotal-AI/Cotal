@@ -81,8 +81,8 @@
     {
       "name": "L12 the bind's boundary is not substituted, so the emitter positions itself wherever the file ends when its own setup has finished",
       "file": "extensions/connector-codex/src/host.ts",
-      "find": "source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),",
-      "replace": "source: new JsonlFileSource<CodexRecord>(rolloutPath),",
+      "find": "          const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor);",
+      "replace": "          const source = new JsonlFileSource<CodexRecord>(rolloutPath);",
       "expectRed": "a turn written INSIDE the emitter's setup window is PUBLISHED rather than left behind the cursor"
     },
     {
@@ -106,6 +106,20 @@
       "replace": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
       "expectRed": "broker-outage-live:setup:the replacement holder stays alive through recovery"
+    },
+    {
+      "name": "L16 the host drops the path's delimiter, so the reader accepts a bare token the way the old sentence-parsed reader did",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "from ${JSON.stringify(path)} (",
+      "replace": "from ${path} (",
+      "expectRed": "restart-late:and the dead thread's own file leaves a turn unfinished, so that close came from the seat"
+    },
+    {
+      "name": "L17 the bind's boundary is never persisted after a successful start, so a host killed before the first pump leaves a virgin WAL and the next bind takes a later boundary",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "          if (source instanceof BoundStartSource && wal.frontier.sourceCursor === undefined)\n            await wal.advanceCursorOnly(source.start);",
+      "replace": "          void wal.frontier.sourceCursor;",
+      "expectRed": "bind:the start boundary is on disk before the first pump (#705)"
     }
   ],
   "suite": [

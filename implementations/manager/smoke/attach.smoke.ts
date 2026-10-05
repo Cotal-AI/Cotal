@@ -8,7 +8,11 @@
  * needs no claude/mesh; tmux/cmux are skipped (logged) when not present on the machine.
  */
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createRuntime, requireRuntimeAdopt } from "../src/index.js";
+import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import type { AgentHandle, LaunchSpec, Runtime } from "@cotal-ai/core";
 import { detachKey } from "../../cli/src/lib/attach-client.js"; // the operator ws client moved into @cotal-ai/cli (stage 2a); dev-only smoke import
 import "@cotal-ai/cmux"; // registers the `cmux` runtime provider
@@ -153,16 +157,30 @@ const cwd = process.cwd();
   const capable: Runtime = { kind: "capable", spawn: () => handle, adopt: () => handle };
   check("present adopt returns the runtime handle", requireRuntimeAdopt(capable, { kind: "capable", id: "opaque" }) === handle);
 
+  // A pty spawn starts no custodian on any platform, so it carries no custody reference (#1391).
+  // On Linux the same runtime still adopts a seat that an earlier manager left under a custodian.
   const pty = createRuntime("pty", SESSION);
   const spawned = pty.spawn("smoke-pty-adopt", spec, cwd);
-  let adopted: AgentHandle | undefined;
-  const ptyErr = attachError(() => (adopted = requireRuntimeAdopt(pty, spawned.reference ?? { kind: "pty", id: "missing" })));
+  check("pty spawn records no custody reference", spawned.reference === undefined);
   if (process.platform === "linux") {
+    const root = mkdtempSync(join(tmpdir(), "cotal-attach-"));
+    process.env.COTAL_SEAT_ROOT = root;
+    const custodial = new CustodialPtyRuntime();
+    const legacy = custodial.spawn("smoke-pty-legacy", spec, cwd);
+    let adopted: AgentHandle | undefined;
+    const ptyErr = attachError(() => (adopted = requireRuntimeAdopt(pty, legacy.reference!)));
     check(
-      "pty adopt returns a live proxy",
-      ptyErr === "" && adopted !== undefined && typeof adopted.attach === "function" && adopted.pid !== undefined,
+      "pty adopts a seat an earlier custodial manager left running",
+      ptyErr === "" && adopted !== undefined && typeof adopted.attach === "function" && adopted.pid === legacy.pid,
     );
+    legacy.stop({ graceful: false });
+    await legacy.waitForExit?.();
+    closeHandle(adopted);
+    closeHandle(legacy);
+    await custodial.reap(legacy.reference!);
+    rmSync(root, { recursive: true, force: true });
   } else {
+    const ptyErr = attachError(() => requireRuntimeAdopt(pty, { kind: "pty", id: "missing" }));
     check(
       `pty adopt throws custody transport unsupported on ${process.platform}`,
       ptyErr === `custody transport unsupported on ${process.platform}`,
@@ -170,7 +188,6 @@ const cwd = process.cwd();
   }
   spawned.stop({ graceful: false });
   closeHandle(spawned);
-  closeHandle(adopted);
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");

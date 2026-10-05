@@ -123,6 +123,27 @@ export function registryReadFailed(e: unknown): boolean {
 }
 
 /**
+ * `details[].kind` for a CALLER-side refusal raised before publish because the args carry a key the
+ * resolved input contract does not declare. That contract is the one the responder serves, so the
+ * key is one this caller sends and the responder does not know. Core cannot call that version skew,
+ * since args may be typed by hand; a surface that builds the args itself for a responder of its own
+ * release can.
+ */
+export const EP_UNDECLARED_ARG = "ai.cotal.ep.undeclared-arg";
+
+/** The {@link EP_UNDECLARED_ARG} payload: the key the contract does not declare. */
+export interface EpUndeclaredArgDetail extends EpErrorDetail {
+  kind: typeof EP_UNDECLARED_ARG;
+  property: string;
+}
+
+/** The key a caller-side refusal names through {@link EP_UNDECLARED_ARG}, or `undefined`. */
+export function undeclaredArg(e: unknown): string | undefined {
+  if (!(e instanceof EpEnvelopeError)) return undefined;
+  return (e.details?.find((d) => d.kind === EP_UNDECLARED_ARG) as EpUndeclaredArgDetail | undefined)?.property;
+}
+
+/**
  * `details[].kind` for a refusal raised by the RESPONDER because the request declared a bound
  * incarnation (`bind`, §13.3) that is not this instance: `failed-precondition` for a different
  * instance, `expired` for the same instance at another epoch. It marks what no caller-side check

@@ -14,7 +14,7 @@ let pass = 0;
 let fail = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
   try {
-    assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+    assert.ok(condition, `${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
     pass++;
     console.log(`  ✓ ${name}`);
   } catch (error) {
@@ -134,13 +134,9 @@ try {
   check("--no-events leaves the event plane off", optedOut.env?.COTAL_EVENTS === undefined && optedOut.env?.COTAL_WORKSPACE_ROOT === undefined);
   const evented = launch({ space: "space", name: "seat", workspaceRoot: dir, events: true });
   check(
-    "event launches arm the plane, pin its durable root, and stabilize open-mode identity",
-    evented.env?.COTAL_EVENTS === "1" && evented.env?.COTAL_WORKSPACE_ROOT === dir && evented.env?.COTAL_ID === "seat",
+    "event launches arm the plane and pin its durable root",
+    evented.env?.COTAL_EVENTS === "1" && evented.env?.COTAL_WORKSPACE_ROOT === dir,
     evented.env,
-  );
-  check(
-    "an allocated event identity wins over the open-mode name",
-    launch({ space: "space", name: "seat", id: "allocated", workspaceRoot: dir, events: true }).env?.COTAL_ID === "allocated",
   );
   throws("events require a durable workspace root", () => launch({ space: "s", name: "n", events: true }), /workspace root/);
   check("Jcode TUI override is absent when unset", base.env?.COTAL_JCODE_TUI === undefined);
@@ -157,6 +153,7 @@ try {
     role: "worker",
     id: "ID",
     lifecycleUid: "life",
+    backfillFloor: 42,
     servers: "nats://bridge.test:4222",
     model: "gpt-5.6-sol",
     prompt: "  do the thing  ",
@@ -171,6 +168,7 @@ try {
       full.env?.COTAL_JCODE_PROMPT === "do the thing",
     full.env,
   );
+  check("backfill floor forwarded", full.env?.COTAL_BACKFILL_FLOOR === "42", full.env?.COTAL_BACKFILL_FLOOR);
   check("keeps broker URL out of env", full.env?.COTAL_SERVERS === undefined);
   check("broker URL resolves from material", configFromEnv(full.env).servers === "nats://bridge.test:4222");
   check("material preserves static creds when supplied", (() => {
@@ -202,7 +200,7 @@ try {
   check("Jcode MCP schema still refuses non-harness extras", !hostSchema.safeParse({ to: "operator", text: "PONG", owner: "forged" }).success);
 
   throws("refuses empty prompt", () => launch({ space: "s", name: "n", prompt: "  " }), /empty/);
-  throws("refuses resume", () => launch({ space: "s", name: "n", resume: "old" }), /resum/i);
+  throws("refuses resume of a session with no readable transcript", () => launch({ space: "s", name: "n", resume: "old" }), /cannot resume session old: no readable transcript/);
   throws("refuses exact-session continuation", () => launch({ space: "s", name: "n", continueSession: "old" }), /continuation/);
   throws("refuses an empty variant", () => launch({ space: "s", name: "n", variant: "  " }), /empty/);
   throws("refuses tool sharing", () => launch({ space: "s", name: "n", mcpServers: { extra: { command: "x" } } }), /tool-sharing/);

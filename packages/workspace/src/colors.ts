@@ -1,16 +1,29 @@
+/** Whether operator output gets ANSI color. A set `FORCE_COLOR` is checked first, the order Node
+ *  uses: `0` or `false` turns color off and any other value turns it on. Otherwise a non-empty
+ *  `NO_COLOR` turns it off (no-color.org), and color follows whether stdout is a terminal. Read on
+ *  every call, so a process that sets these after import is still honoured. */
+export function colorEnabled(): boolean {
+  const force = process.env.FORCE_COLOR;
+  if (force !== undefined) return force !== "0" && force !== "false";
+  if (process.env.NO_COLOR) return false;
+  return Boolean(process.stdout.isTTY);
+}
+
+const sgr = (code: string) => (s: string) => (colorEnabled() ? `\x1b[${code}m${s}\x1b[0m` : s);
+
 /** ANSI color helpers for operator-facing terminal output — shared by every command surface
- *  (@cotal-ai/cli, @cotal-ai/web) so they render identically. Workstation-layer
- *  concern: the wire protocol in core never prints. */
+ *  (@cotal-ai/cli, @cotal-ai/web, the manager, the delivery daemon) so they render identically
+ *  and all honour `colorEnabled`. Workstation-layer concern: the wire protocol in core never prints. */
 export const c = {
-  dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
-  bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
-  green: (s: string) => `\x1b[32m${s}\x1b[0m`,
-  cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
-  yellow: (s: string) => `\x1b[33m${s}\x1b[0m`,
-  red: (s: string) => `\x1b[31m${s}\x1b[0m`,
-  magenta: (s: string) => `\x1b[35m${s}\x1b[0m`,
-  gray: (s: string) => `\x1b[90m${s}\x1b[0m`,
+  dim: sgr("2"),
+  bold: sgr("1"),
+  green: sgr("32"),
+  cyan: sgr("36"),
+  yellow: sgr("33"),
+  red: sgr("31"),
+  magenta: sgr("35"),
+  gray: sgr("90"),
 };
 
 /** 256-color foreground wrapper (xterm color index 0-255). */
-export const color256 = (n: number) => (s: string) => `\x1b[38;5;${n}m${s}\x1b[0m`;
+export const color256 = (n: number) => sgr(`38;5;${n}`);

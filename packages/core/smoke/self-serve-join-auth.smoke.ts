@@ -192,6 +192,11 @@ try {
     await wait(200);
   }
   if (!back) throw new Error("broker did not restart");
+  // The presence bucket is memory-backed (#1356), so the restart emptied it, as it does for any
+  // broker restart. `cotal up` provisions the space after it starts a broker (postStart ->
+  // setupSpaceStreams), and this suite stands in for that step. Without it the bucket stays missing
+  // and every authed endpoint that binds presence fails with "stream not found".
+  await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
   await wait(3000); // reconnect + startConsumers rebind + core-sub reconciliation
   got.length = 0;
   await poster.multicast("after reconnect", { channel: "review.api" });

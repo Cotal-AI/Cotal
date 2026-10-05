@@ -508,7 +508,9 @@ try {
   console.log("M. the injected scanner is BRANDED + space-bonded (a hand-assembled or foreign-space scanner never enumerates — it would silently empty a barrier's family)");
   {
     const handAssembled: Parameters<typeof openLifecycleRegistry>[2] = {
+      scanManagerGates: async () => [],
       scanCredentialFamily: async () => [],
+      scanEndpointCredentialFamily: async () => [],
       scanBysrc: async () => [],
       scanStageFamily: async () => [],
       scanSessions: async () => [],

@@ -15,16 +15,15 @@
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, Socket } from "node:net";
+import { Socket } from "node:net";
 import { createSpaceAuth, serverConfig } from "@cotal-ai/core";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = (): Promise<number> => new Promise((res, rej) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = (s.address() as { port: number }).port; s.close(() => res(p)); }); s.on("error", rej); });
 
 const SPACE = "wslistener";
 const auth = await createSpaceAuth(SPACE);

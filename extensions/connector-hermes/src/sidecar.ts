@@ -43,6 +43,9 @@ function need(name: string): string {
 export function startSidecar(): Sidecar {
   const config = configFromEnv();
   config.connector = "hermes"; // advertise the host harness on our AgentCard (meta.connector)
+  // The gateway posts every turn's output, and its own busy notices, back to the channel as a reply
+  // to the message that started the turn. A peer's reply is therefore never a new task for us.
+  config.channelRepliesPullOnly = true;
   const agent = new MeshAgent(config);
   agent.start(); // background connect with retry
 
@@ -63,7 +66,7 @@ export function startSidecar(): Sidecar {
     hermesHookHandle,
     { fatalBind: true },
   );
-  const bridge = startBridgeServer(agent, config, bridgeSock);
+  const bridge = startBridgeServer(agent, config, bridgeSock, controlToken);
 
   // The plugin reads this at register(ctx) time to declare the cotal_* tools (full shared parity).
   writeFileSync(toolsFile, JSON.stringify(hermesToolDescriptors(config)));

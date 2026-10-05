@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
+import { parseShareSelection } from "@cotal-ai/core";
 import { parse } from "yaml";
 import type { StartAgentOpts } from "./manager.js";
 
@@ -15,7 +17,8 @@ import type { StartAgentOpts } from "./manager.js";
  * default connector). `name` is the persona REF (the file `.cotal/agents/<name>.md`, which
  * must exist); the booted peer presents under that file's own `name:`. `role`/`config`/`cwd` are
  * optional; persona/model come from the same file, and `cwd` roots the agent at a folder of its
- * own (default: the manager's workspace root).
+ * own (default: the manager's workspace root). `share-tools` is an optional list narrowing the
+ * operator's declared MCP servers for this agent, like `--share-tools` (absent: all; `[]`: none).
  */
 export function loadRoster(path: string): StartAgentOpts[] {
   const doc: unknown = parse(readFileSync(path, "utf8"));
@@ -37,6 +40,13 @@ export function loadRoster(path: string): StartAgentOpts[] {
     if (!name) throw new Error(`${at} missing "name"`);
     const agent = str("agent")?.trim();
     if (!agent) throw new Error(`${at} (${name}) missing "agent" (e.g. claude / opencode)`);
-    return { name, agent, role: str("role"), config: str("config"), cwd: str("cwd") };
+    const share = e["share-tools"];
+    // StartAgentOpts carries the `--share-tools` flag grammar, where an empty selection is `none`.
+    // The list must read back unchanged, or a name the grammar splits, trims, drops or takes for
+    // `none` would launch the agent with a selection the entry never wrote.
+    const shareTools = Array.isArray(share) ? share.join(",") || "none" : undefined;
+    if (share !== undefined && !isDeepStrictEqual(parseShareSelection(shareTools), share))
+      throw new Error(`${at}.share-tools must be a list of MCP server names that --share-tools can carry`);
+    return { name, agent, role: str("role"), config: str("config"), cwd: str("cwd"), shareTools };
   });
 }

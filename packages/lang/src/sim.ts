@@ -46,11 +46,12 @@ export interface SimFault {
 }
 
 export interface SimScript {
-  readonly turns?: Readonly<Record<string, Scripted<TurnResultValue>>>;
+  /** See the `at` rule on checkpoints below: turns are stamped from virtual time too, and a scripted `at` is refused. */
+  readonly turns?: Readonly<Record<string, Scripted<Omit<TurnResultValue, "at">>>>;
   readonly asks?: Readonly<Record<string, Scripted<unknown>>>;
   /**
-   * ⚠️ `at` IS NOT SCRIPTABLE. Both of `checkpoint()`'s return paths stamp it from virtual time
-   * and neither one reads a scripted value, so anything written here was required by the type and
+   * ⚠️ `at` IS NOT SCRIPTABLE for turns or checkpoints. `turn()` and both of `checkpoint()`'s return
+   * paths stamp it from virtual time, and neither one reads a scripted value, so anything written here was required by the type and
    * then silently discarded. Demanding a field the implementation overwrites makes every fixture
    * carry a number that means nothing, and reads to the next author as though it were honoured.
    *
@@ -61,6 +62,9 @@ export interface SimScript {
    * type, or never measured against it, escapes: inferred then passed by name, put through an `as`
    * cast, or handed to a parameter declared `unknown`. Those still compile with `at` present and
    * still have it discarded. This closes the idioms a new author reaches for; not the loophole.
+   *
+   * A hold (spec/cotal-lang.md §7.8) reaches `checkpoint` keyed by the held step's name, so an entry
+   * named after an `ask` inside `once` answers that step's hold, and `expired` produces L4027.
    */
   readonly checkpoints?: Readonly<Record<string, Scripted<Omit<CheckpointResultValue, "at">>>>;
   /** Keyed by the `wait` step's name. A scripted `null` is a timeout, which is a choice. */
@@ -136,6 +140,7 @@ export class SimHandler implements EffectHandler {
   private readonly parked: ParkedEvent[] = [];
   private parkSeq = 0;
   private pumpScheduled = false;
+  private settled: (() => Promise<void>) | undefined;
 
   constructor(readonly script: SimScript = {}) {
     this.virtualNow = script.clock?.start ?? 0;
@@ -183,6 +188,18 @@ export class SimHandler implements EffectHandler {
   }
 
   /**
+   * Across a thread boundary the delivered branch's continuation runs in the other realm, so
+   * draining this realm's microtasks no longer means it has reached its next park. The host that
+   * owns the boundary says when it has, and the pump waits for that before each delivery (#2240).
+   */
+  useQuiescence(settled: () => Promise<void>): () => void {
+    this.settled = settled;
+    return () => {
+      if (this.settled === settled) this.settled = undefined;
+    };
+  }
+
+  /**
    * One delivery per macrotask, with the microtask queue drained between: the delivered branch
    * runs to its next park (or its settle) before the next pop, which is what keeps the clock a
    * parking branch reads equal to that branch's own time.
@@ -191,18 +208,23 @@ export class SimHandler implements EffectHandler {
     if (this.pumpScheduled) return;
     this.pumpScheduled = true;
     setImmediate(() => {
-      this.pumpScheduled = false;
-      let next: ParkedEvent | undefined;
-      for (const e of this.parked) {
-        if (e.done) continue;
-        if (next === undefined || e.wake < next.wake || (e.wake === next.wake && e.seq < next.seq)) next = e;
-      }
-      next?.deliver();
-      for (let i = this.parked.length - 1; i >= 0; i--) {
-        if (this.parked[i]!.done) this.parked.splice(i, 1);
-      }
-      if (this.parked.length > 0) this.schedulePump();
+      if (this.settled === undefined) this.pump();
+      else void this.settled().then(() => this.pump());
     });
+  }
+
+  private pump(): void {
+    this.pumpScheduled = false;
+    let next: ParkedEvent | undefined;
+    for (const e of this.parked) {
+      if (e.done) continue;
+      if (next === undefined || e.wake < next.wake || (e.wake === next.wake && e.seq < next.seq)) next = e;
+    }
+    next?.deliver();
+    for (let i = this.parked.length - 1; i >= 0; i--) {
+      if (this.parked[i]!.done) this.parked.splice(i, 1);
+    }
+    if (this.parked.length > 0) this.schedulePump();
   }
 
   private timedBy(spec: string | undefined, fallback: string, ctx: EffectContext): Promise<void> {

@@ -25,26 +25,22 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import {
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import type { EpCaller } from "@cotal-ai/core";
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+process.env.COTAL_HOME = join(dir, "home");
+const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, describeEndpoint,
-  type EpCaller,
-} from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+} = await import("@cotal-ai/core");
+const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 
@@ -91,7 +87,6 @@ const pRunAtLeast = (n: number, k: number): number => {
 
 const space = `qwin-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const mkRoot = (tag: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });

@@ -42,6 +42,8 @@ export interface ResolvedAgent {
   agentType: string;
   /** Manager-host directory. Relative paths are resolved by the manager against its workspace. */
   cwd?: string;
+  /** Session continuity: `exact` reopens the session the manager last bound to this name. */
+  continuity?: "none" | "exact";
   /** Resolved persona path (absolute), or undefined for an inline agent. */
   persona?: string;
   /** Manifest override of the persona's model (or the inline model). */

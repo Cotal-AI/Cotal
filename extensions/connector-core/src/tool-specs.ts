@@ -9,8 +9,10 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, renderLifecycleBlocked, LANG_PROBLEM_DETAIL_KIND, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, LANG_PROBLEM_DETAIL_KIND, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
+// The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
+// the auto-injected block, and are used here rather than restated. See that file for the rule.
 import { attributionSafe, fmtBody, fmtItem, fmtFrom } from "./framing.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
@@ -133,6 +135,10 @@ export function parseToolArgs(spec: CotalToolSpec, args: unknown): Record<string
   );
 }
 
+/** The closed EMPTY input, for an adapter that republishes a tool with no arguments of its own.
+ *  A host given this refuses extras itself; a host given no `inputSchema` at all forwards them. */
+export const NO_TOOL_ARGS: CotalToolInput = z.strictObject({});
+
 /**
  * Refuse ANY caller-supplied argument to a tool an adapter publishes with none — returning the
  * refusal text, or `undefined` when the call is clean.
@@ -143,13 +149,22 @@ export function parseToolArgs(spec: CotalToolSpec, args: unknown): Record<string
  * tool while every sibling refuses it. The wording matches {@link parseToolArgs} so a caller cannot
  * tell which mechanism turned it away, and this stays dependency-free for hosts that bundle.
  */
-/** The closed EMPTY input, for an adapter that republishes a tool with no arguments of its own.
- *  A host given this refuses extras itself; a host given no `inputSchema` at all forwards them. */
-export const NO_TOOL_ARGS: CotalToolInput = z.strictObject({});
-
 export function refuseAnyArgs(name: string, args: unknown): string | undefined {
   const keys = args && typeof args === "object" ? Object.keys(args as Record<string, unknown>) : [];
   return keys.length ? `${name}: unknown argument(s): ${keys.join(", ")} — this tool takes no arguments` : undefined;
+}
+
+/** Compact age of an epoch-ms stamp at `now`: `12s`, `47m`, `3h`, `2d`, or undefined without a stamp.
+ *  A presence record is parsed from the bucket unchecked, so anything but a finite number counts as no
+ *  stamp: the subtraction would date `null` from the epoch, render a string as `NaNd`, and render an
+ *  exponent literal such as `1e400`, which parses to an infinity, as `0s` or `Infinityd`. */
+function ageText(now: number, at: number | undefined): string | undefined {
+  if (typeof at !== "number" || !Number.isFinite(at)) return undefined;
+  const s = Math.max(0, Math.floor((now - at) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86_400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86_400)}d`;
 }
 
 function statusGlyph(s: PresenceStatus): string {
@@ -165,8 +180,6 @@ const ATTENTION_DESC: Record<"open" | "dnd" | "focus", string> = {
     "focus — only DMs and anycast reach your context; an @mention wakes you to pull; untagged channel chatter is held on the channel — read it with cotal_inbox",
 };
 
-/** The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
- *  the auto-injected block, and are used here rather than restated. See that file for the rule. */
 /**
  * HOW MUCH OF THE INBOX ONE RESPONSE MAY CARRY, in characters.
  *
@@ -189,7 +202,8 @@ export interface InboxResponse {
   shown: InboxItem[];
   /** Everything it does not carry. */
   held: InboxItem[];
-  /** Ids no response could ever carry, whatever the window held at the time. */
+  /** Receive keys no response could ever carry, whatever the window held at the time. Keyed like an
+   *  ack, so two id-less items (#662) are never one entry. */
   stuck: ReadonlySet<string>;
 }
 
@@ -221,11 +235,11 @@ export function renderInbox(opts: {
   warning?: string;
   budget?: number;
   /**
-   * Ids of a lane that must be delivered IN ORDER, with no gaps: focus recall, which a caller walks
-   * with a single mark rather than an acknowledgement per item. Stepping over one of these to fit a
-   * later one would either strand it, if the mark then passes it, or re-serve everything after it,
-   * if the mark stops short. The buffered lane has no such constraint, because each of its items is
-   * acked by id.
+   * Receive keys of a lane that must be delivered IN ORDER, with no gaps: focus recall, which a
+   * caller walks with a single mark rather than an acknowledgement per item. Stepping over one of
+   * these to fit a later one would either strand it, if the mark then passes it, or re-serve
+   * everything after it, if the mark stops short. The buffered lane has no such constraint, because
+   * each of its items is acked by receive key.
    */
   strictIds?: ReadonlySet<string>;
 }): InboxResponse {
@@ -244,10 +258,13 @@ export function renderInbox(opts: {
   //
   // Stuck means "no response could carry this", so it is measured against the friendliest response
   // there is: this item alone, its head, and any rider, with no held-note at all.
+  // Every set in this walk is keyed by receive key. An id-less item's wire id is the empty string,
+  // so a set of wire ids makes every id-less item the same item: a held giant vanished from the
+  // note when a small id-less item went out, and recall moved its mark past an unread one (#613).
   const stuck = new Set(
     ordered
       .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget)
-      .map((i) => i.id),
+      .map((i) => i.recvKey),
   );
 
   const assemble = (shown: InboxItem[], held: InboxItem[], tier: NoteTier): string => {
@@ -282,21 +299,21 @@ export function renderInbox(opts: {
   let used = 0;
   let strictGap = false; // the in-order lane stops at its first gap; the free lane steps over its own
   for (const i of ordered) {
-    const strict = strictIds.has(i.id);
+    const strict = strictIds.has(i.recvKey);
     if (strict && strictGap) continue;
     const cost = itemCost(i);
     if (used + cost > budget) {
-      // A message nothing could ever carry is not a gap: it will never become deliverable, so the
-      // walk steps over it and the note says so. Anything else IS a gap, and the ordered lane waits.
-      if (strict && !stuck.has(i.id)) strictGap = true;
+      // In the ordered lane even a message no response could carry whole is a gap: the mark would
+      // pass it if the walk stepped over it, so the lane waits for it to go out in parts (#613).
+      if (strict) strictGap = true;
       continue;
     }
     shown.push(i);
     used += cost;
   }
   const heldOf = (): InboxItem[] => {
-    const ids = new Set(shown.map((i) => i.id));
-    return ordered.filter((i) => !ids.has(i.id));
+    const keys = new Set(shown.map((i) => i.recvKey));
+    return ordered.filter((i) => !keys.has(i.recvKey));
   };
   let held = heldOf();
   let text = assemble(shown, held, "full");
@@ -333,9 +350,9 @@ function itemCost(i: InboxItem): number {
  * The tail that keeps a windowed response honest: what is still there, and that it was not lost.
  *
  * TWO KINDS OF HELD, because they are not the same promise. Most held mail is waiting its turn and
- * a later call delivers it. A message larger than one whole response is not waiting for anything:
- * calling again will never produce it, and saying "call again for the next batch" over it would be
- * a queue that looks like it is moving when it is not.
+ * a later call delivers it whole. A message larger than one whole response never arrives whole: it
+ * goes out in parts through {@link renderPart}, after the smaller mail, so the note says that rather
+ * than promising it in the next batch.
  *
  * THE NOTE IS BOUNDED. It names at most {@link NAMED_STUCK} of the stuck messages and counts the
  * rest, and it truncates a sender's name, because a steady stream of oversized mail would otherwise
@@ -348,7 +365,7 @@ function heldNote(
   tier: NoteTier = "full",
 ): string {
   if (!held.length || tier === "none") return "";
-  const stuck = held.filter((i) => stuckIds.has(i.id));
+  const stuck = held.filter((i) => stuckIds.has(i.recvKey));
   const waiting = held.length - stuck.length;
   if (tier === "compact") {
     const bits: string[] = [];
@@ -363,7 +380,7 @@ function heldNote(
   }
   const parts: string[] = [];
   if (waiting) {
-    const dms = held.filter((i) => i.kind !== "channel" && !stuckIds.has(i.id)).length;
+    const dms = held.filter((i) => i.kind !== "channel" && !stuckIds.has(i.recvKey)).length;
     // Under peek nothing is cleared, so the next call returns THIS window again. Telling a peeking
     // caller to call again for the next batch is a promise the read cannot keep, and an obedient
     // caller loops on it forever.
@@ -381,10 +398,131 @@ function heldNote(
       .join(", ");
     const rest = stuck.length - Math.min(NAMED_STUCK, stuck.length);
     parts.push(
-      `${stuck.length} message${stuck.length === 1 ? " is" : "s are"} larger than one response can carry and cannot be delivered by this tool at all: ${named}${rest ? `, and ${rest} more` : ""}. ${stuck.length === 1 ? "It stays" : "They stay"} buffered and uncleared, and calling again will not produce ${stuck.length === 1 ? "it" : "them"}.`,
+      `${stuck.length} message${stuck.length === 1 ? " is" : "s are"} larger than one response can carry: ${named}${rest ? `, and ${rest} more` : ""}. ${stuck.length === 1 ? "It stays" : "They stay"} buffered and uncleared, and once no smaller mail is waiting, each call delivers the next part of one of them; a message is cleared only after its last part goes out.`,
     );
   }
   return `\n\n… ${parts.join(" ")}`;
+}
+
+/**
+ * How far each oversized message has been read, by receive key, per agent (#613).
+ *
+ * It lives beside the agent rather than in the reply, so a reconnect, which keeps the agent and its
+ * buffer, resumes where the last part ended. A process restart loses it, and the redelivered message
+ * starts again from its first part: repeated, never skipped. An entry goes when its message is no
+ * longer offered, whether by its last part or by anything else that consumed it.
+ */
+const partOffsets = new WeakMap<MeshAgent, Map<string, number>>();
+
+/**
+ * One `cotal_inbox` read at a time per agent (#613). A read decides what to hide, render and clear from
+ * state it took before awaiting recall, so a second read that overlapped it decided from a snapshot the
+ * first had already moved past: it hid a recalled message the first had just read in part, and moved
+ * the recall mark past the rest of it. A read waits for the one before it to finish, failed or not.
+ */
+const inboxReads = new WeakMap<MeshAgent, Promise<unknown>>();
+
+function oneReadAtATime<A>(
+  read: (agent: MeshAgent, config: AgentConfig, args: A) => Promise<ToolResult>,
+): (agent: MeshAgent, config: AgentConfig, args: A) => Promise<ToolResult> {
+  return (agent, config, args) => {
+    const turn = (inboxReads.get(agent) ?? Promise.resolve()).then(() => read(agent, config, args));
+    inboxReads.set(agent, turn.catch(() => undefined));
+    return turn;
+  };
+}
+
+/** The read position for an oversized message, after dropping positions of messages no longer offered. */
+function partCursor(agent: MeshAgent, offered: readonly InboxItem[]): Map<string, number> {
+  let m = partOffsets.get(agent);
+  if (!m) partOffsets.set(agent, (m = new Map()));
+  const live = new Set(offered.map((i) => i.recvKey));
+  for (const k of m.keys()) if (!live.has(k)) m.delete(k);
+  return m;
+}
+
+/**
+ * One part of a message no single response can carry: the next slice of its rendered form, with a
+ * line saying which characters these are and whether more follow (#613).
+ *
+ * The slice is of the RENDERED item, so its indented continuations come with it, and it starts on
+ * its own indented line, so a cut that lands mid-line cannot put peer text at column zero. Its size
+ * is what the window has left once the line above it, the note and any rider are in, and the
+ * finished text is measured like {@link renderInbox}'s. `end` is where the next part starts; the
+ * caller clears the message only when `done`, and advances nothing on a peek.
+ */
+function renderPart(opts: {
+  item: InboxItem;
+  offset: number;
+  peek: boolean;
+  others: readonly InboxItem[];
+  stuck: ReadonlySet<string>;
+  warning?: string;
+  budget?: number;
+}): { text: string; end: number; done: boolean } {
+  const budget = opts.budget ?? INBOX_WINDOW_CHARS;
+  const full = fmtItem(opts.item);
+  const total = full.length;
+  const fmt = (n: number): string => n.toLocaleString("en-US");
+  const assemble = (end: number, tier: NoteTier): string => {
+    const done = end >= total;
+    const next = opts.peek
+      ? "A peek advances nothing, so read without peek to take this part."
+      : done
+        ? "This was its last part, so it is now cleared."
+        : "It stays buffered and uncleared until its last part goes out; call cotal_inbox again for the next part.";
+    const head = `Part of a message larger than one response, from ${fmtFrom(opts.item).slice(0, 40)}: characters ${fmt(opts.offset + 1)}-${fmt(end)} of ${fmt(total)}${opts.peek ? " (peek: nothing cleared)" : ""}. ${next}`;
+    const body = `${head}\n  ${full.slice(opts.offset, end)}${heldNote(opts.others, opts.peek, opts.stuck, tier)}`;
+    return opts.warning ? `${body}\n\n${opts.warning}` : body;
+  };
+  for (const tier of NOTE_TIERS) {
+    // Measure everything but the slice with the widest numbers the header can carry, then fill.
+    const room = budget - assemble(opts.offset, tier).length - 2 * fmt(total).length;
+    if (room <= 0) continue;
+    let end = Math.min(total, opts.offset + room);
+    // Never split a surrogate pair across two parts.
+    if (end < total && /[\uD800-\uDBFF]/.test(full[end - 1])) end--;
+    const text = assemble(end, tier);
+    if (text.length <= budget && end > opts.offset) return { text, end, done: end >= total };
+  }
+  throw new Error(`cotal_inbox: no room for a part of a ${fmt(total)}-character message in a ${fmt(budget)}-character window`);
+}
+
+/**
+ * The reply for a call that could carry no whole message: the next part of `item`, a message too
+ * large for any response, or `undefined` when there is none. The read position moves only when the
+ * part went out, and `last` records the message as handed over only with its last part, so nothing
+ * is cleared before it was handed over (#603). `last` is a buffered message's ack, or for focus
+ * recall the mark or the ahead record that a whole recalled item would have moved.
+ */
+function partReply(opts: {
+  agent: MeshAgent;
+  item: InboxItem | undefined;
+  /** Everything this call offered, so read positions of messages no longer offered are dropped. */
+  offered: readonly InboxItem[];
+  stuck: ReadonlySet<string>;
+  peek: boolean;
+  last: (item: InboxItem) => void;
+  warning?: string;
+}): string | undefined {
+  const { agent, item, peek } = opts;
+  if (!item) return undefined;
+  const cursor = partCursor(agent, opts.offered);
+  const part = renderPart({
+    item,
+    offset: cursor.get(item.recvKey) ?? 0,
+    peek,
+    others: opts.offered.filter((i) => i !== item),
+    stuck: opts.stuck,
+    warning: opts.warning,
+  });
+  if (!peek) {
+    if (part.done) {
+      opts.last(item);
+      cursor.delete(item.recvKey);
+    } else cursor.set(item.recvKey, part.end);
+  }
+  return part.text;
 }
 
 /**
@@ -578,6 +716,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             bucket: presence.bucket,
             since: new Date(presence.since).toISOString(),
             forMs: presence.forMs,
+            consecutiveFailures: presence.consecutiveFailures,
+            stuck: presence.stuck,
             ...(presence.error !== undefined ? { error: presence.error } : {}),
             note: "presence writes are the first thing to fail here, not necessarily the only thing - a broker can refuse writes far more widely while this connection stays up",
           },
@@ -663,8 +803,25 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         "List the agents currently present in your Cotal space, with their role, status, and current activity.",
       run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
+        const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
+        // #1229: rendering never refuses, but it must not present a partial or last-known roster
+        // as a complete one. `unpopulated` = the watch has not replayed its initial snapshot (a
+        // reconnect refill); `stale` = the bucket has been silent past the liveness window.
+        const view = agent.presenceView();
+        const viewSentence =
+          view.state === "unpopulated"
+            ? `The presence watch has not completed its initial snapshot in "${config.space}", so this list may be partial and a missing name is not an absence verdict.`
+            : view.state === "stale"
+              ? `The presence view in "${config.space}" has been silent since ${new Date(view.staleSince).toISOString()}, so the rows below are last-known.`
+              : "";
         const roster = agent.roster();
-        if (!roster.length) return ok(`No one is present in "${config.space}" yet.`);
+        if (!roster.length) {
+          const empty = `No one is present in "${config.space}" yet.`;
+          const preface = writeFailure?.stuck
+            ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. This empty roster is last-known until a write succeeds or the broker store is repaired.`
+            : viewSentence;
+          return ok(preface ? `${preface}\n\n${empty}` : empty);
+        }
         // Names aren't unique. Where one repeats, append the instance id so a DM can target the
         // exact peer (the id is the only authoritative address); keep unique rows clean.
         const counts = new Map<string, number>();
@@ -687,34 +844,52 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
                 .map(([c]) => `#${c}`)
             : [];
           const mutedHint = muted.length ? ` (locally muted ${muted.join(", ")}; DM to reach)` : "";
-          const condition = p.condition ? ` (${p.condition.code})` : "";
+          // The condition with how long it has held, how long the status and activity have stood (#578),
+          // and the age of the last harness-reported work event (#618): a turn that died or stopped
+          // advancing 40m ago no longer reads like a live one, and neither does a report made 40m ago.
+          // The activity also carries its own age (#544): a hook flips the status every turn and leaves
+          // the activity alone, so the status age cannot date it.
+          const now = Date.now();
+          const conditionAge = ageText(now, p.condition?.since);
+          const unchangedAge = ageText(now, p.statusSince);
+          const activeAge = ageText(now, p.activeAt);
+          const unchanged = unchangedAge === undefined ? "" : ` · unchanged for ${unchangedAge}`;
+          const active = activeAge === undefined ? "" : ` · active ${activeAge} ago`;
+          const condition = (p.condition ? ` (${p.condition.code}${conditionAge === undefined ? "" : ` for ${conditionAge}`})` : "") + unchanged + active;
           const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
-          return `${statusGlyph(p.status)} ${who} — ${progress}${p.activity ? `: ${p.activity}` : ""}${attn}${me}${mutedHint}${id}`;
+          const activityAge = ageText(now, p.activitySince);
+          const activity = p.activity ? `: ${p.activity}${activityAge === undefined ? "" : ` (set ${activityAge} ago)`}` : "";
+          return `${statusGlyph(p.status)} ${who} — ${progress}${activity}${attn}${me}${mutedHint}${id}`;
         });
-        return ok(`Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`);
+        const rendered = `Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`;
+        const preface = writeFailure?.stuck
+          ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. The roster below is last-known until a write succeeds or the broker store is repaired.`
+          : viewSentence;
+        return ok(preface ? `${preface}\n\n${rendered}` : rendered);
       },
     },
     {
       name: "cotal_inbox",
       title: "Cotal: read incoming messages",
       description:
-        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is never consumed either: it is named with its sender and size and stays buffered, since delivering it is impossible and clearing it would lose it. In focus mode it also pulls back the channel chatter held since you entered focus.",
+        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
-      async run(agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }) {
+      run: oneReadAtATime(async (agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }) => {
         const inboxScope = scope ?? "all";
         // SELECT, RENDER, THEN CLEAR EXACTLY WHAT WENT OUT (#603). The old order drained the whole
         // scope up front, so a payload too large for the host to deliver had already been marked
         // read, and a reconnect replay is both the largest payload and the one most likely to have
         // a real DM inside it. This READ acks nothing outside the window it returned, on any path.
-        // It is not the only acker: the inbox's own overflow valve acks what it evicts, so an item
-        // that arrives while this call is awaiting recall can still be evicted and lost. That is the
-        // buffer's documented bounded local loss (see MeshAgent.buffer), unchanged by this path.
-        const buffered = agent.peekInbox(inboxScope);
+        // It is not the only acker: the inbox's own overflow valve acks the channel traffic it
+        // evicts, so a channel item that arrives while this call is awaiting recall can still be
+        // evicted and lost. That is the buffer's documented bounded local loss (see
+        // MeshAgent.buffer), unchanged by this path; an evicted directed message is never acked.
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
-          const { text, shown, held } = renderInbox({
+          const buffered = agent.peekInbox(inboxScope);
+          const { text, shown, held, stuck } = renderInbox({
             items: buffered,
             peek,
             head: (s) =>
@@ -728,6 +903,17 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
                 : "Inbox empty, no new messages.",
             );
+          if (!shown.length) {
+            const part = partReply({
+              agent,
+              item: buffered.find((i) => stuck.has(i.recvKey)),
+              offered: buffered,
+              stuck,
+              peek: peek ?? false,
+              last: (i) => agent.drainInboxDeliveries([i.recvKey]),
+            });
+            if (part) return ok(part);
+          }
           // The response exists before anything is acked: an ack is a claim that these messages were
           // handed over, so nothing may be cleared while the handing-over is still hypothetical. And
           // it is the ASSEMBLED response that decides, so what is acked is what a caller was handed.
@@ -737,8 +923,14 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         }
         // Focus: the live buffer holds only DMs/anycast; the channel ambient + @mentions were
         // acked-and-dropped at ingest, so pull them back from the channel stream here (replay-gated,
-        // "since you entered focus"). Recall is read-only, so peek only affects the live buffer.
-        const recall = await agent.recallAmbient();
+        // "since you entered focus"). Recall acks nothing, so peek only affects the live buffer.
+        // A recalled message already part read stays offered until its last part goes out (#613).
+        const before = new Set(agent.peekInbox("all").map((i) => i.recvKey));
+        const underway = new Set([...(partOffsets.get(agent)?.keys() ?? [])].filter((k) => !before.has(k)));
+        const recall = await agent.recallAmbient(underway);
+        // Read after recall, which can hand an id-less message back into the buffer (#662).
+        const buffered = agent.peekInbox(inboxScope);
+        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
         // RECALL HAS TO ADVANCE, or windowing it starves it. Recall is re-derived from an unchanged
         // frontier on every call, so showing its first window and stopping there returned the same
         // prefix forever while the reply promised a next batch: measured as three identical replies
@@ -784,12 +976,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const warning = [droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
-        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
         const { text, shown: all, stuck } = renderInbox({
           items: [...buffered, ...fresh],
           peek,
           warning,
-          strictIds: new Set(clocked.map((i) => i.id)),
+          strictIds: new Set(clocked.map((i) => i.recvKey)),
           head: (s) =>
             scope
               ? `${s.length} message${s.length === 1 ? "" : "s"}. Buffered pull-only items were cleared; normal focus channel items are read-only recall:`
@@ -801,6 +992,29 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
               : "Inbox empty, no new messages, and no channel chatter since you entered focus.",
           );
+        if (!all.length) {
+          // A recalled message goes out in parts too, and its last part moves what a whole one would
+          // have: the mark for the ordered lane, whose first item is the only one it may take, or the
+          // ahead record, so the mark never passes a message that has not been handed over.
+          const first = clocked[0];
+          const item =
+            buffered.find((i) => stuck.has(i.recvKey)) ??
+            (first && stuck.has(first.recvKey) ? first : aheadFresh.find((i) => stuck.has(i.recvKey)));
+          const part = partReply({
+            agent,
+            item,
+            offered: [...buffered, ...fresh],
+            stuck,
+            peek: peek ?? false,
+            warning,
+            last: (i) => {
+              if (bufferedIds.has(i.recvKey)) agent.drainInboxDeliveries([i.recvKey]);
+              else if (aheadIds.has(i.recvKey)) agent.noteRecalledAhead(i.recvKey);
+              else agent.noteRecalled({ ts: i.ts, id: i.recvKey });
+            },
+          });
+          if (part) return ok(part);
+        }
         // Render first, ack second, and only ever ids from the buffered lane: acking a recall id
         // would mark it handled, so a later live copy of that channel message would be dropped.
         if (!peek) {
@@ -818,13 +1032,13 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // the mutation for it survived and the code went rather than the test being weakened.
           const shownRecall = all.filter((i) => !bufferedIds.has(i.recvKey));
           for (const i of shownRecall) if (aheadIds.has(i.recvKey)) agent.noteRecalledAhead(i.recvKey);
-          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.id));
+          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.recvKey));
           const last = shownClocked[shownClocked.length - 1];
           if (last) agent.noteRecalled({ ts: last.ts, id: last.recvKey });
           void stuck;
         }
         return ok(text);
-      },
+      }),
     },
     {
       name: "cotal_send",
@@ -864,11 +1078,22 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       schema: {
         to: z.string().describe("The peer's name (or instance id)."),
         text: z.string().describe("The message."),
+        replyTo: z
+          .string()
+          .optional()
+          .describe(
+            "The id of the peer's message this DM answers. Omit it to answer the peer's oldest unanswered message; when that peer's waiting messages belong to more than one conversation, the DM is refused with their ids.",
+          ),
       },
-      async run(agent, _config, { to, text: msg }: { to: string; text: string }) {
+      async run(agent, _config, { to, text: msg, replyTo }: { to: string; text: string; replyTo?: string }) {
         try {
-          const { peer } = await agent.dm(to, msg);
-          return ok(`DM sent to ${peer.card.name}.`);
+          const { recipient, ack, recipientStatusAtSend } = await agent.dm(to, msg, { replyTo });
+          const dup = ack.duplicate ? " duplicate publication." : "";
+          const at =
+            recipientStatusAtSend === "unrostered"
+              ? "recipient had no roster row at send: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox"
+              : `recipient was ${recipientStatusAtSend} at send`;
+          return ok(`DM stored as seq ${ack.seq} for ${recipient.name} (${at}; delivery not confirmed).${dup}`);
         } catch (e) {
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates
@@ -971,7 +1196,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               ? " · durable backstop unavailable — live messages still arrive; offline replay is at risk after backlog cap"
               : c.deliveryHealth === "active"
                 ? " · durable backstop active"
-                : "";
+                : c.deliveryHealth === "unknown"
+                  ? " · durable backstop health unknown — this reader cannot establish it (no delivery grant here, or the daemon answered with an error)"
+                  : "";
           return `${c.joined ? "●" : "○"} #${c.channel}${desc} (${c.joined ? "subscribed" : "not subscribed"}, replay ${c.replay ? "on" : "off"})${mode}${unclosed}${health}`;
         });
         return ok(
@@ -1072,6 +1299,14 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         "Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal web` so the user can watch the mesh in real time.",
       schema: {
         name: z.string().describe("Which persona to spawn: the persona FILENAME in .cotal/agents (e.g. `review-critic`), without the .md. The new peer joins under the persona's own `name:` (auto-numbered with an underscore, e.g. socrates_2, if that's taken). Fails if no such persona file exists; spawn an existing persona, don't invent a name."),
+        instance: z
+          .string()
+          .refine((value) => {
+            try { assertLifecycleToken(value, "instance"); return true; }
+            catch { return false; }
+          }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
+          .optional()
+          .describe("Optional manager instance id for a multi-manager space. Omitted uses class anycast. A pin that cannot be resolved is refused without falling back to another manager."),
         role: z
           .string()
           .optional()
@@ -1099,7 +1334,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .string()
           .optional()
           .describe(
-            "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace.",
+            "Optional working directory to root the new peer at (e.g. a different repo). A relative path resolves against the manager's workspace; omitted → it shares the manager's workspace. A directory that does not exist on the serving manager's host is refused before launch, with the host named; in a multi-manager space pin the manager with instance.",
           ),
         prompt: z
           .string()
@@ -1118,9 +1353,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // boundary. Resume lives only on the operator CLI (`cotal spawn --resume`, foreground or
         // --detach); a peer-facing, capability-gated resume is deferred (see #159).
       },
-      async run(agent, _config, { name, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events }: { name: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }) {
+      async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }) {
         try {
-          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events });
+          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, instance });
           if (!reply.ok) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
           const d = reply.data as { name?: string; mode?: string; model?: string } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
@@ -1229,7 +1464,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_yield",
       title: "Cotal: yield a run turn",
       description:
-        "Report the outcome of a workflow turn assigned to you. Use this only when your context contains a pending run turn; it does not start a workflow or resolve a checkpoint/ask.\n\nUsually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{\"status\":\"blocked\",\"note\":\"<what prevents progress>\"}`. To hand the assigned turn to another agent, call `{\"status\":\"handoff\",\"to\":\"<agent-name>\",\"note\":\"<handoff context>\"}`.\n\nWhen you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.",
+        "Report the outcome of a workflow turn assigned to you. Use this only when your context contains a pending run turn; it does not start a workflow or resolve a checkpoint/ask.\n\nUsually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{\"status\":\"blocked\",\"note\":\"<what prevents progress>\"}`. To hand the assigned turn to another agent, call `{\"status\":\"handoff\",\"to\":\"<agent-name>\",\"note\":\"<handoff context>\"}`.\n\nWhen you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded, and neither can one the run already settled, such as a turn whose deadline elapsed: that refusal names the turn and its deadline. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.",
       schema: {
         status: z
           .enum(["done", "blocked", "handoff"])

@@ -21,13 +21,17 @@ They merge per connector and per server name: a server in the space-local file r
 same-named server in the operator-level file; connectors or servers present in only one side are
 kept. A missing file is empty (valid); malformed JSON or a non-object top level is a loud error.
 
-It carries two things: which of your personal MCP servers a connector should **share** with the
-agents it spawns, and optional `spawn.env` names that deliberately add environment capability to a
-spawned agent (see [Environment variables](#environment-variables) below).
+It carries three things: which of your personal MCP servers a connector should **share** with the
+agents it spawns, optional `spawn.env` names that deliberately add environment capability to a
+spawned agent (see [Environment variables](#environment-variables) below), and an optional
+`modelPolicy` that limits which models a role may launch on (see [Model policy](#model-policy)).
 
-The sharing half: By default a spawned agent gets none: the Claude connector launches with
-`--strict-mcp-config`, dropping every ambient MCP server (they are heavy and useless to a meshed
-teammate). This file is the explicit opt-in.
+The sharing half: the Claude connector launches with `--strict-mcp-config`, dropping every ambient
+MCP server, so a spawned agent gets only the servers this file lists, and none with no list. On its
+first run `cotal setup` writes the `claude` list from your own Claude Code user-scope servers, leaving
+out a malformed entry and any with an `env` or `headers` value that is anything but `${VAR}`
+references, and keeps a list the file already declares.
+Every shared server boots once per spawn, so remove the heavy ones for a lighter seat.
 
 ```json
 {
@@ -59,9 +63,54 @@ your own Claude / VS Code / Cursor config. Secrets ride as **`${VAR}` references
 | `none` or empty | Nothing |
 | `a,b` | Only those named: each **must** be declared, or the spawn fails (no silent drop) |
 
+A `supervise --roster` entry selects the same way with a `share-tools:` list: an absent key
+shares every declared server, `[]` shares none, and `[a, b]` shares only those named. The roster
+fails to load if a name is one the flag cannot carry unchanged, such as `none` alone or a name
+with a comma or surrounding spaces.
+
 Today only the `claude` connector consumes shared MCP servers; OpenCode inherits config through its
 own merge layer and Hermes has no MCP. See [Connect Claude Code](connect-claude.md) for the full
 sharing model.
+
+### Model policy
+
+`modelPolicy` names, per role, the models a seat in that role may launch on. Each key is a role.
+Its `models` list holds the allowed model ids, and an optional `variants` list holds the allowed
+variants.
+
+```json
+{
+  "modelPolicy": {
+    "reviewer": { "models": ["vendor/model-B"], "variants": ["high"] }
+  }
+}
+```
+
+`cotal spawn` and the manager behind `cotal spawn --detach` check it before anything is minted or
+launched. They judge the effective role (a `--role` override counts) and the effective model and
+variant (`--model` and `--variant` win over the persona's fields, as always). The spawn is refused
+when the role has an entry and:
+
+- no model resolves at all, since the harness would then pick one and nothing would record which;
+- the model is not in `models`. Ids compare whole, so `vendor/model-B-fast` does not match
+  `vendor/model-B`;
+- `variants` is set and the variant is absent or not in it;
+- the launch carries any launch option (`launchOptions:` in the persona or manifest, or `--opt`).
+  The connector applies launch options unread, after the model and variant, and one can select
+  another model (an OpenCode `model`, a Claude `--model`), so a role under the policy launches
+  without them.
+
+The refusal names the persona, whether the value came from its own field or from the flag, the
+value, and the allowed ids. Roles with no entry, and personas with no role, are not constrained.
+A seat launches on the model and variant that were checked, even if its persona file changes after
+the check.
+
+A space-local entry for a role replaces the operator-level entry for that role, and a role named in
+only one file keeps its entry. A policy that cannot be read as written (a `models` list that is
+empty or holds a non-string, or an unknown field) fails every spawn with an error naming the file.
+The policy is read at each spawn, so an edit applies to the next spawn without a restart. Seats that
+are already running are not re-checked, including a supervised restart or a preserved seat resumed
+after maintenance.
 
 ## Environment variables
 
@@ -95,13 +144,14 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn | `default` |
 | `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works. `agent-bearer` skips the gate by name, no flag needed | off |
 | `COTAL_ALLOW_CHECKOUT_SEED` | seed store | Permit a source-checkout CLI to write the operator-global seed store (`1`) after isolating `$XDG_CONFIG_HOME`. Used by in-tree seed smokes that spawn the checkout-shaped `bin/` CLI into a scratch config. Any other value is ignored. The checkout refusal does not name this variable. | off |
-| `COTAL_DETACH_KEY` | `cotal attach` | Detach escape key (`ctrl-<char>` / `^<char>`) | `ctrl-]` |
+| `COTAL_DETACH_KEY` | `cotal attach` | Detach escape key (ctrl-<char> / ^<char>), matched as the control byte or its kitty / modifyOtherKeys encoding | `ctrl-]` |
 | `COTAL_FEEDBACK_KEY` | `feedback`, connector | Beta feedback key → keyed intake | none (public intake) |
 | `COTAL_FEEDBACK_EMAIL` | `feedback`, connector | Contact email for the keyless public intake | your git email |
 | `COTAL_FEEDBACK_URL` | `feedback`, connector | Intake URL override (self-hosted) | keyed / public intake |
-| `COTAL_SKIP_ASSIST` | `setup` | Disable the interactive Claude handoff on a failed step (`1`; for CI) | off |
+| `COTAL_SKIP_ASSIST` | `setup` | Disable the connector debug handoff on a failed step (`1`; for CI) | off |
 | `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors to stderr | off |
 | `COTAL_ENROLLMENT_FILE` | foreground `spawn` | Private `0600` file containing one remote enrollment URL; preferred over the environment form | none |
+| `COTAL_MANAGED_HANDOFF_FILE` | `cotal` entry, foreground `spawn` | Private `0600` file holding one managed lifecycle handoff from a delegating runtime; taken and deleted before anything else runs | none |
 | `COTAL_ENROLLMENT_URL` | foreground `spawn` | One remote enrollment URL when a secret file cannot be mounted; conflicts with `COTAL_ENROLLMENT_FILE` | none |
 | `COTAL_SERVE_HEADLESS` | OpenCode runtime | Run the OpenCode server without a foreground TUI (`1`) | off |
 | `COTAL_HOME` | workspace | Override the machine-home dir for the **mesh registry only** (`meshes/`, `current-mesh`, onboard marker). Does **not** redirect project-root paths (`findCotalRoot` / `.cotal/broker-policy.json`, NATS store, manager/delivery state, auth). Tests that run `cotal up` must also use a temp project root with its own `.cotal/` as `cwd` | `~/.cotal` |
@@ -120,10 +170,11 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | `COTAL_MANAGER_INSTANCE` | Stable instance id of the launching manager. User-auth managed calls request a separate control view for this instance; the issuer authorizes the selection. It carries no credential or grant. An unbound session uses the issuer's unique authorized selection |
 | `COTAL_ENVIRONMENT` | Opaque provider-issued environment reference published in presence. Read once when the endpoint is constructed; omitted when the launcher sets none |
 | `COTAL_LIFECYCLE_UID` | The incarnation's lifecycle UID, minted once per spawn; the session binds its lifecycle-keyed DM/delivery/history consumers by it (its credential pins the same names). Required for an authed launch (`COTAL_CREDS` or user-mode); config parsing fails loud without it. Open mode omits it (the endpoint self-mints per session) |
+| `COTAL_BACKFILL_FLOOR` | The CHAT stream sequence a resumed seat's prior incarnation had reached before its preservation cut; the boot backfill reads only what came after it. Set by the manager on a preserved resume, absent on a fresh spawn. Must parse as a non-negative integer; a broken launcher's malformed value fails loud rather than silently falling back to a full replay |
 | `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment. A remote enrollment's bearer argv uses `agent-bearer --exchange-url <https://base>`; the token never falls back to a local service file |
 | `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, the required-events flag, and the control token. A PATH, never a secret |
 | `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it; the token that authenticates the first frame rides the launch material, not the environment |
-| `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch) |
+| `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch). The bridge socket's first frame carries the control token from the launch material (or `COTAL_CONTROL_TOKEN` in standalone mode) |
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
 | `OPENCODE_DB` / `OPENCODE_HOME` / `OPENCODE_PORT` / `OPENCODE_SERVER_URL` / `COTAL_OPENCODE_*` | OpenCode server plumbing (home, port, DB, server URL) |
 
@@ -254,7 +305,7 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 | `manifests/<hash>.json` | Manifest-deploy ledger (records of `up -f` / `spawn -f` runs) |
 | `config.json` | Space-local connector config (the override layer above) |
 | `nats.pid` · `nats.log` | Background nats-server pid + log |
-| `manager.<key>.pid` · `manager.<key>.log` | Manager (supervisor) pid + log for one space; `manager.<key>.delivery-aware` marks a delivery-aware build. `<key>` is the same case-safe hex space key as the rows above, so one root can run a manager per space. A pre-segmentation root-scoped `manager.pid` is still read while it is the only spelling present, and is removed as the new record is written; both spellings present is reported as ambiguous rather than guessed. The manager writes the pid itself, whatever started it, and removes it on a clean stop only while it still names that process. A reader treats the record as a running manager only if the pid is alive **and** the process is a supervisor: a recycled pid belonging to something else is reported as a stale record, never signalled |
+| `manager.<key>.pid` · `manager.<key>.log` | Manager (supervisor) pid + log for one space; every line of the log starts with the UTC time it was written (ISO 8601), so a reap can be placed in time without another file; `manager.<key>.delivery-aware` marks a delivery-aware build. `<key>` is the same case-safe hex space key as the rows above, so one root can run a manager per space. A pre-segmentation root-scoped `manager.pid` is still read while it is the only spelling present, and is removed as the new record is written; both spellings present is reported as ambiguous rather than guessed. The manager writes the pid itself, whatever started it, and removes it on a clean stop only while it still names that process. A reader treats the record as a running manager only if the pid is alive **and** the process is a supervisor: a recycled pid belonging to something else is reported as a stale record, never signalled |
 | `delivery.<key>.pid` · `delivery.<key>.log` · `delivery.creds` | Delivery daemon pid and log for one space, and its scoped cred (auth mode). Per-space and compatible with a pre-segmentation `delivery.pid` on the same terms as the manager row |
 | `web.pid` · `web.log` | Web dashboard pid + log |
 | `membership.json` · `membership-*.creds` | Membership feed state + its scoped creds |
@@ -308,8 +359,14 @@ released install or an `npx` unpack still seeds as before. The in-tree seed smok
 from a checkout-shaped `bin/` set `COTAL_ALLOW_CHECKOUT_SEED=1` against an isolated config; an
 opt-in write still records that checkout path in `seed/stamp.json` as `writtenBy`. The reconcile
 names on stderr both the store payloads it writes and any old generation it removes, so a
-machine-wide re-seed or cleanup is visible when it happens. Those lines are provenance output: a
-run whose stderr is closed or redirected away keeps the write and loses the line.
+machine-wide re-seed or cleanup is visible when it happens. Those lines are provenance output. When a
+stderr write fails, at once or after waiting in a full pipe, the line is printed on stdout with the
+error and the reconcile still completes. If stdout fails too, the reconcile still completes and the
+run exits 1 instead of 0. A line still waiting in a full stderr pipe when the run exits, as when the
+CLI exits on a closed stdout, is lost and also makes the run exit 1. Node does not say which stderr
+bytes are still waiting, so a line that had to wait and got through just before the exit also makes
+the run exit 1 when later stderr output is still waiting. A run whose stderr is closed or redirected
+away at launch keeps the write and loses the line.
 
 For how `cotal setup` populates the machine state and the plugin, and how the built-in connectors are
 seeded as removable extensions, see [setup internals](setup-internals.md).

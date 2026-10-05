@@ -1,0 +1,55 @@
+{
+  "suite": [
+    "packages/core/smoke/kv-scan.smoke.ts"
+  ],
+  "guard": "finite native KV scans delete ONLY their own consumer in finally, clean up after rotation, and refuse incomplete passes with IncompleteKvScan",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:kv-scan",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/kv-scan.json",
+  "mutations": [
+    {
+      "name": "omits consumer deletion in finally",
+      "file": "packages/core/src/kv-scan.ts",
+      "find": "      await deleteOwn(bucket.stream, targetName!, () => oc.delete()).catch(() => { /* deletion failure: TTL is the backstop */ });",
+      "replace": "",
+      "expectRed": "every read path reclaims its consumer",
+      "cell": "every read path reclaims its consumer",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "omits completeness check on scan ending",
+      "file": "packages/core/src/kv-scan.ts",
+      "find": "  if (!sawTerminal) throw new IncompleteKvScan(bucketName, received, expected);",
+      "replace": "",
+      "expectRed": "unfiltered, cut mid-drain: raises IncompleteKvScan, never returns a list",
+      "cell": "unfiltered, cut mid-drain: raises IncompleteKvScan, never returns a list",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "omits rotated consumer deletion in finally",
+      "file": "packages/core/src/kv-scan.ts",
+      "find": "          deleted = await deleteOwn(bucket.stream, targetName, () => bucket.jsm.consumers.delete(bucket.stream, targetName));",
+      "replace": "          deleted = true;",
+      "expectRed": "rotation: rotated consumer is deleted in finally (no consumer leaked on broker)",
+      "cell": "rotation: rotated consumer is deleted in finally (no consumer leaked on broker)",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "returns empty result before owned consumer cleanup completes",
+      "file": "packages/core/src/kv-scan.ts",
+      "find": "    if (expected !== 0) {",
+      "replace": "    if (expected === 0) return [];\n    if (expected !== 0) {",
+      "expectRed": "empty cleanup filtered: abort throws after delete",
+      "cell": "empty cleanup filtered: abort throws after delete",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "drops options when filter argument is explicitly undefined",
+      "file": "packages/core/src/kv-scan.ts",
+      "find": "  let opts: LiveKvEntriesOptions | undefined = options;",
+      "replace": "  let opts: LiveKvEntriesOptions | undefined;",
+      "expectRed": "empty cleanup explicit-undefined: abort throws after delete",
+      "cell": "empty cleanup explicit-undefined: abort throws after delete",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

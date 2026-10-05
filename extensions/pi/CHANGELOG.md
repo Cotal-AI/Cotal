@@ -1,5 +1,47 @@
 # @cotal-ai/pi
 
+## 0.65.0
+
+## 0.64.0
+
+## 0.63.0
+
+## 0.62.0
+
+## 0.61.0
+
+## 0.60.0
+
+### Patch Changes
+
+- 3b616a2: A manifest agent can declare `continuity: exact` to come back in its previous harness session. The manager records the session the connector proves over its authenticated control endpoint on the first launch, keeps that record current through crash recovery, preserved resume and stop, reopens it on every later launch and preserved resume under the same proof, and refuses one recorded for another space, connector or directory. A reopen fails when the harness no longer has the session rather than starting an empty one under the same id: connectors declare the new `supportsSessionReopen` capability and honor `LaunchOpts.reopenSession`, and Pi reopens with `--session`. Preflight refuses `exact` on a connector that cannot reopen an existing session.
+
+## 0.59.0
+
+### Patch Changes
+
+- 5f13124: Private launch files now have an owner. The Claude persona file, the Claude shared-server MCP config file and the pi persona file are listed on the new `LaunchSpec.artifacts`, and the launcher removes them once it has proved the agent process gone. On the default pty runtime the manager removes them when it sees the agent exit; on tmux, cmux, orca and herdr the manager removes them by polling the seat's status and waiting for the runtime's exit proof; the foreground `cotal spawn` removes them when its child exits. Every one of those launches also starts its child through the new core `reclaimWithChild`: a watcher started beside the child removes the files once the child's process is gone, and tries a failed removal again every five seconds until it succeeds, so a killed manager or foreground `cotal spawn` no longer strands them (POSIX; Windows has no shell for the watcher). Each directory name carries a random per-launch identity, so a stale path can never name a later launch's directory. The tmux, cmux, orca and herdr runtimes now throw the new core `SpawnRefused` for an unsafe name, an unreachable backend, (herdr) a missing working directory or an unknown layout, (orca) a working directory that is missing or outside any Orca worktree, and a launcher script they cannot write or (tmux, herdr) a session or server that will not start, all before the agent's command is handed to the backend, and the manager removes the files at once. A removal that fails, after an exit or after a refusal, is tried again until it succeeds. A batch resume removes the files of specs it built and never launched. Both connectors now refuse a bad model, prompt or launch option before writing anything. Any other spawn that throws is not proof that nothing started, so its files stay for the child's watcher, or for the OS temp reaper when no child started, as do a killed launcher's on Windows. A seat started under a custodian with `launchSeat` from `@cotal-ai/seat`, which the manager no longer does for a new launch, hands them to that custodian: a launch it refuses before any process started removes them at once, the custodian removes them when it sees the agent exit, a removal that fails stays on the custody record, and a reap that proves the seat gone removes what the record still lists from the temp dir the launch wrote to, so a successor with a different `TMPDIR` still removes them. Losing a custodian's connection no longer counts as the agent's exit. The docs now say that owner-private means any process running as the same user can read the file while it exists.
+- 8ce6be3: The 0.33.0 changelog entry "An agent now reads only the channels it lists" now carries a correction. It presented the read-set default-deny as new in 0.33.0, but that shipped in 0.28.0 with #821, so upgrading from 0.28.0 or later needs no migration for it. The correction names what 0.33.0 did change: the no-default-channel check in `multicast` now refuses only an omitted channel, so an explicit empty-string `channel` is no longer refused as if it were omitted, and its refusal is reworded; the `cotal_send`, `cotal_leave` and pi tool text; doc comments; and two regression suites. `docs/release.md` now describes how to correct a released entry.
+
+## 0.58.0
+
+## 0.57.0
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+
+## 0.56.0
+
+## 0.55.0
+
+### Patch Changes
+
+- cb869b7: A pi seat held after a non-terminal `agent_end` (error or an unknown stop reason) with a Cotal batch pending now has a bounded exit: the driver retries the continuation itself a fixed number of times with a fixed backoff, through the same send path a human continuation uses, before holding for operator intervention with a presence that names the attempt count and what to do. User abort still holds without any automatic retry: the person who aborted is the party who continues. Fixes #726
+- d284ee6: A manifest or spawn prompt on a connector that cannot deliver one is refused at preflight (including `up -f --dry-run`), at spawn and in the manager, the way an unsupported model variant is: connectors now declare `supportsPrompt`, and claude, opencode, codex, jcode and pi declare it; hermes keeps its launch-time throw as the second line of defence.
+
 ## 0.54.0
 
 ## 0.53.0
@@ -199,6 +241,17 @@
 
   Already-running agents are not narrowed retroactively: a live seat keeps the read ACL its credential
   was minted with, across renewal, until it is respawned.
+
+  **Correction:** the read-set default-deny described above is not new in 0.33.0. It shipped in 0.28.0
+  with 86f6b10 (#821, "Remove the implicit `general` channel floor"), and so did the refusal of a send
+  with no channel and the no-channel default for the seeded `default_agent`. Upgrading from 0.28.0 or
+  later needs no migration for it. What 0.33.0 changed is narrower. The no-default-channel check in
+  `multicast` now refuses only an omitted channel (`channel === undefined` where it was `!channel`), so
+  an explicit empty-string `channel` is no longer refused as if it were omitted, and the refusal now
+  says to name or join a channel. The `cotal_send` and `cotal_leave` tool descriptions and pi's send
+  call line no longer name `general` as a default or say the last channel cannot be left, doc comments
+  state the rule and the both-keys-omitted consequence, and the `smoke:no-implicit-general` and
+  `smoke:session-channels` suites guard it.
 
 ## 0.32.0
 

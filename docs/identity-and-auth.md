@@ -47,7 +47,11 @@ credentials and pre-creates the durables agents may only *bind* (their DM inbox,
 role's task queue). The manager hosts it today, but nothing is manager-special about it;
 privilege attaches to the signer, and a space can run without a manager.
 `cotal mint <name> --profile <agent|observer|admin>` is the out-of-band path; spawn calls
-the same library ([CLI](cli.md)). Minting static creds is a **static-auth** surface: a
+the same library ([CLI](cli.md)). The out-of-band profiles carry no default TTL: pass
+`--expires-in <seconds>` (or `--expires-at`) for a bounded credential, which a
+standing-renewal consumer requires; pass `--identity <creds>` to re-mint for the nkey a
+file already carries, keeping the principal and its durables. Minting static creds is a
+**static-auth** surface: a
 per-user-auth space refuses it, because agents there join under a logged-in user, never
 via a handed-out file (see *Per-user auth* below).
 
@@ -63,8 +67,8 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 
 | Profile | Is |
 |---|---|
-| **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. Its read-only presence and channel-registry watches may create, inspect, and delete only their own client-managed ordered consumers; those cleanup grants cannot delete KV records or streams. |
-| **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. |
+| **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. Its read-only presence and channel-registry watches create and inspect client-managed ordered consumers but cannot delete any consumer on those streams; the broker removes a finished watch's consumer five minutes after its last interest. |
+| **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. Holds no consumer delete on any stream it reads, so it cannot remove another principal's watch or the delivery daemon's fan-out consumer; the broker removes its own finished consumers. |
 | **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in (`cotal web`). |
 | operator-side | Narrow single-purpose creds for the machinery (supervising, provisioning, teardown, delivery); the reference implementation splits these so no one connection can read every DM *and* delete every stream ([security model](security.md)). |
 | **run-driver** | One workflow run and takeover attempt: its journal subject, replay durable and run-owned record writes. Store reads and effects go through the host. |
@@ -116,7 +120,9 @@ naming the caller. Every other command serves both rails.
 
 Control-plane power is a **declared capability**, not a default. An agent file carrying
 `capabilities: [spawn]` gets the privileged control subject minted into its cred: spawn,
-plus stop/despawn of its *own* children, plus persona definition. Without it, an agent can
+plus stop/despawn of its *own* children, plus persona definition. On a static or open mesh its own
+children include what it launches with `cotal spawn --detach` from its own shell, since that
+command runs as the seat. Without it, an agent can
 only self-despawn and pull or yield the run turns addressed to it. `capabilities: [run]` mints
 the manager's workflow-run commands (start, resume, answer, status, list) together with the spawn
 set, since a program the agent starts may spawn; the manager drives the run under a per-run
@@ -141,8 +147,10 @@ the broker's **auth callout** checks the bearer and the ledger at connect time a
 a scoped credential on the spot. Every bearer also names a **root credential** row in the
 space's credential ledger, proved live at each connect, so revoking that one credential
 bites at the very next connect. The operator grants access with
-`cotal actor grant <actor> --sub <their id>`; a bare grant is the full envelope (all
-channels, may spawn), and `--allow-subscribe` / `--allow-publish` / `--scope` narrow it.
+`cotal actor grant <actor> --sub <their id> --full` for the full envelope (all
+channels; scope `spawn,role:default`, so it may spawn and may delegate the default role), or names
+`--scope`, `--allow-subscribe` and `--allow-publish` for a narrow row. A grant with any of the
+three left off and no `--full` is refused.
 No ledger row, no access; there is no allow-by-default.
 
 **Space catalogs.** A successful authenticated `GET <idp>/token` may advertise one catalog with:
@@ -215,6 +223,24 @@ stored in the owner-only `auth-service.json` file. An operator may add a second 
 That listener still binds `127.0.0.1`; put a reverse proxy in front of it and terminate TLS there.
 In-process TLS is deliberately not another deployment mode: it would duplicate certificate renewal
 and fork proxy-based deployments.
+
+The loopback face also serves three host-only doors, all capability-gated and never on the public
+face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
+and `/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its
+remote manager is gone. The third decides one:
+`POST /manager-service-authority/verify-enrollment` answers whether a remote manager may have a
+managed agent enrolled or released under its authenticated owner. The body is
+`{ owner, request }` and nothing else. The caller's capability scope is read from this machine's
+ledger, never taken from the body, so a host that forwarded a participant-supplied scope could not
+grant itself `supervise`. The door reads the manager gate and checks the registration proof inside
+the service process, so no signing material reaches the caller, and it returns
+`{ authorized: true, owner, actor, instanceId, serveEpoch }` or maps its refusal to 400, 401, 403,
+409, or 412. It decides only. A platform that intercepts these requests owns every write, and stock
+`dispatchManagerAuthorityRequest` refuses both request kinds with `unimplemented` rather than
+answering a manager-lifecycle phase for an agent-lifecycle request. The same door decides the hosted
+runtime create and status kinds. For those it reads the manager actor's ledger row itself and returns
+`{ authorized: true, owner, instanceId, actor, target }`.
+[embedding.md](embedding.md) documents the managed doors' contracts.
 
 The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`, and
 `GET /.well-known/cotal-mesh`; every other path is 404. It does **not** require the loopback
@@ -376,8 +402,16 @@ only on a signed-in human exchange. The `manager-caller` view is the one managed
 because it narrows the agent's existing manager command set to one server-selected instance and adds
 no capability. All views are authorized against the fresh ledger row at every connect and expire
 with the bearer, so narrowing or revoking a grant bites within minutes here too. On the public
-exchange face only `channel-writer`, `channel-purger`, and `manager-caller` are served; `admin`,
-`purger`, `deployer`, and `manager-service` remain loopback-only.
+exchange face only `channel-writer`, `channel-purger`, `manager-caller`, and `session-caller` are
+served; `admin`, `purger`, `deployer`, and `manager-service` remain loopback-only.
+
+The `session-caller` view is how `cotal attach` opens a seat's session on a user-auth mesh. It needs
+no ledger scope, because the session grant is the authority. The exchange takes the grant with the
+login proof and leader-reads the redeemed `session.<id>` row. It issues the bearer only when the row
+is active and unexpired, its signature equals the presented grant's, its holder is this owner and
+actor at this lifecycle, its endpoint and serving epoch match, and the serving manager's gate is open
+at that epoch. The callout repeats the same check at connect and mints the session's caller rails
+with the grant's expiry instead of the bearer's.
 
 ### Remote manager authority
 
@@ -406,11 +440,12 @@ operations and a one-shot **retire** phase for one exact managed lifecycle. Each
 coordinate; the host writes its credential ledger row and finalizes the gate before it releases
 usable material. The retire phase fresh-checks the current manager instance, server-derived serve
 principal, serve epoch, same-owner target and lifecycle UID. It returns only a short-lived requester
-credential pinned to that target. The manager sends it on the existing auth retirement rail with the
-operation id derived from the target lifecycle UID. The terminal rail recomputes it from the
-broker-pinned target before any durable access. A caller cannot substitute another valid operation
-identity for the same target, and retries plus auth-service boot recovery finish the same terminal
-barrier. It never exposes the barrier executor or a general mint surface.
+credential pinned to that target. The manager invokes the registered `auth` endpoint's
+`retire-lifecycle` command through the generic client, resolving the service and calling it with
+an exact target and the operation id derived from the target lifecycle UID. The endpoint
+recomputes that id from the broker-pinned target before any durable access. A caller cannot
+substitute another valid operation identity for the same target, and retries plus auth-service
+boot recovery finish the same terminal barrier. It never exposes the barrier executor or a general mint surface.
 
 Registration maintenance stays on the host. Eviction accepts only a principal found by the host's
 sealed scan of the caller instance's `epcred.manager.<instanceId>.*` family. Reconciliation may
@@ -418,8 +453,8 @@ target a foreign manager slot holder in the same space, but it runs only after t
 proves the frozen gate's holder gone under a complete sweep. The participant receives neither an
 evictor credential nor authority over another instance's records or gate. A clean stop refreshes an
 unhealthy executor before deregistration. A restart verify-evicts its old family, and a manager
-blocked by an abandoned foreign governance slot asks the host to reconcile that holder and retries
-the registration once.
+blocked by a foreign governance slot whose holder's gate is still frozen at the slot's stamp asks
+the host to reconcile that holder and retries the registration once.
 
 A remote manager can provision only descendants of the same derived owner, and the host
 validates that relation and the current manager grant for every provision. It cannot broaden the
@@ -428,6 +463,12 @@ user's envelope or provision a sibling owner's agent. Renewals are bounded. If l
 degraded state and refuses new agents, restarts, or replacement credentials rather than
 substituting local/static authority. Existing live agents remain running only while their own
 valid authority permits it; recovery requires the host service and a fresh successful renewal.
+
+The manager-authority protocol is closed, so a host whose auth service predates a field the
+manager sends refuses the whole request. The manager reports that refusal as version skew after the
+host's reason: it names its own Cotal version and the refused field, and says it needs a host at
+that version or later. It never drops the field to fit the older host. Upgrade the host first;
+[Upgrading](UPGRADING.md) promises no rolling upgrade between versions.
 
 A manager on remote authority mints from that authority alone; it consults the local root's
 records only to refuse a conflict, and only the supervised space's own trust records count as

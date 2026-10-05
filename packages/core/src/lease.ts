@@ -48,6 +48,11 @@ export interface DeliveryLeaseInfo {
    *  Optional because rows written by daemons from before this field exist in live buckets; a row
    *  without one cannot be proven ours (some other process wrote it), which is the safe reading. */
   incarnation?: string;
+  /** Epoch ms when this incarnation acquired the shard. Unlike `since`, which every ready flip and
+   *  renewal re-stamps, it is written once at acquisition and carried on every later write. Optional
+   *  because rows written before this field exist; their acquisition time is unknown. */
+  acquiredAt?: number;
+  /** Epoch ms of this row's latest write: the acquisition, a ready flip, or a renewal. */
   since: number;
   ready: boolean;
 }

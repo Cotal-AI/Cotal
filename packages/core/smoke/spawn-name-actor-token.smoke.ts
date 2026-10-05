@@ -137,6 +137,44 @@ check("a plain name is accepted in BOTH modes",
   spawnNameError("reviewer", { userMode: true }) === undefined &&
     spawnNameError("reviewer", { userMode: false }) === undefined);
 
+// THE CLIENT-SIDE PREFLIGHT (#867 residual). The detached CLI used to send `identity: values.name`
+// straight to the manager and the operator read the manager's refusal after the round trip. The fix
+// is the CLI calling the SAME predicate the manager calls, keyed on the target mesh's auth mode.
+// The suite cannot import the CLI's module (core's smoke may not depend on implementations), so
+// this pins the behaviour at the shared predicate with the exact argument shapes both call sites
+// pass, and the wiring itself is pinned structurally below by reading the CLI's shipped source.
+const CLI_REFUSAL_USER = spawnNameError("default_agent-3", { userMode: true });
+check("a hyphenated --name on a USER-mode target is refused by the same predicate the manager uses",
+  CLI_REFUSAL_USER !== undefined && /actor token/.test(CLI_REFUSAL_USER),
+  { msg: CLI_REFUSAL_USER });
+check("…the CLI's message is core's own, not a copy (names the separator reservation)",
+  typeof CLI_REFUSAL_USER === "string" && CLI_REFUSAL_USER.includes("reserved as the principal name-form separator"),
+  { msg: CLI_REFUSAL_USER });
+check("the same hyphenated --name on a STATIC-mode target is accepted",
+  spawnNameError("default_agent-3", { userMode: false }) === undefined);
+
+// The wiring, asserted structurally for the same reason as the delegation cells above: a call site
+// that is absent today is behaviourally indistinguishable from one that delegates faithfully, and
+// the only moment the difference shows is after the next grammar change. Comments stripped so a
+// cell cannot pass off the #867 comment for the call.
+const CLI_SRC = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "implementations", "cli", "src", "commands", "spawn.ts"),
+  "utf8",
+)
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/\/\/[^\n]*/g, "");
+check("instrument control: the CLI's spawn source was located, comments stripped",
+  CLI_SRC.includes("async function spawnDetached") && CLI_SRC.includes("export async function spawn"),
+  { len: CLI_SRC.length });
+check("the CLI calls the shared name door (import present)",
+  /spawnNameError,/.test(CLI_SRC.slice(CLI_SRC.indexOf("} from \"@cotal-ai/core\";") - 400, CLI_SRC.indexOf("} from \"@cotal-ai/core\";"))));
+check("the CLI calls the shared name door (call sites: detached + foreground)",
+  (CLI_SRC.match(/refuseUnmintableNameOrExit\(/g) ?? []).length === 3,
+  { sites: CLI_SRC.match(/refuseUnmintableNameOrExit\(/g)?.length });
+check("the CLI keys the door on the target mesh's auth mode, not on a restated grammar",
+  CLI_SRC.includes("refuseUnmintableNameOrExit(values.name, t.mode === \"user\")") &&
+    CLI_SRC.includes("refuseUnmintableNameOrExit(requested, target.mode === \"user\")"));
+
 console.log(
   failed === 0
     ? `\n\x1b[32mSPAWN-NAME/ACTOR-TOKEN SMOKE OK ✅\x1b[0m  (${passed} passed, 0 failed)\n`

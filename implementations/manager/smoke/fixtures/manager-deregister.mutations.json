@@ -27,7 +27,7 @@
       "file": "implementations/manager/src/deregister-instance.ts",
       "find": "      if (!unansweredRequest(e)) return { state: \"unestablishable\", detail: `the probe itself failed: ${(e as Error).message}` };",
       "replace": "",
-      "expectRed": "a probe whose publishes the broker REFUSES is unestablishable, never silence"
+      "expectRed": "...and it says the probe itself failed, so the operator repairs the credential and not the manager"
     },
     {
       "name": "PREDICTED KILLED (1 red) - the guard never ASKS: the probe is not run and its verdict is assumed, so a live manager's registration is deleted on no evidence at all",
@@ -46,8 +46,9 @@
     {
       "name": "PREDICTED KILLED (>=1 red) - a manager's clean stop no longer removes its own registration, which is the route that keeps this from ever happening to anyone again",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (registered) await this.deregisterServiceOnStop();",
+      "find": "    if (registered && !seatFailure) await step(\"deregister service\", () => this.deregisterServiceOnStop());\n",
       "replace": "",
+      "note": "Stop now wraps deregistration in a teardown step and skips it after a seat failure; removing this guarded call still leaves a clean stop registered.",
       "expectRed": "after a clean stop its registration is GONE, so no later scatter can freeze it in"
     },
     {

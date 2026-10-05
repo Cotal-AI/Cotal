@@ -9,8 +9,18 @@ import type {
   RemoteManagerGoalIndexScanResult,
   RemoteManagerMaintenanceRequest,
   RemoteManagerMaintenanceResult,
+  RemoteManagedAgentEnrollmentRequest,
+  RemoteManagedAgentEnrollmentResult,
+  RemoteManagedAgentPrepareRetirementRequest,
+  RemoteManagedAgentPrepareRetirementResult,
+  RemoteManagedAgentRuntimeRequest,
+  RemoteManagedAgentRuntimeResult,
   RemoteRetainedAgentValidationRequest,
   RemoteRetainedAgentValidationResult,
+  RemoteRunAdmissionRequest,
+  RemoteRunAdmissionResult,
+  RemoteRunAttemptRequest,
+  RemoteRunAttemptResult,
 } from "./remote-manager-authority.js";
 
 /**
@@ -65,7 +75,7 @@ export interface AuthProvider extends Extension {
    * deploy connections the operator surfaces (`web`, `console`, `history clear`, `channels`,
    * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
-  userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string }): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }>;
+  userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string; sessionGrant?: unknown }): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }>;
   /**
    * Prepare the signed-in account's optional space catalog without exposing its cached session
    * bearer. The provider owns advertisement discovery, conditional HTTP, freshness, locking, and
@@ -107,6 +117,18 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAuthorityRequest;
   }): Promise<RemoteManagerAuthorityMaterial>;
+  /** The registered host resolves issued admission and native run state before returning a
+   * closed admission or fixed JWT set for a caller-held nkey. No signer reaches the manager. */
+  requestRemoteRunAdmission?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteRunAdmissionRequest;
+  }): Promise<RemoteRunAdmissionResult>;
+  requestRemoteRunAttempt?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteRunAttemptRequest;
+  }): Promise<RemoteRunAttemptResult>;
   /** Host-owned registration maintenance for a remote manager. The provider must scope eviction to
    * the caller instance's credential family and guard reconciliation with affirmative liveness. */
   maintainRemoteManager?(opts: {
@@ -138,6 +160,40 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteRetainedAgentValidationRequest;
   }): Promise<RemoteRetainedAgentValidationResult>;
+  /**
+   * Ask the host to enroll one FRESH managed agent under the authenticated owner (#1972). The
+   * participant has already generated the standing `actorToken` and written it at 0600, so the
+   * request carries only its digest; the host picks the lifecycle UID, authors the ledger grant,
+   * pre-creates the durables, and returns the stable non-secret metadata plus the space sentinel.
+   * Optional so a provider with no hosted storage composition fails loud at the caller rather than
+   * letting a local grant masquerade as a host-owned one.
+   */
+  enrollRemoteManagedAgent?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagedAgentEnrollmentRequest;
+  }): Promise<RemoteManagedAgentEnrollmentResult>;
+  /**
+   * Ask the host to PREPARE one managed agent's terminal retirement (#1972 phase P0/P1): revoke the
+   * managed grant UID-exactly and commit the resumable release while preserving the UID. Success
+   * means the terminal auth barrier may start. Never a retirement itself.
+   */
+  prepareRemoteManagedAgentRetirement?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagedAgentPrepareRetirementRequest;
+  }): Promise<RemoteManagedAgentPrepareRetirementResult>;
+  /**
+   * Ask the host to create, or report, the hosted runtime of one already-enrolled managed agent.
+   * The request names only the enrollment's host-selected target; the host decides, owns the
+   * provider effect, and returns its intent state. Optional: a host with no hosted runtime leaves
+   * it absent, and the caller fails loud.
+   */
+  requestRemoteManagedAgentRuntime?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagedAgentRuntimeRequest;
+  }): Promise<RemoteManagedAgentRuntimeResult>;
   /**
    * The derived owner token (`u_…`) of THIS machine's cached login for the given space — resolved
    * offline from the login session + the space's local user-auth material (no IdP round trip).

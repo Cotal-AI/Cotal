@@ -191,7 +191,9 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   uses are absent from the stream while everything on the function-call path is present.
 - **Failed turns publish run errors.** Codex records a failure on
   the turn's own completion record, so a turn that hit a usage limit or an upstream error ends its
-  run with `RUN_ERROR` carrying the code Codex reported.
+  run with `RUN_ERROR` carrying the fixed message `run failed` and no code. Neither Codex's error
+  text nor its `codex_error_info` is published there: both are upstream values that can echo your
+  prompt or tool output, and the events channel has a different read ACL.
 - **No user-authored text is published, ever.** Your prompts, the peer messages injected into the
   thread, and the developer instructions the persona supplies are all withheld. The events channel
   carries a different read ACL from the channel you typed into, so republishing your own words there
@@ -218,7 +220,10 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   where the stream starts and the emitter's setup then runs before its first read; what the
   thread appended inside that window used to land behind the cursor and be dropped, and it is
   published now. A whole turn can sit in there, so the recovery path now covers a stretch of
-  the session it previously lost. Nothing is sent twice in either case.
+  the session it previously lost. Nothing is sent twice in either case. The boundary itself is
+  written to the log as soon as the bind succeeds, so a host that dies before its first read
+  still resumes from that boundary rather than from wherever the file ends by the time it comes
+  back.
 
   The grant still does not decide who may READ a plane. A spawn through the manager gives a seat
   publish rights on its own event channel and nothing else, and a spawn whose grant names a

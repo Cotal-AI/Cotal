@@ -43,7 +43,6 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { createServer as createNetServer } from "node:net";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -64,16 +63,8 @@ import {
 import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "../src/agui-map.js";
 import { createClaudeHandle } from "../src/hooks.js";
 import { createClaudeTranscriptSource } from "../src/agui-source.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
-async function freePort(): Promise<number> {
-  const s = createNetServer();
-  s.listen(0, "127.0.0.1");
-  await once(s, "listening");
-  const port = (s.address() as { port: number }).port;
-  await new Promise<void>((r) => s.close(() => r()));
-  return port;
-}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PORT = await freePort();
@@ -181,10 +172,7 @@ const events = new AguiEmitterHolder<ClaudeEntry, unknown>(
 const claude = createClaudeHandle({ events: () => events });
 
 try {
-  for (let i = 0; i < 50; i++) {
-    if (await isReachable(servers)) break;
-    await sleep(200);
-  }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({
     servers,
     space: SPACE,
@@ -302,8 +290,8 @@ try {
     failedTurnCloses.length === 1, failedTurnCloses);
   check("fail:and that close is RUN_ERROR, not RUN_FINISHED — THE DEFECT",
     failedTurnCloses[0]?.type === "RUN_ERROR", failedTurnCloses[0]);
-  check("fail:the RUN_ERROR carries the harness's detail as the message and its error kind as the code",
-    failedTurnCloses[0]?.message === "Claude AI usage limit reached" && failedTurnCloses[0]?.code === "rate_limit",
+  check("fail:the RUN_ERROR carries the fixed message and no code",
+    failedTurnCloses[0]?.message === "run failed" && !failedTurnCloses[0]?.code,
     failedTurnCloses[0]);
 
   check("stop:the normally-ended turn closed exactly once", normalTurnCloses.length === 1, normalTurnCloses);

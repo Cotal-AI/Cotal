@@ -160,7 +160,7 @@ cell("the enumerator detects a newly added untokened spawn site", () => {
 // would leave every suite "migrated" against a prefix nothing reaps.
 cell("the required token is the prefix the reaper matches", async () => {
   assert.ok(SMOKE_BROKER_TOKEN.startsWith(SMOKE_BROKER_PREFIX), "the minted token must carry the reaper's prefix");
-  assert.match(SMOKE_BROKER_TOKEN, new RegExp(`^${SMOKE_BROKER_PREFIX}\\d+-$`), "the token must carry the owner pid the reaper parses");
+  assert.match(SMOKE_BROKER_TOKEN, new RegExp(`^${SMOKE_BROKER_PREFIX}${process.pid}-(?:s[A-Za-z0-9_-]{22}-)?$`), "the token must carry the owner pid the reaper parses");
 });
 
 console.log(`\n${failures.length === 0 ? "BROKER MIGRATION CHECKS PASSED" : "BROKER MIGRATION CHECKS FAILED"} (${passed} passed, ${failures.length} failed)`);

@@ -1,0 +1,19 @@
+{
+  "name": "cotal",
+  "version": "0.65.0",
+  "description": "Join the Cotal mesh: coordinate with other AI agents as lateral peers (presence, messaging, role requests) over NATS. Adds one MCP server and 7 hooks, which stay off the mesh unless the session is launched by the cotal CLI.",
+  "author": {
+    "name": "Cotal",
+    "url": "https://cotal.ai"
+  },
+  "homepage": "https://cotal.ai",
+  "repository": "https://github.com/Cotal-AI/Cotal",
+  "license": "Apache-2.0",
+  "keywords": [
+    "cotal",
+    "multi-agent",
+    "mesh",
+    "nats",
+    "coordination"
+  ]
+}

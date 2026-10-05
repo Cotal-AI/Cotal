@@ -38,7 +38,7 @@ import { addWizard, canPrompt } from "./meshes-wizard.js";
  * `cotal meshes` — the registry of meshes this machine can reach, and the two verbs that maintain
  * it by hand.
  *
- *   cotal meshes                       list (the kubectl `get-contexts` analogue)
+ *   cotal meshes [--json]              list (the kubectl `get-contexts` analogue)
  *   cotal meshes add <space> --server  register a mesh this machine did NOT start
  *   cotal meshes rm <space> …          drop records (never stops anything)
  *
@@ -51,6 +51,7 @@ import { addWizard, canPrompt } from "./meshes-wizard.js";
 const SUBCOMMANDS = ["list", "add", "rm", "remove"] as const;
 
 export const meshesFlags = [
+  { name: "json", type: "boolean", description: "list: machine-readable, one JSON object per mesh per line (notes go to stderr)" },
   { name: "server", type: "string", value: "<url>", description: "add: the mesh's broker URL (required)" },
   { name: "root", type: "string", value: "<dir>", description: "add: folder holding this mesh's .cotal/auth + .cotal/agents (default: this project)" },
   { name: "mode", type: "string", value: "<auth|open|user>", description: "add: how the broker authenticates (default: inferred from --root; user needs --user-auth-file or --from)" },
@@ -66,13 +67,17 @@ type Values = FlagValues<typeof meshesFlags>;
 export async function meshes(args: ParsedArgs): Promise<void> {
   const sub = args.positionals[0];
   const v = args.values as Values;
+  if (v.json && (sub === "add" || sub === "rm" || sub === "remove")) {
+    console.error(c.red(`✗ meshes ${sub}: --json is taken by the list only`));
+    process.exit(1);
+  }
   if (sub === "add") return addMesh(args.positionals.slice(1), v);
   if (sub === "rm" || sub === "remove") return removeMeshes(args.positionals.slice(1), v);
   if (sub !== undefined && sub !== "list") {
     console.error(c.red(`✗ unknown subcommand "${sub}" - usage: cotal meshes [list | add <space> --server <url> | rm <space> …]`));
     process.exit(1);
   }
-  return listMeshes();
+  return listMeshes(v.json === true);
 }
 
 // ---- list -----------------------------------------------------------------------------------
@@ -80,16 +85,28 @@ export async function meshes(args: ParsedArgs): Promise<void> {
 /** The registered meshes, one per line, with a `*` on the `current` default. This is how you see
  *  what a bare `cotal spawn` would join and which `--space` names exist. The sweep runs first so a
  *  dead broker is tagged `offline` rather than deleted: an `up` record is the restart authority for
- *  that root, and a hand-registered one is still the mesh you meant, just not up. */
-async function listMeshes(): Promise<void> {
+ *  that root, and a hand-registered one is still the mesh you meant, just not up. `--json` prints
+ *  one {@link meshRow} per line instead, and only rows reach stdout. */
+async function listMeshes(json: boolean): Promise<void> {
   const sweep = await pruneStaleMeshes();
   const all = loadMeshes();
   if (all.length === 0) {
-    console.log(c.dim("no meshes registered - `cotal up` starts one here, `cotal meshes add <space> --server <url>` registers one running elsewhere"));
+    // Zero meshes under --json is zero lines, not a prose line a JSONL reader would choke on.
+    if (!json) console.log(c.dim("no meshes registered - `cotal up` starts one here, `cotal meshes add <space> --server <url>` registers one running elsewhere"));
     return;
   }
   const current = getCurrent();
   const offline = new Set(sweep.offline);
+  // A `current` that no longer matches any recorded mesh (its broker went down) shows no `*` — say
+  // why, so a bare `cotal spawn` still reporting "multiple meshes" isn't a mystery.
+  const dangling = current && !all.some((m) => m.space === current)
+    ? `note: default "${current}" is not running - \`cotal use <name>\` to set a live one`
+    : undefined;
+  if (json) {
+    for (const m of all) console.log(JSON.stringify(meshRow(m, m.space === current, offline.has(m.space))));
+    if (dangling) console.error(c.dim(dangling));
+    return;
+  }
   const width = (pick: (m: MeshEntry) => string, header: string) =>
     Math.max(header.length, ...all.map((m) => pick(m).length));
   const wSpace = width((m) => m.space, "SPACE");
@@ -110,10 +127,26 @@ async function listMeshes(): Promise<void> {
         (tags.length ? `  ${tags.join(c.dim(" · "))}` : ""),
     );
   }
-  // A `current` that no longer matches any recorded mesh (its broker went down) shows no `*` — say
-  // why, so a bare `cotal spawn` still reporting "multiple meshes" isn't a mystery.
-  if (current && !all.some((m) => m.space === current))
-    console.log(c.dim(`\nnote: default "${current}" is not running - \`cotal use <name>\` to set a live one`));
+  if (dangling) console.log(c.dim(`\n${dangling}`));
+}
+
+/** One `cotal meshes --json` row: what the table shows, as named fields. Origin and liveness stay
+ *  separate, as the record keeps them. A discovered (`catalog`) entry is never probed by the sweep,
+ *  so it carries no `offline` rather than a guessed `false`. Record internals (catalog owner keys,
+ *  user-auth pins, timestamps) are not part of the row. */
+function meshRow(m: MeshEntry, isDefault: boolean, isOffline: boolean) {
+  return {
+    space: m.space,
+    server: m.server,
+    mode: m.mode,
+    root: m.root,
+    default: isDefault,
+    origin: m.origin ?? "up",
+    ...(m.origin === "catalog" ? {} : { offline: isOffline }),
+    ...(m.tlsRequired ? { tlsRequired: true } : {}),
+    ...(m.policy?.events === "required" ? { events: "required" } : {}),
+    ...(m.origin === "catalog" && m.catalogName ? { catalogName: m.catalogName } : {}),
+  };
 }
 
 // ---- add ------------------------------------------------------------------------------------

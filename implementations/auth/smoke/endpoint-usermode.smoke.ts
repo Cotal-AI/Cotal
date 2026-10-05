@@ -14,7 +14,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { SignJWT, generateKeyPair } from "jose";
+import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
   setupSpaceStreams, principalKey, chatSubject, type CotalMessage, mintLifecycleUid } from "@cotal-ai/core";

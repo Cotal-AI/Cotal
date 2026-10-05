@@ -20,15 +20,14 @@
  * unprovisioned case is asserted to be unchanged: it still says `cotal up`, and must NOT blame the
  * responder. Credentials stay the first cause because they usually are.
  */
-import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createConnection, createServer } from "node:net";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join as pjoin, resolve } from "node:path";
 import { createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { saveSpaceAuth } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = pjoin(WT, "bin", "cotal.ts");
@@ -53,14 +52,6 @@ env.XDG_CONFIG_HOME = pjoin(home, "xdg");
 env.COTAL_SKIP_CONNECTOR_SEED = "1";
 env.COTAL_NO_PROMPT = "1";
 
-async function freePort(): Promise<number> {
-  const s = createServer();
-  await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
-  const a = s.address();
-  assert.ok(a && typeof a === "object");
-  await new Promise<void>((r) => s.close(() => r()));
-  return a.port;
-}
 async function portOpen(port: number): Promise<boolean> {
   return new Promise((res) => {
     const sock = createConnection({ host: "127.0.0.1", port });

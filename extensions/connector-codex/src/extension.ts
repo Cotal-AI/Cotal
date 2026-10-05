@@ -119,6 +119,7 @@ export const codexConnector: Connector = {
   requires: ["codex"],
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
+  supportsPrompt: true, // Codex serves a first turn from an initial message — see buildLaunch
   // There is no first-run gate to press through here: the host joins the mesh FIRST (app-server,
   // credentials, tools) and only then hands the terminal to Codex, so the honest thing to tell
   // someone staring at a blank terminal is that the pause is the mesh, and the UI is coming.
@@ -171,6 +172,7 @@ export const codexConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
+    if (opts.backfillFloor !== undefined) env.COTAL_BACKFILL_FLOOR = String(opts.backfillFloor);
     if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
     // The auto-submitted first turn. A prompt with no text in it cannot be submitted, so refuse the
     // launch rather than start a seat that quietly ignores what the operator passed.

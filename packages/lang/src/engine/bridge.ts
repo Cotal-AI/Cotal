@@ -38,13 +38,14 @@
 import type { MessagePort } from "node:worker_threads";
 import type { EffectContext, EffectHandler } from "../effects.js";
 import { Cancelled, EffectError, EffectRefused } from "../effects.js";
-import type { JournalEntry, JournalStore } from "../journal.js";
+import type { EntryState, JournalEntry, JournalStore } from "../journal.js";
+import { EffectResultTooLarge, JournalAppendRejected } from "../journal.js";
 import type { StepKey } from "../keys.js";
 
 /** One 16-byte SharedArrayBuffer: an Int32 answer flag at 0, the Float64 clock value at 8. */
 export const CLOCK_BYTES = 16;
 
-/** The ten async members of {@link EffectHandler}, the only methods the bridge will forward. */
+/** The eleven async members of {@link EffectHandler}, the only methods the bridge will forward. */
 const METHODS = [
   "spawn",
   "turn",
@@ -52,6 +53,7 @@ const METHODS = [
   "checkpoint",
   "sleep",
   "wait",
+  "observe",
   "notify",
   "monitor",
   "openConclave",
@@ -76,6 +78,17 @@ interface WireError {
    *  race, which is the journal recording a failure the program never had. The reason crosses so
    *  the rebuilt class says the same thing the thrown one did. */
   readonly cancelled?: string;
+  /** A durability failure (`JournalAppendRejected`, or `EffectResultTooLarge` with `tooLarge`):
+   *  graded on class by perform.ts, which lets it leave uncatchable with nothing settled — flattened
+   *  to a plain Error, a host handler rethrowing its refused `ctx.bind` would settle the step
+   *  `failed`, recording an outcome for an append the store refused. The fields are the
+   *  constructors' own, so the rebuilt class says the same thing the thrown one did. */
+  readonly rejected?: {
+    readonly stepKey: string;
+    readonly state: EntryState;
+    readonly reason: string;
+    readonly tooLarge?: { readonly bytes: number; readonly bound: number };
+  };
 }
 
 /** The plain-data half of an {@link EffectContext}; `signal` and `bind` are rebuilt per side. */
@@ -91,7 +104,9 @@ type ToHost =
   | { readonly kind: "append"; readonly seq: number; readonly entry: JournalEntry }
   | { readonly kind: "cancel"; readonly seq: number; readonly reason: string }
   | { readonly kind: "bind-answer"; readonly bseq: number; readonly error?: WireError }
-  | { readonly kind: "now" };
+  | { readonly kind: "now" }
+  /** The thread has reacted to the first `seen` messages and is parked on effects alone. */
+  | { readonly kind: "idle"; readonly seen: number };
 
 type ToThread =
   | { readonly kind: "answer"; readonly seq: number; readonly ok: true; readonly value: unknown }
@@ -120,6 +135,20 @@ function flatten(e: unknown): WireError {
   if (e instanceof Cancelled) {
     return { domain: "host", name: e.name, message: e.message, cancelled: e.reason };
   }
+  if (e instanceof JournalAppendRejected) {
+    return {
+      domain: "host",
+      name: e.name,
+      message: e.message,
+      ...(e.indeterminate ? { indeterminate: true } : {}),
+      rejected: {
+        stepKey: e.stepKey,
+        state: e.state,
+        reason: e.reason.message,
+        ...(e instanceof EffectResultTooLarge ? { tooLarge: { bytes: e.bytes, bound: e.bound } } : {}),
+      },
+    };
+  }
   const err = e as { name?: unknown; message?: unknown; code?: unknown; indeterminate?: unknown };
   return {
     domain: "host",
@@ -142,6 +171,13 @@ function rehydrate(w: WireError): Error {
   if (w.domain === "effect") return new EffectError(w.code ?? "L4000", w.kind ?? "handler-fault", w.message, w.detail);
   if (w.refused === true) return new EffectRefused(w.code ?? "L5016", w.message);
   if (w.cancelled !== undefined) return new Cancelled(w.cancelled);
+  if (w.rejected !== undefined) {
+    const { stepKey, state, reason, tooLarge } = w.rejected;
+    if (tooLarge !== undefined) return new EffectResultTooLarge(stepKey, tooLarge.bytes, tooLarge.bound);
+    const cause = new Error(reason);
+    if (w.indeterminate === true) (cause as Error & { indeterminate?: boolean }).indeterminate = true;
+    return new JournalAppendRejected(stepKey, state, cause);
+  }
   const e = new Error(w.message);
   e.name = w.name;
   if (w.code !== undefined) (e as Error & { code?: string }).code = w.code;
@@ -162,8 +198,26 @@ export function bridgedSeam(port: MessagePort, clock: SharedArrayBuffer): { hand
   let seq = 0;
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   const live = new Map<number, EffectContext>();
+  // QUIESCENCE, for a handler that paces its own deliveries (#2240). Once this thread's microtasks
+  // drain with no append in flight, everything it will do in reply to the messages it has seen
+  // has reached the host, so it says so. The host's simulator waits for that before delivering
+  // its next wake, which is the invariant an in-process run gets from one shared microtask queue.
+  let seen = 0;
+  let appending = 0;
+  let check = false;
+  const reportIdle = (): void => {
+    if (check) return;
+    check = true;
+    setImmediate(() => {
+      check = false;
+      if (appending === 0) port.postMessage({ kind: "idle", seen } satisfies ToHost);
+    });
+  };
+  reportIdle();
 
   port.on("message", (m: ToThread) => {
+    seen++;
+    reportIdle();
     if (m.kind === "answer") {
       const p = pending.get(m.seq);
       // An answer nobody is waiting for is a protocol disagreement, not a value to drop quietly.
@@ -228,7 +282,19 @@ export function bridgedSeam(port: MessagePort, clock: SharedArrayBuffer): { hand
   const store: JournalStore = {
     append(entry: JournalEntry): Promise<void> {
       const s = seq++;
-      const answer = new Promise<void>((resolve, reject) => pending.set(s, { resolve: () => resolve(), reject }));
+      appending++;
+      const answer = new Promise<void>((resolve, reject) =>
+        pending.set(s, {
+          resolve: () => {
+            appending--;
+            resolve();
+          },
+          reject: (e) => {
+            appending--;
+            reject(e);
+          },
+        }),
+      );
       port.postMessage({ kind: "append", seq: s, entry } satisfies ToHost);
       return answer;
     },
@@ -259,8 +325,31 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
   let bseq = 0;
   const binds = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
   const cancels = new Map<number, { fire: (reason: string) => void }>();
+  // Every message posted to the thread is counted, so an `idle` names which of them it covers.
+  let sent = 0;
+  let idleAt = -1;
+  let waiters: (() => void)[] = [];
+  const toThread = (m: ToThread): void => {
+    sent++;
+    port.postMessage(m);
+  };
+  // A closed seam has no thread left to report, so it settles at once and hands the hook back:
+  // the handler may outlive this run and be used again (#2240).
+  let closed = false;
+  const release = seam.handler.useQuiescence?.(() =>
+    closed || idleAt === sent ? Promise.resolve() : new Promise<void>((resolve) => waiters.push(resolve)),
+  );
 
   port.on("message", (m: ToHost) => {
+    if (m.kind === "idle") {
+      idleAt = m.seen;
+      if (idleAt === sent) {
+        const ready = waiters;
+        waiters = [];
+        for (const w of ready) w();
+      }
+      return;
+    }
     if (m.kind === "now") {
       value[0] = seam.handler.now();
       Atomics.store(flag, 0, 1);
@@ -269,8 +358,8 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
     }
     if (m.kind === "append") {
       void seam.store.append(m.entry).then(
-        () => port.postMessage({ kind: "answer", seq: m.seq, ok: true, value: undefined } satisfies ToThread),
-        (e: unknown) => port.postMessage({ kind: "answer", seq: m.seq, ok: false, error: flatten(e) } satisfies ToThread),
+        () => toThread({ kind: "answer", seq: m.seq, ok: true, value: undefined } satisfies ToThread),
+        (e: unknown) => toThread({ kind: "answer", seq: m.seq, ok: false, error: flatten(e) } satisfies ToThread),
       );
       return;
     }
@@ -305,7 +394,7 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
         bind: (external) => {
           const b = bseq++;
           const answer = new Promise<void>((resolve, reject) => binds.set(b, { resolve, reject }));
-          port.postMessage({ kind: "bind", bseq: b, seq: seqHere, external } satisfies ToThread);
+          toThread({ kind: "bind", bseq: b, seq: seqHere, external } satisfies ToThread);
           return answer;
         },
       };
@@ -313,18 +402,18 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
       // The method set is this module's own constant, so an unknown name is the two sides
       // disagreeing about the protocol — refused as an answer, never dispatched dynamically.
       if (!METHODS.includes(m.method) || typeof method !== "function") {
-        port.postMessage({ kind: "answer", seq: seqHere, ok: false, error: { domain: "host", name: "Error", message: `the effect bridge does not forward "${String(m.method)}"` } } satisfies ToThread);
+        toThread({ kind: "answer", seq: seqHere, ok: false, error: { domain: "host", name: "Error", message: `the effect bridge does not forward "${String(m.method)}"` } } satisfies ToThread);
         cancels.delete(seqHere);
         return;
       }
       void (method as (req: unknown, ctx: EffectContext) => Promise<unknown>).call(seam.handler, m.req, ctx).then(
         (v: unknown) => {
           cancels.delete(seqHere);
-          port.postMessage({ kind: "answer", seq: seqHere, ok: true, value: v } satisfies ToThread);
+          toThread({ kind: "answer", seq: seqHere, ok: true, value: v } satisfies ToThread);
         },
         (e: unknown) => {
           cancels.delete(seqHere);
-          port.postMessage({ kind: "answer", seq: seqHere, ok: false, error: flatten(e) } satisfies ToThread);
+          toThread({ kind: "answer", seq: seqHere, ok: false, error: flatten(e) } satisfies ToThread);
         },
       );
       return;
@@ -349,5 +438,15 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
     throw new Error(`cotal-lang effect bridge: the thread sent a message kind this host does not know (${String((m as { kind?: unknown }).kind)})`);
   });
 
-  return { clock, close: () => port.close() };
+  return {
+    clock,
+    close: () => {
+      closed = true;
+      release?.();
+      const ready = waiters;
+      waiters = [];
+      for (const w of ready) w();
+      port.close();
+    },
+  };
 }

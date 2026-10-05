@@ -25,15 +25,17 @@
  *
  * The driver's outcome contract is the walker's, so a failure that crosses the thread boundary is
  * rehydrated into the class `drive()` grades: L5010 back into `JournalAppendRejected` (from the
- * store failure this process itself just witnessed — the thread only reflected it), L5012 back
- * into `RunReleased`, and everything else into an error carrying the same name, code and message
- * it failed with inside the thread.
+ * store failure this process itself just witnessed — the thread only reflected it), L5006 back into
+ * `EffectResultTooLarge` (from the step, size and bound the thread reports, since that refusal
+ * happens in the thread ahead of any append), L5012 back into `RunReleased`, and everything else
+ * into an error carrying the same name, code and message it failed with inside the thread.
  */
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   EffectError,
+  EffectResultTooLarge,
   Journal,
   JournalAppendRejected,
   RunReleased,
@@ -76,6 +78,8 @@ export interface EngineHostRequest {
   readonly store: JournalStore;
   /** The activated prefix: recorded entries for a resume, empty for a fresh run. */
   readonly entries: readonly JournalEntry[];
+  /** The journal's result bound (L5006). The journal it bounds is built in the thread, so it crosses as data. */
+  readonly resultBytes?: number;
   readonly shouldStop: () => string | undefined;
   readonly file?: string;
   readonly seed?: string;
@@ -139,11 +143,14 @@ function rehydrate(failed: WorkerRunFailed, store: WitnessedStore): Error {
     }
     return new JournalAppendRejected(journalEntryKeyString(store.failure.entry), store.failure.entry.state, store.failure.reason);
   }
+  if (failed.tooLarge !== undefined) {
+    return new EffectResultTooLarge(failed.tooLarge.stepKey, failed.tooLarge.bytes, failed.tooLarge.bound);
+  }
   if (failed.code === "L5012") {
     return new RunReleased(failed.reason ?? failed.message);
   }
   if (failed.code === "L5025") {
-    return new RunHeld(failed.step ?? "(step not carried)", failed.reason ?? failed.message);
+    return new RunHeld(failed.step ?? "(step not carried)", failed.reason ?? failed.message, failed.pending === true);
   }
   // An effect failure carries its domain across whole, because callers branch on `kind` exactly as
   // they do when the walker raises the same class in-process.
@@ -180,6 +187,7 @@ export async function runOnHostedEngine(req: EngineHostRequest): Promise<RunResu
       handler: "bridged",
       pins: req.pins,
       entries: req.entries,
+      ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
       ...(req.file !== undefined ? { file: req.file } : {}),
       ...(req.seed !== undefined ? { seed: req.seed } : {}),
       ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),

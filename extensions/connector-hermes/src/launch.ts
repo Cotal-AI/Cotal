@@ -14,15 +14,17 @@
  *
  * The manager runs this in a PTY; stdio is inherited so the gateway's output is what you attach to.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
-import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
+import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
+import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
 
 /** Hermes API range this connector is written against (keep in sync with pyproject.toml).
  *
@@ -46,15 +48,51 @@ import { startSidecar } from "./sidecar.js";
 const HERMES_MIN = "0.18";
 const HERMES_MAX_EXCLUSIVE = "0.22";
 
-const ILLEGAL = /[^A-Za-z0-9_-]/g;
-const tok = (s: string): string => s.trim().replace(ILLEGAL, "_").slice(0, 40) || "_";
-
 /** This package's root (where pyproject.toml + plugin/ live), resolved from this source file. */
 const PKG_DIR = fileURLToPath(new URL("..", import.meta.url));
 const PLUGIN_SRC = join(PKG_DIR, "plugin", "cotal");
 
-function bridgeSocketPath(space: string, name: string): string {
-  return join(tmpdir(), `cotal-hermes-bridge-${tok(space)}-${tok(name)}.sock`);
+/** How long a managed gateway may drain after SIGTERM before it is killed. The runtime that stops
+ *  this launcher SIGKILLs it 3s after its own SIGTERM, and the managed root can only be removed
+ *  once the gateway has exited, so the drain must end with room to spare inside that window. */
+const GATEWAY_DRAIN_MS = 1_500;
+
+/** `pid` and every process below it. The gateway runs as `uv` over the Hermes python process, and
+ *  uv cannot forward a SIGKILL, so killing the gateway means killing the tree. */
+function processTree(pid: number): number[] {
+  const children = new Map<number, number[]>();
+  for (const line of execFileSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" }).split("\n")) {
+    const [child, parent] = line.trim().split(/\s+/).map(Number);
+    if (!child || parent === undefined) continue;
+    children.set(parent, [...(children.get(parent) ?? []), child]);
+  }
+  const tree = [pid];
+  for (let i = 0; i < tree.length; i++) tree.push(...(children.get(tree[i]) ?? []));
+  return tree;
+}
+
+/** The bridge socket's path id is unpredictable, unlike the control endpoint's: `id` folds in the
+ *  launch's own control token alongside space/name/pid, so a same-uid process cannot compute the
+ *  path from public identity the way the old `space`+`name` name let it. The token is what
+ *  authenticates the socket (see bridge.ts); the path merely stops it being guessed at a glance. */
+function bridgeSocketPath(space: string, name: string, token: string): string {
+  const id = createHash("sha256")
+    .update(`${space}\0${name}\0${process.pid}\0${token}\0bridge`)
+    .digest("base64url")
+    .slice(0, 32);
+  const path = join(tmpdir(), `cotal-hermes-bridge-${id}.sock`);
+  const bytes = Buffer.byteLength(path);
+  if (bytes > SUN_PATH_MAX_BYTES) {
+    const tail = `/cotal-hermes-bridge-${id}.sock`.length;
+    throw new Error(
+      `bridge socket path is ${bytes} bytes, over the ${SUN_PATH_MAX_BYTES}-byte sun_path limit on ` +
+        `${process.platform}, so it cannot be bound and the kernel would report only EINVAL: ${path}. ` +
+        `The socket name is a fixed ${tail} bytes, so the temp root must be at most ` +
+        `${SUN_PATH_MAX_BYTES - tail} bytes — TMPDIR is ${Buffer.byteLength(tmpdir())} bytes ` +
+        `(${tmpdir()}). Point TMPDIR at a shorter directory.`,
+    );
+  }
+  return path;
 }
 
 function log(msg: string): void {
@@ -128,14 +166,20 @@ function parseLine(raw: string): [number, number] | null {
 const cmp = (a: [number, number], b: [number, number]): number => a[0] - b[0] || a[1] - b[1];
 
 /** Opt-in: run the gateway in the operator's OWN Hermes profile instead of a disposable one.
- *  Set to the profile directory (`~/.hermes`, or any HERMES_HOME). Unset means the managed
- *  default, which is what a spawned seat should almost always use. */
+ *  Set to the absolute path of the profile directory (`$HOME/.hermes`, or any HERMES_HOME). Unset
+ *  means the managed default, which is what a spawned seat should almost always use. */
 export const ADOPT_HOME_ENV = "COTAL_HERMES_ADOPT_HOME";
 
-/** Resolve the adopt-home opt-in, or undefined for the managed default. */
+/** Resolve the adopt-home opt-in, or undefined for the managed default. A relative value is
+ *  refused: it would resolve against whatever directory the launcher runs in, and a `~` no shell
+ *  expanded would name a directory called `~` there, so the profile written to would depend on
+ *  where the seat started. */
 export function adoptedHome(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const raw = env[ADOPT_HOME_ENV]?.trim();
-  return raw ? raw : undefined;
+  if (!raw) return undefined;
+  if (!isAbsolute(raw))
+    throw new LaunchRefused(`${ADOPT_HOME_ENV}=${raw} is not an absolute path — set it to the full path of your Hermes profile directory, e.g. ${ADOPT_HOME_ENV}=$HOME/.hermes`);
+  return raw;
 }
 
 /**
@@ -226,6 +270,38 @@ export function assertHermesVersion(opts: {
   (opts.logImpl ?? log)(`hermes-agent ${raw} (supported range ${supported}) ✓`);
 }
 
+/** What {@link forkHermesSession} returns: the seat's fork and where it came from. */
+export interface HermesFork {
+  source: string;
+  fork: string;
+  title: string | null;
+  messages: number;
+  transcriptSha256: string;
+  created: boolean;
+}
+
+/**
+ * Fork Hermes session `source` from the operator's profile `sourceHome` into the seat's profile
+ * `seatHome`, or return the fork the seat already owns. Runs plugin/cotal/resume.py under the
+ * project-pinned Hermes, so the copy goes through Hermes' own session store: the source database is
+ * opened read-only, and the fork is a new session the way the gateway's `/branch` makes one. A
+ * session that cannot be found or read is a {@link LaunchRefused} naming it.
+ */
+export function forkHermesSession(opts: { sourceHome: string; source: string; seatHome: string; env?: NodeJS.ProcessEnv }): HermesFork {
+  const env = opts.env ?? process.env;
+  mkdirSync(opts.seatHome, { recursive: true });
+  // `-P` keeps the plugin directory off sys.path: its tools.py would shadow Hermes' own `tools`.
+  const r = spawnSync(
+    hermesUvCommand(env),
+    ["run", "--project", PKG_DIR, "--quiet", "python", "-P", join(PLUGIN_SRC, "resume.py"), "fork", opts.sourceHome, opts.source, opts.seatHome],
+    { encoding: "utf8", env: { ...env, HERMES_HOME: opts.seatHome } },
+  );
+  if (r.error) throw new Error(`could not run the Hermes session fork via uv: ${r.error.message}`);
+  if (r.status === 3) throw new LaunchRefused(r.stderr.trim());
+  if (r.status !== 0) throw new Error(`the Hermes session fork failed (exit ${r.status ?? r.signal}): ${r.stderr.trim()}`);
+  return JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as HermesFork;
+}
+
 async function main(): Promise<void> {
   // No identity → a plain run, not a launcher-spawned agent. Stay off the mesh.
   if (!hasIdentity()) {
@@ -238,16 +314,37 @@ async function main(): Promise<void> {
   const persona = process.env.COTAL_AGENT_FILE
     ? loadAgentFile(process.env.COTAL_AGENT_FILE).persona
     : undefined;
-  // Managed (default): a disposable profile under tmp, regenerated every launch. Adopted (opt-in):
-  // the operator's own profile, into which only this connector's plugin directory is written.
-  const home = adopt ?? join(tmpdir(), `cotal-hermes-${tok(config.space)}-${tok(config.name)}`);
+  // Managed (default): a disposable profile under tmp, regenerated every launch and removed when the
+  // seat stops, unless it holds a `--resume` fork. Adopted (opt-in): the operator's own profile, into
+  // which only this connector's plugin directory is written, and which is never removed.
+  const managed = adopt ? undefined : hermesSeatHome(config.space, config.name);
+  const home = adopt ?? managed!.home;
+  const moved = managed && moveLegacyHermesFork(config.space, config.name);
+  if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
   if (adopt) setupAdoptedProfile(home, { persona });
   else setupProfile(home, { model: process.env.HERMES_MODEL, persona });
+
+  // `cotal spawn --resume`: fork before the seat joins the mesh, so a session that cannot be read is
+  // refused while nothing has joined. A relaunch reuses the fork and does not read the source again.
+  const resume = process.env.COTAL_HERMES_RESUME?.trim();
+  let fork: HermesFork | undefined;
+  if (resume) {
+    if (adopt) throw new LaunchRefused(`${ADOPT_HOME_ENV} runs the operator's own profile, which already holds session ${resume}; continue it there with Hermes' own /resume`);
+    const sourceHome = process.env.COTAL_HERMES_RESUME_HOME?.trim();
+    if (!sourceHome) throw new Error("COTAL_HERMES_RESUME is set without COTAL_HERMES_RESUME_HOME");
+    // The manager reads the fork's provenance where the launch named it, so a profile elsewhere (a
+    // TMPDIR that differs from the manager's) would leave it unrecorded.
+    if (process.env.COTAL_HERMES_RESUME_RECORD !== join(home, HERMES_FORK_RECORD))
+      throw new Error(`the seat's Hermes profile ${home} is not where the launch records its fork (${process.env.COTAL_HERMES_RESUME_RECORD ?? "unset"})`);
+    assertHermesVersion();
+    fork = forkHermesSession({ sourceHome, source: resume, seatHome: home });
+    log(`${fork.created ? "forked" : "continuing the fork of"} Hermes session ${fork.source}${fork.title ? ` ${JSON.stringify(fork.title)}` : ""} as ${fork.fork} (${fork.messages} messages, transcript sha256:${fork.transcriptSha256})`);
+  }
 
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
   const control = controlEndpoint(config.space, config.name);
-  const bridgeSock = bridgeSocketPath(config.space, config.name);
+  const bridgeSock = bridgeSocketPath(config.space, config.name, control.token);
   const toolsFile = join(home, "cotal-tools.json");
   // This launcher mints the control endpoint itself, so it has to hand the token onward to two
   // readers: the in-process sidecar below, and the gateway child. It rides the launch-material file
@@ -287,19 +384,52 @@ async function main(): Promise<void> {
   const sidecar = startSidecar();
 
   // Fail loudly before we hand control to the gateway if the Hermes API line is wrong.
-  assertHermesVersion();
+  if (!fork) assertHermesVersion();
 
+  // A managed gateway's temp files land inside the root a stop removes, not in the shared temp dir.
+  const gatewayTmp = managed && join(managed.root, "tmp");
+  if (gatewayTmp) mkdirSync(gatewayTmp, { recursive: true });
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     HERMES_HOME: home,
+    ...(gatewayTmp ? { TMPDIR: gatewayTmp } : {}),
     [LAUNCH_MATERIAL_ENV]: material,
     COTAL_CONTROL_SOCKET: control.path,
     COTAL_BRIDGE_SOCKET: bridgeSock,
     COTAL_TOOLS_FILE: toolsFile,
+    // The adapter branches each new mesh chat from this fork (plugin/cotal/resume.py seed_chat).
+    ...(fork ? { COTAL_HERMES_FORK_SESSION: fork.fork } : {}),
   };
 
   log(`launching hermes gateway as ${config.name}${config.role ? `/${config.role}` : ""} (HERMES_HOME=${home})`);
   const child = spawnHermesGateway({ pkgDir: PKG_DIR, env: childEnv });
+  const gatewayExit = new Promise<void>((done) => child.once("exit", () => done()));
+
+  // Remove the managed root, but only once the gateway can no longer write into it: let it drain,
+  // kill its tree if it is still up, and wait for its exit. Removing earlier would let a draining
+  // gateway recreate part of the directory after it was deleted.
+  const removeManaged = async (root: string): Promise<void> => {
+    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+      let timer: NodeJS.Timeout | undefined;
+      const drained = await Promise.race([
+        gatewayExit.then(() => true),
+        new Promise<boolean>((done) => (timer = setTimeout(() => done(false), GATEWAY_DRAIN_MS))),
+      ]);
+      clearTimeout(timer);
+      if (!drained) {
+        log(`gateway still running ${GATEWAY_DRAIN_MS}ms after SIGTERM; killing it before removing ${root}`);
+        for (const pid of processTree(child.pid)) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            /* already gone */
+          }
+        }
+        await gatewayExit;
+      }
+    }
+    rmSync(root, { recursive: true, force: true });
+  };
 
   let shuttingDown = false;
   const shutdown = async (code: number): Promise<void> => {
@@ -310,11 +440,15 @@ async function main(): Promise<void> {
     } catch {
       /* ignore */
     }
-    try {
-      await sidecar.stop();
-    } finally {
-      process.exit(code);
-    }
+    // A profile that holds a `--resume` fork is kept: a seat relaunched under the same name continues
+    // that fork, and the record is what refuses a different session under that name.
+    const forked = managed && existsSync(join(home, HERMES_FORK_RECORD)) ? managed : undefined;
+    if (forked) log(`keeping the managed profile ${forked.root}: it holds this seat's --resume fork`);
+    const disposable = forked ? undefined : managed;
+    const [, removed] = await Promise.allSettled([sidecar.stop(), disposable && removeManaged(disposable.root)]);
+    if (removed.status === "rejected")
+      log(`could not remove the managed profile ${disposable!.root}, so it is left on disk: ${(removed.reason as Error).message}`);
+    process.exit(code);
   };
 
   child.on("exit", (code) => void shutdown(code ?? 0));

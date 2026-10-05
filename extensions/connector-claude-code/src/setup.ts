@@ -1,13 +1,23 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { registry, type ConnectorSetupProvider } from "@cotal-ai/core";
+import {
+  globalConfigPath,
+  registry,
+  type ConnectorSetupProvider,
+  type ConnectorStatusInput,
+  type ConnectorStatusRow,
+  type McpServerSpec,
+} from "@cotal-ai/core";
+import { ENV_REFERENCE } from "@cotal-ai/connector-core";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-claude.md";
 const MARKETPLACE = "cotal-mesh";
+const REMOTE_TRANSPORTS = new Set<unknown>(["http", "sse", "ws"]);
 
 function cotalHome(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
@@ -152,6 +162,76 @@ function install(name: string, scope: string, expectedVersion?: string): void {
   verify(name, scope, expectedVersion);
 }
 
+/** One installed-plugin entry, as `claude plugin list --json` reports it. */
+type PluginEntry = Record<string, unknown>;
+
+/** The installed Claude Code plugins, or undefined when Claude cannot be launched or queried (both of
+ *  which status renders as "unknown" rather than "absent"). ONE spawn serves both rows. */
+function pluginList(): PluginEntry[] | undefined {
+  const result = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" });
+  if (result.status !== 0) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(result.stdout || "[]");
+    return Array.isArray(parsed) ? (parsed as PluginEntry[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The skills plugin vs the running CLI release, by the SAME predicate `verify` enforces after an
+ *  install (id, scope, enabled, errors, version), so status never blesses a plugin the installer would
+ *  reject. Stale, missing and broken all name the scoped remedy. */
+function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }: ConnectorStatusInput): ConnectorStatusRow {
+  const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude skills", state, text });
+  if (entries === undefined) return row("off", "unknown");
+  const match = entries.find((entry) => entry.id === `cotal-skills@${MARKETPLACE}` && entry.scope === "user");
+  if (!match || match.enabled === false) return row("off", `not installed · ${skillsRemedy}`);
+  const errors = (match.errors ?? match.error) as unknown;
+  if (Array.isArray(errors) ? errors.length > 0 : Boolean(errors)) return row("error", `load error · ${skillsRemedy}`);
+  if (match.version === version) return row("ok", "current");
+  return row("warn", `${typeof match.version === "string" ? `v${match.version} ≠ v${version} · ` : ""}stale · ${skillsRemedy}`);
+}
+
+/** The user-scope MCP servers every Claude Code session of this user loads, from the config file
+ *  `claude mcp add` writes them to. `CLAUDE_CONFIG_DIR` moves that file, as it does for `claude`. */
+function userServers(): Record<string, unknown> {
+  const path = join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".claude.json");
+  if (!existsSync(path)) return {};
+  let config: { mcpServers?: Record<string, unknown> } | null;
+  try {
+    config = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    throw new Error(`${path}: invalid JSON - ${(e as Error).message}`);
+  }
+  return config?.mcpServers ?? {};
+}
+
+/** Whether setup may copy a server entry into the cotal config. The entry must name a transport
+ *  Claude Code can start (a non-empty `command` for stdio, a non-empty `url` for http, sse and ws) and
+ *  give each field the type {@link McpServerSpec} gives it: any other entry is skipped or never
+ *  connects, so a copy would be shared in name only, and a field of the wrong type also makes launch
+ *  throw for every spawn. That config holds secrets only as `${VAR}` references, and literal text
+ *  cannot be told apart from a secret, so every `env` and `headers` value must be references and
+ *  nothing else. */
+function copyable(spec: unknown): spec is McpServerSpec {
+  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const isOptionalString = (v: unknown) => v === undefined || typeof v === "string";
+  return (
+    isRecord(spec) &&
+    [spec.command, spec.type, spec.url].every(isOptionalString) &&
+    (spec.type === undefined || spec.type === "stdio" ? Boolean(spec.command) : REMOTE_TRANSPORTS.has(spec.type) && Boolean(spec.url)) &&
+    (spec.args === undefined || (Array.isArray(spec.args) && spec.args.every((arg) => typeof arg === "string"))) &&
+    [spec.env, spec.headers].every(
+      (values) => values === undefined || (isRecord(values) && Object.values(values).every((v) => typeof v === "string" && v.replace(ENV_REFERENCE, "") === "")),
+    )
+  );
+}
+
+// All handoffs in one setup run share a single Claude session: the first spawn pins a generated UUID
+// (--session-id), later spawns --resume it, so Claude keeps the context of earlier failures. stdio is
+// inherited, so pinning our own id is the only way to find the session again.
+let assistSession: string | undefined;
+
 export const claudeSetupProvider: ConnectorSetupProvider = {
   kind: "connector-setup",
   name: "claude",
@@ -190,6 +270,44 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
         rmSync(payload, { recursive: true, force: true });
       }
     },
+  },
+  mcpServers: {
+    name: "claude-mcp-servers",
+    title: "Share your MCP servers with spawned sessions",
+    explain:
+      "A spawned Claude Code session gets the cotal tools plus the MCP servers your own sessions load. Each spawn starts its own copy of every shared server, so on a small machine remove the heavy ones from the cotal config or spawn with --share-tools none.",
+    context: [DOCS_URL],
+    run({ seed }) {
+      const installed = Object.entries(userServers());
+      const shared = Object.fromEntries(installed.filter((entry): entry is [string, McpServerSpec] => copyable(entry[1])));
+      const left = installed.filter(([, spec]) => !copyable(spec)).map(([name]) => name);
+      const path = globalConfigPath();
+      // An empty list is recorded too: a later setup keeps whatever list the first run wrote.
+      if (!seed(shared)) return `kept the list ${path} already declares`;
+      const parts = [`${Object.keys(shared).join(", ") || "none"} via ${path}`];
+      if (left.length)
+        parts.push(`not shared: ${left.join(", ")} (setup copies a server only when it is well formed and its env and headers values are all \${VAR} references; add it to ${path} by hand to share it)`);
+      return parts.join("; ");
+    },
+  },
+  assist: {
+    title: "Claude",
+    run(prompt) {
+      const sessionArgs = assistSession ? ["--resume", assistSession] : ["--session-id", (assistSession = randomUUID())];
+      const child = spawn("claude", [prompt, "--permission-mode", "auto", ...sessionArgs], { stdio: "inherit" });
+      return new Promise<void>((resolve, reject) => {
+        child.on("exit", () => resolve());
+        child.on("error", reject);
+      });
+    },
+  },
+  status(input) {
+    const plugins = pluginList();
+    const plugin = plugins?.some((entry) => entry.id === `cotal@${MARKETPLACE}`) ?? false;
+    return [
+      { label: "Claude plugin", state: plugin ? "ok" : "off", text: plugin ? "installed" : "not installed" },
+      skillsRow(plugins, input),
+    ];
   },
 };
 

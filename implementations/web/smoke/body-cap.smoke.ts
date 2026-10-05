@@ -33,16 +33,19 @@
  * is never lost is the OPERATOR LINE, which is written before the response is, and that is what
  * cell 3.3 pins.
  *
+ * Section 9: the GATE's refusal closes an announced upload too, so a stranger with no session
+ * cannot hold the dashboard reading one (#2024); a bodyless refusal keeps its connection.
+ *
  * Needs nats-server on PATH. Run: pnpm smoke:web-body-cap
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import net, { type AddressInfo } from "node:net";
+import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { isReachable, setupSpaceStreams, CotalEndpoint, newIdentity } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -52,10 +55,6 @@ const ok = (name: string, cond: boolean, detail?: unknown): void => {
   console.log(`  x FAIL  ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = async (): Promise<number> => new Promise((res) => {
-  const s = net.createServer();
-  s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-});
 
 /** The cap the route ships with. Typed here rather than imported so that moving the constant in
  *  the source cannot silently move what this suite checks along with it. */
@@ -90,20 +89,23 @@ try {
   for (const ch of [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE, KEEP_A, KEEP_B]) await seed.multicast(MSG, { channel: ch });
   await seed.stop();
 
-  const WEB_PORT = await freePort();
   let log = "";
-  webChild = spawn(process.execPath, [
-    "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-    "--server", SERVER, "--space", SPACE, "--port", String(WEB_PORT), "--no-open",
-  ], { stdio: ["ignore", "pipe", "pipe"] });
-  webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-  webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-
   let launchUrl: string | undefined;
-  for (let i = 0; i < 200 && launchUrl === undefined; i++) {
-    launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-    await wait(250);
-  }
+  const WEB_PORT = await onFreePort(async (port) => {
+    webChild = spawn(process.execPath, [
+      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+      "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
+    webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
+    const taken = `Port ${port} is in use`;
+    for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
+      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+      await wait(250);
+    }
+    if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
+    return port;
+  });
   const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
   const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
   const authed = { cookie: `cotal_web_session=${session}` };
@@ -312,7 +314,52 @@ try {
       r4.status.includes("413") && (await stillThere(PREFIX)), { status: r4.status, text: r4.text.slice(0, 160) });
   }
 
-  console.log("7. the bound does not depend on a header the CALLER chooses");
+  console.log("7. routes that do not read bodies refuse them on the announcement");
+  {
+    // The other dashboard routes never inspect `req`, so they have a zero-byte policy rather than
+    // the delete route's 8 KiB policy. These are raw sockets because a fetch body hides whether the
+    // server closed early and cannot express transfer-encoding without a declared length.
+    const NO_BODY = Buffer.alloc(20_000_000, 0x61);
+    const noBodyHead = (path: string, headers: string): string =>
+      `POST ${path} HTTP/1.1\r\nHost: h\r\n${COOKIE}Connection: keep-alive\r\n${headers}\r\n`;
+
+    const declared = await raw(noBodyHead("/api/roster", `Content-Length: ${NO_BODY.length}\r\n`), Buffer.alloc(0));
+    ok("7.0 an announced 20 MB body to a no-body route is refused at its zero-byte limit before it can be accepted",
+      declared.status.includes("413") && declared.text.includes("/api/roster") && declared.text.includes("takes no request body"),
+      { status: declared.status, text: declared.text.slice(0, 180) });
+
+    const beforeDeclared = log.length;
+    const cutOff = await raw(noBodyHead("/api/roster", `Content-Length: ${NO_BODY.length}\r\n`), NO_BODY);
+    await wait(200);
+    const declaredLog = log.slice(beforeDeclared);
+    ok("7.1 ...and a caller sending that announced body is cut off before it finishes while the operator records a refusal rather than a server fault",
+      cutOff.sent < NO_BODY.length
+      && declaredLog.includes("refused") && declaredLog.includes("/api/roster") && declaredLog.includes("takes no request body")
+      && !declaredLog.includes("failed:"),
+      { sent: cutOff.sent, total: NO_BODY.length, operatorLine: declaredLog.slice(-240) });
+
+    const beforeChunked = log.length;
+    const chunked = await raw(noBodyHead("/api/roster", "Transfer-Encoding: chunked\r\n"), NO_BODY, asChunks);
+    await wait(200);
+    const chunkedLog = log.slice(beforeChunked);
+    ok("7.2 transfer-encoding on a no-body route is refused on that framing announcement without reading the chunked body",
+      chunked.sent < NO_BODY.length && /takes no request body/.test(chunkedLog),
+      { sent: chunked.sent, total: NO_BODY.length, status: chunked.status, operatorLine: chunkedLog.slice(-240) });
+
+    const channels = await raw(noBodyHead("/api/channels", `Content-Length: ${NO_BODY.length}\r\n`), Buffer.alloc(0));
+    ok("7.3 the same zero-byte guard covers a second no-body route rather than special-casing the roster",
+      channels.status.includes("413") && channels.text.includes("/api/channels"),
+      { status: channels.status, text: channels.text.slice(0, 180) });
+
+    const get = await fetch(`http://127.0.0.1:${WEB_PORT}/api/roster`, { headers: authed });
+    ok("7.4 CONTROL: a bodyless GET to the roster is still served normally",
+      get.status === 200, { status: get.status, text: await get.text() });
+    const zero = await raw(noBodyHead("/api/roster", "Content-Length: 0\r\n"), Buffer.alloc(0));
+    ok("7.5 CONTROL: an explicit content-length of zero is not a body and reaches the route normally",
+      zero.status.includes("200"), { status: zero.status, text: zero.text.slice(0, 160) });
+  }
+
+  console.log("8. the bound does not depend on a header the CALLER chooses");
   {
     // EVERY CELL ABOVE SENDS `Connection: close`, which is the arm where this cap looks perfect:
     // the frame's reply closes the socket under a caller that is still uploading. On a keep-alive
@@ -429,6 +476,81 @@ try {
     ok("7.6 ...and a SECOND request is served on that same socket, so the remedy above ends the connection an oversized body was riding on and not keep-alive itself",
       reusable && resp.includes("200") && resp.includes('"purged"'), { reusable, second: resp.slice(0, 200) });
     sock.destroy();
+  }
+
+  console.log("9. the gate refuses an announced upload before reading it too");
+  {
+    // Sections 7 and 8 pin what a SESSION holder meets: the no-body guard refuses the announcement
+    // and the catch closes the connection. The gate runs before that guard, so its refusal used to
+    // leave a stranger uploading on a kept-alive socket that Node then drained to get back (#2024):
+    // measured, all 20,000,000 announced bytes accepted after the 401. The remedy is the close
+    // header on the gate's own refusal, and these cells assert it as EVENTS, NOT RATES, the way
+    // section 8 explains: `sent < NO_BODY.length` is the strict inequality against the whole body,
+    // which cannot flake, because once the server stops reading the caller is bounded by the
+    // socket buffer rather than by a race.
+    const strangerHead = (headers: string): string =>
+      `POST /api/roster HTTP/1.1\r\nHost: h\r\nConnection: keep-alive\r\n${headers}\r\n`;
+    const NO_BODY = Buffer.alloc(20_000_000, 0x61);
+
+    // THE UPLOADING CALLER MAY READ NOTHING, the limit section 8 states for its own chunked arm
+    // applies here too: the close under a mid-upload caller is an RST and the response it had
+    // buffered is lost. What the server owns is the event: the upload was cut off, and a request
+    // that sends NO body bytes still reads the full refusal with its close header. `raw` reports
+    // only the status line and the body, so the header block is read on a plain socket here.
+    const refusedHead = async (status: string, extra: string): Promise<string> =>
+      await new Promise((resolve) => {
+        let resp = "";
+        const sock = net.connect(WEB_PORT, "127.0.0.1", () => {
+          sock.write(strangerHead(`Content-Length: ${NO_BODY.length}\r\n${extra}`));
+        });
+        sock.on("data", (d) => { resp += d.toString("latin1"); });
+        sock.on("error", () => {});
+        sock.on("close", () => resolve(resp));
+        setTimeout(() => { sock.destroy(); resolve(resp); }, 10_000);
+      });
+
+    const bodyless = await refusedHead("401", "");
+    ok("9.0 an UNAUTHENTICATED announced 20 MB body to a no-body route is refused with 401 and that refusal closes the connection",
+      bodyless.split("\r\n")[0].includes("401") && /connection:\s*close/i.test(bodyless),
+      { head: bodyless.slice(0, 240) });
+
+    const stranger = await raw(strangerHead(`Content-Length: ${NO_BODY.length}\r\n`), NO_BODY);
+    ok("9.0b ...and a caller sending that announced body is cut off before it finishes, so the gate's refusal is not drained",
+      stranger.sent < NO_BODY.length,
+      { sent: stranger.sent, total: NO_BODY.length, status: stranger.status.slice(0, 60) });
+
+    const chunked = await raw(strangerHead("Transfer-Encoding: chunked\r\n"), NO_BODY, asChunks);
+    ok("9.1 ...and the same with transfer-encoding: chunked",
+      chunked.sent < NO_BODY.length,
+      { sent: chunked.sent, total: NO_BODY.length, status: chunked.status.slice(0, 60) });
+
+    const crossBodyless = await refusedHead("403", "Origin: http://evil.example\r\n");
+    const crossOrigin = await raw(strangerHead(`Content-Length: ${NO_BODY.length}\r\nOrigin: http://evil.example\r\n`), NO_BODY);
+    ok("9.2 a CROSS-ORIGIN announced body is refused with 403 and closed the same way",
+      crossBodyless.split("\r\n")[0].includes("403") && /connection:\s*close/i.test(crossBodyless)
+      && crossOrigin.sent < NO_BODY.length,
+      { head: crossBodyless.slice(0, 240), sent: crossOrigin.sent, total: NO_BODY.length });
+
+    // THE NEGATIVE ARM, the reason the three cells above are scoped rather than a policy of
+    // closing every refusal: a request that announces NO body keeps its socket, and the proof is
+    // a second request answered on the SAME socket, the way 7.5/7.6 prove reuse for the cap.
+    let twoResp = "";
+    const keep = net.connect(WEB_PORT, "127.0.0.1");
+    keep.on("data", (d) => { twoResp += d.toString("latin1"); });
+    keep.on("error", () => {});
+    await new Promise<void>((r) => { keep.on("connect", () => r()); setTimeout(r, 5000); });
+    keep.write("POST /api/roster HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
+    for (let i = 0; i < 100 && !twoResp.includes("\r\n\r\n"); i++) await wait(100);
+    const first401 = twoResp;
+    twoResp = "";
+    const stillReusable = keep.writable && !keep.destroyed;
+    if (stillReusable) keep.write("POST /api/roster HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n");
+    for (let i = 0; i < 100 && !twoResp.includes("\r\n\r\n"); i++) await wait(100);
+    ok("9.3 CONTROL: an unauthenticated request that announces NO body is refused with 401 and KEEPS its connection, so the remedy is scoped to announced uploads",
+      first401.includes("401") && !/connection:\s*close/i.test(first401)
+      && stillReusable && twoResp.includes("401"),
+      { first: first401.slice(0, 160), second: twoResp.slice(0, 160) });
+    keep.destroy();
   }
 } finally {
   webChild?.kill("SIGKILL");

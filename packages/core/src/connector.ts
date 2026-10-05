@@ -23,6 +23,10 @@ export interface LaunchOpts {
    *  forwards it (`COTAL_LIFECYCLE_UID`) so the session's endpoint binds its lifecycle-keyed
    *  dm/dlv/chathist durables — the same exact names its credential pins. */
   lifecycleUid?: string;
+  /** The CHAT stream sequence this incarnation had reached before a preservation cut (manager-
+   *  recorded). The connector forwards it (`COTAL_BACKFILL_FLOOR`) so the session's boot backfill
+   *  reads only what came after it instead of the whole retained window. Absent on a fresh launch. */
+  backfillFloor?: number;
   /** The accepted-row token of the credential's issuance (SPEC 13.15), chosen by the launcher at
    *  mint. The connector forwards it (`COTAL_ACCEPTED_TOKEN`) so the session's endpoint reads the
    *  generation the issuer bound and pins it into its caller rails. Static issued launches only. */
@@ -64,7 +68,9 @@ export interface LaunchOpts {
   launchOptions?: Record<string, unknown>;
   /** An initial message for the session to act on the moment it starts (`cotal spawn --prompt`).
    *  A connector delivers it as the harness's first turn or throws at launch; it never ignores it,
-   *  because an operator who passed a prompt is waiting on the turn it starts. */
+   *  because an operator who passed a prompt is waiting on the turn it starts. Gated upstream by
+   *  {@link Connector.supportsPrompt}, so a prompt on a connector that cannot deliver one is
+   *  refused before any provisioning. */
   prompt?: string;
   /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
    *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
@@ -80,6 +86,12 @@ export interface LaunchOpts {
    *  CLI/manifest/model-provided field. A connector that cannot preserve its mesh surface across
    *  same-session continuation throws rather than silently launching fresh. */
   continueSession?: string;
+  /** Existing host session to reopen for a manifest `continuity: exact` agent. Unlike
+   *  {@link continueSession}, the session must already exist: a connector that honors it fails the
+   *  launch when the host has no such session, never creating an empty one under that id. Crash
+   *  recovery keeps `continueSession`, because a seat that never took a turn has no stored session
+   *  yet. Manager-internal only, never a CLI/manifest/model-provided field. */
+  reopenSession?: string;
   /** Publish this session's AG-UI event plane to the agent's own event channel (see
    *  {@link Connector.eventChannel}), so an external observer or UI can read what the agent actually
    *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to ON for a
@@ -139,6 +151,18 @@ export interface LaunchSpec {
    *  path after process exit, then verifies the successor reports the same session over `control`.
    *  Contains no transcript or credential; currently used by Pi for its current session id. */
   sessionStatePath?: string;
+  /** Where a `resume` launch records its fork's provenance, for a connector whose seat makes the fork
+   *  after launch: a JSON file the seat writes holding `source` (the session id it forked),
+   *  `transcriptSha256` (SHA-256 over the source transcript as it read it) and `title` when the
+   *  source has one. The manager records it on the seat's resume document, and `cotal ps` shows it.
+   *  The manager keeps a title of at most 1024 characters, so the connector refuses before launch a
+   *  source whose title is longer. */
+  resumeRecordPath?: string;
+  /** Private temporary directories this launch wrote for its child to read (a persona carrier, an
+   *  MCP config file), from `writeLaunchArtifact`. The launcher that spawns this spec owns them: it
+   *  removes them with `discardLaunchArtifacts` once it has proved the child gone (see core
+   *  launch-artifacts). */
+  artifacts?: string[];
 }
 
 /** One provider-specific model variant. `options` is opaque connector metadata for UIs; core never
@@ -225,9 +249,13 @@ export interface Connector extends Extension {
   /** Whether this connector can reopen the exact host session named by
    *  {@link LaunchOpts.continueSession} after a supervised process crash. Default-deny. */
   readonly supportsSessionContinuation?: boolean;
-  /** Whether a launch without {@link LaunchOpts.resume} or {@link LaunchOpts.continueSession}
-   * creates a new host session. This is the first-cutover continuity declaration: a manager may
-   * describe it as `fresh`, but must never infer it by connector name or by probing a live host. */
+  /** Whether this connector honors {@link LaunchOpts.reopenSession}: it reopens that existing host
+   *  session or fails the launch when it does not exist. Default-deny. */
+  readonly supportsSessionReopen?: boolean;
+  /** Whether a launch without {@link LaunchOpts.resume}, {@link LaunchOpts.continueSession} or
+   * {@link LaunchOpts.reopenSession} creates a new host session. This is the first-cutover
+   * continuity declaration: a manager may describe it as `fresh`, but must never infer it by
+   * connector name or by probing a live host. */
   readonly supportsFreshStart?: boolean;
   /**
    * Whether this connector can tell its host that the advertised `cotal_*` list changed.
@@ -245,6 +273,10 @@ export interface Connector extends Extension {
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.prompt} as the harness's first turn.
+   *  Default-deny, so a prompt on a connector that does not declare it fails before any
+   *  provisioning rather than being accepted and never submitted. */
+  readonly supportsPrompt?: boolean;
   /**
    * Connector-specific upper bound for reaching mesh presence after its process is launched.
    *

@@ -21,10 +21,9 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { SMOKE_BROKER_PREFIX as KIT_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_PREFIX as KIT_PREFIX, SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers } from "./reap-smoke-brokers.mjs";
 // A NAMESPACE import for the reporter, deliberately: a named import of every export makes this
 // suite die at LOAD when a mutation renames one, which turns a graded row into an unexplained
@@ -39,11 +38,6 @@ const check = (name: string, ok: boolean, detail = ""): void => {
   else { fail++; console.log(`  ✗ FAIL: ${name}${detail ? ` (${detail})` : ""}`); }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = (): Promise<number> => new Promise((res, rej) => {
-  const s = createServer();
-  s.once("error", rej);
-  s.listen(0, "127.0.0.1", () => { const p = (s.address() as { port: number }).port; s.close(() => res(p)); });
-});
 const alive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 };
@@ -54,7 +48,7 @@ console.log("\n── smoke broker reaper ────────────�
 // workspace build. That duplication is only safe if it cannot drift, which is what this asserts.
 check("the reaper's prefix literal is the one the kit mints", SMOKE_BROKER_PREFIX === KIT_PREFIX, `${SMOKE_BROKER_PREFIX} vs ${KIT_PREFIX}`);
 // And the minted token must actually carry this process's pid, or the owner check has nothing to read.
-check("the kit's token stamps the owning pid into the dir name", SMOKE_BROKER_TOKEN === `${KIT_PREFIX}${process.pid}-`, SMOKE_BROKER_TOKEN);
+check("the kit's token stamps the owning pid into the dir name", new RegExp(`^${KIT_PREFIX}${process.pid}-(?:s[A-Za-z0-9_-]{22}-)?$`).test(SMOKE_BROKER_TOKEN), SMOKE_BROKER_TOKEN);
 
 // ── the declaration beside the module is emitted from it, so it cannot describe a different one ──
 //
@@ -208,7 +202,7 @@ const armKey = (arm: DeclaredShape): string =>
           : `opaque(${arm.text})`;
 // These are values, not types.
 const NAMED_ARMS: Readonly<Record<string, string>> = {
-  "reapSmokeBrokers#0#object{dryRun:union(boolean|undefined)}": "{ dryRun: true }",
+  "reapSmokeBrokers#0#object{dryRun:union(boolean|undefined),scope:union(string|undefined)}": "{ dryRun: true }",
   "reportReaped#1#object{inspected:number,ownedLive:number,reaped:array<object{args:string,owner:number,pid:number}>,supported:boolean,unclaimable:number,unparseable:number}": "report",
 };
 // And the arms that are COMPILED but not RUN, each named with the reason it cannot be run.

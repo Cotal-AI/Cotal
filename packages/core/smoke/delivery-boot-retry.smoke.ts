@@ -69,6 +69,14 @@ try {
   }
   check("after the daemon recovers, reconcileBootJoin establishes the membership (health → active)", established);
 
+  // The public membership round-trip is the affirmative daemon signal (#445): once the daemon
+  // endpoint STOPS, no ctl.delivery responder answers — fetchMemberships() returns undefined —
+  // while the session-local membership map still says true. A surface that trusted the local
+  // map (or the lease residue) would keep certifying a daemon that no longer exists.
+  await daemon!.stop();
+  check("daemon stopped ⇒ public fetchMemberships() answers undefined (no responder)", await agent.fetchMemberships() === undefined);
+  check("…while the session-local membership map still says true (the residue #445 is about)", agent.hasDurableMembership("review") === true);
+
   console.log(`\nDELIVERY-BOOT-RETRY SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {

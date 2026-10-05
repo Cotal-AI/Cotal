@@ -36,20 +36,9 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { join, resolve as resolvePath } from "node:path";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
-
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
 
 const scratch = makeScratch("cotal-up-adopt-lock-");
 const home = mkdtempSync(join(scratch, "home-"));
@@ -64,8 +53,9 @@ const TSX = join(WT, "node_modules", ".bin", "tsx");
 const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
 const resumeDocPath = join(root, ".cotal", "maintenance", "v1", "resume.json");
 const openConfPath = join(root, ".cotal", "server-open.conf");
-// Above the per-space reservations (the artifact object store alone reserves 4 GiB), so the cap is
-// honored without refusing provisioning.
+// Comfortably above the space's own reservations (the artifact Object Store reserves nothing, so what
+// remains is a 64 MiB membership bucket), so the cap is honored without refusing provisioning. What is
+// under test is that the cap is RENDERED and RESUMED, not where it sits.
 const CAP = 17179869184;
 const cappedBlock = `jetstream { store_dir: ${JSON.stringify(join(root, ".cotal", "nats"))}, max_file_store: ${CAP} }`;
 const openConfJetStream = (): string =>

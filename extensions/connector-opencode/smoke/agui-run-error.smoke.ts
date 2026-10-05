@@ -30,23 +30,14 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { bootPlugin } from "./_boot-plugin.js";
 
-async function freePort(): Promise<number> {
-  const s = createNetServer();
-  s.listen(0, "127.0.0.1");
-  await once(s, "listening");
-  const port = (s.address() as { port: number }).port;
-  await new Promise<void>((r) => s.close(() => r()));
-  return port;
-}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PORT = await freePort();
@@ -134,10 +125,7 @@ Object.assign(process.env, {
 type Hooks = Awaited<ReturnType<typeof bootPlugin>>;
 let hooks: Hooks | undefined;
 try {
-  for (let i = 0; i < 50; i++) {
-    if (await isReachable(servers)) break;
-    await sleep(200);
-  }
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({
     servers,
     space: SPACE,
@@ -227,8 +215,8 @@ try {
     failedTurnCloses.length === 1, failedTurnCloses);
   check("fail:and that close is RUN_ERROR, not RUN_FINISHED — THE DEFECT",
     failedTurnCloses[0]?.type === "RUN_ERROR", failedTurnCloses[0]);
-  check("fail:the RUN_ERROR carries the harness's own message and error name as the code",
-    failedTurnCloses[0]?.message === "upstream returned 500" && failedTurnCloses[0]?.code === "APIError",
+  check("fail:the RUN_ERROR carries the fixed message and no code",
+    failedTurnCloses[0]?.message === "run failed" && !failedTurnCloses[0]?.code,
     failedTurnCloses[0]);
 
   check("abort:the user-aborted turn closed exactly once", abortedTurnCloses.length === 1, abortedTurnCloses);

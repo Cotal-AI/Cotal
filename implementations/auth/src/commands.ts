@@ -115,7 +115,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     // Signing in proves WHO you are; each mesh separately lets you in. Hand the human the exact
     // next step — their sub is the one thing the operator needs from them.
     console.log(
-      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub}   (that's the full grant - all channels, may spawn; narrow with --allow-subscribe/--allow-publish/--scope)`,
+      `Not yet on a mesh? Its operator lets you in with: cotal actor grant ${CLI_USER_ACTOR} --sub ${sub} --full   (all channels, scope spawn,role:default; or name --scope, --allow-subscribe and --allow-publish instead of --full)`,
     );
   });
 }
@@ -185,6 +185,10 @@ async function resolveGrantOwner(
   return deriveOwnerForIdpSubject(secret, idp.issuer, values.sub!);
 }
 
+/** The two explicit shapes of `actor grant`, printed by its usage and its refusal. */
+const GRANT_FORMS =
+  "cotal actor grant <actor> --sub <IdP subject> --full   (all channels, scope spawn,role:default; a named flag still overrides its field), or cotal actor grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b   ('' = none, e.g. --scope '' --allow-subscribe general --allow-publish ''). [--role r] [--label l]";
+
 const csv = (s: string | undefined, dflt: string[]): string[] =>
   s === undefined ? dflt : s.split(",").map((x) => x.trim()).filter(Boolean);
 
@@ -234,7 +238,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
   const [sub, actor] = args.positionals;
   const values = args.values as {
     space?: string; sub?: string; owner?: string; scope?: string; "allow-subscribe"?: string;
-    "allow-publish"?: string; role?: string; label?: string; parent?: string;
+    "allow-publish"?: string; role?: string; label?: string; parent?: string; full?: boolean;
   };
   const st = actorState(values.space);
   const { dir, space } = st;
@@ -242,7 +246,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
     if (sub === "list") {
       const rows = loadActorLedger(dir);
       if (!rows.length) {
-        console.log("no actors granted - grant one with: cotal actor grant <actor> --sub <IdP subject>   (that's the full grant - all channels, may spawn; narrow with --allow-subscribe/--allow-publish/--scope)");
+        console.log("no actors granted - grant one with: cotal actor grant <actor> --sub <IdP subject> --full   (all channels, scope spawn,role:default; or name --scope, --allow-subscribe and --allow-publish instead of --full)");
         return;
       }
       for (const r of rows.sort((a, b) => (a.owner + a.actor).localeCompare(b.owner + b.actor)))
@@ -252,12 +256,16 @@ async function runActor(args: ParsedArgs): Promise<void> {
       return;
     }
     if (sub === "grant") {
-      if (!actor) throw new Error("usage: cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role r] [--label l]   (an upsert of the WHOLE row: an omitted flag is the WIDE default - scope spawn,role:default, read '>', post '>' - so narrowing means naming every field, e.g. --scope '' --allow-subscribe general --allow-publish '')");
+      if (!actor) throw new Error(`usage: ${GRANT_FORMS}`);
+      // The row is an upsert of the WHOLE row, so every field must be chosen: either all three ACL
+      // flags are named, or `--full` opts in to the wide default for the ones left off. Omission
+      // alone never means "everything": a dropped flag on a narrow reader grant would otherwise
+      // mint a space-wide row with a success line. The user's agents are still attenuated from
+      // whatever this row says (the envelope rule).
+      const omitted = (["scope", "allow-subscribe", "allow-publish"] as const).filter((f) => values[f] === undefined);
+      if (omitted.length && !values.full)
+        throw new Error(`refusing to grant "${actor}" with ${omitted.map((f) => `--${f}`).join(", ")} left off: an omitted flag would be the WIDE default (scope spawn,role:default, read '>', post '>'). Say which grant you mean: ${GRANT_FORMS}`);
       const owner = await resolveGrantOwner(st, values);
-      // Default = the FULL grant (all channels, spawn + the stock role): `actor grant` is an
-      // operator act of letting a user in, so omitting flags means "fully", and narrowing is the
-      // explicit choice (`--allow-subscribe general --scope ''`). The user's agents are still
-      // attenuated from whatever this row says (the envelope rule).
       //
       // A re-grant rotates the lifecycle so a copied bearer cannot cross the authorization update.
       // Retire the predecessor through the auth plane first; issuance is not allowed to perform a
@@ -444,15 +452,16 @@ const authCommands: Command[] = [
     name: "actor",
     group: "Identity",
     summary: "manage the space's actor ledger - grant/revoke which (user, actor) pairs may run agents",
-    usage: "actor <grant <actor> | revoke <actor> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role r] [--label l]",
+    usage: "actor <grant <actor> | revoke <actor> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--role r] [--label l]",
     positionals: "<grant <actor> | revoke <actor> | list>",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the folder's)" },
       { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to" },
       { name: "owner", type: "string", value: "<u_…>", description: "the derived owner token (alternative to --sub)" },
-      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer (default: spawn,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
-      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (default: > = all channels) - the user's envelope: their agents can never read beyond it" },
-      { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (default: > = all channels) - also the envelope for their agents' posting" },
+      { name: "full", type: "boolean", description: "grant: the full row - every ACL flag left off takes its wide default (all channels; scope spawn,role:default). Without it, grant needs --scope, --allow-subscribe and --allow-publish" },
+      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer (with --full: default spawn,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
+      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (with --full: default > = all channels) - the user's envelope: their agents can never read beyond it" },
+      { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (with --full: default > = all channels) - also the envelope for their agents' posting" },
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
       { name: "label", type: "string", value: "<l>", description: "display label for `actor list` (never the IdP subject)" },
       { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link (operator grants are authority - this does not attenuate)" },

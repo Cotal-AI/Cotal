@@ -39,6 +39,7 @@ import {
 } from "@cotal-ai/core";
 import { staticLifecycleTransport, readStaticSlot, activateStaticLifecycle, casStaticSlot } from "../src/static-lifecycle.js";
 import { bootBroker } from "./_boot-broker.js";
+import { requestDeliveryAdminZeroMemberships } from "./_fake-delivery-admin.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown): void => {
@@ -68,7 +69,14 @@ const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot
 const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
 const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession });
 (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = { kind: "fake", spawn: (name) => fakeHandle(name) };
-(mgr as unknown as { ep: Record<string, unknown> }).ep = { ref: () => ({ id: "smoke-mgr" }), on: () => {}, off: () => {}, waitForPresenceSnapshot: () => Promise.resolve(), getRoster: (): Presence[] => [] };
+(mgr as unknown as { ep: Record<string, unknown> }).ep = {
+  ref: () => ({ id: "smoke-mgr" }),
+  on: () => {},
+  off: () => {},
+  waitForPresenceSnapshot: () => Promise.resolve(),
+  getRoster: (): Presence[] => [],
+  requestDeliveryAdmin: requestDeliveryAdminZeroMemberships,
+};
 
 const M = mgr as unknown as {
   agents: Map<string, unknown>;

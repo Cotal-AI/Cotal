@@ -25,6 +25,7 @@ import {
   UnwalkableScope,
   messageOf,
   InterpreterDefect,
+  isStackExhaustion,
 } from "./errors.js";
 export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "./errors.js";
 import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
@@ -38,6 +39,7 @@ import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./
 import {
   dispatchPrimitive,
   freeConstructors,
+  onceBodyNotCallable,
   option,
   performEffect,
   performScope,
@@ -191,13 +193,6 @@ class Env {
   }
 }
 
-/**
- * The message of an arbitrary thrown value.
- *
- * Reading `.message` off `null` throws, and a thrown primitive is legal in a language with `throw`,
- * so every place that has to describe a failure it did not construct goes through here. A recorded
- * entry saying "Cannot read properties of null" describes the recorder, not the run.
- */
 /** An AST subtree with its source offsets removed: what the code IS, not where it sits. */
 export function stripPositions(node: unknown): unknown {
   if (Array.isArray(node)) return node.map(stripPositions);
@@ -753,14 +748,18 @@ class Interpreter {
         const arg = node.argument as AnyNode;
         if (arg.type === "Identifier") {
           const name = arg.name as string;
-          const old = Number(env.get(name));
+          const current = env.get(name);
+          refuseNonNumberUpdate(current);
+          const old = current as number;
           const next = old + delta;
           env.set(name, next, frame.depth);
           return prefix ? next : old;
         }
         const obj = await this.evaluate(arg.object as AnyNode, env, frame);
         const key = await this.memberKey(arg, env, frame);
-        const old = Number(this.memberOf(obj, key));
+        const current = this.memberOf(obj, key);
+        refuseNonNumberUpdate(current);
+        const old = current as number;
         const next = old + delta;
         this.writeMember(obj, key, next, frame);
         return prefix ? next : old;
@@ -1038,6 +1037,11 @@ class Interpreter {
       );
   }
 
+  /** An options-bag field, read the way the shared scope machinery reads one. */
+  private option(bag: unknown, key: string): unknown {
+    return option(bag, key);
+  }
+
   /**
    * The concurrency combinators.
    *
@@ -1046,17 +1050,13 @@ class Interpreter {
    * the same named effect cannot race for a counter, and replay reproduces both regardless of
    * which one finished first.
    */
-  /** An options-bag field, read the way the shared scope machinery reads one. */
-  private option(bag: unknown, key: string): unknown {
-    return option(bag, key);
-  }
-
   async callScope(name: string, argNodes: AnyNode[], env: Env, frame: Frame): Promise<unknown> {
     const spec = PRIMITIVES[name];
     if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
     const scopeKind = name as ScopeKind;
 
     const first = await this.evaluate(argNodes[0] as AnyNode, env, frame);
+    if (name === "once" && typeof first !== "function") throw onceBodyNotCallable();
     const bagNode = argNodes[spec.optionsAt];
     const bag = bagNode === undefined ? undefined : await this.evaluate(bagNode, env, frame);
     const scopeName = (this.option(bag, "name") as string | undefined) ?? null;
@@ -1246,7 +1246,8 @@ class Interpreter {
           e instanceof RunHeld ||
           e instanceof RunDivergence ||
           e instanceof ScopeBranchMissing ||
-          e instanceof UnwalkableScope;
+          e instanceof UnwalkableScope ||
+          isStackExhaustion(e);
         // JavaScript's completion semantics, which the one-`try` shape this replaced could not
         // express (measured: `try { return 1; } finally { return 2; }` returned 1): the finalizer
         // always runs for ordinary completions, and an ABRUPT finalizer completion — a return, a
@@ -1354,17 +1355,6 @@ function declaredNames(pattern: AnyNode): string[] {
   return out;
 }
 
-/**
- * The binary operators, with JavaScript's meaning ON PRIMITIVES. `"a" + 1`, `true + 1` and
- * `null + 1` mean here exactly what they mean in JavaScript — primitive coercion is pure and
- * deterministic. A record, an array or a function operand is refused (L4018), a declared
- * difference: JavaScript would reach for the host's ToPrimitive machinery, which reads `valueOf`/
- * `toString` off the value — own fields a program can set to its OWN closures. Measured before the
- * refusal: `o + 1` invoked such a closure without an interpreter frame and crashed with a raw host
- * TypeError, and without one it silently produced `"[object Object]1"`. `==` and `!=` never reach
- * this function: the validator refuses them (L1025). `===`/`!==` compare identity and take any
- * operands.
- */
 /** Refuse a container or function where a primitive is needed: there is no implicit conversion. */
 function refuseCoercion(where: string, v: unknown): void {
   if (v !== null && (typeof v === "object" || typeof v === "function")) {
@@ -1376,6 +1366,31 @@ function refuseCoercion(where: string, v: unknown): void {
   }
 }
 
+/**
+ * Refuse an update's operand (`x++`, `--o.count`) that is not already a number: the same L4018
+ * sentence the compiled engine's `case "update"` throws (`engine/ctx.ts`), so `x++`, `x + 1` and
+ * `x += 1` refuse the same operand the same way rather than one of the three quietly coercing it.
+ */
+function refuseNonNumberUpdate(v: unknown): asserts v is number {
+  if (typeof v === "number") return;
+  const kind = v === null ? "null" : Array.isArray(v) ? "an array" : `a ${typeof v}`;
+  throw new RuntimeFault(
+    "L4018",
+    `\`++\` and \`--\` count, and ${kind} is not a number, so there is nothing to count. Nothing is converted for you here: parse it first (\`number(value)\`), or hold the counter in a number.`,
+  );
+}
+
+/**
+ * The binary operators, with JavaScript's meaning ON PRIMITIVES. `"a" + 1`, `true + 1` and
+ * `null + 1` mean here exactly what they mean in JavaScript — primitive coercion is pure and
+ * deterministic. A record, an array or a function operand is refused (L4018), a declared
+ * difference: JavaScript would reach for the host's ToPrimitive machinery, which reads `valueOf`/
+ * `toString` off the value — own fields a program can set to its OWN closures. Measured before the
+ * refusal: `o + 1` invoked such a closure without an interpreter frame and crashed with a raw host
+ * TypeError, and without one it silently produced `"[object Object]1"`. `==` and `!=` never reach
+ * this function: the validator refuses them (L1025). `===`/`!==` compare identity and take any
+ * operands.
+ */
 function applyBinary(op: string, l: unknown, r: unknown): unknown {
   const a = l as number;
   const b = r as number;

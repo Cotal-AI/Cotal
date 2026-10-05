@@ -20,6 +20,7 @@
 import { run } from "./interpret.js";
 import { SimHandler, type SimScript } from "./sim.js";
 import { stepKeyString } from "./keys.js";
+import { EFFECT_KINDS } from "./primitives.js";
 import type { Journal } from "./journal.js";
 import type {
   AgentHandleValue,
@@ -47,6 +48,8 @@ export interface PlannedEffect {
   readonly name: string;
   /** `ok`, `failed`, or `cancelled`. A cancelled branch is part of the plan and says so. */
   readonly status: string;
+  /** Inside `once`: if the host dies during it, a person may be asked to settle it. */
+  readonly atMostOnce?: true;
 }
 
 /** An agent the program would spawn, with the permits it would hold. */
@@ -106,8 +109,11 @@ export interface DryRunReport {
  *
  * Deliberately NOT a `SimHandler` subclass. A dry run over the production handler is the thing
  * that makes the report worth trusting, and inheritance would tie it to simulation forever.
+ *
+ * It implements every member, the optional ones included, so a member added to the contract is a
+ * type error here until it is forwarded rather than a hook the wrapper silently drops.
  */
-export class RecordingHandler implements EffectHandler {
+export class RecordingHandler implements Required<EffectHandler> {
   readonly spawns: SpawnRequest[] = [];
   readonly checkpointsAsked: { req: CheckpointRequest; step: string }[] = [];
   readonly waits: { req: ObserveRequest; step: string }[] = [];
@@ -164,6 +170,13 @@ export class RecordingHandler implements EffectHandler {
   async closeConclave(req: ConclaveRequest, ctx: EffectContext): Promise<null> {
     return await this.inner.closeConclave(req, ctx);
   }
+  /**
+   * Forwarded, so a simulator wrapped here keeps its pacing behind the worker bridge (#2240). A
+   * wrapped handler without the hook has nothing to pace and nothing to release.
+   */
+  useQuiescence(settled: () => Promise<void>): () => void {
+    return this.inner.useQuiescence?.(settled) ?? (() => {});
+  }
 }
 
 export interface DryRunOptions {
@@ -205,6 +218,7 @@ export async function dryRun(
     kind: e.kind,
     name: e.name,
     status: e.status ?? e.state,
+    ...((EFFECT_KINDS as readonly string[]).includes(e.kind) && e.scope.includes("/once:") ? { atMostOnce: true as const } : {}),
   }));
 
   const agents: PlannedAgent[] = recorder.spawns.map((s) => ({
@@ -295,7 +309,8 @@ export function renderReport(report: DryRunReport): string {
 
   out.push("", "Effects, in order:");
   for (const e of report.effects) {
-    out.push(`  ${e.status === "ok" ? " " : "!"} ${e.step}${e.status === "ok" ? "" : `   ${e.status}`}`);
+    const held = e.atMostOnce === true ? "   at most once" : "";
+    out.push(`  ${e.status === "ok" ? " " : "!"} ${e.step}${e.status === "ok" ? "" : `   ${e.status}`}${held}`);
   }
 
   if (report.unusedScript.length > 0) {

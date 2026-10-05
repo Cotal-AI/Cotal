@@ -17,6 +17,10 @@ OpenCode needs no setup step. The picker in `cotal setup` just records that you 
 is no plugin to install; the connector auto-wires at spawn. You only need the `opencode` binary
 on your PATH. (Claude Code, by contrast, installs a plugin because its wake channel needs one.)
 
+The connector supports two OpenCode lines: 1.x (`opencode-ai` 1.16 and later) and 2.x
+(`@opencode/cli` 2.0 and later). It detects the line from `opencode --version` at spawn. An
+unsupported version is refused with an error naming the version and the two supported lines.
+
 ## Spawn it
 
 Same launch grammar as any agent (see [run-a-mesh.md](run-a-mesh.md)):
@@ -86,6 +90,17 @@ in-process plugin does everything.
 - **Quiet stays pull-only.** Quiet-channel ambient never gets prepended to a native human prompt or
   a directed-message turn. `cotal_inbox` explicitly surfaces and clears it; automatic traffic stays
   owned by the connector. Quiet-channel `@mention`s still drive a turn.
+- **Focus `@mention`s are held until delivered on 1.x.** In `focus` the mention's body is dropped
+  at ingest, so the connector keeps a wake that tells the agent to read it with `cotal_inbox`. The
+  wake stays pending until a turn carrying it is accepted, so a busy session, a refused turn or a
+  failed submission only delays it. Several pending mentions share one wake. On a channel with
+  replay off the wake only says the agent was mentioned, because the body cannot be recalled.
+- **A stopping seat refuses prompts on 1.x.** Once a stop has begun, a prompt typed into the TUI
+  or sent to the server API is refused before OpenCode saves it, so the agent starts no new model
+  turn after it has announced it is leaving. OpenCode reports the reason,
+  `the prompt was not run: this seat is shutting down`, as a `session.error` event for an
+  asynchronous prompt and only in its server log for a synchronous one, which answers with a generic
+  server error. A turn already running when the stop began is not cancelled.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector
@@ -108,8 +123,9 @@ channel, the grant, and how to read it. The launcher sets `COTAL_EVENTS` by defa
 `--no-events` to opt out on an unrestricted space. A required registration carries
 `eventsRequired` in launch material, or `COTAL_EVENTS_REQUIRED=1` on the direct env fallback, so a
 personal user-mode OpenCode session arms without a separate event flag. Its own publish grant must
-cover the principal-keyed event channel or the connector refuses before joining. The emitter starts
-once the mesh link is up, so a session created before the first bind still publishes.
+cover the principal-keyed event channel or the connector refuses before joining. The session boundary
+is captured at adopt, before the mesh link connects, so a session created before the first bind still
+publishes and nothing it writes while the connector is still starting up is silently dropped.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 
@@ -128,12 +144,12 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   are leaving is flushed and its open run is closed, so a reader never holds a run that never ends.
 - **Failed turns publish run errors.** OpenCode reports a turn that
   died (an upstream API error, a provider auth failure, or an output-length stop) on its own
-  `session.error` event, and that turn ends its run with `RUN_ERROR` carrying OpenCode's reason and
-  its own error name as the code. If that reason cannot fit in the one closing frame, the shared close
-  still publishes one `RUN_ERROR` that does fit: it keeps the code and says the original detail
-  was omitted or shortened because of the bound, so a reader is never shown a truncated message as
-  complete. A turn **you** stopped is not a failure and is not published as one: a user cancellation
-  arrives on the same event, and it closes the run as an ordinary end.
+  `session.error` event, and that turn ends its run with `RUN_ERROR` carrying the fixed message
+  `run failed` and no code. Neither OpenCode's reason nor its error name is published there: both are
+  upstream values that can echo your prompt or tool output, and the events channel has a different
+  read ACL. A turn **you** stopped is not a failure and is not published as one: a user cancellation
+  arrives on the same event, and it closes the run as an ordinary end. A failed turn also re-arms
+  the wake it carried, so a focus @mention whose turn failed is driven again after the retry delay.
 
 Reasoning is off by default.
 
@@ -146,6 +162,10 @@ Reasoning is off by default.
 - **No tool-sharing.** `connectors.opencode.mcpServers` is not implemented and throws if set.
   OpenCode agents currently inherit the operator's MCP servers wholesale through the config merge
   layer; narrowing that to a chosen subset is a separate feature.
+- **On 2.x, the event plane needs `--no-events`.** The AG-UI event plane is not carried on
+  OpenCode 2.x yet; spawn with `--no-events`.
+- **On 2.x, `cotal models` is refused.** The 2.x catalog is served by a running opencode
+  server, not the CLI, so pass `--model provider/model` directly instead.
 
 ## See also
 

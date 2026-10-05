@@ -9,9 +9,10 @@ on the two committed blobs, which is how the required unit job reaches it. Delet
 comment edits stay legal.
 
 Fragment suites use a stable hash of the script name for sharding, so concurrent file additions and
-filename ordering cannot move another suite between runners.
+filename ordering cannot move another suite between runners. A suite pinned in
+`../ci-suite-costs.json` runs on its pinned shard instead; see `../README.md`.
 
 Run `pnpm smoke:ci-fragments`, `pnpm smoke:gate-inventory`, and
-`pnpm check:shard-stability <base-sha> <head-sha>`. The shard verifier compares both the frozen
-positional list and fragment hash assignments. CI also checks every committed fragment blob
-immediately before the shard runner starts.
+`pnpm check:shard-stability <base-sha> <head-sha>`. The shard verifier compares the frozen
+positional list, fragment hash assignments and cost-table pins. CI also checks every committed
+fragment blob and the cost table immediately before the shard runner starts.

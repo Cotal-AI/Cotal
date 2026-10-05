@@ -6,8 +6,9 @@
  * `@cotal-ai/manager` or `@cotal-ai/cli` (one-way tiering).
  */
 import { registry, type Command } from "@cotal-ai/core";
-import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery } from "./delivery.js";
+import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService } from "./delivery.js";
 import { runFeedbackIntake } from "./feedback-intake.js";
+import { runPending } from "./pending.js";
 
 const deliveryCommands: Command[] = [
   {
@@ -15,18 +16,23 @@ const deliveryCommands: Command[] = [
     name: "deliver",
     group: "Manager",
     summary:
-      "run the delivery daemon — the server-side Plane-3 durable backstop [--space <s>] [--server <url>] [--creds <file>] (auth mode only; N=1)",
+      "run the delivery daemon — the server-side Plane-3 durable backstop [--space <s>] [--server <url>] [--creds <file>] (auth mode only; N=1); or `deliver pending <name>` to inspect a recipient's held DMs",
+    positionals: "[pending <name> [--limit <n>] [--durable <name>]]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to serve (required; the scoped cred doesn't encode it)" },
-      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
+      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the broker recorded for --space, else the local mesh)" },
       { name: "tls", type: "boolean", description: "REQUIRE TLS to the broker - refuse to connect if it is not offered" },
-      { name: "creds", type: "string", value: "<file>", description: "pre-minted scoped delivery cred" },
+      { name: "creds", type: "string", value: "<file>", description: "pre-minted scoped delivery cred, or (with `pending`) an admin cred" },
+      { name: "root", type: "string", value: "<dir>", description: "workspace root holding .cotal/ (default: the nearest .cotal/ above the working directory; none is refused)" },
       { name: "shard", type: "string", value: "<n>", description: "shard index (N=1 only; non-zero is rejected)" },
       { name: "shards", type: "string", value: "<n>", description: "shard count (N=1 only; >1 is rejected)" },
       { name: "dev-mint", type: "boolean", description: "standalone dev: mint a scoped delivery cred from the local signer" },
+      { name: "limit", type: "string", value: "<n>", description: "pending: max recent candidate ids to print (default 20)" },
+      { name: "durable", type: "string", value: "<name>", description: "pending: read this exact DM durable (a live read's printed name) instead of resolving <name>" },
+      { name: "json", type: "boolean", description: "pending: print the facts as one JSON object" },
     ],
     prepareMeshTarget: false,
-    run: (args) => runDelivery(args),
+    run: (args) => (args.positionals[0] === "pending" ? runPending(args) : runDelivery(args)),
   },
   {
     kind: "command",
@@ -53,5 +59,5 @@ const deliveryCommands: Command[] = [
 
 registry.register(...deliveryCommands);
 
-export { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery };
+export { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService };
 export { runFeedbackIntake };

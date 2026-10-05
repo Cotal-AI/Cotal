@@ -1,0 +1,17 @@
+{
+  "suite": ["implementations/manager/smoke/remote-ef-continuity.smoke.ts"],
+  "guard": "a refused host renewal preserves the actual held driver and mediator pair across the drained refusal boundary",
+  "command": "EF_REFUSE_SCOPE=run pnpm exec tsx implementations/manager/smoke/remote-ef-continuity.smoke.ts",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/remote-run-last-good.json",
+  "mutations": [
+    {
+      "name": "refused renewal replaces the last-good driver with the mediator",
+      "afterRestore": "EF_REFUSE_SCOPE=run pnpm exec tsx implementations/manager/smoke/remote-ef-continuity.smoke.ts",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "run.renewalDebt = { at: Date.now(), reason: (e as Error).message };",
+      "replace": "run.creds = run.mediatorCreds;\n        run.renewalDebt = { at: Date.now(), reason: (e as Error).message };",
+      "expectRed": "✗ FAIL: 4a. Refused renewRunDriver keeps the held last-good driver/mediator (same nkey and exp) and records debt",
+      "cell": "4a. Refused renewRunDriver keeps the held last-good driver/mediator (same nkey and exp) and records debt"
+    }
+  ]
+}

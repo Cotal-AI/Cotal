@@ -11,7 +11,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { sameSecretStoreIdentity } from "@cotal-ai/core";
+import { sameSecretStoreIdentity, type SecretStoreIdentity } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, findCotalRoot, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { assertUninjectedCredsSharesCwdRoot, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, workspaceRootFromCredsPath } from "../src/delivery.js";
 
@@ -33,7 +33,7 @@ const throws = (name: string, fn: () => unknown, needle: string) => {
 
 const SPACE = "unified";
 const OTHER = "other";
-const id = (p: string) => reloadStoreIdentityFromCredsPath(p, SPACE);
+const id = (p: string) => reloadStoreIdentityFromCredsPath(p, SPACE) as Extract<SecretStoreIdentity, { kind: "fs" }>;
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-773-id-"));
 try {

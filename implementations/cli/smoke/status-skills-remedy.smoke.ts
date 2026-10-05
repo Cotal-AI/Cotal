@@ -1,14 +1,15 @@
 /**
  * Status's skills rows must recommend a skills-only write (`cotal setup --skills`),
  * never unscoped `cotal setup`. The real CLI entry (`bin/cotal.ts`) is driven in an
- * isolated HOME/COTAL_HOME with a fake `claude` and a planted stale `.agents` skill.
+ * isolated HOME/COTAL_HOME with a fake `claude`, the claude connector installed, and a planted stale
+ * `.agents` skill.
  *
  * Run: pnpm smoke:status-skills-remedy
  */
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +27,8 @@ const cli = join(repoRoot, "bin", "cotal.ts");
 const tsx = join(repoRoot, "node_modules", ".bin", "tsx");
 const canonSkill = join(repoRoot, "implementations", "cli", "cotal-skills", "skills", "team-topology", "SKILL.md");
 const cliVersion = (JSON.parse(readFileSync(join(repoRoot, "bin", "package.json"), "utf8")) as { version: string }).version;
+const claudePkg = join(repoRoot, "extensions", "connector-claude-code");
+const claudeVersion = (JSON.parse(readFileSync(join(claudePkg, "package.json"), "utf8")) as { version: string }).version;
 
 function freshEnv(): { home: string; cwd: string; env: NodeJS.ProcessEnv } {
   const home = mkdtempSync(join(tmpdir(), "cotal-421-home-"));
@@ -55,6 +58,20 @@ exit 0
 `,
   );
   writeFileSync(join(home, "bin", "cotal"), "#!/bin/sh\nexit 0\n");
+  // The Claude skills row comes from the claude connector's setup provider, so the child sees that
+  // connector installed: the repository package linked into the extensions prefix, with the manifest
+  // entry `ext add` writes for it.
+  const prefix = join(home, ".config", "cotal", "extensions");
+  mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true });
+  symlinkSync(claudePkg, join(prefix, "node_modules", "@cotal-ai", "connector-claude-code"), "dir");
+  writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{
+    pkg: "@cotal-ai/connector-claude-code",
+    version: claudeVersion,
+    spec: claudePkg,
+    provides: [{ kind: "connector", name: "claude" }, { kind: "connector-setup", name: "claude" }],
+    commands: [],
+    connectors: [{ name: "claude", requires: ["claude"], setup: { kind: "connector-setup", name: "claude" } }],
+  }] }));
   chmodSync(join(home, "bin", "claude"), 0o755);
   chmodSync(join(home, "bin", "cotal"), 0o755);
   // The child runs the shipped status/remedy path, which reads connection material. Every COTAL_

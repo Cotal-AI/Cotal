@@ -385,6 +385,9 @@ export function eventChannelForName(
   return eventChannel(only);
 }
 
+/** A `${VAR}` or `${VAR:-default}` reference, the form Claude expands in an MCP server config. */
+export const ENV_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}/g;
+
 /** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /
  *  `${VAR:-default}` (in command/args/env/url/headers). The single source of which operator vars
  *  a shared server needs: forwarded BY NAME through {@link launchEnv} (`mcpKeys`), never
@@ -394,7 +397,7 @@ export function mcpServerEnvKeys(servers: Record<string, McpServerSpec>): string
   const names = new Set<string>();
   const scan = (s: string | undefined): void => {
     if (!s) return;
-    for (const m of s.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}/g)) names.add(m[1]);
+    for (const m of s.matchAll(ENV_REFERENCE)) names.add(m[1]);
   };
   for (const spec of Object.values(servers)) {
     scan(spec.command);

@@ -13,7 +13,8 @@
 is **configure-only**: it checks prerequisites, installs the Claude Code
 plugin, and seeds persona files, and it **launches nothing**: no mesh, no web dashboard, no
 manager, no delivery daemon, no cmux/tmux session, no demo. Starting the stack is `cotal up`; the
-dashboard is `cotal web`. Every file it writes is announced (`→ wrote …` via `provenance.wrote`).
+dashboard is `cotal web`. Every file it writes is announced (`→ wrote …` via `provenance.wrote`)
+on stderr, or on stdout with the error when a stderr write fails.
 It is two-tier, gated on a machine marker. Persona seeding resolves the selected mesh root first,
 then uses the same `.cotal/agents` catalog as spawn. With no mesh it names a cwd fallback; an
 ambiguous or broken target refuses rather than choosing a root.
@@ -21,7 +22,9 @@ ambiguous or broken target refuses rather than choosing a root.
 **First run** (no `~/.cotal/onboarded.json`, or `--full`, or `--yes`) runs `runFirstRun(yes)`:
 
 - splash → intro → core **checks** (Node >= 22; **locate** `nats-server`: located, never
-  started) → **connector picker** → resolve and announce the persona destination → seed the generic
+  started) → **connector picker** (each selected connector's install, then its `mcpServers` action,
+  which for Claude copies your user-scope MCP servers into the cotal config unless it already
+  declares a list) → resolve and announce the persona destination → seed the generic
   `default` and optional demo personas (david/sven/me) there → **offer a global install**
   (`offerGlobalInstall`) → onboarded marker → a finale that
   lists the commands to start things (`cotal up --detach`, `cotal web`, `cotal spawn …`,
@@ -34,8 +37,8 @@ ambiguous or broken target refuses rather than choosing a root.
 persona if it's missing,
 re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-scan gate as first
 run, so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
-installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`meshStatus`/`webUp`/`managerUp` for NATS, the plugin, the mesh, the web
-dashboard, and the manager) and for anything down it prints the exact command to start it
+installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`connectorStatusRows`/`meshStatus`/`webUp`/`managerUp` for NATS, the rows
+connector setup providers report, the mesh, the web dashboard, and the manager) and for anything down it prints the exact command to start it
 (`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
 still launches nothing.
 
@@ -57,8 +60,15 @@ Steps run in-process via `runSteps`
 ([`lib/steps.ts`](../implementations/cli/src/lib/steps.ts)). A step can be `optional` (asked
 Y/n), carry a `confirm` consent prompt, or be `live` (it draws its own pane via
 [`lib/live-window.ts`](../implementations/cli/src/lib/live-window.ts)). On failure, an
-interactive run offers a Claude handoff
-([`lib/assist.ts`](../implementations/cli/src/lib/assist.ts)).
+interactive run offers a debug handoff for each connector whose setup provider declares an `assist`
+and whose executables are on PATH
+([`lib/assist.ts`](../implementations/cli/src/lib/assist.ts)). The provider owns the harness
+binary and its flags; the CLI only builds the prompt. When no connector can host one, the menu says
+so in one line. A provider may also declare `status`, which returns read-only rows about what it
+installed. `cotal status` and the setup card print them, and the CLI passes only its own version and
+the `cotal setup --skills` remedy. The extensions manifest caches each connector's setup ref, so
+status imports only connectors that declare a provider. The seed reconcile refreshes a seeded entry
+whose cache predates that ref.
 
 The **connector picker** (`pickConnectors`) multiselects the **setup connector surface**
 (`setupConnectorSurface`): every connector name the live registry or the installed extension
@@ -69,7 +79,11 @@ still needs on PATH, `setup` says whether it owns setup actions at all, and `plu
 whether those actions install plugin assets. A selected candidate runs its connector-owned
 `connector` action through `connectorSetupStep`, which receives the `Connector` itself; a candidate
 that declares no provider is simply marked ready (OpenCode auto-wires at spawn, injecting its
-plugin via `buildLaunch` and never writing the user's config). The `skills` action runs for every
+plugin via `buildLaunch` and never writing the user's config). A selected candidate's `mcpServers` action runs next
+through the same seam: the Claude provider reads the user-scope servers from Claude Code's config and
+records them through the `seed` input the CLI hands it. That is workspace's `seedConnectorServers`,
+which writes the operator-level cotal config under a lock and only when it declares no list for that
+connector, so two setups run at once record one list. The `skills` action runs for every
 present connector that declares one, selected or not, because Cotal's authored skills are
 independent of mesh membership. Two experts (david, the engineer; sven, the guide) plus the
 operator's own driving session (`me`) are written by default, and `me` is the persona
@@ -85,7 +99,7 @@ with the log path and a non-zero exit. It still launches nothing. The control pl
 | Thing | Must stay in sync across | Why |
 |---|---|---|
 | Marketplace name **`cotal-mesh`** | `setup.ts` (materialized `marketplace.json`), `CHANNEL_REF` in [`extensions/connector-claude-code/src/extension.ts`](../extensions/connector-claude-code/src/extension.ts), repo [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) | The wake channel ref `plugin:cotal@cotal-mesh` binds by this name |
-| Plugin assets | the claude connector's own [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) copy list (`dist/mcp.cjs`, `dist/hook.cjs`, `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`) and its `package.json` `files` field | The connector materializes its own plugin; missing or renamed assets break the install, and the base CLI has no copy of the list |
+| Plugin assets | the claude connector's own [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) copy list (`dist/mcp.cjs`, `dist/hook.cjs`, `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`), its `package.json` `files` field, and the release tree's list in [`scripts/materialize-claude-plugin.mjs`](../scripts/materialize-claude-plugin.mjs) | The connector materializes its own plugin; missing or renamed assets break the install, and the base CLI has no copy of the list. The release script refuses a plugin whose `.mcp.json` or hooks reference a file it did not copy |
 | `Connector.pluginRoot` | [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) (contract) plus set in the claude connector's `extension.ts` | A connector's declaration that it ships installable plugin assets; the picker phrases its hint from it |
 | `BUNDLED_PKG_PREFIX` | [`lib/nats-bin.ts`](../implementations/cli/src/lib/nats-bin.ts) ↔ the `@eplightning/nats-server-*` `optionalDependencies` in [`implementations/cli/package.json`](../implementations/cli/package.json) | The bundled NATS binary is resolved by `${prefix}-${platform}-${arch}`. (Future: swap the prefix to our own `@cotal-ai/nats-server-*`.) |
 | Onboard marker plus `ONBOARD_VERSION` | `~/.cotal/onboarded.json` in [`lib/onboard.ts`](../implementations/cli/src/lib/onboard.ts); version const in `setup.ts` | Flips first-run vs ensure |
@@ -150,6 +164,14 @@ All re-execs resolve this CLI via `selfArgv()` / `selfCotal()`
 entry]` (tsx loader in dev, compiled JS in prod), so they never need `cotal` on PATH; the stack
 comes up identically via `npx`, `npm i -g`, and a dev clone.
 
+`selfArgv()` throws unless `process.argv[1]` resolves, through any symlink, to the bin the
+`cotal-ai` package declares (`dist/cotal.js`) or to the `cotal.ts` beside that package's manifest
+(a checkout's `bin/cotal.ts`). Started from any other file, such as a smoke suite under tsx, a
+re-exec would run that file again with a subcommand it ignores, and a file that reaches a starter
+on load would spawn its own successor (#1629). The auth, manager and delivery starters ask before
+they touch a pidfile or a log, and `seedOne` asks before it writes its cursor, stages a payload or
+writes its child marker, so a refusal on those paths leaves none of them behind.
+
 For ergonomics only, an npx run with no global `cotal` offers to `npm i -g cotal-ai`
 (`offerGlobalInstall`, pinned to the running version): gated on `isNpx()` plus a PATH scan
 (`cotalOnPath()`, not `onPath("cotal")`, since `cotal --version` is not a real command). The
@@ -179,7 +201,8 @@ also emits `dist/web/vendor/vendor-manifest.json` (name/version/license/sha512) 
 inventory of its vendored browser libs (marked/DOMPurify ship as opaque `dist` bytes, not runtime deps).
 `seed/paths.ts:shippedSourceDir` resolves the live `extensions/<pkg>` dir in a
 source checkout and `<cotal-ai>/seeded-connectors/<name>` in a published install. The reconcile copies
-that payload into the durable store `seed/store/<version>/<name>` and `ext add --install-links` reifies
+that payload into the durable store `seed/store/<version>/<name>`. The version is validated as one safe
+path segment, and the destination is checked to stay inside the store before anything is written. `ext add --install-links` reifies
 the `file:` dep from THAT stable path (a volatile source would fail to re-reify); `ext add` then
 junction-links each `@cotal-ai/*` peer to the binary's own copy. Before the first lazy import in each
 process, materialization rechecks those links by realpath and rebinds stale links under the extension

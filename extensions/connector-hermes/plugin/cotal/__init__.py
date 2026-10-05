@@ -15,6 +15,7 @@ in the environment. Two run modes:
 """
 from __future__ import annotations
 
+import inspect
 import os
 import secrets
 import shutil
@@ -24,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import hooks
+from . import hooks, replies
 from .tools import register_tools
 
 
@@ -151,6 +152,12 @@ def register(ctx: Any) -> None:
     # other platforms (Telegram, …) keep their own access control.
     os.environ.setdefault("COTAL_ALLOW_ALL_USERS", "true")
     os.environ.setdefault("COTAL_HOME_CHANNEL", "mesh")
+
+    # An answer to a question asked from a session on another platform runs in that session, on a
+    # host that can inject into one (``inject_message`` takes a session key from Hermes 0.20.1).
+    inject = getattr(ctx, "inject_message", None)
+    if inject is not None and "session_key" in inspect.signature(inject).parameters:
+        replies.bind_host(inject)
 
     ctx.register_platform(
         name="cotal",

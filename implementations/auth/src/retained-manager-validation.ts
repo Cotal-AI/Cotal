@@ -2,6 +2,7 @@ import {
   EpEnvelopeError,
   assertDerivedOwnerToken,
   assertLifecycleToken,
+  assertPrincipalOwnerToken,
   assertValidOwnerToken,
   remoteManagerActors,
   type RemoteRetainedAgentValidationRequest,
@@ -9,6 +10,7 @@ import {
   type RetainedAgentAuthority,
 } from "@cotal-ai/core";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 
 const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
 
@@ -40,8 +42,10 @@ function requestError(what: string): never {
   throw new EpEnvelopeError("bad-request", `manager retained-agent validation request ${what}`);
 }
 
-/** Parse the secret-bearing retained-validation request without retaining unknown input fields. */
-export function parseRemoteRetainedAgentValidationRequest(raw: unknown): RemoteRetainedAgentValidationRequest {
+/** Parse the secret-bearing retained-validation request without retaining unknown input fields.
+ * `allowPlatform` admits a platform `p_…` target owner, for the platform control holder only
+ * (SPEC 13.1); the holder's owner-equality check still decides whether that target is its own. */
+export function parseRemoteRetainedAgentValidationRequest(raw: unknown, opts: { allowPlatform?: boolean } = {}): RemoteRetainedAgentValidationRequest {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) requestError("must be an object");
   const o = raw as Record<string, unknown>;
   const allowed = new Set([
@@ -86,7 +90,7 @@ export function parseRemoteRetainedAgentValidationRequest(raw: unknown): RemoteR
   if (typeof t.owner !== "string" || typeof t.actor !== "string" || typeof t.lifecycleUid !== "string")
     requestError("target must contain string owner, actor, and lifecycleUid");
   const parsedTarget = {
-    owner: assertDerivedOwnerToken(t.owner),
+    owner: opts.allowPlatform ? assertPrincipalOwnerToken(t.owner, { allowPlatform: true }) : assertDerivedOwnerToken(t.owner),
     actor: assertValidOwnerToken(t.actor),
     lifecycleUid: assertLifecycleToken(t.lifecycleUid, "manager retained validation target lifecycleUid"),
   };
@@ -108,11 +112,9 @@ export function parseRemoteRetainedAgentValidationRequest(raw: unknown): RemoteR
   };
 }
 
-export interface AuthorizeRemoteRetainedAgentValidationArgs {
+export type AuthorizeRemoteRetainedAgentValidationArgs = ManagerAuthorityHolder & {
   request: RemoteRetainedAgentValidationRequest;
   space: string;
-  owner: string;
-  scope: string[];
   proofSecret: string | Uint8Array;
   observeManagerGate: (instanceId: string) => Promise<{
     state: "open" | "frozen" | "retired";
@@ -120,17 +122,16 @@ export interface AuthorizeRemoteRetainedAgentValidationArgs {
     processEpoch: number;
     registrationRevision: number;
   } | null>;
-}
+};
 
 /** Host policy authorizing one fresh, non-minting retained-agent continuity validation. */
 export async function authorizeRemoteRetainedAgentValidation(
   args: AuthorizeRemoteRetainedAgentValidationArgs,
 ): Promise<RemoteRetainedAgentValidationRequest> {
-  const r = parseRemoteRetainedAgentValidationRequest(args.request);
+  const r = parseRemoteRetainedAgentValidationRequest(args.request, { allowPlatform: args.holder === "platform" });
   if (r.space !== args.space)
     throw new EpEnvelopeError("permission-denied", `manager retained-agent validation request names space ${r.space}, not this host space ${args.space}`);
-  if (!args.scope.includes("supervise"))
-    throw new EpEnvelopeError("permission-denied", 'manager retained-agent validation needs scope "supervise"; spawn/admin do not imply it');
+  requireManagerAuthorityHolder(args, r.instanceId, 'manager retained-agent validation needs scope "supervise"; spawn/admin do not imply it');
   if (r.target.owner !== args.owner)
     throw new EpEnvelopeError("permission-denied", `manager retained-agent validation may target only its authenticated owner ${args.owner}, not ${r.target.owner}`);
   const actors = remoteManagerActors(r.instanceId);

@@ -31,7 +31,7 @@
     {
       "name": "the describe deadline goes back to the rail-blind text and marker",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError(\"deadline-exceeded\", `no describe reply from ${endpoint} within ${deadlineMs}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\", rail }])), deadlineMs); });",
+      "find": "    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError(\"deadline-exceeded\", `no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : \"\"} within ${deadlineMs}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\", rail }])), deadlineMs); });",
       "replace": "    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError(\"deadline-exceeded\", `no describe reply from ${endpoint} within ${deadlineMs}ms`, [{ kind: EP_UNANSWERED, endpoint, command: \"describe\" }])), deadlineMs); });",
       "expectRed": "live: the CLI renders the ep.v1 skew as a named refusal, not as 'no manager reachable'",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

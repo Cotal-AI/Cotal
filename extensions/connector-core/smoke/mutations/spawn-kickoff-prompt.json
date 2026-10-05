@@ -27,8 +27,8 @@
     {
       "name": "A2 the MCP tool accepts prompt but silently omits it from MeshAgent.spawn",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events });",
-      "replace": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, events });",
+      "find": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, instance });",
+      "replace": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, events, instance });",
       "expectRed": "cotal_spawn tool forwards the kickoff prompt"
     },
     {

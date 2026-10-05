@@ -1,0 +1,46 @@
+{
+  "suite": [
+    "implementations/delivery/smoke/delivery-startup-adoption.smoke.ts"
+  ],
+  "guard": "a delivery daemon refuses reloadCreds, with nothing adopted, until it has finished starting, so a boot-time adoption landing after the ready flip cannot reconnect its connection under the start-up awaits still pending and make it exit (#2304)",
+  "command": "pnpm smoke:delivery-startup-adoption",
+  "completionMarker": "DELIVERY-STARTUP-ADOPTION SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/delivery/smoke/mutations/delivery-startup-adoption.json",
+  "why": [
+    "The unfixed daemon died 1-2 times per 20 trials near offset 0 and never past ~40 ms, so the",
+    "death cell alone survives a reverted fix most runs. The reply cell is the deterministic one: an",
+    "adoption that lands before start-up finished must come back as the not-started refusal.",
+    "",
+    "The daemon child runs bin/dist, which resolves workspace packages to their compiled dist, so",
+    "the suite script builds first and each mutant rebuilds after restore."
+  ],
+  "mutations": [
+    {
+      "name": "the daemon reports start-up complete from the first instant",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "  let startedUp = false;",
+      "replace": "  let startedUp = true;",
+      "expectRed": "an adoption landing before start-up finished was refused as not started, nothing adopted",
+      "cell": "an adoption landing before start-up finished was refused as not started, nothing adopted",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the endpoint never consults start-up before adopting",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (this.plane3?.startupComplete?.() === false)\n",
+      "replace": "      if (this.plane3?.startupComplete?.() === false && Date.now() < 0)\n",
+      "expectRed": "an adoption landing before start-up finished was refused as not started, nothing adopted",
+      "cell": "an adoption landing before start-up finished was refused as not started, nothing adopted",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "start-up never completes, so every adoption is refused for good",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "  startedUp = true;\n",
+      "replace": "  startedUp = false;\n",
+      "expectRed": "the next renewal pass on the same daemon adopted every refused generation",
+      "cell": "the next renewal pass on the same daemon adopted every refused generation",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

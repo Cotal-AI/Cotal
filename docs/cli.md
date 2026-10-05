@@ -21,6 +21,15 @@ cotal <command> --help    # one command's flags and usage
 runs it through `tsx` with no build step. Bare `cotal` prints help. Every command generates its own
 `--help`, usage, and shell completion from its declared flags.
 
+An undeclared flag is a usage error, and so is a flag given more than once unless it is
+repeatable, as `--opt` and `down --session-store` are. The command prints the error and its help,
+exits 1, and does not run.
+
+Command output, including error lines on stderr and the guided `setup` and `meshes add` prompts,
+is colored only when stdout is a terminal, so piped or redirected output is plain text. A non-empty
+`NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
+piped, unless it is `0` or `false`, and it takes precedence over `NO_COLOR`.
+
 Commands come from the surfaces the binary composes: the base mesh CLI, the manager
 (`supervise`), and the delivery daemon (`deliver`), plus any operator-installed extensions.
 `cotal ext add <npm-package>` installs any registry providers a package contributes: commands,
@@ -51,6 +60,7 @@ runtimes ship this way.
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
 | Agents & personas | [`service`](#service) | Run the manager as a user service (survives logout and reboot) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
+| Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
 | Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`describe` / `invoke`](#endpoint-control) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
@@ -120,7 +130,10 @@ with `cotal update --self` as the next command, not an automatic install.
 
 After disk reconciliation, `update` reads the selected running manager. A machine with no recorded
 mesh has no running manager to observe, so that read is skipped and the command completes. The same
-holds when every recorded mesh is down and none is selected. A recorded mesh that is down is still a
+holds when every recorded mesh is down and none is selected. A remote user mesh, registered with
+`cotal meshes add --mode user`, is named and skipped: its manager runs under another install, so
+there is no custody on this machine to preserve, and a `legacy` verdict still comes only from a
+manager this machine read. A recorded mesh that is down is still a
 refusal when the command selects it, with `--space` or by running inside its project, and so is a
 named space that is not running. With several meshes running and no `--space`, `--server` or
 `--creds`, the install is machine-wide, so every running manager is reported in turn, each under its
@@ -129,9 +142,9 @@ hot update. A selector flag still reports one manager. A manager without a
 custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
 command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
 for every seat. This report sends no stop, preservation-commit, or replacement command.
-It does not preserve a running PTY on a legacy manager. On Linux a detached custodian
-owns each PTY, so a manager-worker death no longer closes the seat and `status` reports
-`custodied`. Other platforms still spawn in-process and report `legacy`. An incompatible native
+It does not preserve a running PTY on a legacy manager. The built-in pty runtime spawns
+in-process on every platform and reports `legacy`. On Linux it still adopts seats that an earlier
+manager left under a detached custodian, but it starts no new custodian. An incompatible native
 `@lydell/node-pty` or ConPTY ABI break remains an explicit per-seat maintenance cut.
 
 With `--self`, the selected running manager is reported before any global install. When a newer
@@ -165,7 +178,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--server <url>` | auto (free local port) | Listen URL override |
 | `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
 | `--space <s>` | the folder's name | Space name |
-| `--store-dir <dir>` | none | JetStream store directory |
+| `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it) |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. Not accepted with `-f` |
 | `--channels <path>` | `.cotal/channels.json` if present | Channel-registry seed file (JSON). An explicit path that is missing is an error |
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener |
@@ -199,11 +212,14 @@ than keeping or stopping it: `cotal down manager` first. For a split topology wi
 host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
-only what actually started. Ctrl-C on a foreground `up` spares managed agents and reports them
+only what actually started. Ctrl-C on a foreground `up` stops the stack and reports managed agents
 under the same rule as bare `cotal down` (see [`down`](#down)): when the manager cannot prove it can
 spare, Ctrl-C refuses the teardown, prints the refusal with the reap route, and leaves the stack
 running. The `-f` form is a
 [manifest deploy](#manifest-deploys).
+
+A repair `up` on a mesh whose broker died reopens the store its record names, and refuses a
+different `--store-dir` rather than silently opening a second store.
 
 The generated `.cotal/auth/server.conf` is written on a real broker boot and is not an
 operator-owned config. `--host` changes that file only when nats is actually started. A unit
@@ -212,7 +228,10 @@ restart that leaves an answering listener in place is a refresh, not a rebind.
 On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. It writes a reserved
 canary and waits for the bucket to expire it before reporting success. If the broker accepts the
 stream update but the backing store does not persist or enforce it, `up` exits nonzero with a TTL
-persistence error instead of trusting the value returned by stream info.
+persistence error instead of trusting the value returned by stream info. A refresh that restores a
+missing manager says so with its pid (`✓ restored in the background: manager (pid N)`); a refresh
+that finds everything already running prints only the `✓ mesh "<space>" already running` line.
+
 
 `--user-auth --idp <url>` starts the space's auth service alongside the broker: the NATS
 auth callout plus its capability-gated local exchange, and optionally the closed public exchange
@@ -305,15 +324,22 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
 
-Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents running.
-Before signalling the manager it verifies that the exact recorded manager supports releasing its
-local custody, and it reports the agents left behind plus `cotal down --with-agents` as the explicit
-reap. Ctrl-C on a foreground `cotal up` follows the same rule: it verifies the spare capability,
-spares the agents, and prints the same report. When the capability cannot be verified, Ctrl-C
+Bare `cotal down` stops the whole local stack in dependency order and leaves managed agents running
+when their runtime lets them outlive the manager. Before signalling the manager it verifies the spare
+capability of the exact recorded manager, which records what that manager's stop does with its
+seats, and it reports the agents left behind plus `cotal down --with-agents` as the explicit reap.
+The built-in pty runtime keeps each PTY inside the manager process, so those seats cannot outlive
+it: every manager stop stops and deprovisions them, and `down` reports them as stopped. Ctrl-C on a
+foreground `cotal up` follows the same rule: it verifies the spare capability, stops the stack, and
+prints the same report. When the capability cannot be verified, Ctrl-C
 refuses the teardown and leaves the stack running; end it with `cotal down --with-agents`.
 `--with-agents` is a one-shot destructive policy bound to the exact verified manager process
 and the exact live `down` stop reservation; a stale, malformed, crashed, or different stop attempt
-cannot turn a later bare shutdown destructive. Positional component names stop
+cannot turn a later bare shutdown destructive. If a managed agent cannot be proven stopped within
+the manager's stop timeout, the manager logs which one, still closes its broker connections and
+console listener, and exits with code 1. It does not release its pidfile, liveness lease or
+service registration in that case, so no successor is handed authority while that agent may still
+run; the lease lapses on its TTL. Positional component names stop
 only those self-registered local processes; for example, `cotal down manager` leaves delivery and
 the broker running, and `cotal down web` is available when the web extension is installed. A
 component that starts target-resolved (the web dashboard) is stopped the same way: `cotal down web`
@@ -324,9 +350,10 @@ and cannot be combined with component names. Stopping `nats` alone is refused wh
 registered daemon is still live; include those components or use bare `cotal down`.
 
 A pinned manager with no spare-capability record is not signalled by bare `cotal down` or `cotal
-down manager`. The missing record can mean either that the manager predates capability reporting or
-that a current manager cannot detach its agents. Stop each managed agent explicitly, then run `cotal
-down --with-agents` from the mesh root to stop the whole stack. An older manager does not understand
+down manager`. A current manager always publishes the record, so a missing one means an older
+manager: one that predates capability reporting, or one whose pty runtime reported that it cannot
+detach its agents. Stop each managed agent explicitly, then run `cotal down --with-agents` from the
+mesh root to stop the whole stack. An older manager does not understand
 the reap request, which is why the agents must already be stopped.
 
 Bare `cotal down` inventories by pidfile. When this folder's registered broker answers and no
@@ -344,6 +371,21 @@ reported by the OS. Every stop path, including `down` for the broker, web and ex
 and the manager, delivery and auth-service stops, applies the same rule. A pin that names a different
 start means the pid was reused, so teardown refuses and preserves it. A torn or unreadable pin also
 refuses.
+
+The pidfile and its pin are published by renames, and the pidfile rename is the commit point. Just
+before it, the pin holds two lines: the old process's and the new one's. A launcher that dies
+mid-publish therefore leaves the old record or the new one, each checked against its own pin line,
+never a pidfile without its pin. An old record with no pin is legacy, so its line holds `-` in place
+of the token and it stays legacy until the commit. A CLI older than this change reads a two-line pin
+as torn and refuses.
+
+Publishes of one pidfile are serialized by a lock file beside it, `<pidfile>.publish.lock`, because
+the launcher and the daemon it starts both publish the same record. The next publisher reclaims a
+lock left by a crashed one. When no start token can be read for the new process, its pin line holds
+`-` in place of the token, which reads as a legacy record, and the publish ends in the legacy shape:
+a pidfile with no pin. Teardown, and a daemon removing its own record on exit, take the same lock and
+remove the record only while the pidfile still names the pid they stopped, so a stop that races a
+publish leaves the new record whole.
 
 The pidfile pid and the pin pid are two coordinates. Automatic cleanup follows **proven death of
 the pidfile target** (ESRCH on that pid): a torn sibling pin does not wedge a dead pidfile pid.
@@ -435,6 +477,10 @@ A seat whose launch options could not be resolved is refused rather than checkpo
 manager's own wording: `imperative launch options have no non-secret durable source (<keys>)`. The
 refusal arrives at prepare time, so the cut stops before any child does.
 
+A delegated seat (SPEC §13.17) is refused at prepare time too, with
+`a delegated seat is not resumed by a later manager; stop it before preserving`. A manager stop
+after a refused cut retires that seat through its retirement path.
+
 ## clean
 
 ```bash
@@ -468,9 +514,9 @@ also refuse outright on a root that holds accounts for several spaces: the store
 trust record are shared by every space on the broker, so both targets would take out all of them
 and no `--space` can narrow that. `down`, `backup` and `up --restore` refuse there for the same
 reason. `cotal status` lists the tenants on such a root. Personas
-(`.cotal/agents`) and logs are never touched. A custom
-store location is not recorded anywhere, so `--store-dir` must repeat whatever the mesh was
-launched with. Custom cleanup targets must contain either the Cotal store-generation marker or a
+(`.cotal/agents`) and logs are never touched. The mesh record now carries a custom
+store location for `up`'s own repair, but `clean` still takes `--store-dir` itself; `clean` does
+not read the record. Custom cleanup targets must contain either the Cotal store-generation marker or a
 real `jetstream/` store directory; filesystem roots, project roots, and Cotal auth/maintenance trees
 are always refused.
 
@@ -494,8 +540,10 @@ is still refused. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
 independent parent/deadline watchdog. It validates the canonical stream and pull-consumer inventory,
 writes native snapshots with consumers excluded, and stores conservative contiguous ACK-floor
-checkpoints separately. The original store is never opened by the backup broker, and the stack is
-not restarted implicitly. Artifact destinations must not overlap the preserved source or maintenance
+checkpoints separately. The presence bucket is memory-backed, so it does not survive the cut and
+the clone may lack it. Every other stream must be present. The original store is never opened by
+the backup broker, and the stack is not restarted implicitly. Artifact destinations must not overlap
+the preserved source or maintenance
 attempt tree. Restore artifacts and targets likewise cannot nest inside or contain each other, the
 preserved source, or the maintenance attempt tree.
 
@@ -664,7 +712,9 @@ stopped rather than being reprovisioned into a partial restore.
 
 After listener readiness, the manager starts attempt-bound, validates retained credentials/tokens
 without granting or reprovisioning, and resumes the exact persisted principals under cleanup
-suppression. Registry-only restore uses the same flow with an empty agent set. `commitResume` is an
+suppression. Registry-only restore uses the same flow with an empty agent set. On a user-auth mesh
+these manager calls run as the logged-in operator's `cli` actor, the caller the preserve cut used, so
+that actor needs a current `admin` grant. `commitResume` is an
 idempotent validation barrier only: success must be `awaitingFinalize` with an attempt-bound 64-hex
 commit token and does not release suppression. Under the workspace lock, the CLI first fsyncs that
 exact evidence as `manager-committed` (restore) or `resume-committed` (ordinary resume), then calls
@@ -678,8 +728,12 @@ boundaries reuses the same attempt and may retry the idempotent phases without d
 changed per-agent dependency is a named fail-closed result; the journal becomes degraded and remains
 available for forward repair. A retry from `resume-intent`,
 `resume-active`, or `resume-degraded` reuses the same attempt and inventory after the prior listener is
-proven stopped. Every normal restore listener has an unguessable attempt-bound NATS server name. The
-CLI fsyncs its exact name/nonce, canonical endpoint, process owner, and generation-bound target identity
+proven stopped. A retained agent the lost manager already launched can still be running, for example
+in a tmux window, while the journal reads `resume-intent`. On a static mesh the replacement manager
+closes that seat through the reference the lost manager recorded on the agent's slot, waits for the
+principal to leave presence, and launches it again. A live principal with no such record, or one that
+stays live after the seat is closed, is refused. Every normal restore listener has an unguessable
+attempt-bound NATS server name. The CLI fsyncs its exact name/nonce, canonical endpoint, process owner, and generation-bound target identity
 immediately after spawn. Re-entry accepts a surviving listener only when its INFO server name, live PID
 record, endpoint, and target identity all match that proof; degraded restore repair then moves through
 the guarded workspace transition only after manager commit. If an uncommitted bound owner is provably
@@ -693,7 +747,7 @@ restore only when its details prove manager commit and its exact recorded listen
 ## Mesh registry
 
 ```bash
-cotal meshes
+cotal meshes [--json]
 cotal meshes add                      # guided, on a terminal
 cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [--tls] [--force]
 cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <https url>)
@@ -708,6 +762,14 @@ cotal status [--space <s>] [--server <url>] [--components]
 registration trust is stored under the account's private auth state, and the registry contains no
 session token or sentinel credential bytes. Commands resolve the catalog `slug`; a different human
 `name` is rendered only as a label.
+
+`meshes --json` prints one JSON object per recorded mesh per line: `space`, `server`, `mode`,
+`root`, `default` (the `*`), and `origin` (`up`, `manual`, or `catalog` for a discovered entry). A
+local or hand-registered entry also carries `offline`. A discovered entry is never probed, so it has
+no `offline` field. `tlsRequired`, `events: "required"` and a discovered entry's `catalogName` appear
+only when the record has them. An empty registry prints nothing and exits 0. The note about a default
+that matches no record goes to stderr, so stdout carries only rows, on a first run too. The table is
+presentation and is not a stable parsing target. `meshes add` and `meshes rm` refuse `--json`.
 
 A registry record this build cannot use is refused by name, never rendered and never skipped. One
 that does not parse, or is missing a field every consumer reads (`server`, `mode`, `root`, `ts`,
@@ -735,6 +797,10 @@ The shared dispatcher applies this preparation to every command that declares bo
 `--server` as mesh-target flags, including commands registered by other packages and commands that
 declare their own equivalent flag objects. Daemon and startup commands that use those names only as
 configuration explicitly opt out. Registry-local `meshes add` and `meshes rm` never refresh a catalog.
+While the registry holds a record this build cannot use, the preparation neither refreshes nor
+applies a catalog, so the command's own checks run first. A snapshot left unapplied is applied by the
+next preparation after the record is restored or removed. A command that resolves its target through
+the registry still refuses the record by name.
 
 Run on a terminal with the space or `--server` missing, **`meshes add` is guided**: it asks for the
 one thing that cannot be derived (the broker URL), probes it, and tells you what answered - open or
@@ -778,7 +844,8 @@ is the right verb, and `rm` says so unless you pass `--force`. A hand-added reco
 mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
 Nothing that merely *infers* a record is stale from a dead broker touches it: an
 unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`
-wrote the record. A bare command does not treat that offline record as a running mesh;
+wrote the record; a foreground `up` whose broker exits unexpectedly keeps its record the same way.
+A bare command does not treat that offline record as a running mesh;
 name it with `--space` to restart it. `cotal down` / `cotal clean all` still drop an `up` record for the project
 they tear down; a hand-added one they leave alone even when it shares a root, because nothing
 on this machine could write it back.
@@ -801,7 +868,8 @@ including inside another mesh's project. `status` is a read-only report: machine
 folder's `.cotal/`, the recorded meshes, and a live snapshot of the selected mesh (roster, channels,
 membership feed). Stale Claude skills and out-of-date `.agents` skills recommend `cotal setup --skills`,
 not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
-nothing.
+nothing. The manager row asks the service endpoint once: a live process that does not answer is
+`not serving`, and a probe that could not be made leaves the row `running · service unchecked`.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
 stale with the last successful snapshot timestamp and the refresh error. It never calls that state
@@ -876,6 +944,34 @@ rather than choosing one. An invalid enrollment never falls back to login provis
 expired, revoked, and already-used enrollments all produce one response: ask the owner for a fresh
 one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTTP contract.
 
+A runtime that starts a managed seat outside the manager's filesystem hands the child a managed
+handoff instead: one `0600` file named by `COTAL_MANAGED_HANDOFF_FILE`, carrying the lifecycle the
+manager already enrolled. The runtime builds the command with `delegatedSeatCommand`:
+
+```bash
+COTAL_MANAGED_HANDOFF_FILE=/run/seat/handoff.json \
+  cotal spawn --config ./seat.md --space main --name <actor> --agent claude \
+    --expect-owner <owner> --expect-lifecycle-uid <uid>
+```
+
+The `cotal` entry reads the file, deletes it and drops the variable before it parses flags, prints
+help or loads extensions, so every outcome leaves no file. The variable is read under any letter
+case; spellings that name different files are refused after every one of them was deleted. The
+spawn then refuses a malformed handoff, or one whose space, owner, actor or lifecycle UID differs
+from `--space`, `--expect-owner`, `--name` and `--expect-lifecycle-uid`, before any broker
+connection or exchange request. Every refusal on this path names the field and never a value from
+the handoff. The registration's server, exchange and enforcement checks, the local state this
+machine keeps for the space (its mesh record, user-auth state and agent secret files), target
+resolution, the policy refresh, the broker preflight and the agent auth preflight quote the space,
+the server, the exchange URL, the actor or a path named for one of them in their own diagnostics and
+in the filesystem errors under them. For a handoff each prints one fixed sentence that names the
+field and the phase instead, whether its check fails or an error is thrown. The event-plane policy
+refusals name the handoff's space field. An actor outside `[A-Za-z0-9_]` and a space that cannot
+name local state, such as `..`, are refused as malformed before any plane. A handoff conflicts with
+the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
+there it runs the enrollment consumer above without redeeming anything. See
+[Delegated seats](embedding.md#delegated-seats-outside-the-managers-filesystem).
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` | resolved mesh | Target space |
@@ -887,9 +983,9 @@ one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTT
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
-| `--cwd <dir>` | this cwd | Working directory to root the agent at |
+| `--cwd <dir>` | this cwd | Working directory to root the agent at. Refused before launch when the directory does not exist on the serving manager's host. |
 | `--prompt <text>` | none | Initial prompt auto-submitted at start |
-| `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.md)) |
+| `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.md)). The manager records the source session id, and `ps --wide` shows it |
 | `--no-events` | event plane on where supported | Opt out of the session's structured event plane (`--events` only restates the default) |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
 | `--subscribe <a,b>` | persona's | Channel read-set override |
@@ -901,13 +997,17 @@ one. See [Enrollment redeem](identity-and-auth.md#enrollment-redeem) for the HTT
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | none | With `-f`: waive named stale agents (apply-only) |
 | `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime |
+| `--expect-owner <u_…>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the owner the handoff must carry |
+| `--expect-lifecycle-uid <uid>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the lifecycle UID the handoff must carry |
 
 Each session uses its connector's **event plane** by default: a stream of structured events
 describing what the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
 the agent's principal, `events.<owner>.<actor>`, never after its display name, because two live
 agents are allowed to share a display name and would then share a stream. The launch grants publish
-rights on that channel alone, foreground and detached alike. `--no-events` is the explicit opt-out
-unless the selected registration says `policy: { events: "required" }`. Required policy makes the
+rights on that channel alone, foreground and detached alike. On an open mesh, which issues no
+credentials, the launch still allocates the agent an id, so the channel names a stable actor.
+`--no-events` is the explicit opt-out unless the selected registration says
+`policy: { events: "required" }`. Required policy makes the
 event arm and grant mandatory, so `--no-events` and connectors without an event plane are refused.
 
 The launch decision and the grant are separate on purpose. Holding publish rights on a channel is
@@ -915,7 +1015,9 @@ not a request to publish to it, so writing an event channel into an agent file's
 does not override `--no-events`.
 
 The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
-target mesh's `.cotal/agents/`; the launch flags override the file. Foreground runs the agent
+target mesh's `.cotal/agents/`; the launch flags override the file. On a user-auth mesh the
+effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
+spawn is refused with that explanation before any request is sent. Foreground runs the agent
 attached to your terminal; `--detach` hands the launch to the running manager. Both modes get the
 durable backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a foreground
 spawn (messages posted while it is disconnected are then not replayed). A foreground exit retires
@@ -928,6 +1030,43 @@ which arm you are on. A `--detach` spawn is an
 follows to a terminal outcome rather than blocking (see [the control surface](control-surface.md)).
 See [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
 [manifest deploy](#manifest-deploys). (`cotal start` was merged into `cotal spawn --detach`.)
+A `--detach` spawn onto a manager from another Cotal release is refused before any request is sent
+when the manager's contract does not declare a field this CLI sends. The refusal names the field,
+calls it version skew, and gives this CLI's version. A field you leave unset is not sent, so it
+never causes that refusal.
+
+A manager has 50 seat slots, and each seat counts once. A slot is held by a managed seat (a row in
+that manager's `cotal ps`, including a seat still joining), by a reserved launch the manager accepted
+but has not started a process for, or by a cooling hold. A seat that ends within 10 seconds of
+starting leaves its slot cooling until those 10 seconds pass, unless an operator stopped it. Such a
+seat holds only that cooling slot, even while its launch is still reporting the failure. A spawn
+refused at the limit states that split and whether waiting can free a slot:
+
+```text
+at capacity (50 of 50 slots: 49 managed, 0 reserved, 1 cooling); waiting frees a cooling slot in 7s, or despawn one
+```
+
+A cooling slot frees at the stated time. A launch that has not settled frees its slot only if it
+fails, and a managed seat frees its slot only when it stops. The refusal counts a launch as pending
+only while it holds a slot, so a launch whose seat already ended is not counted. The roster counts
+presence, which also includes peers no manager owns, so its total is a different number.
+
+Run from a managed seat's own shell on a static or open mesh, `cotal spawn --detach` launches as
+that seat when it targets the seat's own space. Without `--space` it picks that target the way the
+operator path does, so a recorded mesh that is not running is skipped. The CLI reads the seat's
+launch identity (`COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`, `COTAL_SPACE`, and on a static
+mesh the seat's own credential), so the manager records the seat as the spawner, the same as for
+the seat's `cotal_spawn` tool. On a static mesh that credential also proves the seat's space, so a
+launch without `COTAL_SPACE` still runs as the seat, and a target space holding no credential for
+the seat is refused. An open mesh acts as the seat only when `COTAL_SPACE` names its space. The
+seat can then stop the child with `cotal_despawn`, and the manager stops the child when the seat
+exits. On a static mesh a seat whose agent file lacks `capabilities: [spawn]` is refused, because
+its credential holds no spawn subject.
+`--on <instance>` keeps its pin: the seat's own credential has no instance route, so on a static
+mesh the CLI mints a one-shot `manager-caller` view for the seat, pinned to that instance and
+carrying the spawn subject only when the seat's credential holds it. On an open mesh the call keeps
+the TLS requirement the mesh records. `--creds`, `--server` with an unregistered `--space`, and a
+user-auth mesh keep the operator path.
 
 ## models
 
@@ -964,7 +1103,7 @@ it is not limited to child processes owned by the manager.
 ## Endpoint control
 
 ```bash
-cotal describe <endpoint>                                        [--space <s>]
+cotal describe <endpoint> [--on <instance>]                        [--space <s>]
 cotal invoke <endpoint> <command> [--args '<json>']              [--space <s>]
 cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
 ```
@@ -972,8 +1111,12 @@ cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
 The generic v0.4 service surface. `describe` resolves a registered endpoint's command set off the
 wire - the reserved `describe` command answers the registered contract digests, the schemas are
 fetched from the space's content-addressed contract store, recompiled, and verified against those
-digests - and prints each command with its capability class and targeting shape. `invoke` calls one
-command by name: `--args` is a JSON object validated against the fetched input schema *before*
+digests - and prints each command with its capability class and targeting shape. `--on <instance>`
+pins `describe` to one manager instance's rail (the whole id, as `ps` prints it under its
+`manager <id>` headers), so an operator can read what that instance serves in a multi-manager space;
+unpinned, the class queue answers and the attribution line names whichever instance did. `invoke`
+calls one command by name: `--args` is a JSON object validated against the fetched input schema
+*before*
 publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal through
 `inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
@@ -985,7 +1128,7 @@ reach needs the `admin` scope). An open mesh has no service registry.
 ## Managed seats
 
 ```bash
-cotal ps [--on <instance>] [--wide | --json] [--space <s>]
+cotal ps [--on <instance>] [--wide | --json] [--slots] [--space <s>]
 cotal stop --name <n> [--on <instance>] [--space <s>]
 cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 ```
@@ -994,13 +1137,20 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | none | Managed agent to stop / attach (required) |
-| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent |
-| `--wide` (`ps`) | off | After each seat's compact row, print extra operational facts the manager records: `cwd`, `pid`, spawner, lifecycle uid, and the owning manager's instance id and host. Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process) prints nothing, never a placeholder |
+| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent. A roster principal id (`local.…`) is refused with a message naming the instance id `ps` prints |
+| `--wide` (`ps`) | off | After each seat's compact row, print extra operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, the owning manager's instance id and host, and for a `--resume` seat the session it forked (`forked from <id>`, with the source title and transcript SHA-256 once a Hermes or Jcode seat has recorded its fork). Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, or a connector that reported no provider) prints nothing, never a placeholder |
 | `--json` (`ps`) | off | Machine-readable: one JSON object per seat per line, copied unchanged from the manager row. Instance headers and errors go to stderr, so stdout contains only rows. Mutually exclusive with `--wide` |
+| `--slots` (`ps`) | off | List the durable static slot rows this manager owns instead of live seats, through the `slots` command. Mutually exclusive with `--wide`. A row that is not in the live roster still prints, with `live=false`; a retired row never prints |
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
+
+A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
+that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
+entry, is the route that does.
 
 The human `ps` row is presentation text and is not a stable parsing target. Scripts use `--json`,
 which is the machine-readable row contract.
+
+`--slots --wide` is refused: `--slots` lists durable static slot rows, `--wide` prints live seat facts, and the two answer different questions. Across a multi-manager scatter, `--slots` prints each manager's rows under its own instance header, the same way the plain `ps` scatter does.
 
 These are operator clients over the running manager's control plane. The default row includes the
 connector, model pin, optional requested variant, and runtime as operational descriptors for the
@@ -1010,12 +1160,27 @@ Cotal does not invent an effective provider default it cannot observe. `ps` also
 facts per managed agent, because they answer different questions: the process fact from the manager's
 own runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact
 from the roster (`idle` / `working` / `waiting` / `mesh offline`, or `not in roster` when the seat has
-no presence row at all: a seat that has not joined yet, or one that never did). A seat can be
-`running` and `mesh offline` at once: the process is alive and its presence has lapsed. The mesh fact
-is only a verdict while the manager's own presence watch is fresh: when that watch has been silent past
-the liveness window, or has not replayed the bucket yet, every row prints `mesh unknown` with the reason
-instead (`--json` carries it as `meshView: stale | unpopulated`), because `offline` and `not in roster`
-would then describe the manager's watch rather than the seat. The manager rebinds a watch that goes
+no presence row at all: a seat that has not joined yet, or one that never did). When the seat's
+connector relays a harness-reported condition, the mesh fact carries its code and how long it has
+held, so a seat whose turn died on a provider rate limit reads `waiting (rate_limit for 40m)` rather
+than a bare `waiting`, and `--json` carries the whole `condition` object. When the connector reports
+the seat's last work event (presence `activeAt`), the mesh fact ends with its age, such as
+`· active 3s ago`, and `--json` carries `activeAt`. A seat whose turn stopped advancing keeps
+heartbeating, so its presence row stays fresh and this age is what shows the stall. A seat can be
+`running` and `mesh offline` at once: the process is alive and its presence has lapsed. That row says
+how long, as in `mesh offline for <age>` with an age such as `3.5h`, counted from the seat's last
+presence heartbeat, which `--json` carries as `offlineSince` (epoch ms). The age is read only from
+the seat's own presence record, matched on its principal and lifecycle uid, so a same-named peer or
+an older lifecycle never dates it. The manager log names each managed seat that is offline on the
+mesh while its slot is held
+(`seat offline on the mesh: <name> - last heartbeat <time>; process <state>`), including one its
+watch first sees offline after a reconnect, and each one that comes back
+(`seat back on the mesh: <name>`), so a watchdog that only checks process liveness has a line to
+act on. The manager does not reap or re-key such a seat. The mesh fact is only a verdict while the
+manager's own presence watch is fresh: when that watch has been silent past the liveness window, or
+has not replayed the bucket yet, every row prints `mesh unknown` with the reason instead (`--json`
+carries it as `meshView: stale | unpopulated`), because `offline` and `not in roster` would then
+describe the manager's watch rather than the seat. The manager rebinds a watch that goes
 silent under a live connection on its own, so `mesh unknown` normally clears within a liveness window.
 On a user-auth mesh `ps` also renders each managed agent's last credential-refresh outcome, fail-closed.
 
@@ -1044,12 +1209,12 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
 versioned `ep.v1` rail, a separate subject space from the legacy `ep` rail, and an endpoint serves
 both (SPEC 13.15). A manager older than the versioned rail serves `ep` alone, so it can be running,
 registered and answering while an issued caller's request reaches nobody. Silence on `ep.v1` is
-reported as `no manager answered on the ep.v1 rail` and names both causes it is consistent with:
-no manager running, or one older than the rail. The CLI cannot tell them apart, because the service
-registry records no package version, so check whether a manager is running and, if it is, its
-version. The same scoping applies to `cotal run`'s hosted verbs, which drop the `--local`
-suggestion there, since `--local` drives the run from the calling process and names the caller as
-its answerer.
+reported as `no manager answered on the <rail> rail` with `ep.v1` as the rail, and names both causes
+it is consistent with: no manager running, or one older than the rail. The CLI cannot tell them
+apart, because the service registry records no package version, so check whether a manager is
+running and, if it is, its version. The same scoping applies to `cotal run`'s hosted verbs, which
+drop the `--local` suggestion there, since `--local` drives the run from the calling process and
+names the caller as its answerer.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a
@@ -1081,7 +1246,9 @@ concludes nothing.
   reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary).
 
 `attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
-(Ctrl-] by default; see [`COTAL_DETACH_KEY`](config.md)). It does so over a one-use, holder-bound
+(Ctrl-] by default; see [`COTAL_DETACH_KEY`](config.md)). The key is recognised as the legacy
+control byte and as the kitty keyboard protocol and xterm modifyOtherKeys encodings of the same
+press, so a terminal with either protocol enabled detaches too. It does so over a one-use, holder-bound
 mesh session ([SPEC](../SPEC.md) §13.6): the manager replies with a signed session grant (never a
 `127.0.0.1` URL), the CLI redeems it once over the broker, and the browser console (`cotal console`)
 drives the same session. `stop` and `attach` need a running manager to talk to. On a static mesh
@@ -1104,6 +1271,8 @@ to be frozen, Ctrl-C included, are not delivered to the agent by a reconnect you
 happened. That starts before the first session, not at the first reconnect: at a terminal, `attach`
 reads and drops what you type while it is still resolving the mesh, so a key struck at a prompt that
 has not come up yet does not reach the agent when it does.
+The terminal is in raw mode for the whole reconnect, including when the link died before the first
+session finished opening, so the detach key works there too instead of echoing as `^]`.
 
 A **pipe** carries script input. For example, `printf 'ls\n' | cotal attach --name web` is
 buffered until the session opens. Buffering continues across reconnects, so
@@ -1113,6 +1282,9 @@ down. Only a terminal gets the reader; `--no-reconnect` keeps the old behaviour 
 It stops on its own when reconnecting cannot help, and says why: a manager that refuses the attach
 exits non-zero with the manager's own message, and a reconnect that finds the seat no longer there
 (despawned, or its agent exited while the link was down) exits cleanly with `seat <name> is gone`.
+A local connect refusal that retrying cannot fix, such as a static-auth mesh whose seed is now
+missing, also exits non-zero with the refusal's own sentence. A broker that is still unreachable
+keeps the loop trying in silence.
 A refusal that could still pass, such as a manager at its session ceiling, is relayed in the
 manager's own words while the loop keeps trying, once per refusal rather than once per attempt.
 Pressing the detach key, or the agent's process exiting while you are attached, ends the attach as
@@ -1147,11 +1319,15 @@ same space is now reported on the way past, and not obeyed:
 When a **static-auth** mesh holds no seed at the resolved root, `attach` refuses and names what it
 resolved, the broker and the root, instead of describing a directory it did not use and instead of
 taking the open-mode path. An authenticated registry entry with a missing seed is still
-authenticated. A USER-AUTH mesh still refuses loud: two-step user-mode redemption is not wired.
+authenticated. On a USER-AUTH mesh `attach` reads no seed. It sends your login and the session grant to
+the auth service, which issues a `session-caller` bearer only if your owner and actor hold that
+session. The connection it opens expires with the session grant.
 
 Terminal bytes stream over the mesh; the manager's own HTTP/WS face serves the console. That endpoint binds
 **loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind
-address down, which is what lets you attach to an agent whose manager runs on another machine. A
+address down, which is what lets you reach the browser console (`cotal console`) for an agent whose manager runs on another machine.
+`attach` does not use that face: it redeems a signed mesh session grant over the broker instead (see above), so it reaches a
+remote manager regardless of the bind address. A
 bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
 `supervise --console-host <host>`.
 
@@ -1163,7 +1339,7 @@ does not quietly move a reachable attach face back to loopback. Passing `--host`
 so you can widen or narrow exposure whenever you like; a mesh that never asked stays loopback-only
 and records nothing.
 
-Because that face carries terminal read and write for every managed agent, it is credentialed in two
+Because that face mints terminal read and write authority for every managed agent's browser session, it is credentialed in two
 tiers. A mesh caller receives a **ticket** bound to the single agent the manager just authorized,
 single-use and short-lived, so one authorized attach can never be re-pointed at someone else's
 agent. The **console token** is the operator's own, reaches every agent, and is printed only to the
@@ -1264,7 +1440,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 | `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | none | Protocol-console port |
-| `--console-host <host>` | loopback | Bind host for the console + attach endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets `cotal attach` reach this manager from another machine |
+| `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
 | `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair or `spawn -f` keeps it |
 | `--roster <file>` | none | Declarative roster to boot at startup |
 | `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
@@ -1340,7 +1516,7 @@ cotal service uninstall [--mesh <name>]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--mesh <name>` | this folder's mesh | The mesh whose manager the service runs; one unit per mesh |
-| `--linger` | off | install: also enable user lingering so the user manager starts at boot and the service survives logout. Never enabled silently |
+| `--linger` | off | install: when lingering is off, ask logind to enable it so the user manager starts at boot and the service survives logout. Never enabled silently |
 | `--json` | off | status: machine-readable output |
 
 Runs the manager as a user service so it survives logout and reboot. On Linux this installs a
@@ -1362,15 +1538,50 @@ against that private config root; the unit itself starts with `COTAL_SKIP_CONNEC
 so a manager is never interrupted mid-seed by a restart. An install whose pre-seed cannot
 complete (network unreachable, registry error) refuses instead of deferring.
 
+The same file pins `PATH` to the `PATH` of the shell that ran `install`, and on macOS the plist's
+`EnvironmentVariables` carry it too. Without it the unit inherits the service manager's own short
+`PATH`, which usually lacks `~/.local/bin` and Homebrew, so the manager's boot inventory would
+report a harness unavailable that your shell resolves. Install from a shell that resolves every
+harness the service should launch, and reinstall after moving one. A relative entry, including
+an empty one, is resolved against the directory you ran `install` from, because the unit starts in
+the mesh root where the same spelling names another directory. An entry with a `..` segment is
+pinned as the directory your shell reaches through it, with symlinks followed, and refuses when it
+reaches none. A `PATH` set to the empty string is one empty entry, so it pins that directory. An
+unset `PATH` refuses.
+
 Every value the unit derives from a path (`WorkingDirectory`, the `EnvironmentFile` path, the
 `ExecStart` tokens) is escaped for systemd specifiers (`%` becomes `%%`), so a mesh root that
 contains `%` starts over its real path instead of a path systemd rewrote by expanding it. The
 provenance comment records the root unescaped.
 
+On Linux a user unit starts at boot and survives logout only while the user lingers. Without
+lingering, systemd starts no user manager at boot, so an enabled unit stays inert until the next
+login and stops at the last logout. `install` checks lingering before it writes anything, and when
+lingering is off it fails with the root command that turns it on (`sudo loginctl enable-linger
+<user>`). With `--linger` it first asks logind to enable lingering for the current user, and fails
+with the same command when logind refuses (unprivileged users over SSH get `Access denied`).
+`service status` prints that command while lingering is off. A Linger query that does not answer
+`yes` or `no` (logind unreachable, no `loginctl`) is never read as off: `install` refuses with
+the query's own error and enables nothing, and `service status` shows lingering as unknown with
+that error (`--json` gives `"linger": { "error": ... }`).
+
 `service install` also refuses while a manager is already running for the mesh (`cotal down
 manager` first). The restart policy is `Restart=always` with `RestartSec=20s`, chosen for
 manager units in production: a manager exits for reasons that are not failures (broker
 restarts, host suspend), where `on-failure` with a short interval thrashes.
+
+The unit also sets a start limit (`StartLimitIntervalSec=30min`, `StartLimitBurst=20`). A manager
+that keeps failing to start stops after 20 attempts, about seven minutes at 20 seconds apart, and
+the unit is left `failed` instead of restarting forever. One such failure is deliberate. After an
+unclean stop, a manager that cannot verify eviction of its predecessor's credentials exits 1 and
+leaves the issuance gate frozen, because starting without that proof could let two incarnations
+serve at once (SPEC 13.1). It first waits up to 60 seconds for the delivery daemon to answer, so a
+daemon that is still starting does not fail the start. The log names the cause. When the delivery
+daemon is down, it says the daemon is not reachable on the `ctl.delivery-admin` rail. When the
+daemon answers and refuses, for example because the space is missing a `$SYS` cred, it prints the
+daemon's own reason and repair step. Fix that cause, then run `systemctl --user reset-failed
+<unit>` and `systemctl --user start <unit>`. The macOS agent has no start limit: launchd's
+`ThrottleInterval` only spaces restarts.
 
 `service status` reports the unit state from systemd/launchd, the manager's own health read from
 its pidfile at the unit's recorded root, and the machine facts a hosting side asks for:
@@ -1420,9 +1631,17 @@ holder really is gone, prints what it found, and then finishes the dead operatio
 interrupted restart would have: revoke the old credentials, evict their holders with verification,
 and reopen the gate.
 
-If verification is interrupted, the command leaves the gate frozen and durably records each holder
-whose eviction was already verified. A retry still repeats the freeze-holder liveness check, then
-skips only progress bound to the same registration operation, frozen-gate revision, and holder set.
+The command revokes the old credentials 16 at a time. It then verifies the holders' eviction in
+shared sweeps of up to 256 holders on the delivery daemon. Each sweep scans the broker a fixed number
+of times and kicks live connections 16 at a time, so holders that are already gone add almost
+nothing and live ones add one broker round trip per 16 connections. The daemon must serve the
+`evictPrincipals` verb; an older daemon refuses it and the gate stays frozen.
+
+Each sweep durably records the holders it verified before the next sweep starts. If a holder is not
+verified gone, the command leaves the gate frozen with those records kept. An interrupted sweep
+records nothing, and the sweeps before it stay recorded. A retry still repeats the freeze-holder
+liveness check, then skips only progress bound to the same registration operation, frozen-gate
+revision, and holder set.
 The output reports holders completed before this attempt, completed now, and still remaining. A new
 freeze or changed holder set starts from zero. Cursor cleanup happens only after reopen; a retained
 cursor is harmless because its old gate revision cannot authorize a later freeze.
@@ -1433,11 +1652,36 @@ cursor is harmless because its old gate revision cannot authorize a later freeze
 |---|---|---|
 | `holder-alive` | The freeze-holder still has a live connection: a manager *is* running | Stop that process first. Reconciling would evict a live manager's credentials |
 | `holder-unknown` | The connection sweep could not prove the holder absent | Not safe to proceed: an unprovable holder is treated as a live one. Re-run once the broker answers completely |
-| `liveness-unestablishable` | The delivery daemon could not be asked at all | Start it (`cotal up` runs it) and re-run. Silence is never read as death |
+| `liveness-unestablishable` | The delivery daemon gave no verdict: it was unreachable, timed out, or refused | Act on the delivery lease line in the refusal (below). Silence is never read as death |
 | `not-frozen` / `no-gate` | The gate is open, or there is no gate at that coordinate | Nothing to repair: check `--endpoint` / `--instance` |
 | `wrong-op-kind` | Frozen under a takeover or retirement, not a registration | Out of scope for this command; it will not reinterpret another operation's intent |
 | `eviction-unverified` | The holder looked gone but eviction could not be verified | The gate is left frozen, unchanged. Investigate the broker before retrying |
 | `raced` | A newer manager moved the gate mid-repair | Re-run `cotal doctor` and look again |
+
+When the daemon gives no verdict, the refusal also reads the delivery lease (`lease.0`) and names
+what is blocking the rail:
+
+| Lease reading | What to do |
+|---|---|
+| absent | No daemon is running. Start it (`cotal up` runs it) and re-run |
+| unreadable | The daemon cannot be named, so do not assume none is running. Fix the lease read, then re-run |
+| held, not ready | That holder claimed the shard and has not bound its rails. Wait for it, or stop it so its lease lapses |
+| held, ready, no answer | The query may have gone to another daemon still subscribed to the rail, such as a stopped one whose lease lapsed. Re-run before stopping anything. If no run gets an answer, stop any other delivery daemon for the space, then stop or restart the holder |
+| changed hands | The holder took the shard after the query was sent, so it was never asked. Re-run before stopping anything |
+
+The command reads the lease before it sends the query and again after the query fails. It names a
+holder as the blocker only when the same run of the same daemon held the lease both times, and two
+rows from a daemon too old to record its run never count as the same run. Even then a ready holder
+may not have been asked: the rail is queue-grouped, so any daemon still subscribed to it can take
+the query. A row whose times are not valid dates reads as unreadable.
+
+A daemon that answered and refused keeps its own reason, followed by the same lease line. The lease
+line names the holder, whether it is ready, the space account that holds the lease bucket, when that
+holder acquired the shard, and when the row was last written. A ready holder rewrites the row on
+every renewal and keeps its acquisition time, which only a successful acquisition sets. A row
+written by a daemon that predates the acquisition time reports it as unknown. The lease reads never
+change the outcome: the gate stays frozen and the command exits 2. A manager's boot self-heal uses
+the same check and reports the same line.
 
 There is no `--force`, and no path that discards gate state: the only way this reopens a gate is by
 proving the holder is gone and then completing the operation properly.
@@ -1521,6 +1765,36 @@ it is a known runtime you can add with the shown command. Selecting an unknown o
 via `up`/`spawn --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
 package. There is no silent fallback to `pty`.
 
+## seats
+
+```bash
+cotal seats [--drain]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--drain` | off | Retire every seat whose agent has exited. A seat whose agent still runs is kept |
+
+The pty runtime used to start a detached custodian process for every Linux seat. It now spawns
+in-process, but custodians that an earlier manager started keep running, and one whose agent has
+exited stays resident while a manager still holds its connection. This command lists the custody
+records under `COTAL_SEAT_ROOT` (default `~/.cotal/seats`), one line per seat:
+
+| State | Meaning |
+|---|---|
+| `live-child` | The agent process still runs. The seat is never signalled, and a manager can still adopt it |
+| `childless` | The agent has exited. `--drain` retires the seat |
+| `drained` | `--drain` proved the custodian and the agent gone and removed the record |
+| `refused` | The record cannot be read, carries no start or boot identity, comes from an earlier boot, or the reap could not prove the processes gone. The record stays on disk |
+
+A drain signals only a custodian whose recorded start identity still matches the live process, so
+a reused pid is never touched. A record whose identity cannot tie its pids to this boot's processes
+is refused with or without `--drain`, and is never reported as running or exited. That refusal and
+an unreadable record signal nothing. A refusal from the reap itself can come after the drain already
+sent `SIGKILL` to the custodian. Its detail names the pid or process group the reap could not prove
+gone, so check those processes before you retry. The command exits non-zero when any record is
+refused. It is Linux-only and throws on other platforms.
+
 ## send
 
 ```bash
@@ -1528,6 +1802,14 @@ cotal send dm <agent> "<text>"   [--space <s>] [--server <url>] [--creds <path>]
 cotal send msg <channel> "<text>"
 cotal send ask <role> "<text>"
 ```
+
+A `send dm` prints one line naming three facts: `→ <name>  stored seq <N>; recipient <status>
+at send; delivery not confirmed  <text>`. `stored seq N` is the JetStream sequence the broker
+assigned to the publish; `recipient <status> at send` is the roster status (`idle`, `working`,
+or `offline`) resolved right before the publish, which can change the instant after; the send
+never prints `delivered`, because the sender's credential cannot read the recipient's durable
+to confirm it. Inspect what the broker actually holds for a recipient with
+[`cotal deliver pending`](#deliver).
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -1537,10 +1819,17 @@ One-shot messaging: connect, send a single direct message (`dm`), channel post (
 ask/anycast (`ask`), then exit. For a running conversation, agents use the mesh tools instead
 ([MCP tools](mcp-tools.md)).
 
-`cotal send` works from an operator shell or from a seat. It uses `cotal-send` as the advisory
-display name. The wire principal comes from the resolved operator credential or user bearer, not
-from `COTAL_NAME`, `COTAL_ID`, `COTAL_OWNER`, or `COTAL_ACTOR`. On an open mesh the transient
-endpoint self-mints its principal.
+`cotal send` works from an operator shell or from a seat. Its display name is `<login>@<host>` of
+the shell that ran it, so the recipient can tell one operator's send from another's; it is taken
+from the operating system, never from `COTAL_NAME`. The wire principal comes from the resolved
+operator credential or user bearer, not from `COTAL_NAME`, `COTAL_ID`, `COTAL_OWNER`, or
+`COTAL_ACTOR`. On an open mesh the transient endpoint self-mints its principal.
+
+The transient endpoint never joins the roster and binds no inbox. A recipient can still answer a
+`send dm` or `send ask` with `cotal_dm`, by the sender's name or by the id on the message it
+holds: the reply is stored under the sender's id in the space's DM history, which an operator's DM
+view such as the dashboard's Direct messages lens shows. The `cotal send` that asked has already
+exited, so the reply never reaches that shell.
 
 ## channels
 
@@ -1630,11 +1919,43 @@ the mesh root's `.cotal/web.log`, and reports success only after the HTTP server
 a recorded mesh root, but can be launched from any directory once `cotal up` has recorded the mesh.
 See [Watch a mesh](watch-a-mesh.md).
 
+## deliver
+
+```bash
+cotal deliver [--space <s>] [--server <url>] [--tls] [--creds <file>] [--root <dir>] [--shard <n>] [--shards <n>] [--dev-mint]
+cotal deliver pending <name> [--limit <n>] [--durable <name>] [--json]
+```
+
+With no positional, `cotal deliver` runs the delivery daemon (see
+[the delivery daemon](delivery-daemon.md)). `deliver pending <name>` never starts the daemon: it
+is an operator-only read over one recipient's DM durable, for the moment after a send when the
+question is "what does the broker actually hold for them." It resolves `<name>` against a short
+presence watch (an `offline` card still counts, since the recipient may be dead, that is what
+the verb exists to inspect); when neither a card nor the durable can be found, it prints
+`✗ not-found: no agent "<name>" and no DM durable for it in space <s>` and exits non-zero, never
+`pending 0`. On a match it prints the durable name and one fact per line: `pending`,
+`ack-pending`, `delivered`, `ack-floor`, `created`, `frontier`, and the stream's `max_age` /
+`max_msgs_per_subject` / `discard` limits (`--json` prints the same facts as one object), followed
+by a bounded, unacked read of up to `--limit` (default 20) recent candidate message ids under the
+heading `recent candidate ids (from the ack floor; not proof of a hole)`, a list of what is
+there, not proof that nothing was lost.
+
+The verb needs the `admin` credential profile: it runs through the same static-mesh route as
+`cotal mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,
+because there is no user-mode inspection authority yet. Pass `--creds <file>` for an off-registry
+admin credential. A same-name respawn never inherits a predecessor's held DMs (the durable is
+lifecycle-keyed); an old lifecycle's durable is reachable only by the name a live read printed
+(the `<durable>` line on the first line of this verb's output). Pass that name with `--durable
+<name>` to read it directly once the lifecycle's card is gone from the roster. This skips the
+presence watch on `<name>` entirely, so `<name>` is required but only echoed in error text.
+
 ## mint
 
 ```bash
 cotal mint <name> [--profile <agent|observer|admin>] [--out <path>] [--signer]
 cotal mint <name> --provision [--role <role>] [--space <s>] [--server <url>]
+cotal mint <name> --expires-in <seconds> | --expires-at <unix-seconds>
+cotal mint <name> --identity <creds> [--expires-in <seconds>]
 ```
 
 | Flag | Default | Meaning |
@@ -1647,6 +1968,9 @@ cotal mint <name> --provision [--role <role>] [--space <s>] [--server <url>]
 | `--allow-publish <a,b>` | the agent file's, else deny | Post-ACL override, **agent profile only** |
 | `--role <role>` | the agent file's | Agent profile: the anycast task queue the identity pulls (`svc_<role>`) |
 | `--provision` | off | Agent profile: also pre-create the identity's bind-only DM/deliver durables (and its role's task queue) on the live mesh, so the credential can consume |
+| `--expires-in <seconds>` | unbounded | Bound the credential's lifetime: the JWT `exp` is `iat + <seconds>`. A positive integer; refused together with `--expires-at` |
+| `--expires-at <unix-seconds>` | unbounded | Bound the credential to an absolute `exp` (unix seconds). Refused together with `--expires-in` |
+| `--identity <creds>` | a fresh identity | Re-mint for the nkey carried by this creds file, keeping the principal and every durable keyed to it. The file is read by the same loader the endpoint uses; a file with no seed is refused by name |
 | `--space <s>`, `--server <url>` | the resolved mesh | Which root supplies the agent file, static trust and default credential storage; with `--provision`, also which live mesh receives the durables |
 
 Mints a NATS creds file for a space in **static** auth mode, scoped to a profile and (optionally)
@@ -1667,8 +1991,15 @@ provisioner cred is minted from the space's trust material, used, and dropped), 
 client you start yourself can receive DMs and role anycasts like a spawned seat. The command prints
 the identity's principal (its wire id) and lifecycle uid; a consuming client passes that uid as its
 `lifecycleUid`. Agent profile only; an open mesh needs none of this (peers self-create there). The
-The same resolved authority is used for both the credential and `--provision`, so the broker
+same resolved authority is used for both the credential and `--provision`, so the broker
 footprint cannot be created under a different root's trust material.
+
+The CLI-mintable profiles carry no default TTL: without a lifetime flag the credential is
+unbounded, and a standing-renewal consumer refuses it. `--expires-in <seconds>` (or
+`--expires-at`) is the door the renewal seam's own error names. `--identity <creds>` re-mints for
+the nkey the file already carries, so the new credential presents the SAME principal and every
+durable keyed to it survives; combine it with a lifetime flag to rotate an expiring credential
+without churning the identity.
 
 ## Login
 
@@ -1690,8 +2021,9 @@ account's discovered registry entries. See
 ## actor
 
 ```bash
-# an upsert of the WHOLE row: a flag left off is the WIDE default below, not "unchanged"
-cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>]
+# an upsert of the WHOLE row: name all three ACL flags, or pass --full for the wide defaults below
+cotal actor grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b [--role <r>] [--label <l>]
+cotal actor grant <actor> --sub <IdP subject> --full [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>]
 cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>)
 cotal actor list
 ```
@@ -1701,19 +2033,20 @@ cotal actor list
 | `--space <s>` | the folder's | Space whose ledger to manage |
 | `--sub <subject>` | none | The IdP subject (shown by `cotal login`) the actor belongs to |
 | `--owner <u_…>` | none | The derived owner token (alternative to `--sub`) |
-| `--scope <a,b>` | `spawn,role:default` | Capability scope (`''` = none; `spawn` = may run agents; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it) |
-| `--allow-subscribe <a,b>` | `>` (all channels) | Channel read ACL; the user's envelope, their agents can never read beyond it |
-| `--allow-publish <a,b>` | `>` (all channels) | Channel post ACL; also the envelope for their agents' posting |
+| `--full` | off | Fill each ACL flag left off with its wide default; without it, `grant` refuses unless all three are named |
+| `--scope <a,b>` | `spawn,role:default` with `--full` | Capability scope (`''` = none; `spawn` = may run agents; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it) |
+| `--allow-subscribe <a,b>` | `>` (all channels) with `--full` | Channel read ACL; the user's envelope, their agents can never read beyond it |
+| `--allow-publish <a,b>` | `>` (all channels) with `--full` | Channel post ACL; also the envelope for their agents' posting |
 | `--role <r>` | none | Role (scopes the task-queue consumer) |
 | `--label <l>` | none | Display label for `actor list` (never the IdP subject) |
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
-A bare `grant` is the **full** envelope (all channels, may spawn); the flags narrow it. A
-re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
+`grant --full` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role). A
+`grant` that leaves off `--scope`, `--allow-subscribe` or `--allow-publish` without `--full` is
+refused and writes nothing. A re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
 every field out: the new scope plus the row's current read set, post set, role and label
-(`cotal actor list` shows what a row holds). A field left off does not stay as it was, it
-reverts to the wide default in the table above, which is how a narrow reader becomes a reader
-of every channel. A re-grant retires the current interactive lifecycle through the running auth
+(`cotal actor list` shows what a row holds). Under `--full`, a field left off does not stay as it
+was: it reverts to the wide default in the table above. A re-grant retires the current interactive lifecycle through the running auth
 service before it rotates the row, so copied bearers cannot cross an authorization update. If that
 retirement cannot be confirmed, the row is left unchanged and the command fails with the recovery
 action. `revoke` uses the same retirement before deleting the row, which lets a later grant create a
@@ -1733,7 +2066,8 @@ cotal doctor auth [--fix]
 Credential-health diagnosis and repair for this folder's mesh: renders every managed
 credential as healthy / near-expiry / expired and ends in `healthy` or the exact next
 command; `--fix` applies the repairs it can. The one surface every stale-credential error
-points at.
+points at. `--fix` takes the mesh's renewal lease when the broker answers and refuses while
+a manager or another doctor holds it; with no broker it repairs offline and says so.
 
 ## join
 
@@ -1816,7 +2150,8 @@ across upgrades. `cotal ext add <your-package>` adds a third-party connector the
 dashboard (`@cotal-ai/web`, providing `command:web`) is the seventh built-in seeded on the same path.
 
 `cotal ext seed` is the maintenance entry for that seeding (it runs automatically on the first real
-command of each boot, so you rarely call it):
+command of each boot, so you rarely call it). Each seeded connector's `✓ added` line goes to stderr,
+so the command that triggered the seed keeps stdout to itself:
 
 | Flag | Meaning |
 |---|---|
@@ -1895,9 +2230,10 @@ Operate durable workflow runs (cotal-lang programs) from the terminal.
 ```bash
 cotal run start --file <program> [--timeout <dur>] [--local]
 cotal run resume <runId> [--local --file <program>]
-cotal run ps [--endpoint <ep>]
-cotal run journal <runId> [--endpoint <ep>]
+cotal run ps [--endpoint <ep>] [--json]
+cotal run journal <runId> [--endpoint <ep>] [--json]
 cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
+cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
 cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
 ```
 
@@ -1909,10 +2245,29 @@ the recorded program, so no `--file` is taken. Neither takes `--endpoint`: the m
 its runs under its own endpoint, and naming another is refused. `ps` lists the run records and
 `journal` renders one run's durable records; both only inspect. An open pause prints its question.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
-artifact when present, time, and answer id. Expired pauses and ordinary steps print no answer line.
+artifact when present, time, and answer id, then one `amended` line per later amendment, in the
+order the store committed them, so the last is the current position.
+Expired pauses and ordinary steps print no answer line.
+`--json` on `ps` or `journal` prints each row the manager answers with (or `--local` reads) as one
+JSON object per line. A `ps` row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
+`journalHigh`, `forkedFrom`, `startedAt` and `programHash` (the values the program's `run()`
+reports; `programHash` is absent for a run with no recorded program), and `revoked` or
+`revocationUnreadable` when the marker says so. A `journal` row is an `activation` or a `step`. A
+step row carries its `step` key, the `effect` kind and its `name`, `state`, `outcome`, the recorded
+`status` and `errorCode` once settled, and `startedAt` and `endedAt` in epoch milliseconds. An open
+pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with; a
+settled pause adds its `answer` and its `amendments`, as the text view prints them. A field the
+journal does not record is absent: a checkpoint opened before `onExpiry` was recorded carries none.
+The run header and errors go to stderr, so stdout carries only rows; an unreadable revocation marker
+prints its reason there and still exits 1. The text view is presentation and is not a stable
+parsing target. `--json` on any other verb is refused.
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
-answerer from your credential, so no `--by` is taken there. `migrate` runs the migrate check of an
+answerer from your credential, so no `--by` is taken there. A settled step refuses a second
+`answer`. `amend` records a changed position on a settled checkpoint or `ask`: it files a new
+answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
+settled and the run keeps the answer it acted on. A step that is still open or settled without an
+answer refuses an amend. A spawned seat may amend only an answer recorded under its own name. `migrate` runs the migrate check of an
 edited program against a run's journal, from this terminal under a read credential (`--local`
 only; the manager serves no run-migrate command): it prints whether the migration is admissible,
 every orphaned step with its verdict and code, and exits 0 on admissible and non-zero on not. It
@@ -1921,9 +2276,14 @@ says so. `--timeout` sets the default
 checkpoint timeout for a drive (default 1h). `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
-(`cotal run resume <runId> --local --file <program>`); `answer --local` takes `--by <who>`. A
-user-auth mesh runs no programs yet: the manager refuses the family by name, and `--local` has no
-credential there. The guide is [workflows](workflows.md).
+(`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
+`--by <who>`. On a
+user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
+there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
+its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides
+the versioned rail under that issuance.
+[User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
+records the path. The guide is [workflows](workflows.md).
 
 ## Server daemons
 
@@ -1931,7 +2291,7 @@ Two long-lived infra roles ship with the CLI. They are not part of everyday oper
 daemon comes up automatically with `cotal up --detach` in auth mode.
 
 ```bash
-cotal deliver --space <s> [--server <url>] [--creds <file>]
+cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
 cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy]
 cotal feedback-intake --keys <keys.json> [--port <n>] [--creds <file>]
 ```
@@ -1950,6 +2310,12 @@ daemon that already looks healthy, but production renewal is not that file alone
 the daemon must address one credential store. On a stock split host with two project roots, a
 direct `deliver` is not an independent repair; keep the daemon under `cotal up` on the broker
 host, or inject the same store into both processes ([embedding](embedding.md#supervisor-signing-authority)).
+Typed by hand on the workstation, `deliver` dials the broker recorded for `--space` in the mesh
+registry (a mismatching `--server` is refused before any dial, and a record for a different
+workspace root is refused outright); with no record for the space it falls back to the local mesh.
+The daemon serves the workspace root that `--root <dir>` names, which must hold `.cotal/`, or else
+the nearest `.cotal/` above its working directory. With neither, it refuses at start and names the
+directory it searched from, before it reads a credential or dials a broker.
 See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
 (requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.

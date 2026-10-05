@@ -9,7 +9,12 @@
  */
 import {
   readRunRecord,
+  readRunProgram,
   readRunAdmission,
+  listCheckpointAmendments,
+  readCheckpointAnswer,
+  readCheckpointStatus,
+  readRunRevocation,
   replayRunJournal,
   runDriverCaller,
   walkKvEntries,
@@ -23,17 +28,20 @@ import {
   type RunHostAnswerRequest,
   type RunHostLocateRequest,
   type RunHostOpenPause,
+  type RunHostAcceptedAnswer,
+  type RunHostAmendRequest,
   type RunJournalRow,
   type RunListRow,
   type RunStatusView,
   type RunValidation,
 } from "@cotal-ai/core";
-import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
+import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, journalEntryKeyString, programHashOf, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
-import { locateOpenCheckpoint, answerOpenCheckpoint } from "./resolve-checkpoint.js";
+import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer, stepPauseToken } from "./resolve-checkpoint.js";
+import type { KV } from "@nats-io/kv";
 
 function outcomeOf(out: DriveOutcome): RunHostOutcome {
   if (out.status === "completed")
@@ -57,10 +65,12 @@ function failureOf(e: unknown): RunHostOutcome {
  *  checkpoint outcome the settle named (`resolved` / `expired`) when the settled result is a
  *  checkpoint disposition, and otherwise the settled status with its error code when there is one.
  *  A settled checkpoint whose result a handler does not name reads exactly as it did before the
- *  distinction existed (#1439). */
+ *  distinction existed (#1439). Only a checkpoint settles with a disposition: any other step's
+ *  result is its value, so an `ask` answered with a record that has an `outcome` field still prints
+ *  its status. */
 export function journalOutcomeOf(e: JournalEntry): string {
   if (e.state === "pending") return "pending";
-  if (e.result !== null && typeof e.result === "object") {
+  if (e.kind === "checkpoint" && e.result !== null && typeof e.result === "object") {
     const outcome = (e.result as { readonly outcome?: unknown }).outcome;
     if (outcome === "resolved" || outcome === "expired") return outcome;
   }
@@ -72,11 +82,16 @@ type StepJournalRow = Extract<RunJournalRow, { readonly kind: "step" }>;
 /** Build the one step-row view used by both hosted status reads and the local journal command. */
 export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
   const outcome = journalOutcomeOf(e);
-  const external = e.state === "pending" ? (e.external as { asks?: unknown; addressee?: unknown } | undefined) : undefined;
+  // A held step's question is its hold's, which is what the hold's checkpoint bound.
+  const external = e.state === "pending"
+    ? ((e.hold ?? e.external) as { asks?: unknown; addressee?: unknown; deadlineAt?: unknown; onExpiry?: unknown } | undefined)
+    : undefined;
   const result = e.state === "settled" && e.result !== null && typeof e.result === "object"
     ? e.result as { outcome?: unknown; value?: unknown; by?: unknown; artifact?: unknown; at?: unknown; answerId?: unknown }
     : undefined;
-  const answeredPause = (e.kind === "checkpoint" || e.kind === "ask")
+  // A checkpoint's settled result names its accepted answer. An `ask`'s is the answer's value, read
+  // as data whatever fields it holds; `journalRows` reads its answer off the pause instead.
+  const answeredPause = e.kind === "checkpoint"
     && result?.outcome === "resolved"
     && typeof result.answerId === "string"
     ? {
@@ -91,24 +106,77 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
     n,
     kind: "step",
     step: journalEntryKeyString(e),
+    effect: e.kind,
+    name: e.name,
     state: e.state,
     outcome,
+    ...(e.status !== undefined ? { status: e.status } : {}),
+    ...(e.error?.code ? { errorCode: e.error.code } : {}),
+    startedAt: e.startedAt,
+    ...(e.endedAt !== undefined ? { endedAt: e.endedAt } : {}),
     ...(typeof external?.asks === "string" ? { asks: external.asks } : {}),
     ...(typeof external?.addressee === "string" ? { addressee: external.addressee } : {}),
+    ...(typeof external?.deadlineAt === "number" ? { deadlineAt: external.deadlineAt } : {}),
+    ...(typeof external?.onExpiry === "string" ? { onExpiry: external.onExpiry } : {}),
     ...(answeredPause !== undefined ? { answer: answeredPause } : {}),
   };
 }
 
+/** The answer a settled `ask` accepted, read off its pause's status and answer record. An ask's
+ *  frozen result is the answer's value alone, so unlike a checkpoint's it names no answer to print. */
+async function acceptedAskAnswer(kv: KV, endpoint: string, token: string): Promise<StepJournalRow["answer"]> {
+  const status = await readCheckpointStatus(kv, { endpoint, token });
+  const answerId = status?.value.state === "resumed" ? status.value.settledAnswerId : undefined;
+  if (answerId === undefined) return undefined;
+  const a = await readCheckpointAnswer(kv, endpoint, token, answerId);
+  if (a === undefined)
+    throw new Error(`checkpoint "${token}" settled naming the answer ${answerId}, which is not on record; reconcile the store`);
+  return {
+    answerId,
+    ...(a.value !== undefined ? { value: a.value } : {}),
+    by: a.by,
+    ...(a.artifact !== undefined ? { artifact: a.artifact } : {}),
+    at: a.at,
+  };
+}
+
 /** The journal view `cotal run journal` prints, as rows. The step key is rendered by the export
- *  the journal itself keys with, so it is the key `answer` takes back. */
-function journalRows(records: Awaited<ReturnType<typeof replayRunJournal>>["records"]): RunJournalRow[] {
+ *  the journal itself keys with, so it is the key `answer` takes back. A settled checkpoint or
+ *  `ask` also lists the amendments filed under the token it settled under (an ask's last attempt
+ *  token rides its pending entries), read from the answer records on `kv`, and a settled ask the
+ *  answer its last attempt accepted. */
+export async function journalRows(
+  kv: KV,
+  endpoint: string,
+  records: Awaited<ReturnType<typeof replayRunJournal>>["records"],
+): Promise<RunJournalRow[]> {
   const rows: RunJournalRow[] = [];
+  const steps = new Map<string, JournalEntry[]>();
   for (const { record } of records) {
     if (record.kind === "activation") {
       rows.push({ n: record.n, kind: "activation", holder: record.holder, epoch: record.epoch, replayedTo: record.replayedTo });
       continue;
     }
-    rows.push(journalStepRow(record.n, record.entry as JournalEntry));
+    const e = record.entry as JournalEntry;
+    const row = journalStepRow(record.n, e);
+    const step = steps.get(row.step) ?? [];
+    step.push(e);
+    steps.set(row.step, step);
+    const token = e.state !== "settled" || (e.kind !== "checkpoint" && e.kind !== "ask") ? undefined : stepPauseToken(step);
+    const amendments = token === undefined ? [] : await listCheckpointAmendments(kv, endpoint, token);
+    const answer = token !== undefined && e.kind === "ask" ? await acceptedAskAnswer(kv, endpoint, token) : row.answer;
+    rows.push({
+      ...row,
+      ...(answer !== undefined ? { answer } : {}),
+      ...(amendments.length === 0 ? {} : { amendments: amendments.map((a) => ({
+        answerId: a.answerId,
+        supersedes: a.supersedes as string,
+        ...(a.value !== undefined ? { value: a.value } : {}),
+        by: a.by,
+        ...(a.artifact !== undefined ? { artifact: a.artifact } : {}),
+        at: a.at,
+      })) }),
+    });
   }
   return rows;
 }
@@ -205,7 +273,7 @@ export const cotalLangRunHost: RunHost = {
     const admission = () => readRunAdmission(mediator.jsm, planes.space, req.endpoint, req.runId);
     const handler = createRunEffectHost(mediator, {
       space: planes.space, endpoint: req.endpoint, runId: req.runId,
-      caller: runDriverCaller(req.runId), instanceId: req.instanceId, epoch: req.epoch,
+      caller: runDriverCaller(req.runId, admitted.caller.owner), instanceId: req.instanceId, epoch: req.epoch,
       holder: req.holder, defaultCheckpointTimeout: req.defaultCheckpointTimeout,
     }, authority, admission);
     const records = createRunRecordHost(mediator, req.endpoint, req.runId);
@@ -248,6 +316,26 @@ export const cotalLangRunHost: RunHost = {
     );
   },
 
+  async locateAccepted(planes: RunHostPlanes, req: RunHostLocateRequest): Promise<RunHostAcceptedAnswer> {
+    return await locateAcceptedAnswer(
+      { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint: req.endpoint },
+      { runId: req.runId, stepKey: req.stepKey, takeoverId: req.takeoverId },
+    );
+  },
+
+  async amend(planes: RunHostPlanes, req: RunHostAmendRequest): Promise<unknown> {
+    return await amendAcceptedAnswer(
+      { kv: planes.kv, js: planes.js, jsm: planes.jsm, space: planes.space, endpoint: req.endpoint },
+      {
+        accepted: req.accepted,
+        by: req.by,
+        ...(req.value !== undefined ? { value: req.value } : {}),
+        ...(req.artifact !== undefined ? { artifact: req.artifact } : {}),
+        now: req.now,
+      },
+    );
+  },
+
   async status(planes: RunHostPlanes, req: { endpoint: string; runId: string; takeoverId: string }): Promise<RunStatusView | undefined> {
     const record = await readRunRecord(planes.kv, req.endpoint, req.runId);
     if (record === undefined) return undefined;
@@ -259,7 +347,7 @@ export const cotalLangRunHost: RunHost = {
       endpoint: req.endpoint,
       spec: record.spec.value,
       ...(record.status !== undefined ? { status: record.status.value } : {}),
-      journal: journalRows(replay.records),
+      journal: await journalRows(planes.kv, req.endpoint, replay.records),
     };
   },
 
@@ -282,11 +370,27 @@ export const cotalLangRunHost: RunHost = {
       if (record === undefined) continue;
       const st = record.status?.value;
       const lineage = record.spec.value.forkedFrom;
+      // The revocation marker beside the record, as `run ps --local` reads it. Only a driver writes
+      // the record, so a run whose driver died keeps `running` there after a revoke. A marker read
+      // that fails is carried as such: "no marker" and "could not look" are different answers.
+      let revocation: Pick<RunListRow, "revoked" | "revocationUnreadable"> = {};
+      try {
+        const r = await readRunRevocation(planes.jsm, planes.space, endpoint, runId);
+        if (r !== undefined) revocation = { revoked: { by: r.by, reason: r.reason } };
+      } catch (err) {
+        revocation = { revocationUnreadable: (err as Error).message };
+      }
+      // The run's identity as its program's `run()` reports it: the pinned epoch, and the language's
+      // hash of the recorded source, which is what every resume runs (other source is a fork).
+      const program = await readRunProgram(planes.kv, endpoint, runId);
       rows.push({
         runId,
         endpoint,
         ...(st !== undefined ? { state: st.state, holder: st.holder, epoch: st.epoch, journalHigh: st.journalHigh } : {}),
         ...(lineage !== undefined ? { forkedFrom: lineage } : {}),
+        startedAt: record.spec.value.pins.startedAt,
+        ...(program !== undefined ? { programHash: programHashOf(program.source) } : {}),
+        ...revocation,
       });
     }
     return rows;

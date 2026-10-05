@@ -26,6 +26,8 @@ export function hashAgent(a: PreparedAgent): string {
     agent: a.agentType,
     // Preserve hashes of existing manifests that omit cwd. A directory change requires restart.
     ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
+    // `none` is the default and keeps the pre-`continuity:` hash; switching to `exact` is a restart.
+    ...(a.continuity === "exact" ? { continuity: a.continuity } : {}),
     model: a.model ?? null,
     variant: a.variant ?? null,
     // Sort keys so an identical option set hashes identically (map insertion order must not drift).
@@ -50,6 +52,7 @@ function toLaunchAgent(a: PreparedAgent): MeshLaunchAgent {
     name: a.name,
     agent: a.agentType,
     cwd: a.cwd,
+    ...(a.continuity === "exact" ? { continuity: a.continuity } : {}),
     role: a.role,
     model: a.model,
     variant: a.variant,
@@ -145,6 +148,12 @@ export async function preflightConnectors(prepared: PreparedManifest): Promise<s
     const variantUsers = prepared.agents.filter((a) => a.agentType === type && a.variant);
     if (variantUsers.length && !connector.supportsModelVariant)
       problems.push(`${type} does not support model variants (used by ${variantUsers.map((a) => a.name).join(", ")})`);
+    const promptUsers = prepared.agents.filter((a) => a.agentType === type && a.prompt !== undefined);
+    if (promptUsers.length && !connector.supportsPrompt)
+      problems.push(`${type} does not support a kickoff prompt (used by ${promptUsers.map((a) => a.name).join(", ")})`);
+    const exactUsers = prepared.agents.filter((a) => a.agentType === type && a.continuity === "exact");
+    if (exactUsers.length && !(connector.supportsSessionReopen && connector.supportsSessionContinuation))
+      problems.push(`${type} does not support exact session continuity (used by ${exactUsers.map((a) => a.name).join(", ")})`);
   }
   return problems.join("; ");
 }

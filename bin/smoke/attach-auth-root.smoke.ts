@@ -40,22 +40,11 @@
  * COTAL_HOME and XDG_CONFIG_HOME are sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-/** An ephemeral, collision-safe loopback port (ask the OS for a free one, then release it). */
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
 /** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
 const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
   new Promise((r) => {
@@ -411,10 +400,33 @@ try {
     rawOpen.status !== 0 && /requires auth, but no credentials were supplied/.test(rawOpen.out),
     rawOpen,
   );
+  // The refusal itself, measured where it is decided rather than through the binary: issue #752's
+  // control input. `controlCaller` answers before any network or parse, so a string that is not a
+  // credential at all lands in the same branch a freshly minted file does. That is the proof the
+  // sentence cannot be evidence about the file's age, and these cells hold the sentence to saying
+  // what the invocation is missing and which routes supply it.
+  const { controlCaller } = await import("@cotal-ai/workspace");
+  const bareRefusal = controlCaller({ creds: "definitely-not-a-credential" });
+  ok(
+    "a bare --creds auth with no endpoint-caller triple is refused naming the missing triple and the routes that mint one",
+    "refusal" in bareRefusal && /endpoint-caller triple/.test(bareRefusal.refusal) &&
+      /raw --creds .*cannot mint one|--creds .* cannot mint one/.test(bareRefusal.refusal) &&
+      /project folder/.test(bareRefusal.refusal) && /--space/.test(bareRefusal.refusal) &&
+      !/predates|re-mint/.test(bareRefusal.refusal),
+    bareRefusal,
+  );
+  const withCaller = controlCaller({ creds: "x", epCaller: { owner: "o", actor: "a", uid: "u" } });
+  ok(
+    "…and a --creds auth that already carries an endpoint-caller triple passes it through unchanged",
+    "caller" in withCaller && withCaller.caller.owner === "o" && withCaller.caller.actor === "a" && withCaller.caller.uid === "u",
+    withCaller,
+  );
   const rawCreds = runCli(["attach", "--name", SEAT, "--creds", credFile, "--server", SERVER, "--space", SPACE]);
   ok(
     "a raw --creds attach is refused at the control surface",
-    rawCreds.status !== 0 && /control surface/.test(rawCreds.out),
+    rawCreds.status !== 0 && /endpoint-caller triple/.test(rawCreds.out) &&
+      /raw --creds .*cannot mint one|--creds .* cannot mint one/.test(rawCreds.out) &&
+      /project folder/.test(rawCreds.out) && !/predates|re-mint/.test(rawCreds.out),
     rawCreds,
   );
   ok(

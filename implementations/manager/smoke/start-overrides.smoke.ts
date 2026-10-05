@@ -85,6 +85,7 @@ const recCon: Connector = {
   kind: "connector",
   name: "smoke-ov",
   requires: ["node"],
+  supportsPrompt: true, // block 4 starts it with a prompt; the contract is default-deny (#315)
   buildLaunch: (o) => { lastOpts = o; return { command: "true", args: [], env: {} }; },
 };
 registry.register(recCon);

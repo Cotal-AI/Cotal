@@ -36,6 +36,22 @@
       "replace": "  console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes)`);",
       "expectRed": "a sentinel-emitting suite greens the shard with the cell count",
       "cell": "a sentinel-emitting suite greens the shard with the cell count"
+    },
+    {
+      "name": "--offline stops excluding the live-shaped suites it classified",
+      "file": "bin/smoke/shard.mjs",
+      "find": "const planned = offline ? mine.filter((cmd) => !excluded.some((e) => e.cmd === cmd)) : mine;",
+      "replace": "const planned = mine;",
+      "expectRed": "an offline run never executed the live suite",
+      "cell": "an offline run never executed the live suite"
+    },
+    {
+      "name": "an offline run that excludes nothing is reported as a pass instead of refused",
+      "file": "bin/smoke/shard.mjs",
+      "find": "if (offline && excluded.length === 0) {\n  console.error(\n    \"--offline refused: the inventory yielded no live-shaped suite to exclude. This mode exists \" +\n      \"because the gate holds live suites; an empty exclusion set means the classifier is broken, \" +\n      \"not that the tree is clean.\",\n  );\n  process.exit(2);\n}",
+      "replace": "if (false && offline && excluded.length === 0) {\n  process.exit(2);\n}",
+      "expectRed": "an offline run that excludes nothing is refused, not reported as a clean gate",
+      "cell": "an offline run that excludes nothing is refused, not reported as a clean gate"
     }
   ]
 }

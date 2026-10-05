@@ -31,7 +31,7 @@ on:
 # Same rule as ci.yml, and for the same reason: a superseded PR run holds the group and starves
 # the run that replaced it, while a merge to main must keep its own verdict. See the note there,
 # including why `cancel-in-progress: false` on its own evicts a queued run rather than making it
-# wait. This lane is REQUIRED, so an evicted main run leaves a commit with no Windows verdict while
+# wait. windows-ok is the only Windows verdict, so an evicted main run leaves a commit with none while
 # ci-ok still reports green.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -40,7 +40,8 @@ concurrency:
   queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 jobs:
-  # REQUIRED lane — Windows-specific + broker-free, so a red is a real Windows regression.
+  # `required` lane, the one windows-ok fans in — Windows-specific + broker-free, so a red is a real
+  # Windows regression.
   required:
     name: Windows / required
     timeout-minutes: 25
@@ -184,7 +185,8 @@ jobs:
         run: pnpm smoke:cooperative-stop:live
 
   windows-ok:
-    # Single required status for the native-Windows gate: the deterministic `required` lane. The
+    # Single status for the native-Windows gate: the deterministic `required` lane. Like ci-ok it is
+    # advisory on main, where `attribution` is the only required context. The
     # sharded smoke lane is advisory (see the lane note at the top) and is deliberately NOT a
     # dependency here — listing it would keep gating on it even while it is continue-on-error.
     if: always()

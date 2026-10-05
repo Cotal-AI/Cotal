@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { once } from "node:events";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -9,18 +8,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { CotalEndpoint, isReachable, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { CotalEndpoint, eventChannel, isAguiFramePart, isReachable, parsePrincipalKey, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
+import { RUN_ERROR_EGRESS_MESSAGE } from "@cotal-ai/connector-core";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function freePort(): Promise<number> {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const port = (server.address() as { port: number }).port;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
-}
 async function waitFor<T>(name: string, read: () => T | undefined | Promise<T | undefined>, timeoutMs = 20_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -35,6 +27,8 @@ const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-host-`));
 // Control sockets are AF_UNIX. Keep them under a short root so long case names cannot put the path
 // over sun_path (104/107) and replace the startup outcome under test with a control-listen error.
 const sockRoot = mkdtempSync(join("/tmp", "cjh-"));
+// The socket root is not under `root`, so it needs its own removal, and its own signal backstop.
+const releaseSockRoot = teardownPathOnSignal(sockRoot);
 const controlSock = (name: string): string => join(sockRoot, name);
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -96,9 +90,10 @@ let outage: ChildProcess | undefined;
 let outageNats: ChildProcess | undefined;
 let operator: CotalEndpoint | undefined;
 let outageOperator: CotalEndpoint | undefined;
+const frames: Array<{ threadId: string; runId: string; events: Array<{ type: string; [key: string]: unknown }> }> = [];
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
-  assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  assert.ok(condition, `${name}${actual === undefined ? "" : `: ${JSON.stringify(actual)}`}`);
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -150,7 +145,7 @@ async function callJcodeMcp(
   });
   try {
     await client.connect(transport);
-    const result = await client.callTool({ name, arguments: arguments_ });
+    const result = (await client.callTool({ name, arguments: arguments_ })) as { content: { type: string; text: string }[]; isError?: boolean };
     return {
       text: result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"),
       isError: result.isError,
@@ -286,14 +281,29 @@ try {
   await seedChannelRegistry({ servers, space: "jcodehost", file: { defaults: { replay: false }, channels: { team: { replay: false } } } });
   operator = new CotalEndpoint({ space: "jcodehost", servers, card: { name: "operator", kind: "agent", id: "operator" }, channels: ["team"] });
   operator.on("error", () => {});
+  operator.on("message", (message: { parts: unknown[] }) => {
+    for (const part of message.parts) if (isAguiFramePart(part)) frames.push(part as typeof frames[number]);
+  });
   let peerId: string | undefined;
+  let peerMeta: Record<string, unknown> | undefined;
+  let noProviderMeta: Record<string, unknown> | undefined;
+  let foldPeerId: string | undefined;
+  const foldStatuses: string[] = [];
   let busyPeerId: string | undefined;
   let busyActivity = "";
   const announced = new Set<string>();
-  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string }; activity?: string } }) => {
+  operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string; meta?: Record<string, unknown> }; activity?: string; status?: string } }) => {
     if (event.type === "offline") return;
     announced.add(event.presence.card.name);
-    if (event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
+    if (event.presence.card.name === "jcodepeer") {
+      peerId = event.presence.card.id;
+      peerMeta = event.presence.card.meta;
+    }
+    if (event.presence.card.name === "noproviderpeer") noProviderMeta = event.presence.card.meta;
+    if (event.presence.card.name === "foldpeer") {
+      foldPeerId = event.presence.card.id;
+      foldStatuses.push(event.presence.status ?? "");
+    }
     if (event.presence.card.name === "busypeer") {
       busyPeerId = event.presence.card.id;
       busyActivity = event.presence.activity ?? "";
@@ -314,6 +324,7 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: log,
       FAKE_JCODE_JOURNAL: journal,
+      FAKE_JCODE_APPEND_RECORDS: "1",
       FAKE_JCODE_RUNTIME_PROVIDER: "selected-provider",
       FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
         { model: "fake-model", provider: "default-provider", api_method: "chat_completions", available: true, detail: "wrong route" },
@@ -344,7 +355,7 @@ try {
   await waitFor("mesh presence", () => peerId);
   check("Jcode host joins the mesh", Boolean(peerId));
   const journalModel = existsSync(journal)
-    ? (JSON.parse(readFileSync(journal, "utf8").split("\n").filter(Boolean).at(-1) ?? "{}") as { meta?: { model?: string } }).meta?.model
+    ? (JSON.parse(readFileSync(journal, "utf8").split("\n").filter(Boolean).reverse().find((line) => line.includes("\"meta\"")) ?? "{}") as { meta?: { model?: string } }).meta?.model
     : undefined;
   check(
     "session journal records the requested model pin, not the harness default",
@@ -376,6 +387,117 @@ try {
   );
   check("host copies auth mirror rather than linking it", lstatSync(join(peerHome, "auth.json")).isFile() && !lstatSync(join(peerHome, "auth.json")).isSymbolicLink());
   check("host copied auth mirror is owner-only", (statSync(join(peerHome, "auth.json")).mode & 0o777) === 0o600);
+
+  const foldLog = join(root, "journal-fold.jsonl");
+  const foldJournal = join(managedHome("jcodehost", "foldpeer"), "sessions", "fake-session.journal.jsonl");
+  const fold = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: foldLog,
+      FAKE_JCODE_JOURNAL: join(root, "journal-fold.journal.jsonl"),
+      FAKE_JCODE_SESSION_JOURNAL: foldJournal,
+      FAKE_JCODE_APPEND_RECORDS: "1",
+      FAKE_JCODE_TURN_DELAY_MS: "250",
+      FAKE_JCODE_FOLD_AFTER_RECORD: "1",
+      FAKE_JCODE_FOLD_DELAY_MS: "5000",
+      FAKE_JCODE_FOLD_ON_CONTENT: "JCODE-JOURNAL-FOLD-1984",
+      FAKE_JCODE_FOLD_WITH_TOOL: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "foldpeer",
+      COTAL_ID: "foldpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_WORKSPACE_ROOT: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_EVENTS: "1",
+      COTAL_JCODE_PROMPT: "JCODE-JOURNAL-PRIME-1984",
+      COTAL_CONTROL_SOCKET: controlSock("fold-control.sock"),
+      COTAL_CONTROL_TOKEN: "fold-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let foldErr = "";
+  fold.stderr?.on("data", (chunk: Buffer) => (foldErr += chunk.toString()));
+  await waitFor("foldpeer mesh presence", () => foldPeerId);
+  const foldPrincipal = parsePrincipalKey(foldPeerId!);
+  assert.ok(foldPrincipal, `foldpeer presence has no principal id: ${foldPeerId}`);
+  const foldEventsChannel = eventChannel(foldPrincipal);
+  const foldStart = frames.length;
+  await operator.joinChannel(foldEventsChannel);
+  const foldMarker = "JCODE-JOURNAL-FOLD-1984";
+  const foldStatusStart = foldStatuses.length;
+  await waitFor(
+    "Jcode journal fold priming turn",
+    () =>
+      readJsonLines<{ ev: string; content?: string }>(foldLog).find(
+        (entry) => entry.ev === "turn_run" && String(entry.content).includes("JCODE-JOURNAL-PRIME-1984"),
+      )
+        ? true
+        : undefined,
+  );
+  await waitFor(
+    "Jcode journal fold priming completion",
+    () =>
+      readJsonLines<{ ev: string; content?: string }>(foldLog).find(
+        (entry) => entry.ev === "turn_done_emitted" && String(entry.content).includes("JCODE-JOURNAL-PRIME-1984"),
+      )
+        ? true
+        : undefined,
+  );
+  await waitFor(
+    "Jcode journal fold priming event",
+    () => frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_STARTED")) ? true : undefined,
+  );
+  await waitFor(
+    "Jcode journal fold priming idle",
+    () => foldStatuses.slice(foldStatusStart).includes("idle") ? true : undefined,
+  );
+  await operator.unicast(foldPeerId!, foldMarker);
+  await waitFor(
+    "Jcode journal fold request",
+    () =>
+      readJsonLines<{ ev: string; frame?: { req?: string; content?: string } }>(foldLog).find(
+        (entry) => entry.ev === "request" && entry.frame?.req === "send_message" && String(entry.frame.content).includes(foldMarker),
+      )
+        ? true
+        : undefined,
+  );
+  await waitFor("Jcode journal fold scheduling", () => readJsonLines<{ ev: string }>(foldLog).find((entry) => entry.ev === "journal_fold_scheduled") ? true : undefined);
+  await waitFor(
+    "Jcode journal fold run",
+    () => frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_STARTED")) ? true : undefined,
+  );
+  await waitFor("Jcode journal fold", () => readJsonLines<{ ev: string }>(foldLog).find((entry) => entry.ev === "journal_folded") ? true : undefined);
+  await waitFor(
+    "a journal fold keeps the events-armed Jcode seat alive and ends the folded run with the fixed RUN_ERROR",
+    () => fold.exitCode !== null || fold.signalCode !== null || frames.slice(foldStart).some((frame) => frame.events.some((event) => event.type === "RUN_ERROR")) ? true : undefined,
+  );
+  const foldedFrames = frames.slice(foldStart);
+  const foldEvents = foldedFrames.flatMap((frame) => frame.events);
+  // Since #1431 the connector's code `jcode_journal_fold` stays in the seat: a published RUN_ERROR
+  // carries only the fixed message. On the wire the fold is the run that opened the checkpoint tool
+  // ending with that tool's observation closed and then one RUN_ERROR, never RUN_FINISHED.
+  const foldRunId = foldedFrames.find((frame) =>
+    frame.events.some((event) => event.type === "TOOL_CALL_START" && event.toolCallId === "checkpoint-tool"))?.runId;
+  const foldRunEvents = foldedFrames.filter((frame) => frame.runId === foldRunId).flatMap((frame) => frame.events);
+  const foldTerminals = foldRunEvents.filter((event) => event.type === "RUN_ERROR" || event.type === "RUN_FINISHED");
+  const foldToolEnd = foldRunEvents.findIndex((event) => event.type === "TOOL_CALL_END" && event.toolCallId === "checkpoint-tool");
+  const foldRunError = foldRunEvents.findIndex((event) => event.type === "RUN_ERROR");
+  check(
+    "a journal fold keeps the events-armed Jcode seat alive and ends the folded run with the fixed RUN_ERROR",
+    fold.exitCode === null && fold.signalCode === null && foldRunId !== undefined &&
+      foldTerminals.length === 1 && foldTerminals[0]!.type === "RUN_ERROR" &&
+      foldTerminals[0]!.message === RUN_ERROR_EGRESS_MESSAGE && !("code" in foldTerminals[0]!) && !("rawEvent" in foldTerminals[0]!) &&
+      foldToolEnd >= 0 && foldToolEnd < foldRunError,
+    { exitCode: fold.exitCode, signalCode: fold.signalCode, foldRunId, foldEvents, stderr: foldErr },
+  );
+  await stopHostTree(fold, "SIGTERM");
 
   // Jcode invokes this actual stdio MCP bridge, which relays across the live per-seat Unix socket
   // into the host's MeshAgent. A schema-valid explicit `peek:false` must not be rejected by either
@@ -469,10 +591,17 @@ try {
     8_000,
   ).catch(() => undefined);
   check("mesh DM becomes a Harness API turn", Boolean(turn) && JSON.stringify(turn).includes("mesh-wake"), turn);
-  const bootTurns = entries().filter((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("cotal_orientation"));
+  const bootTurns = entries().filter((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("Call the cotal_orientation tool exactly once"));
   check("host runs the mandatory cotal MCP readiness turn before joining", bootTurns.length === 1, bootTurns);
-  const joinNotice = entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && (entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"));
-  check("post-join context supersedes the pre-join orientation card", Boolean(joinNotice), joinNotice);
+  // This launch has no COTAL_JCODE_PROMPT (#1199): the post-join notice is the seat's first driven
+  // turn (through pendingKickoff/drive()), not a noReply append, so it is a real send_message with
+  // no_reply false.
+  const joinNotice = entries().find((entry) => entry.ev === "request" && (entry.frame as { req?: string; content?: string; no_reply?: boolean }).req === "send_message" && !(entry.frame as { no_reply?: boolean }).no_reply && String((entry.frame as { content?: string }).content).includes("earlier cotal_orientation result was captured before this join"));
+  check(
+    "a no-prompt seat's post-join notice is delivered as a driven turn, not a noReply append",
+    Boolean(joinNotice),
+    joinNotice,
+  );
   const requests = entries().filter((entry) => entry.ev === "request");
   const effortAt = requests.findIndex((entry) => (entry.frame as { req?: string }).req === "set_reasoning_effort");
   const effortFrame = effortAt < 0 ? undefined : (requests[effortAt].frame as { effort?: string; session_id?: string });
@@ -487,6 +616,11 @@ try {
     peerLog.includes("model fake-model is served by provider selected-provider via responses") &&
       !peerLog.includes("model fake-model is served by provider default-provider"),
     peerLog,
+  );
+  check(
+    "the presence card names the provider serving the pinned model and keeps the pin",
+    peerMeta?.provider === "selected-provider" && peerMeta?.model === "fake-model",
+    peerMeta,
   );
 
   await stopHostTree(child, "SIGTERM");
@@ -689,6 +823,51 @@ try {
   await stopHostTree(modelOnly, "SIGTERM");
   check("the model-only lag launch exits cleanly", modelOnly.exitCode === 0, { code: modelOnly.exitCode, stderr: modelOnlyErr });
 
+  // A route the Harness API names with no provider publishes no provider key: absent, never
+  // fabricated (#785).
+  const noProviderLog = join(root, "no-provider.jsonl");
+  const noProvider = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: noProviderLog,
+      FAKE_JCODE_RUNTIME_PROVIDER: "",
+      FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
+        { model: "fake-model", provider: "", api_method: "chat_completions", available: true, detail: "no provider" },
+      ]),
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "noproviderpeer",
+      COTAL_ID: "noproviderpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "0",
+      COTAL_MODEL: "fake-model",
+      COTAL_CONTROL_SOCKET: controlSock("no-provider-control.sock"),
+      COTAL_CONTROL_TOKEN: "no-provider-control-token",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let noProviderErr = "";
+  noProvider.stderr?.on("data", (chunk: Buffer) => (noProviderErr += chunk.toString()));
+  await Promise.race([
+    once(noProvider, "exit"),
+    waitFor("no-provider mesh presence", () => announced.has("noproviderpeer") ? true : undefined),
+  ]);
+  const noProviderConnectorLog = connectorLog(managedHome("jcodehost", "noproviderpeer"));
+  check(
+    "a route with no provider named by the Harness publishes no provider key",
+    (noProviderMeta === undefined || !("provider" in noProviderMeta)) &&
+      noProviderConnectorLog.includes("served by an unreported provider"),
+    { noProviderMeta, noProviderConnectorLog },
+  );
+  await stopHostTree(noProvider, "SIGTERM");
+  check("the no-provider launch exits cleanly", noProvider.exitCode === 0, { code: noProvider.exitCode, stderr: noProviderErr });
+
   // A stale RuntimeInfo.model is not permission to guess. Variant startup still requires a route for
   // the requested pin that is uniquely tied to RuntimeInfo.provider before effort can be applied.
   const missingRouteLog = join(root, "requested-route-missing.jsonl");
@@ -766,7 +945,7 @@ try {
   race.stderr?.on("data", (chunk: Buffer) => (raceErr += chunk.toString()));
   await Promise.race([once(race, "exit"), sleep(20_000)]);
   const raceEntries = readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(raceLog);
-  const raceTurns = raceEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
+  const raceTurns = raceEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("Call the cotal_orientation tool exactly once"));
   check("a first-turn MCP snapshot race recovers on one bounded retry", announced.has("racepeer") && raceTurns.length === 2, { code: race.exitCode, turns: raceTurns, stderr: raceErr });
   await stopHostTree(race, "SIGTERM");
   check("the recovered readiness launch exits cleanly", race.exitCode === 0, { code: race.exitCode, stderr: raceErr });
@@ -961,7 +1140,7 @@ try {
   const absentCode = absent.exitCode;
   await stopHostTree(absent, "SIGKILL");
   const absentEntries = readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(absentLog);
-  const absentTurns = absentEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("cotal_orientation"));
+  const absentTurns = absentEntries.filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("Call the cotal_orientation tool exactly once"));
   check("a permanently absent cotal tool gets exactly two readiness turns", absentTurns.length === 2, absentTurns);
   check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
   check("a permanently absent cotal tool never reaches the roster", !announced.has("absentpeer"), [...announced]);
@@ -1183,7 +1362,6 @@ try {
       (entry) =>
         entry.ev === "request" &&
         entry.frame?.req === "send_message" &&
-        entry.frame?.no_reply &&
         String(entry.frame.content).includes("earlier cotal_orientation result was captured before this join"),
     );
   check("post-join notice stays absent while the mesh is unreachable", !findOutageNotice(), { outageNotice: findOutageNotice(), outageErr });
@@ -1388,7 +1566,7 @@ try {
   await sleep(200);
   const midAlive = slow.exitCode === null && slow.signalCode === null;
   const midRoster = operator.getRoster().filter((p) => p.card.name === "slowpeer" && p.status !== "offline");
-  const midPeer = resolvePeer(operator.getRoster(), "slowpeer", { selfId: operator.id });
+  const midPeer = resolvePeer(operator.getRoster(), "slowpeer", { selfId: (operator as unknown as { id?: string }).id });
   const midDmError = midPeer ? undefined : `no peer "slowpeer" in space "jcodehost"`;
   const midPersona = gateEntries().find(
     (entry) =>
@@ -1540,6 +1718,9 @@ try {
     await sleep(50);
   }
   rmSync(root, { recursive: true, force: true });
+  rmSync(sockRoot, { recursive: true, force: true });
+  check("teardown: the control socket root is gone", !existsSync(sockRoot), { sockRoot });
+  releaseSockRoot();
 }
 
 console.log(`\nJCODE HOST SMOKE: ${pass} passed, 0 failed`);

@@ -31,6 +31,7 @@
  * free port. Left alone they are a live cause of port flake, not just clutter.
  */
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 /**
  * One live `nats-server` process, as `ps` reports it.
@@ -125,10 +126,21 @@ const alive = (pid) => {
  * read before it is acted on. It is the honest way to answer "what would this kill on my machine",
  * and the answer is worth having: on one developer box, of 15 live brokers it claimed 1.
  *
- * @param {{ dryRun?: boolean }} [opts]
+ * `scope` restricts a post-suite pass to that suite's token. A foreign owner can die while this
+ * suite runs; the time its broker became orphaned does not establish who should be blamed.
+ * Omitting scope keeps the global pre-run cleanup available.
+ *
+ * @param {{ dryRun?: boolean, scope?: string }} [opts]
  * @returns {ReapReport}
  */
-export function reapSmokeBrokers({ dryRun = false } = {}) {
+export function reapSmokeBrokers({ dryRun = false, scope } = {}) {
+  if (scope !== undefined && (typeof scope !== "string" || !scope.trim())) {
+    throw new Error("smoke broker scope must be a non-empty string");
+  }
+  const digest = scope === undefined ? undefined
+    : createHash("sha256").update(scope.trim()).digest().subarray(0, 16).toString("base64url");
+  const ownerPattern = digest === undefined ? OWNER_RE
+    : new RegExp(`${SMOKE_BROKER_PREFIX}(\\d+)-s${digest}-`);
   const rows = listNatsServers();
   if (rows === undefined) {
     return { inspected: 0, reaped: [], ownedLive: 0, unparseable: 0, unclaimable: 0, supported: false };
@@ -139,8 +151,11 @@ export function reapSmokeBrokers({ dryRun = false } = {}) {
   const reaped = [];
   let ownedLive = 0, unparseable = 0;
   for (const { pid, args } of tokened) {
-    const owner = OWNER_RE.exec(args);
-    if (!owner) { unparseable++; continue; } // pre-fix format: owner unknown, which is not owner dead
+    const owner = ownerPattern.exec(args);
+    if (!owner) {
+      if (scope === undefined) unparseable++;
+      continue; // Unknown owners and brokers outside this scope are not this suite's leaks.
+    }
     if (alive(Number(owner[1]))) { ownedLive++; continue; } // someone is still using it
     if (!alive(pid)) continue;
     if (dryRun) { reaped.push({ pid, args, owner: Number(owner[1]) }); continue; }

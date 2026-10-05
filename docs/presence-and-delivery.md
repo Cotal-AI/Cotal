@@ -1,6 +1,6 @@
 # Message flow
 
-> **Concept** (informative) · **For:** everyone · **Normative:** [SPEC §4](../SPEC.md#4-delivery-modes), [§6](../SPEC.md#6-presence-and-discovery), [§7](../SPEC.md#7-channels), [§8](../SPEC.md#8-nats--jetstream-binding)
+> **Concept** (informative) · **For:** everyone · **Normative:** [SPEC §4](../SPEC.md#4-delivery-modes), [§6](../SPEC.md#6-presence-and-discovery), [§6.1](../SPEC.md#61-plane-liveness), [§7](../SPEC.md#7-channels), [§8](../SPEC.md#8-nats--jetstream-binding)
 
 How peers see each other and how messages reach them: the presence directory, the three
 delivery modes, and the two delivery guarantees. This page explains; the linked spec
@@ -34,9 +34,23 @@ preference is mirrored here too (below). Each instance writes *only its own* key
 is where discovery lives (our equivalent of `.well-known`), not a place to describe others.
 The optional `condition` beside status relays a harness-reported cause such as `rate_limit`,
 `approval`, or `input`; missing means the harness reported none. A condition is cleared when a
-normal next turn starts. The optional `environment` is an opaque provider reference. Core publishes
-it and never interprets it. Readers reject a row whose `card.id` does not match its KV key and report
-that rejection through the recoverable warning path.
+normal next turn starts. The optional `activeAt` is the epoch ms of the last work event the harness
+reported, such as a token or a tool call; missing means the connector reports none. `ts` is only the
+heartbeat, so a seat whose turn stopped advancing keeps a fresh `ts` and an old `activeAt`. The
+connector records it as events arrive and the next heartbeat carries it. `cotal ps`, `cotal status`,
+`cotal endpoints` and `cotal_roster` print a condition with its age and the age of `activeAt`, such
+as `waiting (rate_limit for 40m) · active 40m ago`. The optional `statusSince` is the epoch ms when the
+instance entered its current status and activity. A change to either moves it, while a heartbeat or a
+repeated report does not, so an activity that outlived what it described reads as old. `cotal_roster`
+prints its age, such as `idle · unchanged for 40m`. An offline record carries none, because an observer
+that derives `offline` from a stale heartbeat does not know when the peer left. The optional
+`activitySince` is when the current activity was set. A status change does not move it, so an
+activity left behind while hooks flip the status every turn still shows its age, such as
+`(set 9h ago)` after the activity on a `cotal_roster` row. The optional `environment` is an opaque provider reference. Core publishes
+it and never interprets it. Readers reject a row whose `card.id` does not match its KV key, whose
+`card.name` or `status` is missing or has the wrong type, or whose `ts` is not a finite number, and
+report that rejection through the recoverable warning path. A kept row whose `ts` is missing or text
+such as `"nope"` would never read as stale, so it would stay live after its key expired.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
 on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
 
@@ -56,6 +70,71 @@ does not register (nobody is present), and a wipe for one that does (its own key
 the latter re-publishes itself and lets the delivery of that record make the view current.
 `cotal ps` prints `mesh unknown` with the reason, never a liveness word, for a row whose
 manager reports a view that is not `current` ([cli.md](cli.md)).
+
+Presence publishing is also monitored separately from the watch. One refused heartbeat remains a
+recoverable warning. If consecutive writes keep failing for a full presence TTL, the endpoint raises
+`PresenceWriteStuckError` with code `presence-write-stuck` and marks the failure record as stuck.
+`cotal_orientation` and `cotal_roster` then say the view is not live and label roster rows as
+last-known until a write succeeds. A successful write resets the consecutive count and clears the
+condition. The condition is local diagnosis, not a new wire field.
+
+The same two tools also render the view's own trust state: under an `unpopulated` view `cotal_roster`
+says the presence watch has not completed its initial snapshot, so the list may be partial and a
+missing name is not an absence verdict, and under a `stale` view it names the silent-since instant
+and labels the rows last-known. A send or DM to a name the observer cannot verify is refused with
+that condition rather than sent, instead of being reported as an unknown peer.
+
+## Plane liveness
+
+Presence tells you which peers are around. It does not tell you whether the manager or the
+delivery daemon is up, and the lease buckets that do know are not readable by agents. So when a
+join or a send fails, a peer used to have no way to separate a credential problem from a dead
+manager or an unbound delivery daemon.
+
+Any credentialed peer can now ask. It sends an empty request on
+`cotal.<space>.live.<plane>.<owner>.<actor>`, where `<plane>` is `manager` or `delivery` and
+`<owner>.<actor>` is its own principal, and names its reply subject under that request as
+`<request>.reply.<nonce>`. In code this is `CotalEndpoint.probeLiveness(plane)`. Any other plane
+name is refused before anything is sent.
+
+The reply is a `LivenessAnswer`:
+
+```json
+{ "plane": "delivery", "responder": "bound", "instance": "3f1c0b52-..." }
+```
+
+`responder` is one of `bound`, `unbound`, `stale` or `unknown`. `instance` is an opaque token
+the responder mints each time it binds. Two answers with different tokens came from two
+responders, which is how a caller probing more than once can spot two manager instances that
+disagree. The token identifies nothing else: it is not the instance id, the principal, a pid, a
+host or a path. The reply carries nothing beyond these three fields, so the lease row's holder
+and workspace path never leave the responder.
+
+How the caller reads the outcome:
+
+| What happened | `responder` |
+| --- | --- |
+| a well-formed reply | whatever the reply says |
+| the broker answered "no responders" | `unbound` |
+| timeout, permission refusal, transport failure | `unknown` |
+| a reply that does not parse | `unknown` |
+
+`unknown` means the probe did not find out. It is never a health report. Each responder grades
+only itself. The manager says `bound` while its service endpoint is serving, and `unbound` while
+that connection is down, both while the client reconnects it and while the manager re-dials it
+after a close. The delivery daemon
+reads its own shard lease: no ready row is `unbound`, a ready row held by another instance is
+`stale`, its own ready row is `bound`. A responder that cannot read its own state answers
+`unknown`.
+
+Responders serve `live.<plane>.*.*` in the queue group `live.<plane>`, so one probe gets one
+answer from one instance. Only the plane's own credential holds that filter, and its reply grant
+stops at the `.reply.` leaf, so a responder cannot forge a probe and an agent cannot answer one.
+A request whose reply target is outside the caller's own `.reply.` subtree is dropped with a
+warning, and the responder keeps serving. When an endpoint replaces its broker connection it
+binds its responders again on the new one, under a new token, so a reconnect does not leave the
+plane looking unbound. The normative rules are in
+[SPEC §6.1](../SPEC.md#61-plane-liveness).
 
 ## Three delivery modes
 
@@ -108,6 +187,24 @@ reader keeps its own bookmark, catching up at its own pace with nothing missed a
 interruption required. One mechanism covers three needs at once: live delivery, the
 inbound buffer, and late-join history. DMs and anycast are always at-least-once this way
 ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
+
+A send result proves only that the broker accepted and stored the message at a sequence
+(`stored seq N`), not that any recipient read it: `cotal send dm` and the `cotal_dm` tool
+report that sequence together with the recipient's roster status at the moment of send
+(`idle`, `working`, or `offline`), and neither ever claims `delivered`. A `cotal_dm` reply to a
+sender that has no roster row, such as a one-shot `cotal send`, reads
+`recipient had no roster row at send` instead: the DM stream keeps it under the sender's id, and
+it may never reach an inbox. The stored sequence
+is a fact about the stream; the status-at-send words are a fact about the roster a moment
+before publish; retention (how long the durable holds it, whether a same-name respawn
+inherits it) is a third, separate fact, covered below and inspectable with
+[`cotal deliver pending`](cli.md#deliver).
+
+A recipient's connector acknowledges a DM only once it has handed it to the session. When the
+session is busy and its bounded local inbox fills with directed mail, the oldest DM is evicted
+from that buffer but left unacknowledged: it stays pending on the recipient's durable and the
+broker redelivers it after the durable's ack wait, so it lands once the session drains
+([Connect Claude](connect-claude.md#how-messages-reach-the-session)).
 
 ## Channel delivery
 

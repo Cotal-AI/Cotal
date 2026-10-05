@@ -4,6 +4,8 @@ import {
   assertLifecycleToken,
   dialerFor,
   invokeCommand,
+  isPermissionDenied,
+  issuedUserCaller,
   replyRefusedBeforeEffect,
   resolveService,
   standaloneConnectOpts,
@@ -50,13 +52,27 @@ export async function invokeUserManager(
   opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal } = {},
 ): Promise<EpAttributedReply> {
   opts.signal?.throwIfAborted();
-  const { caller, instanceId } = managerCallerBinding(bearer, config);
+  const { caller: triple, instanceId } = managerCallerBinding(bearer, config);
+  const connectOpts = standaloneConnectOpts({ bearer, sentinelCreds: config.userAuth!.sentinelCreds, tls: config.tls });
   const nc = await dialerFor(config.servers)({
     servers: config.servers,
-    ...standaloneConnectOpts({ bearer, sentinelCreds: config.userAuth!.sentinelCreds, tls: config.tls }),
+    ...connectOpts,
     maxReconnectAttempts: 0,
     timeout: Math.min(opts.deadlineMs ?? 10_000, 2_000),
   });
+  // An interactive row's view is issued at the callout (SPEC 13.15) and carries the read of its own
+  // accepted row; a managed row's view carries no such grant, so the broker refuses the read and the
+  // connection keeps the legacy rail its rows name. The request surfaces that refusal as a
+  // RequestError whose cause is the permission violation.
+  let caller: EpCaller = triple;
+  try {
+    caller = await issuedUserCaller(nc, config.space, String(connectOpts.name), triple);
+  } catch (e) {
+    if (!isPermissionDenied(e)) {
+      await nc.close();
+      throw e;
+    }
+  }
   const onAbort = () => { void nc.close(); };
   opts.signal?.addEventListener("abort", onAbort, { once: true });
   try {

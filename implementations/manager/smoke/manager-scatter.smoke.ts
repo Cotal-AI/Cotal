@@ -17,29 +17,25 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { createServer, type AddressInfo } from "node:net";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import {
+import type { EpCaller } from "@cotal-ai/core";
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+process.env.COTAL_HOME = join(dir, "home");
+const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER,
   openRecordsBucket, freezeExpectedSet, resolveService, scatterCommand, instancePinnedInstrumentCapabilities,
   epProbeInstanceInterest,
-  type EpCaller,
-} from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+} = await import("@cotal-ai/core");
+const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
+const { Manager } = await import("../src/manager.js");
+const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -51,7 +47,6 @@ const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const SPACE = `mgrscatter-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(SPACE);
-const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const mkRoot = (tag: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });
@@ -60,7 +55,7 @@ const mkRoot = (tag: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection } };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -123,6 +118,10 @@ try {
   // the exact state this section exists to test. A host that dies writes nothing: its connections
   // drop and its registration stays READY forever. Closing the serve connection under the manager
   // reproduces that on the rails that matter, and nothing else here reproduces it at all.
+  // The manager treats any serve-connection close that is not its own stop() as a fault and
+  // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
+  // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
+  (m2 as unknown as MgrPriv).leaseStopping = true;
   await ((m2 as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
   m2 = undefined; // left unstopped on purpose: a stop would deregister the corpse this section needs
   await wait(500);

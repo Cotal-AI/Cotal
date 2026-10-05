@@ -1,5 +1,54 @@
 # @cotal-ai/connector-codex
 
+## 0.65.0
+
+## 0.64.0
+
+## 0.63.0
+
+## 0.62.0
+
+## 0.61.0
+
+## 0.60.0
+
+## 0.59.0
+
+### Patch Changes
+
+- 608f5f4: Re-attach doc comments that had drifted away from the declarations they document. A `/** */` block followed directly by another one documented nothing, so editor hovers and the published type declarations showed no doc for the intended declaration (for example `Manager`, the `plane3` field and `AclResolver`). Each such block now sits above its declaration, is merged into the block it duplicated, or is removed when its declaration no longer exists. A new `pnpm check:doc-comments` check, run as part of `check:docsbundle`, refuses a doc block followed directly by another in shipped source.
+
+## 0.58.0
+
+## 0.57.0
+
+## 0.56.1
+
+### Patch Changes
+
+- 6b76946: A seat resumed from a preservation cut backfills its channels from the chat stream sequence its prior incarnation had reached instead of replaying the whole retained window.
+
+## 0.56.0
+
+### Patch Changes
+
+- fdc2c35: The codex host persists the event plane's bind boundary into the log as soon as the start
+  succeeds, instead of waiting for the emitter's first read. A host that dies between a successful
+  bind and its first pump now resumes from the recorded boundary instead of taking a fresh one at
+  the file's later end, so it no longer drops what the thread wrote in between.
+- ff2851c: Compare receive keys in the codex steer filter, so an empty-id message already steered into a turn is not steered again.
+
+  `surfaced` holds receive keys (a minted one for an id-less delivery), but the steer filter tested the raw `item.id`. For a message whose wire id is the empty string that test never matched, so every pass of the steer loop re-admitted an already-steered empty-id item and injected it again into the live turn for as long as the turn stayed open. The filter now tests `item.recvKey` against the set, with a one-line comment stating that `surfaced` holds receive keys.
+
+## 0.55.0
+
+### Patch Changes
+
+- d5dd72a: The codex-host smoke tolerates a torn JSONL tail at every poll: the two remaining direct parse chains inside `waitFor` polls now read through `readJsonLines`, which drops a partial trailing line a live child is still appending.
+- 2525286: Every settle-dependent cell in the codex lifecycle smoke carries its wait's margin, so a timed-out wait fails as a timed-out wait.
+- 59ca157: The codex host logs the rollout path it publishes from as a quoted value, and the lifecycle smoke reads the path from that value instead of from the sentence around it.
+- d284ee6: A manifest or spawn prompt on a connector that cannot deliver one is refused at preflight (including `up -f --dry-run`), at spawn and in the manager, the way an unsupported model variant is: connectors now declare `supportsPrompt`, and claude, opencode, codex, jcode and pi declare it; hermes keeps its launch-time throw as the second line of defence.
+
 ## 0.54.0
 
 ### Patch Changes

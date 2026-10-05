@@ -26,10 +26,15 @@
  * `stop({ withAgents: true })` reaps.
  *
  * What runs here:
- *   SPARE phase: manager up, one live managed seat, then a plain `mgr.stop()`. The seat
- *   process and minted creds remain.
+ *   SPARE phase: manager up over the custodial pty runtime, one live managed seat, then a plain
+ *   `mgr.stop()`. The seat process and minted creds remain. The default pty runtime keeps each
+ *   PTY inside the manager process, so its seats cannot be spared and stop with it (#2440).
  *   REAP phase: a second manager on a separate root, `stop({ withAgents: true })`. That
  *   seat is dead and its creds are gone, while the independently spared seat remains.
+ *   A failed run then prints the delivery daemon's state before teardown kills it: exited (code and
+ *   signal) or still running, read again after the rail request so a death during it shows, what one
+ *   fresh request on its ctl.delivery-admin rail returns, and its output tail. A rail timeout alone
+ *   reads the same for a dead, a stalled and a slow daemon (#1226).
  *
  * NAMED GAPS (deliberate, not oversights):
  *   - The CLI `down` surface itself is not driven here: this host must never run `cotal down`
@@ -41,15 +46,14 @@
  *   - The broker-side footprint (dm_/dlv_ durables, ACL row) is not asserted; the on-disk creds
  *     file is the asserted deprovision observable.
  *
- * Throwaway everything: own authed nats-server on an OS-assigned free port (ONE space - each
- * space reserves a 4 GiB artifact store on the broker's tmpfs store dir), sandboxed COTAL_HOME,
+ * Throwaway everything: own authed nats-server on an OS-assigned free port (ONE space is all the rig
+ * needs; the artifact Object Store reserves nothing, so the count is not a capacity choice), sandboxed COTAL_HOME,
  * scratch workspace root, kills only PIDs it spawned or that its own children wrote to pidfiles.
  * No live stack is touched, no `cotal up`/`down` anywhere. Needs nats-server on PATH.
  * Run: pnpm smoke:manager-stop-reap
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeScratch } from "./_scratch.js";
 
@@ -60,14 +64,18 @@ const home = mkdtempSync(join(scratch, "home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = join(home, "xdg");
+// The spare phase's custodial seat keeps its custody record in this run's scratch.
+const seatRoot = join(scratch, "seats");
+process.env.COTAL_SEAT_ROOT = seatRoot;
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 
 const { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } = await import("@cotal-ai/smoke-kit");
-const { createSpaceAuth, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, parseCommandArgs, probeConnect, registry, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
+const { CotalEndpoint, createSpaceAuth, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, parseCommandArgs, probeConnect, registry, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
 const { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, authDir, recordMesh, saveSpaceAuth, spaceSegment, workspaceSecretStore } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop) into the registry
 const { Manager } = await import("@cotal-ai/manager");
-import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
+import type { Command, Connector, LaunchOpts, RuntimeProvider, SpaceAuth } from "@cotal-ai/core";
+import { freePort } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
 
 let pass = 0;
@@ -98,15 +106,6 @@ const until = async (cond: () => boolean, ms: number): Promise<boolean> => {
   }
   return cond();
 };
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
 const alive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 };
@@ -166,6 +165,11 @@ const seatCon: Connector = {
   },
 };
 registry.register(seatCon);
+// A plain stop can spare only a seat that outlives the manager, so the spare phase runs over the
+// custodial runtime; the default pty runtime stops its in-process seats with the manager (#2440).
+const { CustodialPtyRuntime } = await import("../../implementations/manager/src/runtime/custodial-pty.js");
+const custodialProvider: RuntimeProvider = { kind: "runtime", name: "custodial-pty", available: () => true, create: () => new CustodialPtyRuntime() };
+registry.register(custodialProvider);
 
 const cmd = (name: string): Command => {
   const c = registry.all<Command>("command").find((x) => x.name === name);
@@ -205,15 +209,52 @@ let releaseBroker: (() => void) | undefined;
 let brokerProc: ChildProcess | undefined;
 let brokerStore: string | undefined;
 let daemon: ChildProcess | undefined;
-const daemonSink = { out: "", exited: false };
+const daemonSink = { out: "", exited: false, exit: "" };
+let spaceAuth: SpaceAuth | undefined;
 let mgr1: InstanceType<typeof Manager> | undefined;
 let mgr2: InstanceType<typeof Manager> | undefined;
+/** The delivery daemon's state when a run fails (#1226). The process state separates dead from
+ *  alive, and it is read before and after the probe, so a daemon that dies while the probe waits
+ *  does not read as a live one that timed out. One fresh request on its rail, with the scoped
+ *  one-shot credential the shipped verify-evict path uses, separates a daemon that answers now (it
+ *  was slow) from one that still does not (it is stalled); "no responders" means nothing serves the rail. */
+const daemonState = async (): Promise<string> => {
+  const d = daemon;
+  if (!d) return "never started";
+  const procNow = () => daemonSink.exited ? `exited (${daemonSink.exit})` : `running (pid ${d.pid})`;
+  const asked = procNow();
+  let rail = "not asked (no space auth)";
+  if (spaceAuth) {
+    const id = newIdentity();
+    let probe: InstanceType<typeof CotalEndpoint> | undefined;
+    const t0 = Date.now();
+    try {
+      probe = new CotalEndpoint({
+        space: SPACE, servers: SERVER, creds: await mintCreds(spaceAuth, id, "endpoint-evictor", { expiresInSeconds: 60 }),
+        card: { id: id.id, name: "reap964-rail-probe", kind: "endpoint" },
+        channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
+      });
+      probe.on("error", () => {});
+      await probe.start();
+      const r = await probe.requestDeliveryAdmin("reloadStoreIdentity", {}, 15_000);
+      rail = `answered after ${Date.now() - t0}ms (${r.ok ? "ok" : `refused: ${r.error}`})`;
+    } catch (e) {
+      rail = `${e instanceof Error ? e.message : String(e)} after ${Date.now() - t0}ms`;
+    } finally {
+      await probe?.stop().catch(() => {});
+    }
+  }
+  const after = procNow();
+  const proc = after === asked ? after : `${asked} when asked, then ${after} during the ask`;
+  return `${proc}; ctl.delivery-admin rail asked again: ${rail}; output tail: ${JSON.stringify(daemonSink.out.slice(-600))}`;
+};
 
 console.log("\n── #964: default stop spares, explicit stop reaps ─────────────\n");
 try {
   console.log("manager-stop-reap: first-line");
   // ── the rig: one authed broker, one provisioned space ─────────────────────────────────────────
   const auth = await createSpaceAuth(SPACE);
+  spaceAuth = auth;
   saveSpaceAuth(authDir(root), auth);
   brokerStore = mkdtempSync(join(scratch, `${SMOKE_BROKER_TOKEN}964-js-`));
   const conf = join(base, "server.conf");
@@ -257,7 +298,7 @@ try {
   });
   daemon.stdout!.on("data", (b: Buffer) => { daemonSink.out += b.toString(); });
   daemon.stderr!.on("data", (b: Buffer) => { daemonSink.out += b.toString(); });
-  daemon.on("exit", () => { daemonSink.exited = true; });
+  daemon.on("exit", (code, signal) => { daemonSink.exited = true; daemonSink.exit = `code ${code}, signal ${signal}`; });
   // Both readiness signals, not just the first: the manager's start() runs a renewal pass whose
   // adoption needs the daemon's membership feed - a pass that beats the feed leaves the daemon on
   // its pre-renewal principal and the control phase then addresses a rail nobody serves.
@@ -270,7 +311,7 @@ try {
   );
 
   // ── SPARE phase: one live seat, then a plain manager stop ─────────────────────────────────────
-  mgr1 = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: root, secretStore: sharedSecretStore });
+  mgr1 = new Manager({ space: SPACE, servers: SERVER, runtime: "custodial-pty", workspaceRoot: root, secretStore: sharedSecretStore });
   await mgr1.start();
   await spawnSeat("seatA");
   must("seat A spawned through the manager (the throwaway connector built its launch)", optsByName.has("seatA"));
@@ -331,6 +372,7 @@ try {
   fail++;
   console.log(`  ✗ scenario threw: ${e instanceof Error ? e.message : String(e)}`);
 } finally {
+  if (fail > 0) console.log(`  delivery daemon at failure: ${await daemonState()}`);
   for (const m of [mgr1, mgr2]) {
     try { if (m) await m.stop({ withAgents: true }); } catch { /* teardown only */ }
   }
@@ -339,6 +381,9 @@ try {
     const pid = pidOf(join(pidDir, `${seat}.pid`));
     if (pid !== undefined && alive(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
   }
+  // A custodian exits on its own once its child is gone and removes its record; let it before the
+  // scratch root goes, so no custodian of this run outlives the suite.
+  for (let i = 0; i < 50 && existsSync(seatRoot) && readdirSync(seatRoot).some((id) => existsSync(join(seatRoot, id, "record.json"))); i++) await sleep(200);
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* already gone */ } }
   if (daemon) await killAndAwaitExit(daemon, "SIGKILL");
   if (brokerProc) await killAndAwaitExit(brokerProc, "SIGKILL");

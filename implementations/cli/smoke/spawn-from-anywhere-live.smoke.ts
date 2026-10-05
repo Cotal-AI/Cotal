@@ -14,22 +14,12 @@
  * never pkill, so a co-running broker on :4222 is untouched. Run: pnpm smoke:spawn-from-anywhere:live
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { createServer, type AddressInfo, type Server } from "node:net";
+import { createServer, type Server } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
-/** An ephemeral, collision-safe loopback port (ask the OS for a free one, then release it). */
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
 /** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
 const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
   new Promise((r) => {

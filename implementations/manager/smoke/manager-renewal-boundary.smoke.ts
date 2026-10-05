@@ -24,36 +24,118 @@
  *
  * Run: pnpm smoke:manager-renewal-boundary
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROBE = join(HERE, "_probe-457-renewal-boundary.ts");
 
-interface ProbeResult { rc: number; stdout: string; verdict: "SURVIVED" | "FAILED" | "UNKNOWN"; }
+type Verdict = "SURVIVED" | "FAILED" | "RECOVERED" | "DEAD" | "UNKNOWN";
+interface ProbeResult { rc: number; stdout: string; stderr: string; verdict: Verdict; }
 
-async function runProbe(flag?: "--mutant" | "--control"): Promise<ProbeResult> {
-  return await new Promise((resolve, reject) => {
-    const args = ["tsx", PROBE];
-    if (flag) args.push(flag);
-    // The probe boots its own broker and mints its own creds; nothing from an ambient seat may reach it.
-    // suite-ambient-env grades this shape: strip COTAL_ from the copy before the copy is spread.
-    const env: NodeJS.ProcessEnv = { ...process.env };
-    for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
-    env.TMPDIR = process.env.TMPDIR ?? "/var/tmp";
-    const child = spawn("pnpm", args, { stdio: ["ignore", "pipe", "pipe"], env });
-    let stdout = ""; let stderr = "";
-    child.stdout.on("data", (b) => { stdout += b.toString(); });
-    child.stderr.on("data", (b) => { stderr += b.toString(); });
-    child.on("error", reject);
-    child.on("exit", (rc) => {
-      const line = stdout.split("\n").find((l) => l.startsWith("BOUNDARY_RESULT="));
-      const verdict = line?.endsWith("SURVIVED") ? "SURVIVED" : line?.endsWith("FAILED") ? "FAILED" : "UNKNOWN";
-      if (verdict === "UNKNOWN") console.error(`  probe stderr: ${stderr}`);
-      resolve({ rc: rc ?? -1, stdout, verdict });
-    });
+// Every mode prints exactly one verdict line whose prefix names the signal it grades:
+// BOUNDARY_RESULT (--control/--mutant, --phase variants) or CLOSE_RESULT (--close variants).
+const VERDICT_PREFIXES = ["BOUNDARY_RESULT=", "CLOSE_RESULT="];
+
+async function runProbes() {
+  const scratch = mkdtempSync(join(process.env.TMPDIR ?? "/var/tmp", "renewal-"));
+  const live = new Set<ChildProcess>();
+  const posix = process.platform !== "win32";
+  let interrupted: NodeJS.Signals | null = null;
+  let grace: NodeJS.Timeout | undefined;
+  let cleanupError: unknown;
+  const killProbe = (child: ChildProcess, signal: NodeJS.Signals): void => {
+    if (child.pid === undefined) return;
+    try {
+      if (posix) process.kill(-child.pid, signal);
+      else {
+        const result = spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        if (result.error) throw result.error;
+        if (result.status !== 0) {
+          process.kill(child.pid, 0); // ESRCH means the child exited before taskkill reached it.
+          throw new Error("could not stop renewal probe process tree");
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  };
+  const stopAll = (signal: NodeJS.Signals): void => {
+    for (const child of live) {
+      try { killProbe(child, signal); }
+      catch (error) { cleanupError ??= error; }
+    }
+  };
+  const onExit = (): void => stopAll("SIGKILL");
+  process.on("exit", onExit);
+  const handlers = (["SIGINT", "SIGTERM", "SIGHUP"] as const).map((signal) => {
+    const handler = (): void => {
+      interrupted ??= signal;
+      stopAll("SIGTERM");
+      grace ??= setTimeout(() => stopAll("SIGKILL"), 5_000);
+    };
+    process.on(signal, handler);
+    return [signal, handler] as const;
   });
+
+  async function runProbe(flags: readonly string[] = []): Promise<ProbeResult> {
+    return await new Promise((resolve, reject) => {
+      const args = ["tsx", PROBE, ...flags];
+      // The probe boots its own broker and mints its own creds; nothing from an ambient seat may reach it.
+      // suite-ambient-env grades this shape: strip COTAL_ from the copy before the copy is spread.
+      const env: NodeJS.ProcessEnv = { ...process.env };
+      for (const k of Object.keys(env)) if (k.startsWith("COTAL_")) delete env[k];
+      env.TMPDIR = scratch;
+      const child = spawn("pnpm", args, { stdio: ["ignore", "pipe", "pipe"], env, detached: posix });
+      live.add(child);
+      let stdout = ""; let stderr = "";
+      child.stdout.on("data", (b) => { stdout += b.toString(); });
+      child.stderr.on("data", (b) => { stderr += b.toString(); });
+      child.on("error", reject);
+      child.on("close", (rc) => {
+        live.delete(child);
+        // A closed leader must not leave a descendant running in its private process group.
+        try { if (posix) killProbe(child, "SIGKILL"); }
+        catch (error) { reject(error); return; }
+        const line = stdout.split("\n").find((l) => VERDICT_PREFIXES.some((p) => l.startsWith(p)));
+        const raw = line?.split("=")[1];
+        const verdict: Verdict = raw === "SURVIVED" || raw === "FAILED" || raw === "RECOVERED" || raw === "DEAD" ? raw : "UNKNOWN";
+        resolve({ rc: rc ?? -1, stdout, stderr, verdict });
+      });
+    });
+  }
+
+  try {
+    // Handle every rejection immediately and wait for all probes before grading. Each probe
+    // still owns a fresh broker, port and credentials, with its original clocks and TTLs.
+    return await Promise.allSettled([
+      runProbe(),
+      runProbe(["--mutant"]),
+      runProbe(["--phase"]),
+      runProbe(["--phase", "--mutant"]),
+      runProbe(["--phase", "--mutant-no-push"]),
+      runProbe(["--close"]),
+      runProbe(["--close", "--mutant"]),
+    ]);
+  } finally {
+    if (grace !== undefined) clearTimeout(grace);
+    process.off("exit", onExit);
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+    rmSync(scratch, { recursive: true, force: true });
+    if (cleanupError !== undefined) throw cleanupError;
+    if (interrupted !== null) {
+      process.stderr.write(`renewal probes: interrupted by ${interrupted}\n`);
+      process.exit(128 + ({ SIGHUP: 1, SIGINT: 2, SIGTERM: 15 } as Record<string, number>)[interrupted]!);
+    }
+  }
+}
+
+function completedProbe(result: PromiseSettledResult<ProbeResult>): ProbeResult {
+  if (result.status === "rejected") throw result.reason;
+  if (result.value.verdict === "UNKNOWN") console.error(`  probe stderr: ${result.value.stderr}`);
+  return result.value;
 }
 
 let pass = 0, fail = 0;
@@ -64,20 +146,69 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 console.log("== #457 renewal-boundary cell ==");
 
+const probes = runProbes();
+
 // Cell 1: the shipped schedule survives the boundary.
-console.log("[cell 1/2] schedule under credRenewIntervalMs(TTL): must SURVIVE the boundary");
-const fixed = await runProbe();
+console.log("[cell 1/8] schedule under credRenewIntervalMs(TTL): must SURVIVE the boundary");
+const results = await probes;
+const fixed = completedProbe(results[0]);
 check("BOUNDARY_RESULT=SURVIVED with the shipped schedule", fixed.verdict === "SURVIVED",
   { rc: fixed.rc, tail: fixed.stdout.split("\n").slice(-6).join(" | ") });
 check("probe exited 0 when the schedule holds", fixed.rc === 0, { rc: fixed.rc });
 
 // Cell 2: the mutant (interval = TTL/2) reddens the same probe. Proves this cell tests the
 // schedule and not e.g. the broker's grace period.
-console.log("[cell 2/2] --mutant reverts interval to TTL/2: must FAIL the boundary");
-const mutant = await runProbe("--mutant");
+console.log("[cell 2/8] --mutant reverts interval to TTL/2: must FAIL the boundary");
+const mutant = completedProbe(results[1]);
 check("BOUNDARY_RESULT=FAILED with interval=TTL/2 (the parent's schedule)", mutant.verdict === "FAILED",
   { rc: mutant.rc, tail: mutant.stdout.split("\n").slice(-6).join(" | ") });
 check("mutant probe exited non-zero when the schedule misses the window", mutant.rc !== 0, { rc: mutant.rc });
+
+// Cell 3: phase offset. The shipped renewAt schedule renews inside the window and reconnect()
+// carries the new credential, independent of a decoy interval running with the parent's buggy phase.
+console.log("[cell 3/8] --phase: renewAt schedule must SURVIVE despite a decoy TTL/2 interval");
+const phase = completedProbe(results[2]);
+check("phase offset: the shipped renewAt schedule renews inside the window and reconnect() carries the new credential",
+  phase.verdict === "SURVIVED", { rc: phase.rc, tail: phase.stdout.split("\n").slice(-6).join(" | ") });
+check("phase probe exited 0", phase.rc === 0, { rc: phase.rc });
+
+// Cell 4: phase offset mutant (interval-only). Strips the renewAt timeout, keeps only the decoy
+// interval -- reproduces the parent bug's phase sensitivity.
+console.log("[cell 4/8] --phase --mutant: interval-only (no renewAt timeout) must FAIL");
+const phaseMutant = completedProbe(results[3]);
+check("phase offset mutant: interval-only misses the window",
+  phaseMutant.verdict === "FAILED", { rc: phaseMutant.rc, tail: phaseMutant.stdout.split("\n").slice(-6).join(" | ") });
+check("phase mutant probe exited non-zero", phaseMutant.rc !== 0, { rc: phaseMutant.rc });
+
+// Cell 5: phase offset mutant (no push). renewAt re-mints but skips nc.reconnect(): the fresh
+// JWT lands on disk but the live connection still presents the stale one and dies at the old exp.
+console.log("[cell 5/8] --phase --mutant-no-push: renewAt re-mints but never pushes, must FAIL");
+const phaseNoPush = completedProbe(results[4]);
+check("phase offset mutant: a renewal that is not pushed dies at the old exp",
+  phaseNoPush.verdict === "FAILED", { rc: phaseNoPush.rc, tail: phaseNoPush.stdout.split("\n").slice(-6).join(" | ") });
+check("phase no-push probe exited non-zero", phaseNoPush.rc !== 0, { rc: phaseNoPush.rc });
+
+// Cell 6: auth-expired close. The bounded recovery re-dials with a fresh credential after the
+// broker refuses reconnects on an expired credential.
+console.log("[cell 6/8] --close: bounded recovery must RECOVER from an auth-expired close");
+const close = completedProbe(results[5]);
+check("auth-expired close: the bounded recovery re-dials with a fresh credential",
+  close.verdict === "RECOVERED", { rc: close.rc, tail: close.stdout.split("\n").slice(-8).join(" | ") });
+check("close probe exited 0", close.rc === 0, { rc: close.rc });
+
+// Cell 7: auth-expired close mutant. A log-only handler (the parent's shape) never re-dials.
+console.log("[cell 7/8] --close --mutant: log-only handler must stay DEAD");
+const closeMutant = completedProbe(results[6]);
+check("auth-expired close mutant: a log-only handler stays dead",
+  closeMutant.verdict === "DEAD", { rc: closeMutant.rc, tail: closeMutant.stdout.split("\n").slice(-6).join(" | ") });
+check("close mutant probe exited non-zero", closeMutant.rc !== 0, { rc: closeMutant.rc });
+
+// Cell 8: transport-drop control, checked inside the (non-mutant) --close run above: closed()
+// must not resolve and the connection must survive a broker restart on the same port.
+console.log("[cell 8/8] transport drop control (from the --close run above)");
+check("transport drop: closed() does not resolve and the connection survives a broker restart",
+  close.stdout.includes("TRANSPORT_DROP_RESULT=SURVIVED"),
+  { tail: close.stdout.split("\n").filter((l) => l.startsWith("TRANSPORT_DROP_RESULT")).join(" | ") });
 
 console.log(`\n== #457 renewal-boundary: ${pass} pass, ${fail} fail ==`);
 if (fail > 0) process.exit(1);

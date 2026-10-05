@@ -9,6 +9,7 @@ import {
   endpointRegistrationBarrier,
   epAuthBucket,
   fetchContractArtifact,
+  foreignSlotHeldFrom,
   provisionEndpointGateOpen,
   publishContractArtifact,
   readEndpointGateGeneration,
@@ -71,7 +72,14 @@ export async function registerRemoteManagerAuthority(args: {
       endpoint: MANAGER_ENDPOINT,
       instanceId: args.instanceId,
       opId: args.instanceId,
-      evict: args.evict,
+      // The host's maintenance verb evicts one principal per call, so each evict call carries one
+      // holder and registration records its verdict before the host is asked about the next.
+      evictMax: 1,
+      evict: async (principals) => {
+        const gone: boolean[] = [];
+        for (const principal of principals) gone.push(await args.evict(principal));
+        return gone;
+      },
     });
     const register = () => registerServiceInstance(recordsKv, {
       space: args.space,
@@ -87,21 +95,25 @@ export async function registerRemoteManagerAuthority(args: {
       observeHolderGeneration: (holderInstanceId) =>
         readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
     });
+    let registered: Awaited<ReturnType<typeof register>>;
     try {
-      await register();
+      registered = await register();
     } catch (error) {
-      const match = (error as Error).message.match(/concurrent registration for endpoint "manager" \(instance "([a-z0-9]{26,32})"\) holds the governance slot/);
-      if (!match || !args.reconcileForeignRegistration) throw error;
-      await args.reconcileForeignRegistration(match[1]!);
-      await register();
+      // Only a holder whose gate is still at the slot's stamp left a frozen registration the host
+      // can reconcile; every other refusal is about this registrant's view of that gate.
+      const held = foreignSlotHeldFrom(error);
+      if (held?.condition !== "in-flight" || !args.reconcileForeignRegistration) throw error;
+      await args.reconcileForeignRegistration(held.holderInstanceId);
+      registered = await register();
     }
-    const observed = await fence.observe();
-    if (observed === null) throw new Error("remote manager issuance gate vanished after registration");
+    // A gate read here could already show a successor's pair; the epoch fences below refuse that
+    // successor instead of returning it as this start's incarnation.
+    const { registrationRevision, processEpoch } = registered;
     const serveGrant = await authorizeServeGrant(recordsKv, {
       space: args.space,
       endpoint: MANAGER_ENDPOINT,
       instanceId: args.instanceId,
-      epoch: observed.processEpoch,
+      epoch: processEpoch,
       holder: { owner: args.owner },
       authority,
       readProcessEpoch: async () => {
@@ -114,11 +126,11 @@ export async function registerRemoteManagerAuthority(args: {
     await writeServiceStatus(recordsKv, {
       endpoint: MANAGER_ENDPOINT,
       instanceId: args.instanceId,
-      epoch: observed.processEpoch,
+      epoch: processEpoch,
       status: {
         state: SERVICE_READY,
-        epoch: observed.processEpoch,
-        observedSpecRevision: observed.registrationRevision,
+        epoch: processEpoch,
+        observedSpecRevision: registrationRevision,
       },
       readProcessEpoch: async () => {
         const current = await fence.observe();
@@ -126,7 +138,7 @@ export async function registerRemoteManagerAuthority(args: {
         return current.processEpoch;
       },
     });
-    return { registrationRevision: observed.registrationRevision, processEpoch: observed.processEpoch, serveGrant };
+    return { registrationRevision, processEpoch, serveGrant };
   } finally {
     await nc.drain().catch(() => nc.close());
   }

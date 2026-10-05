@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createRuntime, requireRuntimeAdopt } from "../src/index.js";
 import { MANAGER_STATUS_CONTRACT } from "../src/manager-service-contract.js";
 import { LegacyPtyRuntime } from "../src/runtime/pty.js";
+import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import type { Runtime } from "@cotal-ai/core";
 
 let pass = 0;
@@ -118,7 +119,7 @@ if (process.platform !== "linux") {
 } else {
   const root = mkdtempSync(join(tmpdir(), "cotal-custodial-"));
   process.env.COTAL_SEAT_ROOT = root;
-  const rt = createRuntime("pty", "cotal-smoke");
+  const rt = new CustodialPtyRuntime();
   const h = rt.spawn("counter", { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } }, process.cwd());
   check("spawned handle exposes a durable reference", h.reference !== undefined && h.reference.kind === "pty", h.reference);
   const adopted = requireRuntimeAdopt(rt, h.reference!);

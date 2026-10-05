@@ -83,11 +83,26 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
   };
 }
 
-/** Reject a missing, foreign, or additional stream before selecting artifact components. */
-export function validateSpaceBackupInventory(space: string, actualNames: readonly string[]): SpaceBackupInventory {
+/** Reject a missing, foreign, or additional stream before selecting artifact components.
+ *
+ * `atRest` is for a STOPPED store reopened on a fresh broker, which is what backup reads. The
+ * presence bucket is memory-backed (#1356), and a memory stream does not survive the broker stop that
+ * makes a cut, so a transient stream may be absent there. One an older cotal created file-backed is
+ * still on disk and is accepted too. Every other stream stays exact. A live space, such as a restore
+ * after it recreates its infrastructure, is validated without `atRest`, and presence is required. */
+export function validateSpaceBackupInventory(
+  space: string,
+  actualNames: readonly string[],
+  options: { atRest?: boolean } = {},
+): SpaceBackupInventory {
   const inventory = spaceBackupInventory(space);
-  const expected = [...inventory.full, ...inventory.excluded.map((s) => s.name)].sort();
   const actual = [...actualNames].sort();
+  const optional = new Set(
+    options.atRest ? inventory.excluded.filter((s) => s.class === "transient").map((s) => s.name) : [],
+  );
+  const expected = [...inventory.full, ...inventory.excluded.map((s) => s.name)]
+    .filter((name) => !optional.has(name) || actual.includes(name))
+    .sort();
   if (new Set(actual).size !== actual.length)
     throw new Error("space backup inventory contains duplicate stream names");
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {

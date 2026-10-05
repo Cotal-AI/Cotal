@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, listenOn, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
 // call, so the real ~/.cotal is never touched.
@@ -180,17 +180,6 @@ async function httpsDowngradeFixture(
   }
 }
 
-/** A free localhost port (the listener is closed before the port is handed back). */
-async function freePort(): Promise<number> {
-  const srv = createServer();
-  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
-  const addr = srv.address();
-  assert.ok(addr && typeof addr === "object");
-  const { port } = addr;
-  await new Promise<void>((r) => srv.close(() => r()));
-  return port;
-}
-
 const roots: string[] = [];
 
 
@@ -202,7 +191,9 @@ function projectRoot(label: string): string {
   return root;
 }
 
-const DEAD = `nats://127.0.0.1:${await freePort()}`; // nothing listens there
+// Nothing listens there. Every listener this process opens takes its port through the smoke kit,
+// which never hands this one out again.
+const DEAD = `nats://127.0.0.1:${await freePort()}`;
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
 const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
@@ -376,8 +367,7 @@ try {
     res.statusCode = 404;
     res.end("{}");
   });
-  await new Promise<void>((r) => exchange.listen(0, "127.0.0.1", r));
-  const exchangeUrl = `http://127.0.0.1:${(exchange.address() as { port: number }).port}`;
+  const exchangeUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(exchange, port))}`;
   // VALID JWKS ON PURPOSE. With an empty key set this fixture refuses for TWO reasons at once, and
   // the issuer cell then passes even with the issuer comparison deleted — it was pinning the empty
   // JWKS, not the foreign issuer. A non-empty key set makes the foreign issuer the ONLY thing
@@ -389,8 +379,7 @@ try {
     res.statusCode = 404;
     res.end("{}");
   });
-  await new Promise<void>((r) => wrongExchange.listen(0, "127.0.0.1", r));
-  const wrongExchangeUrl = `http://127.0.0.1:${(wrongExchange.address() as { port: number }).port}`;
+  const wrongExchangeUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(wrongExchange, port))}`;
   const SENTINEL_BLOB = "-----BEGIN NATS USER JWT-----\nsentinel-secret-material-o7\n------END NATS USER JWT------";
   const bundleFor = (over: Record<string, unknown> = {}) => ({
     space: "hosted",
@@ -422,8 +411,7 @@ try {
   // rather than the deleted sequencing fence, while a plain-http discovery address remains inert.
   let discoHits = 0;
   const countingDisco = createHttpServer((_req, res) => { discoHits++; res.statusCode = 404; res.end("{}"); });
-  await new Promise<void>((r) => countingDisco.listen(0, "127.0.0.1", r));
-  const discoUrl = `http://127.0.0.1:${(countingDisco.address() as { port: number }).port}`;
+  const discoUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(countingDisco, port))}`;
   removeMesh("hosted");
   const fromHttpGate = await run(["add", "hosted"], { mode: "user", from: `${discoUrl}/.well-known/cotal-mesh`, root: hostedRoot });
   check("--from reaches its HTTPS trust gate, not an obsolete consumer fence",
@@ -553,15 +541,13 @@ try {
     if (req.url?.endsWith("/jwks")) return void res.end(JSON.stringify({ keys: [{ kid: "k" }] }));
     res.statusCode = 404; res.end("{}");
   });
-  await new Promise<void>((r) => downgrade.listen(0, "127.0.0.1", r));
-  const downgradeUrl = `http://127.0.0.1:${(downgrade.address() as { port: number }).port}`;
+  const downgradeUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(downgrade, port))}`;
   const redirector = createHttpServer((_req, res) => {
     res.statusCode = 302;
     res.setHeader("location", `${downgradeUrl}/health`);
     res.end();
   });
-  await new Promise<void>((r) => redirector.listen(0, "127.0.0.1", r));
-  const redirectorUrl = `http://127.0.0.1:${(redirector.address() as { port: number }).port}`;
+  const redirectorUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(redirector, port))}`;
 
   const { verifyUserExchange, assertPinnedFetchUrl, pinnedFetchProbe } = await import("../src/commands/meshes-add.js");
   // A non-loopback plain-http exchange base is refused outright: the pin cannot ride plaintext.
@@ -627,8 +613,7 @@ try {
   // I/O the gate exists to prevent.
   let fromConnects = 0;
   const fromSocket = createServer((s) => { fromConnects++; s.destroy(); });
-  await new Promise<void>((r) => fromSocket.listen(0, "127.0.0.1", () => r()));
-  const fromPort = (fromSocket.address() as { port: number }).port;
+  const fromPort = await onFreePort((port) => listenOn(fromSocket, port));
   const fromNoTty = await run(["add", "hosted"], { mode: "user", from: `https://127.0.0.1:${fromPort}/.well-known/cotal-mesh`, root: hostedRoot });
   check("--from performs NO network I/O before the consent gate",
     fromNoTty.code === 1 && fromConnects === 0 && findMesh("hosted") === undefined, { out: fromNoTty.out, fromConnects });
@@ -748,8 +733,7 @@ try {
 
   let catalogBrokerAttempts = 0;
   const catalogSink = createServer((socket) => { catalogBrokerAttempts++; socket.destroy(); });
-  await new Promise<void>((r) => catalogSink.listen(0, "127.0.0.1", r));
-  const catalogServer = `nats://127.0.0.1:${(catalogSink.address() as { port: number }).port}`;
+  const catalogServer = `nats://127.0.0.1:${await onFreePort((port) => listenOn(catalogSink, port))}`;
   for (let i = 0; i < 8; i++)
     recordMesh({ space: `catalog_${i}`, server: catalogServer, root: shared, mode: "user", origin: "catalog", catalogOwner: "acct-fanout", catalogSlug: `catalog_${i}`, catalogName: `Catalog ${i}`, ts: new Date(0).toISOString() });
   const discoveredList = await run([]);
@@ -828,6 +812,7 @@ try {
   check("`up` refuses to reclaim a registered space rather than deleting it", claimError !== undefined, claimError?.message);
   check("…and the registration survives the refusal", findMesh("claimed") !== undefined, loadMeshes());
   check("…naming `cotal meshes rm` as the way through", claimError?.message.includes("cotal meshes rm claimed") === true, claimError?.message);
+  check("…and a loopback registered server does not suggest `supervise`", claimError?.message.includes("supervise") === false, claimError?.message);
   // A LIVE registered holder must reach the SAME refusal. Deciding liveness first sent the operator
   // to `cotal down`, which cannot stop a mesh this machine does not run.
   recordMesh({ space: "claimed-live", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
@@ -843,12 +828,26 @@ try {
   check("`up` refuses a discovered name collision and leaves the catalog record untouched",
     catalogClaimError?.message.includes("owned by a signed-in space catalog") === true && findMesh("claimed-catalog")?.origin === "catalog",
     catalogClaimError?.message);
+  // A registered server that is NOT loopback names `cotal supervise`/`cotal deliver` against that
+  // server, not `meshes rm` — dropping the record would break the route a live remote mesh is
+  // addressed by, and a different `--space` would fork the identity.
+  const remoteBrokerRoot = projectRoot("remote-broker");
+  const REMOTE_BROKER = "nats://broker.example:4222";
+  recordMesh({ space: "claimed-remote", server: REMOTE_BROKER, root: remoteBrokerRoot, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  let remoteClaimError: Error | undefined;
+  await claimSpace("claimed-remote", LIVE, localRoot).catch((e: Error) => void (remoteClaimError = e));
+  check("a non-loopback registered holder refuses, naming `cotal supervise`", remoteClaimError?.message.includes(`cotal supervise --space claimed-remote --server ${REMOTE_BROKER}`) === true, remoteClaimError?.message);
+  check("…and names `cotal deliver`", remoteClaimError?.message.includes("cotal deliver") === true, remoteClaimError?.message);
+  check("…and does not suggest `meshes rm`", remoteClaimError?.message.includes("meshes rm") === false, remoteClaimError?.message);
+  check("…and does not suggest a different `--space`", remoteClaimError?.message.includes("different `--space`") === false, remoteClaimError?.message);
+  check("…and the registration survives the refusal", findMesh("claimed-remote") !== undefined, loadMeshes());
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   await claimSpace("reclaimable", LIVE, root);
   check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
   removeMesh("claimed");
   removeMesh("claimed-live");
   removeMesh("claimed-catalog");
+  removeMesh("claimed-remote");
 
   // PROVENANCE IS NOT DOWNGRADED BY A REFRESH. Several `up` paths re-record a mesh they did not
   // start (the "a broker is already on this port" branch concludes it is up from reachability
@@ -1245,6 +1244,23 @@ try {
     (await run([])).code === 0 && loadMeshes().some((m) => m.space === "tabbed"));
   removeMesh("tabbed");
   recordMesh({ space: "tabbed", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+
+  // ── storeDir shape (#2218) ──────────────────────────────────────────────────────────────────
+  const absStoreDir = join(root, "custom-store");
+  recordMesh({ space: "with-store", server: LIVE, root, mode: "open", origin: "manual", storeDir: absStoreDir, ts: new Date(0).toISOString() });
+  check("a record with an absolute storeDir round-trips through loadMeshes", findMesh("with-store")?.storeDir === absStoreDir, findMesh("with-store"));
+  removeMesh("with-store");
+  writeFileSync(brokenFile, JSON.stringify({ space: "relative-store", server: LIVE, root, mode: "open", storeDir: "relative/path", ts: new Date(0).toISOString() }));
+  let storeDirError = "";
+  try {
+    loadMeshes();
+  } catch (e) {
+    storeDirError = (e as Error).message;
+  }
+  check("a record with a relative storeDir refuses naming the file and storeDir",
+    storeDirError.includes(brokenFile) && storeDirError.includes("storeDir") && storeDirError.includes("relative/path"), storeDirError);
+  rmSync(brokenFile);
+
   // The kernel hands a completer the words AFTER the command name (`emitCommandCompletion`).
   check("completion offers the subcommands first", meshesComplete([""]).items.some((i) => i.value === "add"));
   check("completion offers registered spaces after `rm`", meshesComplete(["rm", ""]).items.some((i) => i.value === "tabbed"));

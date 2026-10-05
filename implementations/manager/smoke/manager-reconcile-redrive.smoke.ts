@@ -10,13 +10,14 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
   DEV_OWNER,
+  CONTROL_DELIVERY_ADMIN,
+  CotalEndpoint,
   createSpaceAuth,
   epAuthBucket,
   epCall,
@@ -33,6 +34,7 @@ import {
   setupSpaceStreams,
   standaloneConnectOpts,
   type Connector,
+  type ControlReply,
   type EpCaller,
   type EvictionResult,
   type LaunchOpts,
@@ -50,7 +52,7 @@ import {
   recordSlotCredential,
   staticLifecycleTransport,
 } from "../src/static-lifecycle.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (condition: () => Promise<boolean> | boolean, ms: number): Promise<boolean> => {
@@ -61,14 +63,6 @@ const until = async (condition: () => Promise<boolean> | boolean, ms: number): P
   }
   return false;
 };
-const freePort = (): Promise<number> => new Promise((resolve, reject) => {
-  const server = createServer();
-  server.on("error", reject);
-  server.listen(0, "127.0.0.1", () => {
-    const port = (server.address() as AddressInfo).port;
-    server.close(() => resolve(port));
-  });
-});
 const awaitExit = (child: ChildProcess, ms = 5_000): Promise<void> => new Promise((resolve) => {
   if (child.exitCode !== null || child.signalCode !== null) return resolve();
   child.once("exit", () => resolve());
@@ -100,6 +94,7 @@ teardownOnSignal(broker, conf);
 
 let manager: Manager | undefined;
 let shutdownManager: Manager | undefined;
+let delivery: CotalEndpoint | undefined;
 let observer: Awaited<ReturnType<typeof connect>> | undefined;
 let callerNc: Awaited<ReturnType<typeof connect>> | undefined;
 const logs: string[] = [];
@@ -183,6 +178,33 @@ try {
   }
   check("the real authenticated broker is serving", serving);
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  const dlvIdentity = newIdentity();
+  delivery = new CotalEndpoint({
+    space, servers, creds: await mintCreds(auth, dlvIdentity, "delivery"),
+    card: { id: dlvIdentity.id, name: "delivery", role: "delivery", kind: "endpoint" },
+    channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
+  });
+  await delivery.start();
+  await delivery.acquireDeliveryLease(0).catch(() => {});
+  delivery.serveControl(CONTROL_DELIVERY_ADMIN, async (req): Promise<ControlReply> => {
+    if (req.op === "reloadStoreIdentity") {
+      let holds = false;
+      try {
+        const own = await delivery!.readDeliveryLeaseEntry(0);
+        holds = own !== undefined && delivery!.ownsDeliveryLease(own.info);
+      } catch { holds = false; }
+      return {
+        ok: true,
+        data: {
+          identity: { kind: "fs", root: resolve(root) },
+          responder: principalKey("local", dlvIdentity.id).key,
+          holdsDeliveryLease: holds,
+        },
+      };
+    }
+    if (req.op === "lifecycleMemberships") return { ok: true, data: { complete: true, channels: [] } };
+    return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
+  }, { boundReply: true });
   for (const alias of ["orphan-first", "orphan-middle", "orphan-last"]) await writeOrphan(alias);
 
   observer = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }), maxReconnectAttempts: 0 });
@@ -354,6 +376,7 @@ try {
   console.error = realError;
   await shutdownManager?.stop({ withAgents: true }).catch(() => {});
   await manager?.stop({ withAgents: true }).catch(() => {});
+  await delivery?.stop().catch(() => {});
   await callerNc?.drain().catch(() => callerNc?.close());
   await observer?.drain().catch(() => observer?.close());
   broker.kill("SIGTERM");

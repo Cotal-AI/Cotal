@@ -3,13 +3,14 @@
  * (implementations/cli/src/web/index.html): brand blue #58a6ff, success green #3fb950.
  *
  * Rendering gates (same as the rest of the CLI's color story):
- *   - No TTY (piped/redirected) or NO_COLOR → plain text, no ANSI
+ *   - `colorEnabled()` is false            → plain text, no ANSI (no TTY, NO_COLOR, FORCE_COLOR=0)
  *   - COLORTERM truecolor/24bit            → 24-bit ANSI (exact brand color)
  *   - otherwise                            → 16-color fallback
  */
 import * as p from "@clack/prompts";
+import { colorEnabled } from "@cotal-ai/workspace";
 
-const USE_ANSI = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+const USE_ANSI = colorEnabled();
 const TRUECOLOR =
   USE_ANSI && (process.env.COLORTERM === "truecolor" || process.env.COLORTERM === "24bit");
 

@@ -9,12 +9,15 @@
  *    dead. Static retirement must NOT free the alias without authoritative exit proof.
  * 3. Unadopted reference with missing on-disk record fails closed as RuntimeReapUnproven.
  *
+ * The default pty runtime spawns in-process and keeps no custody record (#2351). Custodied seats are
+ * the ones an earlier Linux manager launched under a detached custodian, so the manager here runs
+ * over that custodial runtime through a registered runtime provider.
+ *
  * Run: pnpm tsx implementations/manager/smoke/custody-exit-proof.smoke.ts
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,11 +29,12 @@ import {
   mintLifecycleUid, CotalEndpoint, evictDeniedPrincipalWithCreds,
   mintConnectionEvictorCreds, mintMembershipObserverCreds,
 } from "@cotal-ai/core";
-import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
+import type { Connector, LaunchOpts, LaunchSpec, RuntimeProvider } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
+import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { registry } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 import { identityVerdict, type SeatRecord } from "@cotal-ai/seat";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -45,12 +49,6 @@ const seatRoot = mkdtempSync(join(tmpdir(), "s"));
 process.env.COTAL_SEAT_ROOT = seatRoot;
 const ownedRecords: SeatRecord[] = [];
 
-const freePort = (): Promise<number> =>
-  new Promise((res, rej) => {
-    const s = createServer();
-    s.on("error", rej);
-    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-  });
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -163,8 +161,10 @@ const survivorCon: Connector = {
 };
 registry.register(stubCon);
 registry.register(survivorCon);
+const custodialProvider: RuntimeProvider = { kind: "runtime", name: "custodial-pty", available: () => true, create: () => new CustodialPtyRuntime() };
+registry.register(custodialProvider);
 
-const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
+const mgr = new Manager({ space, servers: SERVERS, runtime: "custodial-pty", workspaceRoot });
 
 try {
   let up = false;

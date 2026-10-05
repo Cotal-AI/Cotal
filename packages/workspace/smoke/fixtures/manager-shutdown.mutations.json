@@ -21,8 +21,8 @@
     {
       "name": "the spare capability record itself is not checked",
       "file": "packages/workspace/src/manager-shutdown.ts",
-      "find": "  if (Object.keys(row).sort().join(\",\") !== \"process,version\" || row.version !== 1 || !process ||\n      Object.keys(process).sort().join(\",\") !== \"pid,token\" || process.pid !== expected.pid || process.token !== expected.token)\n    throw new Error(`refusing bare manager stop: spare capability at ${path} is malformed, stale, or belongs to a different manager process`);",
-      "replace": "  void row; void process;",
+      "find": "  if (!seats || !process ||\n      Object.keys(process).sort().join(\",\") !== \"pid,token\" || process.pid !== expected.pid || process.token !== expected.token)\n    throw new Error(`refusing bare manager stop: spare capability at ${path} is malformed, stale, or belongs to a different manager process`);",
+      "replace": "  void process;",
       "expectRed": "a successor capability record cannot authorize the predecessor target",
       "cell": "a successor capability record cannot authorize the predecessor target"
     },

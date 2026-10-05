@@ -34,10 +34,9 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import net, { type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { isReachable, setupSpaceStreams, CotalEndpoint, newIdentity } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -47,10 +46,6 @@ const ok = (name: string, cond: boolean, detail?: unknown): void => {
   console.log(`  x FAIL  ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const freePort = async (): Promise<number> => new Promise((res) => {
-  const s = net.createServer();
-  s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
-});
 
 /** Built at runtime, never typed into this file: a suite about invisible characters that contains
  *  them is a suite whose own source cannot be reviewed by eye. */
@@ -83,20 +78,23 @@ try {
   await seed.multicast(MSG, { channel: REAL });
   await seed.stop();
 
-  const WEB_PORT = await freePort();
   let log = "";
-  webChild = spawn(process.execPath, [
-    "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
-    "--server", SERVER, "--space", SPACE, "--port", String(WEB_PORT), "--no-open",
-  ], { stdio: ["ignore", "pipe", "pipe"] });
-  webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
-  webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
-
   let launchUrl: string | undefined;
-  for (let i = 0; i < 200 && launchUrl === undefined; i++) {
-    launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
-    await wait(250);
-  }
+  const WEB_PORT = await onFreePort(async (port) => {
+    webChild = spawn(process.execPath, [
+      "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
+      "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
+    webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
+    const taken = `Port ${port} is in use`;
+    for (let i = 0; i < 200 && launchUrl === undefined && !log.includes(taken); i++) {
+      launchUrl = log.match(/http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]+/)?.[0];
+      await wait(250);
+    }
+    if (launchUrl === undefined && log.includes(taken)) throw new PortInUseError(port, log);
+    return port;
+  });
   const exchange = launchUrl === undefined ? undefined : await fetch(launchUrl, { redirect: "manual" }).catch(() => undefined);
   const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange?.headers.get("set-cookie") ?? "")?.[1];
   const authed = { cookie: `cotal_web_session=${session}` };

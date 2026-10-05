@@ -18,7 +18,7 @@
  * identical journals (entry sequences and step keys, not merely output).
  */
 
-import { InterpreterDefect, RuntimeFault } from "../errors.js";
+import { InterpreterDefect, RuntimeFault, isStackExhaustion } from "../errors.js";
 import { Cancelled, EffectError, type EffectHandler } from "../effects.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "../library.js";
 import type { Journal } from "../journal.js";
@@ -27,7 +27,7 @@ import { NotCrossable, Prng, assertNoCode, birthDepth, born as stampBirth, deepF
 import type { AgentHandleValue } from "../effects.js";
 import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
-import { dispatchPrimitive, freeConstructors, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
+import { dispatchPrimitive, freeConstructors, onceBodyNotCallable, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
 import { PRIMITIVES } from "../primitives.js";
 import type { RunOptions } from "../interpret.js";
 
@@ -425,6 +425,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 
   /** `parallel`/`race` take a record or an array OF ARMS; the other two take data in that position. */
   const branchesOf = (name: string, first: unknown): unknown => {
+    if (name === "once") return asArm(first);
     if (name !== "parallel" && name !== "race") return first;
     if (Array.isArray(first)) return first.map(asArm);
     if (first === null || typeof first !== "object") return first;
@@ -498,6 +499,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     const frame = currentFrame();
     const scopeKind = name as ScopeKind;
     const first = args[0];
+    if (name === "once" && typeof first !== "function") throw onceBodyNotCallable();
     const bag = args[spec.optionsAt];
     const scopeName = (option(bag, "name") as string | undefined) ?? null;
     // Allocated HERE, synchronously, exactly as the walker allocates it: the occurrence is what
@@ -948,11 +950,9 @@ function buildCtx(run: EngineRun): CtxWithSteps {
           return ~(v as number);
         case "update":
           // `x++`, `x--` and their compound cousins, on the slow path only: the transform emits a
-          // native increment when it can see the operand is a number. A DECLARED DIVERGENCE: the
-          // walker reads the operand through `Number(...)`, so `"5"++` answers 6 and a
-          // record settles as NaN, while `o + 1` and `x += 1` refuse on the very same values. That
-          // is the silent-coercion class, filed against the walker as issue #646, and it is not
-          // being built into the new engine for fidelity's sake.
+          // native increment when it can see the operand is a number. The walker refuses a
+          // non-number operand the same way, with this same sentence (`interpret.ts`,
+          // `refuseNonNumberUpdate`), so `x++`, `x + 1` and `x += 1` all answer one law now.
           if (typeof v !== "number") {
             throw new RuntimeFault(
               "L4018",
@@ -1066,7 +1066,7 @@ const UNCATCHABLE_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 function isUncatchable(e: unknown): boolean {
-  return e instanceof Error && UNCATCHABLE_NAMES.has(e.name);
+  return (e instanceof Error && UNCATCHABLE_NAMES.has(e.name)) || isStackExhaustion(e);
 }
 
 /** What the catch parameter binds to: a frozen record with a code, never the host's own object. */

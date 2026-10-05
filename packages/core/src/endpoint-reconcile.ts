@@ -31,6 +31,7 @@ import {
 } from "./endpoint-serve-kv.js";
 import { epgateKey, parseEndpointGate, type EndpointGateRow, type EndpointRepairCursor } from "./lifecycle-state.js";
 import { completeFrozenRegistrationFromSpec } from "./endpoint-service.js";
+import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { KV } from "@nats-io/kv";
 
 /** Which guard refused. The command prints this verbatim, and the smoke asserts on it, so a refusal
@@ -103,6 +104,9 @@ export interface GateReconcileReport {
   reopenedAtGeneration: number;
 }
 
+/** How many family ledger rows one repair revokes at a time. */
+export const REVOKE_CONCURRENCY = 16;
+
 /**
  * Reconcile ONE frozen gate. Every seam the guard depends on is injected, so the command wires the
  * real ones and the smoke drives the real barrier against an ephemeral broker.
@@ -118,7 +122,9 @@ export async function reconcileEndpointGate(opts: {
   endpoint: string;
   instanceId: string;
   probeHolder: (principal: string) => Promise<HolderLiveness>;
-  evict: (holderPrincipal: string) => Promise<boolean>;
+  /** Verify-evict a SET of holders in one shared sweep, answering `verifiedGone` per holder in
+   *  input order. Throwing means nothing in the set is verified. */
+  evictHolders: (holderPrincipals: readonly string[]) => Promise<boolean[]>;
   log: (line: string) => void;
   /** Records store: same-op Phase-3 completion reads the spec key. Required so a missing store cannot silently abort-reopen a committed write. */
   recordsKv: KV;
@@ -162,17 +168,27 @@ export async function reconcileEndpointGate(opts: {
     );
 
   // ---- 3. Only now: the shipped composition, in the §13.1 order, over the DEAD op's own id.
-  const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId, evict: opts.evict });
+  // The repair evicts the family in bounded sets below, so the barrier is built without an evictor
+  // (its own default is fail-closed) and is used here for enumerate, revoke and reopen.
+  const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId });
 
   const rows = await barrier.enumerate();
   log(`family: ${rows.length} ledger row(s)`);
+  // Deny-new BEFORE kill-live — the precondition eviction's name carries. Revocations are
+  // independent per row, so they run REVOKE_CONCURRENCY at a time; every one of them settles before
+  // a failure is reported, so no write is still in flight when the repair refuses.
   const revoked: string[] = [];
-  for (const r of rows) {
-    if (r.state === "active") {
-      await barrier.revoke(r); // deny-new BEFORE kill-live — the precondition eviction's name carries
-      revoked.push(r.credentialId);
-      log(`  revoked ${r.credentialId} (${r.holderPrincipal})`);
-    } else log(`  ${r.state}: ${r.credentialId} (${r.holderPrincipal})`);
+  for (let i = 0; i < rows.length; i += REVOKE_CONCURRENCY) {
+    const batch = rows.slice(i, i + REVOKE_CONCURRENCY);
+    const settled = await Promise.allSettled(batch.map((r) => (r.state === "active" ? barrier.revoke(r) : undefined)));
+    const failed = settled.find((x): x is PromiseRejectedResult => x.status === "rejected");
+    if (failed) throw failed.reason;
+    for (const r of batch) {
+      if (r.state === "active") {
+        revoked.push(r.credentialId);
+        log(`  revoked ${r.credentialId} (${r.holderPrincipal})`);
+      } else log(`  ${r.state}: ${r.credentialId} (${r.holderPrincipal})`);
+    }
   }
 
   // Evict every distinct family holder, and the freeze-holder itself even when it staged no rows —
@@ -196,30 +212,40 @@ export async function reconcileEndpointGate(opts: {
   }
   const skipped = new Set(cursor.verified);
   const holdersVerifiedBeforeAttempt = [...cursor.verified];
+  for (const h of boundHolders) if (skipped.has(h)) log(`  already verified (durable): ${h}`);
+  // Every holder still required is verify-evicted in bounded sets: one shared scan → KICK → verify
+  // sweep per EVICT_PRINCIPALS_MAX holders instead of one per holder. Each sweep's verified holders
+  // are recorded in one CAS-pinned cursor write before the next sweep starts, so a partial answer or
+  // a refused later sweep still leaves durable progress, and any unverified holder keeps the gate
+  // frozen.
+  const pendingHolders = boundHolders.filter((h) => !skipped.has(h));
   const evicted: string[] = [];
-  for (const h of boundHolders) {
-    if (skipped.has(h)) {
-      log(`  already verified (durable): ${h}`);
-      continue;
-    }
-    let verified: boolean;
+  for (let i = 0; i < pendingHolders.length; i += EVICT_PRINCIPALS_MAX) {
+    const sweep = pendingHolders.slice(i, i + EVICT_PRINCIPALS_MAX);
+    let verified: boolean[];
     try {
-      verified = await barrier.evict(h);
+      verified = await opts.evictHolders(sweep);
+      if (verified.length !== sweep.length)
+        throw new Error(`the evictor answered ${verified.length} verdict(s) for ${sweep.length} holder(s)`);
     } catch (e) {
       throw new GateReconcileRefused(
         "eviction-unverified",
-        `eviction verification for "${h}" was interrupted — the gate stays frozen (fail-closed, SPEC 13.1). Durable progress: ${cursor.verified.length} completed, ${boundHolders.length - cursor.verified.length} remaining. Cause: ${(e as Error)?.message ?? String(e)}`,
+        `eviction verification for ${sweep.length} holder(s) was interrupted — the gate stays frozen (fail-closed, SPEC 13.1). Durable progress: ${cursor.verified.length} completed, ${boundHolders.length - cursor.verified.length} remaining. Cause: ${(e as Error)?.message ?? String(e)}`,
       );
     }
-    if (!verified)
+    const evictedNow = sweep.filter((_, j) => verified[j] === true);
+    if (evictedNow.length > 0) {
+      evicted.push(...evictedNow);
+      cursor = { ...cursor, verified: [...new Set([...cursor.verified, ...evictedNow])].sort() };
+      cursorRevision = await saveEndpointRepairCursor(kv, endpoint, instanceId, cursor, cursorRevision);
+      for (const h of evictedNow) log(`  verified evicted: ${h} (${cursor.verified.length}/${boundHolders.length})`);
+    }
+    const unverified = sweep.filter((_, j) => verified[j] !== true);
+    if (unverified.length > 0)
       throw new GateReconcileRefused(
         "eviction-unverified",
-        `eviction of "${h}" was NOT verified gone — the gate stays frozen (fail-closed, SPEC 13.1). Nothing was reopened; the revocations above are deny-new and safe to leave. Durable progress: ${cursor.verified.length} completed, ${boundHolders.length - cursor.verified.length} remaining.`,
+        `eviction of ${unverified.map((h) => `"${h}"`).join(", ")} was NOT verified gone — the gate stays frozen (fail-closed, SPEC 13.1). Nothing was reopened; the revocations above are deny-new and safe to leave. Durable progress: ${cursor.verified.length} completed, ${boundHolders.length - cursor.verified.length} remaining.`,
       );
-    evicted.push(h);
-    cursor = { ...cursor, verified: [...new Set([...cursor.verified, h])].sort() };
-    cursorRevision = await saveEndpointRepairCursor(kv, endpoint, instanceId, cursor, cursorRevision);
-    log(`  verified evicted: ${h} (${cursor.verified.length}/${boundHolders.length})`);
   }
   const holdersRemaining = boundHolders.filter((h) => !cursor.verified.includes(h));
   if (holdersRemaining.length !== 0)
