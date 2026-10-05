@@ -31,6 +31,7 @@ import {
 } from "./endpoint-serve-kv.js";
 import { epgateKey, parseEndpointGate, type EndpointGateRow, type EndpointRepairCursor } from "./lifecycle-state.js";
 import { completeFrozenRegistrationFromSpec } from "./endpoint-service.js";
+import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { KV } from "@nats-io/kv";
 
 /** Which guard refused. The command prints this verbatim, and the smoke asserts on it, so a refusal
@@ -167,8 +168,8 @@ export async function reconcileEndpointGate(opts: {
     );
 
   // ---- 3. Only now: the shipped composition, in the §13.1 order, over the DEAD op's own id.
-  // The repair evicts the family as one set below, so the barrier is built without an evictor (its
-  // own default is fail-closed) and is used here for enumerate, revoke and reopen.
+  // The repair evicts the family in bounded sets below, so the barrier is built without an evictor
+  // (its own default is fail-closed) and is used here for enumerate, revoke and reopen.
   const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId });
 
   const rows = await barrier.enumerate();
@@ -212,30 +213,34 @@ export async function reconcileEndpointGate(opts: {
   const skipped = new Set(cursor.verified);
   const holdersVerifiedBeforeAttempt = [...cursor.verified];
   for (const h of boundHolders) if (skipped.has(h)) log(`  already verified (durable): ${h}`);
-  // Every holder still required is verify-evicted as ONE set: one shared scan → KICK → verify sweep
-  // instead of one per holder. The verified ones are recorded in one CAS-pinned cursor write, so a
-  // partial answer still leaves durable progress, and any unverified holder keeps the gate frozen.
+  // Every holder still required is verify-evicted in bounded sets: one shared scan → KICK → verify
+  // sweep per EVICT_PRINCIPALS_MAX holders instead of one per holder. Each sweep's verified holders
+  // are recorded in one CAS-pinned cursor write before the next sweep starts, so a partial answer or
+  // a refused later sweep still leaves durable progress, and any unverified holder keeps the gate
+  // frozen.
   const pendingHolders = boundHolders.filter((h) => !skipped.has(h));
   const evicted: string[] = [];
-  if (pendingHolders.length > 0) {
+  for (let i = 0; i < pendingHolders.length; i += EVICT_PRINCIPALS_MAX) {
+    const sweep = pendingHolders.slice(i, i + EVICT_PRINCIPALS_MAX);
     let verified: boolean[];
     try {
-      verified = await opts.evictHolders(pendingHolders);
-      if (verified.length !== pendingHolders.length)
-        throw new Error(`the evictor answered ${verified.length} verdict(s) for ${pendingHolders.length} holder(s)`);
+      verified = await opts.evictHolders(sweep);
+      if (verified.length !== sweep.length)
+        throw new Error(`the evictor answered ${verified.length} verdict(s) for ${sweep.length} holder(s)`);
     } catch (e) {
       throw new GateReconcileRefused(
         "eviction-unverified",
-        `eviction verification for ${pendingHolders.length} holder(s) was interrupted — the gate stays frozen (fail-closed, SPEC 13.1). Durable progress: ${cursor.verified.length} completed, ${boundHolders.length - cursor.verified.length} remaining. Cause: ${(e as Error)?.message ?? String(e)}`,
+        `eviction verification for ${sweep.length} holder(s) was interrupted — the gate stays frozen (fail-closed, SPEC 13.1). Durable progress: ${cursor.verified.length} completed, ${boundHolders.length - cursor.verified.length} remaining. Cause: ${(e as Error)?.message ?? String(e)}`,
       );
     }
-    evicted.push(...pendingHolders.filter((_, i) => verified[i] === true));
-    if (evicted.length > 0) {
-      cursor = { ...cursor, verified: [...new Set([...cursor.verified, ...evicted])].sort() };
+    const evictedNow = sweep.filter((_, j) => verified[j] === true);
+    if (evictedNow.length > 0) {
+      evicted.push(...evictedNow);
+      cursor = { ...cursor, verified: [...new Set([...cursor.verified, ...evictedNow])].sort() };
       cursorRevision = await saveEndpointRepairCursor(kv, endpoint, instanceId, cursor, cursorRevision);
-      for (const h of evicted) log(`  verified evicted: ${h} (${cursor.verified.length}/${boundHolders.length})`);
+      for (const h of evictedNow) log(`  verified evicted: ${h} (${cursor.verified.length}/${boundHolders.length})`);
     }
-    const unverified = pendingHolders.filter((_, i) => verified[i] !== true);
+    const unverified = sweep.filter((_, j) => verified[j] !== true);
     if (unverified.length > 0)
       throw new GateReconcileRefused(
         "eviction-unverified",

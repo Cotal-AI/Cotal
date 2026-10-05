@@ -24,6 +24,7 @@ import {
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
+import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
 import type { EndpointRepairCursor } from "./lifecycle-state.js";
 
@@ -601,16 +602,19 @@ export async function registerServiceInstance(
     }
     const verified = new Set(progress?.verified ?? []);
     const pending = holders.filter((h) => !verified.has(h));
-    if (pending.length > 0) {
-      const gone = await args.barrier.evict(pending);
-      if (gone.length !== pending.length)
-        throw new Error(`the evictor answered ${gone.length} verdict(s) for ${pending.length} holder(s)`);
-      const evicted = pending.filter((_, i) => gone[i] === true);
+    // Each bounded sweep is recorded before the next starts, so a family whose sweeps outlast one
+    // registration executor still advances, and a refused later sweep keeps the earlier verdicts.
+    for (let i = 0; i < pending.length; i += EVICT_PRINCIPALS_MAX) {
+      const sweep = pending.slice(i, i + EVICT_PRINCIPALS_MAX);
+      const gone = await args.barrier.evict(sweep);
+      if (gone.length !== sweep.length)
+        throw new Error(`the evictor answered ${gone.length} verdict(s) for ${sweep.length} holder(s)`);
+      const evicted = sweep.filter((_, j) => gone[j] === true);
       if (args.barrier.progress && progress && evicted.length > 0) {
-        progress = { ...progress, verified: [...verified, ...evicted].sort() };
+        progress = { ...progress, verified: [...progress.verified, ...evicted].sort() };
         progressRevision = await args.barrier.progress.save(progress, progressRevision);
       }
-      const unverified = pending.filter((_, i) => gone[i] !== true);
+      const unverified = sweep.filter((_, j) => gone[j] !== true);
       if (unverified.length > 0)
         throw new Error(`principal(s) ${unverified.map((h) => `"${h}"`).join(", ")} not verified evicted`);
     }
@@ -1787,8 +1791,9 @@ export interface EpIssuanceBarrier {
    *  in input order, `true` only when that principal is verified GONE. FAIL-CLOSED: a `false` (or a
    *  throw) means the barrier MUST NOT complete (no spec write, no reopen); the gate stays frozen
    *  for reconciliation so old authority is never published-over while it is still live. It takes
-   *  the whole set because a family keeps a row for every credential it ever staged, so evicting
-   *  one holder at a time makes every restart slower than the last. */
+   *  a set because a family keeps a row for every credential it ever staged, so evicting one holder
+   *  at a time makes every restart slower than the last; registration passes at most
+   *  {@link EVICT_PRINCIPALS_MAX} holders per call and records the verdicts before the next call. */
   evict: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[];
   /** Token-pinned CAS `frozen` → `open` at the successor coordinate (§13.1). TRUE iff the gate is
    *  still frozen at THIS barrier's `token`; FALSE if a reconciler/newer barrier superseded it (a

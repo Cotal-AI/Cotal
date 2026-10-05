@@ -29,8 +29,8 @@
     {
       "name": "registration evicts its family one holder per request",
       "file": "packages/core/src/endpoint-service.ts",
-      "find": "      const gone = await args.barrier.evict(pending);",
-      "replace": "      const gone: boolean[] = [];\n      for (const h of pending) gone.push(...(await args.barrier.evict([h])));",
+      "find": "      const gone = await args.barrier.evict(sweep);",
+      "replace": "      const gone: boolean[] = [];\n      for (const h of sweep) gone.push(...(await args.barrier.evict([h])));",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "registration resume re-sends the family as one request",
       "cell": "registration resume re-sends the family as one request",

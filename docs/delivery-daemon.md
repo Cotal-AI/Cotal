@@ -80,8 +80,9 @@ manager log names the rail.
 A restart verify-evicts every holder in the manager's credential family, and the family keeps a
 ledger row for every credential an earlier incarnation was issued. The manager sends those holders
 as one `evictPrincipals` request per 256, and the daemon answers each request with one shared sweep
-of the broker. A daemon that does not serve that verb refuses it, and the restart leaves the gate
-frozen.
+of the broker. The manager records the holders each request verified before it sends the next, so a
+restart cut short by its executor window resumes after the last recorded request. A daemon that does
+not serve that verb refuses it, and the restart leaves the gate frozen.
 
 An agent binds its per-member delivery durable even when the plane reached by its connection has no
 ready delivery lease, so a daemon that starts later can deliver through it. A missing or not-ready

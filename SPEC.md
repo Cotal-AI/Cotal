@@ -1277,10 +1277,11 @@ with the same row schema, mint protocol, gate discipline, and never-delete rules
 `cred.`/`gate.`. An interrupted endpoint registration repair MAY journal verified evictions
 under the disjoint cursor key `eprepair.<endpoint>.<instanceId>`. A cursor MUST bind the exact
 registration `opId`, the observed frozen-gate KV revision, and the sorted distinct holder set.
-Each holder is appended durably only after its eviction verifies and before the next holder is
-attempted. A retry MUST repeat the freeze-holder liveness precondition, MAY skip only holders in a
-cursor whose complete binding still matches, MUST restart from empty progress on any mismatch, and
-MUST reopen only after every current holder verifies. Cleanup occurs after reopen; a cursor that
+A holder is appended durably only after its eviction verifies, and the holders one eviction sweep
+verified are appended before the next sweep is attempted. A retry MUST repeat the freeze-holder
+liveness precondition, MAY skip only holders in a cursor whose complete binding still matches, MUST
+restart from empty progress on any mismatch, and MUST reopen only after every current holder
+verifies. Cleanup occurs after reopen; a cursor that
 cannot be deleted cannot authorize a later freeze because that freeze has a different gate revision.
 **`holderPrincipal` is ALWAYS a CONNZ-attributable `<owner>.<actor>` in
 BOTH families** (the barrier KICKs it; an endpoint NAME is not attributable and never sits
