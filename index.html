@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
 <title>Cotal · booth demo</title>
 <link rel="icon" href="assets/cotal-mark.svg">
 <link rel="stylesheet" href="booth.css">
@@ -16,6 +17,10 @@
       <div class="tagline">The open <b>pub/sub</b> standard for AI agents</div>
       <button class="cta">Tap to see it work</button>
     </div>
+    <div class="qr-card">
+      <div class="qr"><canvas class="qrc"></canvas></div>
+      <div class="qr-text"><b>Try it on your phone</b><span>booth.apps.cotal.ai</span></div>
+    </div>
     <div class="attract-foot">
       <span class="vendors"><img src="assets/claude-code.svg" alt="Claude Code"><img src="assets/opencode.svg" alt="OpenCode"><img src="assets/codex.svg" alt="Codex"><img src="assets/hermes.png" alt="Hermes"><img src="assets/pi.svg" alt="pi"></span>
     </div>
@@ -28,14 +33,18 @@
       <p class="lede">About thirty seconds each.</p>
       <div class="cards"></div>
       <div class="home-foot">
-        <div class="qr"><canvas id="qr"></canvas></div>
-        <div><div class="url">cotal.ai</div><div>Open source · Apache 2.0</div></div>
+        <div class="qr-block">
+          <div class="qr"><canvas class="qrc"></canvas></div>
+          <div><div class="url">Try it on your phone</div><div>booth.apps.cotal.ai</div></div>
+        </div>
+        <div class="site"><a href="https://cotal.ai" target="_blank" rel="noopener">cotal.ai</a><div>Open source · Apache 2.0</div></div>
       </div>
     </div>
   </section>
 
   <section id="demo" class="screen" style="z-index:2;">
     <div class="topbar">
+      <button class="back" aria-label="All demos">‹</button>
       <img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span><span class="sep">·</span>
       <span class="title"></span><span class="dots"></span>
       <span class="auto-badge">touch to take over</span>
@@ -65,32 +74,36 @@
   </div>
 
   <script>
-window.COTAL_QR = [
-  '1111111001110001101111111',
-  '1000001000101000001000001',
-  '1011101011001010101011101',
-  '1011101010111000001011101',
-  '1011101011111111001011101',
-  '1000001010110111101000001',
-  '1111111010101010101111111',
-  '0000000011100101000000000',
-  '1011111000110010001111100',
-  '0011100011111000100100010',
-  '0011101110100001110111011',
-  '1101100000010011010000001',
-  '1101111000100001011010111',
-  '1000110101101110110101010',
-  '1000101100000111011111011',
-  '1001110110001100101110001',
-  '1000011000001010111110100',
-  '0000000010000001100011000',
-  '1111111001011000101010111',
-  '1000001011010011100011001',
-  '1011101010010001111110101',
-  '1011101010101111011011111',
-  '1011101010000110100001101',
-  '1000001000001101101111001',
-  '1111111010001010011111111',
+window.BOOTH_QR = [ // https://booth.apps.cotal.ai/?qr=1
+  '11111110001100100011001111111',
+  '10000010000110001100001000001',
+  '10111010000110110100101011101',
+  '10111010011101001011101011101',
+  '10111010011110000110001011101',
+  '10000010101100011011001000001',
+  '11111110101010101010101111111',
+  '00000000000101011101100000000',
+  '10010110110110101011010100000',
+  '01100100110101011000111001001',
+  '00101111001001110101001011110',
+  '10010000011101001000110100110',
+  '01110011010000111100101101011',
+  '00010100111101111101110000000',
+  '11101110000111100110010001111',
+  '10010001101110010110111011010',
+  '11010110001101001100110000010',
+  '00010100011001100100111101001',
+  '10101111011110100010001100011',
+  '00011000010000110111001010011',
+  '10100111110000010010111110100',
+  '00000000111010100000100010111',
+  '11111110010100000100101010010',
+  '10000010100010100010100011100',
+  '10111010001100000110111110001',
+  '10111010110101000010001111110',
+  '10111010000101100000010011101',
+  '10000010001101010110110110010',
+  '11111110101010101100100011010',
 ];
   </script>
   <script src="personas.js"></script>

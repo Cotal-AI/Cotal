@@ -153,7 +153,7 @@
       this.pulses = keep;
       // nodes
       const u = this.unit;
-      const font = Math.max(13, u * 0.021);
+      const font = Math.max(this.w < 520 ? 10 : 13, u * 0.021);
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       for (const n of this.nodes.values()) {
         const { x, y } = this.px(n); ctx.globalAlpha = n.alpha;
@@ -185,7 +185,7 @@
             }
           }
           if (n.vendor && vendorImg[n.vendor] && vendorImg[n.vendor].complete && vendorImg[n.vendor].naturalWidth && n.size >= 0.8) {
-            const br = r * 0.56, bx = x + r * 0.78, by = y - r * 0.78;
+            const br = Math.max(2, r * 0.56), bx = x + r * 0.78, by = y - r * 0.78;
             ctx.fillStyle = '#0d1117'; ctx.beginPath(); ctx.arc(bx, by, br, 0, 6.283); ctx.fill();
             ctx.lineWidth = 1; ctx.strokeStyle = rgba(C.line, 0.8); ctx.stroke();
             ctx.save(); ctx.beginPath(); ctx.arc(bx, by, br - 1.5, 0, 6.283); ctx.clip();
@@ -199,14 +199,14 @@
         }
         if (n.hit) {
           const age = now - n.hit.t0;
-          if (age < 750) { const k = age / 750; ctx.lineWidth = 2 * (1 - k); ctx.strokeStyle = rgba(n.hit.color, 1 - k); ctx.beginPath(); ctx.arc(x, y, u * 0.027 * n.size + k * u * 0.06, 0, 6.283); ctx.stroke(); }
+          if (age < 750) { const k = age / 750; ctx.lineWidth = 2 * (1 - k); ctx.strokeStyle = rgba(n.hit.color, 1 - k); ctx.beginPath(); ctx.arc(x, y, Math.max(0, u * 0.027 * n.size + k * u * 0.06), 0, 6.283); ctx.stroke(); }
           else n.hit = null;
         }
         ctx.globalAlpha = 1;
       }
     }
     drawBadge(x, y, text, color) {
-      const ctx = this.ctx, f = Math.max(11, this.unit * 0.015);
+      const ctx = this.ctx, f = Math.max(this.w < 520 ? 9 : 11, this.unit * 0.015);
       ctx.font = `600 ${f}px "JetBrains Mono", monospace`;
       const w = ctx.measureText(text).width + f * 1.1, hh = f * 1.6;
       ctx.fillStyle = rgba(color, 0.18); ctx.strokeStyle = rgba(color, 0.9); ctx.lineWidth = 1;
@@ -410,10 +410,15 @@
       const room = box.parentElement.clientHeight - box.offsetTop;
       let wide = box.clientWidth;
       for (const l of box.children) wide = Math.max(wide, l.scrollWidth);
-      const k = Math.min(1, box.clientWidth / wide, room / box.scrollHeight);
+      const k = Math.min(1, box.clientWidth / wide, PHONE.matches ? 1 : room / box.scrollHeight);
       if (k < 1) box.style.fontSize = (k * 0.98) + 'em';
     }
-    hl(i, cls = 'hl') { for (const l of this.root.querySelectorAll('.code .l')) { l.classList.remove('hl', 'replay'); if (Number(l.dataset.i) === i) l.classList.add(cls); } }
+    hl(i, cls = 'hl') {
+      let on = null;
+      for (const l of this.root.querySelectorAll('.code .l')) { l.classList.remove('hl', 'replay'); if (Number(l.dataset.i) === i) { l.classList.add(cls); on = l; } }
+      const pane = $('.code', this.root);
+      if (on && pane && pane.scrollHeight > pane.clientHeight + 2) pane.scrollTo({ top: on.offsetTop - pane.clientHeight / 2 + on.offsetHeight / 2, behavior: 'smooth' });
+    }
     codeDone(i) { const l = this.root.querySelector(`.code .l[data-i="${i}"]`); if (l) l.classList.add('done'); }
     codeReset() { for (const l of this.root.querySelectorAll('.code .l')) l.classList.remove('hl', 'replay', 'done'); }
     journal({ key, scope = '', status = 'pending', note = '' }) {
@@ -443,13 +448,21 @@
     .replace(/\b(spawn|ask|checkpoint|turn|fanOut|parallel|log|notify|wait|race|sleep)(?=\()/g, '<span class="eff">$1</span>');
 
   // ---------- the app ----------
+  // A phone, or anyone who scanned the booth QR, gets the demos without the kiosk's idle loop.
+  const PERSONAL = new URLSearchParams(location.search).has('qr') || matchMedia('(max-width: 760px), (max-height: 500px)').matches;
+  const PHONE = matchMedia('(max-width: 760px) and (orientation: portrait)');
+
   const App = {
-    screen: null, run: null, demoIndex: 0, auto: false, autoNext: 0, lastInput: Date.now(), attractMesh: null, autoTimer: null,
+    screen: null, run: null, demoIndex: 0, swallowClick: 0, auto: false, autoNext: 0, lastInput: Date.now(), attractMesh: null, autoTimer: null,
     init() {
       this.stage = new Stage($('#stage'), $('#capbar'));
+      document.body.classList.toggle('personal', PERSONAL);
       this.buildHome(); this.buildAttract(); this.drawQr();
+      $('#demo .back').onclick = () => this.showHome();
       const touch = (e) => this.onInput(e);
       window.addEventListener('pointerdown', touch, true);
+      // The tap that leaves the idle screen must not also land on the card that appears under it.
+      window.addEventListener('click', (e) => { if (Date.now() < this.swallowClick) { e.stopPropagation(); e.preventDefault(); } }, true);
       window.addEventListener('keydown', (e) => this.onKey(e), true);
       window.addEventListener('resize', () => { if (this.stage) this.stage.fitCode(); });
       window.addEventListener('mousemove', () => { this.lastInput = Date.now(); }, { passive: true });
@@ -472,7 +485,9 @@
       const names = ['planner', 'builder', 'reviewer', 'security', 'scout', 'ops', 'merger', 'analyst', 'guide', 'editor'];
       names.forEach((n, i) => {
         const ang = ((i + 0.5) / names.length) * 6.283 + (rand() - 0.5) * 0.25; const rr = 0.34 + rand() * 0.1;
-        M.add({ id: n, label: n, x: 0.5 + Math.cos(ang) * rr * 1.2, y: 0.5 + Math.sin(ang) * rr * 0.98, vendor: vendors[i % vendors.length], status: pick(["idle", "working", "idle", "idle", "waiting"], rand), drift: true, seed: rand() * 10, size: 0.95 });
+        let x = 0.5 + Math.cos(ang) * rr * 1.2, y = 0.5 + Math.sin(ang) * rr * 0.98;
+        if (!PERSONAL && x > 0.66 && y > 0.7) { x -= 0.06; y = 0.66; } // keep the corner clear for the QR card
+        M.add({ id: n, label: n, x, y, vendor: vendors[i % vendors.length], status: pick(["idle", "working", "idle", "idle", "waiting"], rand), drift: true, seed: rand() * 10, size: 0.95 });
         M.link(n, chans[i % 2][0]); if (rand() < 0.4) M.link(n, chans[(i + 1) % 2][0]);
       });
       setInterval(() => {
@@ -498,9 +513,12 @@
       });
     },
     drawQr() {
-      const m = window.COTAL_QR; const cv = $('#qr'); const n = m.length; cv.width = n; cv.height = n; const ctx = cv.getContext('2d');
-      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, n, n); ctx.fillStyle = '#000';
-      for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (m[y][x] === '1') ctx.fillRect(x, y, 1, 1);
+      const m = window.BOOTH_QR, n = m.length;
+      for (const cv of document.querySelectorAll('canvas.qrc')) {
+        cv.width = n; cv.height = n; const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, n, n); ctx.fillStyle = '#000';
+        for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (m[y][x] === '1') ctx.fillRect(x, y, 1, 1);
+      }
     },
     // -- demos
     async startDemo(i, auto) {
@@ -529,7 +547,7 @@
       this.lastInput = Date.now();
       if (e.target.closest('.hud') || e.target.closest('#help')) return;
       if ($('#help').classList.contains('on')) { $('#help').classList.remove('on'); e.stopPropagation(); e.preventDefault(); return; }
-      if (this.screen === 'attract') { e.stopPropagation(); e.preventDefault(); this.showHome(); return; }
+      if (this.screen === 'attract') { e.stopPropagation(); e.preventDefault(); this.swallowClick = Date.now() + 700; this.showHome(); return; }
       if (this.screen === 'demo' && this.run && this.run.auto) { this.run.takeOver(); this.auto = false; document.body.classList.remove('auto'); }
     },
     onKey(e) {
@@ -557,6 +575,7 @@
       }
     },
     tick() {
+      if (PERSONAL) return;
       const idle = (Date.now() - this.lastInput) / 1000;
       document.body.classList.toggle('nocursor', idle > 4);
       if (this.screen === 'home' && idle > 75) this.showAttract();
@@ -570,6 +589,6 @@
     fullscreen() { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {}); },
   };
 
-  window.Booth = { App, Mesh, Run, Stage, CANCELLED, C, KIND, VENDORS, sfx, pick, nameColor, mulberry };
+  window.Booth = { App, Mesh, Run, Stage, CANCELLED, C, KIND, VENDORS, sfx, pick, nameColor, mulberry, PERSONAL, PHONE };
   window.addEventListener('DOMContentLoaded', () => App.init());
 })();

@@ -13,14 +13,22 @@ Before the event: turn off screen sleep and notifications on the booth machine, 
 press `F`, and leave it. The screen plays the demos on its own when nobody touches it, and any
 touch or key hands control to the visitor.
 
+## On a phone
+
+The idle screen and the demo picker show a QR code for https://booth.apps.cotal.ai/?qr=1, so
+visitors can run the demos on their own phone. The page stacks every demo vertically on a
+portrait phone. A phone, or any visit through the QR link, skips the kiosk idle loop: nothing
+plays by itself, and a back arrow returns to the demo picker. The QR matrix is inlined in
+`index.html`; regenerate it with any QR encoder if the address changes.
+
 ## The four demos
 
 | # | Title | What the visitor presses | What it shows |
 | --- | --- | --- | --- |
 | 1 | A team ships a feature | one button | Five agents from four vendors coordinate as peers: multicast, unicast, anycast, presence, and a late joiner replaying history. Pixel faces lip-sync what each agent says. |
 | 2 | Three ways to send | Multicast / Unicast / Anycast, any order | One addressing scheme. Unicast to a busy peer queues in his durable inbox and drains in order; anycast skips the busy reviewer and the next free one claims the work. |
-| 3 | Any topology | Peers / Supervisor / Pipeline / Hybrid / +40 agents | The same nine agents re-wire live into each shape, then forty more join. Topology is configuration. |
-| 4 | A workflow that survives | Run · Approve · Kill the host · Resume | A Cotal Lang program spawns agents, pauses for the visitor's approval at a checkpoint, fans out two reviewers, survives its host being killed, and resumes from the step journal with no agent asked twice. |
+| 3 | Any topology | Peers / Supervisor / Tree / Pipeline / Hybrid / +40 agents | The same nine agents re-wire live into each shape, including a nested tree of sub-leads. Forty more agents can join any shape, with live status and traffic. Picking another shape returns to nine. |
+| 4 | A pipeline across machines | Run · Unplug the laptop · Resume on the server | A Cotal Lang program works a GitHub backlog across three machines: triage labels each issue, a fixer opens a PR per confirmed issue, and two reviewers from different model families approve or block it. The laptop running the workflow is unplugged mid-review. The run resumes on the server from its step journal, and only the lost reviewer runs again. |
 
 The caption bar is the talk track: read it out loud, or let visitors read it themselves.
 

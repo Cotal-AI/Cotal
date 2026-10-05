@@ -444,11 +444,13 @@
     let home = 'laptop';
     S.code(PROGRAM);
     for (const [m, x] of Object.entries(MACH)) M.add({ id: m, kind: 'channel', color: 'sys', label: m, x, y: BASE, size: 0.9 });
-    M.add({ id: 'run', kind: 'channel', color: 'gold', label: 'run', x: 0.5, y: 0.13, size: 1 }); M.link('run', home);
+    M.add({ id: 'run', kind: 'channel', color: 'gold', label: 'run', x: 0.5, y: M.w < 600 ? 0.1 : 0.13, size: 1 }); M.link('run', home);
     S.host(true, 'run on laptop');
     const seat = (id, label, vendor, host) => {
       const k = slots[host].indexOf(null); slots[host][k] = id; hostOf[id] = host;
-      M.add({ id, label, vendor, x: MACH[host] + (k - 1) * 0.1, y: ROW, from: { x: MACH[host], y: BASE } }); M.link(id, host);
+      // On a narrow screen the middle seat sits higher so neighbouring badges do not collide.
+      const y = ROW - (M.w < 600 && k === 1 ? 0.08 : 0);
+      M.add({ id, label, vendor, x: MACH[host] + (k - 1) * 0.1, y, from: { x: MACH[host], y: BASE } }); M.link(id, host);
     };
     const unseat = (id) => { const s = slots[hostOf[id]]; s[s.indexOf(id)] = null; M.remove(id); };
     const lane = (id) => '/fanOut:lanes#0/b:' + id + '/';
