@@ -318,10 +318,11 @@ Stock participant supervision asks its host to enroll a detached agent and to pr
 retirement, over the same manager-authority transport. The stock auth service answers both when it
 runs with a public exchange face: it grants the agent under the participant's owner at a lifecycle
 UID it picks, bounded by the participant actor's own grant, provisions that UID's durables, and on
-retirement releases them and revokes the grant before the manager's terminal rail. A host platform
-that keeps these writers in its own storage intercepts both requests on its own route instead.
-Copying host secrets or actor-ledger files to a participant is not supported. Foreground spawning
-and operator-local hosted managers use their existing paths.
+retirement releases them and revokes the grant before the manager's terminal rail. It refuses a
+second enrollment of a name whose grant still stands until that agent's retirement is prepared. A
+host platform that keeps these writers in its own storage intercepts both requests on its own route
+instead. Copying host secrets or actor-ledger files to a participant is not supported. Foreground
+spawning and operator-local hosted managers use their existing paths.
 
 The remote manager that `cotal supervise` starts can host workflow runs through its host: the host
 admits each run and signs only the run's own driver, mediator and operator credentials. A logged-in

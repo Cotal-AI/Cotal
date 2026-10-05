@@ -105,7 +105,7 @@ import {
   ledgerAuthorizeAgentExchange,
   ledgerAuthorizeConnect,
   ledgerAuthorizeGrant,
-  revokeManagedActor,
+  revokeManagedActorAt,
 } from "./ledger.js";
 import {
   AUTH_PROVIDER_NAME,
@@ -153,6 +153,19 @@ const PUBLIC_MAX_IN_FLIGHT = 64; // global concurrent-admission cap on the publi
 const PUBLIC_DEADLINE_MS = 10_000; // hard wall-clock deadline per public request
 const HOST_FENCE_POLL_MS = 1_000; // how often awaitHostFence re-reads the host gate
 const OBSERVED_RUN_REQUEST_WINDOW_MS = 5 * 60_000; // how long an observed served resume or answer can still be forwarded
+
+/** Enrollment and retirement preparation of one managed agent run one at a time, so neither acts on
+ *  a grant the other is still writing or releasing. The chain lives at module level, keyed by the
+ *  ledger directory, so two plane instances over one ledger share it. */
+const MANAGED_ALIAS_CHAINS = new Map<string, Promise<unknown>>();
+const serializedForAlias = <T>(dir: string, owner: string, actor: string, fn: () => Promise<T>): Promise<T> => {
+  const key = `${resolve(dir)}:${principalKey(owner, actor).key}`;
+  const run = (MANAGED_ALIAS_CHAINS.get(key) ?? Promise.resolve()).then(fn, fn);
+  const tail = run.then(() => undefined, () => undefined);
+  MANAGED_ALIAS_CHAINS.set(key, tail);
+  void tail.then(() => { if (MANAGED_ALIAS_CHAINS.get(key) === tail) MANAGED_ALIAS_CHAINS.delete(key); });
+  return run;
+};
 
 type Values = Record<string, string | undefined>;
 
@@ -1205,50 +1218,62 @@ export async function openAuthAuthorityPlane(opts: {
       refuseIfFenced();
       const r = await authorizeRemoteManagedAgentEnrollment({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate });
       const t = r.target;
-      // A fresh uid is never one a retirement tombstoned, and only the host can make that promise.
-      const lifecycleUid = mintLifecycleUid();
-      // The grant first: its envelope walk against the supervising actor refuses an over-wide
-      // request before any durable exists.
-      const row = grantManagedActor(opts.dir, {
-        owner,
-        actor: t.actor,
-        scope: t.capabilities ?? [],
-        allowSubscribe: t.allowSubscribe ?? [],
-        allowPublish: t.allowPublish ?? [],
-        ...(t.role !== undefined ? { role: t.role } : {}),
-        ...(t.label !== undefined ? { label: t.label } : {}),
-        parent: principalKey(owner, r.actor).key,
-        lifecycleUid,
-        tokenHash: t.tokenHash,
-      });
       const subscribe = t.subscribe ?? [];
-      try {
-        const identity = newIdentity();
-        const provisioner = new CotalEndpoint({
-          space,
-          servers: server,
-          channels: [],
-          creds: await mintCreds(issuerAuth(), identity, "provisioner"),
-          card: { id: identity.id, name: "provisioner", role: "provisioner", kind: "endpoint" },
-          registerPresence: false,
-          watchPresence: false,
-          watchChannels: false,
-          consume: false,
+      const { lifecycleUid, row } = await serializedForAlias(opts.dir, owner, t.actor, async () => {
+        // The token digest names one enrollment. A held row with this request's digest is that
+        // enrollment retried, so it answers the same uid; any other held row is a lifecycle that
+        // still runs, and taking its grant would strand it.
+        const held = findManagedActor(opts.dir, owner, t.actor);
+        if (held !== undefined && held.tokenHash !== t.tokenHash)
+          throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" is enrolled at lifecycle ${held.lifecycleUid}; prepare that lifecycle's retirement before enrolling a successor`);
+        // A fresh uid is never one a retirement tombstoned, and only the host can make that promise.
+        const lifecycleUid = held?.lifecycleUid ?? mintLifecycleUid();
+        // The grant first: its envelope walk against the supervising actor refuses an over-wide
+        // request before any durable exists.
+        const row = held ?? grantManagedActor(opts.dir, {
+          owner,
+          actor: t.actor,
+          scope: t.capabilities ?? [],
+          allowSubscribe: t.allowSubscribe ?? [],
+          allowPublish: t.allowPublish ?? [],
+          ...(t.role !== undefined ? { role: t.role } : {}),
+          ...(t.label !== undefined ? { label: t.label } : {}),
+          parent: principalKey(owner, r.actor).key,
+          lifecycleUid,
+          tokenHash: t.tokenHash,
         });
-        await provisioner.start();
         try {
-          await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe, allowSubscribe: row.allowSubscribe, role: row.role });
-        } finally {
-          await provisioner.stop();
+          const identity = newIdentity();
+          const provisioner = new CotalEndpoint({
+            space,
+            servers: server,
+            channels: [],
+            creds: await mintCreds(issuerAuth(), identity, "provisioner"),
+            card: { id: identity.id, name: "provisioner", role: "provisioner", kind: "endpoint" },
+            registerPresence: false,
+            watchPresence: false,
+            watchChannels: false,
+            consume: false,
+          });
+          await provisioner.start();
+          try {
+            await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe, allowSubscribe: row.allowSubscribe, role: row.role });
+          } finally {
+            await provisioner.stop();
+          }
+        } catch (e) {
+          // A retried enrollment's first answer may already have reached the participant, so its
+          // grant stays. A grant this call wrote gave the participant no uid, so it can never be
+          // retired: it and any durable it got must go now.
+          if (held === undefined) {
+            revokeManagedActorAt(opts.dir, owner, t.actor, lifecycleUid);
+            await deprovisionManagedFootprint(owner, t.actor, lifecycleUid, []).catch((err) =>
+              opts.log(`auth-service: refused enrollment of ${owner}/${t.actor} left durables at ${lifecycleUid}: ${err instanceof Error ? err.message : String(err)}`));
+          }
+          throw e;
         }
-      } catch (e) {
-        // The participant learns no uid from a refused enrollment and so can never retire this one:
-        // the grant and any durable it got must go now.
-        revokeManagedActor(opts.dir, owner, t.actor);
-        await deprovisionManagedFootprint(owner, t.actor, lifecycleUid, []).catch((err) =>
-          opts.log(`auth-service: refused enrollment of ${owner}/${t.actor} left durables at ${lifecycleUid}: ${err instanceof Error ? err.message : String(err)}`));
-        throw e;
-      }
+        return { lifecycleUid, row };
+      });
       return {
         v: 1,
         kind: "manager-managed-agent-enrollment",
@@ -1276,14 +1301,16 @@ export async function openAuthAuthorityPlane(opts: {
       refuseIfFenced();
       const r = await authorizeRemoteManagedAgentPrepareRetirement({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate });
       const { actor, lifecycleUid } = r.target;
-      // Only a grant still at the target uid is this lifecycle's. A row at another uid belongs to a
-      // successor, and an absent row means an earlier attempt already released both halves.
-      const row = findManagedActor(opts.dir, owner, actor);
-      if (row?.lifecycleUid === lifecycleUid) {
-        // Footprint before grant: while the row stands, a retry still knows which channels to purge.
-        await deprovisionManagedFootprint(owner, actor, lifecycleUid, row.allowSubscribe.filter(isConcreteChannel));
-        revokeManagedActor(opts.dir, owner, actor);
-      }
+      await serializedForAlias(opts.dir, owner, actor, async () => {
+        // Only a grant still at the target uid is this lifecycle's. A row at another uid belongs to a
+        // successor, and an absent row means an earlier attempt already released both halves.
+        const row = findManagedActor(opts.dir, owner, actor);
+        if (row?.lifecycleUid === lifecycleUid) {
+          // Footprint before grant: while the row stands, a retry still knows which channels to purge.
+          await deprovisionManagedFootprint(owner, actor, lifecycleUid, row.allowSubscribe.filter(isConcreteChannel));
+          revokeManagedActorAt(opts.dir, owner, actor, lifecycleUid);
+        }
+      });
       return {
         v: 1,
         kind: "manager-managed-agent-prepare-retirement",

@@ -1356,10 +1356,15 @@ service that owns the actor ledger and the space's provisioning authority answer
 the same decision. Its enrollment writes the managed grant at a fresh host-minted lifecycle UID with
 the request's supervising actor as the grant's parent, so the ledger's delegation envelope bounds it,
 and then provisions that UID's durables; a provisioning failure revokes the grant and releases the
-footprint before the refusal. Its prepare-retirement releases the target UID's broker footprint and
-then revokes the grant, only while the grant still names that UID, so a repeated request is harmless.
-The enrolled agent's bearer exchanges at the public exchange face, so an auth service without that
-face MUST refuse enrollment with `failed-precondition`. A host
+footprint before the refusal. An enrollment whose token digest matches the agent's standing grant is
+a retry of that enrollment: it answers the held UID and provisions it again, and its failure leaves
+that grant in place. While the agent holds a grant with another digest, enrollment MUST be refused
+with `conflict` until that lifecycle's retirement is prepared, so a successor never takes a running
+agent's grant. Its prepare-retirement releases the target UID's broker footprint and then revokes the
+grant, only while the grant still names that UID, so a repeated request is harmless. The service runs
+enrollment and prepare-retirement of one agent one at a time, and every revoke it performs names the
+UID it releases. The enrolled agent's bearer exchanges at the public exchange face, so an auth
+service without that face MUST refuse enrollment with `failed-precondition`. A host
 platform that owns the writers MAY intercept them on its own authenticated route and obtain the
 decision alone from the auth service's loopback door
 `POST /manager-service-authority/verify-enrollment`, which carries the same loopback guards as the
