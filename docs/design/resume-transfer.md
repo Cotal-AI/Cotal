@@ -91,7 +91,9 @@ anywhere in a shared home is therefore findable by every seat that runs in that 
    source host and title. The manager creates or verifies its transfer bucket, then answers `staged`
    with a claim (a hit, zero bytes move) or `upload`.
 4. On `upload`, the CLI writes the chunk chain and the commit into the target's bucket (section 4),
-   continuing any chain an earlier attempt left, then calls `transcript-receive` again.
+   continuing any chain an earlier attempt left, then calls `transcript-receive` again. It makes the
+   same call when its commit is refused or the target removes its chain mid-write, and follows the
+   answer (sections 4.2, 4.3).
 5. The manager reads the committed object with the stock `get`, checks its digest against the
    requested `sha256`, stages it privately, deletes the broker object, and answers `staged` with a
    claim.
@@ -185,10 +187,12 @@ Before writing, the CLI reads the last message on the chunk subject with a last-
 `0`. A message: continue at its `Cotal-Offset` with its sequence as the expectation.
 
 A refused expectation means another writer advanced the chain or the target removed it (section 4.5).
-The writer reads the last chunk again and continues from there, or from byte 0 with expectation `0`
-when no chunk is left. Because the subject is derived from the digest of the bytes, both writers
-are writing the same bytes, so continuing is safe. A transcript that changed between attempts has a
-different digest and therefore a different subject; it never extends the old chain.
+The writer reads the last chunk again. When a chunk is left it continues from there: the subject is
+derived from the digest of the bytes, so both writers are writing the same bytes. When no chunk is
+left, the target removed the transfer, and only the target knows whether it staged the bytes first,
+so the writer calls `transcript-receive` and follows its answer (section 4.3). A transcript that
+changed between attempts has a different digest and therefore a different subject; it never extends
+the old chain.
 
 Nothing on the source host records a checkpoint. The broker's chain is the only state, so an attempt
 from another terminal, or after a reboot, resumes from the same place while the target keeps the chain
@@ -203,9 +207,13 @@ shape: `bucket`, `name`, `nuid`, `size`, `chunks` (the last `Cotal-Chunk`), `mti
 carries `Nats-Rollup: sub`, as the stock client's does, and `Nats-Expected-Last-Subject-Sequence` set
 to the meta subject's last sequence as the writer's hit check read it: `0` when there was no record,
 or the sequence of the delete marker a previous removal left (the stock `delete` writes one and
-purges the chunks). Only one commit lands. A writer whose commit is refused reads the record again and
-treats it as a hit if it is live and its `size` and digest match; anything else is an error naming
-the object.
+purges the chunks). Only one commit lands.
+
+Whether its commit lands or is refused, the writer then calls `transcript-receive`, and that answer
+ends the write: `staged` carries a claim, and `upload` means the target removed the transfer without
+staging it, so the writer starts again at section 4.2, reading the chain and the meta subject's
+sequence afresh. A refused writer does not decide from the record, because by the time it reads it
+the target may have staged the winning commit and removed it, leaving a delete marker.
 
 The meta record is a claim made by the writer. The reader does not stage bytes on its word: the stock
 `get` recomputes SHA-256 over the chunks it streams, and the manager then compares the record's digest,
@@ -217,28 +225,36 @@ A hit is checked twice before any chunk is written:
 
 1. The manager's staging index (section 5.2), through `transcript-receive`. This is the hit a re-run
    takes: the broker object was deleted after the first run, and the staged copy remains.
-2. The meta record in the target's bucket, through a direct get on the meta subject. This covers a
-   commit that landed while the manager was down or before its receive call returned.
+2. A live meta record in the target's bucket, read with a direct get on the meta subject. The writer
+   then calls `transcript-receive` instead of writing: another writer's commit landed after the
+   target answered `upload`.
 
 ### 4.5 Retention
 
 A transfer is the chain on `$O.<bucket>.C.<hex>` together with the meta record named `sha256:<hex>`.
 It is removed only whole, and only by the target manager:
 
-- A whole removal is the stock `delete` when the transfer has a meta record (the delete marker, then
-  one filtered `STREAM.PURGE` of the chunk subject), and that purge alone when it has none. One purge
-  removes every chunk on the subject, so a chain either starts at its first chunk or is empty.
+- A whole removal is the stock `delete` when the transfer has a live meta record (the delete marker,
+  then one filtered `STREAM.PURGE` of the chunk subject the record names). When the record is a delete
+  marker, or there is none, it is that purge alone, issued only when the chunk subject holds a
+  message. One purge removes every chunk on the subject, so a chain either starts at its first chunk
+  or is empty.
+- A transfer with no live record and no chunk is already removed, and nothing is written for it. The
+  stock `delete` of a deleted record publishes another marker, so repeating it would move the stream
+  on every staged hit (hand test H2).
 - The manager sweeps its bucket at the start of every `transcript-receive`, when it starts, and at the
-  next deadline. It lists the bucket's subjects with `STREAM.INFO` and a subject filter, reads the
+  next deadline. It lists the bucket's subjects with `STREAM.INFO` and `subjects_filter`, reads the
   last message of each, and removes a transfer whole when its bytes are already staged or its last
   write is older than ten minutes. An `upload` answer sets a deadline ten minutes later, and a
-  transfer the sweep leaves in place sets one ten minutes after its last write.
-- A writer whose chain was removed has its next publish refused and starts again at byte 0
-  (section 4.2).
+  transfer the sweep leaves in place, other than one already removed, sets one ten minutes after its
+  last write.
+- A writer whose chain was removed has its next publish refused and calls `transcript-receive`
+  (section 4.2), which answers `staged` when the bytes were staged before the removal and `upload`
+  when the chain was abandoned.
 - A sweep can remove a chain after its last chunk and before its commit. The commit then names chunks
   that do not exist, and the stock `get` of such an object waits for them and never returns. Before
   fetching, the manager therefore counts the messages on the chunk subject the record names, with
-  `STREAM.INFO` and a subject filter. A committed object whose count differs from the record's
+  `STREAM.INFO` and `subjects_filter`. A committed object whose count differs from the record's
   `chunks`, or that the stock `get` or the digest check refuses, is removed whole and the receive
   answers `upload`.
 
@@ -469,7 +485,7 @@ seat's "source context" is checked by asking it a question only the source conve
 | H6, the seat home starts clean | H1's seat, then a launch with no environment credential, then one with only `ANTHROPIC_API_KEY`, then one whose `cwd` the manager's Claude home does not trust | H1's seat reached its first turn with no login, onboarding or trust prompt; each of the three is refused before the claim is consumed, naming its remedy |
 | H7, unsupported connector | `--agent jcode` (and each other connector without the locator), then a raw `spawn` naming that agent with a valid `resumeClaim` | The CLI moves no byte and the id resolves on B as it does today; the raw `spawn` is refused |
 | H8, retention follows the transfer | Repeat H3's interruption with a new session and run the command again within ten minutes. Then interrupt a carry of another new session the same way, wait more than ten minutes, and run that command again | The first resumed run sends `<size> - <offset>` bytes. Before the second rerun, B's transfer stream holds no message on that chain's chunk subject; the rerun sends all `<size>` bytes and the commit verifies |
-| H9, concurrent carries and a leftover object | From two terminals on A, run H1's command for one new session at the same moment. Then put H1's transcript bytes into B's bucket under the name `sha256:<hex>` with an admin credential (`nats object put`), the state a manager crash between staging and removal leaves, and repeat H1's command | Both concurrent runs launch a seat with distinct fork ids; B's staging directory holds one `<hex>` and no temporary file; the repeated run reports `0 of <size> bytes sent` and B's bucket then holds no live object |
+| H9, concurrent carries and a leftover object | From two terminals on A, run H1's command for one new session at the same moment. Then, for another new session, run the command in one terminal, stop it with `SIGSTOP` after at least 10 acknowledged chunks, run the same command to completion in the other terminal, and resume the stopped one with `SIGCONT`. Then put H1's transcript bytes into B's bucket under the name `sha256:<hex>` with an admin credential (`nats object put`), the state a manager crash between staging and removal leaves, and repeat H1's command | All four carries launch a seat, with distinct fork ids; the resumed run reports fewer than `<size>` bytes sent; B's staging directory holds one `<hex>` per session and no temporary file; the repeated run reports `0 of <size> bytes sent` and B's bucket then holds no live object |
 
 ## 13. Not in this change
 
