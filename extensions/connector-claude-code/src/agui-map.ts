@@ -76,8 +76,7 @@
  * entries, and the single non-tool-result among them is a **context-compaction summary**
  * (`isCompactSummary`), so the true human count is 0 and the predicate over-matches by 825. It would
  * not emit nothing — it would emit a flood, each entry opening a run, which looks like the connector
- * working. An earlier revision of this comment recorded (B) as HEADLESS-ONLY and asserted a human
- * turn is "a `user` entry with no `origin`"; both halves were wrong.
+ * working.
  *
  * **The rule is implemented exactly as RULED, and still not guessed at.** `promptSource` was
  * proposed as the selector and REJECTED: it is bounded by the partition it was inferred from, and

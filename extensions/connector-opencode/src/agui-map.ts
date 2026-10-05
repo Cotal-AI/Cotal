@@ -85,15 +85,12 @@ export interface OpenCodeMapper {
  *   a change of its own, so v1 still drops the numbers.
  * - `file`, `patch`, `snapshot`, `subtask`, `agent`, `retry`, `compaction` -> nothing in v1 (§3.4).
  *
- * **THERE IS STILL NO `RUN_ERROR` ARM HERE, AND THAT IS NOW A STATEMENT ABOUT WHERE IT LIVES.**
+ * **THERE IS NO `RUN_ERROR` ARM HERE, AND THAT IS A STATEMENT ABOUT WHERE IT LIVES.**
  * §3.2 maps `session.error` to `RUN_ERROR`, and a failed turn IS published as one — but not from
  * this file, because `session.error` is a BUS event and never a record in the session store this
  * mapper reads. It is a turn boundary the record stream cannot see, exactly like the finish, so it
  * closes the run through the same out-of-band path: `plugin.ts` decides which errors are failed
- * turns and hands the reason to `AguiEmitterHolder.closeRun`. An earlier revision of this comment
- * said no emitter anywhere on this plane could publish one and that reaching it needed a new method
- * on the shared emitter; the first half was overtaken by the codex connector, which emits
- * `RUN_ERROR` straight from its mapper, and the second half is what this change did.
+ * turns and hands the reason to `AguiEmitterHolder.closeRun`.
  */
 const HANDLED = new Set(["text", "reasoning", "tool"]);
 
