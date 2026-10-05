@@ -595,24 +595,25 @@ type Exit = { site: ts.Node; status: ts.Expression | undefined };
 /** The exits calling `callee` can make, as `site` with first argument `status`: itself when it names
  *  `process.exit`, and those of every function of the file it names, each followed once into `seen`.
  *  Only iterating what a generator returns runs its body, so unless that can be `iterated`, it makes none. */
-function exitsOfCall(sf: ts.SourceFile, callee: ts.Node, site: ts.Node, status: ts.Expression | undefined, seen: Set<ts.Node>, passed = false, iterated = true): Exit[] {
+function exitsOfCall(sf: ts.SourceFile, callee: ts.Node, site: ts.Node, status: ts.Expression | undefined, seen: Set<ts.Node>, iterated = true): Exit[] {
   return [...valuesOf(sf, callee)].flatMap((v) => {
     if (isExitRef(v)) return [{ site, status }];
     if (!ts.isFunctionLike(v) || (!iterated && isGenerator(v)) || seen.has(v)) return [];
     seen.add(v);
-    return exitsIn(sf, v, seen, passed);
+    return exitsIn(sf, v, seen);
   });
 }
-/** The exits running `n` can make, directly or through the calls it makes, and with `passed`, through the
- *  functions it passes to a call or to `new`, which can call them at any time from then on. */
-function exitsIn(sf: ts.SourceFile, n: ts.Node, seen = new Set<ts.Node>(), passed = false): Exit[] {
+/** The outermost of the parentheses and type assertions around `n`, or `n` when there are none. */
+const wrapped = (n: ts.Node): ts.Node => (unwrap(n.parent) === n.parent ? n : wrapped(n.parent));
+/** The exits running `n` can make, directly, through the calls it makes, and through the functions it passes
+ *  to a call or to `new`, which can call them at any time from then on. */
+function exitsIn(sf: ts.SourceFile, n: ts.Node, seen = new Set<ts.Node>()): Exit[] {
   // A call written as a whole statement drops what it returns.
-  const called = findIn(n, ts.isCallExpression).flatMap((c) => exitsOfCall(sf, c.expression, c, c.arguments[0], seen, passed, !ts.isExpressionStatement(c.parent)));
-  if (!passed) return called;
-  return [...called, ...findIn(n, ts.isCallOrNewExpression).flatMap((c) => (c.arguments ?? []).flatMap((a) => exitsOfCall(sf, a, c, undefined, seen, passed)))];
+  const called = findIn(n, ts.isCallExpression).flatMap((c) => exitsOfCall(sf, c.expression, c, c.arguments[0], seen, !ts.isExpressionStatement(wrapped(c).parent)));
+  return [...called, ...findIn(n, ts.isCallOrNewExpression).flatMap((c) => (c.arguments ?? []).flatMap((a) => exitsOfCall(sf, a, c, undefined, seen)))];
 }
 /** Whether running `n` can exit 0, or leave behind a function that can when called later, during an `await`. */
-const canExitZero = (sf: ts.SourceFile, n: ts.Node) => exitsIn(sf, n, new Set(), true).some((e) => !failingStatus(e.status));
+const canExitZero = (sf: ts.SourceFile, n: ts.Node) => exitsIn(sf, n).some((e) => !failingStatus(e.status));
 /** Whether a run can stop at `s` without failing, or never get past it: `s` ends its list, a branch or block
  *  in it returns, or running it can exit 0. A function declaration runs none of its body. */
 const canEndRun = (sf: ts.SourceFile, s: ts.Node) => endsRun(s) || (!ts.isFunctionLike(s) && (findIn(s, ts.isReturnStatement).length > 0 || canExitZero(sf, s)));
@@ -672,9 +673,9 @@ function catchFails(sf: ts.SourceFile, arm: ts.Node | undefined, status: ts.Expr
   return !!first && (exitsWith(first, (status) => cannotBeZero(sf, status, guarded)) || (keepsCode && setsFailingCode(first)));
 }
 
-/** Lines of `process.exit` calls a `finally` can make, directly or through the calls it makes, that can turn
- *  a throw into exit 0: a try/finally or a promise `.finally` whose catch arm does not fail through that
- *  exit, and whose exit status can be 0. */
+/** Lines of `process.exit` calls a `finally` can make, directly, through the calls it makes or through the
+ *  functions it passes to them, that can turn a throw into exit 0: a try/finally or a promise `.finally`
+ *  whose catch arm does not fail through that exit, and whose exit status can be 0. */
 function swallowedThrows(sf: ts.SourceFile): number[] {
   const lines: number[] = [];
   // `seen` collects the functions the `finally` and the catch arm call; a code they write can clear the arm's.
@@ -695,7 +696,7 @@ function swallowedThrows(sf: ts.SourceFile): number[] {
       const prev = n.expression.expression;
       const caught = ts.isCallExpression(prev) && ts.isPropertyAccessExpression(prev.expression) && prev.expression.name.text === "catch" ? prev.arguments[0] : undefined;
       // Calling a generator `.catch` handler runs none of its body, and `.finally` never iterates what its handler returns.
-      if (handler) flag((seen) => exitsOfCall(sf, handler, handler, undefined, seen, false, false), handler, caught && (ts.isArrowFunction(caught) || (ts.isFunctionExpression(caught) && !caught.asteriskToken)) ? caught.body : undefined);
+      if (handler) flag((seen) => exitsOfCall(sf, handler, handler, undefined, seen, false), handler, caught && (ts.isArrowFunction(caught) || (ts.isFunctionExpression(caught) && !caught.asteriskToken)) ? caught.body : undefined);
     }
     ts.forEachChild(n, visit);
   };
@@ -783,7 +784,7 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
   };
   // A count of the cells that ran, so it cannot equal the pin by construction: a sum of counters, each a `let` that
   // starts at 0 and is written only by `++` or `+=` a literal, the `length` of a `const` that starts as `[]` when no
-  // `length` is assigned, or a `const` holding such a sum. An alias of the pin, a literal or a call is no count.
+  // `length` is declared or written, or a `const` holding such a sum. An alias of the pin, a literal or a call is no count.
   const isTally = (n: ts.Node, path: ts.Node[] = []): boolean => {
     const e = unwrap(n);
     if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) return isTally(e.left, path) && isTally(e.right, path);
@@ -796,7 +797,9 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
         found.writes.every((w) =>
           ((ts.isPrefixUnaryExpression(w) || ts.isPostfixUnaryExpression(w)) && w.operator === ts.SyntaxKind.PlusPlusToken) ||
           (ts.isBinaryExpression(w) && w.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken && ts.isNumericLiteral(unwrap(w.right))));
-    return array ? ts.isArrayLiteralExpression(init) && !init.elements.length && !keyed.has("length") : isTally(init, [...path, found.decl]);
+    if (!array) return isTally(init, [...path, found.decl]);
+    // `keyed` holds the values bound to `length`; `++`, `--`, `delete` and a destructuring write one too.
+    return ts.isArrayLiteralExpression(init) && !init.elements.length && !keyed.has("length") && !findIn(sf, (m): m is ts.Expression => memberKey(m) === "length" && !!writeOf(m), true).length;
   };
   // True when `cond` is true on a mismatch, false when it is true on a match, undefined when it is not a pin comparison.
   const onMismatch = (cond: ts.Node): boolean | undefined => {
@@ -907,6 +910,9 @@ const censusControls: Array<[string, boolean]> = [
   ["a finally exit of an imported exit is a swallowed throw", swallows(`import { exit } from "node:process"; try { f(); } finally { exit(process.exitCode ?? 0); }`)],
   ["a generator .finally handler runs none of its body", fails(`function* cleanup() { process.exit(0); } main().finally(cleanup);`)],
   ["a pin after iterating a generator that exits 0 is unpinned", !pinsWith(`function* skip() { process.exit(0); } for (const _ of skip()) {} if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a parenthesized generator call is pinned", pinsWith(`function* skip() { process.exit(0); } (skip()); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a callback a finally passes that exits 0 is a swallowed throw", swallows(`try { f(); } finally { await new Promise(() => setTimeout(() => process.exit(0))); }`)],
+  ["a pin compared with the length of an array grown by ++ is unpinned", !pinsWith(`const cells = []; cells.length++; if (cells.length !== EXPECTED_CELLS) process.exit(1);`)],
 ];
 const brokenControls = censusControls.filter(([, ok]) => !ok).map(([name]) => name);
 

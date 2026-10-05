@@ -66,7 +66,8 @@ reads the entry file of every suite the gate reaches and refuses two shapes. It 
 forms below, because a form it cannot follow to the exit status can hide either defect.
 
 - A `finally`, or a promise `.finally`, that calls `process.exit` with a status that can be 0, itself
-  or through a function it calls or names as the handler, where a throw in that `try` would exit 0.
+  or through a function it calls, passes to a call or names as the handler, where a throw in that
+  `try` would exit 0.
   A catch arm prevents it only when its first statement exits with a failing status, or sets
   `process.exitCode` to one that the exit reads (`process.exit()`, `process.exit(process.exitCode)`
   or `process.exit(process.exitCode ?? 0)`) while nothing in the arm, the `finally` or a function
@@ -79,15 +80,18 @@ forms below, because a form it cannot follow to the exit status can hide either 
   compare the cells that ran with it by `===` or `!==`, after reporting failures, so a deleted cell
   turns the suite red. `==` and `!=` coerce, so a tally of `"5"` would match. The cells that ran are
   counted by a `let` that starts at 0 and that only `++` or `+=` a number writes, by the `length` of
-  a `const` that starts as `[]` when the file assigns no `length`, by a sum of those, or by a
-  `const` that holds one. An alias of the pin, a literal or a call counts nothing, so it is no
-  tally. The comparison is the whole condition of a statement every run reaches, and a mismatch
-  fails the run in one of four forms: `if (ran !== EXPECTED_CELLS)` with an arm that always runs
-  `process.exit(1)`; the same arm setting `process.exitCode = 1`, when the file writes no other code
-  and every `process.exit` that can follow reads it; the same arm throwing, outside any function or
-  `try` with a catch; or `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`. A statement before the
-  failing one in the arm counts only where a throw would also escape, and only when it cannot end
-  the run.
+  a `const` that starts as `[]` when the file declares no `length` and writes none (by `=`, `++`,
+  `--`, `delete` or destructuring), by a sum of those, or by a `const` that holds one. An alias of
+  the pin, a literal or a call counts nothing, so it is no tally. The census cannot see what a cell
+  proves: it counts the writes to the counters, so an increment with no check before it, in any
+  counter of the sum, passes as a cell that proves nothing, as a check of `true` would. Review of
+  the suite has to catch that. The comparison is the whole condition of a statement every run
+  reaches, and a mismatch fails the run in one of four forms: `if (ran !== EXPECTED_CELLS)` with an
+  arm that always runs `process.exit(1)`; the same arm setting `process.exitCode = 1`, when the file
+  writes no other code and every `process.exit` that can follow reads it; the same arm throwing,
+  outside any function or `try` with a catch; or `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`. A
+  statement before the failing one in the arm counts only where a throw would also escape, and only
+  when it cannot end the run.
 
 A failing status is an integer from 1 to 255, written as a literal or a sum of literals. The process
 keeps only the low eight bits of its status, so `process.exit(256)` exits 0. The `finally` exit's
@@ -122,10 +126,9 @@ assignment to it, `||=`, `&&=` and `??=` included, an alias such as `const stop 
 which object it is. A value written as `a ? b : c`, `b || c`, `b && c` or `b ?? c` stands for both
 `b` and `c`, `(a, b)` for `b`, `await a` for `a`, and a call of a function of the file for every
 value it returns. A generator runs its body only as what its call returns is iterated, so its exits
-count for every call of it except one written as a whole statement or a `.finally` handler. A
-function passed as an argument is followed only to decide whether a statement can end the run.
-`.call`, `.apply`, `.bind`, a getter, a key computed at run time and an imported function are not
-followed.
+count for every call of it except one written as a whole statement, in parentheses or not, or a
+`.finally` handler. `.call`, `.apply`, `.bind`, a getter, a key computed at run time and an imported
+function are not followed.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The
