@@ -208,9 +208,25 @@ function peerRow(p) {
     </div>
   </div>`;
 }
+// Grouped by the machine each peer reports in `card.meta.host`, so placement across a multi-machine
+// mesh reads at a glance. A peer that reports no host (a manager card carries none) groups last
+// instead of being guessed onto a machine. Seats do not name the manager they run under, so there
+// is no manager grouping to draw from this feed.
 function renderRoster(list) {
+  const machines = new Map();
+  for (const p of list) {
+    const host = typeof p.host === "string" ? p.host : "";
+    if (!machines.has(host)) machines.set(host, []);
+    machines.get(host).push(p);
+  }
   $("roster").innerHTML = list.length
-    ? list.map(peerRow).join("")
+    ? [...machines.keys()]
+        .sort((a, b) => !a - !b || a.localeCompare(b))
+        .map((host) => {
+          const peers = machines.get(host);
+          return `<div class="machine"><span class="h">${host ? esc(host) : "host not reported"}</span><span class="c">${peers.length}</span></div>${peers.map(peerRow).join("")}`;
+        })
+        .join("")
     : `<div class="empty">no peers</div>`;
   for (const el of $("roster").querySelectorAll(".peer[data-agent]")) {
     el.onclick = () => selectAgent(el.dataset.agent);
@@ -237,6 +253,7 @@ function rosterRows() {
       status: p.status,
       act: p.activity,
       harness: p.card.meta?.connector,
+      host: p.card.meta?.host,
       attention: p.attention, // open/absent both render as nothing
       tag: p.status === "waiting" ? "needs input" : null,
     }));
@@ -1218,12 +1235,12 @@ const bd = [
 const lm = [{ ts: "10:15", who: "maya", status: "idle", body: "sent the NATS v3 notes your way" }];
 const DEMO = {
   roster: [
-    { name: "alice", role: "planner", status: "waiting", tag: "needs input", act: "blocked — needs OPENAI_API_KEY", harness: "claude" },
-    { name: "linus", role: "reviewer", status: "working", act: "reviewing PR #42 · auth guards", harness: "opencode" },
-    { name: "bob", role: "builder", status: "working", act: "writing tests · channels.ts", harness: "claude" },
-    { name: "dave", role: "builder", status: "working", act: "refactoring endpoint.ts", harness: "hermes" },
-    { name: "maya", role: "researcher", status: "idle", act: "—", harness: "opencode" },
-    { name: "scout", role: "observer", status: "idle", act: "watching #team.>", harness: "claude" },
+    { name: "alice", role: "planner", status: "waiting", tag: "needs input", act: "blocked — needs OPENAI_API_KEY", harness: "claude", host: "studio" },
+    { name: "linus", role: "reviewer", status: "working", act: "reviewing PR #42 · auth guards", harness: "opencode", host: "build-01" },
+    { name: "bob", role: "builder", status: "working", act: "writing tests · channels.ts", harness: "claude", host: "build-01" },
+    { name: "dave", role: "builder", status: "working", act: "refactoring endpoint.ts", harness: "hermes", host: "build-01" },
+    { name: "maya", role: "researcher", status: "idle", act: "—", harness: "opencode", host: "studio" },
+    { name: "scout", role: "observer", status: "idle", act: "watching #team.>", harness: "claude", host: "studio" },
   ],
   activity: [
     { type: "sys", text: "— scout joined · observer —" },
