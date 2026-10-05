@@ -166,7 +166,10 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
 - **Monitor**: the all-activity feed (two-line messages with a delivery-mode badge, per-mode
   filter chips, and pause), the roster (status as shape *and* colour, role, a one-line activity,
   and the agent's harness: claude / opencode / hermes), and the golden-signal tiles
-  (working / waiting / idle / offline / oldest-unattended).
+  (working / waiting / idle / offline / oldest-unattended). The roster groups live peers by the
+  machine each one reports as its host, with a count per machine, so placement across machines
+  reads at a glance. A peer that reports no host, such as a manager, is listed last under *host
+  not reported*. Seats do not report which manager runs them, so the roster has no manager grouping.
 - **Channel view**: one channel's message list, members shown in the header.
 - **Direct messages**: a per-peer roll-up (one row per peer, not the n² pair list); expand a peer
   for its conversations. Threads key on authenticated ids, and every shown name, role, and status
