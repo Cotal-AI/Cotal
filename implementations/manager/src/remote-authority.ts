@@ -10,6 +10,7 @@ import {
   parseRemoteManagedAgentRuntimeResult,
   remoteManagerActors,
   writeSecretFileAtomic,
+  REMOTE_MANAGER_IDENTITY_NAMES,
   type Identity,
   type RemoteManagerAdminAuthorizationRequest,
   type RemoteManagerAdminAuthorizationResult,
@@ -491,7 +492,6 @@ export function remoteManagerRenewalCredentials(
   owner: string,
   identities: RemoteManagerIdentityState["identities"],
 ): Record<keyof RemoteManagerIdentityState["identities"], string> {
-  const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
   if (request.operation !== "renewStandingBundle" || material.operation !== request.operation ||
       material.v !== 1 || material.kind !== request.kind || material.space !== request.space ||
       material.owner !== owner || material.actor !== request.actor || material.instanceId !== request.instanceId ||
@@ -501,13 +501,13 @@ export function remoteManagerRenewalCredentials(
       JSON.stringify(material.identities) !== JSON.stringify(request.identities) ||
       JSON.stringify(material.actors) !== JSON.stringify(remoteManagerActors(request.instanceId)) ||
       Object.values(material.credentials).some((credential) => credential === undefined) ||
-      Object.keys(material.credentials).sort().join(",") !== [...names].sort().join(","))
+      Object.keys(material.credentials).sort().join(",") !== [...REMOTE_MANAGER_IDENTITY_NAMES].sort().join(","))
     throw new Error("manager-service renewal returned different coordinates or an incomplete standing family");
-  for (const name of names) if (request.identities[name].id !== identities[name].id)
+  for (const name of REMOTE_MANAGER_IDENTITY_NAMES) if (request.identities[name].id !== identities[name].id)
     throw new Error("manager-service renewal identities differ from the caller-held nkeys");
-  const result = Object.fromEntries(names.map((name) => [name, materialCredential(material, name, identities[name])])) as
-    Record<(typeof names)[number], string>;
-  for (const name of names) if (accountFromCreds(result[name]) !== request.accountPublicKey)
+  const result = Object.fromEntries(REMOTE_MANAGER_IDENTITY_NAMES.map((name) => [name, materialCredential(material, name, identities[name])])) as
+    Record<(typeof REMOTE_MANAGER_IDENTITY_NAMES)[number], string>;
+  for (const name of REMOTE_MANAGER_IDENTITY_NAMES) if (accountFromCreds(result[name]) !== request.accountPublicKey)
     throw new Error(`manager-service ${name} JWT names a foreign account`);
   return result;
 }

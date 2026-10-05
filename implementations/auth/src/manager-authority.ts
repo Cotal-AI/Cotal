@@ -1,10 +1,12 @@
 import {
   EpEnvelopeError,
+  REMOTE_MANAGER_IDENTITY_NAMES,
   assertDerivedOwnerToken,
   assertPrincipalOwnerToken,
   assertLifecycleToken,
   assertValidOwnerToken,
   managedRetirementOpId,
+  parseRemoteManagerIdentities,
   remoteManagerActors,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
@@ -181,20 +183,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     if (!t || Object.keys(t).join(",") !== "id" || typeof t.id !== "string" || !/^U[A-Z2-7]{55}$/.test(t.id))
       requestError("transferReader requires transferReader exactly { id } with a user nkey");
   } else if (o.transferReader !== undefined) requestError(`${o.operation} must not carry transferReader`);
-  const ids = o.identities;
-  if (ids === null || typeof ids !== "object" || Array.isArray(ids)) requestError("requires identities");
-  const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
-  const idObj = ids as Record<string, unknown>;
-  if (Object.keys(idObj).sort().join(",") !== [...names].sort().join(",")) requestError(`identities must contain exactly ${names.join(", ")}`);
-  const identities = {} as RemoteManagerAuthorityRequest["identities"];
-  for (const name of names) {
-    const item = idObj[name];
-    if (item === null || typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).join(",") !== "id")
-      requestError(`identities.${name} must be exactly { id }`);
-    const id = (item as { id?: unknown }).id;
-    if (typeof id !== "string" || !/^U[A-Z2-7]{55}$/.test(id)) requestError(`identities.${name}.id must be a user nkey`);
-    identities[name] = { id };
-  }
+  const identities = parseRemoteManagerIdentities(o.identities, requestError);
   return {
     v: 1,
     kind: "manager-service-authority",
@@ -234,7 +223,7 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   const issued = await args.issue({ owner: args.owner, actors, request: r });
   const credentials = issued.credentials;
   const required = r.operation === "renewStandingBundle"
-    ? ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"]
+    ? REMOTE_MANAGER_IDENTITY_NAMES
     : r.operation === "renewRunDriver"
       ? ["runDriver", "runMediator"]
       : r.operation === "prepare"
@@ -249,7 +238,7 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
           ? ["retirementRequester"]
         : r.operation === "transferReader"
           ? ["transferReader"]
-        : ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"];
+        : REMOTE_MANAGER_IDENTITY_NAMES;
   for (const name of required)
     if (!(name in credentials))
       throw new EpEnvelopeError("internal", `manager-service ${r.operation} did not issue required credential ${name}`);
@@ -300,15 +289,7 @@ export function parseRemoteRunAdmissionRequest(raw: unknown): RemoteRunAdmission
   assertLifecycleToken(o.managerLifecycleUid as string, "managerLifecycleUid");
   if (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof)) admissionError("requires a sha256 registrationProof");
   if (!Number.isSafeInteger(o.processEpoch) || (o.processEpoch as number) < 0) admissionError("requires a non-negative processEpoch");
-  const ids = o.identities as Record<string, unknown> | null;
-  const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"];
-  if (ids === null || typeof ids !== "object" || Object.keys(ids).sort().join(",") !== [...names].sort().join(","))
-    admissionError("requires exactly the five manager identities");
-  const identities = Object.fromEntries(names.map((n) => {
-    const v = ids[n] as { id?: unknown } | null;
-    if (v === null || typeof v !== "object" || Object.keys(v).join(",") !== "id" || typeof v.id !== "string") admissionError(`identity ${n} must be { id }`);
-    return [n, { id: v.id }];
-  })) as RemoteRunAdmissionRequest["identities"];
+  const identities = parseRemoteManagerIdentities(o.identities, admissionError);
   const run = o.run as Record<string, unknown> | null;
   if (run === null || typeof run !== "object" || Object.keys(run).sort().join(",") !== "runId,subject" ||
       typeof run.runId !== "string" || !/^run-[0-9a-f]{32}$/.test(run.runId) || typeof run.subject !== "string")

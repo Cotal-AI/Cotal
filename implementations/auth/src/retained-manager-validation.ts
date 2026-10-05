@@ -5,6 +5,7 @@ import {
   assertPrincipalOwnerToken,
   assertValidOwnerToken,
   remoteManagerActors,
+  parseRemoteManagerIdentities,
   type RemoteRetainedAgentValidationRequest,
   type RemoteRetainedAgentValidationResult,
   type RetainedAgentAuthority,
@@ -12,8 +13,6 @@ import {
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
-
-const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
 
 /** Host-authenticated, stateless proof for one activated manager registration. The account signing
  * seed is already held by the host authority plane and never crosses this seam. */
@@ -68,20 +67,7 @@ export function parseRemoteRetainedAgentValidationRequest(raw: unknown, opts: { 
   if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0)
     requestError("serveEpoch must be a non-negative safe integer");
 
-  const ids = o.identities;
-  if (ids === null || typeof ids !== "object" || Array.isArray(ids)) requestError("requires identities");
-  const idObj = ids as Record<string, unknown>;
-  if (Object.keys(idObj).sort().join(",") !== [...identityNames].sort().join(","))
-    requestError(`identities must contain exactly ${identityNames.join(", ")}`);
-  const identities = {} as RemoteRetainedAgentValidationRequest["identities"];
-  for (const name of identityNames) {
-    const item = idObj[name];
-    if (item === null || typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).join(",") !== "id")
-      requestError(`identities.${name} must be exactly { id }`);
-    const id = (item as { id?: unknown }).id;
-    if (typeof id !== "string" || !/^U[A-Z2-7]{55}$/.test(id)) requestError(`identities.${name}.id must be a user nkey`);
-    identities[name] = { id };
-  }
+  const identities = parseRemoteManagerIdentities(o.identities, requestError);
 
   const target = o.target;
   if (target === null || typeof target !== "object" || Array.isArray(target) ||

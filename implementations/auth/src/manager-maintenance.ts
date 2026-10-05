@@ -5,14 +5,13 @@ import {
   epcredFamilyPrefix,
   parseLedgerRow,
   remoteManagerActors,
+  parseRemoteManagerIdentities,
   type RemoteManagerMaintenanceRequest,
   type RemoteManagerMaintenanceResult,
 } from "@cotal-ai/core";
 import type { AuthLedgerScanner } from "./ledger-scanner.js";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
-
-const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
 
 function requestError(what: string): never {
   throw new EpEnvelopeError("bad-request", `manager-service maintenance request ${what}`);
@@ -40,20 +39,7 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
   if (o.operation === "evict-family-principal") {
     if (typeof o.principal !== "string" || o.principal.length === 0) requestError("evict-family-principal requires principal");
   } else if (o.principal !== undefined) requestError("reconcile-registration must not carry principal");
-  const ids = o.identities;
-  if (ids === null || typeof ids !== "object" || Array.isArray(ids)) requestError("requires identities");
-  const idObj = ids as Record<string, unknown>;
-  if (Object.keys(idObj).sort().join(",") !== [...identityNames].sort().join(","))
-    requestError(`identities must contain exactly ${identityNames.join(", ")}`);
-  const identities = {} as RemoteManagerMaintenanceRequest["identities"];
-  for (const name of identityNames) {
-    const item = idObj[name];
-    if (item === null || typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).join(",") !== "id")
-      requestError(`identities.${name} must be exactly { id }`);
-    const id = (item as { id?: unknown }).id;
-    if (typeof id !== "string" || !/^U[A-Z2-7]{55}$/.test(id)) requestError(`identities.${name}.id must be a user nkey`);
-    identities[name] = { id };
-  }
+  const identities = parseRemoteManagerIdentities(o.identities, requestError);
   return {
     v: 1,
     kind: "manager-service-maintenance",
