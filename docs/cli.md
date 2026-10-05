@@ -797,6 +797,9 @@ The shared dispatcher applies this preparation to every command that declares bo
 `--server` as mesh-target flags, including commands registered by other packages and commands that
 declare their own equivalent flag objects. Daemon and startup commands that use those names only as
 configuration explicitly opt out. Registry-local `meshes add` and `meshes rm` never refresh a catalog.
+While the registry holds a record this build cannot use, the preparation skips the refresh, so the
+command's own checks run first. A command that resolves its target through the registry still
+refuses the record by name.
 
 Run on a terminal with the space or `--server` missing, **`meshes add` is guided**: it asks for the
 one thing that cannot be derived (the broker URL), probes it, and tells you what answered - open or
