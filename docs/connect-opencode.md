@@ -96,9 +96,11 @@ in-process plugin does everything.
   failed submission only delays it. Several pending mentions share one wake. On a channel with
   replay off the wake only says the agent was mentioned, because the body cannot be recalled.
 - **A stopping seat refuses prompts on 1.x.** Once a stop has begun, a prompt typed into the TUI
-  or sent to the server API fails with `the prompt was not run: this seat is shutting down`, so the
-  agent starts no new model turn after it has announced it is leaving. A turn already running when
-  the stop began is not cancelled.
+  or sent to the server API is refused before OpenCode saves it, so the agent starts no new model
+  turn after it has announced it is leaving. OpenCode reports the reason,
+  `the prompt was not run: this seat is shutting down`, as a `session.error` event for an
+  asynchronous prompt and only in its server log for a synchronous one, which answers with a generic
+  server error. A turn already running when the stop began is not cancelled.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector
