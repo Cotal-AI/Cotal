@@ -1085,11 +1085,13 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
 }
 
 /** The address the dashboard recorded in `web.session` once `listen()` succeeded, or `undefined`
- * before it has. */
+ * while no whole record is readable. The dashboard truncates the file before it writes the record,
+ * so a read can find it empty while the dashboard starts. */
 function webBoundAddress(path: string): { host: string; port: number } | undefined {
-  if (!existsSync(path)) return undefined;
-  const { host, port } = JSON.parse(readFileSync(path, "utf8")) as { host?: unknown; port?: unknown };
-  return typeof host === "string" && typeof port === "number" ? { host, port } : undefined;
+  try {
+    const { host, port } = JSON.parse(readFileSync(path, "utf8")) as { host?: unknown; port?: unknown };
+    return typeof host === "string" && typeof port === "number" ? { host, port } : undefined;
+  } catch { return undefined; }
 }
 
 /** The web dashboard owns the HTTP listener and identifies itself through `/api/meta`, including
