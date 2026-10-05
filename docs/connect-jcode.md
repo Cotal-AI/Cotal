@@ -257,8 +257,6 @@ The journal records settled message blocks rather than live deltas. Text and rea
 arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
 blocks. User prompt text is not republished onto the event channel. The launcher sets
 `COTAL_EVENTS` by default; pass `--no-events` to opt out.
-On an open mesh, a default event-enabled Jcode seat uses its managed seat name as the stable actor
-token; with `--no-events`, open-mode identity keeps its ordinary self-minted behavior.
 
 
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,

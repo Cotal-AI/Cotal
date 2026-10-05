@@ -134,13 +134,9 @@ try {
   check("--no-events leaves the event plane off", optedOut.env?.COTAL_EVENTS === undefined && optedOut.env?.COTAL_WORKSPACE_ROOT === undefined);
   const evented = launch({ space: "space", name: "seat", workspaceRoot: dir, events: true });
   check(
-    "event launches arm the plane, pin its durable root, and stabilize open-mode identity",
-    evented.env?.COTAL_EVENTS === "1" && evented.env?.COTAL_WORKSPACE_ROOT === dir && evented.env?.COTAL_ID === "seat",
+    "event launches arm the plane and pin its durable root",
+    evented.env?.COTAL_EVENTS === "1" && evented.env?.COTAL_WORKSPACE_ROOT === dir,
     evented.env,
-  );
-  check(
-    "an allocated event identity wins over the open-mode name",
-    launch({ space: "space", name: "seat", id: "allocated", workspaceRoot: dir, events: true }).env?.COTAL_ID === "allocated",
   );
   throws("events require a durable workspace root", () => launch({ space: "s", name: "n", events: true }), /workspace root/);
   check("Jcode TUI override is absent when unset", base.env?.COTAL_JCODE_TUI === undefined);

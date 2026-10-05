@@ -868,7 +868,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Auth mode (`.cotal/auth` present): mint a stable identity + scoped creds for this agent
   // and pre-create its bind-only durables, via a short-lived privileged provisioner — the
   // same onboarding the manager does, so the foreground launch joins the authed mesh too.
-  // Open mode (no `.cotal/auth`): unchanged — the session connects without creds.
+  // Open mode (no `.cotal/auth`): the session connects without creds, under an allocated id.
   let id: string | undefined;
   let credsPath: string | undefined;
   // The incarnation's lifecycle UID (SPEC 13.1), minted once per spawn: the launched endpoint binds
@@ -1031,6 +1031,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     await materializeSecretToFile(secrets, agentCredsKey(space, name, composition), credsPath);
     id = identity.id;
     provenance.wrote(`creds for ${name} (auth mode)`, credsPath);
+  } else {
+    // Without a declared id the endpoint self-mints a fresh actor per process, which no event
+    // channel can name. The manager allocates one for every non-user launch, so this does too.
+    id = newIdentity().id;
   }
 
   // Which of the operator's personal MCP servers to share with this agent: declared in the cotal
