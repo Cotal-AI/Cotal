@@ -1024,6 +1024,10 @@ which arm you are on. A `--detach` spawn is an
 follows to a terminal outcome rather than blocking (see [the control surface](control-surface.md)).
 See [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
 [manifest deploy](#manifest-deploys). (`cotal start` was merged into `cotal spawn --detach`.)
+A `--detach` spawn onto a manager from another Cotal release is refused before any request is sent
+when the manager's contract does not declare a field this CLI sends. The refusal names the field,
+calls it version skew, and gives this CLI's version. A field you leave unset is not sent, so it
+never causes that refusal.
 
 A manager has 50 seat slots, and each seat counts once. A slot is held by a managed seat (a row in
 that manager's `cotal ps`, including a seat still joining), by a reserved launch the manager accepted
