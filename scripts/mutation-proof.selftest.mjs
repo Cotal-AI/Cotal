@@ -1247,7 +1247,10 @@ check("...and it still permits the suite's own mkdtemp root",
 // bystander in place. On a tree WITHOUT the guard this same child deletes the socket and exits 0,
 // which is the original defect reproduced.
 {
-  const sandbox = mkdtempSync(join(base, "mutation-selftest-escape-"));
+  // Short prefix: a unix socket path is capped by sun_path at 104 bytes on macOS (108 on Linux).
+  // Under macOS's default TMPDIR (/var/folders/<..>/T, 48 bytes) the old "mutation-selftest-escape-"
+  // put the bystander socket at 106, so listen() threw EINVAL and the self-test died at this cell.
+  const sandbox = mkdtempSync(join(base, "mp-escape-"));
   const victimBase = join(sandbox, "shared-tmp");
   mkdirSync(victimBase, { recursive: true });
   const bystander = join(victimBase, "bystander.sock");
