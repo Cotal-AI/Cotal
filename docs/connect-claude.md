@@ -21,7 +21,8 @@ cotal up         # brings up the mesh + delivery daemon + a detached manager
 ```
 
 `cotal setup` installs the cotal plugin (so the repo's Claude sessions get the `cotal_*`
-tools) and seeds one `default` persona; `cotal up` brings up the local stack so
+tools), shares your own MCP servers with spawned sessions on its first run (see
+[Sharing your MCP servers](#sharing-your-mcp-servers)), and seeds one `default` persona; `cotal up` brings up the local stack so
 `cotal spawn --detach` / `cotal_spawn` work right away. Re-running either is idempotent.
 The install mechanics and the invariants behind them are in
 [setup internals](setup-internals.md).
@@ -108,10 +109,10 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   exists. The manager or the foreground `cotal spawn` removes it, and the shared-server MCP config
   file, once it has proved the `claude` process gone. If the launcher is killed first, a watcher
   started beside `claude` removes them when `claude` exits.
-- **MCP isolation.** A spawned agent runs with **only** the cotal MCP server:
-  `--strict-mcp-config` ignores every other MCP source, crucially the operator's personal
-  `~/.claude.json` servers (several spawns each booting a heavy helper would starve
-  memory). Share your own servers deliberately (see below).
+- **MCP servers.** `--strict-mcp-config` ignores every ambient MCP source, so a spawned agent
+  loads the cotal server plus the servers the cotal config shares. First-run `cotal setup`
+  fills that list with your own user-scope servers, so a spawned session has the tools you know
+  (see below).
 - **Installed plugin.** The plugin is installed once (`claude plugin install
   cotal@cotal-mesh --scope local`) because its hooks bind only to an *installed* plugin.
   The repo's `.claude-plugin/marketplace.json` lists the committed plugin tree under
@@ -491,21 +492,33 @@ original is untouched.
 
 ## Sharing your MCP servers
 
-Isolation is the default, but a meshed teammate sometimes genuinely needs one of your own
-tools (say, web search). The opt-in is the cotal config file
-(`~/.config/cotal/config.json`, or a space-local `.cotal/config.json` layered on top):
-each entry the familiar `.mcp.json` shape, secrets written as `${VAR}` references, never
-literals ([full format](config.md)).
+A spawned session keeps your own MCP servers by default. On its first run, `cotal setup` copies
+the user-scope servers from your Claude Code config (`~/.claude.json`, or the one under
+`$CLAUDE_CONFIG_DIR`) into the cotal config file (`~/.config/cotal/config.json`) under
+`connectors.claude.mcpServers`, and names them in its output. With none to copy it writes an
+empty list. Each entry is the familiar `.mcp.json` shape ([full format](config.md)). A cotal
+config that already declares that list keeps it, and a later `cotal setup` never changes it.
+
+The cotal config holds secrets only as `${VAR}` references. Setup cannot tell literal text from
+a secret, so it leaves out a server with an `env` or `headers` value that is anything but `${VAR}`
+references (a `Bearer ${TOKEN}` header among them) and names it in its output. To share one,
+add it to the cotal config with each secret written as a `${VAR}` reference, and export that
+variable where you spawn. Setup also leaves out and names an entry no session can start, such as
+one with a missing or empty `command` or `url`, or one whose `command` is not a string.
 
 At launch the connector forwards *only* the named vars the chosen servers declare and
 passes the merged config as an owner-only temp file; `--strict-mcp-config` stays on, so
-only cotal + the explicitly shared servers load. Scope per spawn with
-`--share-tools tavily,figma` (or `--share-tools none`).
+only cotal + the shared servers load.
+
+For a lighter seat, share fewer. Remove an entry from the cotal config to drop it from every
+spawn, or scope one spawn with `--share-tools tavily,figma` (or `--share-tools none` for cotal
+alone). An empty list (`"mcpServers": {}`) in `~/.config/cotal/config.json` keeps every spawn
+isolated, and setup leaves it as it is.
 
 Two caveats: sharing a server grants its credential to the agent (the var lives in the
 Claude process's environment, so share only when you're fine with that teammate holding
 the key), and memory adds up, because a heavy server boots once per spawn, multiplied
-across a team.
+across a team, and can starve a small machine.
 
 ## Feedback
 

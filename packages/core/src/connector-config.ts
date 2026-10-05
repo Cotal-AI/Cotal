@@ -6,10 +6,11 @@
  *   <root>/.cotal/config.json     (space-local override)          ← higher precedence
  *
  * Today it carries one thing: which of the operator's personal MCP servers a connector should
- * SHARE with the agents it spawns. By default a spawned agent gets none — the Claude connector
- * launches with `--strict-mcp-config`, dropping every operator server, because they're heavy
- * (a headless Chromium server alone can climb past a gigabyte) and useless to a meshed teammate.
- * This file is the explicit opt-in to pass named ones through.
+ * SHARE with the agents it spawns. With no list a spawned agent gets none — the Claude connector
+ * launches with `--strict-mcp-config`, dropping every operator server. First-run setup seeds the
+ * list from the servers the user's own harness sessions load, so a spawned session keeps their
+ * tools; removing entries makes a lighter seat, since each spawn boots its own copy of every shared
+ * server (a headless Chromium server alone can climb past a gigabyte).
  *
  * Each server is written in the de-facto `.mcp.json` shape, so an operator can copy an entry
  * straight out of their own Claude / VS Code / Cursor config. Secrets ride as `${VAR}` references
@@ -96,7 +97,7 @@ export function spaceConfigPath(root: string): string {
 
 /** Parse one config file. A missing file is empty (no config is a valid state); malformed JSON or a
  *  non-object top level throws — a typo in your settings should be loud, not silently ignored. */
-function readConfigFile(path: string): CotalConfig {
+export function readCotalConfigFile(path: string): CotalConfig {
   if (!existsSync(path)) return {};
   let parsed: unknown;
   try {
@@ -157,7 +158,7 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
 /** Load the merged cotal config: the operator-level file as the base, the space-local file layered
  *  on top (more specific wins, per connector + server name). */
 export function loadCotalConfig(root: string): CotalConfig {
-  return mergeConfig(readConfigFile(globalConfigPath()), readConfigFile(spaceConfigPath(root)));
+  return mergeConfig(readCotalConfigFile(globalConfigPath()), readCotalConfigFile(spaceConfigPath(root)));
 }
 
 /** The MCP servers a connector should share with an agent it spawns, after applying an optional

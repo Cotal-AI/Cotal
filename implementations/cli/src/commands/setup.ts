@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorSkillsSetupInput, type ConnectorStatusRow, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type ConnectorStatusRow, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   findCotalRoot,
   homeCotalDir,
@@ -13,6 +13,7 @@ import {
   personaDir,
   provenance,
   resolveMeshTarget,
+  seedConnectorServers,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
@@ -133,6 +134,8 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
       p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
       log.line(`connector ${candidate.value}: ready (no install)`);
     }
+    const share = await connectorSetupStep(candidate.connector, "mcpServers");
+    if (share && !(await runSteps([share], log, { yes, assists: connectorAssists }))) return abort();
   }
   // A connector's skills action is independent of the mesh connector selection: it runs for every
   // connector whose harness is present, so someone using that harness gets Cotal's authored skills
@@ -360,11 +363,11 @@ export async function connectorSetupProvider(connector: Connector): Promise<Conn
  * provider, no such action, or its provider's executables are absent — none of which is a failure
  * of guided setup (the cross-vendor skills drop still reconciles). Exported for the fail-loud
  * smoke, which drives this exact seam. */
-export async function connectorSetupStep(connector: Connector, action: "connector" | "skills"): Promise<Step | null> {
+export async function connectorSetupStep(connector: Connector, action: "connector" | "skills" | "mcpServers"): Promise<Step | null> {
   const provider = await connectorSetupProvider(connector);
   const setup = provider?.[action] as ConnectorSetupAction | undefined;
   if (!provider || !setup || !setupProviderAvailable(provider)) return null;
-  const input = action === "skills" ? connectorSkillsInput() : undefined;
+  const input = action === "skills" ? connectorSkillsInput() : action === "mcpServers" ? connectorShareInput(connector) : undefined;
   return {
     name: setup.name,
     title: setup.title,
@@ -378,6 +381,11 @@ export async function connectorSetupStep(connector: Connector, action: "connecto
  * harness: the provider decides how its own harness consumes the cross-vendor skills. */
 function connectorSkillsInput(): ConnectorSkillsSetupInput {
   return { skillsDir: canonicalSkillsDir(), version: cliVersion(), stateDir: homeCotalDir() };
+}
+
+/** The cotal config write a connector's share action makes, bound to that connector's section. */
+function connectorShareInput(connector: Connector): ConnectorShareSetupInput {
+  return { seed: (servers) => seedConnectorServers(connector.name, servers) };
 }
 
 async function reconcileConnectorSkills(): Promise<void> {

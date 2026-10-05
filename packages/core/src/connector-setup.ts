@@ -1,3 +1,4 @@
+import type { McpServerSpec } from "./connector-config.js";
 import type { Extension } from "./registry.js";
 
 /** One connector-owned setup action. The CLI supplies only generic Cotal inputs; every
@@ -16,6 +17,14 @@ export interface ConnectorSkillsSetupInput {
   readonly skillsDir: string;
   readonly version: string;
   readonly stateDir: string;
+}
+
+/** What a connector's share action receives: the one cotal config write it makes. The CLI binds it to
+ * the connector's section and serializes it across processes, so two setups cannot both seed. */
+export interface ConnectorShareSetupInput {
+  /** Record `servers` as what this connector shares, unless the cotal config already declares a list
+   * for it. Returns whether it wrote. */
+  seed(servers: Record<string, McpServerSpec>): boolean;
 }
 
 /** An interactive debug session a connector's harness can host when a setup step fails. The CLI
@@ -56,6 +65,9 @@ export interface ConnectorSetupProvider extends Extension {
   readonly requires?: readonly string[];
   readonly connector?: ConnectorSetupAction;
   readonly skills?: ConnectorSetupAction<ConnectorSkillsSetupInput>;
+  /** Shares the MCP servers the user's own harness sessions load with the agents this connector
+   * spawns. First-run setup runs it; a share list the cotal config already declares is kept. */
+  readonly mcpServers?: ConnectorSetupAction<ConnectorShareSetupInput>;
   readonly assist?: ConnectorAssist;
   /** Read-only health of what this provider installs, for `cotal status` and the setup card. */
   status?(input: ConnectorStatusInput): readonly ConnectorStatusRow[];

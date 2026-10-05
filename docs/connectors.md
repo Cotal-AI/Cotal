@@ -27,7 +27,7 @@ it; stopping preserves it so an operator can inspect why the session never conne
 | Inbound delivery | hook drain at turn start + idle-wake nudge | injected as a turn | wakes a turn; directed messages steer the live turn | fresh agent per message | injected as a Harness API turn; directed messages steer the live session | steered into the live turn |
 | Mid-turn steering | ✗ | ✗ | ✓ (directed messages) | none | ✓ (directed messages) | ✓ |
 | Session resume (`--resume`) | ✓ (forks) | ✗ ([#154](https://github.com/Cotal-AI/Cotal/issues/154)) | ✗ (a resumed thread has no MCP tools upstream) | ✓ (forks) | ✓ (forks) | ✓ (forks) |
-| Tool-sharing (`--share-tools`) | ✓ (scoped opt-in) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ (private MCP configuration) | ✗ |
+| Tool-sharing (`--share-tools`) | ✓ (setup shares your servers; narrow per spawn) | ✗ (inherits your servers wholesale) | ✗ (isolated per-agent `CODEX_HOME`) | ✗ | ✗ (private MCP configuration) | ✗ |
 | Models | `--model` | `--model` + catalog (`cotal models`) (1.x) + `--variant` | `--model` + catalog (`cotal models`) + `--variant` (reasoning effort) | any provider, via env | `--model` + `--variant` (reasoning effort) | `--model` |
 | Event plane (default on; `--no-events` opts out) | ✓ | ✓ (1.x); 2.x needs `--no-events` | ✓ | ✗ (requires `--no-events`) | ✓ | ✓ (completed messages) |
 | Local listener | stdio MCP, no listener | loopback, per-launch Basic secret | loopback MCP, per-host bearer | Unix socket, control token on the first frame | Unix socket, per-instance token | in-process, no listener |
