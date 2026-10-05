@@ -618,6 +618,11 @@ export class Journal {
     const k = Journal.keyOf(key);
     const entry = this.byKey.get(k);
     if (entry === undefined) throw new Error(`hold before begin for ${k}`);
+    if (entry.state !== "pending")
+      throw new Error(`hold on a settled entry for ${k}; a hold binds only a step whose outcome is still unknown`);
+    // The seed check refuses a `hold` that is not crossable (L5024), so one written here would
+    // publish an entry this journal's own reload refuses.
+    assertCrossable(hold, `the hold binding of ${stepKeyString(key)}`);
     const next = { ...entry, hold };
     await this.persist(k, next);
     this.byKey.set(k, next);

@@ -411,10 +411,7 @@ async function performHold(
     requestId: holdRequestId(recorded),
     attempt: 0,
     ...(resume !== undefined ? { resume } : {}),
-    bind: async (hold) => {
-      assertCrossable(hold, `the hold binding of ${step}`);
-      await host.journal.hold(key, hold);
-    },
+    bind: (hold) => host.journal.hold(key, hold),
   };
   const prompt =
     `The outcome of ${step} is unknown: it was dispatched under request id ${recorded} and never settled, `
@@ -423,8 +420,13 @@ async function performHold(
   try {
     raw = await host.options.handler.checkpoint({ prompt }, ctx);
     assertCrossable(raw, `the hold of ${step}`);
+    // A hold settles only on `resolved` or `expired`. Any other outcome is a handler fault, never
+    // an answer: read as one, it would record a result for the write that nobody gave.
+    const outcome: unknown = raw.outcome;
+    if (outcome !== "resolved" && outcome !== "expired")
+      throw new Error(`the hold of ${step} answered outcome ${JSON.stringify(outcome)}; a checkpoint answers "resolved" or "expired"`);
   } catch (e) {
-    if (e instanceof EffectRefused) throw new RunHeld(step, e.message);
+    if (e instanceof EffectRefused) throw new RunHeld(step, e.message, true);
     return await settleThrown(host, key, frame, e, host.options.handler.now());
   }
 
