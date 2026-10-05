@@ -7513,7 +7513,7 @@ export class Manager {
         ...(auth ? { evict: makeManagerEndpointHolderEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) } : {}),
       });
       const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
-      const { registrationRevision } = await registerServiceInstance(recordsKv, {
+      const { registrationRevision, processEpoch } = await registerServiceInstance(recordsKv, {
         space: this.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
         // #1393: when a FOREIGN instance holds the endpoint governance slot, let core tell an
         // in-flight registration from one abandoned by a predecessor that died between its
@@ -7523,13 +7523,13 @@ export class Manager {
         observeHolderGeneration: (holderInstanceId) =>
           readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
       });
-      // processEpoch comes from the GATE (checklist 4: never derived from the uid string); the
-      // fence below is also the mint's §13.1 release CAS.
+      // processEpoch is the one this registration's reopen committed (checklist 4: never derived
+      // from the uid string). A gate read here could already show a successor's epoch; the fences
+      // below refuse that successor instead of serving at it. The fence is also the mint's §13.1
+      // release CAS.
       const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
-      const observed = await fence.observe();
-      if (observed === null) throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished after registration`);
       const grant = await authorizeServeGrant(recordsKv, {
-        space: this.space, endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
+        space: this.space, endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: processEpoch,
         holder: { owner: DEV_OWNER }, authority, readClusterArtifact,
         readProcessEpoch: async () => {
           const g = await fence.observe();
@@ -7544,10 +7544,10 @@ export class Manager {
       // restart it CAS-updates the predecessor's status forward (the advanced epoch supersedes the old
       // one). Key-pinned to this instance's own status key on the SAME executor.
       await writeServiceStatus(recordsKv, {
-        endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: observed.processEpoch,
+        endpoint: MANAGER_ENDPOINT, instanceId: iid, epoch: processEpoch,
         status: {
           state: SERVICE_READY,
-          epoch: observed.processEpoch,
+          epoch: processEpoch,
           observedSpecRevision: registrationRevision,
           connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
         },
