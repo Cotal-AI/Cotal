@@ -297,8 +297,8 @@ export async function headBeginRetirement(
   if (cur === undefined || cur.mapping.lifecycleUid !== args.lifecycleUid)
     throw new EpEnvelopeError("failed-precondition", `the retirement of uid ${args.lifecycleUid} requires the head for "${args.owner}/${args.actor}" to name it; found ${cur === undefined ? "no head" : `uid ${cur.mapping.lifecycleUid}`} (SPEC 13.1)`);
   if (cur.mapping.state === "retiring") {
-    if (cur.mapping.op?.opId !== args.opId)
-      throw new EpEnvelopeError("permission-denied", `the head for "${args.owner}/${args.actor}" is retiring under operation ${cur.mapping.op?.opId ?? "<none>"}, not ${args.opId}; one retirement at a time, and a stranger never advances it (SPEC 13.1)`);
+    if (cur.mapping.op.opId !== args.opId)
+      throw new EpEnvelopeError("permission-denied", `the head for "${args.owner}/${args.actor}" is retiring under operation ${cur.mapping.op.opId}, not ${args.opId}; one retirement at a time, and a stranger never advances it (SPEC 13.1)`);
     return "already-retiring";
   }
   if (cur.mapping.state !== "active")
@@ -318,8 +318,8 @@ export async function headCompleteRetirement(
   if (cur === undefined || cur.mapping.lifecycleUid !== args.lifecycleUid)
     throw new EpEnvelopeError("failed-precondition", `the retirement terminal for uid ${args.lifecycleUid} requires the head for "${args.owner}/${args.actor}" to name it; found ${cur === undefined ? "no head" : `uid ${cur.mapping.lifecycleUid}`}; a replaced head is settled at the gate, never here (SPEC 13.1)`);
   if (cur.mapping.state === "retired") return "already-retired";
-  if (cur.mapping.state !== "retiring" || cur.mapping.op?.opId !== args.opId)
-    throw new EpEnvelopeError("permission-denied", `the head for "${args.owner}/${args.actor}" is ${cur.mapping.state === "retiring" ? `retiring under operation ${cur.mapping.op?.opId ?? "<none>"}` : `"${cur.mapping.state}"`}, not retiring under ${args.opId}; only the containing operation terminalizes its own retirement (SPEC 13.1)`);
+  if (cur.mapping.state !== "retiring" || cur.mapping.op.opId !== args.opId)
+    throw new EpEnvelopeError("permission-denied", `the head for "${args.owner}/${args.actor}" is ${cur.mapping.state === "retiring" ? `retiring under operation ${cur.mapping.op.opId}` : `"${cur.mapping.state}"`}, not retiring under ${args.opId}; only the containing operation terminalizes its own retirement (SPEC 13.1)`);
   const { op: _op, ...rest } = cur.mapping;
   void _op;
   await t.updateRecord(headKey(args.owner, args.actor), { ...rest, state: "retired" }, cur.revision);
@@ -342,10 +342,10 @@ export async function runActivationSaga(
   if (current !== undefined && current.mapping.state === "active")
     throw new EpEnvelopeError("already-exists", `lifecycle "${owner}/${actor}" is already active (uid ${current.mapping.lifecycleUid}); a takeover advances the epoch through its barrier, it does not re-activate (SPEC 13.1)`);
   if (current !== undefined && current.mapping.state === "retiring")
-    throw lifecycleBlocked("failed-precondition", `lifecycle "${owner}/${actor}" is retiring (op ${current.mapping.op?.opId}); a retiring alias is not replaceable until its barrier completes (SPEC 13.1)`, {
+    throw lifecycleBlocked("failed-precondition", `lifecycle "${owner}/${actor}" is retiring (op ${current.mapping.op.opId}); a retiring alias is not replaceable until its barrier completes (SPEC 13.1)`, {
       blockedOp: "retirement",
       headState: "retiring",
-      ...(current.mapping.op?.opId !== undefined ? { opId: current.mapping.op.opId } : {}),
+      opId: current.mapping.op.opId,
       remedy: "retry",
     });
   const opId = mintLifecycleUid();
@@ -400,10 +400,10 @@ export async function runActivationSagaAtUid(
   if (current !== undefined && current.mapping.state === "active" && current.mapping.lifecycleUid !== lifecycleUid)
     throw new EpEnvelopeError("already-exists", `lifecycle "${owner}/${actor}" is active at uid ${current.mapping.lifecycleUid}, not this grant's ${lifecycleUid}; retiring a live predecessor is the takeover barrier's job and production issuance does not run it (R1) - despawn/retire the predecessor first, or grant a fresh actor name (SPEC 13.1)`);
   if (current !== undefined && current.mapping.state === "retiring")
-    throw lifecycleBlocked("failed-precondition", `lifecycle "${owner}/${actor}" is retiring (op ${current.mapping.op?.opId}); a retiring alias is not replaceable until its barrier completes (SPEC 13.1)`, {
+    throw lifecycleBlocked("failed-precondition", `lifecycle "${owner}/${actor}" is retiring (op ${current.mapping.op.opId}); a retiring alias is not replaceable until its barrier completes (SPEC 13.1)`, {
       blockedOp: "retirement",
       headState: "retiring",
-      ...(current.mapping.op?.opId !== undefined ? { opId: current.mapping.op.opId } : {}),
+      opId: current.mapping.op.opId,
       remedy: "retry",
     });
   const headIsOurs = current !== undefined && current.mapping.state === "active"; // same uid, by the guard above

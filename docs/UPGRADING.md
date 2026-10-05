@@ -51,6 +51,24 @@ needs scope `admin`, and the auth service must run this release. A remote manage
 its host serves the manager-service `transferReader` operation. A seat launched without carrying,
 including any `--resume` whose id this host does not hold, is unchanged.
 
+## Lifecycle head type in 0.67.0
+
+`LifecycleMapping`, the type `parseLifecycleHead` returns, is now a union on `state`. Nothing about
+a running mesh changes: heads that parsed before parse the same way, and the refusals are
+unchanged. Only TypeScript code that compiles against `@cotal-ai/core` is affected.
+
+### What stops working
+
+An `interface` that extends `LifecycleMapping` fails with TS2312, because an interface cannot extend
+a union. Code that builds a head in memory no longer compiles when the head is `retiring` without
+its `op`, or `active` or `retired` with one. The parser already refused those heads.
+
+### Before the upgrade
+
+Declare such an interface as an intersection instead, for example
+`type ActiveMapping = LifecycleMapping & { state: "active" }`. A reader that has checked
+`state === "retiring"` reads `op` without a guard.
+
 ## Lifecycle-blocked refusals in 0.66.0
 
 A refusal that carries `ai.cotal.ep.lifecycle-blocked` now reports only the lifecycle state it
