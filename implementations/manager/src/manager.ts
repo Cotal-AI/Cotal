@@ -7451,7 +7451,8 @@ export class Manager {
     // with a fresh bounded exp; a restart re-provisions the same (idempotent) gate + re-registers.
     const serveIdentity = this.managerServeIdentity;
     const servePrincipal = principalKey(DEV_OWNER, serveIdentity.id).key;
-    const siblings = claimManagerSiblingIdentities(this.workspaceRoot, this.space);
+    // An open mesh mints no credentials, so it has no family for a fresh pair to grow.
+    const siblings = auth ? claimManagerSiblingIdentities(this.workspaceRoot, this.space) : { goalWriter: newIdentity(), sessionLedger: newIdentity() };
     // must-5 (b): the STABLE goal-writer identity — a SIBLING credential in the same §13.1 family
     // (not the gate's bound serving principal), so the run block can family-stage it.
     this.goalWriterIdentity = siblings.goalWriter;

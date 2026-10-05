@@ -438,7 +438,7 @@ export interface ManagerSiblingIdentities {
   sessionLedger: { id: string; seed: string };
 }
 function managerSiblingFile(root: string, space: string): string {
-  return join(authDir(root), `manager-siblings.${Buffer.from(space, "utf8").toString("hex")}.json`);
+  return join(authDir(root), `manager-siblings.${spaceKey(space)}.json`);
 }
 function readManagerSiblingRecord(f: string, space: string): ManagerSiblingIdentities | undefined {
   type Nkey = { id?: unknown; seed?: unknown } | null | undefined;
