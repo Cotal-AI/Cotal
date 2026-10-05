@@ -20,6 +20,22 @@ Use `SMOKE_BROKER_TOKEN` as the prefix for a broker's temporary directory and re
 with `teardownOnSignal`. The token records its owning process. Normal-path cleanup still belongs
 to the suite.
 
+Suites spawn the bare `nats-server` name, so the server under test is whichever one the spawn's
+PATH reaches first. `teardownOnSignal` names it: it reads each running child's binary from
+`/proc/<pid>/exe`, runs that link with `--version`, and for a nats-server prints
+`smoke broker: nats-server <version> at <path>` to stderr. Every broker gets its own line, so a
+server started under another name, or from a binary replaced since the last broker, is still
+recorded. A binary unlinked or replaced while its broker runs still answers through the link, and
+its path prints with the kernel's ` (deleted)` suffix. A child whose binary cannot be run or does
+not answer `--version` within ten seconds, or that was started under a name beginning with
+`nats-server` and whose binary reports no nats-server version, makes `teardownOnSignal` throw, so
+a run cannot pass without saying which server it ran on. The probe runs in its own process group,
+which is killed when the probe returns, so a process it forks dies with it unless it leaves the
+group. A wrapper script named `nats-server` that has not yet started the server is still its
+interpreter, so it throws too. Off Linux there is no `/proc/<pid>/exe`, and each child started
+under a `nats-server` name prints
+`smoke broker: nats-server binary not recorded: <platform> has no /proc/<pid>/exe` instead.
+
 `recordSmokeSandbox` also owns every process that works inside the recorded root. The first
 record starts a small `sh` watchdog that outlives the suite. When the suite's process ends, however
 it ends, SIGKILL included, the watchdog kills whatever still works in a recorded root, including the

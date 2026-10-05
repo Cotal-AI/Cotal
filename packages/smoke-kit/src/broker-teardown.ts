@@ -45,9 +45,10 @@
  * in that case, and it is what a separate reaper matches. Parentage covers the case this helper
  * fixes; the token covers the case it cannot. Neither covers both.
  */
-import type { ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, readlinkSync, rmSync } from "node:fs";
+import { basename } from "node:path";
 
 /** The stable half of the token: what marks a store dir as a smoke broker's at all. */
 export const SMOKE_BROKER_PREFIX = "cotal-smoke-broker-";
@@ -242,17 +243,79 @@ function arm(): void {
 }
 
 /**
+ * Print which nats-server binary a broker runs. Suites spawn the bare name, so the server under test
+ * is whatever the spawn's PATH reaches first, and two boxes can report the same green against
+ * different servers unless the run names the one it used (#371). The binary is read from
+ * `/proc/<pid>/exe`, the file the kernel runs for this child: repeating exec's search from this
+ * process names another file whenever the spawn's env, cwd or PATH differs from ours. That binary's
+ * own `--version` decides whether the child is a broker, because a server started under another name
+ * is still the server under test, and every broker is probed, because a binary replaced at the same
+ * path between two brokers is a different server.
+ * Announcing here covers the live suites without a list, because `pnpm smoke:broker-migration`
+ * refuses a test broker that is not handed to {@link teardownOnSignal} unless it carries the explicit
+ * opt-out marker. A child whose binary cannot be run or does not answer `--version` within ten seconds,
+ * or that was started under a nats-server name and whose binary reports no nats-server version,
+ * throws: a run that cannot name its server cannot vouch for what it measured. Without procfs there is
+ * no running image to read, so the run says the binary is unrecorded rather than guess.
+ */
+function announceBroker(child: ChildProcess): void {
+  // A reaped child's pid may already be another process's, and a child that never started ran nothing.
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  const named = /^nats-server/.test(basename(child.spawnfile));
+  if (process.platform !== "linux") {
+    if (named) console.error(`smoke broker: nats-server binary not recorded: ${process.platform} has no /proc/<pid>/exe`);
+    return;
+  }
+  const exe = `/proc/${child.pid}/exe`;
+  let bin: string;
+  try { bin = readlinkSync(exe); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return; // a zombie: it exited before it could serve
+    throw error;
+  }
+  // Run the link, not the path it reads as: a binary unlinked or replaced while it runs reads as
+  // `<path> (deleted)`, a path that is gone or holds another file, but the link still runs its image.
+  // Bounded, and killed by a signal it cannot ignore, because this blocks the event loop: a binary that
+  // never answers would otherwise hold the suite and keep the armed signal teardown from ever running.
+  // That kill reaches the probe alone, so the probe leads its own process group and the whole group is
+  // killed once it returns: a process it forked would otherwise outlive it with nothing owning it.
+  // spawnSync's native side reads `detached` as spawn's does, but only spawn documents it and Node's
+  // types follow the docs, so the options are a const the types accept rather than a refused literal.
+  const options = { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL", detached: true } as const;
+  const probe = spawnSync(exe, ["--version"], options);
+  // pid 0 is a probe that never started, and kill(-0) would signal this process's own group.
+  if (probe.pid > 0) {
+    try { process.kill(-probe.pid, "SIGKILL"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  }
+  if (probe.error !== undefined) {
+    // Exec fails ENOENT for a child that exited since the readlink and also for a live one whose ELF
+    // interpreter is gone, so only the child's own state can excuse a probe that did not run.
+    if (!stillAlive(child.pid)) return;
+    throw new Error(`smoke broker: could not run ${bin} --version: ${probe.error.message}`);
+  }
+  // Anchored on the program name: a wrapper handed over before it execs the server runs its
+  // interpreter, and an interpreter such as node also prints a bare `v<semver>`.
+  const version = /^nats-server: v(\d+\.\d+\.\d+\S*)/m.exec(probe.stdout)?.[1];
+  if (version !== undefined) console.error(`smoke broker: nats-server ${version} at ${bin}`);
+  else if (named) throw new Error(`smoke broker: ${bin} --version reported no nats-server version: ${`${probe.stdout}${probe.stderr}`.trim()}`);
+}
+
+/**
  * Take ownership of an already-spawned broker. Returns a `release` for the suite's own `finally`:
  * it kills the broker if the suite has not already torn it down itself, and forgets the entry. The
  * store directory remains the suite's to remove, because a restart-shaped suite starts its next
  * broker on the same directory and this helper must not remove a tree the next broker still needs.
  * A second `SIGKILL` on an already-exited child is a no-op, so a site that kills and then releases
- * is unchanged.
+ * is unchanged. A child running nats-server is also announced by binary and version; see
+ * {@link announceBroker}.
  */
 export function teardownOnSignal(child: ChildProcess, storeDir?: string): () => void {
   arm();
   const entry: Owned = { child, ...(storeDir === undefined ? {} : { storeDir }) };
   owned.add(entry);
+  // After ownership, so a broker whose binary cannot be named is still reaped when this throws.
+  announceBroker(child);
   return () => {
     if (owned.delete(entry)) killOwnedChild(child);
   };
