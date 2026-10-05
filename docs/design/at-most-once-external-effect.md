@@ -679,49 +679,67 @@ Run each case under language version 1 (`run`) and version 2 (`runInWorker`).
 
 ### 8.2 One hosted run
 
-On a local mesh with a manager:
+On a local mesh with a manager. A restarted manager retires the seats of the manager it succeeds:
+its static reconcile evicts the crashed predecessor's seat principals and retires their
+credentials, so no seat survives a kill. After each restart the operator re-spawns the `publisher`
+persona (`cotal spawn publisher`) and drives the post-restart steps from that fresh incarnation. The
+hold id is the continuity key. A fresh incarnation holds none of the first attempt's goals and
+reaches the step through the run and its step key, which the hold answers under the hold id.
+
+Two refusals in this procedure are distinct. A seat the restart retired is refused before any run
+check, as a retired credential: `the caller's lifecycle is retired`. A live seat without the `run`
+capability is refused by the baseline relay authorization, because a held `ask` settles only with
+an operator's reach (§4.3). Step 4 exercises both.
 
 1. `cotal run start --file publish.cotal.js` with the program above followed by
-   `await turn(publisher, { name: "after" })`, where the `publisher` seat's answer to `publish`
-   appends one line to a file outside the run and then answers. The `publisher` persona carries no
-   `run` capability.
+   `const fresh = await spawn("publisher")` and `await turn(fresh, { name: "after" })`, where a
+   `publisher` seat's answer to `publish` appends one line to a file outside the run and then
+   answers. The `publisher` persona carries no `run` capability. The `after` turn goes to a seat
+   the run spawns after the step settles: a turn wakes only an agent the run spawned, and step 3
+   retires the one it spawned first.
 2. When the line appears, kill the manager process (SIGKILL) before the answer is accepted.
-3. Restart the manager. It takes the run back from the journal.
+3. Restart the manager. It takes the run back from the journal and retires the original seat.
+   Re-spawn the `publisher` persona.
 4. Expected: `cotal run journal <run>` shows `/once:publish-360#0/b:in/ask:publish#0` open with the
-   hold's question naming the recorded request id; the seat receives no second `publish` turn; the
-   file still has one line. The first attempt's pause, read with `readCheckpointStatus` at the
-   `askToken` on the step's pending entry, is no longer waiting: here it holds no answer, because
-   the hold claimed it. The seat's first `publish` goal is still accepted (§4.3). The seat answers
-   that goal with the command it renders, once with `{"wrong":"shape"}` and once with
-   `{"commentId":1000}`: both are refused permission-denied, nothing is filed under the hold id, and
-   the step stays open.
-5. Kill and restart the manager again while the hold is open. Expected: the hold's timer is
-   re-armed under the hold id, and `cotal run journal` still shows the same question.
+   hold's question naming the recorded request id; no seat receives a second `publish` turn: the
+   restarted manager adopts the first attempt's relay under the recorded id and mints none, and the
+   fresh incarnation holds no turn; the file still has one line. The first attempt's pause, read
+   with `readCheckpointStatus` at the `askToken` on the step's pending entry, is no longer waiting:
+   here it holds no answer, because the hold claimed it. The original seat runs the command its
+   first `publish` goal renders with `{"commentId":1000}` and is refused as a retired credential.
+   The fresh incarnation runs the same command once with `{"wrong":"shape"}` and once with
+   `{"commentId":1000}`: both are refused permission-denied by the baseline relay authorization.
+   Nothing is filed under the hold id, and the step stays open.
+5. Kill and restart the manager again while the hold is open, and re-spawn the persona. Expected:
+   the hold's timer is re-armed under the hold id: the timer stream gains an `.armed` row for the
+   hold id at the epoch the restarted manager took the run back under, with the hold's generation
+   and deadline, and `cotal run journal` still shows the same question.
 6. `cotal run answer <run> "/once:publish-360#0/b:in/ask:publish#0" --value '{"commentId":1000}'`
    from the operator's terminal.
    Expected: the answer is presented under the hold id, the step settles with that value, the
-   `after` turn reaches the seat, because a held `ask` builds no run state a later step reads, and
-   the run completes. `cotal run journal <run>` prints the step's answer as the hold's: its answer
-   id, the value `{"commentId":1000}` and the answerer as `by`. `cotal run amend <run>
-   "/once:publish-360#0/b:in/ask:publish#0" --value '{"commentId":1001}'` files an amendment whose
-   `supersedes` is that answer id, and the journal lists it under the step.
-7. Repeat steps 1 to 6 with `attempts: 2`, where the seat's first answer `{ "wrong": "shape" }`
-   does not conform and the manager is killed after that answer is accepted and before the second
-   attempt binds. The handler reads a settle on a poll (`awaitSettle`, every 2 s), so a kill right
-   after `cotal run answer` returns lands in that window. Expected: the hold waits for its own
-   answer and does not settle with the refused one, and after step 6 the step's value, the printed
-   answer (id, value, `by`) and the amendment's `supersedes` are the hold's, never the refused
-   answer or its responder.
-8. Repeat steps 1 to 6 where the seat answers `{ "commentId": 7 }`, which conforms, and the manager
-   is killed in the same window after that answer is accepted and before the step settles.
+   `after` turn reaches the seat the run spawns next, because a held `ask` builds no run state a
+   later step reads, and the run completes. `cotal run journal <run>` prints the step's answer as
+   the hold's: its answer id, the value `{"commentId":1000}` and the answerer as `by`.
+   `cotal run amend <run> "/once:publish-360#0/b:in/ask:publish#0" --value '{"commentId":1001}'`
+   files an amendment whose `supersedes` is that answer id, and the journal lists it under the
+   step.
+7. Repeat steps 1 to 6 with `attempts: 2`, where the original seat's first answer
+   `{ "wrong": "shape" }` does not conform and the manager is killed after that answer is accepted
+   and before the second attempt binds. The handler reads a settle on a poll (`awaitSettle`, every
+   2 s), so a kill right after `cotal run answer` returns lands in that window. Expected: the hold
+   waits for its own answer and does not settle with the refused one, and after step 6 the step's
+   value, the printed answer (id, value, `by`) and the amendment's `supersedes` are the hold's,
+   never the refused answer or its responder.
+8. Repeat steps 1 to 6 where the original seat answers `{ "commentId": 7 }`, which conforms, and the
+   manager is killed in the same window after that answer is accepted and before the step settles.
    Expected: the restarted manager opens the hold, and after step 6 the step's value, the printed
    answer and the amendment's `supersedes` are the hold's `{ "commentId": 1000 }`, never the
    `{ "commentId": 7 }` the first attempt's pause holds.
-9. Repeat steps 1 to 6 with the `publisher` persona carrying the `run` capability, where the seat
-   does not answer in step 4, and in step 6 it answers its first `publish` goal with the command
-   that goal renders instead of the operator.
+9. Repeat steps 1 to 6 with the `publisher` persona carrying the `run` capability, where no seat
+   answers in step 4, and in step 6 the incarnation re-spawned after the second restart runs the
+   command the first `publish` goal rendered instead of the operator.
    Expected: the answer is presented under the hold id, the step settles with that value, and
-   `cotal run journal <run>` prints the seat as `by`.
+   `cotal run journal <run>` prints that incarnation's name as `by`.
 
 ## 9. Out of scope
 
