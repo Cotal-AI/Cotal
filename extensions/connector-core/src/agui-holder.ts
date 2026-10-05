@@ -253,17 +253,14 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
         // the piece they touched.
         //
         // THE CHAIN IS NOT ONE OF THESE MECHANISMS. It serializes hook events so two flushes cannot
-        // read the source at one cursor, which is its own job and a real one. An earlier version of
-        // this comment credited it with start-once as well; that was measured and it is not true.
+        // read the source at one cursor, which is its own job and a real one.
         //
         // WHAT A SECOND EMITTER WOULD BREAK IS NOT DESCRIBED HERE, AND THE REASON IS THE POINT.
-        // Earlier versions of this comment restated protections that live in other files and were
-        // wrong within the hour: one credited a mechanism with another's work, one named the wrong
-        // mechanism for the path it was discussing. A comment that restates a guarantee it does not
-        // own drifts away from it, and nothing in the edit that moves the guarantee tells the author
-        // this sentence exists. The refusals belong next to the code that performs them: the
-        // record's are in `subject-frontier.ts`, the log's stale-handle check is in `event-wal.ts`,
-        // and the expectation carried on a publish is the broker's to enforce.
+        // A comment that restates a guarantee it does not own drifts away from it, and nothing in
+        // the edit that moves the guarantee tells the author this sentence exists. The refusals
+        // belong next to the code that performs them: the record's are in `subject-frontier.ts`,
+        // the log's stale-handle check is in `event-wal.ts`, and the expectation carried on a
+        // publish is the broker's to enforce.
         //
         // What this file does own is the bracket interleave, and it is OPEN: two emitters would
         // each keep their own bracket machine and nothing detects the interleave. That is the
