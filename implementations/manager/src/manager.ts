@@ -62,6 +62,7 @@ import {
   provisionAgentDurables,
   registry,
   resolveAuthProvider,
+  bearerCommandFailure,
   saveAgentFile,
   subjectMatches,
   AUTH_ENDPOINT,
@@ -319,9 +320,10 @@ function rejectionText(e: unknown): string {
  *  ledger row, secret). Its stderr is the provider command's operator-exact sentence; surface it
  *  verbatim as the spawn refusal. */
 function execBearerPreflight(argv: string[]): Promise<void> {
+  const timeout = 30_000;
   return new Promise((res, rej) => {
-    execFile(argv[0], argv.slice(1), { timeout: 30_000, maxBuffer: 64 * 1024 }, (err, _stdout, stderr) => {
-      if (err) return rej(new Error(stderr.trim() || err.message));
+    execFile(argv[0], argv.slice(1), { timeout, maxBuffer: 64 * 1024 }, (err, _stdout, stderr) => {
+      if (err) return rej(bearerCommandFailure(err, stderr, timeout));
       res();
     });
   });
