@@ -67,7 +67,7 @@ import {
 import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { parsePid, probeLiveness, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, readPidfile, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -323,9 +323,9 @@ export function processRecorded(component: LocalProcess, context: LocalProcessCo
 }
 
 export function processAlive(component: LocalProcess, context: LocalProcessContext): boolean {
-  const pidPath = localProcessPath(component.pidFile, context);
-  if (!existsSync(pidPath)) return false;
-  const pid = parsePid(readFileSync(pidPath, "utf8"));
+  const raw = readPidfile(localProcessPath(component.pidFile, context));
+  if (raw === undefined) return false;
+  const pid = parsePid(raw);
   return pid !== undefined && isAlive(pid);
 }
 
@@ -338,10 +338,8 @@ export function processAlive(component: LocalProcess, context: LocalProcessConte
  *  out from under this": that read would let `cotal down nats` orphan a live auth signer behind a
  *  torn pidfile. Only an ESRCH-confirmed death (or no record) clears a dependant. */
 export function mayBeRunning(component: LocalProcess, context: LocalProcessContext): boolean {
-  const pidPath = localProcessPath(component.pidFile, context);
-  if (!existsSync(pidPath)) return false;
-  const raw = readFileSync(pidPath, "utf8");
-  if (raw.trim() === "") return false; // empty pre-protocol husk: no process behind it
+  const raw = readPidfile(localProcessPath(component.pidFile, context));
+  if (!raw) return false; // no record, or an empty pre-protocol husk: no process behind it
   const pid = parsePid(raw);
   if (pid === undefined) return true; // unattributable content: cannot prove it gone → may be running
   return probeLiveness(pid) !== "dead"; // alive OR unknown → may be running; only ESRCH clears it
@@ -411,9 +409,9 @@ export async function stopLocalProcess(
 ): Promise<boolean> {
   const pidPath = localProcessPath(component.pidFile, context);
   const found = processRecorded(component, context);
-  if (!existsSync(pidPath)) return found;
+  const rawPid = readPidfile(pidPath);
+  if (rawPid === undefined) return found;
 
-  const rawPid = readFileSync(pidPath, "utf8").trim();
   if (rawPid.startsWith("removing:")) {
     const owner = parsePid(rawPid.slice("removing:".length));
     throw new Error(

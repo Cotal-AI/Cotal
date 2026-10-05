@@ -364,6 +364,9 @@ hand-run process). `cotal meshes rm <space>` only drops the registration. The pr
 not other owned components were running: they stop and clear their artifacts first, then the broker
 is named. A component stop and `--dry-run` stay pidfile-only and do not probe.
 
+`down` reads each process record once. A component that exits and removes its own record while
+`down` runs counts as having no record, so the stop goes on. Any other failed read is an error.
+
 **Teardown verifies pinned process identity before signalling.** PIDs are recycled by every OS,
 so a recorded pid alone is not a durable target identity. `up` records each stack process's
 creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the process start
