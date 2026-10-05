@@ -114,7 +114,8 @@ statement in its block exits, throws or returns, or holds a `return` or a `proce
 status that can be 0 in a branch or block, or calls or passes to a call a function of the file whose
 body can make such an exit. A `finally` block counts only when its `try` and catch arm cannot make
 such an exit either, since `process.exit` ends the process without running the `finally`. A
-function passed to a call or to `new` can be called at any time after, such as during an `await`.
+function passed to a call, to `new` or to a tagged template can be called at any time after, such
+as during an `await`, and so can a class field initializer, which runs when `new` builds an object.
 A platform skip that exits 0 before the comparison is such a branch. An async function counts only
 when its call is awaited, because an `await` that never settles ends an unawaited run with exit 0. A
 comparison in a branch, a loop, a callback, a check function, a failure tally or a variable pins
@@ -125,13 +126,16 @@ catch arm fails the run as a mismatch arm would and its `finally` holds no `retu
 function called with `.catch(handler)` or `.then(f, handler)` counts only when the handler is a
 function written in place whose first statement fails the run.
 
-A call stands for every value the file gives its callee: the declarations of a name and every
+A call, a `new` or a tagged template such as ``stop`cleanup` `` stands for every value the file
+gives its callee: the declarations of a name and every
 assignment to it, `||=`, `&&=` and `??=` included, an alias such as `const stop = process.exit`,
 `const { exit } = process` or `import { exit } from "node:process"`, and, for `o.k()` or
 `o["k"]()`, every value the file binds to the key `k` on any object, since the gate does not track
 which object it is. A value written as `a ? b : c`, `b || c`, `b && c` or `b ?? c` stands for both
 `b` and `c`, `(a, b)` for `b`, `await a` for `a`, and a call of a function of the file for every
-value it returns. A name with a default, as a parameter or in a destructuring, also stands for the
+value it returns. A class stands for its constructor, its field initializers and the class it
+extends, all of which `new` runs, and `super` for the class it extends. A name with a default, as
+a parameter or in a destructuring, also stands for the
 default. An array stands for every element, so `list[i]`, `...list` and `const [f] = list` each
 stand for all of them. A generator runs its body only as what its call returns is iterated, so its
 exits count for every call of it except one written as a whole statement, in parentheses or not, or
@@ -140,9 +144,9 @@ as `p["finally"]`, are the promise methods on a promise: `new Promise(...)`, `Pr
 and the other static methods that return one, a call of an async function declared once and never
 reassigned, or one of the three called on such a promise. On anything else they are the promise
 methods only when the file binds nothing to that key, since a method of the file by that name can
-iterate what its handler returns or never call it. `.call`, `.apply`, `.bind`, a getter, a key of an
-object computed at run time, an imported function and a change to a built-in such as
-`Promise.prototype` are not followed.
+iterate what its handler returns or never call it. `.call`, `.apply`, `.bind`, a getter, a
+decorator, the `then` that `await` calls on an object, a key of an object computed at run time, an
+imported function and a change to a built-in such as `Promise.prototype` are not followed.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The

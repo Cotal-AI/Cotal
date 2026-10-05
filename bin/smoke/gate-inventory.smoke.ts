@@ -497,7 +497,9 @@ const runs = (arm: ts.Node): ts.Node[] => {
   const end = list.findIndex(endsRun);
   return end < 0 ? list : list.slice(0, end + 1);
 };
-const enclosingFunction = (n: ts.Node): ts.Node | undefined => (ts.isSourceFile(n.parent) ? undefined : ts.isFunctionLike(n.parent) ? n.parent : enclosingFunction(n.parent));
+/** The function or class field around `n`. A field initializer runs when `new` builds an object, not where it is written, as a body runs when called. */
+const enclosingFunction = (n: ts.Node): ts.Node | undefined =>
+  ts.isSourceFile(n.parent) ? undefined : ts.isFunctionLike(n.parent) || ts.isPropertyDeclaration(n.parent) ? n.parent : enclosingFunction(n.parent);
 
 /** The key `name` binds or reads: an identifier, a literal, or a computed literal. */
 const nameKey = (name: ts.Node | undefined): string | undefined =>
@@ -539,17 +541,27 @@ function indexSuite(sf: ts.SourceFile): SuiteIndex {
 }
 
 const isGenerator = (v: ts.Node) => (ts.isFunctionDeclaration(v) || ts.isFunctionExpression(v) || ts.isMethodDeclaration(v)) && !!v.asteriskToken;
+/** A call, a `new` or a tagged template, each of which runs its callee. */
+type Invocation = ts.CallExpression | ts.NewExpression | ts.TaggedTemplateExpression;
+const isInvocation = (n: ts.Node): n is Invocation => ts.isCallOrNewExpression(n) || ts.isTaggedTemplateExpression(n);
+const calleeOf = (c: Invocation) => (ts.isTaggedTemplateExpression(c) ? c.tag : c.expression);
+/** What `c` passes its callee: for a tagged template, its strings, which no status check reads as failing or as
+ *  `process.exitCode`, then the values of its substitutions. */
+const argumentsOf = (c: Invocation): readonly ts.Expression[] =>
+  !ts.isTaggedTemplateExpression(c) ? (c.arguments ?? []) : [c.template, ...(ts.isTemplateExpression(c.template) ? c.template.templateSpans.map((s) => s.expression) : [])];
+/** The class `c` extends. */
+const baseOf = (c: ts.ClassLikeDeclaration | undefined) => c?.heritageClauses?.find((h) => h.token === ts.SyntaxKind.ExtendsKeyword)?.types[0].expression;
 /** The expressions `fn` returns: its `return` values, or an arrow's expression body. */
 const returnedBy = (fn: ts.SignatureDeclaration): ts.Node[] =>
   ts.isArrowFunction(fn) && !ts.isBlock(fn.body) ? [fn.body] : findIn(fn, ts.isReturnStatement).flatMap((r) => (r.expression ? [r.expression] : []));
 /** The expressions the functions of the file `call` names return, resolved once per call. Calling a generator
  *  returns an iterator, not what its body returns. A callee that depends on its own call's result is cut there. */
-function returnsOf(sf: ts.SourceFile, call: ts.CallExpression): ts.Node[] {
+function returnsOf(sf: ts.SourceFile, call: Invocation): ts.Node[] {
   const { returns } = indexSuite(sf);
   const cached = returns.get(call);
   if (cached) return cached;
   returns.set(call, []);
-  const found = [...valuesOf(sf, call.expression)].flatMap((f) => (ts.isFunctionLike(f) && !isGenerator(f) ? returnedBy(f) : []));
+  const found = [...valuesOf(sf, calleeOf(call))].flatMap((f) => (ts.isFunctionLike(f) && !isGenerator(f) ? returnedBy(f) : []));
   returns.set(call, found);
   return found;
 }
@@ -563,14 +575,17 @@ function valuesOf(sf: ts.SourceFile, target: ts.Node, out = new Set<ts.Node>()):
   out.add(t);
   // `?:`, `||`, `&&`, `??` and `||=`, `&&=`, `??=` evaluate to one of their operands; a comma and any other assignment
   // to the right side; `await` to its operand; a declaration, a parameter or a binding to its initializer. An array
-  // stands for its elements, so an index, a spread or an array binding of it stands for the array.
+  // stands for its elements, so an index, a spread or an array binding of it stands for the array. A class stands
+  // for its constructor and the class it extends, which `new` runs, and `super` for the class it extends.
   const operands =
     ts.isConditionalExpression(t) ? [t.whenTrue, t.whenFalse]
     : ts.isAwaitExpression(t) || ts.isElementAccessExpression(t) || ts.isSpreadElement(t) ? [t.expression]
     : ts.isArrayLiteralExpression(t) ? t.elements
     : ts.isVariableDeclaration(t) || ts.isParameter(t) ? [t.initializer]
     : ts.isBindingElement(t) ? [t.initializer, ts.isArrayBindingPattern(t.parent) ? t.parent.parent : undefined]
-    : ts.isCallExpression(t) ? returnsOf(sf, t)
+    : ts.isClassLike(t) ? [...t.members.filter(ts.isConstructorDeclaration), baseOf(t)]
+    : t.kind === ts.SyntaxKind.SuperKeyword ? [baseOf(ts.findAncestor(t, ts.isClassLike))]
+    : isInvocation(t) ? returnsOf(sf, t)
     : !ts.isBinaryExpression(t) ? []
     : LOGICAL.includes(t.operatorToken.kind) ? [t.left, t.right]
     : t.operatorToken.kind === ts.SyntaxKind.CommaToken || isAssignment(t.operatorToken.kind) ? [t.right]
@@ -595,13 +610,14 @@ const namesExit = (sf: ts.SourceFile, callee: ts.Node) => [...valuesOf(sf, calle
 /** A `process.exit` call a run can make: where it is, and its status. */
 type Exit = { site: ts.Node; status: ts.Expression | undefined };
 /** The exits calling `callee` can make, as `site` with first argument `status`: itself when it names
- *  `process.exit`, and those of every function of the file it names, each followed once into `seen`.
+ *  `process.exit`, and those of every function or class of the file it names, each followed once into `seen`.
  *  Only iterating what a generator returns runs its body, so unless that can be `iterated`, it makes none. */
 function exitsOfCall(sf: ts.SourceFile, callee: ts.Node, site: ts.Node, status: ts.Expression | undefined, seen: Set<ts.Node>, iterated = true): Exit[] {
   return [...valuesOf(sf, callee)].flatMap((v) => {
     if (isExitRef(v)) return [{ site, status }];
-    if (!ts.isFunctionLike(v) || (!iterated && isGenerator(v)) || seen.has(v)) return [];
+    if (!(ts.isFunctionLike(v) || ts.isClassLike(v)) || (!iterated && isGenerator(v)) || seen.has(v)) return [];
     seen.add(v);
+    // `new` runs the field initializers of a class.
     return exitsIn(sf, v, seen);
   });
 }
@@ -635,12 +651,12 @@ const chainsPromise = (sf: ts.SourceFile, callee: ts.Node): callee is ts.Propert
   const key = memberKey(callee);
   return key !== undefined && PROMISE_METHODS.includes(key) && (!indexSuite(sf).keyed.has(key) || isPromise(sf, callee.expression));
 };
-/** The exits running `n` can make, directly, through the calls it makes, and through the functions it passes
- *  to a call or to `new`, which can call them at any time from then on. */
+/** The exits running `n` can make, directly, through the calls, `new` and tagged templates it makes, and through
+ *  the functions it passes to them, which can call them at any time from then on. */
 function exitsIn(sf: ts.SourceFile, n: ts.Node, seen = new Set<ts.Node>()): Exit[] {
   // A call written as a whole statement drops what it returns.
-  const called = findIn(n, ts.isCallExpression).flatMap((c) => exitsOfCall(sf, c.expression, c, c.arguments[0], seen, !ts.isExpressionStatement(wrapped(c).parent)));
-  return [...called, ...findIn(n, ts.isCallOrNewExpression).flatMap((c) => (c.arguments ?? []).flatMap((a) => exitsOfCall(sf, a, c, undefined, seen, !chainsPromise(sf, unwrap(c.expression)))))];
+  const called = findIn(n, isInvocation).flatMap((c) => exitsOfCall(sf, calleeOf(c), c, argumentsOf(c)[0], seen, !ts.isExpressionStatement(wrapped(c).parent)));
+  return [...called, ...findIn(n, isInvocation).flatMap((c) => argumentsOf(c).flatMap((a) => exitsOfCall(sf, a, c, undefined, seen, !chainsPromise(sf, unwrap(calleeOf(c))))))];
 }
 /** Whether running `n` can exit 0, or leave behind a function that can when called later, during an `await`. */
 const canExitZero = (sf: ts.SourceFile, n: ts.Node) => exitsIn(sf, n).some((e) => !failingStatus(e.status));
@@ -653,8 +669,8 @@ const canEndRun = (sf: ts.SourceFile, s: ts.Node) => endsRun(s) || (!ts.isFuncti
  *  `process.exit` passed to a call can be called with any status. */
 const codeHolds = (sf: ts.SourceFile, at: ts.Node) =>
   indexSuite(sf).exitCodeWrites.every(failingCode) &&
-  findIn(sf, ts.isCallOrNewExpression, true).every((c) => !c.arguments?.some((a) => namesExit(sf, a))) &&
-  findIn(sf, ts.isCallExpression, true).every((c) => !namesExit(sf, c.expression) || (c.end <= at.pos && !enclosingFunction(c) && !enclosingFunction(at)) || failingStatus(c.arguments[0]) || honorsExitCode(c.arguments[0]));
+  findIn(sf, isInvocation, true).every((c) => !argumentsOf(c).some((a) => namesExit(sf, a))) &&
+  findIn(sf, isInvocation, true).every((c) => !namesExit(sf, calleeOf(c)) || (c.end <= at.pos && !enclosingFunction(c) && !enclosingFunction(at)) || failingStatus(argumentsOf(c)[0]) || honorsExitCode(argumentsOf(c)[0]));
 /** Whether a throw from `n` fails the run: no function or `try` with a catch encloses it. */
 const throwEscapes = (n: ts.Node) => {
   for (let p = n; !ts.isSourceFile(p); p = p.parent)
@@ -956,6 +972,9 @@ const censusControls: Array<[string, boolean]> = [
   ["a mismatch exit with an argument after its status is unpinned", !pinsWith(`if (ran !== EXPECTED_CELLS) process.exit(1, process.exit(0));`)],
   ["a pin in a finally is pinned", pinsWith(`try { f(); } finally { if (ran !== EXPECTED_CELLS) process.exit(1); }`)],
   ["a pin in a finally whose try can exit 0 is unpinned", !pinsWith(`try { process.exit(0); } finally { if (ran !== EXPECTED_CELLS) process.exit(1); }`)],
+  ["a pin after new of a class whose constructor exits 0 is unpinned", !pinsWith(`class Stop { constructor() { process.exit(0); } } new Stop(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after new of a class whose constructor exits 1 is pinned", pinsWith(`class Bail { constructor() { process.exit(1); } } if (failed) new Bail(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a tagged template in a finally that exits 0 swallows", swallows(`function stop() { process.exit(0); } try { f(); } finally { stop\`cleanup\`; }`)],
 ];
 const brokenControls = censusControls.filter(([, ok]) => !ok).map(([name]) => name);
 
