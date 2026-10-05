@@ -85,7 +85,7 @@ try {
       space: "fixture",
       timeoutMs: 100,
     }),
-    /did not become HTTP-ready/,
+    /did not become HTTP-ready within 100ms \(pid \d+\); last probe http:\/\/127\.0\.0\.1:1\/api\/meta: .+/,
   );
   await terminateDetachedWeb(child, pidPath);
   assert.equal(alive(child.pid!), false, "timeout cleanup escalates and confirms child death");

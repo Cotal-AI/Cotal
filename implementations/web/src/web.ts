@@ -1336,6 +1336,7 @@ export async function waitForDetachedWeb(
     throw new Error(`web dashboard failed to start${error ? `: ${error.message}` : " (no process id)"}`);
   }
   const deadline = Date.now() + opts.timeoutMs;
+  let lastProbe: string | undefined;
   while (Date.now() < deadline) {
     if (spawnError) throw new Error(`web dashboard failed to start: ${spawnError.message}`);
     if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
@@ -1346,12 +1347,23 @@ export async function waitForDetachedWeb(
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
       const session = readWebSession(opts.sessionPath);
-      const meta = await fetch(`${opts.url}api/meta`, {
-        signal: AbortSignal.timeout(500),
-        headers: session ? { [WEB_READINESS_HEADER]: session.readiness } : {},
-      })
-        .then(async (res) => res.ok ? await res.json() as { space?: unknown; pid?: unknown } : undefined)
-        .catch(() => undefined);
+      const probeUrl = `${opts.url}api/meta`;
+      let meta: { space?: unknown; pid?: unknown } | undefined;
+      try {
+        const res = await fetch(probeUrl, {
+          signal: AbortSignal.timeout(500),
+          headers: session ? { [WEB_READINESS_HEADER]: session.readiness } : {},
+        });
+        if (res.ok) {
+          meta = await res.json() as { space?: unknown; pid?: unknown };
+          lastProbe = `${probeUrl}: answered space ${JSON.stringify(meta?.space)}, pid ${JSON.stringify(meta?.pid)}`;
+        } else {
+          lastProbe = `${probeUrl}: HTTP ${res.status}`;
+        }
+      } catch (e) {
+        const cause = e instanceof Error ? (e.cause as { code?: unknown } | undefined)?.code : undefined;
+        lastProbe = `${probeUrl}: ${typeof cause === "string" ? `${cause}: ` : ""}${e instanceof Error ? e.message : String(e)}`;
+      }
       if (session && meta?.space === opts.space && meta.pid === pid) {
         if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
           throw new Error(`web dashboard exited during readiness (pid ${pid})`);
@@ -1360,7 +1372,7 @@ export async function waitForDetachedWeb(
     }
     await sleep(100);
   }
-  throw new Error(`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})`);
+  throw new Error(`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})${lastProbe ? `; last probe ${lastProbe}` : ""}`);
 }
 
 export async function terminateDetachedWeb(child: ChildProcess, pidPath: string): Promise<void> {
