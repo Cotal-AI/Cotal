@@ -453,7 +453,7 @@
       const names = ['planner', 'builder', 'reviewer', 'security', 'scout', 'ops', 'merger', 'analyst', 'guide', 'editor'];
       names.forEach((n, i) => {
         const ang = ((i + 0.5) / names.length) * 6.283 + (rand() - 0.5) * 0.25; const rr = 0.34 + rand() * 0.1;
-        M.add({ id: n, label: n, x: 0.5 + Math.cos(ang) * rr * 1.2, y: 0.5 + Math.sin(ang) * rr * 1.15, vendor: vendors[i % vendors.length], status: pick(['idle', 'working', 'idle', 'idle', 'waiting'], rand), drift: true, seed: rand() * 10, size: 0.95 });
+        M.add({ id: n, label: n, x: 0.5 + Math.cos(ang) * rr * 1.2, y: 0.5 + Math.sin(ang) * rr * 0.98, vendor: vendors[i % vendors.length], status: pick(["idle", "working", "idle", "idle", "waiting"], rand), drift: true, seed: rand() * 10, size: 0.95 });
         M.link(n, chans[i % 2][0]); if (rand() < 0.4) M.link(n, chans[(i + 1) % 2][0]);
       });
       setInterval(() => {
