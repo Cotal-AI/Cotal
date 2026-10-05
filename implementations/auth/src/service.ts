@@ -59,7 +59,7 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, authorizeServeGrant, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, SERVICE_READY, writeServiceStatus, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
+import { contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
@@ -285,16 +285,17 @@ function contractArtifactReader(values: unknown[]): (digest: string) => unknown 
  *  registration that advertises them. The issuance gate is provisioned open once, on first sight
  *  (§13.1); on a restart it already exists and `registerServiceInstance` freezes and re-registers
  *  it, which advances the process epoch and fences the predecessor. A first registration stays at
- *  epoch 0. It returns the epoch this registration committed, and refuses when its confirming read
+ *  epoch 0. `register` is {@link registerServiceInstance}, or {@link registerServingInstance} for an
+ *  instance that serves. It returns what `register` committed, and refuses when its confirming read
  *  finds that a later registration of the same instance superseded it. */
-async function registerSelfAuthorizedInstance(nc: NatsConnection, args: {
+async function registerSelfAuthorizedInstance<R extends { registrationRevision: number; processEpoch: number }>(nc: NatsConnection, args: {
   space: string;
   endpoint: string;
   instanceId: string;
   principal: string;
   clusterDigest: string;
   artifacts: unknown[];
-}): Promise<{ authKv: KV; recordsKv: KV; registrationRevision: number; processEpoch: number }> {
+}, register: (kv: KV, args: Parameters<typeof registerServiceInstance>[1]) => Promise<R>): Promise<R> {
   const { space, endpoint, instanceId } = args;
   const authKv = await new Kvm(nc).open(epAuthBucket(space));
   const recordsKv = await new Kvm(nc).open(recordsBucket(space));
@@ -304,10 +305,11 @@ async function registerSelfAuthorizedInstance(nc: NatsConnection, args: {
     await provisionEndpointGateOpen(authKv, { endpoint, instanceId, principal: args.principal });
   const barrier = endpointRegistrationBarrier(authKv, space, { endpoint, instanceId, opId: mintLifecycleUid() });
   const spec = { endpoint, owner: DEV_OWNER, clusterDigests: [args.clusterDigest], protocol: { v: 1 as const } };
-  const { registrationRevision, processEpoch } = await registerServiceInstance(recordsKv, {
+  const registered = await register(recordsKv, {
     space, spec, instanceId, registrant: { owner: DEV_OWNER }, authority: selfNameAuthority(endpoint), barrier,
     readClusterArtifact: contractArtifactReader(args.artifacts),
   });
+  const { registrationRevision, processEpoch } = registered;
   // A second start of the same instance can complete between this reopen and this read. Its epoch
   // is not this start's to claim, and this start's epoch is already fenced. One that completes after
   // the read leaves this start returning its own epoch, which the gate fences as it fences any
@@ -315,7 +317,7 @@ async function registerSelfAuthorizedInstance(nc: NatsConnection, args: {
   const observed = await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe();
   if (observed?.state !== "open" || observed.processEpoch !== processEpoch || observed.registrationRevision !== registrationRevision)
     throw new EpEnvelopeError("conflict", `the issuance gate of ${endpoint}/${instanceId} is no longer open at this registration (process epoch ${processEpoch}, revision ${registrationRevision}); a later barrier fenced this start (SPEC 13.1)`);
-  return { authKv, recordsKv, registrationRevision, processEpoch };
+  return registered;
 }
 
 /**
@@ -393,25 +395,11 @@ export async function openAuthAuthorityPlane(opts: {
       log,
     });
     try {
-      const { authKv, recordsKv, registrationRevision, processEpoch } = await registerSelfAuthorizedInstance(regClient.nc, {
+      const { grant } = await registerSelfAuthorizedInstance(regClient.nc, {
         space, endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid,
         principal: principalKey(DEV_OWNER, authIdentity.serveIdentity.id).key,
         clusterDigest: artifacts.closureDigest, artifacts: values,
-      });
-      const readProcessEpoch = async (): Promise<number> => {
-        const g = await serveIssuanceGateKv(authKv, space, { endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid }).observe();
-        if (g === null) throw new Error(`no issuance gate for ${AUTH_SERVICE_ENDPOINT}/${iid}`);
-        return g.processEpoch;
-      };
-      const grant = await authorizeServeGrant(recordsKv, {
-        space, endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, epoch: processEpoch, holder: { owner: DEV_OWNER },
-        authority: selfNameAuthority(AUTH_SERVICE_ENDPOINT), readClusterArtifact: contractArtifactReader(values), readProcessEpoch,
-      });
-      await writeServiceStatus(recordsKv, {
-        endpoint: AUTH_SERVICE_ENDPOINT, instanceId: iid, epoch: processEpoch,
-        status: { state: SERVICE_READY, epoch: processEpoch, observedSpecRevision: registrationRevision },
-        readProcessEpoch,
-      });
+      }, registerServingInstance);
       authServeInstanceId = iid;
       authServeGrant = grant;
     } finally {
@@ -1384,7 +1372,7 @@ export async function openAuthAuthorityPlane(opts: {
           // The host is minted no serve credential, so the gate binds a principal nothing holds.
           principal: principalKey(DEV_OWNER, `host_serve_${instanceId}`).key,
           clusterDigest: host.clusterDigest, artifacts: host.artifacts,
-        })).processEpoch;
+        }, registerServiceInstance)).processEpoch;
       } finally {
         await regClient.close();
       }

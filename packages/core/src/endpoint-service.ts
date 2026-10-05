@@ -712,6 +712,38 @@ export async function registerServiceInstance(
   return { registrationRevision: newRev, processEpoch };
 }
 
+/** Register an instance that serves: {@link registerServiceInstance}, then its serve grant
+ *  ({@link authorizeServeGrant}) and its converged `ready` status ({@link writeServiceStatus}) at
+ *  the `processEpoch` and `registrationRevision` that registration committed (§13.1, §13.5, §13.9).
+ *  A gate read after the reopen can already show a successor's epoch, so the gate only fences the
+ *  grant and the status: a successor makes them refuse rather than serve at its epoch. */
+export async function registerServingInstance(
+  kv: KV,
+  args: Parameters<typeof registerServiceInstance>[1] & {
+    /** Fields the `ready` status carries beside the coordinates this registration fixes. */
+    status?: Record<string, unknown> & { state?: never; epoch?: never; observedSpecRevision?: never };
+  },
+): Promise<{ registrationRevision: number; processEpoch: number; grant: EpServeGrant }> {
+  const { registrationRevision, processEpoch } = await registerServiceInstance(kv, args);
+  const { endpoint } = args.spec;
+  const readProcessEpoch = async (): Promise<number> => {
+    const gate = await args.barrier.observe();
+    if (gate === null)
+      throw new EpEnvelopeError("failed-precondition", `no issuance gate for "${endpoint}/${args.instanceId}" after its registration; a gate is never deleted (SPEC 13.12)`);
+    return gate.processEpoch;
+  };
+  const grant = await authorizeServeGrant(kv, {
+    space: args.space, endpoint, instanceId: args.instanceId, epoch: processEpoch, holder: args.registrant,
+    authority: args.authority, readClusterArtifact: args.readClusterArtifact, readProcessEpoch,
+  });
+  await writeServiceStatus(kv, {
+    endpoint, instanceId: args.instanceId, epoch: processEpoch,
+    status: { ...args.status, state: SERVICE_READY, epoch: processEpoch, observedSpecRevision: registrationRevision },
+    readProcessEpoch,
+  });
+  return { registrationRevision, processEpoch, grant };
+}
+
 /** Classify a lost spec-write ack. Sole writer under the freeze: proposed bytes at a revision
  *  past the pre-write snapshot means this write committed. Anything else stays frozen. */
 async function recoverCommittedSpecWrite(
