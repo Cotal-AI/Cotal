@@ -69,6 +69,26 @@ Declare such an interface as an intersection instead, for example
 `type ActiveMapping = LifecycleMapping & { state: "active" }`. A reader that has checked
 `state === "retiring"` reads `op` without a guard.
 
+## Issuance gate types in 0.67.0
+
+`EpGateRow` and `EndpointGateRow`, which `parseIssuanceGate` and `parseEndpointGate` return, and
+`EpGateState`, which an `EpIssuanceGate` or `EpIssuanceBarrier` returns from `observe`, are now
+unions on `state`. Nothing about a running mesh changes: gates that parsed before parse the same
+way, and the refusals are unchanged. Only TypeScript code that compiles against `@cotal-ai/core`
+is affected.
+
+### What stops working
+
+An `interface` that extends one of these types fails with TS2312, because an interface cannot
+extend a union. Code that builds a gate in memory, such as a custom barrier's `observe`, no longer
+compiles when the gate is `frozen` or `retired` without its `op`, or `open` with one. The gate
+parsers already refused those rows.
+
+### Before the upgrade
+
+Declare such an interface as an intersection instead, for example
+`type CustomGateRow = EpGateRow & { custom: string }`.
+
 ## Lifecycle-blocked refusals in 0.66.0
 
 A refusal that carries `ai.cotal.ep.lifecycle-blocked` now reports only the lifecycle state it
