@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { CotalEndpoint, isReachable, mintLifecycleUid } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
 const PORT = await pickFreePort();
@@ -92,7 +92,7 @@ try {
 } finally {
   await agent.stop?.();
   await peer.stop?.();
-  srv.kill();
+  await killAndAwaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
