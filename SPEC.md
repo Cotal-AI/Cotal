@@ -4631,8 +4631,13 @@ the served subject. An amendment's issuance marks its pause with `amend: true`, 
 then requires that pause settled `resumed` with an accepted answer instead of waiting. A legacy-rail
 answer is accepted only from a
 managed seat of that owner whose actor-ledger row is live, on the relay path of §14.5. A boot
-reconcile forwards no subject and continues under the original admission. This revision hosts no
-user-auth run on the signer-holding host's own manager.
+reconcile forwards no subject and continues under the original admission. A run's own caller holds
+no actor-ledger row, so when a participant manager asks its issuing host whether a caller of a run it
+drives holds `admin` (§13.2), it asks for that run's admitted caller, whose current row decides. The
+issuing host pins every run mediator it signs for a participant manager, at issuance and at renewal,
+to a placement on that manager's own instance, the only instance such a run may place a spawn on.
+The participant manager refuses a program that places a spawn on any other instance with
+`unimplemented`. This revision hosts no user-auth run on the signer-holding host's own manager.
 
 ---
 

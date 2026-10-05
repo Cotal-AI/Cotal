@@ -1076,7 +1076,8 @@ export async function openAuthAuthorityPlane(opts: {
             credentials.runMediator = await mintPublicUserJwt(auth, r.run!.mediatorId, "run-mediator", {
               principal: { owner, actor: caller.actor },
               lifecycleUid: r.managerLifecycleUid,
-              runMediator: binding,
+              // Renewed with the placement the attempt was issued with (authorizeRemoteRunAttempt).
+              runMediator: { ...binding, placement: { instanceId: r.instanceId } },
               expiresInSeconds: standingTtl,
             });
             return { credentials };

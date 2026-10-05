@@ -3297,8 +3297,13 @@ export class Manager {
    *  across this campaign; static revocation is the TTL, not a ledger. */
   private async epAdminReach(caller: EpCaller): Promise<boolean> {
     if (!this.userMode) return true;
-    if (this.remoteAuthority)
-      return this.remoteAuthority.authorizeAdmin({ owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid });
+    if (this.remoteAuthority) {
+      // A hosted run's own caller is derived from its id and holds no ledger row: it acts for the
+      // caller its run was admitted for, so that caller's current grant decides, and a revoked
+      // login demotes the run's next spawn.
+      const asked = this.runHosting?.admittedCaller(caller) ?? caller;
+      return this.remoteAuthority.authorizeAdmin({ owner: asked.owner, actor: asked.actor, lifecycleUid: asked.uid });
+    }
     try {
       const scope = await resolveAuthProvider().actorScope({
         dir: userAuthStateDir(this.workspaceRoot, this.space),

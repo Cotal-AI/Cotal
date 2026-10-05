@@ -1477,9 +1477,8 @@ export class MeshHandler {
 
       const fact = await this.goalTerminal(ref, ctx.signal);
       const handle = spawnHandleOf(req, ext, fact, this.binding.endpoint);
-      // Register the run-roster entry `turn` addresses and a handoff resolves to. The owner/actor
-      // address prefers the bound floor and falls back to the terminal's own recorded identity —
-      // the same discipline the discharge uses (see spawnDespawnTarget).
+      // Register the run-roster entry `turn` addresses and a handoff resolves to, by the same
+      // identity the discharge despawns (see spawnDespawnTarget).
       const address = spawnDespawnTarget(ext, fact);
       this.roster.set(parseAgentHandle(handle.agent).name, {
         handle,
@@ -2742,15 +2741,24 @@ function pickAcceptanceFloor(floor: Record<string, unknown>): Record<string, unk
   return out;
 }
 
-/** The despawn target for a discharged spawn: the bound acceptance floor when the entry carries
- *  one, else the identity the SUCCEEDED terminal itself records (`id` is the `owner.actor`
- *  principal, `lifecycleUid` the incarnation). `undefined` when neither names an agent. */
+/** The despawn target for a discharged spawn: the identity a SUCCEEDED terminal records (`id` is
+ *  the `owner.actor` principal, `lifecycleUid` the incarnation), else the bound acceptance floor,
+ *  else what any other terminal records. A host that enrolls a user-auth agent picks its lifecycle
+ *  after the acceptance, so only the terminal names the incarnation that came up. `undefined` when
+ *  none names an agent. */
 function spawnDespawnTarget(
   external: Readonly<Record<string, unknown>> | undefined,
   fact: GoalResultFact,
 ): { owner: string; actor: string; lifecycleUid: string } | undefined {
+  const recorded = terminalAgent(fact);
+  if (fact.state === "succeeded" && recorded !== undefined) return recorded;
   if (typeof external?.owner === "string" && typeof external.actor === "string" && typeof external.uid === "string")
     return { owner: external.owner, actor: external.actor, lifecycleUid: external.uid };
+  return recorded;
+}
+
+/** The agent a spawn terminal records, when its `id` is an `owner.actor` principal. */
+function terminalAgent(fact: GoalResultFact): { owner: string; actor: string; lifecycleUid: string } | undefined {
   const d = fact.data as { id?: unknown; lifecycleUid?: unknown } | undefined;
   if (typeof d?.id !== "string" || typeof d.lifecycleUid !== "string") return undefined;
   const dot = d.id.indexOf(".");

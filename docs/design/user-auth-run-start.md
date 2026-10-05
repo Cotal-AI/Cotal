@@ -12,9 +12,8 @@ Status: implemented for issue #1956. Section 4 names the shipped symbols, with t
   `served` as `permission-denied`, so the closed parser still accepts `operator.answers` alone.
 - An amendment's operator request carries `answers.amend: true`. The issuing host then requires the
   pause settled `resumed` naming an accepted answer, where an answer requires it waiting.
-- Not delivered: section 9 item 3. A run that spawns and turns an owned agent and receives a typed
-  answer from it on a user-auth space is not supported by this change, so issue #1956 stays open for
-  that part.
+- Section 9 item 3 landed after this change, as section 10 records: a run spawns, turns and
+  despawns agents its user owns, and receives their typed answers.
 - A participant manager forwards a legacy-rail answer, and the issuing host refuses it unless it
   comes from a live managed seat of the run's owner. A legacy-rail resume is refused on the manager.
 - `AclResolver`'s `kind` is optional, so a resolver that does not set it never issues.
@@ -487,3 +486,56 @@ A private probe, not a committed test, through shipped entrypoints under a fresh
 6. `cotal actor revoke` for A's `cli` row, then A's answer and resume: refused, source no longer live.
 7. A `run-start` that the probe publishes on the legacy rail under A's connection: refused as today.
 8. The signer-holding host's own manager still refuses user mode by name.
+
+## 10. Owned agents
+
+A run on a participant manager acts through its mediator, whose caller is the run's own derived
+caller, `runDriverCaller(runId, owner)`. Two refusals stood between that caller and an owned agent.
+They were reproduced at `611b71f0b` on a fresh stack whose stock auth service answers managed-agent
+enrollment (#1972):
+
+- An unplaced `spawn` was refused at accept: `spawn is operator reach; the caller's current ledger
+  grant does not carry "admin"`. The registration policy requires the event plane, arming it needs
+  the admin tier, and the manager asked the host's admin door about the derived caller, which has no
+  actor-ledger row.
+- A placed `spawn` was refused at `run start`: `a signerless host issues no placed-spawn mediator`.
+
+With both lifted, a third gap showed: a completed run left its agent running.
+
+The change is three decisions. None adds an authority, a mediator or a signer to the participant.
+
+| Site | Change |
+|---|---|
+| `implementations/manager/src/run-hosting.ts` | Each slot keeps its admission's caller. `admittedCaller(caller)` returns it for the derived caller of a run this manager drives. A placement on the manager's own instance is accepted; any other is refused with `unimplemented`. |
+| `implementations/manager/src/manager.ts`, `epAdminReach` | A remote-authority manager asks the host's admin door about the run's admitted caller in place of its derived caller. The manager already relays the caller tuple it served, so this relays nothing it could not relay before. |
+| `implementations/auth/src/manager-authority.ts`, `authorizeRemoteRunAttempt` | The mediator is pinned to a placement on the registered instance. |
+| `implementations/auth/src/service.ts`, `renewRunDriver` | The renewed mediator carries the same placement. |
+| `implementations/runtime/src/mesh-handler.ts`, `spawnDespawnTarget` | A succeeded spawn terminal's identity comes before the acceptance floor, for the run's release and its roster. |
+
+The host never sees the program, so it cannot mint a placement the program named. The only instance
+a participant manager may place a spawn on is its own, and the instance-pinned `describe`,
+`resolve-cwd` and `spawn` rows reach no manager the run's class `spawn` row does not.
+
+The spawn then takes the path any detached spawn on that manager takes: the host enrolls the agent
+at a lifecycle UID it picks, under the participant's owner, bounded by the participant actor's
+grant. The run turns the seat on the owner path, and the seat answers an `ask` on the relay path of
+section 5, P4.
+
+The manager answers a spawn's acceptance before it enrolls, so the floor the run binds carries the
+participant's provisional UID, and only the succeeded terminal carries the host's. A completed run
+released its seats by the floor, which names a lifecycle the manager does not run. Its target
+resolver answers that `expired`, and the release reads `expired` as already gone. 95 seconds after
+the run completed, `cotal ps` still listed the seat, and `cotal stop --name` stopped it. The release
+and the run's roster now take the succeeded terminal's identity first. A static seat's terminal
+names no `owner.actor` principal, so it keeps the floor.
+
+Revoking the user's row demotes the run's next spawn, because the admin door reads the row at that
+moment, and the participant manager's own host calls stop under the same row.
+
+Checked by hand on a fresh stack, before and after: a placed and an unplaced run each spawn an agent,
+turn it to `done`, receive its `ask` record from the seat, complete and release the seat. A
+placement on another instance is refused at `run start`. User B's resume of A's run, from B's own
+participant manager, and B's answer are refused by the issuing host as admitted on another manager
+instance. Revoking A's row between two spawns of one run refuses the second spawn, and A's next
+start is refused.
+
