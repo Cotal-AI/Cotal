@@ -220,6 +220,15 @@ const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
  *  poll is the intake's whole latency: a fresh turn waits at most one interval plus one wake.
  *  Deadlines are minutes-scale; fifteen seconds of intake lag is invisible to a run. */
 const TURN_POLL_MS = 15_000;
+/** How many turns the run settled before this seat yielded them one session remembers. The
+ *  manager serves a seat one turn at a time, so a short memory covers every late yield. */
+const MAX_SETTLED_TURNS = 32;
+
+/** The refusal for a yield on a turn the run settled first, so a seat that was shown the turn
+ *  learns why the run will not take its result instead of being told no turn exists. */
+function settledTurnError(goalId: string, deadlineAt: number): string {
+  return `turn "${goalId}" was already settled by the run (deadline ${new Date(deadlineAt).toISOString()}), so this yield was not recorded`;
+}
 
 /** One relayed run turn this seat has pulled and not yet yielded. `surfaced` flips when the
  *  payload has been handed to the host session as context — only a surfaced turn auto-yields
@@ -414,6 +423,13 @@ export class MeshAgent extends EventEmitter {
    *  `done`). The poll is also the reconciler: a turn settled elsewhere (deadline, another yield
    *  path) vanishes from `turn-pending` and is dropped here on the next pull. */
   private activeTurns = new Map<string, ActiveTurn>();
+  /** Deadlines of turns the run settled before this seat yielded them, by goal id, so a late yield
+   *  is refused with {@link settledTurnError}. Bounded by {@link MAX_SETTLED_TURNS}. */
+  private settledTurns = new Map<string, number>();
+  /** Goals whose yield the manager answered since the current pull began. That pull may have
+   *  snapshotted a goal before its answer; taking it back would surface the settled turn again, and
+   *  the next pull would record it as the run's settlement. */
+  private yieldedSincePull = new Set<string>();
   private turnPollTimer?: ReturnType<typeof setInterval>;
   /** The last pull failure this seat reported, so one that keeps failing is said once. */
   private pullTrouble?: string;
@@ -2154,6 +2170,7 @@ export class MeshAgent extends EventEmitter {
   private async pollTurns(): Promise<void> {
     if (!this._connected || this._stopping || this.turnPollBusy) return;
     this.turnPollBusy = true;
+    this.yieldedSincePull.clear();
     try {
       const r = await this.managerInvoke("turn-pending", undefined, { target: { mode: "self" } });
       if (!r.ok) { this.notePullTrouble(r.error ?? "refused with no message"); return; }
@@ -2167,10 +2184,10 @@ export class MeshAgent extends EventEmitter {
       if (turns.length < rows.length) this.notePullTrouble(`turn-pending returned ${rows.length - turns.length} malformed turn(s), dropped`);
       else this.pullTrouble = undefined;
       const live = new Set(turns.map((t) => t.goalId));
-      for (const id of [...this.activeTurns.keys()]) if (!live.has(id)) this.activeTurns.delete(id);
+      for (const t of [...this.activeTurns.values()]) if (!live.has(t.goalId)) this.settleTurn(t);
       let fresh = 0;
       for (const t of turns) {
-        if (this.activeTurns.has(t.goalId)) continue;
+        if (this.activeTurns.has(t.goalId) || this.yieldedSincePull.has(t.goalId)) continue;
         this.activeTurns.set(t.goalId, { goalId: t.goalId, payload: t.payload, acceptedAt: t.acceptedAt, deadlineAt: t.deadlineAt, surfaced: false });
         fresh += 1;
       }
@@ -2238,22 +2255,46 @@ export class MeshAgent extends EventEmitter {
 
   /** Yield one active turn back to the run (`turn-yield`, self-mode). Without `turn` it targets
    *  the OLDEST surfaced turn — the one the current session turn is working on. The entry is
-   *  dropped locally only on a confirmed yield; a refused one stays for the poll to reconcile
-   *  (the manager's answer, not a local guess, decides whether it is settled). */
+   *  dropped locally only when the manager's answer settles it, by this yield or by a terminal
+   *  the run reached first; a refused one stays for the poll to reconcile (the manager's answer,
+   *  not a local guess, decides whether it is settled). */
   async yieldTurn(status: "done" | "blocked" | "handoff", opts: { to?: string; note?: string; turn?: string } = {}): Promise<ControlReply> {
     await this.requireConnected();
     const t = opts.turn !== undefined
       ? this.activeTurns.get(opts.turn)
       : [...this.activeTurns.values()].filter((x) => x.surfaced).sort((a, b) => a.acceptedAt - b.acceptedAt)[0];
-    if (!t) return { ok: false, error: opts.turn !== undefined ? `no active turn "${opts.turn}" on this seat` : "no turn is active — nothing to yield" };
+    if (!t) {
+      const id = opts.turn ?? [...this.settledTurns.keys()].at(-1);
+      const deadlineAt = id === undefined ? undefined : this.settledTurns.get(id);
+      if (id !== undefined && deadlineAt !== undefined) return { ok: false, error: settledTurnError(id, deadlineAt) };
+      return { ok: false, error: opts.turn !== undefined ? `no active turn "${opts.turn}" on this seat` : "no turn is active — nothing to yield" };
+    }
     // The surfaced gate holds for an explicit id too: a yield for a payload the session has not
     // been shown would record work nobody did.
     if (!t.surfaced) return { ok: false, error: `turn "${t.goalId}" has not been surfaced into this session yet; nothing was seen, so nothing can be yielded for it` };
     if (status === "handoff" && (opts.to === undefined || opts.to.length === 0))
       return { ok: false, error: "a handoff yield names its addressee (to)" };
     const r = await this.managerInvoke("turn-yield", { goalId: t.goalId, status, to: opts.to, note: opts.note }, { target: { mode: "self" } });
-    if (r.ok) this.activeTurns.delete(t.goalId);
+    if (!r.ok) return r;
+    this.yieldedSincePull.add(t.goalId);
+    // A turn the manager settled between this seat's polls is answered with that terminal's state;
+    // only `succeeded` is a yield that landed.
+    if ((r.data as { state?: unknown } | undefined)?.state !== "succeeded") {
+      this.settleTurn(t);
+      return { ok: false, error: settledTurnError(t.goalId, t.deadlineAt) };
+    }
+    this.activeTurns.delete(t.goalId);
+    // A poll that ran while this yield was in flight saw the turn gone and took it for the run's
+    // settlement; the manager's answer says this yield settled it.
+    this.settledTurns.delete(t.goalId);
     return r;
+  }
+
+  /** Drop an active turn the run settled without this seat's yield, remembering its deadline. */
+  private settleTurn(t: ActiveTurn): void {
+    this.activeTurns.delete(t.goalId);
+    this.settledTurns.set(t.goalId, t.deadlineAt);
+    if (this.settledTurns.size > MAX_SETTLED_TURNS) this.settledTurns.delete(this.settledTurns.keys().next().value!);
   }
 
   /** Ask the manager to purge the space's retained chat backlog (its `purge` op). Cleanup only —
