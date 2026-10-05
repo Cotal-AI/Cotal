@@ -1,5 +1,17 @@
 # @cotal-ai/core
 
+## 0.66.0
+
+### Minor Changes
+
+- 658c1b8: Breaking: the `ai.cotal.ep.lifecycle-blocked` refusal detail now reports only the state the refusing site read. `headState` is optional and set only where the lifecycle head was read; a new `gateState` (`frozen` or `retired`) is set where the issuance gate was read. A gate frozen by a takeover, a registration or another retirement used to report `headState: "retiring"` over an active head or a service instance with no head, and a retired gate reported `headState: "retired"` with no head. `blockedOp` is the gate's own op kind instead of defaulting to `registration`, and `registerServiceInstance` refuses a frozen gate observed without a valid op (a string `opId` and one of the four op kinds) as `internal`. The manager's reserved-name refusal no longer claims a head state. A client that read `headState` from a gate refusal must read `gateState`.
+
+### Patch Changes
+
+- a07f732: The docs now state the first process epoch. SPEC §13.7 and `docs/embedding.md` say that the first registration of an instance commits epoch 0, that epoch 0 is open and serving like any later epoch, and that each later start of the same instance commits the previous epoch plus one, so a consumer or sweeper never treats 0 as absent or not ready. `docs/embedding.md` also states that `awaitHostFence` takes any non-negative safe integer epoch, 0 included, and refuses any other value with `bad-request`. No behavior changes.
+- be53e2d: `parseIssuanceGate` and `parseEndpointGate` now validate a gate's op intent through one shared grammar. Each parser used to carry its own copy of the SPEC 13.1 op rules, and the endpoint copy wrote the op kinds and gate states as inline lists, so a change to the kind set reached only the agent gate and the two families could disagree with nothing failing. Both parsers accept and refuse the same rows as before. The endpoint gate's refusals for a frozen or retired gate without its op, and for an open gate with one, now carry the same explanation as the agent gate's.
+- af779f9: Core exports `registerServingInstance`, which runs `registerServiceInstance` and then authorizes the instance's serve grant and writes its `ready` status at the `processEpoch` and `registrationRevision` that registration committed, both fenced on the registration barrier's read of the issuance gate. It returns `{ registrationRevision, processEpoch, grant }`, and an optional `status` adds fields to the ready status. The auth plane's own boot registration, the manager's boot registration and `registerRemoteManagerAuthority` now call it instead of assembling the grant and status by hand, so the epoch these steps run at comes from one place. Their behavior is unchanged.
+
 ## 0.65.0
 
 ### Patch Changes
