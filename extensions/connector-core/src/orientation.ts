@@ -68,7 +68,7 @@ export interface Orientation {
   /** The tools available to you, grouped so the surface reads small: `core` is the everyday loop. */
   tools: { core: OrientationTool[]; more: OrientationTool[] };
   peers: { present: number; summary: string };
-  /** This endpoint's own presence-publish health. A stuck writer makes the peer snapshot last-known. */
+  /** Whether the roster can be trusted, from {@link presenceLiveness}. */
   presence: { live: boolean; detail?: string };
   status: PresenceStatus;
   attention: AttentionMode;
@@ -90,6 +90,31 @@ const CORE_TOOLS = new Set([
 
 const honestStatus = (status: PresenceStatus): string =>
   status === "working" ? "working · progress unknown" : status;
+
+/** Whether this observer's roster can be trusted, and why not. `cotal_roster` and this card both
+ *  print `detail`, so the two surfaces cannot explain one condition differently. A stuck writer
+ *  takes precedence over the view's own state (#1356); otherwise an `unpopulated` or `stale`
+ *  view (#1229) keeps the roster from being complete or current. */
+export function presenceLiveness(agent: MeshAgent): Orientation["presence"] {
+  const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
+  if (writeFailure?.stuck)
+    return {
+      live: false,
+      detail: `bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms, so the roster is last-known until a write succeeds or the broker store is repaired`,
+    };
+  const view = agent.presenceView();
+  if (view.state === "unpopulated")
+    return {
+      live: false,
+      detail: "the presence watch has not completed its initial snapshot, so the roster may be partial and a missing name is not an absence verdict",
+    };
+  if (view.state === "stale")
+    return {
+      live: false,
+      detail: `the presence watch has been silent since ${new Date(view.staleSince).toISOString()}, so the roster is last-known`,
+    };
+  return { live: true };
+}
 
 /** Assemble the card. `visibleTools` is the already-gated tool list the connector exposes (pass the
  *  result of `cotalToolSpecs(config)` mapped to name/title) — the orientation tool itself is dropped.
@@ -114,16 +139,6 @@ export function buildOrientation(
   const summary = peers.length
     ? shown.join(", ") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : "")
     : "no other peers present";
-  const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
-  // #1229: the roster's trust state, not just the writer's health, decides liveness. A stuck
-  // writer keeps precedence; otherwise an `unpopulated` or `stale` view carries the same shape.
-  const view = agent.presenceView();
-  const viewDetail =
-    view.state === "unpopulated"
-      ? "the presence watch has not completed its initial snapshot, so the peer list may be partial"
-      : view.state === "stale"
-        ? `the presence view has been silent since ${new Date(view.staleSince).toISOString()}, so the peer list is last-known`
-        : undefined;
 
   return {
     v: 1,
@@ -141,14 +156,7 @@ export function buildOrientation(
     capabilities: config.capabilities ?? [],
     tools: { core, more },
     peers: { present: peers.length, summary },
-    presence: writeFailure?.stuck
-      ? {
-          live: false,
-          detail: `bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms`,
-        }
-      : viewDetail
-        ? { live: false, detail: viewDetail }
-        : { live: true },
+    presence: presenceLiveness(agent),
     status: agent.status,
     attention: agent.attention,
     unread: { total: agent.inboxCount() },
