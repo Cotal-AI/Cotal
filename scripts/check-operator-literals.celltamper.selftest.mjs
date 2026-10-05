@@ -506,6 +506,15 @@ const CASES = [
     replace: "hostTokenConfiguration(runtimeHostname, [], ['a-sufficiently-long-token'])",
   },
   {
+    cell: "loopback-machine-host",
+    reader: "findings on a configured localhost token",
+    // The cell asserts that a runtime name of `localhost` yields no token. `configured` is what stops
+    // that zero from passing vacuously: the same text must still match once `localhost` is a
+    // configured token. Take the name out of the text and a live reader must match nothing.
+    find: "const loopbackText = 'open http://localhost:3000 now';",
+    replace: "const loopbackText = 'open http://PLAIN:3000 now';",
+  },
+  {
     cell: "host-token-ceiling",
     reader: "hostTokenCeilingFailures on an over-ceiling entry set",
     // The guard must reject a token matching more files than the ceiling allows. `errors` counts
@@ -877,6 +886,7 @@ const INLINE_CELLS = [
   { name: "ipv6-embedded-ipv4", secondaryField: "planted" },
   { name: "workflow-host-exclusion", secondaryField: "planted" },
   { name: "short-host-token", secondaryField: "configured_errors" },
+  { name: "loopback-machine-host", secondaryField: "configured" },
   { name: "host-token-ceiling", secondaryField: "errors" },
   { name: "binary-skip", secondaryField: "binary_skipped" },
   { name: "production-main-wiring", secondaryField: "skip_rows" },

@@ -82,6 +82,14 @@
       "cell": "short-host-token: destroying the planted subject drives this cell's configured_errors to 0, so its hostTokenLengthFailures on a configured token still discriminates"
     },
     {
+      "name": "the loopback-machine-host cell reports the configured control as matched regardless of the text scanned",
+      "file": "scripts/check-operator-literals.mjs",
+      "find": "      const configured = hostNames(loopbackText, hostTokenConfiguration('localhost', [], ['localhost']).hostTokens);",
+      "replace": "      const configured = 1;",
+      "expectRed": "destroying the planted subject drives this cell's configured to 0, so its findings on a configured localhost token still discriminates",
+      "cell": "loopback-machine-host: destroying the planted subject drives this cell's configured to 0, so its findings on a configured localhost token still discriminates"
+    },
+    {
       "name": "the host-token-ceiling cell reports a ceiling rejection regardless of how many files match",
       "file": "scripts/check-operator-literals.mjs",
       "find": "      const failures = hostTokenCeilingFailures(entries, [\n        { token: SELFTEST_HOST, source: 'repository-variable' },\n      ]);",
