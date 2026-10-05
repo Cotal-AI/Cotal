@@ -230,7 +230,7 @@ export interface AuthAuthorityPlane {
    *  `svc.manager` record is current, and its gate. It probes, freezes and writes nothing. */
   observeManagerInstance: (instanceId: string) => Promise<{ registered: boolean; gate: EpGateState | null }>;
   /** Register one instance of the platform host's endpoint through the §13.7 ceremony this plane
-   *  runs for `auth`, and return the process epoch its gate holds after it (SPEC 13.16). */
+   *  runs for `auth`, and return the process epoch that registration committed (SPEC 13.16). */
   registerHostInstance: (host: NonNullable<PlatformControlInput["host"]>, instanceId: string) => Promise<number>;
   /** The issuance gate of one instance of `endpoint`. It probes, freezes and writes nothing. */
   observeEndpointGate: (endpoint: string, instanceId: string) => Promise<EpGateState | null>;
@@ -284,7 +284,8 @@ function contractArtifactReader(values: unknown[]): (digest: string) => unknown 
  *  registration that advertises them. The issuance gate is provisioned open once, on first sight
  *  (§13.1); on a restart it already exists and `registerServiceInstance` freezes and re-registers
  *  it, which advances the process epoch and fences the predecessor. A first registration stays at
- *  epoch 0. */
+ *  epoch 0. It returns the epoch this registration committed, and refuses once a later registration
+ *  of the same instance has superseded it. */
 async function registerSelfAuthorizedInstance(nc: NatsConnection, args: {
   space: string;
   endpoint: string;
@@ -302,13 +303,16 @@ async function registerSelfAuthorizedInstance(nc: NatsConnection, args: {
     await provisionEndpointGateOpen(authKv, { endpoint, instanceId, principal: args.principal });
   const barrier = endpointRegistrationBarrier(authKv, space, { endpoint, instanceId, opId: mintLifecycleUid() });
   const spec = { endpoint, owner: DEV_OWNER, clusterDigests: [args.clusterDigest], protocol: { v: 1 as const } };
-  const { registrationRevision } = await registerServiceInstance(recordsKv, {
+  const { registrationRevision, processEpoch } = await registerServiceInstance(recordsKv, {
     space, spec, instanceId, registrant: { owner: DEV_OWNER }, authority: selfNameAuthority(endpoint), barrier,
     readClusterArtifact: contractArtifactReader(args.artifacts),
   });
+  // A second start of the same instance can complete between this reopen and the return. Its epoch
+  // is not this start's to claim, and this start's epoch is already fenced.
   const observed = await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe();
-  if (observed === null) throw new Error(`the issuance gate for ${endpoint}/${instanceId} vanished after registration`);
-  return { authKv, recordsKv, registrationRevision, processEpoch: observed.processEpoch };
+  if (observed?.state !== "open" || observed.processEpoch !== processEpoch || observed.registrationRevision !== registrationRevision)
+    throw new EpEnvelopeError("conflict", `a later registration of ${endpoint}/${instanceId} superseded this one (process epoch ${processEpoch}) before it returned; this start is fenced (SPEC 13.1)`);
+  return { authKv, recordsKv, registrationRevision, processEpoch };
 }
 
 /**
@@ -1604,9 +1608,12 @@ export interface AuthServiceHandle extends HostedServiceHandle {
    *  `platformControl`. It refuses every state in which a retirement at that uid has begun. */
   activateManagedLifecycle?: AuthAuthorityPlane["activateManagedLifecycle"];
   /** The host incarnation a delegated user intent pins as its executor (SPEC 13.16). Present only
-   *  with `platformControl.host`. It registers `instanceId` of the host endpoint through the §13.7
-   *  ceremony the auth plane runs for itself, so a host that calls it at every start with its
-   *  persisted instance id fences its predecessor and advances the process epoch. */
+   *  with `platformControl.host`. It registers `instanceId` of the host endpoint in this context's
+   *  account through the §13.7 ceremony the auth plane runs for itself. The host calls it at every
+   *  start with its persisted instance id, before it admits or recovers any flight, so each start
+   *  fences its predecessor and advances the process epoch. It returns the epoch this registration
+   *  committed, and refuses with `conflict` when a later start of the same instance superseded it
+   *  before it returned. */
   registerHostIncarnation?(instanceId: string): Promise<DelegatedUserIntentIncarnation>;
   /** A sweeper's read of an executor's issuance gate on the host endpoint (SPEC 13.16). Present
    *  only with `platformControl.host`. Null is an absent gate. It reads over the context's own

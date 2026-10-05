@@ -470,8 +470,11 @@ the auth plane's, because the two can restart independently. `platformControl.ho
 process's reverse-DNS endpoint, the closure digest of its §13.7 cluster and every contract artifact
 the closure needs, and the auth plane self-authorizes that one name.
 `registerHostIncarnation(instanceId)` publishes the artifacts, registers that instance through the
-ceremony the plane runs for itself, and returns `{ instanceId, processEpoch }`. The host calls it at every start with its persisted instance
-id, so a restart fences its predecessor and advances the epoch. A sweeper reads an executor's gate
+ceremony the plane runs for itself, and returns `{ instanceId, processEpoch }` with the epoch that
+registration committed. The host calls it at every start with its persisted instance id, before it
+admits or recovers any flight, so a restart fences its predecessor and advances the epoch. A start
+that a later start of the same instance superseded before it returned is refused with `conflict`.
+A sweeper reads an executor's gate
 with `observeHostGate(instanceId)`, which answers null for an absent gate. The
 host's launch writer first activates the agent's lifecycle at the pinned UID through the handle's
 `activateManagedLifecycle`, before any ledger row or durable, and its compensation runs the same

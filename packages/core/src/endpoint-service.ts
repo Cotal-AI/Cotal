@@ -356,8 +356,10 @@ function serializeGovernanceCommands(commands: Map<string, Set<string>>): Record
 /** Register (or re-register) a service instance: authenticated-registrant binding, name
  *  authority, then the spec-key CAS. The returned `registrationRevision` is the spec key's
  *  store revision (§13.7) — a re-registration advances it, which is exactly what invalidates a
- *  frozen scatter slot (§13.5 `churn`). A concurrent registration race is a loud `conflict`
- *  (§13.8: re-read and re-decide).
+ *  frozen scatter slot (§13.5 `churn`). The returned `processEpoch` is the one its completing
+ *  reopen committed, never a later read of the gate, which a successor registration may already
+ *  have advanced. A concurrent registration race is a loud `conflict` (§13.8: re-read and
+ *  re-decide).
  *
  *  `registrant` is the BROKER-AUTHENTICATED caller of the registration request (its subject
  *  principal, §13.9 — never a payload claim): the descriptor owner must BE that caller, so a
@@ -398,7 +400,7 @@ export async function registerServiceInstance(
      *  for. See the orphan predicate at the slot-take below. */
     observeHolderGeneration?: (holderInstanceId: string) => Promise<number> | number;
   },
-): Promise<{ registrationRevision: number }> {
+): Promise<{ registrationRevision: number; processEpoch: number }> {
   if (typeof args.readClusterArtifact !== "function")
     throw new EpEnvelopeError("failed-precondition", "registerServiceInstance requires a content-store reader (readClusterArtifact); governed-continuity is not an optional seam (SPEC 13.7)");
   spacePrefix(args.space); // up-front boundary guard on the space arg (mirrors authorizeServeGrant): usable as a subject token, throws on an absent/non-string space at an untyped caller. This is NOT the cross-space authority fence - that is the observed-gate `(space, endpoint, instanceId)` identity check below (trusted-context equality against the per-space KV bucket).
@@ -472,7 +474,7 @@ export async function registerServiceInstance(
         try { await args.barrier.progress?.clear(stored.revision); }
         catch { /* the gate is open; stale progress is freeze-bound and safe to retain */ }
       }
-      return { registrationRevision: finished.registrationRevision };
+      return { registrationRevision: finished.registrationRevision, processEpoch: finished.processEpoch };
     }
   }
 
@@ -681,8 +683,9 @@ export async function registerServiceInstance(
   // outlived its own deregistration would still hold a current-epoch authority. TRUE ABSENCE (never
   // registered) is the only case that keeps the provisioned epoch.
   const isReRegistration = current !== undefined && current !== null;
+  const processEpoch = isReRegistration ? obs.processEpoch + 1 : obs.processEpoch;
   try {
-    if (!(await args.barrier.reopen(token, successorAt(newRev, isReRegistration ? obs.processEpoch + 1 : obs.processEpoch))))
+    if (!(await args.barrier.reopen(token, successorAt(newRev, processEpoch))))
       throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
@@ -693,7 +696,7 @@ export async function registerServiceInstance(
     try { await args.barrier.progress.clear(progressRevision); }
     catch { /* gate is already open; a stale freeze-bound cursor is safe to retain */ }
   }
-  return { registrationRevision: newRev };
+  return { registrationRevision: newRev, processEpoch };
 }
 
 /** Classify a lost spec-write ack. Sole writer under the freeze: proposed bytes at a revision
