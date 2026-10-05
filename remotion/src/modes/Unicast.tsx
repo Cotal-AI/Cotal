@@ -2,7 +2,7 @@
 // dave busy); bob is busy, so the message parks durably in his inbox and
 // delivers the moment he frees up. Unicast is point-to-point, so there is no
 // shared hub at center: the inbox lives on the direct route to bob, its owner.
-// 210 frames @ 30fps = 7s seamless loop.
+// Loops seamlessly at the length Root.tsx registers.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";

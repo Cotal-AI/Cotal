@@ -1,6 +1,6 @@
 // Anycast: alice addresses the role "reviewer". The same cast is present; bob
 // and dave are busy, carol is free, so carol claims the work. Exactly one
-// instance picks it up. 180 frames @ 30fps = 6s seamless loop.
+// instance picks it up. Loops seamlessly at the length Root.tsx registers.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";

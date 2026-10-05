@@ -1,5 +1,5 @@
 // Multicast: alice posts to #general; every subscriber receives it.
-// 150 frames @ 30fps = 5s seamless loop.
+// Loops seamlessly at the length Root.tsx registers.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";
