@@ -1018,8 +1018,8 @@ export async function runJcodeHost(): Promise<void> {
     const parts: string[] = [];
     let ids: string[] = [];
     let turnIds: string[] = [];
-    // Run turns ride the same composed injection; their ids commit as surfaced only after the
-    // turn verifiably ran (two-phase — a failed or severed turn re-surfaces them, never a lie).
+    // Run turns ride the same composed injection; their ids commit as surfaced once the Harness
+    // verifiably accepted it (two-phase — an unaccepted send re-surfaces them, never a lie).
     const turnPeek = agent.peekPendingTurns();
     if (pendingKickoff !== undefined) parts.push(pendingKickoff);
     else {
@@ -1084,6 +1084,9 @@ export async function runJcodeHost(): Promise<void> {
       // An object is not a thenable, so it crosses both async boundaries as a value and the turn is
       // awaited below, outside the gate.
       const { dispatched: runTurn } = await withExclusiveDispatch(async () => {
+        // Read before this send exists: while a lapsed send is still open, an acknowledgement may
+        // be that send's, and it cannot prove the Harness took these run turns.
+        const attributable = unsettledLapsedDispatches === 0 && !acceptanceSuspectUntilBridgeReplaced;
         const dispatched = turnClient!.run(sessionId!, parts.join("\n\n"), { autoApprove: true });
         // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
         // raced below; the handle returned from this gate is what actually reports it.
@@ -1104,6 +1107,9 @@ export async function runJcodeHost(): Promise<void> {
         } finally {
           turnClient!.off("message_accepted", noteAccepted);
         }
+        // Surfaced at acceptance, not at turn end: the model's own cotal_yield runs inside this
+        // turn, and yieldTurn refuses a turn that is not surfaced yet.
+        if (acknowledgedHere && attributable) agent.commitSurfacedTurns(turnIds);
         // LEAVING THE GATE UNACKNOWLEDGED IS A DEBT, NOT A CLEAN EXIT. This send is still open and
         // can still emit its acceptance after the next dispatch has begun, which is precisely how a
         // reviewer produced an acknowledgement for a send that never received one. Releasing the
@@ -1124,9 +1130,6 @@ export async function runJcodeHost(): Promise<void> {
       // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
       if (reconnecting || client !== turnClient)
         throw new Error("Jcode Harness connection closed during the turn; leaving the inbox batch unacknowledged");
-      // The turn ran to completion with the injection in its prompt — the run turns are surfaced.
-      // Committed before the finally's idle write, whose boundary auto-yields them `done`.
-      if (turnIds.length) agent.commitSurfacedTurns(turnIds);
       // A directed DM can be accepted into Jcode's persistent soft-interrupt queue while this run is
       // active. Wait for that request to settle before reading the exact containing-turn ledger.
       await steerSettled;
