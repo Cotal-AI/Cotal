@@ -1102,13 +1102,15 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
   }
 }
 
-/** The address the dashboard recorded in `web.session` once `listen()` succeeded, or `undefined`
- * while no whole record is readable. The dashboard truncates the file before it writes the record,
- * so a read can find it empty while the dashboard starts. */
-function webBoundAddress(path: string): { host: string; port: number } | undefined {
+/** The address the dashboard recorded in `web.session` once `listen()` succeeded, with any readiness
+ * nonce recorded beside it, or `undefined` while no whole record is readable. The dashboard truncates
+ * the file before it writes the record, so a read can find it empty while the dashboard starts. A
+ * record without a nonce still names the address, so it is probed and its answer graded. */
+function webBoundAddress(path: string): { host: string; port: number; readiness?: string } | undefined {
   try {
-    const { host, port } = JSON.parse(readFileSync(path, "utf8")) as { host?: unknown; port?: unknown };
-    return typeof host === "string" && typeof port === "number" ? { host, port } : undefined;
+    const { host, port, readiness } = JSON.parse(readFileSync(path, "utf8")) as { host?: unknown; port?: unknown; readiness?: unknown };
+    if (typeof host !== "string" || typeof port !== "number") return undefined;
+    return typeof readiness === "string" ? { host, port, readiness } : { host, port };
   } catch { return undefined; }
 }
 
@@ -1133,7 +1135,12 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   if (!bound) return { name: "web", verdict: "refused", facts: [...facts, "probe refused (no bound address recorded)"] };
   try {
     const host = bound.host.includes(":") ? `[${bound.host}]` : bound.host;
-    const response = await fetch(`http://${host}:${bound.port}/api/meta`, { signal: AbortSignal.timeout(500) });
+    // The dashboard refuses an anonymous `/api/meta`; the readiness nonce is the one credential its
+    // gate accepts there, so without it a live dashboard could only ever read as a mismatch.
+    const response = await fetch(`http://${host}:${bound.port}/api/meta`, {
+      signal: AbortSignal.timeout(500),
+      headers: bound.readiness === undefined ? {} : { "x-cotal-readiness": bound.readiness },
+    });
     const meta = await response.json() as { pid?: unknown };
     if (response.ok && meta.pid === pid) return { name: "web", verdict: "serving", facts: [...facts, `host ${bound.host}`, `port ${bound.port}`, "http reachable"] };
     return { name: "web", verdict: "not-serving", facts: [...facts, `host ${bound.host}`, `port ${bound.port}`, "http identity mismatch"] };
