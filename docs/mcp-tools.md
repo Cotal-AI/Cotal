@@ -65,7 +65,7 @@ Read the authoritative Cotal docs bundled with this installed version: the wire 
 
 - **Side-effect:** read-only.
 - **Available:** always.
-- Serves the version-exact docs bundled with this release (offline); `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.
+- Serves the version-exact docs bundled with this release (offline). The connector builds the docs and their search index when the tool is first called. `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
