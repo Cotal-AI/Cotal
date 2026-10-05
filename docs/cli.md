@@ -953,15 +953,17 @@ COTAL_MANAGED_HANDOFF_FILE=/run/seat/handoff.json \
 The `cotal` entry reads the file, deletes it and drops the variable before it parses flags, prints
 help or loads extensions, so every outcome leaves no file. The variable is read under any letter
 case; spellings that name different files are refused after every one of them was deleted. The
-spawn then refuses a malformed handoff, or one whose
-space, owner, actor or lifecycle UID differs from `--space`, `--expect-owner`, `--name` and
-`--expect-lifecycle-uid`, before any broker connection or exchange request. Every refusal on this
-path names the field and never a value from the handoff. The registration's server, exchange and
-enforcement checks, the policy refresh, the broker preflight and the agent auth preflight quote the
-server, the exchange URL or the actor in their own diagnostics, so for a handoff each prints one
-fixed sentence that names the field and the phase instead. The event-plane policy refusals name the
-handoff's space field. An actor outside `[A-Za-z0-9_]` and a space that cannot name local state,
-such as `..`, are refused as malformed before any plane. A handoff conflicts with
+spawn then refuses a malformed handoff, or one whose space, owner, actor or lifecycle UID differs
+from `--space`, `--expect-owner`, `--name` and `--expect-lifecycle-uid`, before any broker
+connection or exchange request. Every refusal on this path names the field and never a value from
+the handoff. The registration's server, exchange and enforcement checks, the local state this
+machine keeps for the space (its mesh record, user-auth state and agent secret files), target
+resolution, the policy refresh, the broker preflight and the agent auth preflight quote the space,
+the server, the exchange URL, the actor or a path named for one of them in their own diagnostics and
+in the filesystem errors under them. For a handoff each prints one fixed sentence that names the
+field and the phase instead, whether its check fails or an error is thrown. The event-plane policy
+refusals name the handoff's space field. An actor outside `[A-Za-z0-9_]` and a space that cannot
+name local state, such as `..`, are refused as malformed before any plane. A handoff conflicts with
 the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
 there it runs the enrollment consumer above without redeeming anything. See
 [Delegated seats](embedding.md#delegated-seats-outside-the-managers-filesystem).

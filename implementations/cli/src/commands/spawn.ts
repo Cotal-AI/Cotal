@@ -60,6 +60,7 @@ import {
   preflightOrThrow,
   provenance,
   resolveMeshTarget,
+  resolveTargetOrThrow,
   serverFlag,
   spaceAccountPath,
   spaceFlag,
@@ -68,6 +69,7 @@ import {
   workspaceSecretStore,
   refreshRegistrationPolicy,
   resolveSeatControlTarget,
+  type Check,
   type MeshTarget,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -187,12 +189,14 @@ export function checkEnrollmentBundle(raw: unknown, actor: string): { bundle: En
 }
 
 /** What a managed handoff's bootstrap refuses with at each phase that runs a check shared with the
- *  enrollment path. Those checks' diagnostics quote the space, the server, the exchange URL or the
- *  actor, and a handoff refusal never echoes the document, so each sentence names only the field
- *  and the phase. */
+ *  enrollment path. Those checks' diagnostics, and the filesystem errors under them, quote the
+ *  space, the server, the exchange URL, the actor or a path named for one of them, and a handoff
+ *  refusal never echoes the document, so each sentence names only the field and the phase. */
 const HANDOFF_REFUSALS = {
   space: "the managed handoff's space is malformed",
   bundle: "the managed handoff's mesh fields failed the user-auth bundle check",
+  registration: "the managed handoff's space failed the local registration",
+  target: "the managed handoff's space failed target resolution",
   server: "the managed handoff's server is not a broker URL this machine may dial",
   exchange: "the managed handoff's exchangeUrl failed the exchange check",
   enforcement: "the managed handoff's server failed the enforcement check",
@@ -217,20 +221,25 @@ export function handoffEnrollmentBundle(h: ManagedLifecycleHandoff): { bundle: E
   }
 }
 
-/** With `refusals`, a failed check refuses with its phase's sentence instead of its diagnostic. */
+/** With `refusals`, a step that fails its check or throws refuses with its phase's sentence instead
+ *  of its diagnostic. */
 async function registerEnrollmentMesh(stock: UserBundle, root: string, refusals?: typeof HANDOFF_REFUSALS): Promise<void> {
-  const refuse = (phase: "server" | "exchange" | "enforcement", check: { message: string }) =>
-    new Error(refusals?.[phase] ?? check.message.replace(/^✗\s*/, ""));
-  const serverCheck = checkServer(stock.server);
-  if (!serverCheck.ok) throw refuse("server", serverCheck);
+  const step = async <T>(phase: "server" | "exchange" | "enforcement" | "registration", run: () => Check<T> | Promise<Check<T>>): Promise<T> => {
+    let check: Check<T>;
+    try {
+      check = await run();
+    } catch (e) {
+      throw refusals ? new Error(refusals[phase]) : e;
+    }
+    if (!check.ok) throw new Error(refusals?.[phase] ?? check.message.replace(/^✗\s*/, ""));
+    return check.value;
+  };
+  await step("server", () => checkServer(stock.server));
   const tlsRequired = stock.tlsRequired || tlsIntent(stock.server, false);
-  const dial = checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false });
-  if (!dial.ok) throw refuse("server", dial);
-  const exchange = await verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space));
-  if (!exchange.ok) throw refuse("exchange", exchange);
-  const enforcement = checkEnforcement("user", await probeEnforcement(stock.server), stock.server, stock.space, root);
-  if (!enforcement.ok) throw refuse("enforcement", enforcement);
-  persistRemoteUserEntry(stock.space, stock.server, root, stock, tlsRequired, Boolean(dial.value.residual));
+  const dial = await step("server", () => checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false }));
+  await step("exchange", () => verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space)));
+  await step("enforcement", async () => checkEnforcement("user", await probeEnforcement(stock.server), stock.server, stock.space, root));
+  await step("registration", () => ({ ok: true, value: persistRemoteUserEntry(stock.space, stock.server, root, stock, tlsRequired, Boolean(dial.residual)) }));
 }
 
 /** Completion for `cotal spawn` — `--space <TAB>` lists the running meshes, and the first positional
@@ -560,7 +569,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       }
       const { bundle, stock } = handoffEnrollmentBundle(handoff);
       redeemedEnrollment = { bundle, stock };
-      if (!findMesh(handoff.space)) await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."), HANDOFF_REFUSALS);
+      let registered: boolean;
+      try {
+        registered = findMesh(handoff.space) !== undefined;
+      } catch {
+        throw new Error(HANDOFF_REFUSALS.registration);
+      }
+      if (!registered) await registerEnrollmentMesh(stock, resolvePath(values.config!, ".."), HANDOFF_REFUSALS);
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
@@ -685,8 +700,19 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
 
   // Which mesh this spawn joins — creds + personas together, resolved from --server/--space, the
-  // selected `current` mesh, a local project, or the registry's only running mesh.
-  const target = await resolveTargetOrExit({ server: values.server, space: values.space });
+  // selected `current` mesh, a local project, or the registry's only running mesh. A handoff's
+  // resolution diagnostics quote its space, and only a remote user-auth record can host the
+  // lifecycle it carries, so any other record is refused before a later step reads it.
+  const target = handoffText === undefined
+    ? await resolveTargetOrExit({ server: values.server, space: values.space })
+    : await resolveTargetOrThrow({ server: values.server, space: values.space }).catch(() => {
+      console.error(c.red(`✗ ${HANDOFF_REFUSALS.target}`));
+      process.exit(1);
+    });
+  if (handoffText !== undefined && !(target.mode === "user" && target.userAuth?.remote)) {
+    console.error(c.red("✗ the managed handoff's space is registered here as a local mesh, so it cannot host a managed handoff"));
+    process.exit(1);
+  }
   let policy: typeof target.policy;
   try {
     policy = await refreshRegistrationPolicy(target);
@@ -883,10 +909,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const remoteProvisioningUrl = target.mode === "user" && target.userAuth?.remote
     ? target.userAuth.endpoints?.agentProvisioningUrl
     : undefined;
-  if (handoffText !== undefined && !(target.mode === "user" && target.userAuth?.remote)) {
-    console.error(c.red("✗ the managed handoff's space is registered here as a local mesh, so it cannot host a managed handoff"));
-    process.exit(1);
-  }
   if (target.mode === "user" && target.userAuth?.remote && !remoteProvisioningUrl && !enrollmentUrl && !redeemedEnrollment) {
     console.error(c.red(`✗ mesh "${target.space}" runs elsewhere and advertises no agent-provisioning endpoint, so agents cannot be provisioned from this machine`));
     console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), or run the agent there`));
@@ -919,7 +941,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       process.exit(1);
     }
     const remote = await provisionRemoteUserForeground(target, name, { body: enrolled, exchangeUrl: enrolled.authServiceUrl },
-      handoffText === undefined ? undefined : HANDOFF_REFUSALS.bearer);
+      handoffText === undefined ? undefined : HANDOFF_REFUSALS);
     userAuth = remote.userAuth;
     userCleanup = remote.cleanup;
     remoteUserAuth = true;
@@ -1208,22 +1230,30 @@ function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; materi
  *  Deliberately NOT reusing the local path's cleanup: nothing here created broker state locally, so
  *  teardown is the mesh's business (its lifecycle owns the row and the durables). The spawned
  *  agent's material is shredded on exit; the row is not revoked from here, because this machine
- *  holds no authority to revoke it. `bearerRefusal` replaces the whole failure sentence for a managed
- *  handoff, since it quotes the actor and the bearer preflight's diagnostic quotes the exchange URL. */
+ *  holds no authority to revoke it. For a managed handoff, `refusals` replaces the sentences of the
+ *  local-state, material and bearer steps, which quote the space, the actor or the exchange URL. */
 async function provisionRemoteUserForeground(
   target: MeshTarget,
   name: string,
   source: { provisioningUrl: string } | { body: unknown; exchangeUrl: string },
-  bearerRefusal?: string,
+  refusals?: typeof HANDOFF_REFUSALS,
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; material: RemoteAgentMaterial }> {
   const { space } = target;
-  const dir = userAuthStateDir(target.root, space);
   const store = workspaceSecretStore(target.root);
   const composition = { injected: false as const, root: target.root };
   const fail = (msg: string): never => {
     console.error(c.red(`✗ ${msg}`));
     process.exit(1);
   };
+  // Resolved first, as by every consumer of the space's local state: each resolution migrates a
+  // pre-hex or root-scoped layout, or refuses an ambiguous one, before any request or material.
+  let paths: ReturnType<typeof agentSecretFilePaths>;
+  try {
+    userAuthStateDir(target.root, space);
+    paths = agentSecretFilePaths(target.root, space, name);
+  } catch (e) {
+    return fail(refusals?.registration ?? (e as Error).message);
+  }
   let provider: ReturnType<typeof resolveAuthProvider>;
   try {
     provider = resolveAuthProvider();
@@ -1250,9 +1280,9 @@ async function provisionRemoteUserForeground(
     }
   }
   const checked = checkRemoteAgentMaterial(body, name);
-  if (!checked.ok) return fail(checked.message);
+  if (!checked.ok) return fail(refusals?.bundle ?? checked.message);
   const material = checked.material;
-  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, space, name);
+  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = paths;
   try {
     // Land both secrets 0600 through the store, exactly as the local path does — the bearer
     // re-exec and the launch handoff read FILES.
@@ -1304,7 +1334,7 @@ async function provisionRemoteUserForeground(
       // escaped error would bypass the refusal below.
       cause = shred as Error;
     }
-    return fail(bearerRefusal ?? `agent auth preflight failed for "${name}": ${cause.message}`);
+    return fail(refusals?.bearer ?? `agent auth preflight failed for "${name}": ${cause.message}`);
   }
 }
 
