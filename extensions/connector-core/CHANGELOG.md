@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.65.0
+
+### Patch Changes
+
+- b09131c: AG-UI frame metadata (`CotalMeta`) now declares a `usage` carrier for a run's model usage: input and output token counts, the cached and reasoning parts of those totals, and the cost in US dollars. It rides the event that closes the run (`RUN_FINISHED` or `RUN_ERROR`), and a count the harness does not report is left out rather than written as zero. Before, a connector that read these numbers from its harness had no declared key to publish them under, so it dropped them, and a connector that invented its own key would have disagreed with the next one about the name of the same quantity. No connector fills the carrier yet; each adopts it in its own change.
+- 7782419: `cotal_yield` on a turn the run already settled now refuses with the turn id and its deadline. Before, a seat that yielded after its deadline was told "no turn is active" or that it held no such turn. One that yielded between the manager settling the turn and the seat's next poll was told the yield landed, although the run had recorded L4003.
+
 ## 0.64.0
 
 ## 0.63.0

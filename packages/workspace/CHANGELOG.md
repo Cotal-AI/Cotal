@@ -1,5 +1,15 @@
 # @cotal-ai/workspace
 
+## 0.65.0
+
+### Patch Changes
+
+- Updated dependencies [ba5468d]
+- Updated dependencies [451ffee]
+- Updated dependencies [f01aa7c]
+- Updated dependencies [2cef9e6]
+  - @cotal-ai/core@0.65.0
+
 ## 0.64.0
 
 ### Patch Changes
