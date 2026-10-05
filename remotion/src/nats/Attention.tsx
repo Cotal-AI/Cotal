@@ -83,7 +83,7 @@ export const NatsAttention: React.FC = () => {
   const outcome = fade(f, 2, 8) * (1 - fade(f, T.settle, BEAT - 1));
 
   return (
-    <Card frame={frame}>
+    <Card>
       <Wires paths={[CH_PATH, DM_PATH]} glow={[chatWakes, dmWakes]} />
 
       {MODES.map((m, i) => (

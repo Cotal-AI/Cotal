@@ -3,7 +3,7 @@
 // hairline strokes, rounded-square nodes, lowercase mono, restraint.
 
 import React from "react";
-import { AbsoluteFill, Easing, interpolate, useVideoConfig } from "remotion";
+import { AbsoluteFill, Easing, interpolate } from "remotion";
 import { fontFamily } from "../_shared";
 
 // Square-ish stage so three cards sit side by side in the README and wrap
@@ -62,7 +62,7 @@ export function fade(frame: number, from: number, to: number): number {
 
 // --- backdrop --------------------------------------------------------------------
 
-export const Card: React.FC<{ frame: number; children: React.ReactNode }> = ({
+export const Card: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   return (

@@ -95,7 +95,7 @@ export const NatsReplay: React.FC = () => {
   const offline = fade(frame, DAVE_OFF, DAVE_OFF + 8) * (1 - fade(frame, DAVE_BACK, DAVE_BACK + 8));
 
   return (
-    <Card frame={frame}>
+    <Card>
       <Wires paths={[PATH_BOB, PATH_DAVE]} glow={[bobFlash, daveFlash]} />
 
       {/* the durable stream: messages stay stored after anyone reads them */}

@@ -144,7 +144,7 @@ export const NatsIdentity: React.FC = () => {
   const glowOut = flashAt(frame, T.aDeliverEnd, T.aDeliverEnd + 8);
 
   return (
-    <Card frame={frame}>
+    <Card>
       <Wires paths={[PATH_A, PATH_C, PATH_OUT]} glow={[glowA, glowP, glowOut]} />
 
       <div
