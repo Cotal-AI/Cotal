@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { isAbsolute, join, normalize, dirname, basename } from "node:path";
 import type { Extension } from "@cotal-ai/core";
 import { spaceKey } from "./auth-paths.js";
-import { parsePid, probeLiveness } from "./pid.js";
+import { parsePid, probeLiveness, readPidfile } from "./pid.js";
 
 /** Context supplied to local process providers by workstation commands such as `down` and `status`. */
 export interface LocalProcessContext {
@@ -176,7 +176,8 @@ export function reclaimDeadPreUpgradeRecord(template: string, context: LocalProc
   const [, ...legacy] = localProcessPathCandidates(template, context);
   for (const path of legacy) {
     if (!existsByteExact(path)) continue;
-    const raw = readFileSync(path, "utf8").trim();
+    const raw = readPidfile(path);
+    if (raw === undefined) continue; // gone since the listing: its owner exited or a concurrent start reclaimed it
     if (raw === "") {
       rmSync(path, { force: true }); // empty husk: nothing is behind it, as the canonical claim treats it
       continue;
