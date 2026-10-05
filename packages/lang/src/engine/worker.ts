@@ -72,6 +72,12 @@ export interface WorkerRunRequest {
   readonly pins?: RunPins;
   /** A resume: the recorded entries, rebuilt into the run's journal inside the thread. */
   readonly entries?: readonly JournalEntry[];
+  /**
+   * The journal's result bound (`JournalInit.resultBytes`, L5006), given to the journal the thread
+   * builds. Only valid on the bridged route: it is the durable store's limit, and only that route
+   * has a store.
+   */
+  readonly resultBytes?: number;
   readonly file?: string;
   /**
    * The caller's loose limits and seed, forwarded so the thread's `bindPins` performs the same
@@ -116,6 +122,8 @@ export interface WorkerRunFailed {
    */
   readonly kind?: string;
   readonly detail?: Readonly<Record<string, unknown>>;
+  /** `EffectResultTooLarge`'s fields (L5006), carried so a host can rebuild the class whole. */
+  readonly tooLarge?: { readonly stepKey: string; readonly bytes: number; readonly bound: number };
 }
 
 export type WorkerRunResult = WorkerRunOk | WorkerRunFailed;
@@ -201,6 +209,8 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
     throw new Error("cutAt is only supported by the inspection route");
   if (request.handler === "inspection" && request.pins === undefined)
     throw new Error("inspection requires the recorded run pins");
+  if (request.resultBytes !== undefined && request.handler !== "bridged")
+    throw new Error("resultBytes is only supported by the bridged route");
   // ONE ROUTE, DECIDED, before a thread exists to be wrong in. A bridged request with no seam has
   // nowhere to run its effects; a module-named handler beside a live seam is two answers to where
   // the effects live, and picking one silently would be this module deciding the caller's
