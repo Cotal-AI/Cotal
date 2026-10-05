@@ -15,9 +15,7 @@
  * `now()` is async, and the journal's durable half (`JournalStore.append`) is a Promise the
  * journal awaits before any effect fires, so both survive a port hop with the awaits lining up
  * exactly as they line up over a PubAck. What is genuinely synchronous is `now()` and the stop
- * flag, and both go over shared memory. An earlier form of this header ruled the bridge out by
- * claiming "every journal.* call in the effect path" is synchronous; the durable append never was,
- * and the in-memory reads that are never leave the thread.
+ * flag, and both go over shared memory.
  *
  * CANCELLATION IS THE ONE EXCEPTION, and it is why there is a SharedArrayBuffer here. `shouldStop`
  * is read synchronously, between effects, so it cannot be a message either. The host writes a reason
