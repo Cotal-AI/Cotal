@@ -1,5 +1,18 @@
 # @cotal-ai/cli
 
+## 0.66.0
+
+### Patch Changes
+
+- 84cead6: A foreground `cotal spawn` on an open mesh now publishes its AG-UI events. The launch passed the seat no id, so its endpoint made up a random actor for each process and the event emitter refused to start with `events are not available for a session with a self-minted identity`. The seat's Graph stayed empty although the spawn had succeeded. The foreground launcher now allocates an id on an open mesh, as the manager already does for detached seats, so this works for every connector with an event plane. The Jcode connector used to work around this by itself, using the seat name as its actor on an open mesh. That workaround is gone, and an open-mesh Jcode seat now gets the allocated id like every other seat.
+- 3808751: `cotal status --components` now probes the web dashboard at the address the dashboard bound. The dashboard records its socket's host and port in `web.session` once it is listening, and status reads that record. Before, status parsed `--host` and `--port` out of the dashboard's command line and fell back to `127.0.0.1:7799`, so a port spelled any way other than plain digits (`--port 0x1f90` binds 8080) was probed at 7799, and `--port 0` was refused as an invalid port while the dashboard listened on an ephemeral one. A live dashboard pid with no readable recorded address, including a dashboard still writing its record and one started by an earlier build, is now `refused` with `no bound address recorded`.
+- Updated dependencies [a07f732]
+- Updated dependencies [be53e2d]
+- Updated dependencies [658c1b8]
+- Updated dependencies [af779f9]
+  - @cotal-ai/core@0.66.0
+  - @cotal-ai/workspace@0.66.0
+
 ## 0.65.0
 
 ### Patch Changes

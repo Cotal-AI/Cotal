@@ -1,5 +1,22 @@
 # @cotal-ai/manager
 
+## 0.66.0
+
+### Minor Changes
+
+- 658c1b8: Breaking: the `ai.cotal.ep.lifecycle-blocked` refusal detail now reports only the state the refusing site read. `headState` is optional and set only where the lifecycle head was read; a new `gateState` (`frozen` or `retired`) is set where the issuance gate was read. A gate frozen by a takeover, a registration or another retirement used to report `headState: "retiring"` over an active head or a service instance with no head, and a retired gate reported `headState: "retired"` with no head. `blockedOp` is the gate's own op kind instead of defaulting to `registration`, and `registerServiceInstance` refuses a frozen gate observed without a valid op (a string `opId` and one of the four op kinds) as `internal`. The manager's reserved-name refusal no longer claims a head state. A client that read `headState` from a gate refusal must read `gateState`.
+
+### Patch Changes
+
+- af779f9: Core exports `registerServingInstance`, which runs `registerServiceInstance` and then authorizes the instance's serve grant and writes its `ready` status at the `processEpoch` and `registrationRevision` that registration committed, both fenced on the registration barrier's read of the issuance gate. It returns `{ registrationRevision, processEpoch, grant }`, and an optional `status` adds fields to the ready status. The auth plane's own boot registration, the manager's boot registration and `registerRemoteManagerAuthority` now call it instead of assembling the grant and status by hand, so the epoch these steps run at comes from one place. Their behavior is unchanged.
+- Updated dependencies [a07f732]
+- Updated dependencies [be53e2d]
+- Updated dependencies [658c1b8]
+- Updated dependencies [af779f9]
+  - @cotal-ai/core@0.66.0
+  - @cotal-ai/workspace@0.66.0
+  - @cotal-ai/seat@0.66.0
+
 ## 0.65.0
 
 ### Patch Changes
