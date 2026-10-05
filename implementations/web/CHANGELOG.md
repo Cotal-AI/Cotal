@@ -1,5 +1,14 @@
 # @cotal-ai/web
 
+## 0.67.0
+
+### Patch Changes
+
+- cefb3c7: `cotal web` on the default host and port now prints its launch link a second time at
+  `http://127.0.0.1:7799/`, carrying the same single-use token, so a browser or system resolver with
+  no answer for `cotal.localhost` (Safari, WSL2) still has a printed way in.
+- 35504fe: The dashboard's ONLINE roster now groups live peers by the machine each one reports as its host (`card.meta.host`), with a count per machine, so an operator can see where seats run and how they are spread across machines without opening each agent. A peer that reports no host, such as a manager, is listed last under "host not reported". Seats do not report which manager runs them, so there is no manager grouping yet.
+
 ## 0.66.1
 
 ## 0.66.0

@@ -1,5 +1,11 @@
 # @cotal-ai/connector-opencode
 
+## 0.67.0
+
+### Patch Changes
+
+- 7f909a1: Remove sentences from the AG-UI holder and the Claude Code and OpenCode AG-UI mapper comments that described what earlier revisions of those comments got wrong. The comments now state only the current contract: the `boundPath` gate keeps start-once, the chain serializes hook events, the refusals live in `subject-frontier.ts` and `event-wal.ts`, the bracket interleave is open, OpenCode publishes `RUN_ERROR` through `AguiEmitterHolder.closeRun`, and the Claude Code mapper keeps its measured predicate counts. No behavior changes.
+
 ## 0.66.1
 
 ## 0.66.0
