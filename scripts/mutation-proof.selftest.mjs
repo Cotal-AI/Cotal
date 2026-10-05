@@ -729,6 +729,33 @@ check("a minTicks floor near the true count fails a run that is one real check s
   r.stdout.slice(0, 400));
 execSync("git checkout -- .", { cwd: root });
 
+// 7k. A coloured mark is a mark. The default pattern allows colour codes before the glyph because
+// `spawn-name-actor-token.smoke.ts` prints `  \x1b[32m✓\x1b[0m` and sets no pattern of its own; no
+// cell above prints one, so dropping that allowance left every check green.
+writeFileSync(
+  join(root, "coloured.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "console.log('  ✓ admits a small value');",
+    "console.log('  \\u001b[32m✓\\u001b[0m a coloured mark is counted too');",
+    "if (admit(50) !== false) { process.exit(0); }",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm coloured", { cwd: root });
+
+r = runTool([
+  "--command", `${process.execPath} coloured.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+check("a coloured pass mark at the start of a line is counted",
+  r.stdout.includes("baseline green") && r.stdout.includes("(3 progress marks)"), r.stdout.slice(0, 300));
+execSync("git checkout -- .", { cwd: root });
+
 // 8. The tree is left exactly as found, after all of that.
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
 check("every run restored the tree", after === "", { after });

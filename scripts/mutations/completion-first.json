@@ -30,6 +30,15 @@
       "expectRed": "a \u2713 inside an assertion label is not a progress mark",
       "cell": "a \u2713 inside an assertion label is not a progress mark",
       "note": "The label glyph pays for a missing mark again: with the anchor gone, `labelled.mjs`'s baseline reads 4 marks instead of 3, and the 7i/7j cells that pin the true count go red first."
+    },
+    {
+      "name": "the default progress pattern no longer allows a colour code before the ✓",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "const DEFAULT_PROGRESS_PATTERN = \"^[ \\t]*(?:\\x1b\\\\[[0-9;]*m)*\u2713\";",
+      "replace": "const DEFAULT_PROGRESS_PATTERN = \"^[ \\t]*\u2713\";",
+      "expectRed": "a coloured pass mark at the start of a line is counted",
+      "cell": "a coloured pass mark at the start of a line is counted",
+      "note": "A suite that colours its marks, as `spawn-name-actor-token.smoke.ts` does, would count zero and lose its floor: `coloured.mjs`'s baseline reads 2 marks instead of 3, and the 7k cell goes red."
     }
   ],
   "suite": [
