@@ -15,6 +15,7 @@
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
 import {
@@ -86,7 +87,8 @@ try {
   }
 
   // 5. Materialization can rewrite shared-peer links, so it must obey the same pass -> writer order as
-  //    add/remove. A whole update pass excludes a direct materializer, not only CLI mutation helpers.
+  //    add/remove. A whole update pass excludes a direct materializer, not only CLI mutation helpers. This process
+  //    holds the pass, so the load waits out its lock bound before refusing.
   {
     const ref: ExtensionRef = { kind: "connector", name: "pass-excluded" };
     const ext = fakePackage([ref]);
@@ -98,6 +100,35 @@ try {
       );
     } finally {
       release();
+    }
+  }
+
+  // 6. A load that meets a LIVE short-held mutation lock (another CLI process mid-load) queues behind it
+  //    instead of refusing at once.
+  {
+    const ref: ExtensionRef = { kind: "connector", name: "queued" };
+    const ext = fakePackage([ref]);
+    const holder = spawn(
+      process.execPath,
+      [
+        "--import", "tsx", "--input-type=module", "-e",
+        `import { claimExtensionMutationLock } from "@cotal-ai/workspace";
+         const release = claimExtensionMutationLock({ label: "holder" });
+         console.log("held");
+         setTimeout(() => { release(); process.exit(0); }, 1500);`,
+      ],
+      { cwd: import.meta.dirname, env: process.env, stdio: ["ignore", "pipe", "inherit"] },
+    );
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.stdout.on("data", (d) => String(d).includes("held") && resolve());
+        holder.on("error", reject);
+        holder.on("exit", () => reject(new Error("holder exited before holding the lock")));
+      });
+      await assert.doesNotReject(importInstalledExtension(ext, ref), "load must wait for a briefly held lock");
+      assert.equal(registry.resolve("connector", "queued").name, "queued");
+    } finally {
+      holder.kill();
     }
   }
 

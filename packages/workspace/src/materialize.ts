@@ -116,10 +116,15 @@ function enqueueLoad(load: () => Promise<void>): Promise<void> {
   return run;
 }
 
+/** How long a load queues behind another process's live extension lock before refusing. Another CLI
+ *  process mid-install/load holds it for seconds, not minutes; a bounded wait lets this load follow it
+ *  instead of failing a command that would have succeeded a moment later. */
+const EXTENSION_LOCK_WAIT_MS = 5_000;
+
 async function withExtensionLock(load: () => Promise<void>): Promise<void> {
   const release = claimExtensionMutationLock({
     label: "extension materialization",
-    waitMs: 0,
+    waitMs: EXTENSION_LOCK_WAIT_MS,
     timeoutMessage: (pid) => `extension install/remove is in progress (pid ${pid}) - retry after the active \`cotal ext\` command finishes`,
   });
   try {
