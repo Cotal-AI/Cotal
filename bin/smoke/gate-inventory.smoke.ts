@@ -482,12 +482,14 @@ const honorsExitCode = (status: ts.Expression | undefined): boolean => {
   return isExitCode(s) || (ts.isBinaryExpression(s) && s.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken && isExitCode(unwrap(s.left)) && ts.isNumericLiteral(unwrap(s.right)));
 };
 const statementExpr = (s: ts.Node): ts.Node => unwrap(ts.isExpressionStatement(s) ? s.expression : s);
+/** Whether `s` exits with a status `status` accepts. An argument after the status runs first and can end the
+ *  run before it, so a call with one is not taken for its status. */
 const exitsWith = (s: ts.Node, status: (arg: ts.Expression | undefined) => boolean) => {
   const e = statementExpr(s);
-  return isExitCall(e) && status(e.arguments[0]);
+  return isExitCall(e) && e.arguments.length <= 1 && status(e.arguments[0]);
 };
 const setsFailingCode = (s: ts.Node) => failingCode(statementExpr(s));
-const endsRun = (s: ts.Node) => ts.isThrowStatement(s) || ts.isReturnStatement(s) || exitsWith(s, () => true);
+const endsRun = (s: ts.Node) => ts.isThrowStatement(s) || ts.isReturnStatement(s) || isExitCall(statementExpr(s));
 /** The statements `arm` runs in order, up to the first that ends it, or an arrow body expression. Each runs
  *  only when none before it throws. A statement nested in a branch, loop or callback is not one of them. */
 const runs = (arm: ts.Node): ts.Node[] => {
@@ -605,11 +607,33 @@ function exitsOfCall(sf: ts.SourceFile, callee: ts.Node, site: ts.Node, status: 
 }
 /** The outermost of the parentheses and type assertions around `n`, or `n` when there are none. */
 const wrapped = (n: ts.Node): ts.Node => (unwrap(n.parent) === n.parent ? n : wrapped(n.parent));
-/** `.then`, `.catch` or `.finally`, by name or literal key, when the file binds nothing to that key: the promise
- *  method, which calls its handlers and never iterates what they return. A method of the file by that name can. */
+const PROMISE_METHODS = ["then", "catch", "finally"];
+/** The global `Promise`, which the file does not declare. */
+const isPromiseClass = (n: ts.Node) => ts.isIdentifier(n) && n.text === "Promise" && !indexSuite(n.getSourceFile()).checker.getSymbolAtLocation(n)?.declarations?.length;
+/** Whether `n` is a promise whatever the file binds: `new Promise(...)`, `Promise.resolve(...)` or another static
+ *  method that returns one, a call of an async function bound once and never written, or a promise method called on one. */
+function isPromise(sf: ts.SourceFile, n: ts.Node): boolean {
+  const e = unwrap(n);
+  if (ts.isNewExpression(e)) return isPromiseClass(unwrap(e.expression));
+  if (!ts.isCallExpression(e)) return false;
+  const callee = unwrap(e.expression);
+  if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
+    const key = memberKey(callee) ?? "";
+    return isPromise(sf, callee.expression) ? PROMISE_METHODS.includes(key) : isPromiseClass(unwrap(callee.expression)) && ["resolve", "reject", "all", "allSettled", "any", "race"].includes(key);
+  }
+  const { checker, writes } = indexSuite(sf);
+  const sym = ts.isIdentifier(callee) ? checker.getSymbolAtLocation(callee) : undefined;
+  const decl = sym?.declarations?.length === 1 && !writes.has(sym) ? sym.declarations[0] : undefined;
+  const fn = decl && ts.isVariableDeclaration(decl) && decl.initializer ? unwrap(decl.initializer) : decl;
+  return !!fn && (ts.isFunctionDeclaration(fn) || ts.isFunctionExpression(fn) || ts.isArrowFunction(fn)) && !isGenerator(fn) && !!(ts.getCombinedModifierFlags(fn) & ts.ModifierFlags.Async);
+}
+/** `.then`, `.catch` or `.finally`, by name or literal key, called on a promise or when the file binds nothing to
+ *  that key: the promise method, which calls its handlers and never iterates what they return. A method of the
+ *  file by that name can, and which object a member is read from is not tracked. */
 const chainsPromise = (sf: ts.SourceFile, callee: ts.Node): callee is ts.PropertyAccessExpression | ts.ElementAccessExpression => {
+  if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) return false;
   const key = memberKey(callee);
-  return key !== undefined && ["then", "catch", "finally"].includes(key) && !indexSuite(sf).keyed.has(key);
+  return key !== undefined && PROMISE_METHODS.includes(key) && (!indexSuite(sf).keyed.has(key) || isPromise(sf, callee.expression));
 };
 /** The exits running `n` can make, directly, through the calls it makes, and through the functions it passes
  *  to a call or to `new`, which can call them at any time from then on. */
@@ -747,6 +771,9 @@ function runsTo(sf: ts.SourceFile, stmt: ts.Statement, seen = new Set<ts.Node>()
   // A throw before `stmt` lands in the catch arm, and a `return` in the `finally` drops it.
   if (ts.isTryStatement(owner) && owner.tryBlock === list && ((owner.catchClause && !armFails(sf, owner.catchClause.block)) || (owner.finallyBlock && findIn(owner.finallyBlock, ts.isReturnStatement).length > 0)))
     return false;
+  // `process.exit` ends the process without running a `finally`, so an exit 0 from its `try` or catch arm skips it.
+  if (ts.isTryStatement(owner) && owner.finallyBlock === list && [owner.tryBlock, owner.catchClause?.block].some((b) => b && canExitZero(sf, b)))
+    return false;
   if (ts.isSourceFile(owner) || ts.isBlock(owner) || ts.isTryStatement(owner)) return runsTo(sf, ts.isTryStatement(owner) ? owner : list, seen);
   // Calling a generator runs none of its body.
   if (!(ts.isFunctionDeclaration(owner) || ts.isFunctionExpression(owner) || ts.isArrowFunction(owner)) || owner.asteriskToken || seen.has(owner)) return false;
@@ -818,7 +845,7 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
       return !!arm && armFails(sf, arm);
     }
     const e = statementExpr(s);
-    const status = isExitCall(e) && e.arguments[0] ? unwrap(e.arguments[0]) : undefined;
+    const status = isExitCall(e) && e.arguments.length === 1 ? unwrap(e.arguments[0]) : undefined;
     if (!status || !ts.isConditionalExpression(status)) return false;
     const mismatch = onMismatch(status.condition);
     return mismatch !== undefined && failingStatus(mismatch ? status.whenTrue : status.whenFalse);
@@ -923,6 +950,12 @@ const censusControls: Array<[string, boolean]> = [
   ["a generator a .then method of the file iterates exits", swallows(`function* cleanup() { process.exit(0); } const s = { then(fn) { for (const _ of fn()); } }; try { f(); } finally { s.then(cleanup); }`)],
   ["a promise .finally called by a literal key that exits 0 swallows", swallows(`main()["finally"](() => process.exit(0));`)],
   ["a generator a literal-keyed promise .finally is handed runs none of its body", fails(`function* cleanup() { process.exit(0); } try { f(); } finally { await p["finally"](cleanup); }`)],
+  ["a generator handed to Promise.resolve().finally runs none of its body whatever else binds finally", fails(`const log = { finally() {} }; function* cleanup() { process.exit(0); } try { f(); } finally { await Promise.resolve().finally(cleanup); }`)],
+  ["a generator handed to .finally on an async main runs none of its body whatever else binds finally", fails(`const log = { finally() {} }; async function main() {} function* cleanup() { process.exit(0); } main().finally(cleanup);`)],
+  ["a catch arm exit with an argument after its status swallows", swallows(`try { f(); } catch { process.exit(1, process.exit(0)); } finally { process.exit(0); }`)],
+  ["a mismatch exit with an argument after its status is unpinned", !pinsWith(`if (ran !== EXPECTED_CELLS) process.exit(1, process.exit(0));`)],
+  ["a pin in a finally is pinned", pinsWith(`try { f(); } finally { if (ran !== EXPECTED_CELLS) process.exit(1); }`)],
+  ["a pin in a finally whose try can exit 0 is unpinned", !pinsWith(`try { process.exit(0); } finally { if (ran !== EXPECTED_CELLS) process.exit(1); }`)],
 ];
 const brokenControls = censusControls.filter(([, ok]) => !ok).map(([name]) => name);
 

@@ -100,7 +100,8 @@ own status may also add a lookup into an object literal of them, such as
 `128 + { SIGINT: 2, SIGTERM: 15 }[signal]`, because a sum with a lookup that misses is NaN, on which
 `process.exit` throws rather than exits 0. A lookup alone that misses is undefined and exits 0.
 A `process.exit` passed to a call, as in `setTimeout(process.exit, 0, 0)`, reads no code, since the
-call chooses its status.
+call chooses its status. A `process.exit` with an argument after its status fails nothing, since
+that argument runs first and can exit 0 before it.
 Names resolve to the declaration they bind, so a parameter or inner function that shadows the pin or
 `main` does not count, a `process` the file declares is not the process unless it imports
 `node:process` whole, and a generator, as `main` or as a `.catch` handler, does not count, since its
@@ -111,11 +112,13 @@ body of a function that a reached statement calls (`main()`, `await main()`,
 `await main().catch(...)`) with arguments and parameter defaults that cannot exit 0, when no earlier
 statement in its block exits, throws or returns, or holds a `return` or a `process.exit` with a
 status that can be 0 in a branch or block, or calls or passes to a call a function of the file whose
-body can make such an exit. A function passed to a call or to `new` can be called at any time after,
-such as during an `await`. A platform skip that exits 0 before the comparison is such a branch. An
-async function counts only when its call is awaited, because an `await` that never settles ends an
-unawaited run with exit 0. A comparison in a branch, a loop, a callback, a check function, a failure
-tally or a variable pins nothing.
+body can make such an exit. A `finally` block counts only when its `try` and catch arm cannot make
+such an exit either, since `process.exit` ends the process without running the `finally`. A
+function passed to a call or to `new` can be called at any time after, such as during an `await`.
+A platform skip that exits 0 before the comparison is such a branch. An async function counts only
+when its call is awaited, because an `await` that never settles ends an unawaited run with exit 0. A
+comparison in a branch, a loop, a callback, a check function, a failure tally or a variable pins
+nothing.
 
 A throw or a rejection before the comparison skips it. A statement in a `try` counts only when its
 catch arm fails the run as a mismatch arm would and its `finally` holds no `return`. A statement of a
@@ -133,10 +136,13 @@ default. An array stands for every element, so `list[i]`, `...list` and `const [
 stand for all of them. A generator runs its body only as what its call returns is iterated, so its
 exits count for every call of it except one written as a whole statement, in parentheses or not, or
 a handler of `.then`, `.catch` or `.finally`. Those three, called by name or by a literal key such
-as `p["finally"]`, are the promise methods only when the file binds nothing to that key, since a
-method of the file by that name can iterate what its handler returns or never call it. `.call`,
-`.apply`, `.bind`, a getter, a key of an object computed at run time and an imported function are
-not followed.
+as `p["finally"]`, are the promise methods on a promise: `new Promise(...)`, `Promise.resolve(...)`
+and the other static methods that return one, a call of an async function declared once and never
+reassigned, or one of the three called on such a promise. On anything else they are the promise
+methods only when the file binds nothing to that key, since a method of the file by that name can
+iterate what its handler returns or never call it. `.call`, `.apply`, `.bind`, a getter, a key of an
+object computed at run time, an imported function and a change to a built-in such as
+`Promise.prototype` are not followed.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The
