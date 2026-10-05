@@ -149,6 +149,7 @@ const PUBLIC_FAILED_PER_MIN = 30; // per-PEER refused-exchange window (rolling m
 const PUBLIC_PEER_BUCKETS_MAX = 1024; // bounded LRU of per-peer failure buckets
 const PUBLIC_MAX_IN_FLIGHT = 64; // global concurrent-admission cap on the public listener
 const PUBLIC_DEADLINE_MS = 10_000; // hard wall-clock deadline per public request
+const HOST_FENCE_POLL_MS = 1_000; // how often awaitHostFence re-reads the host gate
 const OBSERVED_RUN_REQUEST_WINDOW_MS = 5 * 60_000; // how long an observed served resume or answer can still be forwarded
 
 type Values = Record<string, string | undefined>;
@@ -1619,16 +1620,22 @@ export interface AuthServiceHandle extends HostedServiceHandle {
    *  account through the §13.7 ceremony the auth plane runs for itself. The host calls it at every
    *  start with its persisted instance id, before it admits or recovers any flight, so each start
    *  fences its predecessor and advances the process epoch. It returns the epoch this registration
-   *  committed. A later start of the same instance that registers before this registration's
-   *  confirming read of the gate makes it refuse with `conflict`. One that registers after that read
-   *  leaves it returning its own epoch, which the gate already fences as it fences any restarted
-   *  predecessor, so a sweeper reads that executor as gone. No read can close that window; the gate
-   *  is the fence. */
+   *  committed, a coordinate that a later start of the same instance can fence at any moment, even
+   *  before this call returns. A later start that registers before this registration's confirming
+   *  read of the gate makes it refuse with `conflict`; the host learns of every other through
+   *  `awaitHostFence`. */
   registerHostIncarnation?(instanceId: string): Promise<DelegatedUserIntentIncarnation>;
-  /** A sweeper's read of an executor's issuance gate on the host endpoint (SPEC 13.16). Present
-   *  only with `platformControl.host`. Null is an absent gate. It reads over the context's own
-   *  authority connection and writes nothing. */
+  /** A sweeper's point-in-time read of an executor's issuance gate on the host endpoint (SPEC
+   *  13.16). Present only with `platformControl.host`. Null is an absent gate. It reads over the
+   *  context's own authority connection and writes nothing. */
   observeHostGate?(instanceId: string): Promise<EpGateState | null>;
+  /** Resolves with the gate once the issuance gate of `instanceId` on the host endpoint is no longer
+   *  open at `processEpoch`: a later registration moved the epoch, a barrier froze or retired it, or
+   *  it is absent (null). Present only with `platformControl.host`. The host arms it with the
+   *  incarnation `registerHostIncarnation` returned, before it admits or recovers any flight, and
+   *  stops serving when it resolves. It rejects once the context is no longer ready or a read
+   *  fails. */
+  awaitHostFence?(instanceId: string, processEpoch: number): Promise<EpGateState | null>;
 }
 
 /** The optional public exchange face: the CLI's `--exchange-public-*`, `--advertised-server` and
@@ -1992,6 +1999,18 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
         observeHostGate: async (instanceId: string) => {
           refuseUnlessReady();
           return await plane.observeEndpointGate(host.endpoint, instanceId);
+        },
+        awaitHostFence: async (instanceId: string, processEpoch: number) => {
+          if (!Number.isSafeInteger(processEpoch) || processEpoch < 0)
+            throw new EpEnvelopeError("bad-request", `processEpoch must be a non-negative integer, got ${String(processEpoch)}`);
+          // No runtime credential may create a consumer on the auth bucket (SPEC 13.9), so the
+          // gate cannot be watched; the hook polls its leader-served read.
+          for (;;) {
+            refuseUnlessReady();
+            const gate = await plane.observeEndpointGate(host.endpoint, instanceId);
+            if (gate?.state !== "open" || gate.processEpoch !== processEpoch) return gate;
+            await new Promise((r) => setTimeout(r, HOST_FENCE_POLL_MS));
+          }
         },
       } : {}),
       readiness(): HostedServiceState {

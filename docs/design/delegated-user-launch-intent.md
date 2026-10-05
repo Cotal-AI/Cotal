@@ -504,6 +504,8 @@ answers material it did not commit. The manager frees or keeps its alias only on
 The execution has one executor, the incarnation the consuming CAS pinned, and recovery follows the
 executor and sweeper roles of SPEC §13.7:
 
+- The executor stops every flight before its next effect once the handle's `awaitHostFence`,
+  armed with its incarnation at start, resolves: a later registration or barrier has fenced it.
 - The executor, in the same process run, starts a new flight for the record when its earlier
   flight ended with no `outcome`, for example on an `unavailable` writer error, at its next scan of
   consumed records or on a retry. That flight resumes at step 7.
@@ -737,7 +739,7 @@ payload. `authorizeAdmin` is unchanged.
 | `parseRemoteDelegatedUserIntentExecutionResult`, `resolveReadAcl` | `@cotal-ai/core` | shipped |
 | `DelegatedUserIntentRecord`, `DelegatedUserIntentExecutionPin`, `DelegatedUserIntentIncarnation`, `DelegatedUserIntentFlights`, `joinOrStartDelegatedUserIntent`, `delegatedUserIntentHoldsAlias`, `ObservePlatformControlAssignment`, `authorizeDelegatedUserIntentAdmission`, `authorizeDelegatedUserIntentExecution`, `DelegatedUserIntentDecision` | `@cotal-ai/auth` | shipped; stock dispatch refuses both kinds as `unimplemented` |
 | `AuthServiceHandle.observeManagerGate`, `AuthServiceHandle.activateManagedLifecycle` | `@cotal-ai/auth` | shipped; present with `platformControl` |
-| `AuthServiceHandle.registerHostIncarnation`, `AuthServiceHandle.observeHostGate`, `PlatformControlInput.host` | `@cotal-ai/auth` | shipped; present with `platformControl.host`; the host registers its persisted instance id at every start, before it admits or recovers a flight; a start whose confirming gate read finds a later start registered is refused, and one superseded after that read returns its own epoch, which the gate already fences |
+| `AuthServiceHandle.registerHostIncarnation`, `AuthServiceHandle.observeHostGate`, `AuthServiceHandle.awaitHostFence`, `PlatformControlInput.host` | `@cotal-ai/auth` | shipped; present with `platformControl.host`; the host registers its persisted instance id at every start and arms `awaitHostFence` with the returned incarnation, before it admits or recovers a flight; the return is a committed coordinate, `observeHostGate` a point-in-time read, and the hook resolves once a later registration or barrier fences that incarnation |
 | `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent`, `Manager.retireDelegatedAgent` | `@cotal-ai/manager` | shipped |
 | `PlatformControlAssignment`, `platformControlOwner`, the `p_` grammar, the platform control door | `@cotal-ai/auth`, `@cotal-ai/core` | absent at this branch's base; shipped on main at `6ca4d8e0f` (#2408) |
 | `grantManagedActor`, `assertWithinSpawnerGrant` (module-private in `ledger.ts`; the admission decision calls it from inside `@cotal-ai/auth`), `provisionAgentDurables`, `remoteManagerCurrentRegistrationProof`, `managedRetirementOpId`, the managed retire flight | auth, core | shipped, reused unchanged; a hosted host reaches the flight at `POST /managed-lifecycle/retire` with the handle's `cap` |
