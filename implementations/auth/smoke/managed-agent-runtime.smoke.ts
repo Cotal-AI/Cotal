@@ -284,6 +284,8 @@ try {
       managerServiceAuthority: wrongArm as never,
       maintainRemoteManager: wrongArm as never,
       validateRetainedAgent: wrongArm as never,
+      enrollManagedAgent: wrongArm as never,
+      prepareManagedAgentRetirement: wrongArm as never,
       scanManagerGoalIndex: wrongArm as never,
       authorizeManagerAdmin: wrongArm as never,
       admitManagerRun: wrongArm as never,

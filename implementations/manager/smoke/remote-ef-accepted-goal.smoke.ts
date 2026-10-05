@@ -6,9 +6,9 @@
  * the shipped `cotal supervise` (signerless remote manager) and the shipped `cotal ps`/`cotal spawn`.
  *
  * LABELLED TRUSTED FIXTURE HOST: a proxy in front of the daemon's public face. It forwards every
- * route unchanged EXCEPT managed-agent enrollment, which stock deliberately refuses (403, host
- * platform interception required). For that one kind it authenticates the caller's IdP token,
- * asks the daemon's REAL loopback verify-enrollment door, writes the managed ledger row for the
+ * route unchanged EXCEPT managed-agent enrollment, which it answers itself the way a platform that
+ * keeps its own writers does. For that one kind it authenticates the caller's IdP token, asks the
+ * daemon's REAL loopback verify-enrollment door, writes the managed ledger row for the
  * token DIGEST and returns the closed material. It never gives the manager a signing key, never
  * answers without the door's decision, and is not a production SandboxProvider.
  *

@@ -415,9 +415,17 @@ nothing about.
 
 Both managed-agent operations ride the one verified `POST /manager-service-authority` transport as
 `kind: "manager-managed-agent-enrollment"` and `kind: "manager-managed-agent-prepare-retirement"`.
-Stock `dispatchManagerAuthorityRequest` refuses both with `unimplemented`: they mutate host storage,
-and stock holds none of that composition. A host terminates its own public route, authenticates the
-human there, and asks the auth service for the decision at
+Stock `cotal auth-service` answers both itself, because it owns the actor ledger and the space's
+provisioning authority. An enrollment writes the managed grant at a fresh UID with the supervising
+actor as its parent, provisions that UID's durables, and returns the daemon's public exchange URL as
+`agentBearerExchangeUrl`; a daemon started without `--exchange-public-port` refuses enrollment. A
+retry with the same token digest answers the same UID while the supervising actor's current grant
+covers it, and a fresh enrollment's refusal otherwise. While the agent's grant stands, an enrollment
+with another digest is refused with `conflict` until that lifecycle's retirement is prepared. A
+prepare-retirement releases the target UID's broker footprint and then revokes its grant, so the
+manager's terminal rail finds the grant gone. A platform that keeps these writers in its own storage
+intercepts both kinds instead. It terminates its own public route, authenticates the human there,
+and asks the auth service for the decision at
 `POST /manager-service-authority/verify-enrollment` (exported as `VERIFY_ENROLLMENT_PATH` from
 `@cotal-ai/auth`) with the `Bearer <cap>` from `auth-service.json` and only `{ owner, request }`. That
 door has the managed retirement door's guards, derives the caller's scope from the local ledger rather
