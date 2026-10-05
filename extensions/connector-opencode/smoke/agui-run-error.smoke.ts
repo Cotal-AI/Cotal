@@ -36,7 +36,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { bootPlugin } from "./_boot-plugin.js";
+import { bootPlugin, disposeInProcess } from "./_boot-plugin.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -230,7 +230,7 @@ try {
 
   console.log(`opencode-run-error smoke: ${pass} passed, ${fail} failed`);
 } finally {
-  await hooks?.dispose?.();
+  await disposeInProcess(hooks);
   oc.close();
   broker.kill("SIGKILL");
   await sleep(150);

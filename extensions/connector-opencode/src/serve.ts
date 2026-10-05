@@ -238,6 +238,9 @@ async function main(): Promise<void> {
       tui.kill(sig);
       serve.kill(sig);
     });
+  // The server is the seat. A TUI stays up against a server that has gone, so without this the
+  // seat's process outlives it and the manager goes on listing a seat that has left the mesh.
+  serve.on("exit", () => tui.kill("SIGTERM"));
   tui.on("exit", (code, signal) => {
     // TUI closed → tear down the server, for real (SIGKILL fallback), before exiting.
     void killServe(serve).then(() => process.exit(code ?? (signal ? 1 : 0)));

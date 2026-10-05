@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey } from "@cotal-ai/core";
 import { configFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
 import { connect as rawConnect } from "@nats-io/transport-node";
-import { bootPlugin, bootPlugin2, fakeOpenCode2Context } from "./_boot-plugin.js";
+import { bootPlugin, bootPlugin2, fakeOpenCode2Context, disposeInProcess } from "./_boot-plugin.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await freePort();
@@ -474,12 +474,12 @@ try {
   // single-site mutant reds this cell; it is asserted here rather than proved by mutation.
   await errorOnce();
   const beforeStop = prompts.length;
-  await hooks.dispose!();
+  await disposeInProcess(hooks);
   hooks = undefined;
   await sleep(4_000);
   check("retry:a stop submits nothing — a pending retry does not submit after dispose()", prompts.length === beforeStop, prompts);
 } finally {
-  await hooks?.dispose?.();
+  await disposeInProcess(hooks);
   await pub.stop();
   srv.kill("SIGKILL");
   oc.close();
