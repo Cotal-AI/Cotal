@@ -33,7 +33,6 @@ import {
   DEFERRAL_MAX_MS,
   deferralExhausted,
   exhaustedDeferralAction,
-  refusalNeedsBoundary,
   type FallbackState,
 } from "../src/queue-fallback.js";
 
@@ -225,23 +224,9 @@ console.log("\n13. the two measured failure modes, and the state that separates 
   // TWO REVIEWERS MEASURED OPPOSITE FAILURES AND BOTH WERE RIGHT.
   //   trigger only on `!acknowledged`  -> 4 executions from 4 send frames (run-debt duplicate)
   //   trigger on every refusal         -> 0 executions from 0 send frames (silent starvation)
-  // The second is what an earlier version of THIS cell failed to catch, because it graded
-  // `refusalNeedsBoundary(ack, attr)` as a pure function while the call site sat inside
-  // `if (!acknowledged || !attributable)`, where that expression is TAUTOLOGICALLY TRUE. The unit
-  // test passed on a predicate the branch could never consult. A pure-function cell proves nothing
-  // about a call site that cannot disagree with it, which is why these cells now grade the two
-  // decisions separately and the live suites carry the behaviour.
-  check(
-    "a lapsed SEND forces the boundary: nothing can ever settle it",
-    refusalNeedsBoundary(true) === true,
-    { sendLapsed: true, boundary: refusalNeedsBoundary(true) },
-  );
-  // The refusing half. Without it, `return true` satisfies the line above.
-  check(
-    "and a send that WAS acknowledged does not: the boundary is for the unsettleable case only",
-    refusalNeedsBoundary(false) === false,
-    { sendLapsed: false, boundary: refusalNeedsBoundary(false) },
-  );
+  // Neither trigger survives: a send is never written while a run holds acceptance, so the only
+  // refusal left is a lapsed send's, and run debt reaches a boundary only through an exhausted
+  // deferral.
   // The deferral is the half that prevents sol's duplicate at its SOURCE. A send issued while a run
   // is open can never be attributed, so it is refused on arrival and re-sent forever, and every
   // refused copy is still accepted and RUN by the Harness.
@@ -261,7 +246,7 @@ console.log("\n13. the two measured failure modes, and the state that separates 
   // future edit routes run debt into the boundary, this is the cell that reddens.
   check(
     "run debt NEVER forces a boundary while the deferral is live, however deep",
-    [1, 2, 7].every((n) => refusalNeedsBoundary(false) === false && attributionBlockedByOpenRun(n, 0) === true),
+    [1, 2, 7].every((n) => deferralExhausted(n, 0) === false && attributionBlockedByOpenRun(n, 0) === true),
     { checked: [1, 2, 7] },
   );
   // LIVENESS, and this is the cell a third reviewer's blocker demanded. Deferring on a run that
@@ -350,7 +335,7 @@ console.log("\n13. the two measured failure modes, and the state that separates 
   );
 }
 
-const EXPECTED_CELLS = 51;
+const EXPECTED_CELLS = 49;
 console.log(`\nSUITE COMPLETE: ${pass + failures.length} cells`);
 console.log(`jcode queue fallback policy: ${pass} cells OK, ${failures.length} failed`);
 if (pass + failures.length !== EXPECTED_CELLS) {

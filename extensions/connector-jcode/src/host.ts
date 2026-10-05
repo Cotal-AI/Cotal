@@ -38,7 +38,6 @@ import {
   deferralExhausted,
   exhaustedDeferralAction,
   nextFallbackDelay,
-  refusalNeedsBoundary,
   type FallbackState,
 } from "./queue-fallback.js";
 import {
@@ -1481,6 +1480,10 @@ export async function runJcodeHost(): Promise<void> {
     try {
       await withExclusiveDispatch(async () => {
         attributable = unsettledLapsedDispatches === 0 && !acceptanceSuspectUntilBridgeReplaced;
+        // The deferral above was read before the wait for this gate, and a run can lapse during it.
+        // A frame written now could only be refused while the Harness still runs it, and its
+        // acceptance would surface that run's turns, so nothing is written.
+        if (!attributable) return;
         const onAccepted = (event: ApiEvent): void => {
           if ("session_id" in event && event.session_id === session) acknowledged = true;
         };
@@ -1502,12 +1505,16 @@ export async function runJcodeHost(): Promise<void> {
         release();
         return;
       }
-      if (!acknowledged || !attributable) {
-        // Written but never acknowledged, OR acknowledged while an earlier lapsed send could still
-        // have been the sender. Recording either as accepted is what turned a stall into LOSS, so
-        // both are refused: released, un-acked, still owed, retried by the loop.
+      // Deferred, not refused: nothing was written, and the next tick defers on the run's debt.
+      if (!attributable) {
+        release();
+        return;
+      }
+      if (!acknowledged) {
+        // Written but never acknowledged. Recording it as accepted is what turned a stall into LOSS,
+        // so it is refused: released, un-acked, still owed, retried by the loop.
         //
-        // AND IF IT WAS NEVER ACKNOWLEDGED, THIS SEND IS NOW ITSELF A LAPSED ONE. The SDK resolved
+        // AND THIS SEND IS NOW ITSELF A LAPSED ONE. The SDK resolved
         // our `sendMessage` on its own accept wait, which proves only that we stopped listening: the
         // request is still live at the Harness and may emit its session-only acceptance at any
         // later point, when some other batch is the one waiting. Nothing settles that promise in a
@@ -1530,33 +1537,11 @@ export async function runJcodeHost(): Promise<void> {
         // The request itself is made by the fallback's next tick rather than here, so it happens on
         // the retry path where the batch is still owed and can be redriven, instead of inside a
         // handover that is already unwinding.
-        // BOTH REFUSALS NEED THE BOUNDARY, not just the unacknowledged one. A reviewer measured the
-        // gap: a RUN whose acceptance window lapses owes `unsettledLapsedDispatches` debt that
-        // clears only when that turn ENDS, which on a long turn is unbounded. Every fallback send
-        // meanwhile is genuinely acknowledged, so `!acknowledged` is false and no boundary was ever
-        // requested, while `attributable` stays false because the run debt is outstanding. The
-        // batch is refused, stays owed, and the level-triggered loop re-delivers it into a healthy
-        // Harness that ACCEPTS AND EXECUTES each copy: 4 executions from 4 send frames.
-        //
-        // That is the same unbounded duplicate execution the `!acknowledged` case was given a
-        // boundary to stop, reached through the other debt state, so it takes the same answer. The
-        // discriminator is not which flag failed but whether re-delivery on THIS connection can
-        // ever become attributable again; while a lapsed dispatch is open it cannot, because
-        // nothing distinguishes its late acceptance from the next send's.
-        //
-        // Replacing the bridge ends the ambiguity at the root: the replacement attaches the same
-        // session, drops the old connection's still-open request with it, and the batch is redriven
-        // once where an acknowledgement means something. The one-shot guard governs it, so widening
-        // the trigger cannot turn into a reconnect loop.
-        if (refusalNeedsBoundary(!acknowledged)) acceptanceSuspectUntilBridgeReplaced = true;
+        acceptanceSuspectUntilBridgeReplaced = true;
         release();
         writeJcodeDiagnostic(
-          acknowledged
-            ? `[cotal-jcode] queued turn was acknowledged but an earlier unacknowledged dispatch is ` +
-              `still open, so the acknowledgement is not attributable; replacing the Harness ` +
-              `connection before re-delivering ${items.length} automatic message(s)\n`
-            : `[cotal-jcode] queued turn was not acknowledged (no message_accepted); ${items.length} ` +
-              `automatic message(s) remain queued for redelivery\n`,
+          `[cotal-jcode] queued turn was not acknowledged (no message_accepted); ${items.length} ` +
+            `automatic message(s) remain queued for redelivery\n`,
         );
         return;
       }
