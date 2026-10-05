@@ -5,6 +5,7 @@ import {
   composeSpaceAuth,
   jwtIssuedAt,
   mkSecretDir,
+  newIdentity,
   validateSpaceAuthForRead,
   writeSecretFile,
   writeSecretFileAtomic,
@@ -424,6 +425,51 @@ export function createManagerInstanceIdentity(root: string, space: string, candi
       throw new Error(
         `manager-instance-identity-create-lost: exclusive create for space "${space}" at ${path} lost and the existing file could not be adopted`,
       );
+    return winner;
+  }
+}
+
+/** The manager's goal-writer and session-ledger nkeys for `space`. Both are siblings of the serve
+ *  identity in its §13.1 credential family and persist for the same reason: the family never drops
+ *  a row and every re-registration verify-evicts each holder it ever staged, so a fresh pair per
+ *  boot made each restart sweep two more holders than the one before. */
+export interface ManagerSiblingIdentities {
+  goalWriter: { id: string; seed: string };
+  sessionLedger: { id: string; seed: string };
+}
+function managerSiblingFile(root: string, space: string): string {
+  return join(authDir(root), `manager-siblings.${spaceKey(space)}.json`);
+}
+function readManagerSiblingRecord(f: string, space: string): ManagerSiblingIdentities | undefined {
+  type Nkey = { id?: unknown; seed?: unknown } | null | undefined;
+  const raw = readAuthRecord<{ goalWriter?: Nkey; sessionLedger?: Nkey } | null>(f, `the manager sibling identities for space "${space}"`);
+  if (raw === undefined) return undefined;
+  const nkey = (k: Nkey): k is { id: string; seed: string } =>
+    typeof k?.id === "string" && k.id.length > 0 && typeof k.seed === "string" && k.seed.length > 0;
+  if (!nkey(raw?.goalWriter) || !nkey(raw?.sessionLedger))
+    throw new Error(`${f} is malformed; refusing to mint fresh sibling identities over it`);
+  return {
+    goalWriter: { id: raw.goalWriter.id, seed: raw.goalWriter.seed },
+    sessionLedger: { id: raw.sessionLedger.id, seed: raw.sessionLedger.seed },
+  };
+}
+/** This root's manager sibling identities for `space`, minted on the first start and read back on
+ *  every later one. The mint publishes by exclusive create, as {@link createManagerInstanceIdentity}
+ *  does, so concurrent first starts adopt one pair. */
+export function claimManagerSiblingIdentities(root: string, space: string): ManagerSiblingIdentities {
+  const path = managerSiblingFile(root, space);
+  const stored = readManagerSiblingRecord(path, space);
+  if (stored !== undefined) return stored;
+  mkSecretDir(authDir(root));
+  const candidate: ManagerSiblingIdentities = { goalWriter: newIdentity(), sessionLedger: newIdentity() };
+  try {
+    writeSecretFileCreateOnly(path, JSON.stringify(candidate, null, 2));
+    return candidate;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    const winner = readManagerSiblingRecord(path, space);
+    if (winner === undefined)
+      throw new Error(`manager-sibling-identities-create-lost: exclusive create for space "${space}" at ${path} lost and the existing file could not be adopted`);
     return winner;
   }
 }

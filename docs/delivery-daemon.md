@@ -78,7 +78,9 @@ it refuses or its reply cannot be read. One that stays silent for the whole wait
 manager log names the rail.
 
 A restart verify-evicts every holder in the manager's credential family, and the family keeps a
-ledger row for every credential an earlier incarnation was issued. The manager sends those holders
+ledger row for every credential an earlier incarnation was issued. The manager keeps its serve,
+goal-writer and session-ledger identities across restarts, so restarts add no holders; each attach
+session adds one serving holder. The manager sends those holders
 as one `evictPrincipals` request per 256, and the daemon answers each request with one shared sweep
 of the broker. The manager records the holders each request verified before it sends the next, so a
 restart cut short by its executor window resumes after the last recorded request. A daemon that does
