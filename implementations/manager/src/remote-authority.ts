@@ -229,6 +229,7 @@ export function remoteManagerAuthorityRequest(
   contractArtifacts?: unknown[],
   session?: RemoteManagerAuthorityRequest["session"],
   retirement?: RemoteManagerAuthorityRequest["retirement"],
+  transferReader?: RemoteManagerAuthorityRequest["transferReader"],
 ): RemoteManagerAuthorityRequest {
   const requestId = `${operation}${mintLifecycleUid()}`;
   return {
@@ -244,6 +245,7 @@ export function remoteManagerAuthorityRequest(
     ...(contractArtifacts ? { contractArtifacts } : {}),
     ...(session ? { session } : {}),
     ...(retirement ? { retirement } : {}),
+    ...(transferReader ? { transferReader } : {}),
     identities: {
       supervisor: { id: state.identities.supervisor.id },
       executor: { id: state.identities.executor.id },

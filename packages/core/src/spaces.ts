@@ -4,7 +4,7 @@
 // open/dev mesh — one server, every space's streams visible to a bare connection. Under auth a
 // server hosts a single account/space, so this is really an open-mode admin capability.
 
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { DEFAULT_SERVER } from "./endpoint.js";
@@ -100,6 +100,28 @@ export async function listSpaces(opts: ListSpacesOptions = {}): Promise<SpaceInf
   }
 }
 
+async function listTransferStreams(nc: NatsConnection, space: string): Promise<string[]> {
+  const names: string[] = [];
+  for await (const name of (await jetstreamManager(nc)).streams.names()) if (isTransferStream(space, name)) names.push(name);
+  return names;
+}
+
+/** The space's transfer streams, which a `teardown` mint names in `transferStreams`. Open mode, or a
+ *  credential allowing `STREAM.NAMES` (a `teardown` minted without them). */
+export async function transferStreamNames(opts: { servers?: string; creds?: string; space: string }): Promise<string[]> {
+  const nc = await connect({
+    servers: opts.servers ?? DEFAULT_SERVER,
+    reconnect: false,
+    maxReconnectAttempts: 0,
+    ...scopedConnectOpts(opts.creds),
+  });
+  try {
+    return await listTransferStreams(nc, opts.space);
+  } finally {
+    await nc.close();
+  }
+}
+
 /** Tear down a space — delete its chat/DM/task streams plus the presence and channel-registry KV
  *  buckets. Irreversible; all history, presence, and channel config for the space is gone. Open
  *  mode, or a cred allowing STREAM.DELETE. Not-found streams are ignored (idempotent). */
@@ -136,9 +158,8 @@ export async function deleteSpace(opts: { servers?: string; creds?: string; spac
       objectStoreStream(artifactBucket(opts.space)),
     ];
     // Each manager instance that received a carried resume holds its own transfer bucket, so those
-    // streams are found by name shape. Only an open mesh receives one in this release, and the
-    // teardown credential of an authenticated mesh holds no stream listing.
-    if (!opts.creds) for await (const name of jsm.streams.names()) if (isTransferStream(opts.space, name)) streams.push(name);
+    // streams are found by name shape; a teardown credential deletes the ones named at its mint.
+    streams.push(...await listTransferStreams(nc, opts.space));
     for (const s of streams) await jsm.streams.delete(s).catch(() => {});
   } finally {
     await nc.close();

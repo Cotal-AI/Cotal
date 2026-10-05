@@ -981,6 +981,18 @@ export async function openAuthAuthorityPlane(opts: {
             );
             return { credentials };
           }
+          if (r.operation === "transferReader") {
+            const expectedProof = remoteManagerRegistrationProof(owner, r);
+            if (r.registrationProof !== expectedProof)
+              throw new EpEnvelopeError("permission-denied", "manager-service transfer reader proof does not match this owner/lifecycle");
+            credentials.transferReader = await mintPublicUserJwt(
+              { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+              r.transferReader!.id,
+              "transfer-reader",
+              { principal: { owner, actor: actors.serve }, lifecycleUid: r.managerLifecycleUid, transferReader: { instanceId: r.instanceId } },
+            );
+            return { credentials };
+          }
           if (r.operation === "retire") {
             const expectedProof = remoteManagerRegistrationProof(owner, r);
             if (r.registrationProof !== expectedProof)

@@ -75,6 +75,7 @@ import {
   livenessSubject,
   livenessServeFilter,
   livenessReplyGrant,
+  isTransferStream,
 } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
 import {
@@ -719,6 +720,9 @@ export interface MintOpts {
   transferWriter?: { instanceId: string; hex: string };
   /** `transfer-reader` profile only: the manager instance whose own transfer bucket this reads. */
   transferReader?: { instanceId: string };
+  /** `teardown` profile only: the space's transfer streams, enumerated before the mint, that this
+   *  teardown may inspect and delete by name ({@link transferStreamNames}). */
+  transferStreams?: string[];
   /** `backup` profile only: one discriminated inspector or snapshot phase. */
   backup?: BackupPermissionScope;
   /** `restore` profile only: one discriminated initiate, upload, validate, or checkpoint phase. */
@@ -1033,7 +1037,7 @@ export async function mintPublicUserJwt(
   opts: MintOpts,
 ): Promise<{ jwt: string; exp: number }> {
   if (!/^U[A-Z2-7]{55}$/.test(publicId)) throw new Error("mintPublicUserJwt: publicId must be a user nkey");
-  if (!["remote-manager", "endpoint-serve", "goal-writer", "session-ledger", "session-serving", "retirement-requester", "run-driver", "run-mediator", "run-operator"].includes(profile))
+  if (!["remote-manager", "endpoint-serve", "goal-writer", "session-ledger", "session-serving", "retirement-requester", "run-driver", "run-mediator", "run-operator", "transfer-reader"].includes(profile))
     throw new Error(`mintPublicUserJwt: profile "${profile}" is not part of the closed remote manager protocol`);
   const pr: MintPrincipal = {
     owner: opts.principal?.owner ?? DEV_OWNER,
@@ -1230,7 +1234,7 @@ export function permissionsFor(
   if (profile === "probe") return probePermissions(pr); // connect-only liveness/auth preflight (PR 1.5)
   if (profile === "channel-writer") return channelWriterPermissions(space, pr); // channel-registry writes (PR 1.5)
   if (profile === "channel-purger") return channelPurgerPermissions(space, pr); // channel-writer + CHAT purge (PR 1.5)
-  if (profile === "teardown") return teardownPermissions(space, pr); // sole STREAM.DELETE holder (PR 1.5)
+  if (profile === "teardown") return teardownPermissions(space, pr, opts.transferStreams ?? []); // sole STREAM.DELETE holder (PR 1.5)
   if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged", opts); // ps/start reads (PR 1.5)
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin", opts); // any-mode stop/attach (PR 1.5)
   if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin", opts); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
@@ -1890,7 +1894,7 @@ function channelPurgerPermissions(space: string, pr: MintPrincipal): Record<stri
  *  DM/DLV body, posts chat, or forges. Isolated here so no standing operator/provisioner/supervisor cred
  *  can delete a stream; a leaked teardown can wipe a space you own + stop its agents (that IS its job),
  *  nothing else. Minted ephemerally per teardown from the local trust material (same-checkout `down -f`). */
-function teardownPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: string[]): Record<string, unknown> {
   // The ep-rail mirror of the admin deploy tier (1c.2c): teardown reads `ps` and stops owned agents
   // it did not spawn (any-mode despawn) - the admin instrument set. Lifecycle-keyed, so a uid is
   // required at mint (fail-loud).
@@ -1907,11 +1911,18 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
     `KV_${membershipBucket(space)}`, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
     ...endpointPlaneStreamNames(space),
     objectStoreStream(artifactBucket(space)),
+    ...transferStreams.map((name) => {
+      if (!isTransferStream(space, name)) throw new Error(`permissionsFor: teardown transferStreams names ${JSON.stringify(name)}, not one of ${space}'s transfer streams`);
+      return name;
+    }),
   ].flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.DELETE.${s}`]);
   return {
     pub: {
       allow: [
         "$JS.API.INFO",
+        // deleteSpace() enumerates the transfer streams (one per manager instance that received a
+        // carried resume) by name shape; their names are not derivable from the space alone.
+        "$JS.API.STREAM.NAMES",
         // connectProbe read: presence watch (name→id + roster) + channel registry read.
         `$JS.API.CONSUMER.CREATE.${PKV}.>`,
         `$JS.API.CONSUMER.INFO.${PKV}.>`,

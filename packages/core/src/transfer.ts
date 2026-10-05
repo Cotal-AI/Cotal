@@ -26,6 +26,8 @@ export const OFFSET_HEADER = "Cotal-Offset";
 export const CHUNK_HEADER = "Cotal-Chunk";
 const EXPECTED_LAST_SUBJECT_SEQ = "Nats-Expected-Last-Subject-Sequence";
 const HEX64 = /^[0-9a-f]{64}$/;
+/** A record's chunk subject token: this protocol's hex digest or the stock client's nuid, never a wildcard. */
+const STOCK_NUID = /^[0-9A-Za-z]{1,64}$/;
 
 function assertHex(hex: string): void {
   if (!HEX64.test(hex)) throw new Error(`transfer: ${JSON.stringify(hex)} is not a 64-character lowercase hex digest`);
@@ -156,7 +158,7 @@ export async function readChainHead(jsm: JetStreamManager, bucket: string, hex: 
 export interface MetaHead {
   seq: number;
   live: boolean;
-  /** The live record's chunk subject token and chunk count. */
+  /** The record's chunk subject token (a stock delete marker keeps it) and the live record's chunk count. */
   nuid?: string;
   chunks?: number;
   digest?: string;
@@ -166,7 +168,7 @@ export async function readMetaHead(jsm: JetStreamManager, bucket: string, hex: s
   const m = await lastOnSubject(jsm, objectStoreStream(bucket), transferMetaSubject(bucket, hex), read);
   if (m === null) return { seq: 0, live: false };
   const info = JSON.parse(m.string()) as { deleted?: boolean; nuid?: string; chunks?: number; digest?: string };
-  if (info.deleted === true) return { seq: m.seq, live: false };
+  if (info.deleted === true) return { seq: m.seq, live: false, nuid: info.nuid };
   return { seq: m.seq, live: true, nuid: info.nuid, chunks: info.chunks, digest: info.digest };
 }
 
@@ -251,9 +253,10 @@ async function subjectCount(jsm: JetStreamManager, stream: string, subject: stri
 
 /**
  * Remove a transfer whole (design 4.5): the stock delete for a live record (its marker, then one
- * filtered purge of the record's chunk subject), otherwise the purge alone and only when the chunk
- * subject holds a message. A transfer with neither is already removed and nothing is written, because a
- * stock delete of a deleted record publishes another marker.
+ * filtered purge of the record's chunk subject), otherwise the purge alone of each chunk subject that
+ * holds a message: the chain's, and the one a delete marker names, whose chunks remain when a stop fell
+ * between the marker and its purge (a stock put names a random one). A transfer with neither is already
+ * removed and nothing is written, because a stock delete of a deleted record publishes another marker.
  */
 export async function removeTransfer(nc: NatsConnection, bucket: string, hex: string): Promise<void> {
   const jsm = await jetstreamManager(nc);
@@ -263,8 +266,9 @@ export async function removeTransfer(nc: NatsConnection, bucket: string, hex: st
     return;
   }
   const stream = objectStoreStream(bucket);
-  const subject = transferChunkSubject(bucket, hex);
-  if ((await subjectCount(jsm, stream, subject)) > 0) await jsm.streams.purge(stream, { filter: subject });
+  const marked = meta.nuid !== undefined && STOCK_NUID.test(meta.nuid) ? [`$O.${bucket}.C.${meta.nuid}`] : [];
+  for (const subject of new Set([transferChunkSubject(bucket, hex), ...marked]))
+    if ((await subjectCount(jsm, stream, subject)) > 0) await jsm.streams.purge(stream, { filter: subject });
 }
 
 /** One transfer the sweep found: its digest and when its last message was written. */

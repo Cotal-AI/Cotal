@@ -426,7 +426,8 @@ process. See [SPEC §13.9](../SPEC.md#139-authority-boundary) and
 A carried resume transcript never rides the rails. The operator-only `transcript-receive` command
 answers whether to upload and hands back a one-time claim for `spawn`, and the bytes travel through
 the target instance's own transfer bucket under two one-shot credentials: a writer the operator
-mints for that one transcript, and a reader the target instance mints for its own bucket.
+mints for that one transcript, and a reader the target instance mints for its own bucket, or that
+the host issues a remote manager through its `transferReader` authority operation.
 
 ## See also
 

@@ -12,6 +12,8 @@ import type { ResumeTranscriptLocator } from "@cotal-ai/core";
 
 /** The project directory name a carried seat's transcripts live under (`CLAUDE_CODE_PROJECT_DIR_NAME`). */
 const SEAT_PROJECT = "seat";
+/** The fork record a carried seat writes in its home (design section 9). */
+const FORK_RECORD = "cotal-fork.json";
 /** The first Claude release that honours `CLAUDE_CODE_PROJECT_DIR_NAME`. */
 const MIN_VERSION = [2, 1, 234] as const;
 /** The manager keeps a fork title of at most this many characters. */
@@ -118,6 +120,11 @@ export function refuseCarriedLaunch(binary: string, seatEnv: Record<string, stri
     throw new Error(`claude connector: the manager's Claude home does not trust ${cwd}; open \`claude\` in that directory on the manager host once, then launch again`);
 }
 
+/** Where a carried seat writes its fork record: the manager's {@link LaunchSpec.resumeRecordPath}. */
+export function carriedForkRecord(home: string): string {
+  return join(home, FORK_RECORD);
+}
+
 /** Fill the seat's home: the carried transcript where `--resume` finds it, and the first-run state a
  *  fresh home would otherwise prompt for, trusting only the launch directory already checked. */
 export function placeCarried(home: string, transcript: string, resume: string | undefined, cwd: string): Record<string, string> {
@@ -127,5 +134,23 @@ export function placeCarried(home: string, transcript: string, resume: string | 
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     copyFileSync(transcript, join(dir, `${resume}.jsonl`));
   }
-  return { CLAUDE_CONFIG_DIR: home, CLAUDE_CODE_PROJECT_DIR_NAME: SEAT_PROJECT };
+  return { CLAUDE_CONFIG_DIR: home, CLAUDE_CODE_PROJECT_DIR_NAME: SEAT_PROJECT, ...(resume !== undefined ? { COTAL_CLAUDE_CARRIED: resume } : {}) };
+}
+
+/**
+ * Write a carried seat's fork record once Claude has resumed: the digest of the transcript it read,
+ * which the manager holds to the carried claim before it records the seat's provenance. A seat that
+ * was not carried, or a session start that is not the resume, writes nothing; a later resume of the
+ * same seat keeps the first record.
+ */
+export function recordCarriedFork(env: NodeJS.ProcessEnv, start: unknown): void {
+  const source = env.COTAL_CLAUDE_CARRIED;
+  if (!source || !env.CLAUDE_CONFIG_DIR || start !== "resume") return;
+  const transcript = join(env.CLAUDE_CONFIG_DIR, "projects", SEAT_PROJECT, `${source}.jsonl`);
+  const title = titleOf(transcript);
+  try {
+    writeFileSync(carriedForkRecord(env.CLAUDE_CONFIG_DIR), JSON.stringify({ source, ...(title ? { title } : {}), transcriptSha256: sha256(transcript) }), { mode: 0o600, flag: "wx" });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  }
 }

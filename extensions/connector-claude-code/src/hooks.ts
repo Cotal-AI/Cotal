@@ -25,6 +25,7 @@ import {
 } from "@cotal-ai/connector-core";
 import type { AguiEmitterHolder } from "@cotal-ai/connector-core";
 import type { ClaudeEntry } from "./agui-map.js";
+import { recordCarriedFork } from "./carried.js";
 
 /** A short, human-readable preview of a tool call: its most salient input, else compact JSON. */
 function toolDetail(name: unknown, input: unknown): { name: string; detail: string } | undefined {
@@ -301,6 +302,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // current boundary and never republish history. The holder carries the value opaquely to
           // the connector-owned source factory.
           adoptEvents(ev.transcript_path, ev.source);
+          recordCarriedFork(process.env, ev.source);
           // Claude Code reports the session's actual model here (the ONLY hook that carries it; absent
           // after /clear or conversation recovery, so guard on string). Surface it in presence when the
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the

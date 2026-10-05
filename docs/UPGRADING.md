@@ -46,7 +46,8 @@ A manager host that runs carried seats needs `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROP
 cloud provider selection in its environment, because each carried seat runs in its own Claude home
 with no stored login. On an authenticated mesh the CLI mints the transfer writer from the space's
 signing seed, so the carrying host needs that seed, as for any other operator command. A user-mode
-mesh and a remote manager refuse a carry in this release. A seat launched without carrying,
+operator, who holds no seed, cannot carry in this release. A remote manager receives a carry once
+its host serves the manager-service `transferReader` operation. A seat launched without carrying,
 including any `--resume` whose id this host does not hold, is unchanged.
 
 ## Lifecycle-blocked refusals in 0.66.0

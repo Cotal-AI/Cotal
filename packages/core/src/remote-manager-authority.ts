@@ -13,7 +13,7 @@ import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, asse
 export interface RemoteManagerAuthorityRequest {
   v: 1;
   kind: "manager-service-authority";
-  operation: "prepare" | "activate" | "renew" | "session" | "retire" | "renewStandingBundle" | "renewRunDriver";
+  operation: "prepare" | "activate" | "renew" | "session" | "retire" | "renewStandingBundle" | "renewRunDriver" | "transferReader";
   space: string;
   /** The interactive ledger actor authenticating the request (normally `cli`). */
   actor: string;
@@ -46,6 +46,9 @@ export interface RemoteManagerAuthorityRequest {
     opId: string;
     serveEpoch: number;
   };
+  /** Transfer reader only: one fresh caller-generated nkey for one `transcript-receive` or sweep over
+   * this instance's own transfer bucket (docs/design/resume-transfer.md section 6). */
+  transferReader?: { id: string };
   /** Activate only: the manager's canonical contract artifacts, already content-addressed by the
    * client. The host publishes exactly these after re-hashing and derives the registered surface;
    * arbitrary extra contracts are refused by closed artifact count/digest checks. */
@@ -113,6 +116,7 @@ export interface RemoteManagerAuthorityMaterial {
     runMediator: RemoteManagerCredential;
     sessionServing: RemoteManagerCredential;
     retirementRequester: RemoteManagerCredential;
+    transferReader: RemoteManagerCredential;
   }>;
 }
 

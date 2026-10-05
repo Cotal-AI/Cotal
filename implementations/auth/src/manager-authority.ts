@@ -102,11 +102,11 @@ function requestError(what: string): never {
 export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPlatform?: boolean } = {}): RemoteManagerAuthorityRequest {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) requestError("must be an object");
   const o = raw as Record<string, unknown>;
-  const allowed = new Set(["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "session", "retirement", "contractArtifacts", "identities", "accountPublicKey", "processEpoch", "run"]);
+  const allowed = new Set(["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "session", "retirement", "contractArtifacts", "identities", "accountPublicKey", "processEpoch", "run", "transferReader"]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   if (o.v !== 1 || o.kind !== "manager-service-authority") requestError('must carry { v: 1, kind: "manager-service-authority" }');
-  if (o.operation !== "prepare" && o.operation !== "activate" && o.operation !== "renew" && o.operation !== "session" && o.operation !== "retire" && o.operation !== "renewStandingBundle" && o.operation !== "renewRunDriver")
-    requestError('operation must be "prepare", "activate", "renew", "session", "retire", "renewStandingBundle", or "renewRunDriver"');
+  if (o.operation !== "prepare" && o.operation !== "activate" && o.operation !== "renew" && o.operation !== "session" && o.operation !== "retire" && o.operation !== "renewStandingBundle" && o.operation !== "renewRunDriver" && o.operation !== "transferReader")
+    requestError('operation must be "prepare", "activate", "renew", "session", "retire", "renewStandingBundle", "renewRunDriver", or "transferReader"');
   for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId"] as const)
     if (typeof o[key] !== "string" || o[key].length === 0) requestError(`requires non-empty ${key}`);
   assertLifecycleToken(o.instanceId as string, "manager authority instanceId");
@@ -177,6 +177,11 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
       serveEpoch: r.serveEpoch,
     };
   } else if (o.retirement !== undefined) requestError(`${o.operation} must not carry retirement`);
+  if (o.operation === "transferReader") {
+    const t = o.transferReader as Record<string, unknown> | undefined;
+    if (!t || Object.keys(t).join(",") !== "id" || typeof t.id !== "string" || !/^U[A-Z2-7]{55}$/.test(t.id))
+      requestError("transferReader requires transferReader exactly { id } with a user nkey");
+  } else if (o.transferReader !== undefined) requestError(`${o.operation} must not carry transferReader`);
   const ids = o.identities;
   if (ids === null || typeof ids !== "object" || Array.isArray(ids)) requestError("requires identities");
   const names = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
@@ -205,6 +210,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     ...(run ? { run } : {}),
     ...(o.session && typeof o.session === "object" ? { session: o.session as RemoteManagerAuthorityRequest["session"] } : {}),
     ...(retirement ? { retirement } : {}),
+    ...(o.operation === "transferReader" ? { transferReader: { id: (o.transferReader as { id: string }).id } } : {}),
     ...(Array.isArray(o.contractArtifacts) ? { contractArtifacts: o.contractArtifacts } : {}),
     identities,
   };
@@ -217,6 +223,7 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   const actors = remoteManagerActors(r.instanceId);
   const ids = Object.values(r.identities).map((identity) => identity.id);
   if (r.retirement) ids.push(r.retirement.id);
+  if (r.transferReader) ids.push(r.transferReader.id);
   if (r.run) ids.push(r.run.driverId, r.run.mediatorId);
   if (new Set(ids).size !== ids.length)
     throw new EpEnvelopeError("bad-request", "manager-service identities must be distinct; one nkey cannot collapse separate authority lifetimes");
@@ -241,6 +248,8 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
         ? ["sessionServing"]
         : r.operation === "retire"
           ? ["retirementRequester"]
+        : r.operation === "transferReader"
+          ? ["transferReader"]
         : ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"];
   for (const name of required)
     if (!(name in credentials))

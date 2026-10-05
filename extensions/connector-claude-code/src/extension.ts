@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
-import { claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
+import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -342,6 +342,7 @@ export const claudeConnector: Connector = {
       // default action. The runtime presses Enter once when this connector-owned text appears.
       confirm: "WARNING: Loading development channels",
       control,
+      ...(opts.carried ? { resumeRecordPath: carriedForkRecord(opts.carried.home) } : {}),
       ...(artifacts.length > 0 ? { artifacts } : {}),
     };
   },

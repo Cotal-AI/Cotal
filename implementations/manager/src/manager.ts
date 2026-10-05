@@ -428,6 +428,10 @@ export interface ManagerOptions {
     sessionLedgerCreds: string;
     serveGrant: EpServeGrant;
     mintSessionServing: (args: { identity: Identity; endpoint: string; sessionId: string; epoch: number; exp: number }) => Promise<string>;
+    /** One host-issued transfer reader over this instance's own transfer bucket, for one
+     *  `transcript-receive` or sweep (docs/design/resume-transfer.md section 6). Absent: this
+     *  manager refuses `transcript-receive`. */
+    mintTransferReader?: (identity: Identity) => Promise<string>;
     mintRetirementRequester: (args: {
       identity: Identity;
       target: { owner: string; actor: string; lifecycleUid: string };
@@ -531,7 +535,8 @@ export type FreeSlotCause =
   | "supervise-crash-loop"
   | "supervise-recovery-failed"
   | "session-bind-failed"
-  | "resume-session-rebind-failed";
+  | "resume-session-rebind-failed"
+  | "carried-fork-refused";
 
 /** Operator-facing phrasing per cause. Kept beside the union so adding a member without a sentence
  *  is a type error rather than a blank in the log. The stop family's sentences carry the principal
@@ -545,6 +550,7 @@ const FREE_SLOT_CAUSE_TEXT: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, st
   "supervise-recovery-failed": "this manager retired it after a supervised restart failed",
   "session-bind-failed": "this manager stopped it: its host session could not be bound at launch",
   "resume-session-rebind-failed": "this manager stopped it: its host session could not be rebound on resume",
+  "carried-fork-refused": "this manager stopped it: it recorded no fork of the carried transcript",
 };
 
 /** The stop family's sentences — the same job {@link FREE_SLOT_CAUSE_TEXT} does for the string
@@ -779,6 +785,9 @@ interface ManagedLaunch {
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
   resumed?: ForkProvenance;
+  /** A carried resume's claim (#1499): the digest the manager staged, which the seat's fork record
+   *  must name before {@link resumed} is set, the host it came from, and when it was staged. */
+  carried?: { transcriptSha256: string; host: string; transferredAt: string };
   /** The connector's {@link LaunchSpec.resumeRecordPath} for this seat's fork. */
   resumeRecordPath?: string;
   sessionId?: string;
@@ -1853,9 +1862,9 @@ export class Manager {
       });
       await this.runHosting.reconcile();
     }
-    // A carried resume (#1499) needs this instance's transfer reader, which a manager mints from the
-    // space's signing seed (or needs none on an open mesh). A remote manager has no issuer for it yet.
-    if (!this.remoteAuthority && !this.userMode) {
+    // A carried resume (#1499) needs this instance's transfer reader: minted from the space's signing
+    // seed, issued by the host to a remote manager, or none on an open mesh.
+    if (!this.remoteAuthority || this.remoteAuthority.mintTransferReader) {
       this.transcripts = new TranscriptReceiver({
         space: this.space,
         instanceId: this.managerInstanceId,
@@ -3640,7 +3649,7 @@ export class Manager {
       abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
       transcriptReceive: (ctx) => this.serveGated(ctx, () => adminGated(ctx, () => {
         if (!this.transcripts)
-          throw new EpEnvelopeError("failed-precondition", "transcript-receive: this manager does not receive carried transcripts (a user-mode or remote manager has no transfer reader)");
+          throw new EpEnvelopeError("failed-precondition", "transcript-receive: this manager does not receive carried transcripts (its remote authority issues no transfer reader)");
         return this.transcripts.receive(args(ctx) as unknown as TranscriptReceiveInput);
       })),
     });
@@ -4708,7 +4717,14 @@ export class Manager {
    *  record cannot be read or does not name this seat's source, it is absent: `ps` then shows the
    *  source id alone rather than failing the listing for every other seat. */
   private forkProvenance(a: ManagedAgent): ForkProvenance | undefined {
-    if (a.launch.resumed || !a.launch.resumeRecordPath || !a.launch.forkSource) return a.launch.resumed;
+    // A carried seat's provenance is set only by refuseCarriedFork, once its record names the claim.
+    if (a.launch.resumed || a.launch.carried) return a.launch.resumed;
+    a.launch.resumed = this.readForkRecord(a);
+    return a.launch.resumed;
+  }
+
+  private readForkRecord(a: ManagedAgent): ForkProvenance | undefined {
+    if (!a.launch.resumeRecordPath || !a.launch.forkSource) return undefined;
     let record: unknown;
     try {
       record = JSON.parse(readFileSync(a.launch.resumeRecordPath, "utf8"));
@@ -4719,8 +4735,24 @@ export class Manager {
     if (r.source !== a.launch.forkSource || typeof r.transcriptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(r.transcriptSha256) ||
         !(r.title === undefined || r.title === null || (typeof r.title === "string" && r.title.length <= 1024)))
       return undefined;
-    a.launch.resumed = { source: r.source, ...(typeof r.title === "string" && r.title ? { title: r.title } : {}), transcriptSha256: r.transcriptSha256 };
-    return a.launch.resumed;
+    return { source: r.source, ...(typeof r.title === "string" && r.title ? { title: r.title } : {}), transcriptSha256: r.transcriptSha256 };
+  }
+
+  /** Design section 9: a carried seat must fork the bytes the operator carried. Wait for its fork
+   *  record and hold it to the claim; on a match it becomes the seat's provenance, otherwise the
+   *  refusal is returned. A seat that writes no record cannot be shown to have forked the claim. */
+  private async refuseCarriedFork(a: ManagedAgent, timeoutMs: number): Promise<string | undefined> {
+    const claim = a.launch.carried!;
+    const deadline = Date.now() + timeoutMs;
+    let record: ForkProvenance | undefined;
+    while (!(record = this.readForkRecord(a))) {
+      if (Date.now() >= deadline) return `${a.name} wrote no fork record within ${timeoutMs} ms, so it cannot be shown to have forked the carried transcript`;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (record.transcriptSha256 !== claim.transcriptSha256)
+      return `${a.name} forked a transcript with sha256:${record.transcriptSha256}, not the carried sha256:${claim.transcriptSha256}`;
+    a.launch.resumed = { ...record, host: claim.host, transferredAt: claim.transferredAt };
+    return undefined;
   }
 
   private readManagedSession(a: ManagedAgent): string {
@@ -6053,10 +6085,7 @@ export class Manager {
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
-          // A carried seat forks the staged copy the manager verified, so the claim is its provenance.
-          ...(carried
-            ? { resumed: { source: carried.source, ...(carried.title ? { title: carried.title } : {}), transcriptSha256: carried.sha256, host: carried.sourceHost, transferredAt: carried.stagedAt } }
-            : {}),
+          ...(carried ? { carried: { transcriptSha256: carried.sha256, host: carried.sourceHost, transferredAt: carried.stagedAt } } : {}),
           // Opaque values may contain secrets. Preserve only their keys and require the referenced
           // persona/manifest to resolve the values again; imperative overrides have no safe payload.
           unresolvedLaunchOptionKeys:
@@ -6122,6 +6151,15 @@ export class Manager {
         this.watchExit(managed);
         await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } });
         return { ok: false, error: readiness.detail };
+      }
+      if (managed.launch.carried) {
+        const refused = await this.refuseCarriedFork(managed, readinessTimeoutMs);
+        if (refused !== undefined) {
+          this.stopHandle(managed, false);
+          this.freeSlot(managed, true, "carried-fork-refused");
+          await hooks?.onOutcome?.({ kind: "failed", data: { error: refused } });
+          return { ok: false, error: refused };
+        }
       }
       if (managed.restart) {
         if (connector.supportsSessionContinuation) {
@@ -9575,18 +9613,18 @@ export class Manager {
   }
 
   /** A connection holding this instance's transfer reader grants (docs/design/resume-transfer.md
-   *  section 6), minted for this one receive or sweep from the space's signing seed. An open mesh
-   *  enforces no grants, so a bare one-shot connection is that reader there. */
+   *  section 6) for this one receive or sweep: minted from the space's signing seed, or issued by the
+   *  host to a remote manager. An open mesh enforces no grants, so a bare one-shot connection is that
+   *  reader there. */
   private async withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-    if (this.remoteAuthority || this.userMode) throw new Error("withTransferReader: a user-mode or remote manager has no transfer reader");
-    const nc = await this.dial(this.auth
-      ? {
-          ...standaloneConnectOpts({
-            creds: await mintCreds(this.auth, newIdentity(), "transfer-reader", { transferReader: { instanceId: this.managerInstanceId } }),
-            /* not yet wired to a recorded transport */ tls: false,
-          }),
-          maxReconnectAttempts: 0,
-        }
+    const issue = this.remoteAuthority?.mintTransferReader;
+    if (this.remoteAuthority && !issue) throw new Error("withTransferReader: this manager's remote authority issues no transfer reader");
+    const identity = newIdentity();
+    const creds = issue
+      ? await issue(identity)
+      : this.auth && await mintCreds(this.auth, identity, "transfer-reader", { transferReader: { instanceId: this.managerInstanceId } });
+    const nc = await this.dial(creds
+      ? { ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 }
       : { maxReconnectAttempts: 0 });
     try {
       return await fn(nc);
