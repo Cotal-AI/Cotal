@@ -1091,6 +1091,21 @@ export async function runJcodeHost(): Promise<void> {
         // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
         // raced below; the handle returned from this gate is what actually reports it.
         dispatched.catch(() => {});
+        // Surfaced at acceptance, not at turn end: the model's own cotal_yield runs inside this
+        // turn, and yieldTurn refuses a turn that is not surfaced yet. Heard until the turn settles,
+        // not only inside the window below: while this run is open with its acceptance lapsed, the
+        // queue fallback defers and nothing else sends this session a message it could acknowledge,
+        // so a late acceptance is still this send's.
+        if (attributable && turnIds.length) {
+          const surface = (event: ApiEvent): void => {
+            if (!("session_id" in event && event.session_id === sessionId)) return;
+            stopSurfacing();
+            agent.commitSurfacedTurns(turnIds);
+          };
+          const stopSurfacing = (): void => { turnClient!.off("message_accepted", surface); };
+          turnClient!.on("message_accepted", surface);
+          void dispatched.then(stopSurfacing, stopSurfacing);
+        }
         // Hold the gate for ONE acceptance round trip, then hand the turn back to run outside it.
         // Whichever happens first ends the window: the acknowledgement, the turn itself finishing,
         // or the SDK's own 10s acceptance timeout, so the gate cannot be held by a silent Harness.
@@ -1107,9 +1122,6 @@ export async function runJcodeHost(): Promise<void> {
         } finally {
           turnClient!.off("message_accepted", noteAccepted);
         }
-        // Surfaced at acceptance, not at turn end: the model's own cotal_yield runs inside this
-        // turn, and yieldTurn refuses a turn that is not surfaced yet.
-        if (acknowledgedHere && attributable) agent.commitSurfacedTurns(turnIds);
         // LEAVING THE GATE UNACKNOWLEDGED IS A DEBT, NOT A CLEAN EXIT. This send is still open and
         // can still emit its acceptance after the next dispatch has begun, which is precisely how a
         // reviewer produced an acknowledgement for a send that never received one. Releasing the
