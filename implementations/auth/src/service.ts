@@ -276,7 +276,7 @@ export interface AuthAuthorityPlane {
   close(): Promise<void>;
 }
 
-type RemoteRetirementGate = { state: "open" | "frozen" | "retired"; principal: string; processEpoch: number };
+type RemoteRetirementGate = Pick<EpGateState, "state" | "principal" | "processEpoch">;
 
 /** Package-internal policy step for the hosted retirement requester. The HTTP production door calls
  * this after deriving the owner and manager actors; broker-free smokes exercise the same decision. */

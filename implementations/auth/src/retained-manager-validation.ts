@@ -10,6 +10,7 @@ import {
   type RetainedAgentAuthority,
 } from "@cotal-ai/core";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 
 const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
@@ -116,12 +117,7 @@ export type AuthorizeRemoteRetainedAgentValidationArgs = ManagerAuthorityHolder 
   request: RemoteRetainedAgentValidationRequest;
   space: string;
   proofSecret: string | Uint8Array;
-  observeManagerGate: (instanceId: string) => Promise<{
-    state: "open" | "frozen" | "retired";
-    principal: string;
-    processEpoch: number;
-    registrationRevision: number;
-  } | null>;
+  observeManagerGate: ObserveManagerGate;
 };
 
 /** Host policy authorizing one fresh, non-minting retained-agent continuity validation. */
