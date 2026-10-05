@@ -44,11 +44,13 @@ No client has compile-time knowledge of any endpoint's commands. `cotal describe
 `describe` command answers the registered contract digests, the schemas are fetched from the
 space's content-addressed contract store, recompiled, and verified against those digests.
 Each command prints with its capability class and targeting shape. `cotal invoke <endpoint>
-<command> --args '<json>'` then calls one command by name, validating the arguments against
-the fetched input schema before publish. A signed-in user invokes the same surface through their
-bearer, and the broker enforces each command's existing capability grant. A manager alias supplied
-through `--name` resolves through its name-keyed `inspect` command, so an authorized targeted call
-does not need the manager-wide `ps` enumeration grant. Every built-in manager command uses this
+<command> --args '<json>'` then calls one command by name, validating the arguments as they
+will be sent (JSON drops a key whose value is undefined) against the fetched input schema before
+publish. A refusal at that check means nothing was sent, and it is marked `not-executed`. A
+signed-in user invokes the same surface through their bearer, and the broker enforces each
+command's existing capability grant. A manager alias supplied through `--name` resolves through
+its name-keyed `inspect` command, so an authorized targeted call does not need the manager-wide
+`ps` enumeration grant. Every built-in manager command uses this
 same trust chain, so there is nothing the built-ins can reach that a described contract cannot. The registered
 `auth` endpoint is describable the same way `manager` is: `cotal describe auth` lists
 `retire-lifecycle` and its exact-mode target shape.

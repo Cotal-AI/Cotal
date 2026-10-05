@@ -21,7 +21,7 @@ import {
   type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import {
-  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_BIND_REFUSED, registryReadFailed, bindRefusalMarked, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
+  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_UNDECLARED_ARG, EP_BIND_REFUSED, registryReadFailed, bindRefusalMarked, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
   type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail, type EpBindRefusedDetail,
   type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail, type EpBindBlock,
 } from "./endpoint-envelope.js";
@@ -97,8 +97,26 @@ function buildRequest(
 ): { subject: string; requestId: string; n: string; body: Uint8Array } {
   // §13.7: the caller's own contract gates the args BEFORE publish — the same validator and the
   // same budget the responder runs, so a request this boundary admits pins digests the
-  // responder can honor or reject, never digests detached from the payload.
-  assertArgsValid(op.contract.input.validate, op.args);
+  // responder can honor or reject, never digests detached from the payload. The args are gated as
+  // the responder will parse them: JSON drops a key whose value is undefined, and validating the
+  // object itself refused, against an older responder's closed contract, a key that never reaches it.
+  let args: Record<string, unknown> | undefined;
+  try {
+    args = op.args === undefined ? undefined : JSON.parse(JSON.stringify(op.args)) as Record<string, unknown>;
+  } catch (e) {
+    // A value JSON cannot carry (a BigInt, a cycle, a throwing toJSON) is malformed args that never
+    // left this caller: a `not-executed` refusal like the contract check below, never an unknown outcome.
+    throw new EpEnvelopeError("bad-request", `args cannot be sent as JSON: ${e instanceof Error ? e.message : String(e)}`, undefined, "not-executed");
+  }
+  try {
+    assertArgsValid(op.contract.input.validate, args);
+  } catch (e) {
+    if (!(e instanceof EpEnvelopeError)) throw e;
+    // Nothing was published, so the refusal is `not-executed` (§13.3). A key the contract does not
+    // declare is marked, so a surface that knows both builds can name the version skew.
+    const property = op.contract.input.validate.errors?.[0]?.params?.additionalProperty;
+    throw new EpEnvelopeError(e.code, e.message, typeof property === "string" ? [{ kind: EP_UNDECLARED_ARG, property }] : undefined, "not-executed");
+  }
   // The responder refuses these too (§13.3), but a caller that would emit an unservable request
   // should not have to learn it from a round trip: `describe` is what produces a bind, and a
   // scatter addresses every incarnation, so neither can carry one.
@@ -131,7 +149,7 @@ function buildRequest(
     ...(op.goalId !== undefined ? { goalId: op.goalId } : {}),
     ...(op.target && op.target.mode !== "self" ? { target: bodyTarget(op.target) } : {}),
     ...(op.bind !== undefined ? { bind: { instanceId: assertLifecycleToken(op.bind.instanceId, "bind instanceId"), epoch: op.bind.epoch } } : {}),
-    ...(op.args !== undefined ? { args: op.args } : {}),
+    ...(args !== undefined ? { args } : {}),
     from: { id: `${op.caller.owner}.${op.caller.actor}`, name: op.name ?? op.caller.actor },
     ...(verb.deadlineMs !== undefined ? { deadlineMs: verb.deadlineMs } : {}),
     ...(op.correlation !== undefined ? { correlation: op.correlation } : {}),

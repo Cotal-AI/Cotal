@@ -14,6 +14,7 @@ import {
   unansweredRequest,
   unansweredRail,
   registryReadFailed,
+  undeclaredArg,
   renderLifecycleBlocked,
   replyRefusedBeforeEffect,
   submitAndFollowGoal,
@@ -37,6 +38,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { controlCaller, loadSpaceAuth, renderWorkspaceError, type ControlAuth } from "@cotal-ai/workspace";
 import { DEV_OWNER, type SpaceAuth } from "@cotal-ai/core";
 import { c, staleStoreHint } from "../ui.js";
+import { cliVersion } from "./version.js";
 
 /** The control auth shape and target resolver live in `@cotal-ai/workspace` (shared with every
  *  command surface that addresses the manager: this CLI, `cotal run`, the web dashboard). Re-exported
@@ -339,6 +341,11 @@ export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
   }
   if (registryReadFailed(e))
     return { ok: false, unanswered: false, error: `the manager registry could not be read: a broker read on this side, not the managers' silence, and they may all be up. Retry; if it persists, look at the broker's JetStream (${detail})` };
+  // This CLI built the args for a manager of its own release, and the two release in lockstep, so a
+  // key the manager's contract does not declare means the manager runs a different release.
+  const undeclared = undeclaredArg(e);
+  if (undeclared !== undefined)
+    return { ok: false, unanswered: false, error: `${detail}. That is version skew: this CLI runs Cotal ${cliVersion()} and sends "${undeclared}", which the manager's contract does not declare. Run the manager at Cotal ${cliVersion()}, or use a CLI at the manager's version` };
   // The unpinned class-queue split. Core says a call that addresses one instance does not split
   // and stops there (a CLI flag name does not belong in a core error). The flag is named here only
   // when the CALLER declared it has one (`pin` present) and did not pass it: an absent `pin` is a
