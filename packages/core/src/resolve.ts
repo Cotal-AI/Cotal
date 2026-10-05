@@ -50,6 +50,7 @@ function candidate(p: Presence): PeerCandidate {
  * - otherwise a case-insensitive name match, preferring live peers over stale offline ghosts:
  *   one live match resolves; **2+ live matches throw**; with no live match a unique offline peer
  *   resolves (best-effort), but **2+ offline duplicates throw**;
+ * - a target that is a peer's `name/role` roster label throws, naming the bare name;
  * - no match → `undefined` (the caller renders "no such peer").
  *
  * `opts.selfId`, when given, is excluded (you don't DM yourself). Throws
@@ -68,7 +69,18 @@ export function resolvePeer(
   const want = target.trim().toLowerCase();
   if (!want) return undefined;
   const matches = peers.filter((p) => p.card.name.toLowerCase() === want);
-  if (matches.length === 0) return undefined;
+  if (matches.length === 0) {
+    // Rosters print a peer as `name/role`, so that label is what gets copied into a target. It is
+    // refused rather than resolved: `/` is reserved for `owner/name` handles, and reading it as a
+    // role here would give the same string two meanings once handles land.
+    const labelled = peers.find((p) => p.card.role && `${p.card.name}/${p.card.role}`.toLowerCase() === want);
+    if (labelled)
+      throw new Error(
+        `"${target}" is the roster label of ${labelled.card.name} (role ${labelled.card.role}), not an ` +
+          `address: use the name "${labelled.card.name}" or its instance id`,
+      );
+    return undefined;
+  }
 
   const live = matches.filter((p) => p.status !== "offline");
   const pool = live.length > 0 ? live : matches;
