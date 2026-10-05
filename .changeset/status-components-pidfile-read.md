@@ -1,0 +1,5 @@
+---
+"@cotal-ai/cli": patch
+---
+
+`cotal status --components` no longer aborts every row when one component's PID record cannot be read. The pass checked that a pidfile existed and then read it, so a component that removed its own record between those two calls, or a record the pass could not read, threw out of the whole pass: it printed the header with no rows and exited 1, the same code as `absent`. The record is now read once. A record that is gone reads as `absent`, and any other read error makes that component `refused`, naming the error, while the other rows print as before. Bare `cotal status` reads each local process record once as well, and a record it cannot read marks only that process row `pidfile unreadable`, naming the error. It reads the manager's delivery-aware marker only after the manager's own record, so a marker left behind by a stopped manager is not read. A process that exits while status runs, or a process record status cannot read, no longer aborts the command before the component pass.
