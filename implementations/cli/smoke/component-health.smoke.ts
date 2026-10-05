@@ -121,33 +121,16 @@ async function waitForFile(path: string): Promise<void> {
   assert.ok(existsSync(path), `fixture never wrote ${path}`);
 }
 
-async function stop(child: ChildProcess | undefined): Promise<void> {
-  if (!child?.pid) return;
-  try { child.kill("SIGTERM"); } catch { /* already gone */ }
+/** Takes a bare PID for the detached dashboard, which `cotal web --detach` leaves parented elsewhere. */
+async function stop(target: ChildProcess | number | undefined): Promise<void> {
+  const pid = typeof target === "number" ? target : target?.pid;
+  if (!pid) return;
+  try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
   for (let i = 0; i < 30; i++) {
-    try { process.kill(child.pid, 0); } catch { return; }
+    try { process.kill(pid, 0); } catch { return; }
     await sleep(50);
   }
-  try { child.kill("SIGKILL"); } catch { /* already gone */ }
-}
-
-async function writeWebHarness(port: number): Promise<ChildProcess> {
-  const script = join(root, "web-harness.mjs");
-  const readiness = "web-harness-readiness";
-  // Refuses `/api/meta` without the recorded nonce, as the dashboard's gate does, so this cell grades
-  // the credential the probe presents rather than a surface no real dashboard serves.
-  writeFileSync(script, [
-    'import { createServer } from "node:http";',
-    `const server = createServer((req, res) => { if (req.url === "/api/meta") { res.setHeader("content-type", "application/json"); if (req.headers["x-cotal-readiness"] !== ${JSON.stringify(readiness)}) { res.statusCode = 401; res.end(JSON.stringify({ error: "unauthenticated" })); return; } res.end(JSON.stringify({ pid: process.pid })); return; } res.statusCode = 404; res.end(); });`,
-    `server.listen(${port}, "127.0.0.1");`,
-  ].join("\n"));
-  const child = spawn(process.execPath, [script], { cwd: root, stdio: "ignore" });
-  assert.ok(child.pid, "web harness received a pid");
-  writeFileSync(join(root, ".cotal", "web.pid"), String(child.pid));
-  writeFileSync(join(root, ".cotal", "web.session"), JSON.stringify({ host: "127.0.0.1", port, readiness }));
-  for (let i = 0; i < 50 && !(await portOpen(port)); i++) await sleep(50);
-  assert.ok(await portOpen(port), "web harness never bound its port");
-  return child;
+  try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
 }
 
 async function writeDeliveryHolder(): Promise<ChildProcess> {
@@ -321,7 +304,7 @@ const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 let broker: ChildProcess | undefined;
 let holder: ChildProcess | undefined;
-let web: ChildProcess | undefined;
+let web: number | undefined;
 let delivery: ChildProcess | undefined;
 let servingManager: { close(): Promise<void> } | undefined;
 try {
@@ -413,14 +396,22 @@ try {
   try { foreignWeb.kill("SIGTERM"); } catch { /* fixture is already gone */ }
   rmSync(join(root, ".cotal", "web.pid"), { force: true });
 
-  web = await writeWebHarness(await freePort());
+  // The shipped dashboard, installed and launched as an operator does, so this cell grades the
+  // probe against the dashboard's own `web.session` and auth gate rather than a copy of either. It
+  // keeps serving for the cells below.
+  const extAdd = cli("ext", "add", join(WT, "implementations", "web"));
+  check("the web extension installs into this isolated config", extAdd.status === 0, `${extAdd.stdout}${extAdd.stderr}`);
+  const webPort = await freePort();
+  const webUp = cli("web", "--detach", "--no-open", "--port", String(webPort), "--space", SPACE, "--server", server);
+  const webUpText = `${webUp.stdout}${webUp.stderr}`;
+  web = Number(/\(pid (\d+)\)/.exec(webUpText)?.[1]) || undefined;
+  check("the dashboard starts detached", webUp.status === 0 && web !== undefined, webUpText);
+  const anonymousMeta = await fetch(`http://127.0.0.1:${webPort}/api/meta`);
+  check("the dashboard refuses an anonymous /api/meta", anonymousMeta.status === 401, anonymousMeta.status);
   const webServing = cli("status", "--components", "--space", SPACE, "--server", server);
   const webServingText = `${webServing.stdout}${webServing.stderr}`;
-  check("a dashboard-owned HTTP meta face proves web serving",
-    /web\s+serving/.test(webServingText) && /port \d+/.test(webServingText) && webServingText.includes("http reachable"), webServingText);
-  await stop(web);
-  web = undefined;
-  rmSync(join(root, ".cotal", "web.pid"), { force: true });
+  check("the live dashboard at its recorded address grades web serving",
+    /web\s+serving/.test(webServingText) && webServingText.includes(`pid ${web}`) && webServingText.includes(`port ${webPort}`) && webServingText.includes("http reachable"), webServingText);
 
   // The delivery daemon owns its ready lease and records its last adoption proof in its renewal
   // record. Put a holder in the pre-ready state, then flip the record to a refused adoption: neither
@@ -441,7 +432,6 @@ try {
   rmSync(renewalRecordPath(root, SPACE), { force: true });
   await sleep(10_500);
 
-  web = await writeWebHarness(await freePort());
   servingManager = await serveManagerWithForeignRefusal();
   const benignRefusal = await cliAsync("status", "--components", "--space", SPACE, "--server", server);
   const benignRefusalText = `${benignRefusal.stdout}${benignRefusal.stderr}`;
