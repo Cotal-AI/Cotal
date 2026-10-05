@@ -904,9 +904,10 @@ state wins):
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
-- **web**: local PID record and the dashboard's own loopback `/api/meta` response, which must name
-  the same PID and its requested port. A different process on the port, an unreadable PID command,
-  or an unrecognizable process record is `refused`, not a green default-port guess.
+- **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded in
+  `web.session` once it was listening, which must name the same PID. A live PID with no readable
+  recorded address (the dashboard is still writing it, or an earlier build started it), or an
+  unrecognizable process record, is `refused`, not a green default-port guess.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
 
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`

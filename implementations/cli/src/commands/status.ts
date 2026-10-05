@@ -20,7 +20,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readProcessCommand, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -1084,40 +1084,18 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
   }
 }
 
-/** The web dashboard owns the HTTP listener and identifies itself through `/api/meta`, including
- * the serving PID.  A raw TCP success is insufficient: another program could own its port. */
-export function webProbeTarget(command: string):
-  | { host: string; port: number; url: URL }
-  | { refused: string } {
-  const portMatch = /(?:^|\s)--port(?:=|\s+)(\d{1,5})(?:\s|$)/.exec(command);
-  const hostMatch = /(?:^|\s)--host(?:=|\s+)([^\s]+)(?:\s|$)/.exec(command);
-  // A direct web process uses the documented defaults. A detached process is re-execed with `web`
-  // in argv; an arbitrary live PID record whose command has neither form is not evidence that the
-  // default endpoint is its control face, so decline the probe rather than test a bystander.
-  const isWebCommand = /(?:^|\s)web(?:\s|$)/.test(command);
-  if (!portMatch && !isWebCommand)
-    return { refused: "port probe refused (recorded PID is not a web command)" };
-  const port = portMatch ? Number(portMatch[1]) : 7799;
-  if (!Number.isInteger(port) || port < 1 || port > 65535)
-    return { refused: "port probe refused (invalid process port)" };
-  const host = hostMatch?.[1] ?? "127.0.0.1";
+/** The address the dashboard recorded in `web.session` once `listen()` succeeded, or `undefined`
+ * while no whole record is readable. The dashboard truncates the file before it writes the record,
+ * so a read can find it empty while the dashboard starts. */
+function webBoundAddress(path: string): { host: string; port: number } | undefined {
   try {
-    const unbracketed = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-    if (unbracketed.includes("[") || unbracketed.includes("]") || /[\s/?#@]/.test(unbracketed)) throw new Error("invalid");
-    const ipv6 = unbracketed.includes(":");
-    const parsed = new URL(`http://${ipv6 ? `[${unbracketed}]` : unbracketed}:${port}/api/meta`);
-    const normalized = ipv6 ? parsed.hostname.slice(1, -1) : parsed.hostname;
-    if (normalized === "0.0.0.0" || normalized === "::" || normalized === "::ffff:0:0") throw new Error("invalid");
-    return {
-      host: normalized,
-      port,
-      url: parsed,
-    };
-  } catch {
-    return { refused: "host probe refused (invalid process host)" };
-  }
+    const { host, port } = JSON.parse(readFileSync(path, "utf8")) as { host?: unknown; port?: unknown };
+    return typeof host === "string" && typeof port === "number" ? { host, port } : undefined;
+  } catch { return undefined; }
 }
 
+/** The web dashboard owns the HTTP listener and identifies itself through `/api/meta`, including
+ * the serving PID.  A raw TCP success is insufficient: another program could own its port. */
 async function webHealth(context: LocalProcessContext): Promise<ComponentHealth> {
   const record = processRecord(localProcessPath("web.pid", context));
   const facts = pidFacts(record);
@@ -1128,26 +1106,24 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
     if (record.kind === "unknown") facts.push("pid liveness unestablishable");
     return { name: "web", verdict: stopped, facts };
   }
-  // The dashboard exposes its own requested port in its process command.  We ask only the exact
-  // recorded PID — never scan ports — and then require that HTTP's `/api/meta` names the same PID.
-  // An unreadable command is a probe refusal rather than an assumption that the documented default
-  // was used.
+  // Probe only the address the dashboard recorded once it was listening, never one guessed from its
+  // command line or a default: no argv names the port `--port 0` bound. Without that record the
+  // control surface cannot be located, which is a probe refusal rather than a not-serving answer.
   if (record.kind !== "live") throw new Error("web component record lost its live pid after classification");
   const pid = record.pid;
-  const command = readProcessCommand(pid);
-  if (command.kind !== "command") return { name: "web", verdict: "refused", facts: [...facts, "port probe refused (process command unreadable)"] };
-  const target = webProbeTarget(command.command);
-  if ("refused" in target) return { name: "web", verdict: "refused", facts: [...facts, target.refused] };
+  const bound = webBoundAddress(localProcessPath("web.session", context));
+  if (!bound) return { name: "web", verdict: "refused", facts: [...facts, "probe refused (no bound address recorded)"] };
   try {
-    const response = await fetch(target.url, { signal: AbortSignal.timeout(500) });
+    const host = bound.host.includes(":") ? `[${bound.host}]` : bound.host;
+    const response = await fetch(`http://${host}:${bound.port}/api/meta`, { signal: AbortSignal.timeout(500) });
     const meta = await response.json() as { pid?: unknown };
-    if (response.ok && meta.pid === pid) return { name: "web", verdict: "serving", facts: [...facts, `host ${target.host}`, `port ${target.port}`, "http reachable"] };
-    return { name: "web", verdict: "not-serving", facts: [...facts, `host ${target.host}`, `port ${target.port}`, "http identity mismatch"] };
+    if (response.ok && meta.pid === pid) return { name: "web", verdict: "serving", facts: [...facts, `host ${bound.host}`, `port ${bound.port}`, "http reachable"] };
+    return { name: "web", verdict: "not-serving", facts: [...facts, `host ${bound.host}`, `port ${bound.port}`, "http identity mismatch"] };
   } catch {
-    // The registered web process has no persistent endpoint record beyond its own command. If that
-    // exact HTTP surface cannot identify the recorded PID, this component is present but not serving.
+    // If the recorded address cannot identify the recorded PID, this component is present but not
+    // serving.
   }
-  return { name: "web", verdict: "not-serving", facts: [...facts, `host ${target.host}`, `port ${target.port}`, "http not answered"] };
+  return { name: "web", verdict: "not-serving", facts: [...facts, `host ${bound.host}`, `port ${bound.port}`, "http not answered"] };
 }
 
 async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
