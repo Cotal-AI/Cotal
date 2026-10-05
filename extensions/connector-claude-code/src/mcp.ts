@@ -7,7 +7,12 @@
  * message arrives. Identity comes from `COTAL_*` env.
  *
  * stdio transport owns stdout for JSON-RPC — ALL diagnostics go to stderr.
+ *
+ * Run directly (`node mcp.cjs`) it serves the one session its process env names. `require`d, it
+ * runs nothing and exports {@link serveClaudeSession}, so a host can serve several sessions from one
+ * process, each over its own stream pair and launch env.
  */
+import type { Readable, Writable } from "node:stream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -36,16 +41,6 @@ import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.j
 import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "./agui-map.js";
 import { createBoundClaudeTranscriptSource } from "./agui-source.js";
 
-/** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set in main()
- *  iff COTAL_EVENTS is on (buildLaunch sets it for managed sessions; a personal session never
- *  publishes). This replaces the `tr-<name>` transcript mirror, which is gone. */
-let events: AguiEmitterHolder<ClaudeEntry> | undefined;
-
-/** Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages.
- *  Read `events` lazily: main() assigns it after this handler is built. `onReply` is the commit
- *  half — an injected batch is acked only once its reply is confirmed delivered. */
-const claude = createClaudeHandle({ events: () => events });
-
 /** What a plain session's one tool says. Static: an unmanaged process knows nothing about any mesh. */
 const HOW_TO_JOIN =
   "This Claude Code session is not on a Cotal mesh, so the cotal_* mesh tools are off. " +
@@ -71,21 +66,52 @@ async function serveUnmanaged(): Promise<void> {
   await server.connect(new StdioServerTransport());
 }
 
-async function main(): Promise<void> {
-  // No identity → this is a plain `claude`, not a launcher-spawned agent. Stay
-  // off the mesh, so an installed plugin can't make the operator's own sessions
-  // join as stray peers, but still answer MCP so the client sees a working server.
-  if (!hasIdentity()) {
-    process.stderr.write("[cotal-connector] no COTAL_NAME — not a managed session; staying off the mesh\n");
-    await serveUnmanaged();
-    return;
-  }
-  const config = configFromEnv();
+/** Where a hosted session reads its launch env and speaks MCP. `mcp.cjs` run directly passes its
+ *  own process env and stdio; a host serving several sessions in one process passes each
+ *  connection's env and stream pair, and gets one independent session per call. */
+export interface ClaudeSessionOptions {
+  /** The session's launch env (`COTAL_*`, the launch-material path). Read only from here. */
+  env: NodeJS.ProcessEnv;
+  /** MCP JSON-RPC from the Claude Code client, newline-delimited. */
+  input: Readable;
+  /** MCP JSON-RPC to the client. */
+  output: Writable;
+  /** One diagnostic line, no trailing newline. Default: stderr. */
+  log?: (line: string) => void;
+  /** Exit the process when the control socket can't be bound. Only the process that IS the session
+   *  may do this; a host serving several sessions passes false and the call rejects instead. */
+  fatalBind?: boolean;
+  /** The manager asked this session to shut down (authenticated control frame). The session has
+   *  already closed itself when this runs; the caller decides what else ends (mcp.cjs: the process). */
+  onShutdown?: () => void;
+}
+
+export interface ClaudeSession {
+  name: string;
+  /** Leave the mesh and stop serving: control socket, wake policy, endpoint, MCP server. Idempotent. */
+  close(): Promise<void>;
+}
+
+/** Serve one managed Claude Code session: its mesh endpoint, hook control socket, `claude/channel`
+ *  wake policy and the cotal MCP server over `input`/`output`. Everything per-session lives in this
+ *  call, so N calls in one process are N independent sessions. Rejects on a misconfigured launch. */
+export async function serveClaudeSession(opts: ClaudeSessionOptions): Promise<ClaudeSession> {
+  const { env } = opts;
+  const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`));
+  /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set below iff
+   *  COTAL_EVENTS is on (buildLaunch sets it for managed sessions; a personal session never
+   *  publishes). This replaces the `tr-<name>` transcript mirror, which is gone. */
+  let events: AguiEmitterHolder<ClaudeEntry> | undefined;
+  /** Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages.
+   *  Read `events` lazily: it is assigned after this handler is built. `onReply` is the commit
+   *  half — an injected batch is acked only once its reply is confirmed delivered. */
+  const claude = createClaudeHandle({ events: () => events });
+  const config = configFromEnv(env);
   config.connector = "claude"; // advertise the host harness on our AgentCard (meta.connector)
   const agent = new MeshAgent(config);
   agent.start(); // background connect with retry — never blocks tool serving
 
-  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "") || config.eventsRequired) {
+  if (/^(1|true|yes|on)$/i.test(env.COTAL_EVENTS ?? "") || config.eventsRequired) {
     // The mapper is built inside the emitter factory, because it is keyed on the thread the
     // transcript names and that is not known until a hook hands one over. It is HELD here because
     // `onRunClosed` below has to reach it, and the two are assigned at different times.
@@ -108,7 +134,7 @@ async function main(): Promise<void> {
         const startEmitter = async () => {
           // The events state root throws rather than defaulting to the working directory: a WAL
           // written somewhere no later start looks is a silent loss.
-          const workspaceRoot = resolveEventsStateRoot(process.env);
+          const workspaceRoot = resolveEventsStateRoot(env);
 
           // The native session IS the AG-UI thread, and Claude Code names the transcript after it.
           // Taken from the path rather than from any env: the hook's path is what the emitter
@@ -161,7 +187,7 @@ async function main(): Promise<void> {
       // Required, and not defaulted to a swallow: this runs behind a hook that must not throw, so
       // a failure reaches a human only if it is written somewhere. The holder is terminal on
       // error, it does not retry, so this line is the whole record of why events stopped.
-      (e: Error) => process.stderr.write(`[cotal-connector] AG-UI emitter stopped: ${e.message}\n`),
+      (e: Error) => log(`[cotal-connector] AG-UI emitter stopped: ${e.message}`),
       // The turn terminal closes a run the record stream never described, so the mapper still
       // believes that run is open. Without this it would attribute the next records to a run the
       // published stream has already finished and the emitter would refuse the batch. Keyed on the
@@ -175,12 +201,10 @@ async function main(): Promise<void> {
   // from the launch-material file that env points at, which is also where the hooks read it. A
   // managed session without both is misconfigured, so fail loud rather than serve an
   // unauthenticated (or no) control plane.
-  const control = controlFromEnv();
+  const control = controlFromEnv(env);
   if (!control) {
-    process.stderr.write(
-      "[cotal-connector] managed session missing its control socket path or its control token - cannot serve the control plane\n",
-    );
-    process.exit(1);
+    await agent.stop().catch(() => {});
+    throw new Error("managed session missing its control socket path or its control token - cannot serve the control plane");
   }
   const controlPath = control.path;
   const controlToken = control.token;
@@ -190,25 +214,48 @@ async function main(): Promise<void> {
   // frame arriving before the MCP server exists reads `undefined` instead of hitting the TDZ.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
   let wake: WakePolicy | undefined;
-  const shutdown = async () => {
-    try {
-      controlServer?.close();
-    } catch {
-      /* ignore */
-    }
-    wake?.stop();
-    try {
-      await agent.stop();
-    } finally {
-      process.exit(0);
-    }
-  };
+  let mcp: McpServer | undefined;
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> =>
+    (closing ??= (async () => {
+      try {
+        controlServer?.close();
+      } catch {
+        /* ignore */
+      }
+      wake?.stop();
+      try {
+        await agent.stop();
+      } finally {
+        await mcp?.close().catch(() => {});
+      }
+    })());
   controlServer = startControlServer(
     agent,
     { path: controlPath, token: controlToken },
     claude.handle,
-    { fatalBind: true, onShutdown: () => void shutdown(), onReply: claude.onReply },
+    {
+      fatalBind: opts.fatalBind ?? false,
+      onShutdown: () => void close().finally(() => opts.onShutdown?.()),
+      onReply: claude.onReply,
+    },
   );
+  // Hosted (fatalBind off), a bind failure is this session's alone: report it as the call's
+  // rejection rather than serving with no control plane. Directly run, startControlServer exits.
+  await new Promise<void>((resolve, reject) => {
+    const srv = controlServer!;
+    if (srv.listening) return resolve();
+    const onError = (e: Error) => {
+      srv.off("listening", onListening);
+      void close().finally(() => reject(new Error(`control socket ${controlPath}: ${e.message}`)));
+    };
+    const onListening = () => {
+      srv.off("error", onError);
+      resolve();
+    };
+    srv.once("error", onError);
+    srv.once("listening", onListening);
+  });
 
   const server = new McpServer(
     { name: "cotal", version: "0.0.0" },
@@ -242,6 +289,7 @@ async function main(): Promise<void> {
     },
   );
 
+  mcp = server;
   registerCotalTools(server, agent, config, "claude-code");
 
   // The wake policy owns every `claude/channel` push (arriving messages + the Stop→idle flush).
@@ -249,34 +297,50 @@ async function main(): Promise<void> {
   wake = createWakePolicy(
     agent,
     (params) => server.server.notification({ method: "notifications/claude/channel", params }),
-    (msg) => process.stderr.write(`[cotal-connector] ${msg}\n`),
+    (msg) => log(`[cotal-connector] ${msg}`),
   );
 
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await server.connect(new StdioServerTransport(opts.input, opts.output));
 
   // Is this session consuming us as a channel? Only now (post-handshake) can we read the
   // client's capabilities, so we flip the flag the nudge path is gated on. The handlers
   // were registered above and simply no-op'd until this point.
   const clientCaps = server.server.getClientCapabilities();
-  const envFlag = process.env.COTAL_CHANNEL;
+  const envFlag = env.COTAL_CHANNEL;
   const channelActive = envFlag
     ? /^(1|true|yes|on)$/i.test(envFlag)
     : Boolean((clientCaps?.experimental as Record<string, unknown> | undefined)?.["claude/channel"]);
   wake?.setChannelActive(channelActive);
-  process.stderr.write(
-    `[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}\n`,
-  );
-
-  process.stderr.write(
-    `[cotal-connector] MCP ready (stdio) — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}\n`,
-  );
+  log(`[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}`);
+  log(`[cotal-connector] MCP ready (stdio) — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}`);
+  return { name: config.name, close };
 }
 
-main().catch((e) => {
-  process.stderr.write(`[cotal-connector] fatal: ${(e as Error).stack ?? String(e)}\n`);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  // No identity → this is a plain `claude`, not a launcher-spawned agent. Stay
+  // off the mesh, so an installed plugin can't make the operator's own sessions
+  // join as stray peers, but still answer MCP so the client sees a working server.
+  if (!hasIdentity()) {
+    process.stderr.write("[cotal-connector] no COTAL_NAME — not a managed session; staying off the mesh\n");
+    await serveUnmanaged();
+    return;
+  }
+  const session = await serveClaudeSession({
+    env: process.env,
+    input: process.stdin,
+    output: process.stdout,
+    fatalBind: true,
+    onShutdown: () => process.exit(0),
+  });
+  const shutdown = () => void session.close().finally(() => process.exit(0));
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
+
+// Run as the MCP server only when executed (`node mcp.cjs`); `require`d by a host, it only exports.
+if (typeof require !== "undefined" && require.main === module) {
+  main().catch((e) => {
+    process.stderr.write(`[cotal-connector] fatal: ${(e as Error).stack ?? String(e)}\n`);
+    process.exit(1);
+  });
+}
