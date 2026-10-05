@@ -138,9 +138,10 @@ export function makeAuthGate(port: number, host: string = WEB_HOST) {
   // Single-use, minted per process. 32 bytes: this is the only secret standing between a local
   // process and the mesh view until the cookie exists.
   let launchToken: string | undefined = randomBytes(32).toString("base64url");
-  // A SECOND secret, for one caller: `--detach`'s parent, which must poll `/api/meta` to learn the
-  // child is up and is OURS rather than a squatter on the same port. It is presented as a header and
-  // is NOT exchanged for a session and NOT consumed, because the parent may poll many times.
+  // A SECOND secret, for the callers that must poll `/api/meta` to learn the dashboard is up and is
+  // OURS rather than a squatter on the same port: `--detach`'s parent and `cotal status`. It is
+  // presented as a header and is NOT exchanged for a session and NOT consumed, because they may poll
+  // many times.
   //
   // Two secrets rather than exempting `/api/meta`, and the difference matters: an exempt route is
   // permanently unauthenticated for everyone, and the next person to add a field to it will not know
@@ -175,7 +176,7 @@ export function makeAuthGate(port: number, host: string = WEB_HOST) {
         if (normalized === undefined || !allowedOrigins.has(normalized)) return { refuse: CROSS_ORIGIN };
       }
 
-      // Scoped to the one path its only caller polls. The nonce is never consumed and lives as long
+      // Scoped to the one path its callers poll. The nonce is never consumed and lives as long
       // as the process, so accepting it on every path would leave `web.session` holding a standing
       // full-surface credential beside a link this command calls single-use.
       const readiness = req.headers[READINESS_HEADER];
@@ -1225,8 +1226,8 @@ export async function web(args: ParsedArgs): Promise<void> {
   const launchUrl = `${url}?k=${gate.launchToken}`;
   // Written AFTER listen() succeeded, so its existence means the port is ours. A detached parent
   // reads it for the readiness nonce and the link; an operator who lost the printed line reads it
-  // for the link; `cotal status` reads it for the address to probe. 0600 — same trust boundary as
-  // the rest of `~/.cotal`, no wider.
+  // for the link; `cotal status` reads it for the address to probe and the nonce to present. 0600 —
+  // same trust boundary as the rest of `~/.cotal`, no wider.
   if (sessionPath) {
     // The socket's address, not the requested one: `--port 0` binds an ephemeral port.
     const bound = httpServer.address() as AddressInfo;

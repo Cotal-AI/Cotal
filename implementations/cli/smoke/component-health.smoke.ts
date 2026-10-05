@@ -133,15 +133,18 @@ async function stop(child: ChildProcess | undefined): Promise<void> {
 
 async function writeWebHarness(port: number): Promise<ChildProcess> {
   const script = join(root, "web-harness.mjs");
+  const readiness = "web-harness-readiness";
+  // Refuses `/api/meta` without the recorded nonce, as the dashboard's gate does, so this cell grades
+  // the credential the probe presents rather than a surface no real dashboard serves.
   writeFileSync(script, [
     'import { createServer } from "node:http";',
-    `const server = createServer((req, res) => { if (req.url === "/api/meta") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ pid: process.pid })); return; } res.statusCode = 404; res.end(); });`,
+    `const server = createServer((req, res) => { if (req.url === "/api/meta") { res.setHeader("content-type", "application/json"); if (req.headers["x-cotal-readiness"] !== ${JSON.stringify(readiness)}) { res.statusCode = 401; res.end(JSON.stringify({ error: "unauthenticated" })); return; } res.end(JSON.stringify({ pid: process.pid })); return; } res.statusCode = 404; res.end(); });`,
     `server.listen(${port}, "127.0.0.1");`,
   ].join("\n"));
   const child = spawn(process.execPath, [script], { cwd: root, stdio: "ignore" });
   assert.ok(child.pid, "web harness received a pid");
   writeFileSync(join(root, ".cotal", "web.pid"), String(child.pid));
-  writeFileSync(join(root, ".cotal", "web.session"), JSON.stringify({ host: "127.0.0.1", port }));
+  writeFileSync(join(root, ".cotal", "web.session"), JSON.stringify({ host: "127.0.0.1", port, readiness }));
   for (let i = 0; i < 50 && !(await portOpen(port)); i++) await sleep(50);
   assert.ok(await portOpen(port), "web harness never bound its port");
   return child;
