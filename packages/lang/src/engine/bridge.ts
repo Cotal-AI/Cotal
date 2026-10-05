@@ -38,7 +38,8 @@
 import type { MessagePort } from "node:worker_threads";
 import type { EffectContext, EffectHandler } from "../effects.js";
 import { Cancelled, EffectError, EffectRefused } from "../effects.js";
-import type { JournalEntry, JournalStore } from "../journal.js";
+import type { EntryState, JournalEntry, JournalStore } from "../journal.js";
+import { EffectResultTooLarge, JournalAppendRejected } from "../journal.js";
 import type { StepKey } from "../keys.js";
 
 /** One 16-byte SharedArrayBuffer: an Int32 answer flag at 0, the Float64 clock value at 8. */
@@ -77,6 +78,17 @@ interface WireError {
    *  race, which is the journal recording a failure the program never had. The reason crosses so
    *  the rebuilt class says the same thing the thrown one did. */
   readonly cancelled?: string;
+  /** A durability failure (`JournalAppendRejected`, or `EffectResultTooLarge` with `tooLarge`):
+   *  graded on class by perform.ts, which lets it leave uncatchable with nothing settled — flattened
+   *  to a plain Error, a host handler rethrowing its refused `ctx.bind` would settle the step
+   *  `failed`, recording an outcome for an append the store refused. The fields are the
+   *  constructors' own, so the rebuilt class says the same thing the thrown one did. */
+  readonly rejected?: {
+    readonly stepKey: string;
+    readonly state: EntryState;
+    readonly reason: string;
+    readonly tooLarge?: { readonly bytes: number; readonly bound: number };
+  };
 }
 
 /** The plain-data half of an {@link EffectContext}; `signal` and `bind` are rebuilt per side. */
@@ -123,6 +135,20 @@ function flatten(e: unknown): WireError {
   if (e instanceof Cancelled) {
     return { domain: "host", name: e.name, message: e.message, cancelled: e.reason };
   }
+  if (e instanceof JournalAppendRejected) {
+    return {
+      domain: "host",
+      name: e.name,
+      message: e.message,
+      ...(e.indeterminate ? { indeterminate: true } : {}),
+      rejected: {
+        stepKey: e.stepKey,
+        state: e.state,
+        reason: e.reason.message,
+        ...(e instanceof EffectResultTooLarge ? { tooLarge: { bytes: e.bytes, bound: e.bound } } : {}),
+      },
+    };
+  }
   const err = e as { name?: unknown; message?: unknown; code?: unknown; indeterminate?: unknown };
   return {
     domain: "host",
@@ -145,6 +171,13 @@ function rehydrate(w: WireError): Error {
   if (w.domain === "effect") return new EffectError(w.code ?? "L4000", w.kind ?? "handler-fault", w.message, w.detail);
   if (w.refused === true) return new EffectRefused(w.code ?? "L5016", w.message);
   if (w.cancelled !== undefined) return new Cancelled(w.cancelled);
+  if (w.rejected !== undefined) {
+    const { stepKey, state, reason, tooLarge } = w.rejected;
+    if (tooLarge !== undefined) return new EffectResultTooLarge(stepKey, tooLarge.bytes, tooLarge.bound);
+    const cause = new Error(reason);
+    if (w.indeterminate === true) (cause as Error & { indeterminate?: boolean }).indeterminate = true;
+    return new JournalAppendRejected(stepKey, state, cause);
+  }
   const e = new Error(w.message);
   e.name = w.name;
   if (w.code !== undefined) (e as Error & { code?: string }).code = w.code;
