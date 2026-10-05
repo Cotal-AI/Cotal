@@ -176,9 +176,10 @@ delivers, the other only wakes:
   so dropping it means silence until someone types. When the channel becomes active, the connector
   first re-fires a focus mention remembered during startup, otherwise one buffered wake. A rejected
   push keeps its bounded retry, and JetStream redelivery remains the durable backstop for unacked
-  inbox items. A redelivery does not repeat a nudge the session already accepted for that message,
-  so a session held in a long tool call gets one nudge per message. Once a hook frame carries the
-  message, its next redelivery nudges again, so a reply that never reached Claude Code still
+  inbox items. A redelivery does not repeat a nudge already pushed for that message, whether the
+  message had its own nudge or was counted in a batch one, so a session held in a long tool call
+  gets one nudge per message. Once a hook frame carries the message, or the push that announced it
+  fails, its next redelivery nudges again, so a reply that never reached Claude Code still
   recovers. If the channel cannot run at all, delivery still waits for the next hook. Live-only
   traffic has no durable retry.
 

@@ -501,11 +501,14 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
    *  unrelated push landing means the session woke for something else, and that notice carries no
    *  pull hint, so it reschedules this rather than discharging it. */
   let pendingMentionWake: { item: InboxItem; hint: string } | undefined;
-  /** Items whose own nudge the session accepted and no hook frame has carried since. Each JetStream
-   *  redelivery of a pending item re-emits `incoming`; while the session still holds that nudge (a
-   *  long tool call), printing it again only queues a duplicate per ack wait (#2584). Keyed by the
+  /** Items a nudge announced that no hook frame has carried since, each mapped to the covered list of
+   *  the push that announced it. Each JetStream redelivery of a pending item re-emits `incoming`;
+   *  while the session still holds that nudge (a long tool call), printing it again only queues a
+   *  duplicate per ack wait (#2584). Recorded when the push is made, not when it resolves: a push
+   *  still queued behind a full stdout can complete after a frame carried the item and lost its
+   *  reply, and recording it then would bury the redelivery that recovers that loss. Keyed by the
    *  item, so a message re-buffered after it left the inbox is announced afresh. */
-  const held = new WeakSet<InboxItem>();
+  const announced = new WeakMap<InboxItem, readonly InboxItem[]>();
 
   const clearRetry = (resetDelay: boolean): void => {
     if (retryTimer) clearTimeout(retryTimer);
@@ -535,7 +538,10 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
 
   const nudge = (item?: InboxItem, pullHint?: string, isMentionWake = false): void => {
     if (!channelActive) return;
-    const n = agent.inboxCount("automatic");
+    // A batch notice announces every automatic item it counts.
+    const covered = item ? [item] : agent.peekInbox("automatic");
+    const n = covered.length;
+    for (const it of covered) announced.set(it, covered);
     const content = pullHint
       ? `📨 ${pullHint}`
       : item
@@ -548,11 +554,13 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
         // found by accident. Treating any success as "awake, will pull" cancelled the sole recovery
         // for the one wake nothing else can replay.
         if (isMentionWake) pendingMentionWake = undefined;
-        else if (item) held.add(item);
         clearRetry(true);
         if (pendingMentionWake) scheduleRetry(); // someone else's success is not this one's delivery
       },
       (e: Error) => {
+        // The session never saw this push, so its redelivery is news again, unless a later push
+        // announced the item since.
+        for (const it of covered) if (announced.get(it) === covered) announced.delete(it);
         log(`channel nudge failed: ${e.message}`);
         scheduleRetry();
       },
@@ -565,7 +573,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
   // receive-time pull-only ambient never nudges (a quiet @mention remains automatic). `muted` never reaches
   // here (ack-dropped at ingest); in `focus`, ambient/mentions never reach "incoming" either.
   agent.on("incoming", (item: InboxItem) => {
-    if (held.has(item)) return;
+    if (announced.has(item)) return;
     const automatic = agent.inboxScope(item.recvKey) === "automatic";
     const directedOrMention = item.kind !== "channel" || item.mentionsMe;
     const ambientWakes = agent.attention === "open" && agent.status !== "working";
@@ -591,7 +599,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
       }
     },
     surfaced(items: readonly InboxItem[]): void {
-      for (const item of items) held.delete(item);
+      for (const item of items) announced.delete(item);
     },
     stop(): void {
       clearRetry(true);
