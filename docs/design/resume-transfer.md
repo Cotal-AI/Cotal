@@ -1,7 +1,7 @@
 # Carrying a resumed session to another manager
 
 > **Design** (non-normative, not shipped) · Phase 1 for [#1499](https://github.com/Cotal-AI/Cotal/issues/1499).
-> Measured against `9f22cf0f0`. Phase 2 implements this record as written, in the same change, once
+> Measured against `22e210acd`. Phase 2 implements this record as written, in the same change, once
 > it is reviewed. Phase 2 builds the transfer that `cotal spawn --resume <id> --detach --on <instance>`
 > needs. Streaming over the same path is designed here (section 8) and is not built in this change,
 > so the change refers to #1499 and leaves it open.
@@ -13,6 +13,7 @@
 | Where transcript bytes travel | A per-space JetStream Object Store, one bucket per target manager instance. Manager control requests never carry them, and the space's artifact store is not used | [3](#3-the-transfer-store) |
 | How a payload larger than `max_payload` moves | Chunks of at most 128 KiB, lowered to fit the connection's `max_payload` | [4.1](#41-chunks) |
 | How an interrupted transfer resumes | A chain of chunks on one stable subject per transcript, each publish pinned to the previous chunk's sequence; the stock `put` is not used to write | [4.2](#42-checkpoint-and-resume) |
+| How long a transfer lives | Until the target stages it, or ten minutes after its last write. It is removed whole by the target manager; no message expires by age | [4.5](#45-retention) |
 | How duplicates are decided | The object name is `sha256:<hex>`; the manager's private staging copy is the dedupe index, so a re-run moves zero bytes | [4.4](#44-hits), [5.2](#52-staging) |
 | Who can read a transfer | Only the target instance, through grants that name its own bucket. The operator's writer is pinned to one object. Seats and peers hold nothing | [6](#6-grants) |
 | How a launch names carried bytes | A one-time claim from an operator-only manager command; a transcript hash alone launches nothing | [5.3](#53-the-claim) |
@@ -25,11 +26,11 @@
 
 ## 1. What exists today
 
-Measured at `9f22cf0f0`.
+Measured at `22e210acd`.
 
 **A detached resume carries an id, not a session.** `spawnDetached` forwards `--resume` to the manager
-as a string (`implementations/cli/src/commands/spawn.ts:426`, "host-local session id"), and the
-manager hands it to the connector (`implementations/manager/src/manager.ts:693`). The Claude connector
+as a string (`implementations/cli/src/commands/spawn.ts:480`, "host-local session id"), and the
+manager hands it to the connector (`implementations/manager/src/manager.ts:716`). The Claude connector
 renders `--resume <id> --fork-session` (`extensions/connector-claude-code/src/extension.ts:316`), so the
 id resolves in whatever Claude home the manager host runs with. A transcript that exists only on the
 operator's machine cannot be resumed on a manager on another host. The issue's reproduction at this
@@ -44,7 +45,7 @@ Cotal's `sha256:<hex>`. No production code puts or gets bytes.
 **The provisioner is deliberately kept off the store's data.** It holds `STREAM.CREATE`, `INFO` and
 one `UPDATE` on `OBJ_cotal_artifacts_<space>`, and no consumer or publish grant, because the Object
 Store client reads through a push consumer whose `deliver_subject` the caller chooses; a
-`CONSUMER.CREATE` grant on the stream exports every object in it (`packages/core/src/provision.ts:2228-2236`).
+`CONSUMER.CREATE` grant on the stream exports every object in it (`packages/core/src/provision.ts:2214-2221`).
 No standing credential holds Object Store data grants.
 
 **The pinned client cannot resume a failed put.** In `@nats-io/obj` 3.4.0
@@ -61,7 +62,7 @@ resume document (`implementations/manager/src/resume.ts:90`), returned by `ps` a
 and printed as `forked from <id>` (`implementations/cli/src/commands/agents.ts:367`).
 
 **Resume is an operator surface.** `cotal_spawn` does not expose it to peers
-(`extensions/connector-core/src/tool-specs.ts:1335`). The manager's `spawn` row is in the
+(`extensions/connector-core/src/tool-specs.ts:1350`). The manager's `spawn` row is in the
 `manager.spawn` class, which a peer with the spawn capability holds.
 
 **The Claude connector does not depend on the config home for its mesh surface.** The cotal plugin
@@ -112,7 +113,7 @@ anywhere in a shared home is therefore findable by every seat that runs in that 
 | Subjects | `$O.cotal_xfer_<space>_<instanceId>.C.>` (chunks), `$O.cotal_xfer_<space>_<instanceId>.M.>` (meta) |
 | Storage | file |
 | Discard | `new` |
-| `max_age` | 7 days, which bounds an abandoned chain or an object no manager collected |
+| `max_age` | `0`: no message expires by age, because a per-message age can drop the start of a chain and keep its end (section 4.5) |
 | Rollup headers | allowed (the commit is a subject rollup) |
 | Direct get | allowed (the hit check and the resume read use it) |
 | `max_bytes`, `max_msgs`, `max_msg_size` | `-1`, so the broker's file store is the bound, as for the artifact store |
@@ -183,25 +184,28 @@ Before writing, the CLI reads the last message on the chunk subject with a last-
 (`$JS.API.DIRECT.GET.<stream>.<chunk subject>`). No message: start at byte 0 with expected sequence
 `0`. A message: continue at its `Cotal-Offset` with its sequence as the expectation.
 
-A refused expectation means another writer advanced the chain. The writer reads the last chunk again
-and continues from there. Because the subject is derived from the digest of the bytes, both writers
+A refused expectation means another writer advanced the chain or the target removed it (section 4.5).
+The writer reads the last chunk again and continues from there, or from byte 0 with expectation `0`
+when no chunk is left. Because the subject is derived from the digest of the bytes, both writers
 are writing the same bytes, so continuing is safe. A transcript that changed between attempts has a
 different digest and therefore a different subject; it never extends the old chain.
 
 Nothing on the source host records a checkpoint. The broker's chain is the only state, so an attempt
-from another terminal, or after a reboot, resumes from the same place.
+from another terminal, or after a reboot, resumes from the same place while the target keeps the chain
+(section 4.5).
 
 ### 4.3 Commit
 
 When `Cotal-Offset` reaches the size, the writer publishes the meta record on
-`$O.<bucket>.M.<base64url("sha256:<hex>")>` in the stock shape: `bucket`, `name`, `nuid`, `size`,
-`chunks` (the last `Cotal-Chunk`), `mtime`, `deleted: false`, `options.max_chunk_size`, and `digest`
-as `SHA-256=<base64url>` of the whole transcript. The publish carries `Nats-Rollup: sub`, as the stock
-client's does, and `Nats-Expected-Last-Subject-Sequence` set to the meta subject's last sequence as
-the writer's hit check read it: `0` when there was no record, or the sequence of the delete marker a
-previous collection left (the stock `delete` writes one and purges the chunks). Only one commit lands.
-A writer whose commit is refused reads the record again and treats it as a hit if it is live and its
-`size` and digest match; anything else is an error naming the object.
+`$O.<bucket>.M.<base64url("sha256:<hex>")>`, padded as the stock client encodes it, in the stock
+shape: `bucket`, `name`, `nuid`, `size`, `chunks` (the last `Cotal-Chunk`), `mtime`, `deleted: false`,
+`options.max_chunk_size`, and `digest` as `SHA-256=<base64url>` of the whole transcript. The publish
+carries `Nats-Rollup: sub`, as the stock client's does, and `Nats-Expected-Last-Subject-Sequence` set
+to the meta subject's last sequence as the writer's hit check read it: `0` when there was no record,
+or the sequence of the delete marker a previous removal left (the stock `delete` writes one and
+purges the chunks). Only one commit lands. A writer whose commit is refused reads the record again and
+treats it as a hit if it is live and its `size` and digest match; anything else is an error naming
+the object.
 
 The meta record is a claim made by the writer. The reader does not stage bytes on its word: the stock
 `get` recomputes SHA-256 over the chunks it streams, and the manager then compares the record's digest,
@@ -216,6 +220,32 @@ A hit is checked twice before any chunk is written:
 2. The meta record in the target's bucket, through a direct get on the meta subject. This covers a
    commit that landed while the manager was down or before its receive call returned.
 
+### 4.5 Retention
+
+A transfer is the chain on `$O.<bucket>.C.<hex>` together with the meta record named `sha256:<hex>`.
+It is removed only whole, and only by the target manager:
+
+- A whole removal is the stock `delete` when the transfer has a meta record (the delete marker, then
+  one filtered `STREAM.PURGE` of the chunk subject), and that purge alone when it has none. One purge
+  removes every chunk on the subject, so a chain either starts at its first chunk or is empty.
+- The manager sweeps its bucket at the start of every `transcript-receive`, when it starts, and at the
+  next deadline. It lists the bucket's subjects with `STREAM.INFO` and a subject filter, reads the
+  last message of each, and removes a transfer whole when its bytes are already staged or its last
+  write is older than ten minutes. An `upload` answer sets a deadline ten minutes later, and a
+  transfer the sweep leaves in place sets one ten minutes after its last write.
+- A writer whose chain was removed has its next publish refused and starts again at byte 0
+  (section 4.2).
+- A sweep can remove a chain after its last chunk and before its commit. The commit then names chunks
+  that do not exist, and the stock `get` of such an object waits for them and never returns. Before
+  fetching, the manager therefore counts the messages on the chunk subject the record names, with
+  `STREAM.INFO` and a subject filter. A committed object whose count differs from the record's
+  `chunks`, or that the stock `get` or the digest check refuses, is removed whole and the receive
+  answers `upload`.
+
+A transfer therefore lives until its bytes are staged, or ten minutes after its last write. While the
+target manager is down nothing removes any part of it. A skewed manager clock moves when a whole
+transfer is removed and never removes part of one.
+
 ## 5. Manager surface
 
 ### 5.1 `transcript-receive`
@@ -226,19 +256,32 @@ A new row in the `manager.admin` class, minted into the operator instruments onl
   when the source has one.
 - Output: `{ state: "upload" }` or `{ state: "staged", claim, fetched }`.
 
-The handler creates or verifies the instance's bucket, then answers in this order: a staged copy
-of that size present, `staged` with `fetched: false`; committed object present, fetch, verify, stage, delete the
-object, `staged` with `fetched: true`; otherwise `upload`. The manager cluster document moves to
-revision 21.
+The handler creates or verifies the instance's bucket, sweeps it (section 4.5), then answers in this
+order:
+
+1. A staged copy of that size is present: `staged` with `fetched: false`. The sweep has already
+   removed any object of those bytes, including one a crash between staging and deletion left.
+2. A committed object is present: fetch it, verify it, stage it, remove it whole, and answer `staged`
+   with `fetched: true`. An object whose chunk count differs from its record, or that the stock `get`
+   or the digest check refuses, is removed whole and the answer is `upload` (section 4.5).
+3. Otherwise `upload`.
+
+A removal that fails fails the receive with the broker's error, and no claim is issued; the next
+sweep removes the object. The manager runs one `transcript-receive` or sweep at a time, so two
+receives of one digest never fetch, stage or remove it together, and the second takes the staged
+hit. The manager cluster document moves to revision 21.
 
 ### 5.2 Staging
 
 Staged transcripts live at `<root>/.cotal/transcripts/<hex>`, mode `0600` in a `0700` directory, where
-`<root>` is the manager's workspace root. A fetch writes `<hex>.part`, checks the digest, and renames.
-No seat reads this directory: placement copies out of it. The staged copy is kept so a re-run moves
-zero bytes, and the broker object is deleted once the copy is renamed into place, which meets the
-issue's rule that the transfer object does not outlive its delivery. Staged copies have no automatic
-expiry in this change (section 13).
+`<root>` is the manager's workspace root. A fetch writes a temporary file named for the instance and
+unique to that fetch, checks the digest, and renames it to `<hex>`. A rename that replaces a staged
+copy replaces it with the same verified bytes, so the managers of two spaces that share a root still
+publish one correct copy. A manager removes its own instance's leftover temporary files when it
+starts. No seat reads this directory: placement copies out of it. The staged copy is kept so a re-run
+moves zero bytes, and the broker object is removed once the copy is renamed into place, which meets
+the issue's rule that the transfer object does not outlive its delivery. Staged copies have no
+automatic expiry in this change (section 13).
 
 ### 5.3 The claim
 
@@ -258,7 +301,7 @@ obtain a claim, and the manager never logs one.
 | Credential | On the transfer store | Pinning |
 |---|---|---|
 | Operator transfer instrument (one-shot, per CLI call) | Publish `$O.<bucket>.C.<hex>` and `$O.<bucket>.M.<base64url(name)>`; `$JS.API.DIRECT.GET.<stream>.` followed by each of those two subjects | One instance (`--on`), one object. Minted after the CLI has computed the digest |
-| Target manager transfer reader (one-shot, per `transcript-receive`) | `STREAM.CREATE` and `INFO` on its own stream; `CONSUMER.CREATE` on its own stream; `STREAM.MSG.GET` and `STREAM.PURGE` on its own stream; publish `$O.<bucket>.M.>` for the stock delete marker | One instance, its own bucket. A local manager mints it from the host's signing seed, as it mints its provisioner; a remote manager receives it over its authenticated provisioning protocol, as it receives its other exact one-shot grants |
+| Target manager transfer reader (one-shot, per `transcript-receive` or sweep) | `STREAM.CREATE` and `INFO` on its own stream; `CONSUMER.CREATE` on its own stream; `STREAM.MSG.GET` and `STREAM.PURGE` on its own stream; publish `$O.<bucket>.M.>` for the stock delete marker | One instance, its own bucket. A local manager mints it from the host's signing seed, as it mints its provisioner; a remote manager receives it over its authenticated provisioning protocol, as it receives its other exact one-shot grants |
 | Space teardown | `STREAM.INFO` and `DELETE` on each enumerated transfer stream | By name |
 | Every other credential, including seats, the spawn capability, the supervisor, other instances' readers, and the provisioner | Nothing that names `OBJ_cotal_xfer_` or `$O.cotal_xfer_` | |
 
@@ -348,7 +391,7 @@ The chunk chain is also the streaming path. A reader that creates an ordered con
 `$O.<bucket>.C.<hex>` before the commit receives each chunk as the broker acknowledges it, in order,
 with JetStream flow control and idle heartbeats. The commit record ends the stream and gives the
 reader the digest to verify against. A reader that joins late replays from the first chunk, because
-the stream keeps the chain until the commit is collected or `max_age` passes.
+the stream keeps the whole chain until the transfer is staged or abandoned (section 4.5).
 
 The consumers that would use it are oversized inbox messages (#613, which also needs final-slice-only
 acknowledgement), large tool output, and attachments on DMs and channel posts. Each brings its own
@@ -401,7 +444,7 @@ The CLI prints `carried session <id> to <instance>: sha256:<hex>, <sent> of <siz
 | Place | Change |
 |---|---|
 | `packages/core` | `transferBucket`; the chunk writer, resume read, commit and hit read; the transfer instrument and transfer reader grant sets; the `transcript-receive` row in the admin instrument set; `Connector.resumeTranscript` and the carried-launch fields on `LaunchOpts` |
-| `implementations/manager` | `transcript-receive`, staging, claims, seat-home lifecycle, the provenance check, revision 21 |
+| `implementations/manager` | `transcript-receive` and its sweep, staging, claims, seat-home lifecycle, the provenance check, revision 21 |
 | `implementations/cli` | The carry step in `spawnDetached`; provenance in `ps` and `attach` |
 | `extensions/connector-claude-code` | The locator, the seat-home launch, the login and first-run checks |
 | `SPEC.md` | Section 8: the transfer bucket and the chunk chain headers. Section 9 and Appendix B: the two new credentials. Section 13: the new row and the `spawn` and `ps` fields |
@@ -425,6 +468,8 @@ seat's "source context" is checked by asking it a question only the source conve
 | H5, title-only resume | On A, two sessions carry one name. `cotal spawn --resume <name> --detach --on <B instance>` | The CLI refuses and lists both with host, id, SHA-256 and modification time; after carrying both by id, `ps` on B lists two seats with distinct fork ids and provenance |
 | H6, the seat home starts clean | H1's seat, then a launch with no environment credential, then one with only `ANTHROPIC_API_KEY`, then one whose `cwd` the manager's Claude home does not trust | H1's seat reached its first turn with no login, onboarding or trust prompt; each of the three is refused before the claim is consumed, naming its remedy |
 | H7, unsupported connector | `--agent jcode` (and each other connector without the locator), then a raw `spawn` naming that agent with a valid `resumeClaim` | The CLI moves no byte and the id resolves on B as it does today; the raw `spawn` is refused |
+| H8, retention follows the transfer | Repeat H3's interruption with a new session and run the command again within ten minutes. Then interrupt a carry of another new session the same way, wait more than ten minutes, and run that command again | The first resumed run sends `<size> - <offset>` bytes. Before the second rerun, B's transfer stream holds no message on that chain's chunk subject; the rerun sends all `<size>` bytes and the commit verifies |
+| H9, concurrent carries and a leftover object | From two terminals on A, run H1's command for one new session at the same moment. Then put H1's transcript bytes into B's bucket under the name `sha256:<hex>` with an admin credential (`nats object put`), the state a manager crash between staging and removal leaves, and repeat H1's command | Both concurrent runs launch a seat with distinct fork ids; B's staging directory holds one `<hex>` and no temporary file; the repeated run reports `0 of <size> bytes sent` and B's bucket then holds no live object |
 
 ## 13. Not in this change
 
