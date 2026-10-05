@@ -130,8 +130,9 @@ the real HTTP server at the bound host and port before returning, logs to `<mesh
 `cotal down web` or bare `cotal down`. On the default host it probes `127.0.0.1`, because a system
 resolver such as WSL2's may not answer the branded `cotal.localhost`. It requires a recorded mesh root; after `cotal up` records the
 mesh, it can be launched from any directory. The branded URL `http://cotal.localhost:7799/` resolves
-to loopback with no DNS setup in Chrome, Firefox, and Edge; Safari may not resolve `*.localhost`,
-so use `http://127.0.0.1:7799`. A custom `--port` uses the plain loopback address. An explicit
+to loopback with no DNS setup in Chrome, Firefox, and Edge. Safari and a system resolver such as
+WSL2's may not resolve `*.localhost`, so on this default the launch link is printed again at
+`http://127.0.0.1:7799/` with the same single-use token. A custom `--port` uses the plain loopback address. An explicit
 `--host` is also the advertised address and the only allowed browser Origin for that process.
 
 **The link is single-use, and the surface authenticates the caller.** Starting the dashboard prints a
