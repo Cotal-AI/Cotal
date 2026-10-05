@@ -76,7 +76,7 @@ export const ModeUnicast: React.FC = () => {
   const glow2 = deliverFlash;
 
   return (
-    <Card frame={frame}>
+    <Card>
       <Wires paths={[PATH1, PATH2]} glow={[glow1, glow2]} />
 
       <AgentNode at={ALICE} name="alice" role="planner" status="working" flash={emit} />

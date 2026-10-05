@@ -80,7 +80,7 @@ export const ModeAnycast: React.FC = () => {
   const claimGlow = flash;
 
   return (
-    <Card frame={frame}>
+    <Card>
       <Wires paths={[PATH1, ...OUT_PATHS]} glow={[inGlow, 0, claimGlow, 0]} />
 
       {/* the role: a quiet bracket around the pool, labelled on its top edge */}

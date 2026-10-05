@@ -74,7 +74,7 @@ export const ModeMulticast: React.FC = () => {
     fade(frame, T.sendEnd - 4, T.sendEnd) * (1 - fade(frame, T.fanStart + 6, T.fanEnd));
 
   return (
-    <Card frame={frame}>
+    <Card>
       <Wires paths={[IN_PATH, ...OUT_PATHS]} glow={[inGlow, flash, flash, flash]} />
       <Ripple at={PILL} p={prog(frame, T.fanStart - 2, T.fanStart + 30)} />
       <Ripple at={PILL} p={prog(frame, T.fanStart + 8, T.fanStart + 42)} />
