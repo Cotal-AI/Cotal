@@ -17,7 +17,7 @@ import {
   endpointToken, assertBoundedOwner, assertLifecycleToken, assertCommandToken, assertPoolToken,
   type EpAuthzMode,
 } from "./endpoint-subjects.js";
-import { EpEnvelopeError, lifecycleBlocked, type EpClass } from "./endpoint-envelope.js";
+import { EpEnvelopeError, lifecycleBlocked, type EpClass, type EpErrorCode, type EpErrorDetail } from "./endpoint-envelope.js";
 import {
   RECORD_KINDS, GOVERN_HEAD, recordSpecKey, recordStatusKey, recordAtomicKey, readRecord, recordsBucket,
   createRecordEntry, updateRecordEntry, deleteRecordEntry, assertStatusValue,
@@ -787,6 +787,24 @@ export async function completeFrozenRegistrationFromSpec(
   return { completed: true, registrationRevision: specEntry.revision, processEpoch };
 }
 
+/** `details[].kind` on every refusal of {@link assertForeignSlotIsOrphaned}. A caller that repairs the
+ *  holder decides on these facts, because the message is prose and the codes pair unlike cases. */
+export const EP_FOREIGN_SLOT_HELD = "ai.cotal.ep.foreign-slot-held";
+
+export type ForeignSlotCondition = "no-seam" | "unreadable" | "garbled" | "behind" | "in-flight";
+
+export interface EpForeignSlotHeldDetail extends EpErrorDetail {
+  kind: typeof EP_FOREIGN_SLOT_HELD;
+  holderInstanceId: string;
+  condition: ForeignSlotCondition;
+}
+
+/** The foreign-slot marker on a thrown registration refusal. */
+export function foreignSlotHeldFrom(e: unknown): EpForeignSlotHeldDetail | undefined {
+  if (!(e instanceof EpEnvelopeError)) return undefined;
+  return e.details?.find((d): d is EpForeignSlotHeldDetail => d.kind === EP_FOREIGN_SLOT_HELD);
+}
+
 /** THE FOREIGN-SLOT ORPHAN PREDICATE (§13.7). A registration whose endpoint governance slot is held
  *  by ANOTHER instance either waits for a live registration to finish or reclaims a dead one, and
  *  this decides which. It refuses unless the slot is PROVABLY dead.
@@ -827,20 +845,22 @@ async function assertForeignSlotIsOrphaned(
   observeHolderGeneration?: (holderInstanceId: string) => Promise<number> | number,
 ): Promise<void> {
   const held = `a concurrent registration for endpoint "${endpoint}" (instance "${slot.instanceId}") holds the governance slot through its spec publication`;
+  const refuse = (code: EpErrorCode, condition: ForeignSlotCondition, message: string) =>
+    new EpEnvelopeError(code, message, [{ kind: EP_FOREIGN_SLOT_HELD, holderInstanceId: slot.instanceId, condition }]);
   if (typeof observeHolderGeneration !== "function")
-    throw new EpEnvelopeError("conflict", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);
+    throw refuse("conflict", "no-seam", `${held}; re-read and re-decide. This registration cannot observe that instance's issuance gate, so it cannot tell an in-flight registration from an abandoned one and refuses (SPEC 13.7/13.8)`);
   let observed: unknown;
   try {
     observed = await observeHolderGeneration(slot.instanceId);
   } catch (e) {
-    throw new EpEnvelopeError("unavailable", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
+    throw refuse("unavailable", "unreadable", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): ${(e as Error)?.message ?? String(e)}`);
   }
   if (!wireInt(observed))
-    throw new EpEnvelopeError("unavailable", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);
+    throw refuse("unavailable", "garbled", `${held}, and its issuance-gate generation could not be observed; refusing rather than racing a registration that may still be in flight (SPEC 13.7): observed ${JSON.stringify(observed)}, not an unsigned generation`);
   if (observed < slot.generation)
-    throw new EpEnvelopeError("unavailable", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);
+    throw refuse("unavailable", "behind", `${held} at generation ${slot.generation}, ahead of its observed live gate generation ${observed}; refusing rather than treating an ahead or garbled observation as an abandoned slot (SPEC 13.7)`);
   if (observed === slot.generation)
-    throw new EpEnvelopeError("conflict", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: cotal reconcile-gate --instance ${slot.instanceId}), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
+    throw refuse("conflict", "in-flight", `${held}; its issuance gate is still at generation ${slot.generation}, so that registration is IN FLIGHT and this one must wait; re-read and re-decide. If its holder is gone, reopen that instance's gate first (its own restart heals it on boot, or run: cotal reconcile-gate --instance ${slot.instanceId}), which advances the generation past the slot and lets this registration reclaim it (SPEC 13.7/13.8)`);
   // observed > slot.generation: the holder's gate has reopened past the stamp, so the slot can
   // never satisfy the promote's generation equality. It is dead, and the slot-take replaces it.
 }

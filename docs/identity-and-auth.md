@@ -453,8 +453,8 @@ target a foreign manager slot holder in the same space, but it runs only after t
 proves the frozen gate's holder gone under a complete sweep. The participant receives neither an
 evictor credential nor authority over another instance's records or gate. A clean stop refreshes an
 unhealthy executor before deregistration. A restart verify-evicts its old family, and a manager
-blocked by an abandoned foreign governance slot asks the host to reconcile that holder and retries
-the registration once.
+blocked by a foreign governance slot whose holder's gate is still frozen at the slot's stamp asks
+the host to reconcile that holder and retries the registration once.
 
 A remote manager can provision only descendants of the same derived owner, and the host
 validates that relation and the current manager grant for every provision. It cannot broaden the
