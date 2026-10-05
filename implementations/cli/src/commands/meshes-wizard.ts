@@ -140,7 +140,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
           placeholder: "nats://100.90.12.34:4222",
           validate: (v) => {
             if (!v) return "Required - this is the address the mesh's broker listens on.";
-            const r = checkServer(v);
+            const r = checkServer(v, "--server");
             if (!r.ok) return r.message.replace(/^✗ (--server )?/, "");
             // The same safety gate the flag form applies, asked here so a refused address is
             // caught at the prompt instead of after the operator has answered three more
@@ -155,7 +155,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
           },
         });
     } else {
-      const pre = checkServer(server);
+      const pre = checkServer(server, "--server");
       if (!pre.ok) {
         io.log.error(pre.message);
         server = undefined;

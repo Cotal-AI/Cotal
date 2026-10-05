@@ -187,7 +187,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     console.error(c.red("✗ --server <url> is required - a mesh you did not start here has no address to infer (e.g. --server nats://100.90.12.34:4222, its address on your private overlay)"));
     process.exit(1);
   }
-  const server = take(checkServer(v.server));
+  const server = take(checkServer(v.server, "--server"));
   // The strictness this registration RECORDS — from --tls or a tls:// scheme — and therefore what
   // every dial through the record will enforce. Sourced once, so the dial policy, the candidate
   // probe and the written entry cannot disagree.
@@ -360,7 +360,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
   }
 
   // ── the same fences as every other registration ──────────────────────────────────────────
-  const server = take(checkServer(v.server ?? bundle.server));
+  const server = take(v.server === undefined ? checkServer(bundle.server, "the bundle's server") : checkServer(v.server, "--server"));
   // The bundle's recorded strictness is a TLS-intent source of its own, alongside --tls and the
   // scheme: the export states what the mesh's transport requires, and the record must carry it.
   const tlsRequired = bundle.tlsRequired || tlsIntent(server, Boolean(v.tls));
