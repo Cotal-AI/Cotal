@@ -484,11 +484,32 @@ original is untouched.
 
 - `cotal spawn --resume <id>` (foreground) is the primary surface: the transcript is on
   *your* machine, and errors are Claude's own stderr, inline.
-- `--detach --resume <id>` works, with two differences: the id resolves against the
-  **manager host's** `~/.claude` (you practically need `--cwd`), and the manager waits for
-  a real outcome; `✓ started` means the agent *joined the mesh*, `✗ exited on launch`
-  carries Claude's last output, and an uncertain launch (~30 s) is reported without
-  tearing the agent down.
+- `--detach --resume <id> --on <instance>` carries a session held on *your* machine to that
+  manager instance, which may run on another host. The CLI finds the transcript under your
+  Claude config (`~/.claude`, or `$CLAUDE_CONFIG_DIR`), sends it through a JetStream Object
+  Store bucket only that instance reads, under a writer credential pinned to that one transcript,
+  and prints `carried session <id> to <instance>:
+  sha256:<hex>, <sent> of <size> bytes sent in <chunks> chunks`. A re-run of the same bytes
+  sends nothing, and an interrupted carry continues where it stopped. The seat forks it in a
+  private Claude home under the manager's `.cotal/seat-homes/`, which no other seat's Claude
+  lists or finds, and which is removed when the seat stops. When Claude starts the fork, the seat
+  records the SHA-256 of the transcript it read from its own project; the manager stops a seat
+  whose record names other bytes than the carried ones, or that records none within the join
+  timeout after it joins, an uncertain launch included, and otherwise shows that record as the
+  seat's provenance. `cotal attach` to such a seat names its source after the seat
+  name, as `(resumed from <host>:<id>)`. A remote manager receives a carry when its host issues it a
+  transfer reader. On a user-auth mesh the CLI exchanges the operator's login for a one-object
+  `transfer-writer` view, which needs scope `admin`.
+- A session name in place of an id is refused, listing each session on this host that carries
+  that name with its id, SHA-256 and modification time. An id this host does not hold resolves
+  against the **manager host's** `~/.claude`, as before.
+- A seat-private home holds no login. The manager host needs `CLAUDE_CODE_OAUTH_TOKEN` (from
+  `claude setup-token`), `ANTHROPIC_AUTH_TOKEN`, or a cloud provider selection in its
+  environment; `ANTHROPIC_API_KEY` alone is refused. The launch directory must already be
+  trusted by the manager host's own Claude, and Claude must be 2.1.234 or later.
+- The manager waits for a real outcome: `✓ started` means the agent *joined the mesh*,
+  `✗ exited on launch` carries Claude's last output, and an uncertain launch (~30 s) is
+  reported without tearing the agent down.
 - Resume is an **operator surface only**, deliberately not exposed on MCP `cotal_spawn`
   (a mesh peer naming host-local transcripts would widen `spawn` into transcript
   disclosure). Only the Claude connector supports it today; OpenCode and Hermes fail loud.

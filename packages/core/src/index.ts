@@ -40,6 +40,7 @@ export * from "./secret-store.js";
 export * from "./provision.js";
 export * from "./space-auth.js";
 export * from "./streams.js";
+export * from "./transfer.js";
 export * from "./backup-config.js";
 export * from "./backup.js";
 export * from "./channels.js";

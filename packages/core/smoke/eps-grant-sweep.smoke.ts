@@ -123,6 +123,8 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "endpoint-evictor": via("endpoint-evictor"),
   issuer: via("issuer"),
   "run-admitter": via("run-admitter", { runAdmitter: { endpoint: EP, runId: "run-sweep" } }),
+  "transfer-writer": via("transfer-writer", { transferWriter: { instanceId: IID, hex: "0".repeat(64) } }),
+  "transfer-reader": via("transfer-reader", { transferReader: { instanceId: IID } }),
 };
 
 // ── exhaustiveness: the table's key set IS the profile set, proven at runtime ──────────────────

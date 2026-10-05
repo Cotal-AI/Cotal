@@ -32,9 +32,9 @@
  * the public face is the credential itself: the human arm presents an EdDSA IdP JWT verified
  * against the pinned JWKS/issuer/audience; the agent arm presents an actorToken whose sha256 must
  * match a FRESH ledger row. Origin rejection, JSON-only bodies, the 64 KB bound, and no-CORS-ever
- * hold verbatim. Public views are channel-writer/channel-purger (admin-gated) and manager-caller
- * (instance-bound, with no added command scope). Other views stay loopback-only. The agent-secret
- * arm may request only manager-caller on either face;
+ * hold verbatim. Public views are channel-writer/channel-purger and the one-object transfer-writer
+ * (admin-gated) and manager-caller (instance-bound, with no added command scope). Other views stay
+ * loopback-only. The agent-secret arm may request only manager-caller on either face;
  * failures are bucketed per peer (`--exchange-trusted-proxy` opts into the last X-Forwarded-For
  * hop as the peer key; otherwise the socket remote address) in a bounded LRU, under a global
  * concurrent-admission cap and a hard request deadline — all of it pools SEPARATE from the
@@ -66,7 +66,7 @@ import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
-import { PUBLIC_EXCHANGE_VIEWS, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
+import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
@@ -978,6 +978,18 @@ export async function openAuthAuthorityPlane(opts: {
                 sessionServing: { endpoint: "manager", sessionId: session.sessionId, epoch: session.epoch },
                 expiresAt: exp,
               },
+            );
+            return { credentials };
+          }
+          if (r.operation === "transferReader") {
+            const expectedProof = remoteManagerRegistrationProof(owner, r);
+            if (r.registrationProof !== expectedProof)
+              throw new EpEnvelopeError("permission-denied", "manager-service transfer reader proof does not match this owner/lifecycle");
+            credentials.transferReader = await mintPublicUserJwt(
+              { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+              r.transferReader!.id,
+              "transfer-reader",
+              { principal: { owner, actor: actors.serve }, lifecycleUid: r.managerLifecycleUid, transferReader: { instanceId: r.instanceId } },
             );
             return { credentials };
           }
@@ -2616,7 +2628,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const peer = policy.peerKey(req);
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
-  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant } = body as {
+  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {
     idpToken?: unknown;
     actor?: unknown;
     actorToken?: unknown;
@@ -2625,9 +2637,12 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     view?: unknown;
     managerInstanceId?: unknown;
     sessionGrant?: unknown;
+    transferWriter?: unknown;
   };
   if ((view === "session-caller") !== (sessionGrant !== undefined))
     return send(res, 400, { error: 'view "session-caller" and sessionGrant come together or not at all' });
+  if ((view === "transfer-writer") !== (transferWriter !== undefined))
+    return send(res, 400, { error: 'view "transfer-writer" and transferWriter come together or not at all' });
   if (ttlSec !== undefined && typeof ttlSec !== "number") return send(res, 400, { error: "ttlSec must be a number" });
   if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
   if (managerInstanceId !== undefined && typeof managerInstanceId !== "string") return send(res, 400, { error: "managerInstanceId must be a string when present" });
@@ -2708,12 +2723,14 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     // principal holds THAT redeemed session. The bridge's `verifySession` hook runs the decision on
     // the principal it derived, before signing; the callout re-runs it at the mint.
     const session = view === "session-caller" ? grantCoordinates(sessionGrant) : undefined;
+    if (transferWriter !== undefined) assertTransferWriterClaim(transferWriter);
     const r = await ctx.bridge.exchange(idpToken, {
       actor,
       ttlSec,
       view: view as UserTokenView | undefined,
       managerInstanceId: selectedManagerInstanceId,
       ...(session ? { verifySession: (p: { owner: string; actor: string; lifecycleUid: string }) => ctx.verifySession(p, session) } : {}),
+      ...(transferWriter !== undefined ? { transferWriter } : {}),
     });
     return send(res, 200, r);
   } catch (e) {

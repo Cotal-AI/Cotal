@@ -30,7 +30,7 @@
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
  *   manager.persona  definePersona                         (privileged-grade; ownership-checked)
- *   manager.admin    purge / launch / resume family        (operator instruments only)
+ *   manager.admin    purge / launch / resume family / transcript-receive  (operator instruments only)
  *   manager.run      run-start / run-resume / run-answer   (the `run` capability + privileged instrument)
  *                    run-status / run-ps ride manager.read
  */
@@ -248,12 +248,15 @@ const AGENT_ROW_SCHEMA = {
     host: { type: "string" },
     // #1500: present only on a `--resume` seat. `source` is the session it forked; `title` and
     // `transcriptSha256` appear once the seat has recorded its fork, and `title` only when the source
-    // has one.
+    // has one. A carried resume (#1499) also names the source `host` and when its bytes were staged.
     resume: {
       type: "object",
       additionalProperties: false,
       required: ["source"],
-      properties: { source: { type: "string" }, title: { type: "string" }, transcriptSha256: { type: "string" } },
+      properties: {
+        source: { type: "string" }, title: { type: "string" }, transcriptSha256: { type: "string" },
+        host: { type: "string" }, transferredAt: { type: "string" },
+      },
     },
   },
 } as const;
@@ -313,6 +316,10 @@ const SPAWN_INPUT_SCHEMA = {
     variant: { type: "string" },
     launchOptions: { type: "object" },
     resume: { type: "string" },
+    // #1499: the one-time claim `transcript-receive` issued for carried bytes of `resume`, and the
+    // agent the CLI found them with.
+    resumeClaim: { type: "string" },
+    resumeAgent: { type: "string" },
     events: { type: "boolean" },
     cwd: { type: "string" },
     prompt: { type: "string" },
@@ -391,9 +398,16 @@ const STOP_OUTPUT_SCHEMA = {
 // grant is a signed, presenter-equality-bound offer (sessionId/subjects/serving/exp/sig) — non-bearer
 // (a leak releases nothing) and never logged. The caller redeems it over the mesh (meshSessionTransport)
 // with a per-session rails-only cred it mints itself. The object is signature-validated, not schema-shaped.
+// `resumedFrom` (#1499): present only on a seat that forked a session carried from another host.
 const ATTACH_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["grant"],
-  properties: { grant: { type: "object" } },
+  properties: {
+    grant: { type: "object" },
+    resumedFrom: {
+      type: "object", additionalProperties: false, required: ["host", "source"],
+      properties: { host: { type: "string" }, source: { type: "string" } },
+    },
+  },
 } as const;
 
 /** `input` (C3): type text into a running seat's terminal. The one call an external UI needs to
@@ -634,6 +648,26 @@ const FINALIZE_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["attemptId", "durableCommitToken"],
   properties: { attemptId: { type: "string", minLength: 1 }, durableCommitToken: { type: "string", minLength: 1 } },
 } as const;
+// `transcript-receive` (#1499, docs/design/resume-transfer.md 5.1): the operator announces carried
+// bytes by digest; the answer is a claim on a staged copy, or a request to upload.
+const TRANSCRIPT_RECEIVE_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["sha256", "size", "source", "sourceHost"],
+  properties: {
+    sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+    size: { type: "integer", minimum: 0 },
+    source: { type: "string", minLength: 1 },
+    sourceHost: { type: "string", minLength: 1 },
+    title: { type: "string" },
+  },
+} as const;
+const TRANSCRIPT_RECEIVE_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["state"],
+  properties: {
+    state: { type: "string", enum: ["upload", "staged"] },
+    claim: { type: "string" },
+    fetched: { type: "boolean" },
+  },
+} as const;
 const GOAL_RESULT_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["goalId"],
   properties: { goalId: { type: "string", minLength: 1 } },
@@ -853,6 +887,7 @@ const ROWS: CommandRow[] = [
   { name: "prepare-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: OPEN_OBJECT_SCHEMA, targeted: false, handler: "preparePreservation" },
   { name: "commit-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: OPEN_OBJECT_SCHEMA, targeted: false, handler: "commitPreservation" },
   { name: "abort-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: ATTEMPT_STATE_OUTPUT_SCHEMA, targeted: false, handler: "abortPreservation" },
+  { name: "transcript-receive", capability: "manager.admin", input: TRANSCRIPT_RECEIVE_INPUT_SCHEMA, output: TRANSCRIPT_RECEIVE_OUTPUT_SCHEMA, targeted: false, handler: "transcriptReceive" },
 ];
 
 // WHEN THE COMPILE HAPPENS (#1323): every CLI invocation loads this module before its verb is
@@ -990,7 +1025,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  20 = the `ps`/`inspect` row adds `resume`: the session a `--resume` seat forked, its title and
  *  its transcript hash. A changed output contract is a changed described surface even though the
- *  command names are unchanged. */
+ *  command names are unchanged.
+ *
+ *  21 = `transcript-receive` stages a resume transcript carried from another host (#1499), `spawn`
+ *  input grows `resumeClaim` and `resumeAgent`, the `ps`/`inspect` row's `resume` adds the source
+ *  `host` and `transferredAt`, and `attach` output adds `resumedFrom`. A new served command cannot
+ *  fold into 20. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1008,7 +1048,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 20,
+    revision: 21,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -1095,6 +1135,7 @@ export interface ManagerServiceHandlers {
   preparePreservation(ctx: EpServeContext): unknown | Promise<unknown>;
   commitPreservation(ctx: EpServeContext): unknown | Promise<unknown>;
   abortPreservation(ctx: EpServeContext): unknown | Promise<unknown>;
+  transcriptReceive(ctx: EpServeContext): unknown | Promise<unknown>;
 }
 
 /** Build the `EpCommandDef[]` `serveEndpoint` consumes: each command's provenance-branded compiled

@@ -34,6 +34,23 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Carrying a resumed Claude session to another host
+
+`cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the
+operator's host to the target manager instance. Both sides need this release: an older manager does
+not serve `transcript-receive`, and the CLI then stops with that manager's refusal instead of
+launching. The manager cluster document moves to revision 21, and the `ps` row's `resume` object
+gains `host` and `transferredAt`.
+
+A manager host that runs carried seats needs `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN` or a
+cloud provider selection in its environment, because each carried seat runs in its own Claude home
+with no stored login. On an authenticated mesh the CLI mints the transfer writer from the space's
+signing seed, so the carrying host needs that seed, as for any other operator command. On a user-auth
+mesh it exchanges the operator's login for a `transfer-writer` view instead, so the operator's grant
+needs scope `admin`, and the auth service must run this release. A remote manager receives a carry once
+its host serves the manager-service `transferReader` operation. A seat launched without carrying,
+including any `--resume` whose id this host does not hold, is unchanged.
+
 ## Lifecycle-blocked refusals in 0.66.0
 
 A refusal that carries `ai.cotal.ep.lifecycle-blocked` now reports only the lifecycle state it

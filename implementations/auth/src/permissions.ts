@@ -138,6 +138,8 @@ export function calloutPermissions(
           };
         });
       }
+      if (t.act.view === "transfer-writer")
+        return permissionsFor("transfer-writer", t.space, principal, { transferWriter: t.act.transferWriter! });
       if (t.act.view === "manager-caller") {
         const instanceId = t.act.managerInstanceId!;
         if (!authorizeManagerCaller)

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
-import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -94,6 +94,7 @@ import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting } from "./run-hosting.js";
 import { controlSession } from "./control-session.js";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
+import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput } from "./transcript-receive.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
@@ -427,6 +428,10 @@ export interface ManagerOptions {
     sessionLedgerCreds: string;
     serveGrant: EpServeGrant;
     mintSessionServing: (args: { identity: Identity; endpoint: string; sessionId: string; epoch: number; exp: number }) => Promise<string>;
+    /** One host-issued transfer reader over this instance's own transfer bucket, for one
+     *  `transcript-receive` or sweep (docs/design/resume-transfer.md section 6). Absent: this
+     *  manager refuses `transcript-receive`. */
+    mintTransferReader?: (identity: Identity) => Promise<string>;
     mintRetirementRequester: (args: {
       identity: Identity;
       target: { owner: string; actor: string; lifecycleUid: string };
@@ -530,7 +535,8 @@ export type FreeSlotCause =
   | "supervise-crash-loop"
   | "supervise-recovery-failed"
   | "session-bind-failed"
-  | "resume-session-rebind-failed";
+  | "resume-session-rebind-failed"
+  | "carried-fork-refused";
 
 /** Operator-facing phrasing per cause. Kept beside the union so adding a member without a sentence
  *  is a type error rather than a blank in the log. The stop family's sentences carry the principal
@@ -544,6 +550,7 @@ const FREE_SLOT_CAUSE_TEXT: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, st
   "supervise-recovery-failed": "this manager retired it after a supervised restart failed",
   "session-bind-failed": "this manager stopped it: its host session could not be bound at launch",
   "resume-session-rebind-failed": "this manager stopped it: its host session could not be rebound on resume",
+  "carried-fork-refused": "this manager stopped it: it recorded no fork of the carried transcript",
 };
 
 /** The stop family's sentences — the same job {@link FREE_SLOT_CAUSE_TEXT} does for the string
@@ -584,6 +591,9 @@ export interface ForkProvenance {
   source: string;
   title?: string;
   transcriptSha256: string;
+  /** A carried resume (#1499): the host the transcript came from, and when its bytes were staged. */
+  host?: string;
+  transferredAt?: string;
 }
 
 export interface ManagerResumeAgent {
@@ -711,6 +721,10 @@ export interface StartAgentOpts {
    *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
   resume?: string;
+  /** The one-time claim `transcript-receive` issued for carried bytes of {@link resume} (#1499), and
+   *  the agent the CLI found them with. Imperative control args only, like `resume`. */
+  resumeClaim?: string;
+  resumeAgent?: string;
   /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
    *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
@@ -771,6 +785,9 @@ interface ManagedLaunch {
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
   resumed?: ForkProvenance;
+  /** A carried resume's claim (#1499): the digest the manager staged, which the seat's fork record
+   *  must name before {@link resumed} is set, the host it came from, and when it was staged. */
+  carried?: { transcriptSha256: string; host: string; transferredAt: string };
   /** The connector's {@link LaunchSpec.resumeRecordPath} for this seat's fork. */
   resumeRecordPath?: string;
   sessionId?: string;
@@ -797,6 +814,8 @@ interface ManagedAgent {
   name: string;
   role?: string;
   agent: string;
+  /** The seat-private Claude home a carried resume launched in (#1499), removed when the seat is freed. */
+  seatHome?: string;
   /** Stable id the manager assigned this agent at spawn: the nkey public key (static auth), or
    *  the owner+actor principal dot-form (user mode). */
   id: string;
@@ -1257,6 +1276,8 @@ export class Manager {
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
    * already past an earlier shutdown check cannot finish after stop() returns. */
   private startTask?: Promise<void>;
+  /** This instance's side of a carried resume transcript (#1499); absent where it has no transfer reader. */
+  private transcripts?: TranscriptReceiver;
   /** The one stop this manager runs, with the agent policy it was asked for. A stop takes seats out
    *  of `agents` before they have exited, so a second teardown would find none and report success
    *  while the first still waits on a live seat. */
@@ -1840,6 +1861,18 @@ export class Manager {
         log: (line) => console.error(line),
       });
       await this.runHosting.reconcile();
+    }
+    // A carried resume (#1499) needs this instance's transfer reader: minted from the space's signing
+    // seed, issued by the host to a remote manager, or none on an open mesh.
+    if (!this.remoteAuthority || this.remoteAuthority.mintTransferReader) {
+      this.transcripts = new TranscriptReceiver({
+        space: this.space,
+        instanceId: this.managerInstanceId,
+        workspaceRoot: this.workspaceRoot,
+        withReader: (fn) => this.withTransferReader(fn),
+        log: (line) => console.error(line),
+      });
+      await this.transcripts.start();
     }
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
@@ -2458,9 +2491,12 @@ export class Manager {
       });
     }
     // A later manager does not resume a delegated seat, and its close runs only inside its
-    // retirement, so a cut that holds one is refused before any child stops.
-    for (const a of this.agents.values())
+    // retirement, so a cut that holds one is refused before any child stops. A carried resume seat's
+    // private home is removed when its slot is freed, so a later manager would find nothing to fork.
+    for (const a of this.agents.values()) {
       if (a.handedOff) failures.push({ name: a.name, id: a.id, error: "a delegated seat is not resumed by a later manager; stop it before preserving" });
+      if (a.seatHome) failures.push({ name: a.name, id: a.id, error: "a carried resume seat's private home is not kept for a later manager; stop it before preserving" });
+    }
     const unverifiedStops = this.unverifiedStops.filter((stopped) => {
       try {
         if (!stopped.authoritative && stopped.handle.status() === "exited") return false;
@@ -2823,6 +2859,7 @@ export class Manager {
 
   private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
+    this.transcripts?.stop();
     this.staticReconcileStopping = true;
     const starting = this.startTask;
     for (const item of this.staticReconcileItems.values()) {
@@ -3615,6 +3652,11 @@ export class Manager {
       preparePreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx)))),
       commitPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx)))),
       abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
+      transcriptReceive: (ctx) => this.serveGated(ctx, () => adminGated(ctx, () => {
+        if (!this.transcripts)
+          throw new EpEnvelopeError("failed-precondition", "transcript-receive: this manager does not receive carried transcripts (its remote authority issues no transfer reader)");
+        return this.transcripts.receive(args(ctx) as unknown as TranscriptReceiveInput);
+      })),
     });
   }
 
@@ -4232,6 +4274,7 @@ export class Manager {
     this.agents.delete(a.name);
     this.recordContinuityAtStop(a, "stop");
     if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
+    if (a.seatHome) rmSync(a.seatHome, { recursive: true, force: true });
     // P2 item 6 (pin 4): end any live §13.6 attach session bound to THIS incarnation with the honest
     // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
     // exit) via the `agents` guard above; a no-op when no plane or no live session for the target.
@@ -4679,7 +4722,14 @@ export class Manager {
    *  record cannot be read or does not name this seat's source, it is absent: `ps` then shows the
    *  source id alone rather than failing the listing for every other seat. */
   private forkProvenance(a: ManagedAgent): ForkProvenance | undefined {
-    if (a.launch.resumed || !a.launch.resumeRecordPath || !a.launch.forkSource) return a.launch.resumed;
+    // A carried seat's provenance is set only by refuseCarriedFork, once its record names the claim.
+    if (a.launch.resumed || a.launch.carried) return a.launch.resumed;
+    a.launch.resumed = this.readForkRecord(a);
+    return a.launch.resumed;
+  }
+
+  private readForkRecord(a: ManagedAgent): ForkProvenance | undefined {
+    if (!a.launch.resumeRecordPath || !a.launch.forkSource) return undefined;
     let record: unknown;
     try {
       record = JSON.parse(readFileSync(a.launch.resumeRecordPath, "utf8"));
@@ -4690,8 +4740,40 @@ export class Manager {
     if (r.source !== a.launch.forkSource || typeof r.transcriptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(r.transcriptSha256) ||
         !(r.title === undefined || r.title === null || (typeof r.title === "string" && r.title.length <= 1024)))
       return undefined;
-    a.launch.resumed = { source: r.source, ...(typeof r.title === "string" && r.title ? { title: r.title } : {}), transcriptSha256: r.transcriptSha256 };
-    return a.launch.resumed;
+    return { source: r.source, ...(typeof r.title === "string" && r.title ? { title: r.title } : {}), transcriptSha256: r.transcriptSha256 };
+  }
+
+  /** Design section 9: a carried seat must fork the bytes the operator carried. Wait for its fork
+   *  record and hold it to the claim; on a match it becomes the seat's provenance, otherwise the
+   *  refusal is returned. A seat that writes no record cannot be shown to have forked the claim. */
+  private async refuseCarriedFork(a: ManagedAgent, timeoutMs: number): Promise<string | undefined> {
+    const claim = a.launch.carried!;
+    const deadline = Date.now() + timeoutMs;
+    let record: ForkProvenance | undefined;
+    while (!(record = this.readForkRecord(a))) {
+      if (a.terminalizing || a.handle.status() === "exited") return `${a.name} stopped before it wrote a fork record`;
+      if (Date.now() >= deadline) return `${a.name} wrote no fork record within ${timeoutMs} ms, so it cannot be shown to have forked the carried transcript`;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (record.transcriptSha256 !== claim.transcriptSha256)
+      return `${a.name} forked a transcript with sha256:${record.transcriptSha256}, not the carried sha256:${claim.transcriptSha256}`;
+    a.launch.resumed = { ...record, host: claim.host, transferredAt: claim.transferredAt };
+    return undefined;
+  }
+
+  /** A carried seat whose launch was uncertain is held to the claim once it joins, as a started one
+   *  is; the wait ends when the seat stops or exits, which its exit watcher reaps. */
+  private async refuseLateCarriedFork(a: ManagedAgent, timeoutMs: number): Promise<void> {
+    for (;;) {
+      const late = await this.awaitReadiness(a, timeoutMs, { reapOnExit: false });
+      if (late.ok) break;
+      if (!late.uncertain || a.terminalizing) return;
+    }
+    const refused = await this.refuseCarriedFork(a, timeoutMs);
+    if (refused === undefined || a.terminalizing || a.handle.status() === "exited") return;
+    console.error(`! ${refused}; stopping it`);
+    this.stopHandle(a, false);
+    this.freeSlot(a, true, "carried-fork-refused");
   }
 
   private readManagedSession(a: ManagedAgent): string {
@@ -5049,6 +5131,8 @@ export class Manager {
         variant: args.variant ? String(args.variant) : undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume ? String(args.resume) : undefined,
+        resumeClaim: args.resumeClaim !== undefined ? String(args.resumeClaim) : undefined,
+        resumeAgent: args.resumeAgent !== undefined ? String(args.resumeAgent) : undefined,
         events,
         eventsNotice,
         cwd: args.cwd ? String(args.cwd) : undefined,
@@ -5431,6 +5515,21 @@ export class Manager {
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
     if (opts.resume && !connector.supportsResume)
       return { ok: false, error: `${agent} connector does not support resuming an existing session (resume)` };
+    // A carried resume (#1499) is checked here too, before anything is minted. The claim is only
+    // looked at: the connector may still refuse the launch, and a refused launch leaves it unspent.
+    let carried: TranscriptClaim | undefined;
+    if (opts.resumeClaim !== undefined) {
+      if (opts.resume === undefined) return { ok: false, error: "resumeClaim: names carried bytes of a resume; the launch carries no resume" };
+      if (!connector.resumeTranscript) return { ok: false, error: `${agent} connector does not take a carried transcript (resumeClaim)` };
+      if (opts.resumeAgent !== agent)
+        return { ok: false, error: `resumeClaim: the session was carried for agent "${opts.resumeAgent ?? "<none>"}", and this launch resolves agent "${agent}"` };
+      if (!this.transcripts) return { ok: false, error: "resumeClaim: this manager does not receive carried transcripts" };
+      try {
+        carried = this.transcripts.peek(opts.resumeClaim, opts.resume);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    }
     // A restart policy this host cannot honour is refused at accept, never accepted and ignored.
     // External runtimes (tmux/cmux/orca/herdr) attach to a process they do not own and stream no
     // exit, so a name cannot be respawned in place. User-mode seats have no static slot that
@@ -5699,6 +5798,8 @@ export class Manager {
     // and retires over a live process. The slot row holds the same reference; this is the copy the
     // in-process rollback can actually read.
     let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference } | undefined;
+    // A carried resume's seat-private home, removed by the finally unless a live seat took it.
+    let seatHome: string | undefined;
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -5949,7 +6050,13 @@ export class Manager {
           handoff,
         );
       } else {
+        if (carried) {
+          seatHome = join(this.workspaceRoot, ".cotal", "seat-homes", lifecycleUid);
+          mkdirSync(seatHome, { recursive: true, mode: 0o700 });
+          launchOpts.carried = { home: seatHome, transcript: carried.path, cwd };
+        }
         spec = connector.buildLaunch(launchOpts);
+        if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
         handle = await this.spawnCustodied(name, spec, cwd, custody);
       }
@@ -5958,6 +6065,7 @@ export class Manager {
         name,
         role,
         agent,
+        ...(seatHome ? { seatHome } : {}),
         id: userLaunch ? principalKey(userLaunch.owner, name).key : identity.id,
         lifecycleUid,
         // The lifecycle-keyed family this spawn just materialized (absent on an open mesh) — the
@@ -5998,6 +6106,7 @@ export class Manager {
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
+          ...(carried ? { carried: { transcriptSha256: carried.sha256, host: carried.sourceHost, transferredAt: carried.stagedAt } } : {}),
           // Opaque values may contain secrets. Preserve only their keys and require the referenced
           // persona/manifest to resolve the values again; imperative overrides have no safe payload.
           unresolvedLaunchOptionKeys:
@@ -6038,6 +6147,7 @@ export class Manager {
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
       // orphan-rollback in `finally` no longer applies to it.
       provisioned = undefined;
+      seatHome = undefined;
       // #159 B1: reply on a REAL outcome, not a timer. Wait for the agent to actually join the mesh
       // (presence) → started, the child to exit → failed (with its last output; already reaped), or
       // neither in time → uncertain. `✓ started` therefore means "it joined", never just "a process
@@ -6060,8 +6170,19 @@ export class Manager {
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       if (!readiness.ok) {
         this.watchExit(managed);
+        if (managed.launch.carried) void this.refuseLateCarriedFork(managed, readinessTimeoutMs);
         await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } });
         return { ok: false, error: readiness.detail };
+      }
+      if (managed.launch.carried) {
+        const refused = await this.refuseCarriedFork(managed, readinessTimeoutMs);
+        if (refused !== undefined && managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: refused }; }
+        if (refused !== undefined) {
+          this.stopHandle(managed, false);
+          this.freeSlot(managed, true, "carried-fork-refused");
+          await hooks?.onOutcome?.({ kind: "failed", data: { error: refused } });
+          return { ok: false, error: refused };
+        }
       }
       if (managed.restart) {
         if (connector.supportsSessionContinuation) {
@@ -6113,6 +6234,7 @@ export class Manager {
     } finally {
       this.reserved.delete(name);
       this.reservedLive.delete(name);
+      if (seatHome) rmSync(seatHome, { recursive: true, force: true });
       // Minted but never handed to a live slot (buildLaunch / runtime.spawn threw after mint) → tear the
       // orphan down (detached, fail-loud) so a failed spawn leaves no creds/durables behind (#159 B).
       if (provisioned) {
@@ -9513,6 +9635,27 @@ export class Manager {
     }
   }
 
+  /** A connection holding this instance's transfer reader grants (docs/design/resume-transfer.md
+   *  section 6) for this one receive or sweep: minted from the space's signing seed, or issued by the
+   *  host to a remote manager. An open mesh enforces no grants, so a bare one-shot connection is that
+   *  reader there. */
+  private async withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
+    const issue = this.remoteAuthority?.mintTransferReader;
+    if (this.remoteAuthority && !issue) throw new Error("withTransferReader: this manager's remote authority issues no transfer reader");
+    const identity = newIdentity();
+    const creds = issue
+      ? await issue(identity)
+      : this.auth && await mintCreds(this.auth, identity, "transfer-reader", { transferReader: { instanceId: this.managerInstanceId } });
+    const nc = await this.dial(creds
+      ? { ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 }
+      : { maxReconnectAttempts: 0 });
+    try {
+      return await fn(nc);
+    } finally {
+      await nc.drain().catch(() => nc.close());
+    }
+  }
+
   /** Purge the space's retained message backlog (chat, optionally DMs). Privileged — the manager mints a
    *  short-lived "purger" cred (same destructive grant as `cotal history clear`, isolated off the
    *  supervisor); regular agents are denied STREAM.PURGE under auth. Cleanup only: leaves live agents and
@@ -9796,7 +9939,8 @@ export class Manager {
     }
     // establishAttach releases the claim it was handed on every exit; nothing to unwind here.
     const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
-    return { ok: true, data: { grant } };
+    const carried = a.launch.resumed?.host;
+    return { ok: true, data: { grant, ...(carried ? { resumedFrom: { host: carried, source: a.launch.resumed!.source } } : {}) } };
   }
 
   /** P2 item 6: the console's mesh §13.6 session establisher (backing `POST /session/<name>` on the

@@ -1065,6 +1065,22 @@ export function artifactBucket(space: string): string {
   return `cotal_artifacts_${token(space)}`;
 }
 
+/** Name of one manager instance's **transfer bucket**: the Object Store a carried resume transcript
+ *  travels through to that instance (docs/design/resume-transfer.md). One bucket per receiving
+ *  instance, because a grant matches whole subject tokens and nothing inside one bucket carries the
+ *  target in a whole token: the stream name is the only place the read partition can live. Like
+ *  {@link artifactBucket} it sits outside `cotal.<space>.>`, so it is enumerated by name. */
+export function transferBucket(space: string, instanceId: string): string {
+  return `cotal_xfer_${token(space)}_${token(instanceId)}`;
+}
+
+/** Whether `stream` backs one of `space`'s transfer buckets. Instance ids are `[a-z0-9]` lifecycle
+ *  tokens, so another space whose token extends this one with `_` never matches. */
+export function isTransferStream(space: string, stream: string): boolean {
+  const prefix = objectStoreStream(`cotal_xfer_${token(space)}_`);
+  return stream.startsWith(prefix) && /^[a-z0-9]+$/.test(stream.slice(prefix.length));
+}
+
 /** The JetStream stream backing an Object Store bucket. The `OBJ_` prefix is the Object Store's own
  *  convention, not Cotal's — measured against `@nats-io/obj` 3.4.0 rather than assumed, because this
  *  name is what every stream inventory, teardown list and backup check matches on. */

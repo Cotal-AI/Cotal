@@ -72,9 +72,11 @@ const issuer = createUserTokenIssuer({ issuer: "https://views.test", key: signin
 // The one session a session-caller bearer is bound to (#2312). In production the exchange stamps
 // what the identity plane read from the session row; here the issuer's own claim check is the gate.
 const SESSION = { endpoint: "manager", sessionId: mintSessionId(), epoch: 1, exp: Math.floor(Date.now() / 1000) + 300 };
+// The one object a transfer-writer bearer may upload (#1499).
+const TRANSFER = { instanceId: "m".repeat(26), hex: "a".repeat(64) };
 for (const view of USER_TOKEN_VIEWS) {
   const required = VIEW_REQUIRED_SCOPE[view];
-  const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: required ? [required] : [], view, lifecycleUid: smokeUid, ...(view === "manager-caller" ? { managerInstanceId: "m".repeat(26) } : {}), ...(view === "session-caller" ? { session: SESSION } : {}) });
+  const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: required ? [required] : [], view, lifecycleUid: smokeUid, ...(view === "manager-caller" ? { managerInstanceId: "m".repeat(26) } : {}), ...(view === "session-caller" ? { session: SESSION } : {}), ...(view === "transfer-writer" ? { transferWriter: TRANSFER } : {}) });
   const v = await validateUserToken(token, { key: issuer.localKeySet(), issuer: "https://views.test", audience: SPACE });
   const s = v.act.session;
   const sessionIntact = view === "session-caller"

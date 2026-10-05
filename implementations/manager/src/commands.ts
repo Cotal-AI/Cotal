@@ -386,6 +386,16 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             throw new Error("manager-service retirement material does not echo the requested target, operation, and serve epoch");
           return materialCredential(retirementMaterial, "retirementRequester", identity);
         },
+        mintTransferReader: async (identity) => {
+          const transferReader = { id: identity.id };
+          const readerMaterial = await provider.managerServiceAuthority!({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request: remoteManagerAuthorityRequest(state, "cli", "transferReader", remoteManagerRegistrationProof(material.owner,
+              remoteManagerAuthorityRequest(state, "cli", "transferReader", `sha256:${"0".repeat(64)}`)), undefined, undefined, undefined, transferReader),
+          });
+          return materialCredential(readerMaterial, "transferReader", identity);
+        },
         // #1972: the host-owned halves of the managed agent lifecycle. Both ride the one verified
         // manager-authority transport, and both are present only when the registered provider
         // implements them — a provider without the hosted storage composition leaves the hook absent,

@@ -78,6 +78,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   preparePreservation: { command: "prepare-preservation" },
   commitPreservation: { command: "commit-preservation" },
   abortPreservation: { command: "abort-preservation" },
+  transcriptReceive: { command: "transcript-receive" },
 };
 
 /** Operator reach for one targeted control call: `owner` rides the caller's own-domain verb rows
@@ -416,7 +417,7 @@ export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { o
  *  the scatter's TWO connections cannot drift in their connect options: they differ in credential
  *  and in nothing else. The selected dialer matters because the raw node transport refuses a
  *  `wss://` mesh behind an HTTPS edge even when the other endpoint rails can reach it. */
-async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
+export async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
   const nc = await dialerFor(server)({
     servers: server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),

@@ -29,7 +29,7 @@ import type { CryptoKey, JWTVerifyGetKey } from "jose";
 import { assertValidOwnerToken } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
-import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, type UserTokenSession, type UserTokenView } from "./token.js";
+import { USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 import { grantCommandLine } from "./grant-command.js";
 
 /** The pinned identity of ONE external IdP. All fields are operator config — nothing in here is
@@ -116,6 +116,8 @@ export interface IdpBridge {
     /** #2312, required for view "session-caller": the identity plane's session decision for the
      *  principal this bridge derived. Returns the session claim to stamp; throws to refuse. */
     verifySession?: (p: { owner: string; actor: string; lifecycleUid: string }) => Promise<UserTokenSession>;
+    /** Required for view "transfer-writer": the one object the bearer may upload (#1499). */
+    transferWriter?: UserTokenTransferWriter;
   }): Promise<ExchangeResult>;
 }
 
@@ -246,7 +248,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       const idpRemaining = idpExp - Math.floor(Date.now() / 1000);
       if (idpRemaining <= 0)
         throw new Error("idp bridge: the IdP session proof has expired - cannot mint a bearer");
-      let ttlSec = Math.min(req.ttlSec ?? MAX_TOKEN_TTL_SEC, idpRemaining);
+      let ttlSec = Math.min(req.ttlSec ?? viewTtlCapSec(req.view), idpRemaining);
       let session: UserTokenSession | undefined;
       if (req.view === "session-caller") {
         if (!req.verifySession) throw new Error('view "session-caller" needs the identity plane\'s session decision - refusing to mint');
@@ -270,6 +272,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         view: req.view,
         managerInstanceId: req.managerInstanceId,
         ...(session ? { session } : {}),
+        ...(req.transferWriter ? { transferWriter: req.transferWriter } : {}),
         ttlSec,
       });
       const { exp } = decodeJwt(token);

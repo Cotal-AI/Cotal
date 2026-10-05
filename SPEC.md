@@ -595,6 +595,20 @@ mode.
 | `DM_<space>` | `cotal.<space>.inst.>` | Limits | file storage, no Direct Get |
 | `TASK_<space>` | `cotal.<space>.svc.>` | WorkQueue | file storage, no Direct Get |
 
+**Resume transfer bucket.** A manager instance that receives a carried resume transcript holds one
+JetStream Object Store bucket, `cotal_xfer_<space>_<instanceId>` (stream
+`OBJ_cotal_xfer_<space>_<instanceId>`): file storage, `discard=new`, `max_age=0`, rollup headers and
+Direct Get allowed, every other limit `-1`. An object is named `sha256:<hex>` for the transcript's
+digest and is written in the stock Object Store layout with its `nuid` set to `<hex>`, so every
+attempt at the same bytes writes one chunk subject, `$O.<bucket>.C.<hex>`. Each chunk is a
+JetStream publish carrying `Cotal-Offset` (transcript bytes through this chunk), `Cotal-Chunk`
+(chunks through this chunk) and `Nats-Expected-Last-Subject-Sequence` (the previous chunk's stream
+sequence, `0` for the first); the acknowledged chain is the upload's only checkpoint, and a writer
+continues from its last chunk. The commit is the stock meta record, published with `Nats-Rollup:
+sub` and an expected last subject sequence. The target manager stages a committed object, verified
+against its digest, removes the object whole, and removes any transfer idle for ten minutes; no
+message expires by age.
+
 Channel **live** delivery is a native core-NATS subscription to `cotal.<space>.chat.*.*.<channel>`
 (wildcard sender owner+actor) bounded by `sub.allow` (§9), not a durable consumer; join/leave is the
 subscribe/unsubscribe and needs no privileged mediation. The legacy v0.2 `chat_<owner>-<actor>`
@@ -729,6 +743,8 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 | `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info/delete of their client-managed ordered consumers on those two streams only; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; ordered-consumer cleanup cannot delete KV records or streams; durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
+| `transfer-writer` | one carried transcript's chunk and meta subjects in one manager instance's transfer bucket (§8) | a last-message Direct Get on those two subjects | one-shot per CLI call, minted after the transcript is hashed; no consumer and no other object |
+| `transfer-reader` | the stock delete marker on its own transfer bucket's meta subjects | its own `OBJ_cotal_xfer_<space>_<instanceId>` stream: info, message get, its push consumer, purge | one-shot per `transcript-receive` or sweep; no other instance's bucket |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
 
 DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
@@ -888,8 +904,13 @@ one session and binds the minted connection's expiry to the grant's, which is th
 expiry, rather than the bearer's. The auth service's host-issuer connection performs both reads and
 holds only `STREAM.INFO` and the leader-served `STREAM.MSG.GET` on `KV_cotal_sessions_<space>`: no
 Direct Get and no write on that store.
-On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, and `session-caller`
-MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
+The `transfer-writer` view carries a required `act.transferWriter` claim `{instanceId, hex}` and is
+valid with no other view; `act.transferWriter` is valid only with it. It needs ledger scope `admin`,
+the scope of the `transcript-receive` row it serves. The human exchange accepts it only together with a
+`transferWriter` body (each without the other is a 400), and the callout mints the `transfer-writer`
+profile for that one object of that one instance's transfer bucket (§8).
+On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, `session-caller`, and
+`transfer-writer` MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
 managed-agent secret exchange MUST refuse every view other than `manager-caller`.
 
 ---
@@ -2480,7 +2501,7 @@ host-validated at every request, and loss of that validation also refuses a new 
 
 **Platform control registration.** A platform-run control manager registers, activates, renews,
 and retires through the same typed `prepare → activate → renew` protocol and operations as the
-remote manager service above: `session`, `retire`, `renewStandingBundle`, `renewRunDriver`, the
+remote manager service above: `session`, `retire`, `transferReader`, `renewStandingBundle`, `renewRunDriver`, the
 host-owned maintenance operations, retained-agent validation, the goal-index scan, admin
 authorization, and run admission and attempt. Each request rides inside one closed
 `platform-control-authority` envelope that adds only the space, the assigned account, and the
@@ -3568,6 +3589,8 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Versioned-rail request, reply, serve (§13.15) | as the four rows above | the same rows with `ep.v1` for `ep` and one more pinned token: the caller's `<generation>` literal in its request-publish and reply-subscribe rows (`ep.v1.reply.*.*.*.<cO>.<cA>.<cUid>.<generation>.*`), a spanned token in the serve credential's reply-publish row (`ep.v1.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*.*`) and its three serve-subscribe shapes per command | direct; broker-confined on the generation exactly as on the caller triple |
 | Issuance (§13.15) | the `issuer` principal (one-shot, minted per issuance or per lifecycle terminal by the party holding the space signer) | `$KV.cotal_issued_<space>.>` and `$KV.cotal_accepted_<space>.>` publish, `STREAM.INFO`/`STREAM.MSG.GET` on `KV_cotal_issued_<space>`, its own ordered consumers on that store, and ONE leader-served `STREAM.MSG.GET` on `KV_cotal_auth_<space>` for source liveness; NO auth-store write, no rail row | mediated; create-only CAS on evidence, revision-CAS on the attempt row |
 | Run admission (§14.8) | the `run-admitter` principal (one-shot, 60 s, minted per run by the hosting endpoint or the local operator) | exactly `$KV.cotal_admission_<space>.admission.v1.<endpoint>.<runId>` and `….revoked.v1.<endpoint>.<runId>` publish plus `STREAM.MSG.GET` on that store; nothing else | mediated; create-only |
+| Resume transfer write (§8) | the `transfer-writer` principal (one-shot, 5 min, per `cotal spawn --resume --detach --on` call after the CLI hashes the transcript: minted by the operator holding the space signer, or on a user-auth space exchanged as the `transfer-writer` view, §10) | publish exactly `$O.cotal_xfer_<space>_<instanceId>.C.<hex>` and `$O.cotal_xfer_<space>_<instanceId>.M.<name>` (one object of one instance's bucket), plus `$JS.API.DIRECT.GET.OBJ_cotal_xfer_<space>_<instanceId>.` followed by each of those two subjects; no consumer, no stream API, no other object | direct; object-pinned |
+| Resume transfer read (§8) | the `transfer-reader` principal (one-shot, 5 min, minted per `transcript-receive` or sweep by the receiving manager from the space signer, or issued to a remote manager by the host's `transferReader` authority operation for that manager's own instance) | `STREAM.CREATE`, `STREAM.INFO`, `STREAM.MSG.GET`, `STREAM.PURGE` and `CONSUMER.CREATE` on its own `OBJ_cotal_xfer_<space>_<instanceId>` only, publish `$O.cotal_xfer_<space>_<instanceId>.M.>` (the stock delete marker), `$JS.API.INFO`, and that stream's `$JS.FC.OBJ_cotal_xfer_<space>_<instanceId>.>` flow control; every other credential, seats, the spawn capability, the supervisor, the provisioner and other instances' readers included, holds nothing that names `OBJ_cotal_xfer_` or `$O.cotal_xfer_` | mediated; instance-pinned |
 | Run admission read (§14.8) | the `run-mediator` and `run-operator` principals | `STREAM.MSG.GET` on `KV_cotal_admission_<space>` (leader-served; body-selected, stream-wide, the same residual as every records reader); the `run-driver` holds NO row on this store | mediated read; fail-closed |
 | Journal submission append | capability holder | `epj.<endpoint>.<command>[.<mode>[.<target tokens per mode>]].<cO>.<cA>.<cUid>` | direct, explicitly untrusted input |
 | Canonicalizer consume | the endpoint's canonicalizer principal (singleton, §13.4) | its durable on `EPJ_<space>`: `$JS.API.CONSUMER.CREATE.EPJ_<space>.<canonD>.cotal.<space>.epj.<endpoint>.>` (full-tail single filter), `$JS.API.CONSUMER.INFO.EPJ_<space>.<canonD>`, `$JS.API.CONSUMER.MSG.NEXT.EPJ_<space>.<canonD>`, plus `$JS.ACK.EPJ_<space>.<canonD>.>` (ack/term after durable decision only, and, for pool-admitted acceptances, after the enqueue, §13.4) | mediated |
@@ -4884,11 +4907,20 @@ single-function profiles, each granting only the verbs its function needs and no
   `delivery-admin` control tier is deleted with the v0 rail (§13.11).
 - `membership-rw`: the derived channel-membership graph feed reader/writer.
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
-  human-CLI and maintenance surfaces, each scoped to its verbs.
+  human-CLI and maintenance surfaces, each scoped to its verbs. `teardown` also lists stream names,
+  so space deletion finds the transfer buckets (§8), and holds `STREAM.INFO` and `STREAM.DELETE` on
+  each transfer stream named at its mint.
 - `issuer`: one issuance window (§13.15), minted per mint or per lifecycle terminal by the party
   holding the space signer; the issued and accepted stores plus one auth-store liveness read.
 - `run-admitter`: one run's admission record or revocation marker (§14.8), minted per run for
   60 seconds; two exact keys and nothing else.
+- `transfer-writer`: one carried resume transcript (§8), minted per CLI call for five minutes, or on
+  a user-auth space exchanged per call as the `transfer-writer` view; the object's chunk and meta
+  subjects in one instance's transfer bucket and a last-message direct get on each.
+- `transfer-reader`: one manager instance's `transcript-receive` or sweep (§8), minted per call for
+  five minutes; its own transfer bucket's stream and nothing of any other instance. A remote manager
+  receives it from the host's `transferReader` authority operation, which binds it to the
+  authenticated manager's own instance.
 - `manager-service` is NOT a generic host profile: on a per-user-auth space only the
   loopback/operator exchange may issue this closed, one-owner/one-fixed-manager-actor/one-instance
   view to a signed-in user with ledger scope `supervise` (§13.1/§13.6). It reaches exactly the

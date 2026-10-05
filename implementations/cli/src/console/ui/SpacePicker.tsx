@@ -1,8 +1,17 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
-import { listSpaces, deleteSpace, type SpaceInfo } from "@cotal-ai/core";
+import { listSpaces, deleteSpace, type SpaceAuth, type SpaceInfo } from "@cotal-ai/core";
+import { findMesh, getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { agentColor } from "./theme.js";
 import { Confirm } from "./Confirm.js";
+
+/** The trust material of a space this host registered as a static-auth mesh on `server`. Deleting a
+ *  space needs a teardown that names each of its resume transfer streams, and a carried `--creds`
+ *  file names only those that existed when it was minted, so deletion mints its own from this. */
+async function teardownAuth(server: string, space: string): Promise<SpaceAuth | undefined> {
+  const m = findMesh(space);
+  return m?.mode === "auth" && m.server === server ? getSpaceAuth(workspaceSecretStore(m.root), space) : undefined;
+}
 
 /** The admin landing view: an overview of every space on the server (agents present, channels,
  *  messages) with a selection cursor. Enter drops into that space's console; `r` re-enumerates.
@@ -75,7 +84,9 @@ export function SpacePicker({
         onConfirm={() => {
           const space = del.space;
           setDel(null);
-          void deleteSpace({ servers: server, creds, space }).then(() => setNonce((n) => n + 1));
+          void teardownAuth(server, space)
+            .then((auth) => deleteSpace({ servers: server, ...(auth ? { auth } : { creds }), space }))
+            .then(() => setNonce((n) => n + 1), (e: Error) => setError(e.message));
         }}
         onCancel={() => setDel(null)}
       />

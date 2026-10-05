@@ -75,6 +75,7 @@ import {
   livenessSubject,
   livenessServeFilter,
   livenessReplyGrant,
+  isTransferStream,
 } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
 import {
@@ -88,6 +89,7 @@ import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CM
 import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
+import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
@@ -175,6 +177,13 @@ export type Profile =
   // over. Creates that ONE run's admission record and, later, its revocation marker. The driver
   // holds nothing on this store; the mediator reads it.
   | "run-admitter"
+  // A carried resume's TRANSFER WRITER (docs/design/resume-transfer.md section 6): the operator's
+  // per-call instrument for ONE object in ONE manager instance's transfer bucket, minted after the
+  // CLI has hashed the transcript ({@link transferWriterGrants}).
+  | "transfer-writer"
+  // A manager instance's TRANSFER READER: one `transcript-receive` or sweep over its own transfer
+  // bucket and no other ({@link transferReaderGrants}).
+  | "transfer-reader"
   // Closed human-issued remote manager authority. Never exposed as a generic profile string: the
   // auth provider's typed manager-service protocol is the only mint door.
   | "remote-manager";
@@ -277,6 +286,8 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "run-operator": { class: "one-shot", defaultTtlSeconds: 60, note: "one served run-status / run-ps / run-answer call (SPEC 14.3): the hosting manager mints it per call on its own connection, never the serve rails; 60s bounds a copied cred to a minute" },
   issuer: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one issuance's evidence stage/release or one lifecycle terminal's issuance retirement (SPEC 13.15)" },
   "run-admitter": { class: "one-shot", defaultTtlSeconds: 60, note: "one hosted run's admission record create, or its revocation marker (SPEC 14.8); 60s bounds a copied cred to a minute" },
+  "transfer-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one carried resume per CLI call: one object's chunk and meta subjects in one instance's transfer bucket" },
+  "transfer-reader": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one transcript-receive or sweep over the minting instance's own transfer bucket" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
@@ -704,6 +715,14 @@ export interface MintOpts {
   /** `run-admitter` profile only: the ONE hosted run whose admission record and revocation marker
    *  this connection may create. */
   runAdmitter?: { endpoint: string; runId: string };
+  /** `transfer-writer` profile only: the ONE object (the transcript's hex digest) in the ONE manager
+   *  instance's transfer bucket this instrument may write. */
+  transferWriter?: { instanceId: string; hex: string };
+  /** `transfer-reader` profile only: the manager instance whose own transfer bucket this reads. */
+  transferReader?: { instanceId: string };
+  /** `teardown` profile only: the space's transfer streams, listed before the mint, that this
+   *  teardown may inspect and delete by name ({@link deleteSpace} lists and names them). */
+  transferStreams?: string[];
   /** `backup` profile only: one discriminated inspector or snapshot phase. */
   backup?: BackupPermissionScope;
   /** `restore` profile only: one discriminated initiate, upload, validate, or checkpoint phase. */
@@ -1018,7 +1037,7 @@ export async function mintPublicUserJwt(
   opts: MintOpts,
 ): Promise<{ jwt: string; exp: number }> {
   if (!/^U[A-Z2-7]{55}$/.test(publicId)) throw new Error("mintPublicUserJwt: publicId must be a user nkey");
-  if (!["remote-manager", "endpoint-serve", "goal-writer", "session-ledger", "session-serving", "retirement-requester", "run-driver", "run-mediator", "run-operator"].includes(profile))
+  if (!["remote-manager", "endpoint-serve", "goal-writer", "session-ledger", "session-serving", "retirement-requester", "run-driver", "run-mediator", "run-operator", "transfer-reader"].includes(profile))
     throw new Error(`mintPublicUserJwt: profile "${profile}" is not part of the closed remote manager protocol`);
   const pr: MintPrincipal = {
     owner: opts.principal?.owner ?? DEV_OWNER,
@@ -1167,6 +1186,16 @@ export function permissionsFor(
     if (!opts.runAdmitter) throw new Error("permissionsFor: run-admitter requires opts.runAdmitter ({endpoint, runId} of the ONE run it admits)");
     return runAdmitterPermissions(space, pr, opts.runAdmitter);
   }
+  if (profile === "transfer-writer") {
+    if (!opts.transferWriter) throw new Error("permissionsFor: transfer-writer requires opts.transferWriter ({instanceId, hex} of the ONE object it writes)");
+    const g = transferWriterGrants(space, opts.transferWriter.instanceId, opts.transferWriter.hex, pr.connId);
+    return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
+  }
+  if (profile === "transfer-reader") {
+    if (!opts.transferReader) throw new Error("permissionsFor: transfer-reader requires opts.transferReader ({instanceId} whose own bucket it reads)");
+    const g = transferReaderGrants(space, opts.transferReader.instanceId, pr.connId);
+    return { pub: { allow: g.publish }, sub: { allow: g.subscribe } };
+  }
   if (profile === "endpoint-evictor") {
     // P2 item 3 (slice 3a): a SCOPED delivery-admin caller for ONE re-registration's verify-evict.
     // Publish EXACTLY this credential's OWN delivery-admin control subject + $JS.API.INFO; subscribe
@@ -1205,7 +1234,7 @@ export function permissionsFor(
   if (profile === "probe") return probePermissions(pr); // connect-only liveness/auth preflight (PR 1.5)
   if (profile === "channel-writer") return channelWriterPermissions(space, pr); // channel-registry writes (PR 1.5)
   if (profile === "channel-purger") return channelPurgerPermissions(space, pr); // channel-writer + CHAT purge (PR 1.5)
-  if (profile === "teardown") return teardownPermissions(space, pr); // sole STREAM.DELETE holder (PR 1.5)
+  if (profile === "teardown") return teardownPermissions(space, pr, opts.transferStreams ?? []); // sole STREAM.DELETE holder (PR 1.5)
   if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged", opts); // ps/start reads (PR 1.5)
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin", opts); // any-mode stop/attach (PR 1.5)
   if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin", opts); // spawn -f deploy authority (PR 1.5; user-mode view rides privileged)
@@ -1865,7 +1894,7 @@ function channelPurgerPermissions(space: string, pr: MintPrincipal): Record<stri
  *  DM/DLV body, posts chat, or forges. Isolated here so no standing operator/provisioner/supervisor cred
  *  can delete a stream; a leaked teardown can wipe a space you own + stop its agents (that IS its job),
  *  nothing else. Minted ephemerally per teardown from the local trust material (same-checkout `down -f`). */
-function teardownPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: string[]): Record<string, unknown> {
   // The ep-rail mirror of the admin deploy tier (1c.2c): teardown reads `ps` and stops owned agents
   // it did not spawn (any-mode despawn) - the admin instrument set. Lifecycle-keyed, so a uid is
   // required at mint (fail-loud).
@@ -1882,11 +1911,18 @@ function teardownPermissions(space: string, pr: MintPrincipal): Record<string, u
     `KV_${membershipBucket(space)}`, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
     ...endpointPlaneStreamNames(space),
     objectStoreStream(artifactBucket(space)),
+    ...transferStreams.map((name) => {
+      if (!isTransferStream(space, name)) throw new Error(`permissionsFor: teardown transferStreams names ${JSON.stringify(name)}, not one of ${space}'s transfer streams`);
+      return name;
+    }),
   ].flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.DELETE.${s}`]);
   return {
     pub: {
       allow: [
         "$JS.API.INFO",
+        // deleteSpace() enumerates the transfer streams (one per manager instance that received a
+        // carried resume) by name shape; their names are not derivable from the space alone.
+        "$JS.API.STREAM.NAMES",
         // connectProbe read: presence watch (name→id + roster) + channel registry read.
         `$JS.API.CONSUMER.CREATE.${PKV}.>`,
         `$JS.API.CONSUMER.INFO.${PKV}.>`,
