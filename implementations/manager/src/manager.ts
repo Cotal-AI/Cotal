@@ -8265,9 +8265,7 @@ export class Manager {
    *   3. OPEN MESH. No credential family exists, so the revoke/evict loop is vacuous and this belt
    *      is COOPERATIVE only: a non-conformant process simply does not run it.
    *  The named follow-up that would close 2 and 3 is the gate-linearized commit (routing the
-   *  terminal through the issuance gate's own CAS), deliberately deferred as substrate territory.
-   *  An earlier revision of this comment claimed the residual was "closed by item-3 slice 3.0,
-   *  never a permanent residual". That asserted a closure that does not exist. */
+   *  terminal through the issuance gate's own CAS), deliberately deferred as substrate territory. */
   private async assertGoalWriterEpochCurrent(epoch: number): Promise<void> {
     const gate = this.goalWriter?.gate;
     if (!gate) return; // no goal-writer standing yet

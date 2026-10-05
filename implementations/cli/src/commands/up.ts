@@ -3428,14 +3428,14 @@ async function authSetup(
  * malformed pid file refuses exactly like a live one, since "cannot tell" and "still running" have
  * the same consequence.
  *
- * WHAT IT CANNOT SEE, stated because an earlier version of this comment claimed otherwise: both
- * records are mutable, and neither is written by a broker started outside `cotal up`. Delete both
- * while the process lives, or run `nats-server -c <root>/.cotal/auth/server.conf` by hand, and this
- * returns success having probed nothing. The requested address is covered separately (an unidentified
- * listener there refuses the rotation rather than moving to a free port), which leaves a hand-started
- * broker on a DIFFERENT port as the honest residual. Closing that needs something a survivor holds
- * and cannot delete, an exclusive store lock, which does not exist today; until it does, do not run
- * `nats-server` against this root's config outside `cotal up`.
+ * WHAT IT CANNOT SEE: both records are mutable, and neither is written by a broker started outside
+ * `cotal up`. Delete both while the process lives, or run
+ * `nats-server -c <root>/.cotal/auth/server.conf` by hand, and this returns success having probed
+ * nothing. The requested address is covered separately (an unidentified listener there refuses the
+ * rotation rather than moving to a free port), which leaves a hand-started broker on a DIFFERENT port
+ * as the honest residual. Closing that needs something a survivor holds and cannot delete, an
+ * exclusive store lock, which does not exist today; until it does, do not run `nats-server` against
+ * this root's config outside `cotal up`.
  *
  * Not a general `up` guard: an ordinary boot adopting or replacing a listener is a supported flow with
  * its own claim machinery. This is specifically the precondition for retiring an authority.

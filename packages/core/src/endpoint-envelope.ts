@@ -484,9 +484,7 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
  * {@link import("./schema-profile.js").compileContract} still refuses `contract-invalid`, a false
  * positive fails a boot loudly rather than lying to a caller.
  *
- * WHAT THIS COMMENT USED TO CLAIM, AND WHY IT WAS WRONG. It said the deterministic profile bounds
- * "do the pre-emptive work", i.e. that registration-time bounds REPLACE request-path enforcement.
- * They do not, and that was disproved by execution rather than argued: a four-node schema —
+ * REGISTRATION-TIME PROFILE BOUNDS DO NOT REPLACE REQUEST-PATH ENFORCEMENT. A four-node schema —
  * trivially inside every byte, depth, ref-chain, node and closure bound — declaring
  * `uniqueItems: true` over an array of OBJECTS makes validation QUADRATIC IN THE CALLER'S DATA.
  * 3,000 valid objects measured 75ms and 5,000 measured 227ms, from ~54KB of entirely legitimate
