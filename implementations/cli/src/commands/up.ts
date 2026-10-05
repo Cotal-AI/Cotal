@@ -998,7 +998,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // failure copy says "restart it with `cotal up`"), so a refresh must re-ensure the service —
       // never just reprint "already running" over a dead callout. No broker config is (re)written
       // here, so healing on a bare `cotal up` is safe: the mode can't drift, only the daemon heals.
-      let userAuth = held.userAuth;
+      let userAuth: UserAuthInfo | undefined;
       if (held.mode === "user") {
         const auth = await getSpaceAuth(workspaceSecretStore(root), held.space);
         if (!auth) {
@@ -1057,15 +1057,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         });
         if (!controlPlane) process.exitCode = 1;
       }
-      const heldAttachHost = attachHostFor(held.space, values.host);
-      const heldMaxSessions = maxSessionsFor(held.space, maxSessions);
       // A broker was already answering here — this branch starts nothing, so it must not claim the
-      // record as ours (see `Provenance`).
-      // `tlsRequired` is CARRIED FORWARD, not re-derived. This branch starts no listener, so it has
-      // no transport decision to record — and `recordOurMesh` writes the entry whole, so omitting
-      // the field here would erase the requirement on every bare refresh, exactly the way dropping
-      // `attachHost` would silently demote the mesh to loopback.
-      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(held.tlsRequired !== undefined ? { tlsRequired: held.tlsRequired } : {}), ...(userAuth ? { userAuth } : {}), ...(heldAttachHost ? { attachHost: heldAttachHost } : {}), ...(heldMaxSessions !== undefined ? { maxSessions: heldMaxSessions } : {}), ...(held.maxFileStore !== undefined ? { maxFileStore: held.maxFileStore } : {}), ...(held.storeDir !== undefined ? { storeDir: held.storeDir } : {}), ts: new Date().toISOString() }, "refresh");
+      // record as ours (see `Provenance`), and it passes only what this invocation decided.
+      // `recordOurMesh` carries everything else (`tlsRequired`, the recorded host and session
+      // ceiling, the store) from the record as it stands at write time, not from `held`.
+      recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ts: new Date().toISOString() }, "refresh");
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -2829,14 +2825,15 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance): void {
   const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording m
   const prior = findMesh(m.space);
   const origin = provenance === "refresh" && (prior?.origin === "manual" || prior?.origin === "catalog") ? prior.origin : "up";
-  // A REFRESH starts nothing: it concluded the mesh is up from reachability alone, and rebuilds `m`
-  // from what THIS launch knows, which is never the operator's past decisions. `origin` was already
-  // carried across for that reason; the overlay acceptance is the same class and was not, so a
-  // no-op refresh silently erased a consent the operator had given. A `started` takeover may
-  // replace it (that launch really is the mesh now); a refresh may not quietly drop it.
-  const unencryptedOverlay =
-    provenance === "refresh" && m.unencryptedOverlay === undefined ? prior?.unencryptedOverlay : m.unencryptedOverlay;
-  recordMesh({ ...m, origin, ...(unencryptedOverlay !== undefined ? { unencryptedOverlay } : {}) });
+  // A REFRESH starts nothing: it concluded the mesh is up from reachability alone, so `m` holds only
+  // what THIS launch decided, and every other field is the record as it stands now. That covers the
+  // operator's past decisions (origin, overlay consent, TLS requirement) and anything another writer
+  // committed while the refresh ensured the control plane; rebuilding from the refresh's earlier
+  // read reverted those and still exited 0. A `started` takeover may replace the record outright
+  // (that launch really is the mesh now).
+  if (provenance === "refresh" && !prior)
+    throw new Error(`mesh "${m.space}" was removed from the registry while \`cotal up\` refreshed it - not re-recording it from an earlier read`);
+  recordMesh(provenance === "refresh" ? { ...prior, ...m, origin } : { ...m, origin });
   if (!usableCurrent) {
     setCurrent(m.space);
     return;
