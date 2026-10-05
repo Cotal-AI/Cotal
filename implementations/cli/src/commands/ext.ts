@@ -1,9 +1,8 @@
 import { spawn } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
 import { registry, type Command, type Connector, type ParsedArgs } from "@cotal-ai/core";
-import { RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, provenance, saveExtensionsManifest, type InstalledExtension, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
+import { RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, provenance, saveExtensionsManifest, type InstalledExtension, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
@@ -112,24 +111,6 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
   } finally {
     if (!published && !preservePending) mutation.clear();
   }
-}
-
-/** Import an installed extension package (its declared entry) so it self-registers. */
-async function importExtension(pkg: string): Promise<void> {
-  const dir = extensionPackageDir(pkg);
-  const meta = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {
-    main?: string;
-    exports?: unknown;
-  };
-  // Entry resolution: the common cases (exports["."] as string or {import|default}, else main).
-  let entry = meta.main ?? "index.js";
-  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") entry = dot;
-  else if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string>;
-    entry = d.import ?? d.default ?? entry;
-  } else if (typeof meta.exports === "string") entry = meta.exports;
-  await import(pathToFileURL(join(dir, entry)).href);
 }
 
 /** Rebuild each installed package's private links after npm mutates the shared prefix. Keeping the
@@ -285,11 +266,8 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // Import once; every registration must LAND IN OUR REGISTRY. Runtime-only and other provider
   // packages are first-class extensions too; commands are only the display/dispatch subset.
   const before = new Set(registry.all().map((ext) => `${ext.kind}:${ext.name}`));
-  try {
-    await importExtension(pkg);
-  } catch (e) {
-    fail(pkg, `failed to import: ${(e as Error).message}`);
-  }
+  const version = pkgMeta.version ?? "0.0.0";
+  await importExtensionEntry(pkg, version, "the add was rolled back; replace this build");
   const contributed = registry.all().filter((ext) => !before.has(`${ext.kind}:${ext.name}`));
   if (!contributed.length) {
     fail(pkg, `imported cleanly but registered no extensions in THIS CLI's registry - if it bundles its own @cotal-ai/core, make core a peerDependency`);
@@ -314,7 +292,6 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   const commands = contributed.filter((ext): ext is Command => ext.kind === "command");
   const connectors = contributed.filter((ext): ext is Connector => ext.kind === "connector");
   const localProcesses = contributed.filter((ext): ext is LocalProcess => ext.kind === "local-process");
-  const version = pkgMeta.version ?? "0.0.0";
   const entry: InstalledExtension = {
     pkg,
     version,
