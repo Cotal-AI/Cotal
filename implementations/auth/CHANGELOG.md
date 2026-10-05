@@ -1,5 +1,24 @@
 # @cotal-ai/auth
 
+## 0.62.0
+
+### Minor Changes
+
+- bcf66d6: Add a delegated user intent: SPEC §13.16, a design record, and the host decisions it needs. A signed-in user admits one launch or one retirement on the host's authenticated route, and a platform control holder consumes that intent once from its current registration, epoch, assignment revision and lifecycle. `@cotal-ai/core` adds the closed request types and parsers for the user's intent and the holder's execution, `parseRemoteDelegatedUserIntentExecutionResult`, and `resolveReadAcl`, the read-list resolution `provisionAgentDurables` already used. `@cotal-ai/auth` adds `authorizeDelegatedUserIntentAdmission` and `authorizeDelegatedUserIntentExecution`, the record, pin and flight types, `delegatedUserIntentHoldsAlias` and `joinOrStartDelegatedUserIntent`, `AuthServiceHandle.observeManagerGate`, which a platform composition's handle carries so the host reads the holder's gate over the context's own connection, and `AuthServiceHandle.activateManagedLifecycle`, which activates a delegated launch's lifecycle at its pinned UID before any row or durable and mints nothing, so a launch the host compensates or the user retires reaches the terminal barrier even when its agent never exchanged. Admission derives nothing from the request: it takes the owner the host derived from the verified IdP subject, requires `spawn` on the user's own fresh ledger row, binds the account's current platform assignment and the holder's open gate, and dry-runs the envelope walk from the user's principal over the read list the writer will provision. Execution compares the request with the record and with the fresh assignment, gate epoch and registration proof, and returns the user's owner and parent for the host's writers. The holder gains no grant, no decision reads `supervise`, and the `platform-control` view's same-owner rule is unchanged. Stock dispatch refuses both kinds as `unimplemented`; a host that owns an intent store and the enrollment and retirement writers composes the decisions on its own routes. `@cotal-ai/manager` adds `remoteAuthority.executeDelegatedUserIntent`, `StartAgentOpts.delegatedIntent` and `Manager.retireDelegatedAgent`: a delegated launch takes the hosted enrollment arm with the intent's execution and refuses material under any owner but the intent's, and `retireDelegatedAgent` stops a delegated agent only after the host confirms `retired: true` for its exact target and operation id. A delegated agent's name, including one whose launch failed at any step after the host's enrollment answer, stays held until then.
+- 231d226: A platform composition can now ask whether its assigned control manager is serving. With the `platformControl` input, `startAuthService` returns a handle with `platformControlReadiness(instanceId)`, which answers that manager instance's `status` reply and refuses any instance the current assignment does not name, or one whose gate another owner holds. The auth context reads over its own connection, whose grant is that instance's `describe` and `status` and its own reply rail. The connection renews in process like the context's other connections and never leaves it, so a pooled control host no longer needs a human or operator credential, a per-read control instrument, or the manager's process id to tell whether the manager is up.
+
+### Patch Changes
+
+- Updated dependencies [bcf66d6]
+- Updated dependencies [97a2382]
+- Updated dependencies [877909b]
+- Updated dependencies [5ef9a67]
+- Updated dependencies [565036c]
+- Updated dependencies [9236a12]
+- Updated dependencies [b36bebf]
+  - @cotal-ai/core@0.62.0
+  - @cotal-ai/workspace@0.62.0
+
 ## 0.61.0
 
 ### Minor Changes
