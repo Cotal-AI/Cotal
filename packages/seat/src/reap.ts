@@ -7,8 +7,8 @@ import { unsupportedTransport, type SeatExit } from "./protocol.js";
 
 /** What a reap proved. `absent`: no custody record exists for that seat id, so there is no process
  *  this package can address. `reaped`: every process the record names was either signalled and
- *  verified gone, or found already gone (its pid absent or held by a process with a different start
- *  identity, which is proof the recorded one exited). */
+ *  verified gone, or found already gone (its pid absent, held by a process with a different start
+ *  identity, or recorded on an earlier boot, each of which is proof the recorded one exited). */
 export type SeatReapEvidence =
   | { outcome: "absent" }
   | { outcome: "reaped"; custodian: "signalled" | "gone"; child: "signalled" | "gone"; group: number; exit?: SeatExit; detail: string };
@@ -134,18 +134,22 @@ export function censusCustodians(run?: string): CustodianSighting[] {
 
 /** Why `rec`'s pids cannot be tied to the processes it recorded, or undefined when they can. A
  *  start token counts ticks since ITS OWN boot, so it only tells two processes apart within one boot,
- *  and a record may have outlived a reboot on disk. A record with no start identity, no boot identity,
- *  or another boot's identity proves nothing about whatever this boot put at those pid numbers, so it
- *  is neither signalled nor reported as running or gone. */
+ *  and a record may have outlived a reboot on disk. A record with no start identity or no boot
+ *  identity proves nothing about whatever holds those pid numbers now, so it is neither signalled nor
+ *  reported as running or gone. */
 function unprovedIdentity(id: string, rec: SeatRecord): string | undefined {
   if (rec.custodianStart === undefined)
     return `seat ${id} record carries no process start identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (a bare pid may belong to an unrelated process)`;
   if (rec.bootId === undefined)
     return `seat ${id} record carries no boot identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (its start tokens cannot be compared across a reboot)`;
-  const boot = bootToken();
-  if (boot !== undefined && rec.bootId !== boot)
-    return `seat ${id} record belongs to boot ${rec.bootId}, but this is boot ${boot}; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (those pids now belong to this boot's processes)`;
   return undefined;
+}
+
+/** Whether `rec` was written on an earlier boot. No process outlives a reboot, so every process it
+ *  names is gone, and whatever holds those pid numbers now is one of this boot's and is never signalled. */
+function fromEarlierBoot(rec: SeatRecord): boolean {
+  const boot = bootToken();
+  return boot !== undefined && rec.bootId !== boot;
 }
 
 /**
@@ -184,11 +188,13 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
   const unproved = unprovedIdentity(id, rec);
   if (unproved !== undefined) throw new Error(unproved);
   const custodianStart = rec.custodianStart!;
+  const earlierBoot = fromEarlierBoot(rec);
   // Read before anything is signalled, so a SIGKILL sent below is never reported as how the child ended.
   const recorded = recordedExit(exitPath(path));
   const exit = recorded.exit;
   // A pinned record without a child identity means the child was gone before custody began.
-  const childLive = (): boolean => rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live";
+  const childLive = (): boolean => !earlierBoot && rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live";
+  const custodianLive = (): boolean => !earlierBoot && identityVerdict(rec.custodianPid, custodianStart) === "live";
 
   // The child first: node-pty made it a session and process-group leader, so signalling the group
   // takes its descendants (a connector host's TUI and bridges) with it. A child that is no longer a
@@ -201,9 +207,9 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     groupKilled = leader && child === "signalled";
   }
   let custodian: "signalled" | "gone" = "gone";
-  if (identityVerdict(rec.custodianPid, custodianStart) === "live") custodian = signal(rec.custodianPid, "SIGKILL");
+  if (custodianLive()) custodian = signal(rec.custodianPid, "SIGKILL");
 
-  const gone = (): boolean => !childLive() && identityVerdict(rec.custodianPid, custodianStart) === "gone";
+  const gone = (): boolean => !childLive() && !custodianLive();
   if (!(await until(gone, graceMs)))
     throw new Error(`seat ${id}: custodian ${rec.custodianPid} or child ${rec.childPid} still holds its recorded start identity ${graceMs}ms after SIGKILL; exit not proved`);
   // The group after the leader: a member that re-parented to init keeps the pgid, and the pgid
@@ -211,7 +217,7 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
   // A retained record may outlive its original group and numeric PGID. Without a live leader
   // identity, remaining members might belong to a later generation, so retain unproved custody.
   let group = 0;
-  if (!groupKilled && processStartToken(rec.childPid) === undefined && groupMembers(rec.childPid).length > 0)
+  if (!earlierBoot && !groupKilled && processStartToken(rec.childPid) === undefined && groupMembers(rec.childPid).length > 0)
     throw new Error(`seat ${id}: group ownership is unproved for absent leader ${rec.childPid}; custody retained`);
   if (groupKilled) {
     const empty = await until(() => {
@@ -256,15 +262,15 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
     child,
     group,
     ...(exit ? { exit } : {}),
-    detail: `custodian ${rec.custodianPid} ${custodian}, child ${rec.childPid} ${child}${groupKilled || group > 0 ? `, group ${rec.childPid} empty` : ""}; custody record ${hadPath ? "removed" : "verified gone"}${ended}`,
+    detail: `custodian ${rec.custodianPid} ${custodian}, child ${rec.childPid} ${child}${earlierBoot ? ` with boot ${rec.bootId}` : ""}${groupKilled || group > 0 ? `, group ${rec.childPid} empty` : ""}; custody record ${hadPath ? "removed" : "verified gone"}${ended}`,
   };
 }
 
 /** One custody record as {@link drainSeats} found it. `live-child`: the child still holds its
  *  recorded start identity, so the seat is a running agent and is never signalled. `childless`: the
  *  child is gone, so a drain would retire the seat. `drained`: a drain proved the seat gone and
- *  removed its record. `refused`: the record could not be read, its identity does not tie its pids
- *  to this boot's processes, or the reap did not prove exit; the record stays on disk. */
+ *  removed its record. `refused`: the record could not be read, carries no start or boot identity,
+ *  or the reap did not prove exit; the record stays on disk. */
 export interface SeatInventoryEntry {
   id: string;
   state: "live-child" | "childless" | "drained" | "refused";
@@ -282,8 +288,9 @@ export interface SeatInventoryEntry {
  * running agent, and a manager may still adopt it. Only a seat whose child is proved gone reaches
  * {@link reapSeat}. A record is written once, and a start identity that is gone never comes back, so
  * the reap that follows finds the child gone too and signals at most a custodian whose identity
- * matches the record. A record that cannot be read or whose identity proves nothing on this boot, or
- * a reap that does not prove exit, is refused and left on disk for the operator.
+ * matches the record. A record from an earlier boot names processes that ended with that boot, so it
+ * is childless and its reap signals nothing. A record that cannot be read or whose identity proves
+ * nothing, or a reap that does not prove exit, is refused and left on disk for the operator.
  */
 export async function drainSeats(root: string, opts: { drain?: boolean; graceMs?: number } = {}): Promise<SeatInventoryEntry[]> {
   if (process.platform !== "linux") throw unsupportedTransport();
@@ -309,13 +316,14 @@ export async function drainSeats(root: string, opts: { drain?: boolean; graceMs?
       out.push({ ...seen, state: "refused", detail: unproved });
       continue;
     }
-    if (rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live") {
+    const earlierBoot = fromEarlierBoot(rec);
+    if (!earlierBoot && rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live") {
       out.push({ ...seen, state: "live-child", detail: `child ${rec.childPid} is running; kept` });
       continue;
     }
     if (!opts.drain) {
-      const custodian = rec.custodianStart !== undefined && identityVerdict(rec.custodianPid, rec.custodianStart) === "live" ? "running" : "gone";
-      out.push({ ...seen, state: "childless", detail: `child ${rec.childPid} is gone; custodian ${rec.custodianPid} ${custodian}` });
+      const custodian = !earlierBoot && rec.custodianStart !== undefined && identityVerdict(rec.custodianPid, rec.custodianStart) === "live" ? "running" : "gone";
+      out.push({ ...seen, state: "childless", detail: `child ${rec.childPid} is gone; custodian ${rec.custodianPid} ${custodian}${earlierBoot ? ` with boot ${rec.bootId}` : ""}` });
       continue;
     }
     try {

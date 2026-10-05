@@ -9,7 +9,7 @@
     "The fixture launches a real detached custodian, records worker and child pids, kills only the worker, then adopts the surviving seat. Both mutation windows are code-only unique anchors.",
     "The linger cells launch real custodians whose child exits at once and watch the custodian pid; the reap cells run reapSeat against a live custodied seat and against a record whose pinned start identities do not match the live pids.",
     "A custody reference reaches reapSeat and loadSeat from a durable slot row, so the id is checked against the shape seatId mints before it is joined to the custody root. The mutation drops that check and the traversal id resolves to a path outside the root instead of being refused.",
-    "A start token counts ticks since boot, so it is unique only within one boot while a custody record outlives a reboot on disk. The boot cells rewrite a live seat's record to name a foreign boot and then to name none, and require both to refuse rather than signal the pids that record still holds."
+    "A start token counts ticks since boot, so it is unique only within one boot while a custody record outlives a reboot on disk. The boot cells rewrite a live seat's record to name no boot, which must refuse, and then a foreign boot, which must reap as gone; neither may signal the pids that record still holds."
   ],
   "mutations": [
     {
@@ -103,11 +103,11 @@
     {
       "name": "signal a record that belongs to another boot",
       "file": "packages/seat/src/reap.ts",
-      "find": "  if (boot !== undefined && rec.bootId !== boot)\n    return `seat ${id} record belongs to boot ${rec.bootId}, but this is boot ${boot}; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (those pids now belong to this boot's processes)`;\n",
-      "replace": "",
+      "find": "  return boot !== undefined && rec.bootId !== boot;\n",
+      "replace": "  return false;\n",
       "afterRestore": "pnpm --filter @cotal-ai/seat build",
-      "expectRed": "a record from another boot refuses to signal",
-      "cell": "a record from another boot refuses to signal",
+      "expectRed": "a record from another boot reaps as gone without signalling",
+      "cell": "a record from another boot reaps as gone without signalling",
       "note": "Without the boot comparison the start tokens match across reboots by coincidence, and the reap signals whatever this boot put at those pid numbers."
     },
     {
