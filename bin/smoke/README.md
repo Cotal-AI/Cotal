@@ -70,8 +70,9 @@ forms below, because a form it cannot follow to the exit status can hide either 
   `try` would exit 0.
   A catch arm prevents it only when its first statement exits with a failing status, or sets
   `process.exitCode` to one that the exit reads (`process.exit()`, `process.exit(process.exitCode)`
-  or `process.exit(process.exitCode ?? 0)`) while nothing in the arm, the `finally` or a function
-  either calls writes another code, including `++`, `--`, destructuring and `process["exitCode"]`.
+  or `process.exit(process.exitCode ?? 0)`) while the file writes no other code anywhere, including
+  by `++`, `--`, destructuring and `process["exitCode"]`, since a callback scheduled earlier can run
+  while the `finally` awaits.
   A statement before it can throw past it, so log after failing. A statement inside a branch of
   the arm, a computed code and a rethrow do not count. A promise `.catch` counts only directly
   before `.finally`. A status variable that starts failing counts when the only write that clears
@@ -125,10 +126,12 @@ assignment to it, `||=`, `&&=` and `??=` included, an alias such as `const stop 
 `o["k"]()`, every value the file binds to the key `k` on any object, since the gate does not track
 which object it is. A value written as `a ? b : c`, `b || c`, `b && c` or `b ?? c` stands for both
 `b` and `c`, `(a, b)` for `b`, `await a` for `a`, and a call of a function of the file for every
-value it returns. A generator runs its body only as what its call returns is iterated, so its exits
-count for every call of it except one written as a whole statement, in parentheses or not, or a
-`.finally` handler. `.call`, `.apply`, `.bind`, a getter, a key computed at run time and an imported
-function are not followed.
+value it returns. A name with a default, as a parameter or in a destructuring, also stands for the
+default. An array stands for every element, so `list[i]`, `...list` and `const [f] = list` each
+stand for all of them. A generator runs its body only as what its call returns is iterated, so its
+exits count for every call of it except one written as a whole statement, in parentheses or not, or
+a handler of `.then`, `.catch` or `.finally`. `.call`, `.apply`, `.bind`, a getter, a key of an
+object computed at run time and an imported function are not followed.
 
 The second rule applies to every suite not listed in `unpinned-suites.txt`. That list is the debt
 that existed when the rule landed, and `UNPINNED_DIGEST` in the gate binds it to those entries. The

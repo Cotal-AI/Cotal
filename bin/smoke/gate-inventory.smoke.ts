@@ -496,7 +496,6 @@ const runs = (arm: ts.Node): ts.Node[] => {
   return end < 0 ? list : list.slice(0, end + 1);
 };
 const enclosingFunction = (n: ts.Node): ts.Node | undefined => (ts.isSourceFile(n.parent) ? undefined : ts.isFunctionLike(n.parent) ? n.parent : enclosingFunction(n.parent));
-const within = (n: ts.Node, outer: ts.Node) => outer.pos <= n.pos && n.end <= outer.end;
 
 /** The key `name` binds or reads: an identifier, a literal, or a computed literal. */
 const nameKey = (name: ts.Node | undefined): string | undefined =>
@@ -554,32 +553,33 @@ function returnsOf(sf: ts.SourceFile, call: ts.CallExpression): ts.Node[] {
 }
 
 /** Every value the file gives `target`: itself, the declarations and writes of a name, every value bound
- *  to a member's key on any object, since which object a member is read from is not tracked, and what a
- *  call returns. */
+ *  to a member's key on any object, since which object a member is read from is not tracked, every element
+ *  of an array it is read from, since which index is not tracked either, and what a call returns. */
 function valuesOf(sf: ts.SourceFile, target: ts.Node, out = new Set<ts.Node>()): Set<ts.Node> {
   const t = unwrap(target);
   if (out.has(t)) return out;
   out.add(t);
   // `?:`, `||`, `&&`, `??` and `||=`, `&&=`, `??=` evaluate to one of their operands; a comma and any other assignment
-  // to the right side; `await` to its operand.
+  // to the right side; `await` to its operand; a declaration, a parameter or a binding to its initializer. An array
+  // stands for its elements, so an index, a spread or an array binding of it stands for the array.
   const operands =
     ts.isConditionalExpression(t) ? [t.whenTrue, t.whenFalse]
-    : ts.isAwaitExpression(t) ? [t.expression]
+    : ts.isAwaitExpression(t) || ts.isElementAccessExpression(t) || ts.isSpreadElement(t) ? [t.expression]
+    : ts.isArrayLiteralExpression(t) ? t.elements
+    : ts.isVariableDeclaration(t) || ts.isParameter(t) ? [t.initializer]
+    : ts.isBindingElement(t) ? [t.initializer, ts.isArrayBindingPattern(t.parent) ? t.parent.parent : undefined]
     : ts.isCallExpression(t) ? returnsOf(sf, t)
     : !ts.isBinaryExpression(t) ? []
     : LOGICAL.includes(t.operatorToken.kind) ? [t.left, t.right]
     : t.operatorToken.kind === ts.SyntaxKind.CommaToken || isAssignment(t.operatorToken.kind) ? [t.right]
     : [];
-  for (const o of operands) valuesOf(sf, o, out);
+  for (const o of operands) if (o) valuesOf(sf, o, out);
   const { checker, writes, keyed } = indexSuite(sf);
   // `const { k } = o` reads `o.k`. `process.exit` is the exit itself, so no function of the file named `exit` stands for it.
   const key = isProcessMember(t, "exit") ? undefined : ts.isBindingElement(t) && ts.isObjectBindingPattern(t.parent) ? nameKey(t.propertyName ?? t.name) : memberKey(t);
   for (const v of (key !== undefined && keyed.get(key)) || []) valuesOf(sf, v, out);
   const sym = !ts.isIdentifier(t) ? undefined : ts.isShorthandPropertyAssignment(t.parent) && t.parent.name === t ? checker.getShorthandAssignmentValueSymbol(t.parent) : checker.getSymbolAtLocation(t);
-  for (const d of sym ? [...(sym.declarations ?? []), ...(writes.get(sym) ?? [])] : []) {
-    const v = ts.isVariableDeclaration(d) ? d.initializer : d;
-    if (v) valuesOf(sf, v, out);
-  }
+  for (const d of sym ? [...(sym.declarations ?? []), ...(writes.get(sym) ?? [])] : []) valuesOf(sf, d, out);
   return out;
 }
 /** `process.exit` itself, or a name destructured from `process` or imported from its module as `exit`. */
@@ -605,22 +605,27 @@ function exitsOfCall(sf: ts.SourceFile, callee: ts.Node, site: ts.Node, status: 
 }
 /** The outermost of the parentheses and type assertions around `n`, or `n` when there are none. */
 const wrapped = (n: ts.Node): ts.Node => (unwrap(n.parent) === n.parent ? n : wrapped(n.parent));
+/** `.then`, `.catch` or `.finally`, which call their handlers and never iterate what they return. */
+const chainsPromise = (callee: ts.Node): callee is ts.PropertyAccessExpression => ts.isPropertyAccessExpression(callee) && ["then", "catch", "finally"].includes(callee.name.text);
 /** The exits running `n` can make, directly, through the calls it makes, and through the functions it passes
  *  to a call or to `new`, which can call them at any time from then on. */
 function exitsIn(sf: ts.SourceFile, n: ts.Node, seen = new Set<ts.Node>()): Exit[] {
   // A call written as a whole statement drops what it returns.
   const called = findIn(n, ts.isCallExpression).flatMap((c) => exitsOfCall(sf, c.expression, c, c.arguments[0], seen, !ts.isExpressionStatement(wrapped(c).parent)));
-  return [...called, ...findIn(n, ts.isCallOrNewExpression).flatMap((c) => (c.arguments ?? []).flatMap((a) => exitsOfCall(sf, a, c, undefined, seen)))];
+  return [...called, ...findIn(n, ts.isCallOrNewExpression).flatMap((c) => (c.arguments ?? []).flatMap((a) => exitsOfCall(sf, a, c, undefined, seen, !chainsPromise(unwrap(c.expression)))))];
 }
 /** Whether running `n` can exit 0, or leave behind a function that can when called later, during an `await`. */
 const canExitZero = (sf: ts.SourceFile, n: ts.Node) => exitsIn(sf, n).some((e) => !failingStatus(e.status));
 /** Whether a run can stop at `s` without failing, or never get past it: `s` ends its list, a branch or block
  *  in it returns, or running it can exit 0. A function declaration runs none of its body. */
 const canEndRun = (sf: ts.SourceFile, s: ts.Node) => endsRun(s) || (!ts.isFunctionLike(s) && (findIn(s, ts.isReturnStatement).length > 0 || canExitZero(sf, s)));
+/** Whether every `process.exitCode` the file writes fails. A callback the file scheduled can run during any
+ *  `await`, so a write anywhere can follow a failing one. */
+const codesFail = (sf: ts.SourceFile) => indexSuite(sf).exitCodeWrites.every(failingCode);
 /** Whether a failing `process.exitCode` set at `at` holds to the end: every code the file writes fails, and
  *  every exit that can follow reads the code or fails. A top-level exit before a top-level `at` ran first. */
 const codeHolds = (sf: ts.SourceFile, at: ts.Node) =>
-  indexSuite(sf).exitCodeWrites.every(failingCode) &&
+  codesFail(sf) &&
   findIn(sf, ts.isCallExpression, true).every((c) => !namesExit(sf, c.expression) || (c.end <= at.pos && !enclosingFunction(c) && !enclosingFunction(at)) || failingStatus(c.arguments[0]) || honorsExitCode(c.arguments[0]));
 /** Whether a throw from `n` fails the run: no function or `try` with a catch encloses it. */
 const throwEscapes = (n: ts.Node) => {
@@ -663,13 +668,12 @@ function cannotBeZero(sf: ts.SourceFile, arg: ts.Expression | undefined, guarded
 
 /** A catch arm keeps a throw from leaving through a `finally` exit of `status` with status 0 when its first
  *  statement exits with a status that cannot be 0, or sets `process.exitCode` to a failing status that the
- *  exit honors while nothing in `scope` (the arm, the `finally` and the functions they call) writes any other
- *  code. A statement before it can throw past it into the `finally`, and a rethrow does not count: the
- *  `finally` exit ends the process first. */
-function catchFails(sf: ts.SourceFile, arm: ts.Node | undefined, status: ts.Expression | undefined, scope: ts.Node[], guarded?: ts.Block): boolean {
+ *  exit honors while every code the file writes fails. A statement before it can throw past it into the
+ *  `finally`, and a rethrow does not count: the `finally` exit ends the process first. */
+function catchFails(sf: ts.SourceFile, arm: ts.Node | undefined, status: ts.Expression | undefined, guarded?: ts.Block): boolean {
   if (!arm) return false;
   const first = ts.isBlock(arm) ? arm.statements[0] : arm;
-  const keepsCode = honorsExitCode(status) && indexSuite(sf).exitCodeWrites.filter((w) => scope.some((s) => within(w, s))).every(failingCode);
+  const keepsCode = honorsExitCode(status) && codesFail(sf);
   return !!first && (exitsWith(first, (status) => cannotBeZero(sf, status, guarded)) || (keepsCode && setsFailingCode(first)));
 }
 
@@ -678,25 +682,20 @@ function catchFails(sf: ts.SourceFile, arm: ts.Node | undefined, status: ts.Expr
  *  whose catch arm does not fail through that exit, and whose exit status can be 0. */
 function swallowedThrows(sf: ts.SourceFile): number[] {
   const lines: number[] = [];
-  // `seen` collects the functions the `finally` and the catch arm call; a code they write can clear the arm's.
-  const flag = (collect: (seen: Set<ts.Node>) => Exit[], block: ts.Node, catchArm: ts.Node | undefined, guarded?: ts.Block) => {
-    const seen = new Set<ts.Node>();
-    const exits = collect(seen);
-    if (catchArm) exitsIn(sf, catchArm, seen);
-    const scope = [block, ...(catchArm ? [catchArm] : []), ...seen];
+  const flag = (exits: Exit[], catchArm: ts.Node | undefined, guarded?: ts.Block) => {
     for (const exit of exits)
-      if (!failingStatus(exit.status, true) && !cannotBeZero(sf, exit.status, guarded) && !catchFails(sf, catchArm, exit.status, scope, guarded))
+      if (!failingStatus(exit.status, true) && !cannotBeZero(sf, exit.status, guarded) && !catchFails(sf, catchArm, exit.status, guarded))
         lines.push(sf.getLineAndCharacterOfPosition(exit.site.getStart(sf)).line + 1);
   };
   const visit = (n: ts.Node) => {
-    if (ts.isTryStatement(n) && n.finallyBlock) flag((seen) => exitsIn(sf, n.finallyBlock!, seen), n.finallyBlock, n.catchClause?.block, n.tryBlock);
+    if (ts.isTryStatement(n) && n.finallyBlock) flag(exitsIn(sf, n.finallyBlock), n.catchClause?.block, n.tryBlock);
     if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "finally") {
       const handler = n.arguments[0];
       // Only a `.catch` directly before `.finally` sees every rejection; an earlier one misses a later `.then`.
       const prev = n.expression.expression;
       const caught = ts.isCallExpression(prev) && ts.isPropertyAccessExpression(prev.expression) && prev.expression.name.text === "catch" ? prev.arguments[0] : undefined;
       // Calling a generator `.catch` handler runs none of its body, and `.finally` never iterates what its handler returns.
-      if (handler) flag((seen) => exitsOfCall(sf, handler, handler, undefined, seen, false), handler, caught && (ts.isArrowFunction(caught) || (ts.isFunctionExpression(caught) && !caught.asteriskToken)) ? caught.body : undefined);
+      if (handler) flag(exitsOfCall(sf, handler, handler, undefined, new Set(), false), caught && (ts.isArrowFunction(caught) || (ts.isFunctionExpression(caught) && !caught.asteriskToken)) ? caught.body : undefined);
     }
     ts.forEachChild(n, visit);
   };
@@ -720,7 +719,7 @@ function callersOf(sf: ts.SourceFile, fn: ts.SignatureDeclaration): Array<[ts.Ex
     if (!ts.isCallExpression(e)) return undefined;
     const callee = unwrap(e.expression);
     if (callee === fn || (binding && ts.isIdentifier(callee) && checker.getSymbolAtLocation(callee) === binding)) return e;
-    return ts.isPropertyAccessExpression(callee) && ["then", "catch", "finally"].includes(callee.name.text) ? callOf(callee.expression) : undefined;
+    return chainsPromise(callee) ? callOf(callee.expression) : undefined;
   };
   return findIn(sf, ts.isExpressionStatement, true).flatMap((s) => {
     const call = callOf(s.expression);
@@ -913,6 +912,9 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin after a parenthesized generator call is pinned", pinsWith(`function* skip() { process.exit(0); } (skip()); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a callback a finally passes that exits 0 is a swallowed throw", swallows(`try { f(); } finally { await new Promise(() => setTimeout(() => process.exit(0))); }`)],
   ["a pin compared with the length of an array grown by ++ is unpinned", !pinsWith(`const cells = []; cells.length++; if (cells.length !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a function a finally passes out of an array that exits 0 is a swallowed throw", swallows(`try { f(); } finally { const list = [() => process.exit(0)]; queueMicrotask(list[0]); }`)],
+  ["a catch arm exitCode an earlier callback can clear swallows", swallows(`setTimeout(() => { process.exitCode = 0; }); try { f(); } catch { process.exitCode = 1; } finally { await g(); process.exit(process.exitCode ?? 0); }`)],
+  ["a generator a finally hands to a promise handler runs none of its body", fails(`function* cleanup() { process.exit(0); } try { f(); } finally { await p.finally(cleanup); }`)],
 ];
 const brokenControls = censusControls.filter(([, ok]) => !ok).map(([name]) => name);
 
