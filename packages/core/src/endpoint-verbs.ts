@@ -100,7 +100,14 @@ function buildRequest(
   // responder can honor or reject, never digests detached from the payload. The args are gated as
   // the responder will parse them: JSON drops a key whose value is undefined, and validating the
   // object itself refused, against an older responder's closed contract, a key that never reaches it.
-  const args = op.args === undefined ? undefined : JSON.parse(JSON.stringify(op.args)) as Record<string, unknown>;
+  let args: Record<string, unknown> | undefined;
+  try {
+    args = op.args === undefined ? undefined : JSON.parse(JSON.stringify(op.args)) as Record<string, unknown>;
+  } catch (e) {
+    // A value JSON cannot carry (a BigInt, a cycle, a throwing toJSON) is malformed args that never
+    // left this caller: a `not-executed` refusal like the contract check below, never an unknown outcome.
+    throw new EpEnvelopeError("bad-request", `args cannot be sent as JSON: ${e instanceof Error ? e.message : String(e)}`, undefined, "not-executed");
+  }
   try {
     assertArgsValid(op.contract.input.validate, args);
   } catch (e) {
