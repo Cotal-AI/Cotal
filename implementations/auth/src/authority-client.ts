@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, admissionBucket, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, AUTH_ENDPOINT, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, admissionBucket, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
@@ -149,27 +149,28 @@ export function servedRunRequestSubjects(space: string): string[] {
 export { remoteManagerRegistrationProof };
 
 /**
- * The AUTH PLANE's OWN registration executor grant (#399 M2): the ONE `(auth, instanceId)`
- * self-registration this plane performs at boot (`registerServiceInstance` +
- * `authorizeServeGrant` + `writeServiceStatus` + the §13.7 contract-artifact publish), mirrored
+ * The registration executor grant for one instance of an endpoint the AUTH PLANE self-authorizes
+ * (#399 M2): its own `(auth, instanceId)` at boot (`registerServiceInstance` +
+ * `authorizeServeGrant` + `writeServiceStatus` + the §13.7 contract-artifact publish), and a
+ * platform host's configured endpoint (SPEC 13.16, the registration and publish only). Mirrored
  * from the manager's `endpointServeExecutorPermissions` (`packages/core/src/provision.ts:2426`)
  * but built directly (the auth plane self-authorizes its own name with the space signing seed,
  * exactly as the manager self-authorizes `manager`, so this rides the same self-minted
  * `openAuthorityClient` door as the writer/barrier connections rather than a `mintCreds` profile).
- * Key-pinned to exactly this instance's gate/cred/repair rows and its two `svc.auth.<instanceId>`
- * record keys plus the endpoint's `govern.auth` head; the contract-artifact publish is the same
+ * Key-pinned to exactly this instance's gate/cred/repair rows and its two `svc.<endpoint>.<instanceId>`
+ * record keys plus the endpoint's `govern.<endpoint>` head; the contract-artifact publish is the same
  * single-token `epc.*` form {@link contractPublisherGrants} uses (never the wide `epc.>`).
  */
-export function authRegistrationExecutorGrants(space: string, connId: string, instanceId: string): { publish: string[]; subscribe: string[] } {
+export function registrationExecutorGrants(space: string, connId: string, endpoint: string, instanceId: string): { publish: string[]; subscribe: string[] } {
   const auth = `KV_${epAuthBucket(space)}`;
   const records = `KV_${recordsBucket(space)}`;
-  const gateKey = epgateKey(AUTH_ENDPOINT, instanceId);
-  const credPrefix = epcredFamilyPrefix(AUTH_ENDPOINT, instanceId);
-  const repairKey = eprepairKey(AUTH_ENDPOINT, instanceId);
+  const gateKey = epgateKey(endpoint, instanceId);
+  const credPrefix = epcredFamilyPrefix(endpoint, instanceId);
+  const repairKey = eprepairKey(endpoint, instanceId);
   const recordKeys = [
-    recordSpecKey(RECORD_KINDS.svc, [AUTH_ENDPOINT, assertLifecycleToken(instanceId, "instanceId")]),
-    recordStatusKey(RECORD_KINDS.svc, [AUTH_ENDPOINT, assertLifecycleToken(instanceId, "instanceId")]),
-    recordAtomicKey(GOVERN_HEAD, [AUTH_ENDPOINT]),
+    recordSpecKey(RECORD_KINDS.svc, [endpoint, assertLifecycleToken(instanceId, "instanceId")]),
+    recordStatusKey(RECORD_KINDS.svc, [endpoint, assertLifecycleToken(instanceId, "instanceId")]),
+    recordAtomicKey(GOVERN_HEAD, [endpoint]),
   ];
   const inbox = assertInboxConnId(connId);
   return {
