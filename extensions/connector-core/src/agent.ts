@@ -2278,6 +2278,9 @@ export class MeshAgent extends EventEmitter {
       return { ok: false, error: settledTurnError(t.goalId, t.deadlineAt) };
     }
     this.activeTurns.delete(t.goalId);
+    // A poll that ran while this yield was in flight saw the turn gone and took it for the run's
+    // settlement; the manager's answer says this yield settled it.
+    this.settledTurns.delete(t.goalId);
     return r;
   }
 
