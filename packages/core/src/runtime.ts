@@ -107,8 +107,9 @@ export interface Runtime {
    * Minting the id inside `spawn` cannot give that ordering, because the processes are already
    * running by the time it returns.
    *
-   * OPTIONAL, and absent means this runtime has no durable custody to reserve (it also has no
-   * {@link reap}); the caller spawns without a reference, as before. A runtime that implements
+   * OPTIONAL, and absent means this runtime has no durable custody to reserve; the caller spawns
+   * without a reference, as before. Such a runtime may still report a reference on the handle after
+   * the spawn and reap by it, which a successor can use once the handle exists. A runtime that implements
    * this MUST spawn the seat under exactly the reference it returned, and report it back on the
    * handle: a spawn that quietly mints its own id would leave the recorded reference addressing
    * nothing, which is worse than recording none.

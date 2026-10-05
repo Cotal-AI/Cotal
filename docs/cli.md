@@ -724,8 +724,12 @@ boundaries reuses the same attempt and may retry the idempotent phases without d
 changed per-agent dependency is a named fail-closed result; the journal becomes degraded and remains
 available for forward repair. A retry from `resume-intent`,
 `resume-active`, or `resume-degraded` reuses the same attempt and inventory after the prior listener is
-proven stopped. Every normal restore listener has an unguessable attempt-bound NATS server name. The
-CLI fsyncs its exact name/nonce, canonical endpoint, process owner, and generation-bound target identity
+proven stopped. A retained agent the lost manager already launched can still be running, for example
+in a tmux window, while the journal reads `resume-intent`. On a static mesh the replacement manager
+closes that seat through the reference the lost manager recorded on the agent's slot, waits for the
+principal to leave presence, and launches it again. A live principal with no such record, or one that
+stays live after the seat is closed, is refused. Every normal restore listener has an unguessable
+attempt-bound NATS server name. The CLI fsyncs its exact name/nonce, canonical endpoint, process owner, and generation-bound target identity
 immediately after spawn. Re-entry accepts a surviving listener only when its INFO server name, live PID
 record, endpoint, and target identity all match that proof; degraded restore repair then moves through
 the guarded workspace transition only after manager commit. If an uncommitted bound owner is provably

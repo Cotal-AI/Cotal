@@ -15,6 +15,11 @@ import.
   (`env -i`) so the tmux server's environment doesn't reach agents. Graceful stop types `/exit`
   then kills the window; hard stop kills immediately. Exit waits poll the stable pane id and honor
   tmux's `pane_dead` state, including `remain-on-exit`; provider errors fail the wait closed.
+  Each handle carries a reference to its tmux server, window and pane, so a later manager can reap
+  the seat after the one that spawned it is gone. The reap closes the window while the session
+  still holds it, even when the agent's pane already exited. It refuses a pane that has moved out of
+  that window, whether it still runs or has exited, and a window that has moved out of the session,
+  including one that moves while the reap runs.
 
 - **`TerminalLayout` (`tmux`)** — opens/closes tmux windows for host-side orchestration
   (e.g. `cotal setup`). Detects the current session from `$TMUX`; must be called from inside

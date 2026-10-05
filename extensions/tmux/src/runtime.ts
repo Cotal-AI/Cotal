@@ -5,6 +5,7 @@ import {
   type LaunchSpec,
   type Runtime,
   type RuntimeProvider,
+  type RuntimeReference,
   type Tab,
   type TerminalLayout,
 } from "@cotal-ai/core";
@@ -61,13 +62,15 @@ export class TmuxRuntime implements Runtime {
     }
     // Key the whole lifecycle off the STABLE window ID (@N), not `session:name`. tmux can rename
     // a window (automatic-rename / a title escape), which would desync a name-based status/stop.
-    const { windowId, paneId } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
+    const { windowId, paneId, serverPid } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
 
     if (spec.confirm) scheduleConfirm(windowId);
 
     return {
       name,
       kind: "tmux",
+      // Durable enough for a successor manager to close this window if this one dies (see reap).
+      reference: { kind: "tmux", id: `${serverPid}.${windowId}.${paneId}` },
       status: () => {
         try {
           return tmux.paneState(paneId);
@@ -107,6 +110,41 @@ export class TmuxRuntime implements Runtime {
         );
       },
     };
+  }
+
+  /** Close a window an earlier manager opened, by the reference its handle carried, and prove the
+   *  window and its pane gone. The window decides, not the pane: a pane that exited can leave its
+   *  window open (`remain-on-exit`, or another pane split into it), so a window this runtime's
+   *  session still holds is closed whatever its pane's state. A server that is gone, or a window and
+   *  pane it no longer lists, means the seat is gone. A pane still listed outside that window, live or
+   *  exited, or a window only other sessions hold, is `absent`: nothing here touches it or proves
+   *  anything about it. tmux checks the pane and the session again in the command that closes the
+   *  window, so a seat whose placement changed after these listings is `absent` too. */
+  async reap(reference: RuntimeReference): Promise<{ outcome: "absent" } | { outcome: "reaped"; detail: string }> {
+    if (reference.kind !== "tmux") throw new Error(`cannot reap runtime kind "${reference.kind}" with tmux`);
+    // The ids reach a tmux format and command string, so only tmux's own id shapes pass.
+    const match = /^(\d+)\.(@\d+)\.(%\d+)$/.exec(reference.id);
+    if (!match) throw new Error(`tmux runtime: malformed reference ${JSON.stringify(reference.id)}`);
+    const [, serverPid, windowId, paneId] = match;
+    if (tmux.serverPid() !== serverPid) {
+      // Another server answers here. The seat is gone only if the server that ran it is gone too.
+      try {
+        process.kill(Number(serverPid), 0);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ESRCH")
+          return { outcome: "reaped", detail: `tmux server ${serverPid} that ran pane ${paneId} is gone` };
+      }
+      return { outcome: "absent" };
+    }
+    const paneAt = tmux.paneWindow(paneId);
+    if (paneAt !== undefined && paneAt !== windowId) return { outcome: "absent" };
+    const sessions = tmux.windowSessions(windowId);
+    if (sessions.length === 0) return { outcome: "reaped", detail: `tmux window ${windowId} and pane ${paneId} were already gone` };
+    if (!sessions.includes(this.session)) return { outcome: "absent" };
+    if (!tmux.closeWindowIfHeld(this.session, windowId, paneId)) return { outcome: "absent" };
+    if (tmux.windowSessions(windowId).length > 0) throw new Error(`tmux: window ${windowId} is still listed after kill-window`);
+    await tmux.waitForPaneExit(paneId);
+    return { outcome: "reaped", detail: `closed tmux window ${windowId}; pane ${paneId} exited` };
   }
 }
 
