@@ -465,7 +465,9 @@ export interface SubmitAndFollowGoalOptions {
 
 /** Subscribe before a single submission, then observe its accepted goal through live progress and
  *  mediated canonical reads. Local failures before an attributed reply throw; they never invent a
- *  responder. Once accepted, observation failures retain that responder and never authorize retry. */
+ *  responder. Once accepted, observation failures retain that responder and never authorize retry.
+ *  A terminal other than `succeeded` keeps the acceptance as its data, so the caller still holds the
+ *  allocated identity of a goal that settled `uncertain` and may yet converge. */
 export async function submitAndFollowGoal(
   nc: NatsConnection,
   space: string,
@@ -666,7 +668,7 @@ export async function submitAndFollowGoal(
     const message = renderLifecycleBlocked(raw, details ? { details } : undefined);
     const fromAccept = lifecycleBlockedFrom(attributed.reply.error);
     const merged = details ?? (fromAccept ? [fromAccept] : undefined);
-    return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: terminal.state, message, ...(merged ? { details: merged } : {}) } } };
+    return { ...attributed, reply: { ...attributed.reply, ok: false, error: { code: terminal.state, message, ...(merged ? { details: merged } : {}) } } };
   } finally {
     completed = true;
     opts?.signal?.removeEventListener("abort", onAbort);

@@ -467,6 +467,9 @@ export interface ControlReply {
   ok: boolean;
   data?: unknown;
   error?: string;
+  /** The endpoint's error code when the reply carried one. A caller that decides on a refusal keys
+   *  on it, because the message is rendered prose and the code is the only stable half. */
+  code?: string;
   /** Structured §13.3 details when the manager named a cause the string cannot carry
    *  (lifecycle-blocked spawn refusals, #873). Optional so every existing `{ok,error}`
    *  producer stays valid. */
