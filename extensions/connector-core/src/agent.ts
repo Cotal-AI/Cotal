@@ -18,6 +18,7 @@ import {
   isPublishPermissionDenied,
   unansweredRequest,
   renderLifecycleBlocked,
+  bearerCommandFailure,
   type EpAttributedReply,
   type EpVerbTarget,
   type ControlReply,
@@ -88,7 +89,7 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
 function execBearerCmd(argv: string[], signal?: AbortSignal, timeout = 30_000): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(argv[0], argv.slice(1), { timeout, signal, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(stderr.trim() || err.message));
+      if (err) return reject(bearerCommandFailure(err, stderr, timeout));
       const bearer = stdout.trim();
       if (!bearer) return reject(new Error(`bearer command printed nothing (${argv[0]})`));
       resolve(bearer);

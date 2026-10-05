@@ -1,3 +1,4 @@
+import type { ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
 import type {
@@ -316,6 +317,22 @@ export interface AuthProvider extends Extension {
    * protocol, discovery, and secret handling stay entirely behind the provider; the agent-side
    * runtime only runs an argv and reads a line. */
   readonly agentBearerCommand: string;
+}
+
+/** The error for a failed run of an {@link AuthProvider.agentBearerCommand} argv. The command prints
+ *  an operator sentence on stderr for every failure it handles, and that sentence is the error.
+ *  Empty stderr means the child never reached its handler, and Node's `Command failed` message
+ *  would repeat the whole argv, with its exchange URL, principal and file paths, while hiding
+ *  whether the child timed out, was killed or exited. */
+export function bearerCommandFailure(err: ExecFileException, stderr: string, timeoutMs: number): Error {
+  const said = stderr.trim();
+  if (said) return new Error(said);
+  // execFile marks an exit error `killed` only when its own timeout killed the child.
+  if (err.killed) return new Error(`the bearer command timed out after ${timeoutMs}ms`);
+  if (err.signal) return new Error(`the bearer command was killed by ${err.signal}`);
+  if (typeof err.code === "number") return new Error(`the bearer command exited with code ${err.code} and printed nothing`);
+  // A spawn, abort or output-limit error has no exit, and Node's sentence for it repeats no arguments.
+  return new Error(err.message);
 }
 
 /** Non-secret proved account identity returned beside a catalog snapshot. */
