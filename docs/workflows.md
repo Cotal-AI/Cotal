@@ -251,7 +251,11 @@ back from the connection's accepted row, and every `run` verb rides the versione
 host admits a run only for the owner who registered the manager, and on every resume and answer it
 checks that owner and that the caller's issuance is still live. It also watches the resume and
 answer requests on the broker itself, and issues for one the manager forwards only if it saw that
-request, once, and only for the run, endpoint and amendment that request named. A request bound to another manager instance or epoch gets nothing, and so does one whose class or pinned contract is not the one the manager registered. Another user's start, answer or resume is refused, and so is a revoked actor's. [User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
+request, once, and only for the run, endpoint and amendment that request named. A request bound to another manager instance or epoch gets nothing, and so does one whose class or pinned contract is not the one the manager registered. Another user's start, answer or resume is refused, and so is a revoked actor's.
+Such a run spawns, turns and despawns agents owned by that user. A spawn has the reach of the user
+who started the run, as their actor-ledger row reads at that moment, and the host enrolls each agent
+through its managed-agent enrollment. A spawn may be placed on the manager that hosts the run and on
+no other instance. [User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
 records the path.
 
 A hosted run is **admitted** under the caller that started it. The caller's credential is an

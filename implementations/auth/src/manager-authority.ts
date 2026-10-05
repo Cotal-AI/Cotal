@@ -614,7 +614,9 @@ export async function authorizeRemoteRunAttempt(args: {
     if (a.epoch !== (status?.epoch ?? 0) + 1 || a.fencingToken !== (status?.fencingToken ?? 0) + 1)
       throw new EpEnvelopeError("conflict", `run ${a.runId} attempt must be the next recorded epoch/fencing token`);
     const pin: RunDriverGrantArgs = { endpoint: args.endpoint, runId: a.runId, owner: admission.caller.owner, takeoverId: a.takeoverId, instanceId: r.instanceId, epoch: a.epoch };
-    return { kind: "attempt", driver: { id: a.driverId, profile: "run-driver", runDriver: pin }, mediator: { id: a.mediatorId, profile: "run-mediator", runMediator: { ...pin } } };
+    // The host never sees the program, and the only instance a signerless manager places a spawn on
+    // is its own, so the mediator is pinned there; that row reaches no manager the class row does not.
+    return { kind: "attempt", driver: { id: a.driverId, profile: "run-driver", runDriver: pin }, mediator: { id: a.mediatorId, profile: "run-mediator", runMediator: { ...pin, placement: { instanceId: r.instanceId } } } };
   }
   const op = r.operator!;
   if (op.runId !== undefined) await admitted(op.runId);
