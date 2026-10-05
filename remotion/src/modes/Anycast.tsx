@@ -9,6 +9,7 @@ import {
   Beam,
   bez,
   Card,
+  CARD_TYPE,
   Dot,
   fade,
   GOLD,
@@ -22,12 +23,12 @@ import {
 } from "./scene";
 
 // Shared stage: alice left, the reviewer pool clustered right, junction center.
-const ALICE: Pt = { x: 118, y: 300 };
-const JUNCTION: Pt = { x: 425, y: 300 };
+const ALICE: Pt = { x: 100, y: 410 };
+const JUNCTION: Pt = { x: 400, y: 410 };
 const GROUP: Pt[] = [
-  { x: 726, y: 134 }, // bob, busy
-  { x: 726, y: 300 }, // carol, free -> claims
-  { x: 726, y: 466 }, // dave, busy
+  { x: 700, y: 240 }, // bob, busy
+  { x: 700, y: 410 }, // carol, free -> claims
+  { x: 700, y: 580 }, // dave, busy
 ];
 const MEMBERS = [
   { name: "bob", busy: true },
@@ -42,8 +43,8 @@ const SEG1: [Pt, Pt] = [
 ];
 // same fan geometry as multicast, so the two cards glance alike
 const outCtrl = (r: Pt): [Pt, Pt] => [
-  { x: JUNCTION.x + 80, y: JUNCTION.y },
-  { x: r.x - 115, y: r.y },
+  { x: JUNCTION.x + 60, y: JUNCTION.y },
+  { x: r.x - 90, y: r.y },
 ];
 const OUT_END = (r: Pt): Pt => ({ x: r.x - 54, y: r.y });
 
@@ -87,10 +88,10 @@ export const ModeAnycast: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: 632,
-          top: 72,
-          width: 188,
-          height: 492,
+          left: 590,
+          top: 178,
+          width: 220,
+          height: 520,
           borderRadius: 26,
           border: `1px solid ${INK.line}`,
         }}
@@ -98,11 +99,11 @@ export const ModeAnycast: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: 632,
-          top: 59,
-          width: 188,
+          left: 590,
+          top: 155,
+          width: 220,
           textAlign: "center",
-          fontSize: 21,
+          fontSize: 18 * CARD_TYPE,
           letterSpacing: 1,
           color: GOLD,
         }}
@@ -110,16 +111,16 @@ export const ModeAnycast: React.FC = () => {
         <span style={{ background: INK.card, padding: "0 12px" }}>@reviewer</span>
       </div>
 
-      <AgentNode at={ALICE} name="alice" role="planner" status="working" flash={emit} />
+      <AgentNode at={ALICE} name="alice" status="working" flash={emit} type={CARD_TYPE} />
       {MEMBERS.map((m, i) => (
         <AgentNode
           key={m.name}
           at={GROUP[i]!}
           name={m.name}
-          role="reviewer"
           status={i === CLAIMER ? carolStatus : m.busy ? "working" : "idle"}
           flash={i === CLAIMER ? flash : 0}
           dimmed={i !== CLAIMER ? dimOthers : 0}
+          type={CARD_TYPE}
         />
       ))}
 
@@ -132,7 +133,12 @@ export const ModeAnycast: React.FC = () => {
         visible={t2 > 0 && t2 < 1}
       />
 
-      <Labels mode="anycast" caption="any one of a role claims it" subject="cotal.demo.svc.reviewer" />
+      <Labels
+        mode="anycast"
+        caption="any one of a role claims it"
+        subject="cotal.demo.svc.reviewer"
+        type={CARD_TYPE}
+      />
     </Card>
   );
 };

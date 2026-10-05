@@ -13,13 +13,13 @@ import {
   Beam,
   bez,
   Card,
+  CARD_TYPE,
   Dot,
   fade,
   GOLD,
   INK,
   Labels,
   lerp,
-  NATS_TYPE,
   prog,
   wirePath,
   Wires,
@@ -85,8 +85,8 @@ const Check: React.FC<{ x: number; top: number; duty: string; verdicts: Verdict[
         top,
         width: 400,
         textAlign: "center",
-        fontSize: 18 * NATS_TYPE,
-        letterSpacing: 0.3 * NATS_TYPE,
+        fontSize: 18 * CARD_TYPE,
+        letterSpacing: 0.3 * CARD_TYPE,
         color,
         opacity,
       }}
@@ -169,9 +169,9 @@ export const NatsIdentity: React.FC = () => {
           top: GATE.y - 102,
           width: 400,
           textAlign: "center",
-          fontSize: 20 * NATS_TYPE,
+          fontSize: 20 * CARD_TYPE,
           color: INK.dim,
-          letterSpacing: 0.3 * NATS_TYPE,
+          letterSpacing: 0.3 * CARD_TYPE,
         }}
       >
         nats server
@@ -196,9 +196,9 @@ export const NatsIdentity: React.FC = () => {
         ]}
       />
 
-      <AgentNode at={ALICE} name="alice" status="working" flash={emitA} type={NATS_TYPE} />
-      <AgentNode at={CAROL} name="carol" status="working" flash={emitC} type={NATS_TYPE} />
-      <AgentNode at={BOB} name="bob" status="idle" flash={deliverFlash} type={NATS_TYPE} />
+      <AgentNode at={ALICE} name="alice" status="working" flash={emitA} type={CARD_TYPE} />
+      <AgentNode at={CAROL} name="carol" status="working" flash={emitC} type={CARD_TYPE} />
+      <AgentNode at={BOB} name="bob" status="idle" flash={deliverFlash} type={CARD_TYPE} />
 
       <Beam d={PATH_A} pos={(t) => bez(FROM_A, ...inCtrl(FROM_A), GATE_IN, t)} t={tA} visible={inFlight(tA)} />
       <Beam d={PATH_OUT} pos={(t) => lerp(...OUT, t)} t={tAOut} visible={inFlight(tAOut)} />
@@ -214,7 +214,7 @@ export const NatsIdentity: React.FC = () => {
         mode="identity"
         caption="the sender rides the subject"
         subject={`cotal.demo.inst.u_….bob.u_….${frame < T.pSend ? "alice" : "carol"}`}
-        type={NATS_TYPE}
+        type={CARD_TYPE}
       />
     </Card>
   );

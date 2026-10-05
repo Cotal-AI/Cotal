@@ -10,6 +10,7 @@ import {
   AgentNode,
   Beam,
   Card,
+  CARD_TYPE,
   Dot,
   fade,
   GOLD,
@@ -24,11 +25,11 @@ import {
 
 // Same cluster as the other cards; bob (top) is the addressee, carol/dave below
 // are present but unaddressed. The inbox sits on the alice -> bob route.
-const ALICE: Pt = { x: 118, y: 300 };
-const BOB: Pt = { x: 726, y: 134 };
-const CAROL: Pt = { x: 726, y: 300 };
-const DAVE: Pt = { x: 726, y: 466 };
-const INBOX: Pt = { x: 442, y: 220 };
+const ALICE: Pt = { x: 100, y: 410 };
+const BOB: Pt = { x: 700, y: 240 };
+const CAROL: Pt = { x: 700, y: 410 };
+const DAVE: Pt = { x: 700, y: 580 };
+const INBOX: Pt = { x: 400, y: 325 };
 
 const SEG1: [Pt, Pt] = [
   { x: ALICE.x + 50, y: ALICE.y - 13 },
@@ -79,10 +80,16 @@ export const ModeUnicast: React.FC = () => {
     <Card frame={frame}>
       <Wires paths={[PATH1, PATH2]} glow={[glow1, glow2]} />
 
-      <AgentNode at={ALICE} name="alice" role="planner" status="working" flash={emit} />
-      <AgentNode at={BOB} name="bob" role="builder" status={bobStatus} flash={Math.max(deliverFlash, freeFlash)} />
-      <AgentNode at={CAROL} name="carol" role="reviewer" status="idle" />
-      <AgentNode at={DAVE} name="dave" role="builder" status="working" />
+      <AgentNode at={ALICE} name="alice" status="working" flash={emit} type={CARD_TYPE} />
+      <AgentNode
+        at={BOB}
+        name="bob"
+        status={bobStatus}
+        flash={Math.max(deliverFlash, freeFlash)}
+        type={CARD_TYPE}
+      />
+      <AgentNode at={CAROL} name="carol" status="idle" type={CARD_TYPE} />
+      <AgentNode at={DAVE} name="dave" status="working" type={CARD_TYPE} />
 
       {/* durable inbox: a rounded slot matching the node language; gold while it holds */}
       <div
@@ -103,13 +110,13 @@ export const ModeUnicast: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: INBOX.x - 70,
+          left: INBOX.x - 70 * CARD_TYPE,
           top: INBOX.y + 48,
-          width: 140,
+          width: 140 * CARD_TYPE,
           textAlign: "center",
-          fontSize: 20,
+          fontSize: 20 * CARD_TYPE,
           color: INK.dim,
-          letterSpacing: 0.3,
+          letterSpacing: 0.3 * CARD_TYPE,
         }}
       >
         inbox
@@ -124,7 +131,7 @@ export const ModeUnicast: React.FC = () => {
         </>
       )}
 
-      <Labels mode="unicast" caption="deliver to one, durably" subject="cotal.demo.inst.bob" />
+      <Labels mode="unicast" caption="deliver to one, durably" subject="cotal.demo.inst.bob" type={CARD_TYPE} />
     </Card>
   );
 };

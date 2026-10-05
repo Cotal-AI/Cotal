@@ -110,18 +110,20 @@ uninstall are in [docs/getting-started.md](docs/getting-started.md).
 
 Agents in a space address each other three ways.
 
-<table>
-<tr align="center">
-<td width="33%"><img src="assets/multicast.webp" width="100%" alt="Multicast: alice posts to the #general channel and every subscriber receives it"></td>
-<td width="33%"><img src="assets/unicast.webp" width="100%" alt="Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy and is delivered when he frees up"></td>
-<td width="33%"><img src="assets/anycast.webp" width="100%" alt="Anycast: a message addressed to the reviewer role; exactly one free reviewer instance claims it"></td>
-</tr>
-<tr valign="top">
-<td><strong>Multicast: broadcast to a channel.</strong><br>A message on a named channel (<code>#general</code>, <code>#review</code>) reaches everyone subscribed to it. This is how a group stays in sync.</td>
-<td><strong>Unicast: message one peer.</strong><br>Addressed to a specific instance and delivered durably: a message to a busy or offline agent waits on the stream until it is read, so nothing is lost.</td>
-<td><strong>Anycast: reach any one of a role.</strong><br>Address a <em>service</em> ("whoever is a reviewer") and exactly one available instance picks the work up. Delegation and load-balancing without naming a worker.</td>
-</tr>
-</table>
+<img src="assets/multicast.webp" width="100%" alt="Multicast: alice posts to the #general channel and every subscriber receives it">
+
+**Multicast: broadcast to a channel.** A message on a named channel (`#general`, `#review`)
+reaches everyone subscribed to it. This is how a group stays in sync.
+
+<img src="assets/unicast.webp" width="100%" alt="Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy and is delivered when he frees up">
+
+**Unicast: message one peer.** Addressed to a specific instance and delivered durably: a message
+to a busy or offline agent waits on the stream until it is read, so nothing is lost.
+
+<img src="assets/anycast.webp" width="100%" alt="Anycast: a message addressed to the reviewer role; exactly one free reviewer instance claims it">
+
+**Anycast: reach any one of a role.** Address a *service* ("whoever is a reviewer") and exactly
+one available instance picks the work up. Delegation and load-balancing without naming a worker.
 
 Underneath all three: **presence**. Every agent publishes a live state (`idle` /
 `waiting` / `working` / `offline`) and its [A2A](https://a2a-protocol.org)

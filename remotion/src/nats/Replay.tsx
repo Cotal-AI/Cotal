@@ -8,12 +8,12 @@ import {
   AgentNode,
   Beam,
   Card,
+  CARD_TYPE,
   fade,
   GOLD,
   INK,
   Labels,
   lerp,
-  NATS_TYPE,
   prog,
   wirePath,
   Wires,
@@ -72,7 +72,7 @@ const Marker: React.FC<{ index: number; letter: string; above: boolean; opacity:
       border: `1.5px solid ${GOLD}`,
       background: INK.fill,
       color: GOLD,
-      fontSize: 18 * NATS_TYPE,
+      fontSize: 18 * CARD_TYPE,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -142,9 +142,9 @@ export const NatsReplay: React.FC = () => {
           top: TRACK.y + 92,
           width: TRACK.x1 - TRACK.x0,
           textAlign: "center",
-          fontSize: 20 * NATS_TYPE,
+          fontSize: 20 * CARD_TYPE,
           color: INK.dim,
-          letterSpacing: 0.3 * NATS_TYPE,
+          letterSpacing: 0.3 * CARD_TYPE,
         }}
       >
         stream
@@ -152,15 +152,15 @@ export const NatsReplay: React.FC = () => {
       <Marker index={bobAt(frame)} letter="b" above opacity={shown} />
       <Marker index={daveAt(frame)} letter="d" above={false} opacity={shown} />
 
-      <AgentNode at={ALICE} name="alice" status="working" flash={emit} type={NATS_TYPE} />
-      <AgentNode at={BOB} name="bob" status="working" flash={bobFlash} type={NATS_TYPE} />
+      <AgentNode at={ALICE} name="alice" status="working" flash={emit} type={CARD_TYPE} />
+      <AgentNode at={BOB} name="bob" status="working" flash={bobFlash} type={CARD_TYPE} />
       <AgentNode
         at={DAVE}
         name="dave"
         status={offline > 0.5 ? "idle" : "working"}
         flash={daveFlash}
         dimmed={offline}
-        type={NATS_TYPE}
+        type={CARD_TYPE}
       />
       <div
         style={{
@@ -169,7 +169,7 @@ export const NatsReplay: React.FC = () => {
           top: DAVE.y - 101,
           width: 400,
           textAlign: "center",
-          fontSize: 19 * NATS_TYPE,
+          fontSize: 19 * CARD_TYPE,
           color: INK.dim,
           // img2webp -lossy keeps the faint last steps of a text fade, so the word switches
           opacity: offline > 0.5 ? 1 : 0,
@@ -196,7 +196,7 @@ export const NatsReplay: React.FC = () => {
         mode="replay"
         caption="each reader keeps its own bookmark"
         subject="cotal.demo.chat.u_….alice.general"
-        type={NATS_TYPE}
+        type={CARD_TYPE}
       />
     </Card>
   );

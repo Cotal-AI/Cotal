@@ -10,13 +10,13 @@ import {
   Beam,
   bez,
   Card,
+  CARD_TYPE,
   ChannelPill,
   Dot,
   fade,
   GOLD,
   INK,
   Labels,
-  NATS_TYPE,
   prog,
   wirePath,
   Wires,
@@ -27,7 +27,7 @@ const CHANNEL: Pt = { x: 215, y: 320 };
 const ALICE: Pt = { x: 215, y: 480 };
 const BOB: Pt = { x: 690, y: 400 };
 
-const CH_FROM: Pt = { x: CHANNEL.x + 92 * NATS_TYPE, y: CHANNEL.y };
+const CH_FROM: Pt = { x: CHANNEL.x + 92 * CARD_TYPE, y: CHANNEL.y };
 const DM_FROM: Pt = { x: ALICE.x + 52, y: ALICE.y };
 const CH_TO: Pt = { x: BOB.x - 52, y: BOB.y - 16 };
 const DM_TO: Pt = { x: BOB.x - 52, y: BOB.y + 16 };
@@ -58,7 +58,7 @@ const ModePill: React.FC<{ index: number; name: string; active: number }> = ({ i
       border: `1.5px solid ${active > 0.5 ? GOLD : INK.ring}`,
       background: INK.fill,
       color: active > 0.5 ? GOLD : INK.dim,
-      fontSize: 18 * NATS_TYPE,
+      fontSize: 18 * CARD_TYPE,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -90,14 +90,14 @@ export const NatsAttention: React.FC = () => {
         <ModePill key={m.name} index={i} name={m.name} active={i === mode ? 1 : 0} />
       ))}
 
-      <ChannelPill at={CHANNEL} label="#general" glow={mode === 2 ? held : 0} type={NATS_TYPE} />
-      <AgentNode at={ALICE} name="alice" status="working" flash={flashAt(T.dmStart)} type={NATS_TYPE} />
+      <ChannelPill at={CHANNEL} label="#general" glow={mode === 2 ? held : 0} type={CARD_TYPE} />
+      <AgentNode at={ALICE} name="alice" status="working" flash={flashAt(T.dmStart)} type={CARD_TYPE} />
       <AgentNode
         at={BOB}
         name="bob"
         status="idle"
         flash={Math.max(chatWakes, dmWakes)}
-        type={NATS_TYPE}
+        type={CARD_TYPE}
       />
 
       {mode === 2 ? (
@@ -125,8 +125,8 @@ export const NatsAttention: React.FC = () => {
           position: "absolute",
           left: 40,
           top: 170,
-          fontSize: 19 * NATS_TYPE,
-          letterSpacing: 0.3 * NATS_TYPE,
+          fontSize: 19 * CARD_TYPE,
+          letterSpacing: 0.3 * CARD_TYPE,
           color: INK.name,
           opacity: outcome,
         }}
@@ -138,7 +138,7 @@ export const NatsAttention: React.FC = () => {
         mode="attention"
         caption="what may wake an agent"
         subject={`cotal_status attention=${MODES[mode]!.name}`}
-        type={NATS_TYPE}
+        type={CARD_TYPE}
       />
     </Card>
   );

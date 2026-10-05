@@ -147,9 +147,11 @@ Every delivery message is addressed one of three ways
 | **unicast** | `to` (instance id) | one specific peer's inbox |
 | **anycast** | `toService` (role) | *any one* holder of the role: "whoever is a reviewer" |
 
-| Multicast | Unicast | Anycast |
-|---|---|---|
-| ![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp) | ![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp) | ![Anycast: a message addressed to the reviewer role; one free reviewer instance claims it](../assets/anycast.webp) |
+![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp)
+
+![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp)
+
+![Anycast: a message addressed to the reviewer role; one free reviewer instance claims it](../assets/anycast.webp)
 
 Channels are dotted and hierarchical (`team.backend`); publishing is always concrete,
 subscriptions may wildcard a subtree (`team.>`). Anycast is queued work: a task with no

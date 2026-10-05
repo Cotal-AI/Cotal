@@ -5,7 +5,7 @@ import { ModeAnycast } from "./modes/Anycast";
 import { NatsIdentity } from "./nats/Identity";
 import { NatsReplay } from "./nats/Replay";
 import { NatsAttention } from "./nats/Attention";
-import { NATS_STAGE, STAGE } from "./modes/scene";
+import { MODE_STAGE, NATS_STAGE } from "./modes/scene";
 import { PeerMesh } from "./variants/PeerMesh";
 import { Observer } from "./variants/Observer";
 import { WireTrace } from "./variants/WireTrace";
@@ -47,7 +47,7 @@ const EXPL = { fps: 30, width: 1920, height: 1080 } as const;
 
 const COMMON = { durationInFrames: 120, fps: 30, width: 1280 } as const;
 
-const MODE = { fps: 30, width: STAGE.w, height: STAGE.h } as const;
+const MODE = { fps: 30, width: MODE_STAGE.w, height: MODE_STAGE.h } as const;
 const NATS = { fps: 30, width: NATS_STAGE.w, height: NATS_STAGE.h } as const;
 
 export const Root: React.FC = () => {
