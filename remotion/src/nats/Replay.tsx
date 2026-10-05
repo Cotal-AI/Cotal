@@ -13,23 +13,25 @@ import {
   INK,
   Labels,
   lerp,
+  NATS_TYPE,
   prog,
   wirePath,
   Wires,
   type Pt,
 } from "../modes/scene";
 
-const ALICE: Pt = { x: 118, y: 310 };
-const BOB: Pt = { x: 726, y: 160 };
-const DAVE: Pt = { x: 726, y: 460 };
+const ALICE: Pt = { x: 130, y: 340 };
+const BOB: Pt = { x: 690, y: 215 };
+const DAVE: Pt = { x: 690, y: 470 };
 
 const SLOTS = 5;
-const SLOT_X = (i: number) => 296 + 64 * i;
-const TRACK = { x0: 252, x1: 596, y: 310 };
+const SLOT_X = (i: number) => 266 + 56 * i;
+const TRACK = { x0: 230, x1: 520, y: 340 };
 const START: Pt = { x: ALICE.x + 52, y: ALICE.y };
+const MARKER = 44;
 
 const readerPath = (r: Pt) =>
-  wirePath({ x: TRACK.x1, y: TRACK.y }, { x: TRACK.x1 + 60, y: TRACK.y }, { x: r.x - 120, y: r.y }, { x: r.x - 52, y: r.y });
+  wirePath({ x: TRACK.x1, y: TRACK.y }, { x: TRACK.x1 + 60, y: TRACK.y }, { x: r.x - 112, y: r.y }, { x: r.x - 52, y: r.y });
 const PATH_BOB = readerPath(BOB);
 const PATH_DAVE = readerPath(DAVE);
 
@@ -62,15 +64,15 @@ const Marker: React.FC<{ index: number; letter: string; above: boolean; opacity:
   <div
     style={{
       position: "absolute",
-      left: (index < 0 ? TRACK.x0 + 8 : SLOT_X(index)) - 15,
-      top: above ? TRACK.y - 76 : TRACK.y + 46,
-      width: 30,
-      height: 30,
-      borderRadius: 9,
+      left: (index < 0 ? TRACK.x0 + 8 : SLOT_X(index)) - MARKER / 2,
+      top: above ? TRACK.y - 40 - MARKER : TRACK.y + 40,
+      width: MARKER,
+      height: MARKER,
+      borderRadius: 12,
       border: `1.5px solid ${GOLD}`,
       background: INK.fill,
       color: GOLD,
-      fontSize: 18,
+      fontSize: 18 * NATS_TYPE,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -140,9 +142,9 @@ export const NatsReplay: React.FC = () => {
           top: TRACK.y + 92,
           width: TRACK.x1 - TRACK.x0,
           textAlign: "center",
-          fontSize: 20,
+          fontSize: 20 * NATS_TYPE,
           color: INK.dim,
-          letterSpacing: 0.3,
+          letterSpacing: 0.3 * NATS_TYPE,
         }}
       >
         stream
@@ -150,26 +152,27 @@ export const NatsReplay: React.FC = () => {
       <Marker index={bobAt(frame)} letter="b" above opacity={shown} />
       <Marker index={daveAt(frame)} letter="d" above={false} opacity={shown} />
 
-      <AgentNode at={ALICE} name="alice" role="planner" status="working" flash={emit} />
-      <AgentNode at={BOB} name="bob" role="builder" status="working" flash={bobFlash} />
+      <AgentNode at={ALICE} name="alice" status="working" flash={emit} type={NATS_TYPE} />
+      <AgentNode at={BOB} name="bob" status="working" flash={bobFlash} type={NATS_TYPE} />
       <AgentNode
         at={DAVE}
         name="dave"
-        role="builder"
         status={offline > 0.5 ? "idle" : "working"}
         flash={daveFlash}
         dimmed={offline}
+        type={NATS_TYPE}
       />
       <div
         style={{
           position: "absolute",
-          left: DAVE.x - 80,
-          top: DAVE.y + 92,
-          width: 160,
+          left: DAVE.x - 200,
+          top: DAVE.y - 101,
+          width: 400,
           textAlign: "center",
-          fontSize: 19,
+          fontSize: 19 * NATS_TYPE,
           color: INK.dim,
-          opacity: offline,
+          // img2webp -lossy keeps the faint last steps of a text fade, so the word switches
+          opacity: offline > 0.5 ? 1 : 0,
         }}
       >
         offline
@@ -189,7 +192,12 @@ export const NatsReplay: React.FC = () => {
         );
       })}
 
-      <Labels mode="replay" caption="each reader keeps its own bookmark" subject="cotal.demo.chat.u_….alice.general" />
+      <Labels
+        mode="replay"
+        caption="each reader keeps its own bookmark"
+        subject="cotal.demo.chat.u_….alice.general"
+        type={NATS_TYPE}
+      />
     </Card>
   );
 };

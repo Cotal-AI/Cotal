@@ -9,6 +9,12 @@ import { fontFamily } from "../_shared";
 // Square-ish stage so three cards sit side by side in the README and wrap
 // to a stack when the viewport is narrow. Single source of truth for size.
 export const STAGE = { w: 860, h: 620 } as const;
+
+// The NATS cards show one per row at the README column width, 294 CSS px on a
+// 360 px phone. Their type is scaled so the smallest text (18 px) still renders
+// at 11 CSS px there, and the stage is taller to make room for it.
+export const NATS_TYPE = 1.9;
+export const NATS_STAGE = { w: STAGE.w, h: 700 } as const;
 const INSET = 16;
 
 // --- palette (cool cream + gold + ink) -----------------------------------------
@@ -86,10 +92,11 @@ export const Card: React.FC<{ frame: number; children: React.ReactNode }> = ({
 
 // Mode name + one-line caption top-left, real wire subject bottom-left.
 // The caption makes each card self-explanatory standalone (npm, social).
-export const Labels: React.FC<{ mode: string; caption: string; subject: string }> = ({
+export const Labels: React.FC<{ mode: string; caption: string; subject: string; type?: number }> = ({
   mode,
   caption,
   subject,
+  type = 1,
 }) => (
   <>
     <div
@@ -97,8 +104,8 @@ export const Labels: React.FC<{ mode: string; caption: string; subject: string }
         position: "absolute",
         top: 28,
         left: 38,
-        fontSize: 26,
-        letterSpacing: 6,
+        fontSize: 26 * type,
+        letterSpacing: 6 * type,
         color: GOLD,
       }}
     >
@@ -107,10 +114,10 @@ export const Labels: React.FC<{ mode: string; caption: string; subject: string }
     <div
       style={{
         position: "absolute",
-        top: 68,
+        top: 28 + 40 * type,
         left: 40,
-        fontSize: 19,
-        letterSpacing: 0.3,
+        fontSize: 19 * type,
+        letterSpacing: 0.3 * type,
         color: INK.text,
       }}
     >
@@ -121,9 +128,9 @@ export const Labels: React.FC<{ mode: string; caption: string; subject: string }
         position: "absolute",
         bottom: 24,
         left: 38,
-        fontSize: 18,
+        fontSize: 18 * type,
         color: INK.dim,
-        letterSpacing: 0.5,
+        letterSpacing: 0.5 * type,
       }}
     >
       {subject}
@@ -140,12 +147,14 @@ const NODE_RADIUS = 22;
 export const AgentNode: React.FC<{
   at: Pt;
   name: string;
-  role: string;
+  role?: string;
   status: "idle" | "working";
   flash?: number; // 0..1 receive/emit pulse
   dimmed?: number; // 0..1
-}> = ({ at, name, role, status, flash = 0, dimmed = 0 }) => {
+  type?: number;
+}> = ({ at, name, role, status, flash = 0, dimmed = 0, type = 1 }) => {
   const ring = flash > 0.05 ? GOLD : INK.ring;
+  const labelW = (NODE_R * 2 + 160) * type;
   return (
     <div
       style={{
@@ -208,33 +217,34 @@ export const AgentNode: React.FC<{
         style={{
           position: "absolute",
           top: NODE_R * 2 + 13,
-          left: -80,
-          width: NODE_R * 2 + 160,
+          left: NODE_R - labelW / 2,
+          width: labelW,
           textAlign: "center",
-          fontSize: 22,
-          letterSpacing: 0.3,
+          fontSize: 22 * type,
+          letterSpacing: 0.3 * type,
         }}
       >
         <span style={{ color: INK.name }}>{name}</span>
-        <span style={{ color: INK.dim }}>/{role}</span>
+        {role && <span style={{ color: INK.dim }}>/{role}</span>}
       </div>
     </div>
   );
 };
 
-export const ChannelPill: React.FC<{ at: Pt; label: string; glow?: number }> = ({
+export const ChannelPill: React.FC<{ at: Pt; label: string; glow?: number; type?: number }> = ({
   at,
   label,
   glow = 0,
+  type = 1,
 }) => (
   <div
     style={{
       position: "absolute",
-      left: at.x - 92,
-      top: at.y - 31,
-      width: 184,
-      height: 62,
-      borderRadius: 31,
+      left: at.x - 92 * type,
+      top: at.y - 31 * type,
+      width: 184 * type,
+      height: 62 * type,
+      borderRadius: 31 * type,
       background: INK.fill,
       border: `1.5px solid ${glow > 0.05 ? GOLD : INK.ring}`,
       boxShadow: glow > 0.05
@@ -243,8 +253,8 @@ export const ChannelPill: React.FC<{ at: Pt; label: string; glow?: number }> = (
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      fontSize: 24,
-      letterSpacing: 0.5,
+      fontSize: 24 * type,
+      letterSpacing: 0.5 * type,
       color: glow > 0.4 ? INK.name : INK.text,
     }}
   >
@@ -261,7 +271,7 @@ export function wirePath(p0: Pt, c1: Pt, c2: Pt, p1: Pt): string {
 // Resting hairlines, plus an optional gold "afterglow" that lingers on a wire
 // once a message has just traversed it (glow 0..1 per path), fading back to ink.
 export const Wires: React.FC<{ paths: string[]; glow?: number[] }> = ({ paths, glow = [] }) => (
-  <svg style={{ position: "absolute", inset: 0 }} width={STAGE.w} height={STAGE.h}>
+  <svg style={{ position: "absolute", inset: 0 }} width="100%" height="100%">
     {paths.map((d, i) => (
       <path key={`r${i}`} d={d} stroke={INK.line} strokeOpacity={0.95} strokeWidth={2} fill="none" />
     ))}
@@ -292,7 +302,7 @@ export const Beam: React.FC<{
   const head = pos(t);
   return (
     <>
-      <svg style={{ position: "absolute", inset: 0 }} width={STAGE.w} height={STAGE.h}>
+      <svg style={{ position: "absolute", inset: 0 }} width="100%" height="100%">
         <path
           d={d}
           pathLength={1}
@@ -334,7 +344,7 @@ export const Pulse: React.FC<{
   const off = -(t - TAIL);
   return (
     <>
-      <svg style={{ position: "absolute", inset: 0 }} width={STAGE.w} height={STAGE.h}>
+      <svg style={{ position: "absolute", inset: 0 }} width="100%" height="100%">
         <path
           d={d}
           pathLength={1}

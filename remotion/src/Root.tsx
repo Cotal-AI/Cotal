@@ -5,7 +5,7 @@ import { ModeAnycast } from "./modes/Anycast";
 import { NatsIdentity } from "./nats/Identity";
 import { NatsReplay } from "./nats/Replay";
 import { NatsAttention } from "./nats/Attention";
-import { STAGE } from "./modes/scene";
+import { NATS_STAGE, STAGE } from "./modes/scene";
 import { PeerMesh } from "./variants/PeerMesh";
 import { Observer } from "./variants/Observer";
 import { WireTrace } from "./variants/WireTrace";
@@ -48,6 +48,7 @@ const EXPL = { fps: 30, width: 1920, height: 1080 } as const;
 const COMMON = { durationInFrames: 120, fps: 30, width: 1280 } as const;
 
 const MODE = { fps: 30, width: STAGE.w, height: STAGE.h } as const;
+const NATS = { fps: 30, width: NATS_STAGE.w, height: NATS_STAGE.h } as const;
 
 export const Root: React.FC = () => {
   return (
@@ -55,9 +56,9 @@ export const Root: React.FC = () => {
       <Composition id="ModeMulticast" component={ModeMulticast} durationInFrames={150} {...MODE} />
       <Composition id="ModeUnicast" component={ModeUnicast} durationInFrames={168} {...MODE} />
       <Composition id="ModeAnycast" component={ModeAnycast} durationInFrames={162} {...MODE} />
-      <Composition id="NatsIdentity" component={NatsIdentity} durationInFrames={210} {...MODE} />
-      <Composition id="NatsReplay" component={NatsReplay} durationInFrames={180} {...MODE} />
-      <Composition id="NatsAttention" component={NatsAttention} durationInFrames={180} {...MODE} />
+      <Composition id="NatsIdentity" component={NatsIdentity} durationInFrames={210} {...NATS} />
+      <Composition id="NatsReplay" component={NatsReplay} durationInFrames={180} {...NATS} />
+      <Composition id="NatsAttention" component={NatsAttention} durationInFrames={180} {...NATS} />
       <Composition id="PeerMesh" component={PeerMesh} height={340} {...COMMON} />
       <Composition id="Observer" component={Observer} height={360} {...COMMON} />
       <Composition id="WireTrace" component={WireTrace} height={320} {...COMMON} />

@@ -3,7 +3,8 @@
 // receiver drops a message whose payload from does not match the subject.
 // alice sends to bob as alice and both checks pass. carol publishes on alice's
 // subject and the server refuses it. carol publishes on its own subject with a
-// payload claiming alice: the server passes it and bob drops it.
+// payload claiming alice: the server passes it and bob drops it. Each check's
+// line names the claim it read.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";
@@ -18,21 +19,24 @@ import {
   INK,
   Labels,
   lerp,
+  NATS_TYPE,
   prog,
   wirePath,
   Wires,
   type Pt,
 } from "../modes/scene";
 
-const ALICE: Pt = { x: 118, y: 200 };
-const CAROL: Pt = { x: 118, y: 430 };
-const GATE: Pt = { x: 430, y: 315 };
-const BOB: Pt = { x: 726, y: 315 };
+const ALICE: Pt = { x: 130, y: 220 };
+const CAROL: Pt = { x: 130, y: 460 };
+const GATE: Pt = { x: 430, y: 340 };
+const BOB: Pt = { x: 690, y: 340 };
 
 const GATE_IN: Pt = { x: GATE.x - 42, y: GATE.y };
+// Both senders' wires join one trunk into the server early, which keeps them
+// clear of the server's two text lines.
 const inCtrl = (from: Pt): [Pt, Pt] => [
-  { x: from.x + 130, y: from.y },
-  { x: GATE_IN.x - 130, y: GATE_IN.y },
+  { x: from.x + 92, y: from.y },
+  { x: from.x + 92, y: GATE_IN.y },
 ];
 const FROM_A: Pt = { x: ALICE.x + 52, y: ALICE.y };
 const FROM_C: Pt = { x: CAROL.x + 52, y: CAROL.y };
@@ -62,60 +66,41 @@ const T = {
   pDroppedEnd: 206,
 };
 
-// Both claims travel with the message, so the viewer can see which one each check reads.
-const Tag: React.FC<{ at: Pt; subject: string; from: string }> = ({ at, subject, from }) => (
-  <div
-    style={{
-      position: "absolute",
-      left: at.x - 90,
-      top: at.y - 70,
-      width: 180,
-      textAlign: "center",
-      fontSize: 18,
-      lineHeight: "24px",
-      color: INK.text,
-    }}
-  >
-    <span style={{ background: INK.card, padding: "0 6px" }}>subject {subject}</span>
-    <br />
-    <span style={{ background: INK.card, padding: "0 6px" }}>from {from}</span>
-  </div>
-);
+type Verdict = { text: string; ok: boolean; opacity: number };
 
-const Verdict: React.FC<{ at: Pt; text: string; ok: boolean; opacity: number }> = ({ at, text, ok, opacity }) => (
-  <div
-    style={{
-      position: "absolute",
-      left: at.x - 90,
-      top: at.y - 104,
-      width: 180,
-      textAlign: "center",
-      fontSize: 21,
-      letterSpacing: 0.5,
-      color: ok ? GOLD : INK.name,
-      opacity,
-    }}
-  >
-    {text}
-  </div>
-);
-
-const Duty: React.FC<{ at: Pt; text: string }> = ({ at, text }) => (
-  <div
-    style={{
-      position: "absolute",
-      left: at.x - 100,
-      top: at.y + 88,
-      width: 200,
-      textAlign: "center",
-      fontSize: 17,
-      color: INK.dim,
-      letterSpacing: 0.3,
-    }}
-  >
-    {text}
-  </div>
-);
+// A check's line: its duty at rest, the verdict on the claim it read while it acts.
+// The duty fades out before a verdict fades in, so the two never overlap.
+const Check: React.FC<{ x: number; top: number; duty: string; verdicts: Verdict[] }> = ({
+  x,
+  top,
+  duty,
+  verdicts,
+}) => {
+  const line = (text: string, color: string, opacity: number) => (
+    <div
+      key={text}
+      style={{
+        position: "absolute",
+        left: x - 200,
+        top,
+        width: 400,
+        textAlign: "center",
+        fontSize: 18 * NATS_TYPE,
+        letterSpacing: 0.3 * NATS_TYPE,
+        color,
+        opacity,
+      }}
+    >
+      {text}
+    </div>
+  );
+  return (
+    <>
+      {line(duty, INK.dim, Math.max(0, 1 - 2 * Math.max(...verdicts.map((v) => v.opacity))))}
+      {verdicts.map((v) => line(v.text, v.ok ? GOLD : INK.name, Math.max(0, 2 * v.opacity - 1)))}
+    </>
+  );
+};
 
 // A refused message falls off the wire where it was stopped and fades out.
 const Drop: React.FC<{ at: Pt; frame: number; from: number }> = ({ at, frame, from }) => {
@@ -123,7 +108,7 @@ const Drop: React.FC<{ at: Pt; frame: number; from: number }> = ({ at, frame, fr
   if (frame < from || drop >= 1) return null;
   return (
     <div style={{ opacity: 1 - drop }}>
-      <Dot at={{ x: at.x, y: at.y + 70 * drop }} />
+      <Dot at={{ x: at.x, y: at.y + 40 * drop }} />
     </div>
   );
 };
@@ -145,10 +130,9 @@ export const NatsIdentity: React.FC = () => {
   const emitC = Math.max(flashAt(frame, T.fSend, T.fSend + 20), flashAt(frame, T.pSend, T.pSend + 20));
   const deliverFlash = flashAt(frame, T.aDeliverEnd, T.aFlashEnd);
 
-  const passed = Math.max(
-    fade(frame, T.aCheck, T.aCheck + 6) * (1 - fade(frame, T.aDeliverEnd, T.aFlashEnd)),
-    fade(frame, T.pCheck, T.pCheck + 6) * (1 - fade(frame, T.pDeliverEnd, T.pDeliverEnd + 12)),
-  );
+  const passedA = fade(frame, T.aCheck, T.aCheck + 6) * (1 - fade(frame, T.aDeliverEnd, T.aFlashEnd));
+  const passedP = fade(frame, T.pCheck, T.pCheck + 6) * (1 - fade(frame, T.pDeliverEnd, T.pDeliverEnd + 12));
+  const passed = Math.max(passedA, passedP);
   const refused = fade(frame, T.fCheck, T.fCheck + 6) * (1 - fade(frame, T.fRefusedEnd - 12, T.fRefusedEnd));
   const delivered = fade(frame, T.aDeliverEnd, T.aDeliverEnd + 6) * (1 - fade(frame, T.aFlashEnd - 8, T.aFlashEnd));
   const dropped = fade(frame, T.pDeliverEnd, T.pDeliverEnd + 6) * (1 - fade(frame, T.pDroppedEnd - 12, T.pDroppedEnd));
@@ -181,47 +165,56 @@ export const NatsIdentity: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: GATE.x - 90,
-          top: GATE.y + 56,
-          width: 180,
+          left: GATE.x - 200,
+          top: GATE.y - 102,
+          width: 400,
           textAlign: "center",
-          fontSize: 20,
+          fontSize: 20 * NATS_TYPE,
           color: INK.dim,
-          letterSpacing: 0.3,
+          letterSpacing: 0.3 * NATS_TYPE,
         }}
       >
         nats server
       </div>
-      <Duty at={GATE} text="checks subject" />
-      <Duty at={BOB} text="checks from" />
-      <Verdict at={GATE} text="✓ passed" ok opacity={passed} />
-      <Verdict at={GATE} text="✕ refused" ok={false} opacity={refused} />
-      <Verdict at={BOB} text="✓ delivered" ok opacity={delivered} />
-      <Verdict at={BOB} text="✕ dropped" ok={false} opacity={dropped} />
+      <Check
+        x={GATE.x}
+        top={GATE.y + 52}
+        duty="checks subject"
+        verdicts={[
+          { text: "✓ subject alice", ok: true, opacity: passedA },
+          { text: "✕ subject alice", ok: false, opacity: refused },
+          { text: "✓ subject carol", ok: true, opacity: passedP },
+        ]}
+      />
+      <Check
+        x={BOB.x}
+        top={BOB.y + 120}
+        duty="checks from"
+        verdicts={[
+          { text: "✓ from alice", ok: true, opacity: delivered },
+          { text: "✕ from alice", ok: false, opacity: dropped },
+        ]}
+      />
 
-      <AgentNode at={ALICE} name="alice" role="planner" status="working" flash={emitA} />
-      <AgentNode at={CAROL} name="carol" role="reviewer" status="working" flash={emitC} />
-      <AgentNode at={BOB} name="bob" role="builder" status="idle" flash={deliverFlash} />
+      <AgentNode at={ALICE} name="alice" status="working" flash={emitA} type={NATS_TYPE} />
+      <AgentNode at={CAROL} name="carol" status="working" flash={emitC} type={NATS_TYPE} />
+      <AgentNode at={BOB} name="bob" status="idle" flash={deliverFlash} type={NATS_TYPE} />
 
       <Beam d={PATH_A} pos={(t) => bez(FROM_A, ...inCtrl(FROM_A), GATE_IN, t)} t={tA} visible={inFlight(tA)} />
-      {inFlight(tA) && <Tag at={bez(FROM_A, ...inCtrl(FROM_A), GATE_IN, tA)} subject="alice" from="alice" />}
       <Beam d={PATH_OUT} pos={(t) => lerp(...OUT, t)} t={tAOut} visible={inFlight(tAOut)} />
-      {inFlight(tAOut) && <Tag at={lerp(...OUT, tAOut)} subject="alice" from="alice" />}
 
       <Beam d={PATH_C} pos={(t) => bez(FROM_C, ...inCtrl(FROM_C), GATE_IN, t)} t={tF} visible={inFlight(tF)} />
-      {inFlight(tF) && <Tag at={bez(FROM_C, ...inCtrl(FROM_C), GATE_IN, tF)} subject="alice" from="alice" />}
       <Drop at={GATE_IN} frame={frame} from={T.fCheck} />
 
       <Beam d={PATH_C} pos={(t) => bez(FROM_C, ...inCtrl(FROM_C), GATE_IN, t)} t={tP} visible={inFlight(tP)} />
-      {inFlight(tP) && <Tag at={bez(FROM_C, ...inCtrl(FROM_C), GATE_IN, tP)} subject="carol" from="alice" />}
       <Beam d={PATH_OUT} pos={(t) => lerp(...OUT, t)} t={tPOut} visible={inFlight(tPOut)} />
-      {inFlight(tPOut) && <Tag at={lerp(...OUT, tPOut)} subject="carol" from="alice" />}
       <Drop at={OUT[1]} frame={frame} from={T.pDeliverEnd} />
 
       <Labels
         mode="identity"
         caption="the sender rides the subject"
         subject={`cotal.demo.inst.u_….bob.u_….${frame < T.pSend ? "alice" : "carol"}`}
+        type={NATS_TYPE}
       />
     </Card>
   );

@@ -252,25 +252,28 @@ for an agent that isn't here yet?
 Cotal turns a NATS account into a space where agents know who sent a message, who may read it,
 and when to wake up.
 
-<p align="center">
-<img src="assets/identity.webp" width="270" alt="Identity: alice sends to bob as alice and both checks pass; carol publishes on alice's subject and the server refuses it; carol publishes on its own subject with a payload claiming alice, the server passes it and bob drops it">
-<img src="assets/replay.webp" width="270" alt="Replay: alice posts to a durable stream; bob reads each message as it lands, while offline dave keeps its bookmark and reads the rest when it returns">
-<img src="assets/attention.webp" width="270" alt="Attention: in open, channel chatter and direct messages wake bob; in dnd, chatter waits for its next turn; in focus, chatter stays on the channel; a direct message wakes bob in every mode">
-</p>
+<img src="assets/identity.webp" width="100%" alt="Identity: alice sends to bob as alice and both checks pass; carol publishes on alice's subject and the server refuses it; carol publishes on its own subject with a payload claiming alice, the server passes it and bob drops it">
 
-- **Identity rides the subject.** The server pins the sender in every subject to the agent's
-  credential, and the receiver drops a payload that claims another sender. [Identity](docs/identity-and-auth.md#shared-identity)
+**Identity rides the subject.** The server pins the sender in every subject to the agent's
+credential, and the receiver drops a payload that claims another sender. [Identity](docs/identity-and-auth.md#shared-identity)
+
+<img src="assets/replay.webp" width="100%" alt="Replay: alice posts to a durable stream; bob reads each message as it lands, while offline dave keeps its bookmark and reads the rest when it returns">
+
+**Durable, per-reader delivery and replay.** Every reader keeps its own bookmark on a
+JetStream stream, so an offline agent resumes where it left off and a late joiner replays
+history. [Durable transport](docs/presence-and-delivery.md#durable-transport)
+
+<img src="assets/attention.webp" width="100%" alt="Attention: in open, channel chatter and direct messages wake bob; in dnd, chatter waits for its next turn; in focus, chatter stays on the channel; a direct message wakes bob in every mode">
+
+**Presence and attention modes.** Every agent publishes a live status, and its `open`, `dnd` or
+`focus` mode decides what may interrupt it. [Attention](docs/presence-and-delivery.md#attention)
+
 - **Per-agent ACLs.** Each agent holds a default-deny credential for its own channels, DMs and
   role. [Profiles](docs/identity-and-auth.md#profiles)
-- **Durable, per-reader delivery and replay.** Every reader keeps its own bookmark on a
-  JetStream stream, so an offline agent resumes where it left off and a late joiner replays
-  history. [Durable transport](docs/presence-and-delivery.md#durable-transport)
 - **Three delivery modes, one addressing scheme.** Multicast, unicast and anycast are subject
   families in one space (`chat.>`, `inst.>`, `svc.>`). [Delivery modes](docs/presence-and-delivery.md#three-delivery-modes)
 - **Roles as anycast addresses.** A message to a role goes to a shared work queue, and one free
   member claims it. [Addressing](docs/architecture.md#addressing)
-- **Presence and attention modes.** Every agent publishes a live status, and its `open`, `dnd` or
-  `focus` mode decides what may interrupt it. [Attention](docs/presence-and-delivery.md#attention)
 - **Push wake-ups.** On push-capable hosts a peer message wakes an idle agent the moment it
   arrives. [Message delivery](docs/connect-claude.md#how-messages-reach-the-session)
 

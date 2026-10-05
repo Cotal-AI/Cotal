@@ -16,17 +16,18 @@ import {
   GOLD,
   INK,
   Labels,
+  NATS_TYPE,
   prog,
   wirePath,
   Wires,
   type Pt,
 } from "../modes/scene";
 
-const CHANNEL: Pt = { x: 230, y: 236 };
-const ALICE: Pt = { x: 186, y: 440 };
-const BOB: Pt = { x: 680, y: 330 };
+const CHANNEL: Pt = { x: 215, y: 320 };
+const ALICE: Pt = { x: 215, y: 480 };
+const BOB: Pt = { x: 690, y: 400 };
 
-const CH_FROM: Pt = { x: CHANNEL.x + 92, y: CHANNEL.y };
+const CH_FROM: Pt = { x: CHANNEL.x + 92 * NATS_TYPE, y: CHANNEL.y };
 const DM_FROM: Pt = { x: ALICE.x + 52, y: ALICE.y };
 const CH_TO: Pt = { x: BOB.x - 52, y: BOB.y - 16 };
 const DM_TO: Pt = { x: BOB.x - 52, y: BOB.y + 16 };
@@ -49,15 +50,15 @@ const ModePill: React.FC<{ index: number; name: string; active: number }> = ({ i
   <div
     style={{
       position: "absolute",
-      left: 530 + 94 * index,
+      left: 410 + 134 * index,
       top: 30,
-      width: 84,
-      height: 40,
-      borderRadius: 20,
+      width: 124,
+      height: 60,
+      borderRadius: 30,
       border: `1.5px solid ${active > 0.5 ? GOLD : INK.ring}`,
       background: INK.fill,
       color: active > 0.5 ? GOLD : INK.dim,
-      fontSize: 19,
+      fontSize: 18 * NATS_TYPE,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -89,9 +90,15 @@ export const NatsAttention: React.FC = () => {
         <ModePill key={m.name} index={i} name={m.name} active={i === mode ? 1 : 0} />
       ))}
 
-      <ChannelPill at={CHANNEL} label="#general" glow={mode === 2 ? held : 0} />
-      <AgentNode at={ALICE} name="alice" role="planner" status="working" flash={flashAt(T.dmStart)} />
-      <AgentNode at={BOB} name="bob" role="builder" status="idle" flash={Math.max(chatWakes, dmWakes)} />
+      <ChannelPill at={CHANNEL} label="#general" glow={mode === 2 ? held : 0} type={NATS_TYPE} />
+      <AgentNode at={ALICE} name="alice" status="working" flash={flashAt(T.dmStart)} type={NATS_TYPE} />
+      <AgentNode
+        at={BOB}
+        name="bob"
+        status="idle"
+        flash={Math.max(chatWakes, dmWakes)}
+        type={NATS_TYPE}
+      />
 
       {mode === 2 ? (
         // focus: the chatter never leaves the channel
@@ -116,10 +123,10 @@ export const NatsAttention: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          right: 28,
-          top: 90,
-          fontSize: 19,
-          letterSpacing: 0.3,
+          left: 40,
+          top: 170,
+          fontSize: 19 * NATS_TYPE,
+          letterSpacing: 0.3 * NATS_TYPE,
           color: INK.name,
           opacity: outcome,
         }}
@@ -127,7 +134,12 @@ export const NatsAttention: React.FC = () => {
         {MODES[mode]!.outcome}
       </div>
 
-      <Labels mode="attention" caption="what may wake an agent" subject={`cotal_status attention=${MODES[mode]!.name}`} />
+      <Labels
+        mode="attention"
+        caption="what may wake an agent"
+        subject={`cotal_status attention=${MODES[mode]!.name}`}
+        type={NATS_TYPE}
+      />
     </Card>
   );
 };
