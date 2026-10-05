@@ -136,9 +136,10 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 - **Trusted directory.** Claude opens a directory it has not trusted on its workspace-trust dialog,
   and the dialog's default answer exits. No one is at a supervised seat to answer it, so a launch
   whose directory the manager host's own Claude does not trust is refused before it starts, naming
-  the directory and the dialog. Trust given to a parent directory counts. Open `claude` in that
-  directory on the manager host once and trust it, then spawn again. A foreground `cotal spawn`
-  shows the dialog in your own terminal instead.
+  the directory and the dialog. Trust is read as Claude reads it: trust given to a parent directory
+  counts up to the root of the directory's own Git repository, and a linked worktree shares the trust
+  of its repository's main checkout. Open `claude` in that directory on the manager host once and
+  trust it, then spawn again. A foreground `cotal spawn` shows the dialog in your own terminal instead.
 
 Inbound mesh messages arrive in context as
 `<channel source="cotal" from="bob" kind="dm" …>…</channel>`: each meta key a tag

@@ -226,6 +226,8 @@ export const claudeConnector: Connector = {
     const binary = opts.resolvedBinaries?.claude ?? "claude";
     if (opts.carried) refuseCarriedLaunch(binary, env);
     if (opts.cwd) refuseUntrustedCwd(opts.cwd);
+    // placeCarried trusts the carried directory in the seat's home, whatever cwd came beside it.
+    if (opts.carried && opts.carried.cwd !== opts.cwd) refuseUntrustedCwd(opts.carried.cwd);
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
