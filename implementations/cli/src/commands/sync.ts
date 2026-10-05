@@ -253,17 +253,17 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   const values = args.values as { space?: string };
   const requested = values.space ?? (command === "use" ? args.positionals[0] : undefined);
   const current = !requested && command !== "meshes" ? getCurrent() : undefined;
-  let named: MeshEntry | undefined;
-  let selected: MeshEntry | undefined;
+  let meshes: MeshEntry[];
   try {
-    named = requested ? findMesh(requested) : undefined;
-    selected = current ? findMesh(current) : undefined;
+    meshes = loadMeshes();
   } catch {
     // Applying a catalog reads this same registry, so none can apply while a record is unusable.
     // Refusing here would pre-empt the command's own checks; a command that resolves its target
     // through the registry still refuses the record by name.
     return;
   }
+  const named = requested ? meshes.find((m) => m.space === requested) : undefined;
+  const selected = current ? meshes.find((m) => m.space === current) : undefined;
   const target = named ?? selected;
   const targetCatalog = !diagnostics && target?.origin === "catalog" ? target : undefined;
   const force = Boolean(requested && !named);
