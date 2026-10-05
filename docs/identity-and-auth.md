@@ -416,7 +416,9 @@ with the grant's expiry instead of the bearer's.
 The `transfer-writer` view is how `cotal spawn --resume <id> --detach --on <instance>` uploads a
 session this host holds on a user-auth mesh. It needs scope `admin`, as the `transcript-receive`
 call it serves does, and names one object: the target instance and the transcript's SHA-256. The
-callout mints writes to that object of that instance's transfer bucket and nothing else.
+callout mints writes to that object of that instance's transfer bucket and nothing else. The bearer,
+and with it the broker connection, lives at most five minutes, the lifetime of the static
+`transfer-writer` credential, and never past the login proof it was exchanged for.
 
 ### Remote manager authority
 

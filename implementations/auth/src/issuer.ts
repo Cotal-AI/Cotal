@@ -13,7 +13,7 @@
  *  - `alg` is EdDSA only; every token carries a `kid` so verifiers pick the right key across rotation;
  *  - the minted claims are exactly {@link validateUserToken}'s reject matrix inverse — a token this
  *    issuer produces MUST validate, and the round-trip smoke pins that (issuer ↔ validator agree);
- *  - the lifetime is capped at {@link MAX_TOKEN_TTL_SEC} at MINT (fail loud on an overlong ask) — the
+ *  - the lifetime is capped at the view's {@link viewTtlCapSec} at MINT (fail loud on an overlong ask) — the
  *    validator caps on the read side too, but a mint that quietly exceeded the cap would be dead JWTs;
  *  - rotation is real: multiple keys live in the JWKS at once (sign with the newest, verify any
  *    still-published kid), and a retired kid stops verifying — that's the revocation seam for the
@@ -25,7 +25,7 @@
 import { SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generateKeyPair, importJWK } from "jose";
 import type { CryptoKey, JWK, JWTVerifyGetKey } from "jose";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken } from "@cotal-ai/core";
-import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertSessionClaim, assertTransferWriterClaim, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
+import { USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertSessionClaim, assertTransferWriterClaim, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 
 /** The one signing algorithm — Ed25519. Pinned on both mint and verify. */
 export const USER_TOKEN_ALG = "EdDSA";
@@ -109,7 +109,7 @@ export interface IssueClaims {
   session?: UserTokenSession;
   /** The one object bound to the transfer-writer view (#1499). */
   transferWriter?: UserTokenTransferWriter;
-  /** Requested lifetime; capped at {@link MAX_TOKEN_TTL_SEC} (an overlong ask THROWS). */
+  /** Requested lifetime; capped at the view's {@link viewTtlCapSec} (an overlong ask THROWS). */
   ttlSec?: number;
 }
 
@@ -179,9 +179,10 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     if ((claims.view === "transfer-writer") !== (claims.transferWriter !== undefined))
       throw new Error('issue: view "transfer-writer" and a transferWriter claim come together or not at all');
     if (claims.transferWriter !== undefined) assertTransferWriterClaim(claims.transferWriter);
-    const ttl = claims.ttlSec ?? MAX_TOKEN_TTL_SEC;
-    if (typeof ttl !== "number" || !Number.isFinite(ttl) || !(ttl > 0) || ttl > MAX_TOKEN_TTL_SEC)
-      throw new Error(`issue: ttlSec ${ttl} out of range (0, ${MAX_TOKEN_TTL_SEC}] - the cap is the revocation lever`);
+    const cap = viewTtlCapSec(claims.view);
+    const ttl = claims.ttlSec ?? cap;
+    if (typeof ttl !== "number" || !Number.isFinite(ttl) || !(ttl > 0) || ttl > cap)
+      throw new Error(`issue: ttlSec ${ttl} out of range (0, ${cap}] - the cap is the revocation lever`);
     const signer = keys.get(active);
     if (!signer) throw new Error("issue: no active signing key");
     const now = Math.floor(Date.now() / 1000);

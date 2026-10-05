@@ -19,7 +19,7 @@
  */
 import { decodeProtectedHeader, jwtVerify } from "jose";
 import type { CryptoKey, JWTVerifyGetKey } from "jose";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, credentialLifetime } from "@cotal-ai/core";
 
 /** Current normative token-shape version. Bump only with a SPEC change; validators reject
  *  anything else (older = downgrade, newer = from-the-future misconfig). */
@@ -65,6 +65,13 @@ export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "sup
   // `manager.admin` row, so writing them needs the same scope.
   "transfer-writer": "admin",
 };
+
+/** The longest a bearer of `view` may live. A transfer-writer bearer is the user-mode form of the
+ *  one-shot `transfer-writer` credential, so it carries that profile's five minutes, and so does the
+ *  broker credential the callout binds to the bearer's expiry. */
+export function viewTtlCapSec(view: UserTokenView | undefined): number {
+  return view === "transfer-writer" ? credentialLifetime("transfer-writer").defaultTtlSeconds! : MAX_TOKEN_TTL_SEC;
+}
 
 /** The ONE object a `transfer-writer` bearer may upload (docs/design/resume-transfer.md section 6):
  *  the manager instance whose transfer bucket holds it and the transcript's hex digest. */
@@ -207,7 +214,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
   // sails through exp/nbf checks, giving it an effective validity far beyond the cap and quietly
   // defeating the short-lived-token revocation lever. So: iat may not be in the future, and exp
   // may not sit further than the cap from now.
-  const maxTtl = opts.maxTtlSec ?? MAX_TOKEN_TTL_SEC;
+  const maxTtl = Math.min(opts.maxTtlSec ?? MAX_TOKEN_TTL_SEC, viewTtlCapSec((payload.act as UserTokenActor | undefined)?.view));
   const tol = opts.clockToleranceSec ?? 5;
   const now = Math.floor(Date.now() / 1000);
   if (payload.iat > now + tol) throw new Error("user token: iat is in the future");

@@ -33,7 +33,10 @@ cotal console                    # no --space on an open mesh → the admin over
 every space on the server (enumerated from its `CHAT_*` streams and presence buckets) with its
 agents, channels, and message counts. Pick one to drop into its console; `b` returns to the
 overview. `--space X` skips the picker. Under auth a server hosts a single space, so the console
-enters it directly (no overview).
+enters it directly (no overview). `D` deletes the selected space once you type its name. A space this
+host registered as a static-auth mesh on that server is deleted under a teardown minted from its trust
+material, which names the resume transfer buckets the space holds at that moment; any other space is
+deleted under the console's own connection, bare on an open mesh or your `--creds` file.
 
 **Lenses and keys** (TUI). The layout is a roster, a live feed, per-channel tabs, a golden-signal
 tiles strip, and toggleable lenses:
