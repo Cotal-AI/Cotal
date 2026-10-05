@@ -15,7 +15,7 @@
 
   const C = { bg: '#0d1117', fg: '#e6edf3', dim: '#8b949e', faint: '#6e7681', blue: '#58a6ff', green: '#3fb950', amber: '#d29922', waiting: '#e3b341', red: '#f85149', gold: '#e9c46a', line: '#5b6b82' };
   const STATUS = { working: C.green, waiting: C.waiting, idle: C.faint, offline: C.faint };
-  const KIND = { chat: C.blue, dm: C.amber, anycast: C.green, sys: C.dim, gold: C.gold };
+  const KIND = { chat: C.blue, dm: C.amber, anycast: C.green, sys: C.dim, gold: C.gold, red: C.red, green: C.green };
   const VENDORS = {
     claude: { label: 'Claude Code', img: 'assets/claude-code.svg' },
     opencode: { label: 'OpenCode', img: 'assets/opencode.svg' },
@@ -50,7 +50,7 @@
   class Mesh {
     constructor(canvas, opts = {}) {
       this.cv = canvas; this.ctx = canvas.getContext('2d'); this.opts = opts;
-      this.nodes = new Map(); this.edges = []; this.temp = []; this.pulses = []; this.alive = true;
+      this.nodes = new Map(); this.edges = []; this.temp = []; this.pulses = []; this.alive = true; this.zoom = 1; this.zoomT = 1;
       const rand = mulberry(opts.seed || 7);
       this.stars = Array.from({ length: 170 }, () => ({ x: rand(), y: rand(), r: 0.5 + rand() * 1.4, p: rand() * 6.28 }));
       this.ro = new ResizeObserver(() => this.resize()); this.ro.observe(canvas);
@@ -65,7 +65,8 @@
       this.w = w; this.h = hh; this.cv.width = Math.round(w * dpr); this.cv.height = Math.round(hh * dpr);
       this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); this.unit = Math.min(w, hh) * (this.opts.scale || 1);
     }
-    px(n) { return { x: n.x * this.w, y: n.y * this.h }; }
+    px(n) { const z = this.zoom; return { x: (0.5 + (n.x - 0.5) * z) * this.w, y: (0.5 + (n.y - 0.5) * z) * this.h }; }
+    zoomTo(z) { this.zoomT = z; }
     add(n) {
       const node = { kind: 'agent', status: 'idle', alpha: 0, badge: null, glow: 0, scale: 0.3, size: 1, ...n };
       node.tx = n.x; node.ty = n.y;
@@ -77,7 +78,8 @@
     has(id) { return this.nodes.has(id); }
     move(id, x, y) { const n = this.nodes.get(id); if (n) { n.tx = x; n.ty = y; } }
     status(id, s) { const n = this.nodes.get(id); if (n) { n.status = s; n.glow = 1; } }
-    badge(id, text) { const n = this.nodes.get(id); if (n) n.badge = text; }
+    badge(id, text, color) { const n = this.nodes.get(id); if (n) { n.badge = text; n.badgeColor = color; } }
+    recolor(id, color) { const n = this.nodes.get(id); if (n) { n.color = color; n.glow = 1; } }
     link(a, b, kind = 'member') { if (!this.edges.some((e) => e.a === a && e.b === b)) this.edges.push({ a, b, kind, glow: 0 }); }
     unlink(a, b) { this.edges = this.edges.filter((e) => !(e.a === a && e.b === b)); }
     clearEdges() { this.edges = []; }
@@ -93,6 +95,7 @@
     draw(now) {
       const { ctx, w, h: hh } = this; if (!w) return;
       ctx.clearRect(0, 0, w, hh);
+      this.zoom = lerp(this.zoom, this.zoomT, 0.06);
       for (const s of this.stars) {
         const a = 0.18 + 0.2 * Math.sin(now / 1500 + s.p);
         ctx.fillStyle = `rgba(200,214,235,${a})`; ctx.beginPath(); ctx.arc(s.x * w, s.y * hh, s.r, 0, 6.283); ctx.fill();
@@ -162,10 +165,11 @@
         if (n.kind === 'channel') {
           const r = u * 0.04 * n.scale * n.size, cc = KIND[n.color] || C.blue;
           ctx.shadowColor = cc; ctx.shadowBlur = 16 + 26 * n.glow;
-          ctx.fillStyle = n.color === 'gold' ? '#2a2417' : '#10203a'; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill();
+          ctx.fillStyle = n.color === 'gold' ? '#2a2417' : n.color === 'red' ? '#2a1416' : n.color === 'sys' ? '#161b22' : '#10203a'; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill();
           ctx.shadowBlur = 0; ctx.lineWidth = 2; ctx.strokeStyle = rgba(cc, 0.75 + 0.25 * n.glow); ctx.stroke();
           ctx.fillStyle = rgba(cc, 0.5 + 0.5 * n.glow); ctx.beginPath(); ctx.arc(x, y, r * 0.22, 0, 6.283); ctx.fill();
           ctx.font = `600 ${font}px "JetBrains Mono", monospace`; ctx.fillStyle = '#c9d1d9'; ctx.fillText(n.label, x, y + r + 6);
+          if (n.badge) this.drawBadge(x, y - r * 1.9, n.badge, KIND[n.badgeColor] || C.amber);
         } else {
           const r = u * 0.027 * n.scale * n.size; const col = STATUS[n.status] || C.faint;
           if (n.status === 'offline') {
@@ -191,7 +195,7 @@
             ctx.font = `500 ${font * (n.size < 0.8 ? 0.8 : 1)}px "JetBrains Mono", monospace`; ctx.fillStyle = n.size < 0.8 ? rgba('#c9d1d9', 0.6) : '#c9d1d9';
             if (n.size >= 0.8) ctx.fillText(n.label || n.id, x, y + r + 5);
           }
-          if (n.badge) this.drawBadge(x - r * 0.9, y - r * 1.15, n.badge, C.amber);
+          if (n.badge) this.drawBadge(x, y - r * 2.2, n.badge, KIND[n.badgeColor] || C.amber);
         }
         if (n.hit) {
           const age = now - n.hit.t0;
@@ -285,6 +289,7 @@
     }
     teardown() {
       if (this.mesh) this.mesh.dispose(); this.mesh = null;
+      if (this.codeRo) this.codeRo.disconnect();
       for (const f of this.faces.values()) f.dispose(); this.faces.clear();
       this.root.classList.remove('dead');
     }
@@ -394,6 +399,19 @@
         const l = h('div', 'l'); l.dataset.i = i; l.append(h('span', 'n', String(i + 1)));
         const s = h('span', 's'); s.innerHTML = highlight(src); l.append(s); box.append(l);
       });
+      this.fitCode(); document.fonts.ready.then(() => this.fitCode());
+      if (!this.codeRo) { this.codeRo = new ResizeObserver(() => this.fitCode()); }
+      this.codeRo.disconnect(); this.codeRo.observe(box.parentElement);
+    }
+    // Shrink the program until its longest line and its full height fit the pane.
+    fitCode() {
+      const box = $('.code .lines', this.root); if (!box) return;
+      box.style.fontSize = '';
+      const room = box.parentElement.clientHeight - box.offsetTop;
+      let wide = box.clientWidth;
+      for (const l of box.children) wide = Math.max(wide, l.scrollWidth);
+      const k = Math.min(1, box.clientWidth / wide, room / box.scrollHeight);
+      if (k < 1) box.style.fontSize = (k * 0.98) + 'em';
     }
     hl(i, cls = 'hl') { for (const l of this.root.querySelectorAll('.code .l')) { l.classList.remove('hl', 'replay'); if (Number(l.dataset.i) === i) l.classList.add(cls); } }
     codeDone(i) { const l = this.root.querySelector(`.code .l[data-i="${i}"]`); if (l) l.classList.add('done'); }
@@ -402,11 +420,11 @@
       const box = $('.journal .rows', this.root); if (!box) return;
       const r = h('div', 'jr ' + status); r.dataset.key = scope + key;
       r.append(h('span', 'i', ICON[status]));
-      const k = h('span', 'k'); const br = /\/b:([^/]+)\//.exec(scope || '');
-      if (br) k.append(h('span', 'branch', br[1]));
+      const k = h('span', 'k'); const br = [...(scope || '').matchAll(/\/b:([^/]+)/g)].map((m) => m[1]);
+      if (br.length) k.append(h('span', 'branch', br.join(' · ')));
       k.append(document.createTextNode(key.replace(/#0$/, ''))); r.append(k);
       r.append(h('span', 's', note || (status === 'ok' ? '' : status))); box.append(r);
-      while (box.children.length > 12) box.firstChild.remove();
+      while (box.children.length > 24) box.firstChild.remove();
       return r;
     }
     journalSet(fullKey, status, note) {
@@ -415,14 +433,14 @@
     }
     journalFreeze(on) { for (const r of this.root.querySelectorAll('.jr')) r.classList.toggle('frozen', on); }
     journalClear() { const box = $('.journal .rows', this.root); if (box) box.textContent = ''; }
-    host(alive) { const b = $('.hostbadge', this.root); if (!b) return; b.classList.toggle('dead', !alive); b.textContent = alive ? 'host alive' : 'host dead'; this.root.classList.toggle('dead', !alive); }
+    host(alive, text) { const b = $('.hostbadge', this.root); if (!b) return; b.classList.toggle('dead', !alive); b.textContent = text || (alive ? 'host alive' : 'host dead'); this.root.classList.toggle('dead', !alive); }
   }
   const ICON = { pending: '◌', ok: '✓', replayed: '⟲', dead: '✕', live: '●' };
   const highlight = (src) => src
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/("[^"]*")/g, '<span class="str">$1</span>')
-    .replace(/\b(const|await|async|if|return)\b/g, '<span class="kw">$1</span>')
-    .replace(/\b(spawn|ask|checkpoint|turn|fanOut|log|notify|wait|race|sleep)(?=\()/g, '<span class="eff">$1</span>');
+    .replace(/\b(const|let|await|async|function|if|for|return)\b/g, '<span class="kw">$1</span>')
+    .replace(/\b(spawn|ask|checkpoint|turn|fanOut|parallel|log|notify|wait|race|sleep)(?=\()/g, '<span class="eff">$1</span>');
 
   // ---------- the app ----------
   const App = {
@@ -433,6 +451,7 @@
       const touch = (e) => this.onInput(e);
       window.addEventListener('pointerdown', touch, true);
       window.addEventListener('keydown', (e) => this.onKey(e), true);
+      window.addEventListener('resize', () => { if (this.stage) this.stage.fitCode(); });
       window.addEventListener('mousemove', () => { this.lastInput = Date.now(); }, { passive: true });
       setInterval(() => this.tick(), 1000);
       $('#hud-help').onclick = (e) => { e.stopPropagation(); $('#help').classList.toggle('on'); };
