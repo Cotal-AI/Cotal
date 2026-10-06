@@ -15,7 +15,8 @@
  * process, or a malicious site via DNS-rebind, can drive the session: arbitrary code execution as
  * this user + full mesh-identity takeover via the ungated cotal_* tools). So we set a random
  * per-launch `OPENCODE_SERVER_PASSWORD` in the child env; the poke and the attach TUI present it as
- * HTTP basic auth. Bind stays loopback; no CORS / mDNS.
+ * HTTP basic auth. It travels only in environments: argv is readable by every local user, and
+ * stdout may be a shared terminal or log. Bind stays loopback; no CORS / mDNS.
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
@@ -46,8 +47,10 @@ function resolveOpencodeBin(): string {
 const BIN = resolveOpencodeBin();
 const USERNAME = "opencode";
 
-/** Per-launch secret gating the spawned server's HTTP API (see SECURITY above). */
-const SECRET = randomBytes(24).toString("hex");
+/** Secret gating the spawned server's HTTP API (see SECURITY above). A caller that drives the
+ *  server itself, such as a headless host, supplies its own, since the handshake never carries it;
+ *  otherwise it is minted per launch. */
+const SECRET = process.env.OPENCODE_SERVER_PASSWORD || randomBytes(24).toString("hex");
 
 /** Ask the OS for a free port (bind :0, read it, release) so co-located peers don't collide. */
 async function freePort(): Promise<number> {
@@ -209,11 +212,12 @@ async function main(): Promise<void> {
 
   // Headless mode (COTAL_SERVE_HEADLESS=1): no foreground TUI. Hand the running server back to a
   // non-terminal host (a web studio, an automated harness) via one machine-readable handshake line
-  // on stdout, then keep the serve alive. The host drives the session over HTTP (basic auth with the
-  // password below) and tails its event stream. `attached` stays false, so the `serve.on("exit")`
-  // handler above still exits us if the server dies; SIGTERM tears the server down for real.
+  // on stdout, then keep the serve alive. The host drives the session over HTTP, with basic auth from
+  // the OPENCODE_SERVER_PASSWORD it gave us, and tails its event stream. `attached` stays false, so
+  // the `serve.on("exit")` handler above still exits us if the server dies; SIGTERM tears the server
+  // down for real.
   if (process.env.COTAL_SERVE_HEADLESS?.trim() === "1") {
-    process.stdout.write(`[cotal-serve] ${JSON.stringify({ port: Number(port), session: id, password: SECRET })}\n`);
+    process.stdout.write(`[cotal-serve] ${JSON.stringify({ port: Number(port), session: id })}\n`);
     for (const sig of ["SIGINT", "SIGTERM"] as const)
       process.on(sig, () => void terminate(serve).then(() => process.exit(0)));
     return;
@@ -228,11 +232,11 @@ async function main(): Promise<void> {
   delete tuiEnv.OPENCODE_CONFIG_CONTENT; // a viewer, not a peer — must NOT load the plugin again
   for (const k of Object.keys(tuiEnv)) if (k.startsWith("COTAL_")) delete tuiEnv[k];
   attached = true;
-  // 2.x has no `attach` subcommand and no `--password` flag; the username/password already ride in
-  // tuiEnv (OPENCODE_SERVER_USERNAME/OPENCODE_SERVER_PASSWORD) and the binary reads them itself.
+  // Both lines read the username/password from tuiEnv (1.x `attach --password` defaults to
+  // OPENCODE_SERVER_PASSWORD), so neither needs the secret on argv. 2.x has no `attach` subcommand.
   const tui = line === 2
     ? spawn(BIN, ["--server", url, "--session", id], { env: tuiEnv, stdio: "inherit" })
-    : spawn(BIN, ["attach", url, "--session", id, "--password", SECRET], { env: tuiEnv, stdio: "inherit" });
+    : spawn(BIN, ["attach", url, "--session", id], { env: tuiEnv, stdio: "inherit" });
 
   for (const sig of ["SIGINT", "SIGTERM"] as const)
     process.on(sig, () => {
