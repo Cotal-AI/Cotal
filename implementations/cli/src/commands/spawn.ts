@@ -53,8 +53,6 @@ import {
   authDir,
   credsFlag,
   defaultAgentOverride,
-  defaultAgentType,
-  DEFAULT_CONNECTOR,
   defaultPersonaOverride,
   defaultPersonaRef,
   launchFlags,
@@ -66,6 +64,7 @@ import {
   parseLaunchOptions,
   preflightOrThrow,
   provenance,
+  resolveAgentType,
   resolveMeshTarget,
   resolveTargetOrThrow,
   serverFlag,
@@ -476,7 +475,7 @@ async function spawnDetached(
   let resumeAgent: string | undefined;
   let resumeClaim: string | undefined;
   if (values.resume !== undefined) {
-    resumeAgent = values.agent ?? defaultAgentType(DEFAULT_CONNECTOR);
+    resumeAgent = resolveAgentType({ flag: values.agent });
     resumeClaim = await carryTranscriptOrExit(flags, on, values.resume, resumeAgent);
   }
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
@@ -921,7 +920,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (target.source === "registry" || target.source === "current")
     console.error(c.dim(`→ joining mesh ${space} (${server}) as ${name}`));
 
-  const agentType = values.agent ?? def.agent ?? defaultAgentType("claude");
+  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent });
   // Materialize the connector HERE, after the authoritative persona load (#869): the harness choice
   // (flag > persona pin > env > default) is only final once the target root has supplied the file.
   // On the published binary nothing static-imports connectors, so this import-from-manifest is what

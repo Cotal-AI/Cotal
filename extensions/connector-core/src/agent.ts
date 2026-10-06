@@ -1973,7 +1973,7 @@ export class MeshAgent extends EventEmitter {
    *  the exact connector-selected readiness budget carried by the acceptance.
    *  How it lands — a detached PTY, a tmux window, a cmux tab — is the manager's
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
-   *  the harness (default the manager's `COTAL_DEFAULT_AGENT`, else `cotal`/Claude), `opts.model` /
+   *  the harness (absent it, the persona's `agent:` pin, else the manager's default), `opts.model` /
    *  `opts.variant` override the persona file's model selectors, `opts.prompt` submits the new
    *  peer's first turn, and `opts.cwd` roots it at a different folder/repo
    *  than the manager's workspace — the same knobs the operator's `cotal spawn --detach` carries, so
