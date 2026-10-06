@@ -134,7 +134,10 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
       p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
       log.line(`connector ${candidate.value}: ready (no install)`);
     }
-    if (provider?.mcpServers && !(await runSteps([actionStep(provider.mcpServers, connectorShareInput(candidate.connector))], log, { yes, assists: connectorAssists }))) return abort();
+    // Resolved again because the connector action can change what is on PATH, and a provider whose
+    // executables are gone must not write.
+    const share = (await availableSetupProvider(candidate.connector))?.mcpServers;
+    if (share && !(await runSteps([actionStep(share, connectorShareInput(candidate.connector))], log, { yes, assists: connectorAssists }))) return abort();
   }
   // A connector's skills action is independent of the mesh connector selection: it runs for every
   // connector whose harness is present, so someone using that harness gets Cotal's authored skills
