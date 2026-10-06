@@ -326,7 +326,7 @@ export function spawnPersonaRef(configFlag: string | undefined, positionals: rea
 }
 
 /**
- * Auto-number `requested` past any peer already present on the mesh (foo → foo-2 → foo-3) — the same
+ * Auto-number `requested` past any peer already present on the mesh (foo → foo_2 → foo_3) — the same
  * series the manager's spawn funnel uses (firstFreeName). Foreground `cotal spawn` doesn't go through
  * the manager, so it has no name reservation: this is a best-effort, advisory check. It connects a
  * transient presence-watching endpoint, lets the roster settle, and snapshots the live names; two
