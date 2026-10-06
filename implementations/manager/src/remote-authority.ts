@@ -35,6 +35,7 @@ import {
   type RunAdmission,
   type RetainedAgentAuthority,
 } from "@cotal-ai/core";
+import { spaceKey } from "@cotal-ai/workspace";
 import type { RunHostingContext } from "./run-hosting.js";
 
 export interface RemoteManagerIdentityState {
@@ -214,7 +215,7 @@ export function remoteManagerAdminAuthorized(
 }
 
 function stateFile(root: string, space: string): string {
-  return join(root, ".cotal", `remote-manager.${Buffer.from(space, "utf8").toString("hex")}.json`);
+  return join(root, ".cotal", `remote-manager.${spaceKey(space)}.json`);
 }
 
 function parseIdentity(v: unknown, what: string): Identity {
