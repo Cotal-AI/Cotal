@@ -187,8 +187,11 @@ registration. Supply its `[document, manifest]` pair when constructing the activ
 with `remoteManagerClient.remoteManagerAuthorityRequest` and the stock registration proof.
 The host still validates the artifact closure and current registration before activation.
 The namespace includes closed standing/run renewal, admission, maintenance, enrollment and
-retirement helpers. It provides no signer or new grant. The host still owns authenticated issuance,
-current registration and activated-run observations, and any guarded foreign-holder repair.
+retirement helpers. `remoteRunHosting` builds the four `runHosting` callbacks from the registration
+and the transport you supply for the host's run admission, run attempt and authority requests, so
+your manager sends the run requests the stock manager sends. The namespace provides no signer or
+new grant. The host still owns authenticated issuance, current registration and activated-run
+observations, and any guarded foreign-holder repair.
 An embedding must preserve those checks and supply a supported runtime; the client exports alone
 do not provide a pooled runtime, an authority service or a complete hosted context.
 

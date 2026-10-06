@@ -819,7 +819,7 @@ export class RunHosting {
     const deadline = Date.now() + RUN_ACTIVATION_WAIT_MS;
     for (;;) {
       if (await recorded()) return;
-      const early = await Promise.race([settled, new Promise<undefined>((r) => setTimeout(r, 50))]);
+      const early = await Promise.race([settled, new Promise<undefined>((r) => setTimeout(() => r(undefined), 50))]);
       if (early !== undefined) {
         if (await recorded()) return;
         throw new EpEnvelopeError(

@@ -35,6 +35,7 @@ import {
   type RunAdmission,
   type RetainedAgentAuthority,
 } from "@cotal-ai/core";
+import type { RunHostingContext } from "./run-hosting.js";
 
 export interface RemoteManagerIdentityState {
   v: 1;
@@ -126,6 +127,49 @@ export function remoteRunAttemptCredentials(
   if (!("operator" in identities) || identities.operator.id !== request.operator?.id)
     throw new Error("manager run operator requested a different local nkey");
   return { operator: materialize("operator", identities.operator) };
+}
+
+/** The four signerless run callbacks over one registration. A caller supplies only the transport,
+ *  so every composition sends the host the run requests the stock manager sends. */
+export function remoteRunHosting(args: {
+  state: RemoteManagerIdentityState;
+  owner: string;
+  registrationProof: string;
+  accountPublicKey: string;
+  processEpoch: number;
+  requestRunAdmission: (request: RemoteRunAdmissionRequest) => Promise<RemoteRunAdmissionResult>;
+  requestRunAttempt: (request: RemoteRunAttemptRequest) => Promise<RemoteRunAttemptResult>;
+  call: (request: RemoteManagerAuthorityRequest) => Promise<RemoteManagerAuthorityMaterial>;
+}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun">> {
+  const { state, owner, registrationProof, accountPublicKey, processEpoch } = args;
+  return {
+    admitRun: async ({ runId, subject }) => {
+      const request = remoteRunAdmissionRequest(state, registrationProof, accountPublicKey, processEpoch, { runId, subject });
+      return remoteRunAdmission(await args.requestRunAdmission(request), request);
+    },
+    issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator, served }) => {
+      const request = remoteRunAttemptRequest(state, registrationProof, accountPublicKey, processEpoch,
+        { attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id, ...(served !== undefined ? { served } : {}) } });
+      const pair = remoteRunAttemptCredentials(await args.requestRunAttempt(request), request, owner, { driver, mediator });
+      if (!("driver" in pair)) throw new Error("host returned an operator instead of a run pair");
+      return pair;
+    },
+    issueOperator: async ({ identity, takeoverId, runId, answers, served }) => {
+      const request = remoteRunAttemptRequest(state, registrationProof, accountPublicKey, processEpoch,
+        { operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}), ...(served !== undefined ? { served } : {}) } });
+      const credential = remoteRunAttemptCredentials(await args.requestRunAttempt(request), request, owner, { operator: identity });
+      if (!("operator" in credential)) throw new Error("host returned a run pair instead of an operator");
+      return credential.operator;
+    },
+    renewRun: async ({ runId, holder, takeoverId, epoch, fencingToken, driver, mediator }) => {
+      const request: RemoteManagerAuthorityRequest = {
+        ...remoteManagerAuthorityRequest(state, "cli", "renewRunDriver", registrationProof),
+        accountPublicKey, processEpoch,
+        run: { runId, holder, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id },
+      };
+      return remoteRunRenewalCredentials(await args.call(request), request, owner, driver, mediator);
+    },
+  };
 }
 
 export function remoteManagerAdminAuthorizationRequest(

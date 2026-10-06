@@ -8,7 +8,6 @@ import {
   remoteManagerActors,
   remoteManagerRegistrationProof,
   type RemoteManagerAuthorityMaterial,
-  type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
 import { Manager as SourceManager, type ManagerOptions } from "../src/manager.js";
 import "@cotal-ai/runtime";
@@ -43,11 +42,7 @@ const {
   remoteManagedAgentEnrollmentRequest,
   remoteManagerAuthorityRequest,
   remoteManagerGoalIndexEntries,
-  remoteRunAdmission,
-  remoteRunAdmissionRequest,
-  remoteRunAttemptRequest,
-  remoteRunAttemptCredentials,
-  remoteRunRenewalCredentials,
+  remoteRunHosting,
   remoteStandingBundleRenewal,
 } = publicAuthority ? publicApi!.remoteManagerClient : sourceAuthority;
 if (publicAuthority) console.log("PUBLIC_REMOTE_AUTHORITY_BOUND:package-root");
@@ -133,7 +128,6 @@ const sessionLedgerCreds = materialCredential(activateMat, "sessionLedger", mgrI
 
 const runBase = () => ({
   proof: retainedRegistrationProof,
-  account: standing.accountPublicKey,
   epoch: registered.processEpoch,
 });
 
@@ -203,45 +197,13 @@ const managerOpts = (runtime: string, pooled: boolean): ManagerOptions => ({
       if (!resp.ok) throw new Error(`fixture host HTTP ${resp.status}: ${String(json.error ?? "unknown")}`);
       return remoteManagedAgentEnrollmentMaterial(json as never, request);
     },
-    runHosting: {
-      admitRun: async (run) => {
-        const { proof, account, epoch } = runBase();
-        const request = remoteRunAdmissionRequest(mgrIdentity, proof, account, epoch, { runId: run.runId, subject: run.subject });
-        const result = (await postHttp(request)) as never;
-        return remoteRunAdmission(result, request);
-      },
-      issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator, served }) => {
-        const base = runBase();
-        const request = remoteRunAttemptRequest(mgrIdentity, base.proof, base.account, base.epoch, {
-          attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id, ...(served !== undefined ? { served } : {}) },
-        });
-        const result = (await postHttp(request)) as never;
-        const pair = remoteRunAttemptCredentials(result, request, owner, { driver, mediator });
-        if (!("driver" in pair)) throw new Error("host returned an operator instead of a run pair");
-        return pair;
-      },
-      issueOperator: async ({ identity, takeoverId, runId, answers, served }) => {
-        const { proof, account, epoch } = runBase();
-        const request = remoteRunAttemptRequest(mgrIdentity, proof, account, epoch, {
-          operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}), ...(served !== undefined ? { served } : {}) },
-        });
-        const result = (await postHttp(request)) as never;
-        const credential = remoteRunAttemptCredentials(result, request, owner, { operator: identity });
-        if (!("operator" in credential)) throw new Error("host returned a run pair instead of an operator");
-        return credential.operator;
-      },
-      renewRun: async ({ runId, holder, takeoverId, epoch, fencingToken, driver, mediator }) => {
-        const base = runBase();
-        const request: RemoteManagerAuthorityRequest = {
-          ...remoteManagerAuthorityRequest(mgrIdentity, "cli", "renewRunDriver", base.proof),
-          accountPublicKey: base.account,
-          processEpoch: base.epoch,
-          run: { runId, holder, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id },
-        };
-        const result = (await postHttp(request)) as unknown as RemoteManagerAuthorityMaterial;
-        return remoteRunRenewalCredentials(result, request, owner, driver, mediator);
-      },
-    },
+    runHosting: remoteRunHosting({
+      state: mgrIdentity, owner, registrationProof: retainedRegistrationProof,
+      accountPublicKey: standing.accountPublicKey, processEpoch: registered.processEpoch,
+      requestRunAdmission: async (request) => (await postHttp(request)) as never,
+      requestRunAttempt: async (request) => (await postHttp(request)) as never,
+      call: async (request) => (await postHttp(request)) as never,
+    }),
   },
 });
 if (POOLED) {
