@@ -39,7 +39,7 @@ import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./la
 import { type RuntimeMode } from "./runtime/index.js";
 import { custodyRoot } from "./runtime/custodial-pty.js";
 import { drainSeats } from "@cotal-ai/seat";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunAdmission, remoteRunAdmissionRequest, remoteRunAttemptCredentials, remoteRunAttemptRequest, remoteRunRenewalCredentials } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -289,7 +289,6 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         }),
       });
       const runCall = { store: workspaceSecretStore(findCotalRoot()), dir: join(findCotalRoot(), ".cotal", "auth", space) };
-      const runBase = () => ({ proof: retainedRegistrationProof, account: standing.accountPublicKey, epoch: registered.processEpoch });
       remoteAuthority = {
         ...standing,
         owner: material.owner,
@@ -310,42 +309,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         serveCreds: materialCredential(activate, "serve", state.identities.serve),
         goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
         sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
-        runHosting: {
-          admitRun: async (run) => {
-            const { proof, account, epoch } = runBase();
-            const request = remoteRunAdmissionRequest(state, proof, account, epoch, { runId: run.runId, subject: run.subject });
-            const result = await provider.requestRemoteRunAdmission!({ ...runCall, request });
-            return remoteRunAdmission(result, request);
-          },
-          issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator, served }) => {
-            const base = runBase();
-            const request = remoteRunAttemptRequest(state, base.proof, base.account, base.epoch,
-              { attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id, ...(served !== undefined ? { served } : {}) } });
-            const result = await provider.requestRemoteRunAttempt!({ ...runCall, request });
-            const pair = remoteRunAttemptCredentials(result, request, material.owner, { driver, mediator });
-            if (!("driver" in pair)) throw new Error("host returned an operator instead of a run pair");
-            return pair;
-          },
-          issueOperator: async ({ identity, takeoverId, runId, answers, served }) => {
-            const { proof, account, epoch } = runBase();
-            const request = remoteRunAttemptRequest(state, proof, account, epoch,
-              { operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}), ...(served !== undefined ? { served } : {}) } });
-            const result = await provider.requestRemoteRunAttempt!({ ...runCall, request });
-            const credential = remoteRunAttemptCredentials(result, request, material.owner, { operator: identity });
-            if (!("operator" in credential)) throw new Error("host returned a run pair instead of an operator");
-            return credential.operator;
-          },
-          renewRun: async ({ runId, holder, takeoverId, epoch, fencingToken, driver, mediator }) => {
-            const base = runBase();
-            const request = {
-              ...remoteManagerAuthorityRequest(state, "cli", "renewRunDriver", base.proof),
-              accountPublicKey: base.account, processEpoch: base.epoch,
-              run: { runId, holder, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id },
-            };
-            const result = await provider.managerServiceAuthority!({ ...runCall, request });
-            return remoteRunRenewalCredentials(result, request, material.owner, driver, mediator);
-          },
-        },
+        runHosting: remoteRunHosting({
+          state, owner: material.owner, registrationProof: retainedRegistrationProof,
+          accountPublicKey: standing.accountPublicKey, processEpoch: registered.processEpoch,
+          requestRunAdmission: (request) => provider.requestRemoteRunAdmission!({ ...runCall, request }),
+          requestRunAttempt: (request) => provider.requestRemoteRunAttempt!({ ...runCall, request }),
+          call: (request) => provider.managerServiceAuthority!({ ...runCall, request }),
+        }),
         serveGrant: registered.serveGrant,
         agentBearerExchangeUrl,
         mintSessionServing: async (session) => {
