@@ -25,8 +25,8 @@
     {
       "name": "public stop/close race forgets consumer identity before fresh cleanup",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    watch.consumer = consumer;\n    watch.consumerStream = info.stream_name;\n    watch.consumerName = info.name;\n    let pending = info.num_pending;\n",
-      "replace": "    let pending = info.num_pending;\n",
+      "find": "    watch.consumer = consumer;\n    watch.consumerStream = info.stream_name;\n    watch.consumerName = info.name;\n",
+      "replace": "",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
       "cell": "public stop concurrent with terminal close resolves after fresh cleanup",
       "note": "The consumer identity must survive its closed connection so the endpoint-owned public stop can finish only after fresh-epoch deletion.",

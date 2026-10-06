@@ -63,7 +63,7 @@ import {
   type JetStreamPublishOptions,
 } from "@nats-io/jetstream";
 import { type PushConsumer } from "@nats-io/jetstream";
-import { Kvm, type KV, type KvEntry, type KvWatchEntry } from "@nats-io/kv";
+import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 
 import type {
@@ -3078,13 +3078,9 @@ export class CotalEndpoint extends EventEmitter {
     watch.consumer = consumer;
     watch.consumerStream = info.stream_name;
     watch.consumerName = info.name;
-    let pending = info.num_pending;
     let iter: Awaited<ReturnType<PushConsumer["consume"]>>;
-    try { iter = await consumer.consume({ callback: (msg) => {
-      const isUpdate = pending === 0 || --pending === 0;
-      const entry: KvWatchEntry = kv.jmToWatchEntry(msg, isUpdate);
+    try { iter = await consumer.consume({ callback: () => {
       if (!watch.stopped && watch.consumer === consumer) watch.onChange();
-      void entry;
     } }); }
     catch (err) {
       await this.disarmMembershipWatch(watch);
