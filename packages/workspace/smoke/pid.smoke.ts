@@ -27,9 +27,6 @@ import { join } from "node:path";
 import {
   commandIsCotalDelivery, commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
 } from "../src/pid.js";
-// #969: the delivery stop cells below grade the EPERM refusal, which sits AFTER the
-// creation-identity gate, so the fixtures write the pin a real launch writes.
-import { defaultStartToken, formatRecord } from "../src/pid.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -248,11 +245,6 @@ try {
   // `stopLocalProcess` now; these cells pin how the manager stop treats its own record.
   const { stopManager } = await import("../../../implementations/cli/src/lib/manager-proc.js");
   const alive = () => "alive" as const;
-  const refuseSignal = (): never => {
-    const e = new Error("operation not permitted") as NodeJS.ErrnoException;
-    e.code = "EPERM";
-    throw e;
-  };
   writeFileSync(mgrPid, `${deadPid}\n`);
   check("a proven-dead manager IS cleared (the refusal is not blanket)", (await stopManager()) && !existsSync(mgrPid), deadPid);
 
