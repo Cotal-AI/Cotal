@@ -553,7 +553,7 @@ export class MeshHandler {
         await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
       }
     }
-    if (rows.some((p) => p.card?.name === holder.name && p.lifecycleUid === holder.uid))
+    if (rows.some((p) => p.card.name === holder.name && p.lifecycleUid === holder.uid))
       throw new EffectError(
         "L4008", "worktree",
         `spawn(${persona}) would put a second agent into the worktree "${worktree}" while ${holder.name}#${holder.uid} is live in it; two agents MUST NOT share a worktree concurrently (L3022/L4008)`,
@@ -1134,8 +1134,8 @@ export class MeshHandler {
         }
         throw e;
       }
-      if (!rows.some((p) => p.card?.name === name && p.lifecycleUid === uid)) {
-        const reason = rows.some((p) => p.card?.name === name) ? "superseded" : "lapsed";
+      if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {
+        const reason = rows.some((p) => p.card.name === name) ? "superseded" : "lapsed";
         lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
         if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
           if (primary !== undefined) await this.cancelTimer(primary);
@@ -1630,8 +1630,8 @@ export class MeshHandler {
           if (e instanceof IncompleteKvScan) { await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref()); continue; }
           throw e;
         }
-        if (!rows.some((pr) => pr.card?.name === name && pr.lifecycleUid === uid)) {
-          const reason = rows.some((pr) => pr.card?.name === name) ? "superseded" : "lapsed";
+        if (!rows.some((pr) => pr.card.name === name && pr.lifecycleUid === uid)) {
+          const reason = rows.some((pr) => pr.card.name === name) ? "superseded" : "lapsed";
           lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
           if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
             await this.cancelTimer(primary);
@@ -2152,18 +2152,20 @@ export class MeshHandler {
     }
   }
 
-  /** Every live presence row that decodes. Foreign bytes in the bucket are skipped — a peer's
-   *  malformed self-publish must not break another agent's name resolution — and what an ABSENT
-   *  row means belongs to the caller: `resolveMemberPrincipal` refuses the join loudly, and
-   *  `waitDown` reads it as the death it is waiting for. */
+  /** Every live presence row that decodes to a card with a string id and name. Foreign bytes in
+   *  the bucket are skipped — a peer's malformed self-publish must not break another agent's name
+   *  resolution — and what an ABSENT row means belongs to the caller: `resolveMemberPrincipal`
+   *  refuses the join loudly, and `waitDown` reads it as the death it is waiting for. */
   private async presenceRows(): Promise<Presence[]> {
     const rows: Presence[] = [];
     for (const e of await liveKvEntries(await this.presenceRegistry())) {
+      let row: unknown;
       try {
-        rows.push(e.json<Presence>());
+        row = e.json<unknown>();
       } catch {
-        // not a presence row
+        continue;
       }
+      if (isPresenceRow(row)) rows.push(row);
     }
     return rows;
   }
@@ -2794,6 +2796,16 @@ function isConclavePlan(v: unknown): v is ConclavePlan {
   });
 }
 
+/** Whether a decoded presence value carries the string `card.id` and `card.name` that every
+ *  presence reader here matches on or returns. */
+function isPresenceRow(v: unknown): v is Presence {
+  if (typeof v !== "object" || v === null) return false;
+  const card = (v as Record<string, unknown>).card;
+  if (typeof card !== "object" || card === null) return false;
+  const c = card as Record<string, unknown>;
+  return typeof c.id === "string" && typeof c.name === "string";
+}
+
 /** Split an agent handle `<name>#<lifecycleUid>` on its LAST `#` — the uid alphabet
  *  (`[a-z0-9]{26,32}`) cannot carry one, a name could. */
 function parseAgentHandle(agent: string): { name: string; uid: string } {
@@ -2807,7 +2819,7 @@ function parseAgentHandle(agent: string): { name: string; uid: string } {
  *  the effect's own catchable failure — the agent is down or gone (L4002) — and more than one is
  *  an ambiguity no membership row may be written under. */
 function resolveMemberPrincipal(rows: readonly Presence[], agent: string, name: string, uid: string): string {
-  const matches = rows.filter((p) => p.card?.name === name && p.lifecycleUid === uid && typeof p.card?.id === "string");
+  const matches = rows.filter((p) => p.card.name === name && p.lifecycleUid === uid);
   if (matches.length === 1) return matches[0]!.card.id;
   if (matches.length === 0)
     throw new EffectError("L4002", "conclave",
