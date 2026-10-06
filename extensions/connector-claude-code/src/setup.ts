@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   globalConfigPath,
+  mcpServerProblem,
   registry,
   type ConnectorSetupProvider,
   type ConnectorStatusInput,
@@ -17,7 +18,6 @@ import { ENV_REFERENCE } from "@cotal-ai/connector-core";
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-claude.md";
 const MARKETPLACE = "cotal-mesh";
-const REMOTE_TRANSPORTS = new Set<unknown>(["http", "sse", "ws"]);
 
 function cotalHome(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
@@ -206,25 +206,14 @@ function userServers(): Record<string, unknown> {
   return config?.mcpServers ?? {};
 }
 
-/** Whether setup may copy a server entry into the cotal config. The entry must name a transport
- *  Claude Code can start (a non-empty `command` for stdio, a non-empty `url` for http, sse and ws) and
- *  give each field the type {@link McpServerSpec} gives it: any other entry is skipped or never
- *  connects, so a copy would be shared in name only, and a field of the wrong type also makes launch
- *  throw for every spawn. That config holds secrets only as `${VAR}` references, and literal text
- *  cannot be told apart from a secret, so every `env` and `headers` value must be references and
- *  nothing else. */
-function copyable(spec: unknown): spec is McpServerSpec {
-  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-  const isOptionalString = (v: unknown) => v === undefined || typeof v === "string";
-  return (
-    isRecord(spec) &&
-    [spec.command, spec.type, spec.url].every(isOptionalString) &&
-    (spec.type === undefined || spec.type === "stdio" ? Boolean(spec.command) : REMOTE_TRANSPORTS.has(spec.type) && Boolean(spec.url)) &&
-    (spec.args === undefined || (Array.isArray(spec.args) && spec.args.every((arg) => typeof arg === "string"))) &&
-    [spec.env, spec.headers].every(
-      (values) => values === undefined || (isRecord(values) && Object.values(values).every((v) => typeof v === "string" && v.replace(ENV_REFERENCE, "") === "")),
-    )
-  );
+/** Whether setup may copy a server entry into the cotal config: the config reader must accept it
+ *  ({@link mcpServerProblem}), or every spawn would be refused. That config holds secrets only as
+ *  `${VAR}` references, and literal text cannot be told apart from a secret, so every `env` and
+ *  `headers` value must be references and nothing else. */
+function copyable(name: string, spec: unknown): spec is McpServerSpec {
+  if (mcpServerProblem(name, spec) !== undefined) return false;
+  const { env, headers } = spec as McpServerSpec;
+  return [env, headers].every((values) => values === undefined || Object.values(values).every((v) => v.replace(ENV_REFERENCE, "") === ""));
 }
 
 // All handoffs in one setup run share a single Claude session: the first spawn pins a generated UUID
@@ -279,8 +268,8 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     context: [DOCS_URL],
     run({ seed }) {
       const installed = Object.entries(userServers());
-      const shared = Object.fromEntries(installed.filter((entry): entry is [string, McpServerSpec] => copyable(entry[1])));
-      const left = installed.filter(([, spec]) => !copyable(spec)).map(([name]) => name);
+      const shared = Object.fromEntries(installed.filter((entry): entry is [string, McpServerSpec] => copyable(...entry)));
+      const left = installed.filter((entry) => !copyable(...entry)).map(([name]) => name);
       const path = globalConfigPath();
       // An empty list is recorded too: a later setup keeps whatever list the first run wrote.
       if (!seed(shared)) return `kept the list ${path} already declares`;
