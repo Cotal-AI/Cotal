@@ -695,10 +695,6 @@
     "sha256": "c8034e0b9faa728b252b7abc0ec1af3359b4ce36e3e976d7e68f5c73f4491a8b",
     "refusal": "mutation \"the answer names no responder at all, so two disagreeing instances are indistinguishable from one that changed state\" edits packages/core/src/endpoint.ts, but its named cell \"CELL G1: every answer from a bound responder NAMES which responder answered\" reaches no launch, file read, or module import: every value its verdict rests on is written in the suite source itself, so no edit to that file can change what this cell prints and it cannot be the assertion that proves the mutated guard. Name the cell that exercises the guard end to end, or move the mutation to the code this cell does read."
   },
-  "packages/core/smoke/fixtures/presence-watch-rebuild.mutations.json": {
-    "sha256": "1a56492ec9f58b754df7c0a3e4e2397ac1eda966ced282f267893590c09592ae",
-    "refusal": "mutation \"P1 the observer's presence-bucket consumer delete is restored, so a rebuild deletes its predecessor and any observer can again delete another principal's presence watch cursor\" is missing \"cell\""
-  },
   "packages/core/smoke/fixtures/scatter-liveness.mutations.json": {
     "sha256": "00e68dcad326045f9a8e071c9cc59359f573124b0d5586fbd1f24e344f24232d",
     "refusal": "mutation \"PREDICTED KILLED (1 red) - the probe's deadline timer holds the event loop again, so a command whose gather has already finished waits out every LIVE instance's probe budget before it can exit - the 4.0s `cotal ps` regression, measured\" is missing \"cell\""

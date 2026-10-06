@@ -672,9 +672,9 @@ resort, so do not swap it back into a live mesh casually.
 
 ## When something looks absent
 
-Permission denials are **loud, never silent**: an over-tight ACL rejects the endpoint call and
-also shows up as a logged denial, instead of returning an empty or incomplete result that looks
-successful. Check
+Permission denials are **loud, never silent**: an over-tight ACL rejects the endpoint call it
+refuses instead of returning an empty or incomplete result that looks successful, and a denial no
+call is waiting on, such as a refused subscription, shows up as a logged denial on the endpoint. Check
 `.cotal/manager.<key>.log`, `.cotal/delivery.<key>.log` (one pair per space, keyed as
 [Config](config.md#project-files) describes), and `.cotal/nats.log`; `cotal status` shows
 what is actually running. Those files live under the **project** `.cotal/`, not `~/.cotal`,

@@ -590,9 +590,6 @@ export class CotalEndpoint extends EventEmitter {
    *  EXPECTED async permission violation that joinChannel turns into a clean throw, so watchStatus
    *  suppresses it rather than surfacing a spurious connection error. */
   private readonly confirmingChatSubs = new Set<string>();
-  /** Delete subjects of this endpoint's own consumers whose refusal watchStatus has not consumed yet
-   *  (see {@link deleteOwnConsumer}). */
-  private readonly ownConsumerDeletes = new Set<string>();
   /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches,
    *  running membership scans and running history reads (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
@@ -1589,7 +1586,6 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubs.clear();
     this.chatSubDenied.clear();
     this.confirmingChatSubs.clear();
-    this.ownConsumerDeletes.clear();
     this.ownWatchDeletePrefixes.clear();
     this.roster.clear();
     // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
@@ -3006,7 +3002,6 @@ export class CotalEndpoint extends EventEmitter {
     let scanPrefix: string | undefined;
     const entries = await liveKvEntries(kv, {
       onConsumer: (info) => { scanPrefix = this.recordOwnWatchConsumer(info); },
-      deleteOwnConsumer: (stream, name, del) => this.deleteOwnConsumer(stream, name, del),
     }).finally(() => {
       // The scan's own last delete goes out after nats.js closed its consumer, so every predecessor
       // delete the library sent is answered ahead of it on this connection.
@@ -3120,24 +3115,12 @@ export class CotalEndpoint extends EventEmitter {
     watch.rejectStop = undefined;
   }
 
-  /** Run one delete of a consumer this endpoint created. A profile without the delete row is refused
-   *  by design (#691), and nats.js reports a refused request twice: as the request's rejection, which
-   *  the caller handles, and on the connection status, which watchStatus would emit as an `error`.
-   *  A refused subject stays recorded until watchStatus drops that echo, since the two settle in
-   *  either order. */
-  private async deleteOwnConsumer(stream: string, name: string, del: () => Promise<boolean>): Promise<boolean> {
-    const subject = `$JS.API.CONSUMER.DELETE.${stream}.${name}`;
-    this.ownConsumerDeletes.add(subject);
-    let refused = false;
-    try { return await del(); }
-    catch (err) { refused = isPublishPermissionDenied(err); throw err; }
-    finally { if (!refused) this.ownConsumerDeletes.delete(subject); }
-  }
-
   /** Record the consumer behind one of this connection's own KV watches, membership scans or history
    *  reads, and return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
    *  rebuilding it after a stall or a sequence gap, deletes the predecessor itself with no hook before
-   *  the send, so a profile without the delete row (#691) has that delete refused. A watch's prefix
+   *  the send, so a profile without the delete row (#691) has that delete refused. A stalled link can
+   *  time that delete out before its refusal arrives, and nats.js then hands the refusal to no request,
+   *  so {@link trackRequestDenials} cannot own it and the consumer's name has to. A watch's prefix
    *  stays recorded for the connection because a retired watch's last rebuild can be refused after
    *  the watch has stopped; {@link readMembership} and {@link drainWindow} retire theirs after their own
    *  last delete, which goes out once nats.js has stopped the consumer and so is answered after every
@@ -3158,8 +3141,7 @@ export class CotalEndpoint extends EventEmitter {
    *  the elevated profile, which holds no stream-wide CONSUMER.DELETE (#691): the broker reaps the
    *  consumer at its inactive threshold. */
   private async deleteReaderConsumer(consumer: Consumer): Promise<void> {
-    const { stream_name, name } = await consumer.info(true);
-    try { await this.deleteOwnConsumer(stream_name, name, () => consumer.delete()); }
+    try { await consumer.delete(); }
     catch (e) {
       if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound) && !isPublishPermissionDenied(e)) throw e;
     }
@@ -3167,7 +3149,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Delete one membership-watch consumer, swallowing ONLY already-gone and a refused delete. */
   private async deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string): Promise<boolean> {
-    try { return await this.deleteOwnConsumer(stream, name, () => jsm.consumers.delete(stream, name)); }
+    try { return await jsm.consumers.delete(stream, name); }
     catch (err) {
       if (membershipConsumerReleased(err)) return true;
       throw err;
@@ -3185,8 +3167,7 @@ export class CotalEndpoint extends EventEmitter {
     try { iter?.stop(); } catch { /* already closed */ }
     if (consumer) {
       try {
-        const { stream_name, name } = await consumer.info(true);
-        const deleted = await this.deleteOwnConsumer(stream_name, name, () => consumer.delete());
+        const deleted = await consumer.delete();
         if (deleted) { watch.consumerStream = undefined; watch.consumerName = undefined; }
       } catch (err) {
         if (membershipConsumerReleased(err)) {
@@ -3706,14 +3687,17 @@ export class CotalEndpoint extends EventEmitter {
 
   /**
    * Surface the connection's async status errors on our `error` event. NATS reports
-   * publish permission violations *only* here (subscription/request ones too), never on
-   * the failing call — so without this an over-tight ACL silently drops the agent's
-   * traffic and it just looks "absent". We annotate permission denials explicitly so a
-   * denial is never mistaken for absence (which already has a benign cause: MCP reconnect).
+   * publish permission violations *only* here (subscription ones too), never on the
+   * failing call — so without this an over-tight ACL silently drops the agent's
+   * traffic and it just looks "absent". A denied request is the exception: nats.js also
+   * rejects that request with the denial, so its caller owns it (see {@link trackRequestDenials}).
+   * We annotate permission denials explicitly so a denial is never mistaken for absence
+   * (which already has a benign cause: MCP reconnect).
    */
   private watchStatus(): void {
     const nc = this.nc;
     if (!nc) return;
+    const handedToRequest = this.trackRequestDenials(nc);
     void (async () => {
       for await (const s of nc.status()) {
         // A rebuild can replace `this.nc` before the old iterator finishes. Late disconnect/close
@@ -3741,11 +3725,11 @@ export class CotalEndpoint extends EventEmitter {
         // and turns into a clean throw — it is not a connection error to surface.
         if (s.error instanceof PermissionViolationError && this.confirmingChatSubs.has(s.error.subject))
           continue;
-        // The echo of a refused delete of this endpoint's own consumer: one its caller already handled,
-        // or the predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
-        // history reads.
+        if (s.error instanceof PermissionViolationError && handedToRequest.has(s.error)) continue;
+        // The predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
+        // history reads, whose refusal can arrive after that delete timed out.
         if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
-          && (this.ownConsumerDeletes.delete(s.error.subject) || this.isOwnWatchDelete(s.error.subject)))
+          && this.isOwnWatchDelete(s.error.subject))
           continue;
         this.emit("error", describeStatusError(s.error));
       }
@@ -3766,6 +3750,29 @@ export class CotalEndpoint extends EventEmitter {
     // through a real pending dial, a stopped endpoint announced a live transport it never had.
     if (this.stopped) return;
     this.emit("transport", { connected: true, server: nc.getServer() } satisfies TransportState);
+  }
+
+  /** Wrap `nc.request` to record each publish denial nats.js rejects one of this connection's requests
+   *  with. nats.js rejects the pending request on the denied subject with the denial and then dispatches
+   *  that same error instance on the connection status, so the caller that received it (an empty history
+   *  read, a refused consumer delete, nats.js's own delete of a rebuilt watch's predecessor) owns it and
+   *  the status loop skips it. nats.js settles the request before it dispatches the status and this
+   *  reaction sits directly on the promise it returns, so it runs before the status loop body, which is
+   *  further microtasks away behind the status iterator. Any other denial is a different instance and is
+   *  not recorded, including one on the same subject and one that arrives after its request timed out.
+   *  A refused request inbox is rejected into every pending request but breaks every later one, so it
+   *  is not recorded either. */
+  private trackRequestDenials(nc: NatsConnection): WeakSet<PermissionViolationError> {
+    const handed = new WeakSet<PermissionViolationError>();
+    const request = nc.request.bind(nc);
+    nc.request = (subject, payload, opts) => {
+      const reply = request(subject, payload, opts);
+      reply.catch(({ cause }: Error) => {
+        if (cause instanceof PermissionViolationError && cause.operation === "publish") handed.add(cause);
+      });
+      return reply;
+    };
+    return handed;
   }
 
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a

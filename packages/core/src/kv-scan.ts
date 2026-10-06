@@ -101,9 +101,7 @@ export class IncompleteKvScan extends Error {
 
 export interface LiveKvEntriesOptions {
   signal?: AbortSignal;
-  /** Runs each delete of the scan's own consumers, for a caller that must recognise a refused one: a
-   *  profile without the delete row is refused by design (#691), and the endpoint keeps that
-   *  refusal's connection-status echo off its `error` event. */
+  /** Runs each delete of the scan's own consumers in place of the plain delete. */
   deleteOwnConsumer?: (stream: string, name: string, del: () => Promise<boolean>) => Promise<boolean>;
   /** Runs with the scan's consumer before its first delivery. nats.js rebuilds that consumer after a
    *  stall or a sequence gap and deletes the predecessor itself, with no hook before the send, so a
