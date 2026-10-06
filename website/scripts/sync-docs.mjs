@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSy
 import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { lexer, walkTokens } from 'marked';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -121,7 +122,6 @@ const knownSlugs = new Map(
 // Seeded with images used by the hand-authored landing page (index.mdx), which
 // doesn't pass through this rewriter.
 const assetRefs = new Set(['assets/cotal-demo.webp']);
-const mdLink = /\]\(([^)#]+?)(#[^)]*)?\)/g;
 const isExternal = (target) => /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/');
 
 function resolveRepoPath(srcDir, target) {
@@ -137,7 +137,7 @@ function resolveRepoPath(srcDir, target) {
 }
 
 function rewriteLinks(md, srcDir) {
-  return md.replace(mdLink, (whole, target, anchor = '') => {
+  return md.replace(/\]\(([^)#]+?)(#[^)]*)?\)/g, (whole, target, anchor = '') => {
     if (isExternal(target)) return whole;
     const repoPath = resolveRepoPath(srcDir, target);
     if (repoPath === 'spec/cotal.schema.json') return `](/cotal.schema.json${anchor})`;
@@ -174,12 +174,14 @@ function yamlEscape(s) {
 
 // The index also links design notes (docs/design/) and spec/ references, which stay on
 // GitHub, so only its links to SPEC.md and top-level docs pages must match the group map.
-const indexed = new Set(
-  [...readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf8').matchAll(mdLink)]
-    .filter(([, target]) => !isExternal(target))
-    .map(([, target]) => resolveRepoPath('docs', target))
-    .filter((rel) => rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel)),
-);
+// A lexer reads the links so reference, titled and angle-bracket links count and a link
+// shown in a code example does not.
+const indexed = new Set();
+walkTokens(lexer(readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf8')), (token) => {
+  if (token.type !== 'link' || isExternal(token.href)) return;
+  const rel = resolveRepoPath('docs', token.href.split('#')[0]);
+  if (rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel)) indexed.add(rel);
+});
 for (const rel of indexed) if (!sources.includes(rel)) throw new Error(`indexed but not in the group map: ${rel}`);
 for (const rel of sources) if (!indexed.has(rel)) throw new Error(`in the group map but not indexed: ${rel}`);
 
