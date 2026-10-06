@@ -316,6 +316,16 @@ function rejectionText(e: unknown): string {
   }
 }
 
+/** Run one cleanup step, recording its failure in `failed` as `<what>: <reason>`. A step that threw
+ *  would otherwise skip every step after it, and a swallowed one would leave nothing to report. */
+async function attemptCleanup(failed: string[], what: string, step: () => unknown): Promise<void> {
+  try {
+    await step();
+  } catch (err) {
+    failed.push(`${what}: ${rejectionText(err)}`);
+  }
+}
+
 /** Run the agent's bearer argv once, pre-launch — the end-to-end auth preflight (state dir, daemon,
  *  ledger row, secret). Its stderr is the provider command's operator-exact sentence; surface it
  *  verbatim as the spawn refusal. */
@@ -4011,16 +4021,15 @@ export class Manager {
       // Roll back everything this attempt materialized — a refused spawn must leave no standing
       // secret, no ledger row, no durable footprint — and AWAIT the broker teardown: the caller
       // may respawn the moment it reads the refusal, and a detached teardown would race (and
-      // delete) that fresh spawn's just-provisioned durables.
-      await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
-      await secrets.delete(agentSecretKeyForFile(tokenPath, this.space)).catch(() => {});
-      await secrets.delete(agentSecretKeyForFile(sentinelPath, this.space)).catch(() => {});
-      rmSync(tokenPath, { force: true });
-      rmSync(sentinelPath, { force: true });
-      rmSync(healthPath, { force: true });
-      await this.deprovision({ id: principalKey(owner, name).key, name, lifecycleUid: opts.lifecycleUid, userOwner: owner, secretPaths: files }).catch((err) =>
-        console.error(`rollback deprovision ${name}: ${(err as Error).message}`));
-      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}` };
+      // delete) that fresh spawn's just-provisioned durables. deprovision shreds the secret family
+      // and revokes the grant, but only logs a failed revoke, so the revoke is attempted here first.
+      // Each failure joins the refusal, so the caller learns what this spawn left behind.
+      const failed: string[] = [];
+      await attemptCleanup(failed, "revoke agent grant", () => provider.revokeAgent({ dir, owner, actor: name }));
+      await attemptCleanup(failed, "deprovision", () =>
+        this.deprovision({ id: principalKey(owner, name).key, name, lifecycleUid: opts.lifecycleUid, userOwner: owner, secretPaths: files }));
+      const leftover = failed.length ? `; cleanup failed: ${failed.join("; ")}` : "";
+      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}${leftover}` };
     }
   }
 
@@ -4104,7 +4113,7 @@ export class Manager {
       if (files.actorToken !== staged.actorToken) {
         await secrets.put(agentSecretKeyForFile(files.actorToken, this.space), actorToken);
         await materializeSecretToFile(secrets, agentSecretKeyForFile(files.actorToken, this.space), files.actorToken);
-        await secrets.delete(agentSecretKeyForFile(staged.actorToken, this.space)).catch(() => {});
+        await secrets.delete(agentSecretKeyForFile(staged.actorToken, this.space));
         rmSync(staged.actorToken, { force: true });
       }
       await secrets.put(agentSecretKeyForFile(files.sentinelCreds, this.space), material.sentinelCreds);
@@ -4138,18 +4147,11 @@ export class Manager {
       // A failed removal joins the refusal instead of throwing, so every removal is attempted and
       // the refusal still reaches the caller.
       const unshredded: string[] = [];
-      const shred = async (what: string, remove: () => unknown) => {
-        try {
-          await remove();
-        } catch (err) {
-          unshredded.push(`${what}: ${rejectionText(err)}`);
-        }
-      };
       for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files]) {
         for (const path of [family.actorToken, family.sentinelCreds])
-          await shred(`secret ${path}`, () => secrets.delete(agentSecretKeyForFile(path, this.space)));
+          await attemptCleanup(unshredded, `secret ${path}`, () => secrets.delete(agentSecretKeyForFile(path, this.space)));
         for (const path of [family.actorToken, family.sentinelCreds, family.health])
-          await shred(`file ${path}`, () => rmSync(path, { force: true }));
+          await attemptCleanup(unshredded, `file ${path}`, () => rmSync(path, { force: true }));
       }
       const leftover = unshredded.length ? `; cleanup failed: ${unshredded.join("; ")}` : "";
       return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}` };
@@ -4397,18 +4399,23 @@ export class Manager {
     // unowned same-name file is the exact successor-clobber this ownership discipline removes.
     const secrets = this.secrets;
     const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
+    // Every removal is attempted, and a failed one is thrown only after the broker teardown below,
+    // so a file fault cannot strand the agent's durables and ACL row on the broker.
+    const unshredded: string[] = [];
     if (files.creds) {
-      await secrets.delete(agentSecretKeyForFile(files.creds, this.space));
-      rmSync(files.creds, { force: true });
+      const creds = files.creds;
+      await attemptCleanup(unshredded, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
+      await attemptCleanup(unshredded, `file ${creds}`, () => rmSync(creds, { force: true }));
     }
     if (a.userOwner) {
       // USER MODE: this teardown IS revocation, not just footprint reduction — the ledger row is
       // the agent's standing mint authority, so delete it (next exchange refused, next connect
       // denied) and shred the secret/sentinel/health files. A copied actor token dies here; a
       // still-LIVE connection ends at its bearer-bound JWT expiry (≤ the agent TTL).
-      if (files.actorToken) await secrets.delete(agentSecretKeyForFile(files.actorToken, this.space));
-      if (files.sentinelCreds) await secrets.delete(agentSecretKeyForFile(files.sentinelCreds, this.space));
-      for (const f of [files.actorToken, files.sentinelCreds, files.health]) if (f) rmSync(f, { force: true });
+      for (const path of [files.actorToken, files.sentinelCreds])
+        if (path) await attemptCleanup(unshredded, `secret ${path}`, () => secrets.delete(agentSecretKeyForFile(path, this.space)));
+      for (const path of [files.actorToken, files.sentinelCreds, files.health])
+        if (path) await attemptCleanup(unshredded, `file ${path}`, () => rmSync(path, { force: true }));
       // The ledger row IS the agent's STANDING mint authority (a different store from the auth-plane
       // cred ledger the rail retirement covers): while it lives, a copied actor token can still mint a
       // fresh connect credential. So a FAILED revoke must NOT be swallowed into a clean terminal (INT-2):
@@ -4433,6 +4440,7 @@ export class Manager {
         console.error(`revoke agent grant ${a.name}: ${(e as Error).message}`);
       }
     }
+    const shredFailure = unshredded.length ? `could not shred "${a.name}": ${unshredded.join("; ")}` : undefined;
     try {
       const res = await this.deprovisionBroker(a);
       const h = this.retiring.get(a.name);
@@ -4443,8 +4451,10 @@ export class Manager {
         h.lastError = (e as Error).message;
         if (e instanceof DeprovisionError) h.lastResources = e.accounting;
       }
+      if (shredFailure) throw new Error(`${rejectionText(e)}; ${shredFailure}`, { cause: e });
       throw e;
     }
+    if (shredFailure) throw new Error(shredFailure);
     // #29 piece 3: after the footprint teardown, ask the AUTH plane to RETIRE the lifecycle over
     // the auth endpoint rail. The rail re-checks the SERVE-ISSUANCE GATE at serve time (not the
     // space-manager lease - that check was replaced in 02794b2f) and refuses unless the registration
