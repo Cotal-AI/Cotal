@@ -1853,10 +1853,14 @@ export async function startAuthService(inputs: HostedContextInputs & {
     ...(inputs.platformControl !== undefined ? { platformControl: inputs.platformControl } : {}),
     ...(inputs.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: inputs.standingRenewableTtlSeconds } : {}),
   });
-  return started.handle;
+  return { ...started.handle, readiness: (): HostedServiceState => ({ ...started.status(), context: inputs.context }) };
 }
 
 type AuthContextEnd = { kind: "fenced"; cause: string } | { kind: "broker"; cause?: string };
+
+/** The shared builder's state, without a key: only the hosted entry point has an assigned context
+ *  to report it under, so the CLI composition never carries one. */
+type AuthContextStatus = { state: "ready" | "draining" } | { state: "unavailable"; cause: string };
 
 interface AuthContextOptions {
   space: string;
@@ -1874,7 +1878,7 @@ interface AuthContextOptions {
   standingRenewableTtlSeconds?: number;
 }
 
-async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthServiceHandle; ended: Promise<AuthContextEnd> }> {
+async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<AuthServiceHandle, "readiness">; status(): AuthContextStatus; ended: Promise<AuthContextEnd> }> {
   const { space, server, dir, secrets, port } = o;
   const keys = await loadServiceKeys(secrets, space);
   const callout = await loadCalloutAuth(secrets, space);
@@ -2066,7 +2070,6 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
       }
       return end;
     });
-    const context = o.context ?? { accountPublicKey: keys.dataAccount.pub, lifecycleUid: "" };
     const platformControl = o.platformControl;
     const host = platformControl?.host;
     // The human route's retained-validation composition, for the platform holder.
@@ -2115,7 +2118,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
       const { nc: readerNc } = await client;
       return await invokeCommand(readerNc, space, await resolveService(readerNc, space, "manager", caller, { instanceId }), "status", undefined, {});
     };
-    const service: AuthServiceHandle = {
+    const service: Omit<AuthServiceHandle, "readiness"> = {
       url,
       ...(publicUrl !== undefined ? { publicUrl } : {}),
       cap,
@@ -2167,14 +2170,12 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: AuthSe
           }
         },
       } : {}),
-      readiness(): HostedServiceState {
-        if (state === "unavailable") return { state, context, cause: cause ?? "auth-service context is unavailable" };
-        return { state: closePromise === undefined ? "ready" : "draining", context };
-      },
       drain: close,
       close,
     };
-    return { handle: service, ended };
+    const status = (): AuthContextStatus =>
+      state === "unavailable" ? { state, cause: cause ?? "auth-service context is unavailable" } : { state: closePromise === undefined ? "ready" : "draining" };
+    return { handle: service, status, ended };
   } catch (e) {
     // A failed start releases only what THIS context acquired, in reverse order.
     await closeServer(publicHttp).catch(() => {});
