@@ -32,7 +32,13 @@ export function emitSentinel(counts: { passed: number; failed: number; cells?: n
 
 /** A skip is not a cell: the shard lists the suite with `reason` and adds nothing to its total. */
 export function skipSuite(reason: string): never {
-  console.log(`${SENTINEL_PREFIX} skipped=${reason}`);
+  const line = `${SENTINEL_PREFIX} skipped=${reason}`;
+  // The shard grades the last sentinel it reads, so a reason with a line break could end in a tally.
+  const read = parseSentinel(line);
+  if (read?.kind !== "skipped" || read.reason !== reason) {
+    throw new Error(`skipSuite reason must read back as one skip line: ${JSON.stringify(reason)}`);
+  }
+  console.log(line);
   process.exit(0);
 }
 

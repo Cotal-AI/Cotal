@@ -38,7 +38,13 @@ export function emitSentinel(counts) {
  * @returns {never}
  */
 export function skipSuite(reason) {
-  console.log(`${SENTINEL_PREFIX} skipped=${reason}`);
+  const line = `${SENTINEL_PREFIX} skipped=${reason}`;
+  // The shard grades the last sentinel it reads, so a reason with a line break could end in a tally.
+  const read = parseSentinel(line);
+  if (read?.kind !== "skipped" || read.reason !== reason) {
+    throw new Error(`skipSuite reason must read back as one skip line: ${JSON.stringify(reason)}`);
+  }
+  console.log(line);
   process.exit(0);
 }
 

@@ -63,6 +63,8 @@ A suite that cannot run on the current platform ends through `skipSuite(reason)`
 shard adds no cell for it, counts it as skipped in the completion line, and lists each skipped
 suite with its reason under that line. A skip that printed a cell count would be reported as a
 covered pass.
+`skipSuite` throws when the reason would not read back as that one skip line, such as a reason
+with a line break, because the shard grades the last sentinel line a suite prints.
 
 ## Failure reports
 
