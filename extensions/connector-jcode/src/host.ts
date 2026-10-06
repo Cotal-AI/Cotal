@@ -554,7 +554,6 @@ export async function runJcodeHost(): Promise<void> {
     if (!events || !eventJournal || events.running) return;
     events.adopt(eventJournal);
     await events.settled();
-    if (events.failure) throw events.failure;
   };
 
   const releaseEventLock = async (): Promise<void> => {
@@ -2096,6 +2095,9 @@ export async function runJcodeHost(): Promise<void> {
     // would publish the pre-join orientation tool records and merge the next requested turn into the
     // same AG-UI run. A completed proof can bind now; an open one binds in drive() after turn_done.
     if (!readinessTurnOpen) await ensureEventsBound();
+    // A space that requires events has already stopped a seat whose event plane failed to bind, and
+    // that shutdown owns the exit.
+    if (stopping) return;
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
     // orientation card was pre-join so it cannot later mistake that truthful old snapshot for its
     // current connection state (#778).
