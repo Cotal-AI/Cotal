@@ -218,6 +218,34 @@ Branch on `class` where such code read `code`: `released` for L5012, `held` for 
 for L5006 and `rejected` for L5010. An `effect` or `error` result keeps its `code`. Once narrowed to
 `too-large`, a result carries the `stepKey`, `bytes` and `bound` that `tooLarge` held.
 
+## Remote manager request builder in 0.70.0
+
+`remoteManagerClient.remoteManagerAuthorityRequest` from `@cotal-ai/manager` now takes an
+operation's coordinates as one object, and `remoteManagerRegistrationProof` from `@cotal-ai/core`
+computes the proof from the manager's identity state instead of a request. Nothing about a running
+mesh changes: the proof digest and the request on the wire are the same, so a manager and a host on
+different sides of this release still accept each other. Only code that builds remote manager
+requests itself is affected, in TypeScript and in plain JavaScript.
+
+### What stops working
+
+A call that passes the registration proof, contract artifacts, session, retirement or transfer
+reader as positional arguments after the operation no longer compiles. A call that passes a request
+to `remoteManagerRegistrationProof` no longer compiles either, because the second argument now names
+the lifecycle `lifecycleUid`, as the identity state does.
+
+Plain JavaScript runs both old calls without an error. The builder drops the positional coordinates,
+so the host refuses the request with `requires a sha256 registrationProof`. A proof computed from a
+request leaves out the lifecycle, so the host refuses a request that carries it as a proof mismatch.
+
+### Before the upgrade
+
+Name the coordinates, for example
+`remoteManagerAuthorityRequest(state, "cli", "retire", { registrationProof, retirement })`.
+Compute the proof as `remoteManagerRegistrationProof(owner, state)`, adding the contract artifacts
+as a third argument for activation only. A host that recomputes the proof from a received request
+passes `{ space, instanceId, lifecycleUid: managerLifecycleUid, identities }` from that request.
+
 ## Carrying a resumed Claude session to another host
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the

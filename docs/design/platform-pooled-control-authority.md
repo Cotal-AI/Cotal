@@ -318,10 +318,10 @@ which mints both locally. Stock `cotal supervise` is unchanged and gains no flag
 - `remoteStandingBundleRenewal` is called unchanged. Its `call` wraps each inner request in the
   envelope. Its echo validation (`remoteManagerRenewalCredentials`) is unchanged: same owner, same
   identities, same account, same process epoch, all five credentials or none.
-- The registration proof is unchanged. `remoteManagerRegistrationProof(owner, request)` and the
-  host-keyed `remoteManagerCurrentRegistrationProof(secret, owner, request, gate)` both bind the
-  owner. Because `p_` and `u_` owners are disjoint, a proof from one door never validates on the
-  other.
+- The registration proof is unchanged.
+  `remoteManagerRegistrationProof(owner, registration, contractArtifacts)` and the host-keyed
+  `remoteManagerCurrentRegistrationProof(secret, owner, request, gate)` both bind the owner.
+  Because `p_` and `u_` owners are disjoint, a proof from one door never validates on the other.
 - The process epoch fence is unchanged. `authorizeRemoteManagerRenewal` requires an open gate, a
   gate principal equal to `<p_owner>.manager_serve_<instanceId>`, a gate `processEpoch` equal to the
   request's, and a timing-safe proof match. The assignment check runs first.

@@ -7,8 +7,8 @@
     {
       "name": "standing renewal sends a foreign registration proof",
       "file": "implementations/manager/src/remote-authority.ts",
-      "find": "...remoteManagerAuthorityRequest(args.state, \"cli\", \"renewStandingBundle\", args.registrationProof),",
-      "replace": "...remoteManagerAuthorityRequest(args.state, \"cli\", \"renewStandingBundle\", `sha256:${\"0\".repeat(64)}`),",
+      "find": "...remoteManagerAuthorityRequest(args.state, \"cli\", \"renewStandingBundle\", { registrationProof: args.registrationProof }),",
+      "replace": "...remoteManagerAuthorityRequest(args.state, \"cli\", \"renewStandingBundle\", { registrationProof: `sha256:${\"0\".repeat(64)}` }),",
       "expectRed": "✗ FAIL: the close handlers ask for the all-duty family, the foreign-owner request is refused, and last-good is kept with debt",
       "cell": "the close handlers ask for the all-duty family, the foreign-owner request is refused, and last-good is kept with debt"
     }

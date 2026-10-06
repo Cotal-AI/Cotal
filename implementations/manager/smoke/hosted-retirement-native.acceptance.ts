@@ -773,7 +773,7 @@ try {
     artifactDigests: contractArtifacts.map((value) => rawDigest(JSON.stringify(value))),
   }));
   const activateRequest = {
-    ...remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof),
+    ...remoteManagerAuthorityRequest(state, "cli", "activate", { registrationProof }),
     contractArtifacts,
   };
   const parsedActivate = parseRemoteManagerAuthorityRequest(activateRequest);
@@ -806,7 +806,7 @@ try {
       const renew = await cotalAuthProvider.managerServiceAuthority!({
         store: participantStore,
         dir: participantDir,
-        request: remoteManagerAuthorityRequest(state, "cli", "renew", retainedRegistrationProof),
+        request: remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: retainedRegistrationProof }),
       });
       return materialCredential(renew, "executor", state.identities.executor);
     },
@@ -820,8 +820,9 @@ try {
       retirementMints++;
       const response = await cotalAuthProvider.managerServiceAuthority!({
         store: participantStore, dir: participantDir,
-        request: remoteManagerAuthorityRequest(state, "cli", "retire", terminalProof, undefined, undefined, {
-          id: identity.id, target, opId, serveEpoch,
+        request: remoteManagerAuthorityRequest(state, "cli", "retire", {
+          registrationProof: terminalProof,
+          retirement: { id: identity.id, target, opId, serveEpoch },
         }),
       });
       return materialCredential(response, "retirementRequester", identity);

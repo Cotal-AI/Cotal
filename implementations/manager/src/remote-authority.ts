@@ -163,7 +163,7 @@ export function remoteRunHosting(args: {
     },
     renewRun: async ({ runId, holder, takeoverId, epoch, fencingToken, driver, mediator }) => {
       const request: RemoteManagerAuthorityRequest = {
-        ...remoteManagerAuthorityRequest(state, "cli", "renewRunDriver", registrationProof),
+        ...remoteManagerAuthorityRequest(state, "cli", "renewRunDriver", { registrationProof }),
         accountPublicKey, processEpoch,
         run: { runId, holder, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id },
       };
@@ -270,12 +270,9 @@ export function remoteManagerAuthorityRequest(
   state: RemoteManagerIdentityState,
   actor: string,
   operation: RemoteManagerAuthorityRequest["operation"],
-  registrationProof?: string,
-  contractArtifacts?: unknown[],
-  session?: RemoteManagerAuthorityRequest["session"],
-  retirement?: RemoteManagerAuthorityRequest["retirement"],
-  transferReader?: RemoteManagerAuthorityRequest["transferReader"],
+  coordinates: Pick<RemoteManagerAuthorityRequest, "registrationProof" | "contractArtifacts" | "session" | "retirement" | "transferReader"> = {},
 ): RemoteManagerAuthorityRequest {
+  const { registrationProof, contractArtifacts, session, retirement, transferReader } = coordinates;
   const requestId = `${operation}${mintLifecycleUid()}`;
   return {
     v: 1,
@@ -525,7 +522,7 @@ export function remoteStandingBundleRenewal(args: {
     accountPublicKey,
     renewStandingBundle: async (processEpoch) => {
       const request: RemoteManagerAuthorityRequest = {
-        ...remoteManagerAuthorityRequest(args.state, "cli", "renewStandingBundle", args.registrationProof),
+        ...remoteManagerAuthorityRequest(args.state, "cli", "renewStandingBundle", { registrationProof: args.registrationProof }),
         accountPublicKey, processEpoch,
       };
       return remoteManagerRenewalCredentials(await args.call(request), request, args.owner, args.state.identities);

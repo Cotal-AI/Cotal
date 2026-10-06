@@ -268,12 +268,11 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       // the bounded values the host validates to reconstruct the serve grant. Re-sending the full
       // schema closure here exceeded the typed protocol's 64-artifact cap as the command set grew.
       const contractArtifacts = [artifacts.document, artifacts.manifest];
-      const registrationProof = remoteManagerRegistrationProof(material.owner,
-        remoteManagerAuthorityRequest(state, "cli", "activate", `sha256:${"0".repeat(64)}`, contractArtifacts));
+      const registrationProof = remoteManagerRegistrationProof(material.owner, state, contractArtifacts);
       const activate = await provider.managerServiceAuthority({
         store: workspaceSecretStore(findCotalRoot()),
         dir: join(findCotalRoot(), ".cotal", "auth", space),
-        request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
+        request: remoteManagerAuthorityRequest(state, "cli", "activate", { registrationProof, contractArtifacts }),
       });
       const retainedRegistrationProof = currentRegistrationProof(activate);
       const supervisorCreds = materialCredential(material, "supervisor", state.identities.supervisor);
@@ -302,7 +301,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           const renewed = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "renew", retainedRegistrationProof),
+            request: remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: retainedRegistrationProof }),
           });
           return materialCredential(renewed, "executor", state.identities.executor);
         },
@@ -322,13 +321,15 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           const sessionMaterial = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "session", remoteManagerRegistrationProof(material.owner,
-              remoteManagerAuthorityRequest(state, "cli", "session", `sha256:${"0".repeat(64)}`)), undefined, {
-              id: session.identity.id,
-              endpoint: session.endpoint,
-              sessionId: session.sessionId,
-              epoch: session.epoch,
-              exp: session.exp,
+            request: remoteManagerAuthorityRequest(state, "cli", "session", {
+              registrationProof: remoteManagerRegistrationProof(material.owner, state),
+              session: {
+                id: session.identity.id,
+                endpoint: session.endpoint,
+                sessionId: session.sessionId,
+                epoch: session.epoch,
+                exp: session.exp,
+              },
             }),
           });
           return materialCredential(sessionMaterial, "sessionServing", session.identity);
@@ -337,17 +338,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           const retirementMaterial = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "retire", remoteManagerRegistrationProof(material.owner,
-              remoteManagerAuthorityRequest(state, "cli", "retire", `sha256:${"0".repeat(64)}`, undefined, undefined, {
+            request: remoteManagerAuthorityRequest(state, "cli", "retire", {
+              registrationProof: remoteManagerRegistrationProof(material.owner, state),
+              retirement: {
                 id: identity.id,
                 target: retirementTarget,
                 opId,
                 serveEpoch,
-              })), undefined, undefined, {
-              id: identity.id,
-              target: retirementTarget,
-              opId,
-              serveEpoch,
+              },
             }),
           });
           if (retirementMaterial.retirement?.opId !== opId ||
@@ -357,12 +355,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           return materialCredential(retirementMaterial, "retirementRequester", identity);
         },
         mintTransferReader: async (identity) => {
-          const transferReader = { id: identity.id };
           const readerMaterial = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "transferReader", remoteManagerRegistrationProof(material.owner,
-              remoteManagerAuthorityRequest(state, "cli", "transferReader", `sha256:${"0".repeat(64)}`)), undefined, undefined, undefined, transferReader),
+            request: remoteManagerAuthorityRequest(state, "cli", "transferReader", {
+              registrationProof: remoteManagerRegistrationProof(material.owner, state),
+              transferReader: { id: identity.id },
+            }),
           });
           return materialCredential(readerMaterial, "transferReader", identity);
         },
