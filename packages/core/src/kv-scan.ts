@@ -1,6 +1,7 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
-import type { ConsumerInfo, MsgRequest, NextMsgRequest } from "@nats-io/jetstream";
+import { JetStreamApiCodes, JetStreamApiError, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
+import { isPublishPermissionDenied } from "./endpoint.js";
 
 /**
  * The ONE sanctioned way to read every live entry of a KV bucket.
@@ -100,7 +101,7 @@ export class IncompleteKvScan extends Error {
 
 export interface LiveKvEntriesOptions {
   signal?: AbortSignal;
-  /** Runs each delete of the scan's own consumer, for a caller that must recognise a refused one: a
+  /** Runs each delete of the scan's own consumers, for a caller that must recognise a refused one: a
    *  profile without the delete row is refused by design (#691), and the endpoint keeps that
    *  refusal's connection-status echo off its `error` event. */
   deleteOwnConsumer?: (stream: string, name: string, del: () => Promise<boolean>) => Promise<boolean>;
@@ -172,14 +173,10 @@ export async function liveKvEntries(
   let sawTerminal = false;
   let bucketName = bucket.bucket;
   let expected = 0;
-  let activeConsumerName: string | undefined;
-  let initialName: string | undefined;
   try {
     // THE BIND-TIME PROOF, continued: zero here is the only thing that yields an empty result.
     const initialInfo = await oc.info(true);
     opts?.onConsumer?.(initialInfo);
-    initialName = initialInfo.name;
-    activeConsumerName = initialInfo.name;
     expected = initialInfo.num_pending;
 
     if (opts?.signal?.aborted) {
@@ -192,21 +189,6 @@ export async function liveKvEntries(
       // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is
       // what makes concurrent rewrites and drifted `history` settings both correct.
       const iter = await oc.consume();
-      const statusIter = typeof iter.status === "function" ? iter.status() : undefined;
-      if (statusIter) {
-        (async () => {
-          try {
-            for await (const s of statusIter) {
-              if (s.type === "ordered_consumer_recreated" && "name" in s && typeof s.name === "string") {
-                activeConsumerName = s.name;
-              }
-            }
-          } catch {
-            /* status iterator closed */
-          }
-        })();
-      }
-
       const onAbort = () => {
         iter.stop(opts?.signal?.reason ?? new Error("scan aborted"));
       };
@@ -235,24 +217,28 @@ export async function liveKvEntries(
       }
     }
   } finally {
-    // Delete ONLY this scan's own consumer in finally. If rotation occurred, delete the rotated consumer too.
-    // TTL (inactive_threshold) remains the crash/deletion-failure backstop.
+    // Delete ONLY this scan's own consumers. nats.js rebuilds the consumer after a stall or a
+    // sequence gap as `<prefix>_<serial + 1>`, sends that create without awaiting it, and deletes only
+    // the last predecessor whose create was answered, so a successor superseded while its create was
+    // unanswered is deleted by nobody. The iterator is closed, so the serial is final: delete every
+    // name it reached. Newest first, because nats.js never deletes that one itself, so a refusal
+    // reaches the hook on a subject none of its predecessor deletes shares. A create that lands after
+    // its delete is reaped at its inactive_threshold, like a consumer a crash leaves.
     const deleteOwn = opts?.deleteOwnConsumer ?? ((_stream, _name, del) => del());
-    const targetName = (oc as unknown as { name?: string }).name ?? activeConsumerName;
-    if (targetName && initialName && targetName !== initialName) {
-      for (let i = 0; i < 20; i++) {
-        let deleted = false;
-        try {
-          deleted = await deleteOwn(bucket.stream, targetName, () => bucket.jsm.consumers.delete(bucket.stream, targetName));
-        } catch {
-          // in-flight creation or already deleted
-        }
-        if (deleted) break;
-        await new Promise((r) => setTimeout(r, 20));
+    // The client sets `name` on every push consumer it returns and moves it to each rebuild; the cast only hides it from the type.
+    const name = (oc as unknown as { name: string }).name;
+    const cut = name.lastIndexOf("_") + 1;
+    if (!/^\d+$/.test(name.slice(cut))) throw new Error(`scan consumer ${name} carries no rebuild serial - the pinned nats.js changed shape`);
+    for (let serial = Number(name.slice(cut)); serial >= 1; serial--) {
+      const target = name.slice(0, cut) + serial;
+      try {
+        await deleteOwn(bucket.stream, target, () => bucket.jsm.consumers.delete(bucket.stream, target));
+      } catch (e) {
+        // A profile without the delete row (#691) is refused for every name alike, and the broker
+        // reaps those consumers at their inactive_threshold.
+        if (isPublishPermissionDenied(e)) break;
+        if (!(e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound)) throw e;
       }
-    } else {
-      // The client sets `name` on every push consumer it returns; the cast above only hides it from the type.
-      await deleteOwn(bucket.stream, targetName!, () => oc.delete()).catch(() => { /* deletion failure: TTL is the backstop */ });
     }
   }
   if (opts?.signal?.aborted) {
