@@ -1,8 +1,8 @@
 # Platform-owned pooled control authority
 
-Status: the door is implemented in `@cotal-ai/core` and `@cotal-ai/auth` and not released. The
-platform's own Runtime and composition root are not part of Cotal. Section 9 lists what landed and
-what did not. The source inventory in section 1 was checked at
+Status: the door shipped in `@cotal-ai/core` and `@cotal-ai/auth` 0.60.0, and its readiness read in
+0.62.0. The platform's own Runtime and composition root are not part of Cotal. Section 9 lists
+what landed and what did not. The source inventory in section 1 was checked at
 `06f48f40473f809bcb31f2ba21b3ceb1d33ccc18` (v0.58.0), before the door existed.
 
 The question is how a platform runs one administrative control manager per account in `pooled`

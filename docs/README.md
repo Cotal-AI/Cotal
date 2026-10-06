@@ -126,7 +126,7 @@ For people changing how Cotal is built or shipped (not needed to use it).
 | [Setup internals](setup-internals.md) | How the `cotal setup` flow works. |
 | [Signer isolation](design/signer-isolation.md) | How the account signing seed moves off the manager uid (design, not shipped). |
 | [Tasks endpoint](design/tasks-endpoint.md) | How a tasks provider joins a space as an ordinary endpoint (design, not shipped). |
-| [Platform control authority](design/platform-pooled-control-authority.md) | How a platform runs a pooled control manager per account without a human session (design; the auth-service door is implemented, not released). |
+| [Platform control authority](design/platform-pooled-control-authority.md) | How a platform runs a pooled control manager per account without a human session. |
 | [User-auth run start](design/user-auth-run-start.md) | How a logged-in user's `cotal run start` gets admitted on a participant manager under issued authority. |
 | [Resume transfer](design/resume-transfer.md) | How a detached `--resume` carries a session to a manager on another host (design, not shipped). |
 
