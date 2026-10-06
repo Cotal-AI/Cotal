@@ -1056,6 +1056,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           noManager,
         });
         if (!controlPlane) process.exitCode = 1;
+        // #883: a refresh that HEALED a missing manager must say so — the summary line otherwise reads
+        // identically to a refresh that found everything already up, and the operator cannot tell which
+        // world they are in without a second command. Only here does a started manager mean one was
+        // missing: a launch starts its manager as a matter of course (#2480).
+        if (controlPlane?.started) console.log(c.green(`✓ restored in the background: manager (pid ${controlPlane.pid})`));
       }
       // A broker was already answering here — this branch starts nothing, so it must not claim the
       // record as ours (see `Provenance`), and it passes only what this invocation decided.
@@ -1459,7 +1464,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       throw new Error("smoke-injected failure after restore listener readiness");
     await completeResumeActivation(
       resumeAttempt,
-      controlPlane && svc.ok,
+      controlPlane !== undefined && svc.ok,
       !svc.ok ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
       server,
       startupLock,
@@ -1831,7 +1836,7 @@ async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, held
   });
   await completeResumeActivation(
     pending.attemptId,
-    controlPlane && svc.ok,
+    controlPlane !== undefined && svc.ok,
     !svc.ok ? "adopted resume listener has no user-auth service" : "adopted resume listener has a degraded control plane",
     pending.server,
     heldLock,
@@ -1885,7 +1890,7 @@ async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?:
   });
   await completeResumeActivation(
     prepared.attemptId,
-    controlPlane && svc.ok,
+    controlPlane !== undefined && svc.ok,
     !svc.ok ? "proven restore listener has no user-auth service" : "proven restore listener has a degraded control plane",
     prepared.server,
     heldLock,
@@ -2368,8 +2373,9 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
  *  cotal_spawn find a manager without any setup side effect. Coupled to the broker by the
  *  daemon's watchdog + the `up`/`down` teardown. `mgr` rides through to the manager start — the
  *  `up -f` path hands THE manager its runtime + resolved launch spec here (one manager per space,
- *  so the launch can never be a second supervise). Returns whether the control plane came up, so a
- *  caller whose output claims a manager (the `up -f` launching line) can tell the truth. */
+ *  so the launch can never be a second supervise). Returns the control plane it ensured, or
+ *  `undefined` when it is degraded, so a caller whose output claims a manager (the `up -f` launching
+ *  line) can tell the truth. */
 async function startDeliveryWithBroker(
   space: string,
   server: string,
@@ -2404,13 +2410,9 @@ async function startDeliveryWithBroker(
     /** #2469: the foreground owner's restart hook for a daemon this launch starts. */
     onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   },
-): Promise<boolean> {
+): Promise<Awaited<ReturnType<typeof ensureControlPlane>> | undefined> {
   try {
     const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) });
-    // #883: a refresh that HEALED a missing manager must say so — the summary line otherwise reads
-    // identically to a refresh that found everything already up, and the operator cannot tell which
-    // world they are in without a second command.
-    if (plane.started) console.log(c.green(`✓ restored in the background: manager (pid ${plane.pid})`));
     // #1576: `up` either BINDS the responder or SAYS SO HERE. The delivery daemon is a hard
     // dependency of spawn, retirement and join, and this function used to return `true` for a boot
     // that started a daemon whose responder never bound — so `cotal up` printed its success banner
@@ -2422,13 +2424,13 @@ async function startDeliveryWithBroker(
         c.yellow(`! delivery responder did not bind before this boot finished - ${RESPONDER_UNBOUND_CONSEQUENCE}`) +
           c.dim(`\n  The daemon process is running and the wait is open-ended; boot durable joins reconcile by themselves once it binds (agents do NOT need respawning).\n  Watch it with \`${displayCmd()} status --components\`.`),
       );
-    return true;
+    return plane;
   } catch (e) {
     // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,
     // `spawn --detach` / cotal_spawn have no responder, and the operator must hear it here,
     // not as an unexplained "no manager reachable" later.
     console.error(c.dim(`! control plane degraded: ${(e as Error).message} - durable delivery/manager may be down; start one with: cotal supervise`));
-    return false;
+    return undefined;
   }
 }
 
@@ -2650,7 +2652,7 @@ export async function startMeshDetached(
     server,
     pid: child.pid ?? 0,
     source,
-    controlPlane,
+    controlPlane: controlPlane !== undefined,
     authService: svc.ok,
     delivery: useAuth && deliveryUp(space),
     manager: managerUp(space),

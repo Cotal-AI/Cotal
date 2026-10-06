@@ -230,7 +230,8 @@ canary and waits for the bucket to expire it before reporting success. If the br
 stream update but the backing store does not persist or enforce it, `up` exits nonzero with a TTL
 persistence error instead of trusting the value returned by stream info. A refresh that restores a
 missing manager says so with its pid (`✓ restored in the background: manager (pid N)`); a refresh
-that finds everything already running prints only the `✓ mesh "<space>" already running` line.
+that finds everything already running prints only the `✓ mesh "<space>" already running` line. A
+first boot starts its manager without the restore line.
 
 
 `--user-auth --idp <url>` starts the space's auth service alongside the broker: the NATS
