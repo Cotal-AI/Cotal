@@ -2,12 +2,12 @@ import { join } from "node:path";
 import { mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
 import {
   clearCurrent,
-  findMesh,
   getCurrent,
   homeCotalDir,
   loadMeshes,
-  recordMesh,
-  removeMesh,
+  readMesh,
+  recordMeshes,
+  removeMeshes,
   userAuthStateDir,
   type MeshEntry,
 } from "@cotal-ai/workspace";
@@ -178,12 +178,12 @@ function consume(result: AuthSpaceCatalogResult, force: boolean): CatalogDiff {
 }
 
 function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
-  const before = loadMeshes().filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey);
+  const loaded = loadMeshes();
+  const before = loaded.filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey);
   const priorByName = new Map(before.map((m) => [m.space, m]));
   const diff = emptyDiff();
   if (result.state === "failed") {
-    for (const old of before)
-      recordMesh({ ...old, ...(result.fetchedAt ? { catalogFetchedAt: result.fetchedAt } : {}), catalogError: result.error ?? "refresh failed" });
+    recordMeshes(before.map((old) => ({ ...old, ...(result.fetchedAt ? { catalogFetchedAt: result.fetchedAt } : {}), catalogError: result.error ?? "refresh failed" })));
     return diff;
   }
   if (result.snapshot === undefined) return diff;
@@ -198,25 +198,30 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
     clearCurrent();
     diff.selectionInvalidated = current;
   }
-  for (const old of before) {
-    if (nextSlugs.has(old.space)) continue;
-    removeMesh(old.space);
-    diff.removed.push(old.space);
-  }
-  for (const row of snapshot.spaces) {
-    const existing = findMesh(row.slug);
-    if (existing && (existing.origin !== "catalog" || existing.catalogOwner !== result.account.ownerKey)) {
-      diff.collisions.push(row.slug);
-      continue;
+  for (const old of before) if (!nextSlugs.has(old.space)) diff.removed.push(old.space);
+  removeMeshes(diff.removed);
+  const loadedByName = new Map(loaded.map((m) => [m.space, m]));
+  // Each row is checked just before its own write, because writers outside the catalog lock
+  // (`meshes add`, `up`) can record a space while this runs and their record must still win. They
+  // write the canonical file, which answers in one read; a pre-hex record only an older build writes,
+  // so the opening load answers for it.
+  function* entries(): Generator<MeshEntry> {
+    for (const row of snapshot.spaces) {
+      const existing = readMesh(row.slug) ?? loadedByName.get(row.slug);
+      if (existing && (existing.origin !== "catalog" || existing.catalogOwner !== result.account.ownerKey)) {
+        diff.collisions.push(row.slug);
+        continue;
+      }
+      const next = entryFor(result.account, row, result.fetchedAt);
+      const prior = priorByName.get(row.slug);
+      writeCatalogCredential(next, row);
+      if (!prior) diff.added.push(row.slug);
+      else if (sameEntry(prior, next)) diff.unchanged.push(row.slug);
+      else diff.changed.push(row.slug);
+      yield next;
     }
-    const next = entryFor(result.account, row, result.fetchedAt);
-    const prior = priorByName.get(row.slug);
-    writeCatalogCredential(next, row);
-    recordMesh(next);
-    if (!prior) diff.added.push(row.slug);
-    else if (sameEntry(prior, next)) diff.unchanged.push(row.slug);
-    else diff.changed.push(row.slug);
   }
+  recordMeshes(entries());
   for (const list of [diff.added, diff.changed, diff.removed, diff.unchanged, diff.collisions]) list.sort();
   return diff;
 }
