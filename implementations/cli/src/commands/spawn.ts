@@ -1314,30 +1314,50 @@ function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; materi
   };
 }
 
-/** Run one cleanup step, recording its failure in `failed` as `<what>: <reason>`. A step that threw
- *  would otherwise skip every step after it, and a swallowed one would leave nothing to report. */
-async function attemptCleanup(failed: string[], what: string, step: () => unknown): Promise<void> {
+/** A caught value's text for a refusal. A provider or store may reject with any value, including null
+ *  or one whose `message` getter or `toString` throws, and the refusal must still be printed, so the
+ *  coercion to text runs inside the guard. */
+function rejectionText(e: unknown): string {
   try {
-    await step();
-  } catch (err) {
-    failed.push(`${what}: ${(err as Error).message}`);
+    return String((e as Error)?.message ?? e);
+  } catch {
+    return "an unreadable rejection";
   }
+}
+
+/** A cleanup step that threw. `step` names it without quoting the agent's paths or secret keys. */
+type CleanupFailure = { step: string; err: unknown };
+
+/** Run one cleanup step, recording its failure in `failed`. A step that threw would otherwise skip
+ *  every step after it, and a swallowed one would leave nothing to report. */
+async function attemptCleanup(failed: CleanupFailure[], step: string, run: () => unknown): Promise<void> {
+  try {
+    await run();
+  } catch (err) {
+    failed.push({ step, err });
+  }
+}
+
+/** `<step>: <reason>` for each failure. */
+function describeCleanupFailures(failed: CleanupFailure[]): string {
+  return failed.map(({ step, err }) => `${step}: ${rejectionText(err)}`).join("; ");
 }
 
 /** Shred a user-mode agent's local material: both secrets from the store, then their files and the
  *  health file. Each step is attempted and a failed one is recorded in `failed`. */
 async function shredAgentMaterial(
-  failed: string[],
+  failed: CleanupFailure[],
   store: SecretStore,
   space: string,
   name: string,
   composition: SpaceMaterialComposition,
   paths: { actorToken: string; sentinelCreds: string; health: string },
 ): Promise<void> {
-  for (const key of [agentActorTokenKey(space, name, composition), agentSentinelCredsKey(space, name, composition)])
-    await attemptCleanup(failed, `secret ${key}`, () => store.delete(key));
-  for (const path of [paths.actorToken, paths.sentinelCreds, paths.health])
-    await attemptCleanup(failed, `file ${path}`, () => rmSync(path, { force: true }));
+  await attemptCleanup(failed, "actor token secret", () => store.delete(agentActorTokenKey(space, name, composition)));
+  await attemptCleanup(failed, "sentinel creds secret", () => store.delete(agentSentinelCredsKey(space, name, composition)));
+  await attemptCleanup(failed, "actor token file", () => rmSync(paths.actorToken, { force: true }));
+  await attemptCleanup(failed, "sentinel creds file", () => rmSync(paths.sentinelCreds, { force: true }));
+  await attemptCleanup(failed, "health file", () => rmSync(paths.health, { force: true }));
 }
 
 /** Foreground REMOTE-USER onboarding — the participant path for a mesh registered with
@@ -1437,18 +1457,20 @@ async function provisionRemoteUserForeground(
       // Local shred only. The remote row and its durables belong to the mesh's lifecycle; this
       // machine has no authority to retire them and must not pretend otherwise.
       cleanup: async () => {
-        const failed: string[] = [];
+        const failed: CleanupFailure[] = [];
         await shredAgentMaterial(failed, store, space, name, composition, paths);
-        if (failed.length) throw new Error(failed.join("; "));
+        if (failed.length) throw new Error(describeCleanupFailures(failed));
       },
     };
   } catch (e) {
     // What the shred left behind joins the refusal after its cause. A handoff refusal keeps its
-    // fixed sentence, because the removal errors quote paths named for the handoff's actor.
-    const failed: string[] = [];
+    // fixed sentence and names only the failed steps, because their errors quote paths named for
+    // the handoff's actor.
+    const failed: CleanupFailure[] = [];
     await shredAgentMaterial(failed, store, space, name, composition, paths);
-    const leftover = failed.length ? `; cleanup failed: ${failed.join("; ")}` : "";
-    return fail(refusals?.bearer ?? `agent auth preflight failed for "${name}": ${(e as Error).message}${leftover}`);
+    const steps = refusals ? failed.map((f) => f.step).join("; ") : describeCleanupFailures(failed);
+    const leftover = failed.length ? `; cleanup failed: ${steps}` : "";
+    return fail(`${refusals?.bearer ?? `agent auth preflight failed for "${name}": ${rejectionText(e)}`}${leftover}`);
   }
 }
 
@@ -1494,8 +1516,8 @@ async function provisionUserForeground(
   // Revoke the row, shred the secret material, and retire the broker footprint the durable
   // provisioning below creates (DM/DLV durables + ACL row). Every step is attempted, so a failed
   // removal cannot strand the durables on the broker, and the failures go back to the caller.
-  const teardown = async (): Promise<string[]> => {
-    const failed: string[] = [];
+  const teardown = async (): Promise<CleanupFailure[]> => {
+    const failed: CleanupFailure[] = [];
     await attemptCleanup(failed, "revoke agent grant", () => provider.revokeAgent({ dir, owner, actor: name }));
     await shredAgentMaterial(failed, store, space, name, composition, paths);
     const targetId = principalKey(owner, name).key;
@@ -1578,15 +1600,15 @@ async function provisionUserForeground(
       // the agent process exits, the same teardown the rollback below runs on a failed preflight.
       cleanup: async () => {
         const failed = await teardown();
-        if (failed.length) throw new Error(failed.join("; "));
+        if (failed.length) throw new Error(describeCleanupFailures(failed));
       },
     };
   } catch (e) {
     // Roll back EVERYTHING this attempt materialized: a refused spawn leaves no row, no secret, no
     // orphaned durables. What the teardown could not remove joins the refusal after its cause.
     const failed = await teardown();
-    const leftover = failed.length ? `; cleanup failed: ${failed.join("; ")}` : "";
-    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}${leftover}`);
+    const leftover = failed.length ? `; cleanup failed: ${describeCleanupFailures(failed)}` : "";
+    return fail(`agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}`);
   }
 }
 

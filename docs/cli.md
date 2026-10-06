@@ -980,7 +980,9 @@ machine keeps for the space (its mesh record, user-auth state and agent secret f
 resolution, the policy refresh, the broker preflight and the agent auth preflight quote the space,
 the server, the exchange URL, the actor or a path named for one of them in their own diagnostics and
 in the filesystem errors under them. For a handoff each prints one fixed sentence that names the
-field and the phase instead, whether its check fails or an error is thrown. The event-plane policy
+field and the phase instead, whether its check fails or an error is thrown. When the agent auth
+preflight's rollback then fails to remove a secret or file, that sentence is followed by the names of
+the cleanup steps that failed, without their errors. The event-plane policy
 refusals name the handoff's space field. An actor outside `[A-Za-z0-9_]` and a space that cannot
 name local state, such as `..`, are refused as malformed before any plane. A handoff conflicts with
 the enrollment variables, `--detach`, `-f` and `--creds`, and needs `--config <persona-file>`. From
