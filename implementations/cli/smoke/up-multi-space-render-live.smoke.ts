@@ -50,7 +50,10 @@ const { ensureCalloutAuth, ensurePinnedIdp } = await import("@cotal-ai/auth");
 
 const WT = resolvePath(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
-const TSX = join(WT, "node_modules", ".bin", "tsx");
+// The `.bin/tsx` shim runs the script in a second process and relays only SIGINT and SIGTERM, so a
+// SIGKILL sent to it ends the wrapper and orphans the CLI. Loading tsx into node makes the child the
+// CLI itself.
+const TSX_IMPORT = import.meta.resolve("tsx");
 
 let pass = 0;
 const kids: ChildProcess[] = [];
@@ -63,7 +66,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Start a FOREGROUND `cotal up` for one space and wait until its broker answers. */
 function startUp(port: number, space: string): ChildProcess {
-  const cp = spawn(TSX, [CLI, "up", "--space", space, "--server", `nats://127.0.0.1:${port}`], {
+  const cp = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--space", space, "--server", `nats://127.0.0.1:${port}`], {
     cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" },
     stdio: ["ignore", "pipe", "pipe"],
