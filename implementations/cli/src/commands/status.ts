@@ -346,8 +346,7 @@ async function printProject(root: string, cmd: string, selected: Selected, value
       // #2073: a live manager pid used to print green `running` on the pidfile alone, which is how
       // a manager whose service rail had died read as healthy for hours. One probe of the service
       // endpoint now decides the row; see `managerRowState`.
-      const deliveryAwareDetail = c.dim(managerHasDeliveryMarker(context.space) ? " · delivery-aware" : " · old/unknown build");
-      row(component.name, await managerRowState(selected.ok ? selected.target : undefined, state, deliveryAwareDetail));
+      row(component.name, await managerRowState(selected.ok ? selected.target : undefined, state, context.space));
       continue;
     }
     // THE #1576 ROW. A live delivery PID is not the fact an operator needs; the responder is.
@@ -688,16 +687,25 @@ function formatProc(p: Proc): string {
  *    suffix).
  *  - a DEFINITIVE no-answer — the same predicate `managerHealth`'s not-serving branch uses
  *    (`unansweredRequest`, or the service-registry-missing text): red `not serving (pid N)` with
- *    ` · service endpoint not answering`.
+ *    ` · service endpoint not answering`, plus the marker error when the marker could not be read.
  *  - any other failure (a refused probe, an `unavailable` user-mode credential): `running (pid N)`
  *    as today with a dim ` · service unchecked`, so a failed probe never reads as a dead rail.
  *
  *  Bare status keeps exit 0 in every case; this only changes what the row says. A dead/stopped pid
  *  never reaches the probe at all (the early return below), so a stopped manager still reads as the
  *  dim stopped row, not `not serving` — a dead pid is not a live pid that will not answer. */
-async function managerRowState(target: MeshTarget | undefined, state: Proc, deliveryAwareDetail: string): Promise<string> {
+async function managerRowState(target: MeshTarget | undefined, state: Proc, space: string): Promise<string> {
   if (!state.live) return formatProc(state);
-  const unprobed = `${formatProc(state)}${deliveryAwareDetail}`;
+  let deliveryAware = false;
+  let markerUnreadable = "";
+  try {
+    deliveryAware = managerHasDeliveryMarker(space);
+  } catch (e) {
+    // The marker reader throws so `up` and the delivery preflight refuse to act on a marker they
+    // cannot read. Status is the recovery command: name the failed read on this row and report the rest.
+    markerUnreadable = c.red(` · delivery-aware marker unreadable: ${(e as Error).message}`);
+  }
+  const unprobed = `${formatProc(state)}${markerUnreadable || c.dim(deliveryAware ? " · delivery-aware" : " · old/unknown build")}`;
   if (!target) return unprobed;
   try {
     let auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } };
@@ -712,7 +720,7 @@ async function managerRowState(target: MeshTarget | undefined, state: Proc, deli
     return unprobed;
   } catch (e) {
     const noService = e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test((e as Error).message));
-    if (noService) return `${c.red(`not serving (pid ${state.pid})`)}${c.dim(" · service endpoint not answering")}`;
+    if (noService) return `${c.red(`not serving (pid ${state.pid})`)}${c.dim(" · service endpoint not answering")}${markerUnreadable}`;
     return `${unprobed}${c.dim(" · service unchecked")}`;
   }
 }
