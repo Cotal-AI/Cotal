@@ -443,6 +443,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/lang':
+        specifier: workspace:*
+        version: link:../../packages/lang
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace

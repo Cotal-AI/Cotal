@@ -34,6 +34,24 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Run answers on a participant manager in 0.68.0
+
+A participant manager now asks its issuing host for an answering credential by naming the run and
+step it answers. The host reads the pause's token off that run's journal and no longer accepts a
+token from the manager. Runs on a mesh with no participant manager are unaffected.
+
+### What stops working
+
+While a participant manager and its issuing host run different sides of this release, the host
+refuses every `cotal run answer` and every amendment that manager serves, because each side refuses
+the other's request shape. Starting, resuming and reading runs is unchanged. A pause stays waiting
+through the window, or follows its timeout if it has one.
+
+### Before the upgrade
+
+Upgrade the auth service and every participant manager registered with it in the same window, then
+answer the pauses that waited.
+
 ## Carrying a resumed Claude session to another host
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the

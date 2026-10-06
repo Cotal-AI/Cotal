@@ -28,18 +28,15 @@ export {
   resolveCheckpoint,
   locateOpenCheckpoint,
   answerOpenCheckpoint,
-  openCheckpointToken,
   locateAcceptedAnswer,
   amendAcceptedAnswer,
-  settledPauseToken,
-  CheckpointNotOpen,
-  CheckpointNotAmendable,
   type AcceptedAnswer,
   type OpenCheckpoint,
   type ResolveCheckpointDeps,
   type ResolveCheckpointRequest,
   type ResolveCheckpointResult,
 } from "./resolve-checkpoint.js";
+export { openCheckpointToken, settledPauseToken, CheckpointNotOpen, CheckpointNotAmendable } from "@cotal-ai/lang";
 export { renderRunContext, UnrenderableNotice, type RunContextRender } from "./run-context.js";
 export {
   migrateRun,
