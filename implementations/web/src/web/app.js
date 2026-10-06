@@ -745,7 +745,7 @@ function renderRail() {
     el.onclick = () => selectAgent(el.dataset.agent);
 }
 
-// ── Agent Detail drill-down (centre) — per-agent frame, rendered from the peer's card (docs/web.md) ──
+// ── Agent Detail drill-down (centre) — per-agent frame, rendered from the peer's card (docs/watch-a-mesh.md) ──
 function selectAgent(id) {
   agentSel = id;
   dmSel = null;

@@ -15,7 +15,7 @@ async function teardownAuth(server: string, space: string): Promise<SpaceAuth | 
 
 /** The admin landing view: an overview of every space on the server (agents present, channels,
  *  messages) with a selection cursor. Enter drops into that space's console; `r` re-enumerates.
- *  Self-sizing (mirrors App) so the command just renders it. See docs/protocol-view.md. */
+ *  Self-sizing (mirrors App) so the command just renders it. See docs/watch-a-mesh.md. */
 export function SpacePicker({
   server,
   creds,
