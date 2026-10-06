@@ -3,9 +3,9 @@
 // derives a frontmatter title from the first H1 and rewrites cross-links to
 // Starlight routes. Generated files are git-ignored (see .gitignore).
 //
-// The group map below IS the site's information architecture. It moves in lockstep
-// with docs/README.md (the docs index): a page added to /docs joins both in the
-// same change. Missing source files fail the sync loudly — no silent drift.
+// The group map below IS the site's information architecture. It publishes the same
+// pages docs/README.md (the docs index) links, and the sync refuses when the two
+// differ. Missing source files fail the sync loudly — no silent drift.
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
@@ -59,6 +59,7 @@ const groups = [
       'docs/connect-hermes.md',
       'docs/connect-jcode.md',
       'docs/connect-pi.md',
+      'docs/authoring-a-connector.md',
       'docs/build-a-client.md',
       'docs/embedding.md',
     ],
@@ -120,6 +121,8 @@ const knownSlugs = new Map(
 // Seeded with images used by the hand-authored landing page (index.mdx), which
 // doesn't pass through this rewriter.
 const assetRefs = new Set(['assets/cotal-demo.webp']);
+const mdLink = /\]\(([^)#]+?)(#[^)]*)?\)/g;
+const isExternal = (target) => /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/');
 
 function resolveRepoPath(srcDir, target) {
   const out = srcDir ? srcDir.split('/') : [];
@@ -134,8 +137,8 @@ function resolveRepoPath(srcDir, target) {
 }
 
 function rewriteLinks(md, srcDir) {
-  return md.replace(/\]\(([^)#]+?)(#[^)]*)?\)/g, (whole, target, anchor = '') => {
-    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/')) return whole;
+  return md.replace(mdLink, (whole, target, anchor = '') => {
+    if (isExternal(target)) return whole;
     const repoPath = resolveRepoPath(srcDir, target);
     if (repoPath === 'spec/cotal.schema.json') return `](/cotal.schema.json${anchor})`;
     if (repoPath.startsWith('assets/')) {
@@ -168,6 +171,17 @@ function firstParagraph(md) {
 function yamlEscape(s) {
   return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
+
+// The index also links design notes (docs/design/) and spec/ references, which stay on
+// GitHub, so only its links to SPEC.md and top-level docs pages must match the group map.
+const indexed = new Set(
+  [...readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf8').matchAll(mdLink)]
+    .filter(([, target]) => !isExternal(target))
+    .map(([, target]) => resolveRepoPath('docs', target))
+    .filter((rel) => rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel)),
+);
+for (const rel of indexed) if (!sources.includes(rel)) throw new Error(`indexed but not in the group map: ${rel}`);
+for (const rel of sources) if (!indexed.has(rel)) throw new Error(`in the group map but not indexed: ${rel}`);
 
 // Clean generated markdown (keep hand-authored .mdx like index.mdx; the
 // generated getting-started.mdx is ours to remove).
