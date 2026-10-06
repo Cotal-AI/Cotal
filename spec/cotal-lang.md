@@ -570,16 +570,16 @@ not await except through the **scopes**, the primitives whose journal kind §6.1
 scope opens a **scope frame** in the step-key grammar (§10.2), gives every branch its own key
 namespace, and writes one journal entry of its own whose result records how it settled.
 
-Scopes differ in the two traits below. The rules that depend on a trait read its column here
+Scopes differ in the three traits below. The rules that depend on a trait read its column here
 instead of naming kinds, so a new scope is a row in §6.1 and a row in this table.
 
-| Scope | Settles (§10.6) | Orphaned on migrate (§11.2) |
-| --- | --- | --- |
-| `parallel` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own |
-| `race` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own |
-| `fanOut` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own |
-| `conclave` | its body's own value | ignored if `closed`; else **rejected** (L5014) |
-| `once` | its body's own value | ignored: a scope outlives nothing of its own |
+| Scope | Settles (§10.6) | Orphaned on migrate (§11.2) | A fork cut inside it (§11.3) |
+| --- | --- | --- | --- |
+| `parallel` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own |
+| `race` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | **refused** (L5020): re-entering would decide the winner again |
+| `fanOut` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own |
+| `conclave` | its body's own value | ignored if `closed`; else **rejected** (L5014) | **refused** (L5020): re-entering would open the conclave again on a fresh handler |
+| `once` | its body's own value | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own |
 
 ### 7.1 Branches and branch keys
 
@@ -1102,8 +1102,10 @@ a named step key (never an ordinal), under the parent's pins **unchanged, seed i
 reseeded prefix would re-decide every pure draw inside history it is supposed to copy, and no entry
 records a draw. The cut is found by a dry walk in migration mode (§11.2), so a cut inside a settled
 scope is found rather than swept past. The cut step MUST exist in the parent's journal (L5017), MUST
-be reached by the parent program's own path (L5018), and MUST NOT lie inside a scope whose outcome
-was already decided (L5020, a race loser's step); a fork that asks to pin a new program hash is
+be reached by the parent program's own path (L5018), and MUST NOT lie inside a scope unless its §7
+row re-enters a fork cut (L5020). A scope that encloses the cut and is re-entered is left out of the
+prefix, so the child enters it again: its other branches replay from the entries the prefix holds,
+and the branch holding the cut runs live from it. A fork that asks to pin a new program hash is
 refused (L5002) until the run record carries one. Agents the prefix spawned are respawned at the
 frontier by default and adopted only where the spawn said `onFork: "adopt"`, and a host that cannot
 honour that refuses (L5019). The child is a new run under a new id whose record names its lineage:
@@ -1280,4 +1282,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-05 | A fifth scope, `once` (§7.8): every step under it is dispatched at most once, and a resume that finds one pending opens a hold under a token derived from its recorded request id instead of dispatching it again. An entry may carry `hold` (§10.1). An expired hold fails the step with the catchable L4027, and an effect `once` does not admit is refused with L4028. `once` is a reserved name. |
 | 2026-10-06 | The migrate orphan table has a `waitUntil` row (§11.2): an orphaned `waitUntil` is ignored whether it settled or is still pending, and its recorded observations stay in the journal. The reference migrate check already admitted it, while the table's "any other kind" row required L5015, so an implementation written from the table refused every migration that orphaned a `waitUntil`. |
 | 2026-10-06 | A `conclave` body may not write outside itself (L2032, §7.5, §7.7): `conclave` raises the depth on both engines and the validator walks its body, as it does for `once`. Measured before it: a body that assigned an outer `let` or wrote a field of a record built outside it completed, the live run read the new value, and the resume, which delivers a settled `conclave` from its entry, read the old one and diverged (L5001) at the next effect that took it as input. |
-| 2026-10-06 | The scopes and the two traits in which they differ are one table (§7): what a scope settles and its verdict when a migration orphans it. §2.3, §6.5, §10.1, §10.6 and §11.2 cite that table or §6.1 instead of listing or counting kinds, so a new scope is a row in §6.1 and a row in §7, and a scope with no row there has no settle or orphan rule. No behavior changes. |
+| 2026-10-06 | The scopes and the three traits in which they differ are one table (§7): what a scope settles, its verdict when a migration orphans it, and whether a fork re-enters it when the cut lies inside it. §2.3, §6.5, §10.1, §10.6, §11.2 and §11.3 cite that table or §6.1 instead of listing or counting kinds, so a new scope is a row in §6.1 and a row in §7. §11.3 refused a cut inside "a scope whose outcome was already decided" without naming those scopes; it now re-enters `parallel`, `fanOut` and `once` and refuses `race` and `conclave` (L5020), as the reference already did, and refuses a cut inside a scope with no row. No behavior changes. |
