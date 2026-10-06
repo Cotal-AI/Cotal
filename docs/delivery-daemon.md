@@ -103,11 +103,24 @@ refuses a plaintext listener rather than upgrading on the server's unauthenticat
 holds a standing credential and reconnects unattended, so a downgrade here would repeat with nobody
 watching. See [transport.md](transport.md).
 
-The transport-health component can use the resident endpoint's NATS connection events, with no
-additional authenticated dial while it is healthy. It distinguishes broker disconnects from
-authentication-expiry errors and clears the corresponding failure on a proved credential adoption.
-Until this component is wired into the daemon, the current two-second authenticated broker probe
-remains its active broker watch.
+After a reachability check at start-up, the daemon watches the broker only through its resident
+connection's events. It opens no other connection to check the broker. A disconnect starts a clock,
+and a reconnect stops it. When the time since the disconnect, less any time the daemon's own
+event loop was stalled, reaches the window (`COTAL_DELIVERY_BROKER_GONE_MS`, 15 seconds by
+default), the daemon logs
+`✗ delivery: broker connection unavailable (broker unreachable), exiting (coupled to the broker)`
+and exits. Wall time since the disconnect also has a backstop
+(`COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS`, four times the window by default and never less than it).
+Reaching it logs
+`✗ delivery: broker connection unavailable past backstop (broker unreachable), exiting (coupled to the broker)`
+and exits, however long the daemon was stalled. A broker that stops answering without closing the
+socket counts as disconnected only once the client's pings go unanswered, so the clock starts a few
+seconds after the broker stops.
+
+An authentication-expiry error is not a broker disconnect. The daemon logs
+`! delivery: credential expired, awaiting proved renewal` at once and waits for a renewal it has
+proved against the broker; a reconnect alone does not clear it. If no such renewal arrives by the
+backstop, it logs `✗ delivery: credential expired without renewal` and exits.
 
 The daemon refuses a `reloadCreds` adoption until it has finished starting, which is after its lease
 watch is bound. Its lease turns ready earlier than that, so a renewal owner can ask before start-up
