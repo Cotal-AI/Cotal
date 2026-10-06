@@ -99,7 +99,7 @@ try {
   const initial = Object.fromEntries(await Promise.all(names.map(async (n) => [n, await sign(n, TTL)]))) as Record<Name, string>;
   const registered = await registerRemoteManagerAuthority({
     space, server: SERVERS, owner, instanceId, serveActor: actors.serve,
-    prepareCreds: initial.executor, tlsRequired: false, evict: async () => true,
+    prepareCreds: initial.executor, tlsRequired: false, evict: async (principals) => principals.map(() => true),
   });
 
   // The host's live registration-gate reader, over its own provisioner connection.

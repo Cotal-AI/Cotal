@@ -458,8 +458,9 @@ recomputes that id from the broker-pinned target before any durable access. A ca
 substitute another valid operation identity for the same target, and retries plus auth-service
 boot recovery finish the same terminal barrier. It never exposes the barrier executor or a general mint surface.
 
-Registration maintenance stays on the host. Eviction accepts only a principal found by the host's
-sealed scan of the caller instance's `epcred.manager.<instanceId>.*` family. Reconciliation may
+Registration maintenance stays on the host. One eviction request carries up to 256 holders, and the
+host accepts it only when its single sealed scan of the caller instance's
+`epcred.manager.<instanceId>.*` family finds every one of them. Reconciliation may
 target a foreign manager slot holder in the same space, but it runs only after the delivery daemon
 proves the frozen gate's holder gone under a complete sweep. The participant receives neither an
 evictor credential nor authority over another instance's records or gate. A clean stop refreshes an

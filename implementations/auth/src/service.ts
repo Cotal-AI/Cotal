@@ -1148,10 +1148,10 @@ export async function openAuthAuthorityPlane(opts: {
         scanner,
         observeManagerGate,
       });
-      const evict = makeDeliveryAdminEvictor({ space, server, dataAccount, log });
+      const evictHolders = makeDeliveryAdminHolderEvictor({ space, server, dataAccount, log });
       if (authorized.operation === "evict-family-principal") {
-        const eviction = await evict(authorized.principal!);
-        return completeRemoteManagerMaintenance(authorized, owner, { eviction });
+        const evictions = await evictHolders(authorized.principals!);
+        return completeRemoteManagerMaintenance(authorized, owner, { evictions });
       }
       const principalOracle = makeDeliveryAdminPrincipalOracle({ space, server, dataAccount, log });
       const executorIdentity = newIdentity();
@@ -1183,7 +1183,7 @@ export async function openAuthAuthorityPlane(opts: {
             const result = await principalOracle(principal);
             return { state: result.state, detail: result.note ?? `delivery-daemon principal sweep, sweepComplete=${String(result.sweepComplete)}` };
           },
-          evictHolders: makeDeliveryAdminHolderEvictor({ space, server, dataAccount, log }),
+          evictHolders: async (holders) => (await evictHolders(holders)).map((e) => e.verifiedGone),
           log,
         });
       } finally {
