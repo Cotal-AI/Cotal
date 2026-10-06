@@ -24,8 +24,8 @@
  * unreachable rail reads it again, so the refusal names what is blocking the rail instead of always
  * advising a restart (#1062). Those reads are diagnostic only: they change the copy, never the verdict.
  */
-import { CotalEndpoint, mintCreds, newIdentity, parsePrincipalLivenessResult, type ControlReply, type DeliveryLeaseInfo, type SpaceAuth } from "@cotal-ai/core";
-import { untilDeliveryAdminAnswers } from "./endpoint-evict.js";
+import { parsePrincipalLivenessResult, type ControlReply, type DeliveryLeaseInfo, type SpaceAuth } from "@cotal-ai/core";
+import { untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
 import type { HolderLiveness } from "./reconcile-gate.js";
 
 /**
@@ -120,34 +120,19 @@ function unansweredRailBlocker(before: DeliveryLeaseReading, after: DeliveryLeas
  *  it with; the evictor credential holds no lease read by design. Never throws: a failed read is
  *  itself a reading. */
 async function readDeliveryLeaseForDiagnosis(opts: { space: string; servers: string; auth: SpaceAuth }): Promise<DeliveryLeaseReading> {
-  const id = newIdentity();
-  let ep: CotalEndpoint | undefined;
   try {
-    ep = new CotalEndpoint({
-      space: opts.space,
-      servers: opts.servers,
-      creds: await mintCreds(opts.auth, id, "observer", { expiresInSeconds: 60 }),
-      card: { id: id.id, name: "manager-lease-diagnosis", kind: "endpoint" },
-      channels: [],
-      consume: false,
-      watchChannels: false,
-      watchPresence: false,
-      registerPresence: false,
+    return await withScopedEndpoint(opts, "observer", "manager-lease-diagnosis", async (ep): Promise<DeliveryLeaseReading> => {
+      const entry = await ep.readDeliveryLeaseEntry(0);
+      if (!entry) return { state: "absent" };
+      const { holder, acquiredAt, since, ready } = entry.info;
+      if (typeof holder !== "string" || typeof ready !== "boolean" || !isLeaseTime(since) || (acquiredAt !== undefined && !isLeaseTime(acquiredAt)))
+        return { state: "unreadable", error: `row is not a lease record: ${JSON.stringify(entry.info)}` };
+      return { state: "held", lease: entry.info };
     });
-    ep.on("error", () => {});
-    await ep.start();
-    const entry = await ep.readDeliveryLeaseEntry(0);
-    if (!entry) return { state: "absent" };
-    const { holder, acquiredAt, since, ready } = entry.info;
-    if (typeof holder !== "string" || typeof ready !== "boolean" || !isLeaseTime(since) || (acquiredAt !== undefined && !isLeaseTime(acquiredAt)))
-      return { state: "unreadable", error: `row is not a lease record: ${JSON.stringify(entry.info)}` };
-    return { state: "held", lease: entry.info };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     // No lease bucket means no daemon can hold the shard, the reading `cotal status --components` gives it.
     return /stream not found/i.test(error) ? { state: "absent" } : { state: "unreadable", error };
-  } finally {
-    await ep?.stop().catch(() => {});
   }
 }
 
@@ -168,27 +153,8 @@ export function makeManagerHolderLivenessProbe(opts: {
     let leaseBefore: DeliveryLeaseReading = { state: "unreadable", error: "the wait ended before it was read" };
     const ask = async (requestMs: (capMs: number) => number): Promise<ControlReply> => {
       leaseBefore = await readDeliveryLeaseForDiagnosis(opts);
-      const id = newIdentity();
-      let ep: CotalEndpoint | undefined;
-      try {
-        const creds = await mintCreds(opts.auth, id, "endpoint-evictor", { expiresInSeconds: 60 });
-        ep = new CotalEndpoint({
-          space: opts.space,
-          servers: opts.servers,
-          creds,
-          card: { id: id.id, name: "manager-holder-liveness", kind: "endpoint" },
-          channels: [],
-          consume: false,
-          watchChannels: false,
-          watchPresence: false,
-          registerPresence: false,
-        });
-        ep.on("error", () => {});
-        await ep.start();
-        return await ep.requestDeliveryAdmin("principalLiveness", { principal }, requestMs(15_000));
-      } finally {
-        await ep?.stop().catch(() => {});
-      }
+      return withScopedEndpoint(opts, "endpoint-evictor", "manager-holder-liveness", (ep) =>
+        ep.requestDeliveryAdmin("principalLiveness", { principal }, requestMs(15_000)));
     };
     try {
       const r = await untilDeliveryAdminAnswers(opts.unreachableWaitMs ?? 0, ask, (reason, delayMs) =>
