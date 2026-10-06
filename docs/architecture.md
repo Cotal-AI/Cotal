@@ -268,7 +268,7 @@ Three identity layers, in increasing permanence
 - **`name`** is a cosmetic, reusable human handle. Addressing by name is best-effort
   convenience, with deterministic and fail-loud resolution: a unique live name resolves,
   and a collision among live peers throws with the candidate ids rather than silently
-  picking one. The manager auto-numbers its own spawns (`reviewer` → `reviewer-2`).
+  picking one. The manager auto-numbers its own spawns (`reviewer` → `reviewer_2`).
   Rosters print a peer as `name/role`. That label is not an address, because `/` is
   reserved for `owner/name` handles: a target written that way is refused, and the refusal
   gives the bare name.

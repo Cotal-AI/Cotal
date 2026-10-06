@@ -128,8 +128,8 @@ up, the manager accepts the goal and returns the allocated identity at once:
 
 ```json
 {
-  "name": "reviewer-2",
-  "owner": "u_...", "actor": "reviewer", "uid": "...",
+  "name": "reviewer_2",
+  "owner": "u_...", "actor": "reviewer_2", "uid": "...",
   "goalId": "...", "fingerprint": "...",
   "readinessDeadlineMs": 30000,
   "executor": { "lifecycleUid": "...", "epoch": 3 }
@@ -137,7 +137,7 @@ up, the manager accepts the goal and returns the allocated identity at once:
 ```
 
 The name is the one actually allocated: a persona-derived collision is auto-numbered
-(`reviewer`, then `reviewer-2`), while a hard-pinned `--name` that collides with a live
+(`reviewer`, then `reviewer_2`), while a hard-pinned `--name` that collides with a live
 agent is refused at accept, before anything is minted. Auto-numbering never hands out a numbered
 name it has already issued in that manager process, even after the agent holding it is gone, so
 a collision takes the next number. Only numbering consults that history: a hard-pinned `--name`,

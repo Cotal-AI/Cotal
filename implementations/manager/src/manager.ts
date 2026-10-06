@@ -5020,7 +5020,7 @@ export class Manager {
     return this.agents.has(name) || this.reserved.has(name) || this.retiring.has(name) || live.has(name);
   }
 
-  /** First free name in the series `base`, `base-2`, `base-3`, … — checked against live slots,
+  /** First free name in the series `base`, `base_2`, `base_3`, … — checked against live slots,
    *  in-flight (reserved) slots, names held pending retirement, AND the live mesh roster. The
    *  roster check covers occupants this manager does not manage (a foreground `cotal spawn`, a
    *  connector session, another manager's agent): allocating their name would mint a sibling the
@@ -5612,7 +5612,7 @@ export class Manager {
     // Resolve the launch profile: IDENTITY (free-form `name:`) + role + read/post ACL + capabilities
     // + model/variant. Either from a fully-resolved manifest launch object (`opts.resolved`, whose `config`
     // is a materialized transient persona — the file is NOT the access authority), or from the
-    // persona file. The number rides the IDENTITY (socrates → socrates-2), not the file ref — a
+    // persona file. The number rides the IDENTITY (socrates → socrates_2), not the file ref — a
     // redelivered identical spawn yields a fresh numbered agent (MAX_AGENTS bounds the blast radius).
     let identityName: string;
     let role: string | undefined;
@@ -5766,10 +5766,10 @@ export class Manager {
     await this.ep.waitForPresenceSnapshot();
     // M6 (P2 item 2 spawn-as-action): a HARD-PINNED name — an imperative `--name`/identity override
     // or a manifest-declared name (opts.resolved) — that collides with a LIVE/provisioning/reserved
-    // incarnation REFUSES loud at accept, BEFORE any reserve/mint/bind (pin 1), never a silent `-2`
+    // incarnation REFUSES loud at accept, BEFORE any reserve/mint/bind (pin 1), never a silent `_2`
     // suffix (so an address-by-triple caller's pinned name can't be re-pointed). A PERSONA-DERIVED
     // base name (no pin) keeps uniqueName's collision numbering, so multi-peer `spawn reviewer` twice
-    // still yields reviewer + reviewer-2. The retiring-hold refuse (~2472) is orthogonal and already fired.
+    // still yields reviewer + reviewer_2. The retiring-hold refuse (~2472) is orthogonal and already fired.
     const hardPinned = opts.identity !== undefined || opts.resolved !== undefined;
     let name: string;
     if (hardPinned) {

@@ -31,7 +31,7 @@ const LedgerAgentSchema = z.strictObject({
   /** The manifest agent key (`agents:` name) — display + the stable key a re-apply matches a declared
    *  agent against (the spawned name may collision-number, so it can't be that key). */
   requested: z.string().regex(TOKEN, "requested name must be a path-safe token ([A-Za-z0-9_-])"),
-  /** The manager-reply SPAWNED name (collision-numbered, e.g. `socrates-2`) — what creds are filed
+  /** The manager-reply SPAWNED name (collision-numbered, e.g. `socrates_2`) — what creds are filed
    *  under; the cred path derives from THIS, never the manifest key. */
   name: z.string().regex(TOKEN, "agent name must be a path-safe token ([A-Za-z0-9_-])"),
   /** The spawned agent's nkey id — the immutable identity `down -f` matches before stopping. */
