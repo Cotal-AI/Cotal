@@ -244,6 +244,9 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   } catch (e) {
     fail(pkg, `has unreadable package metadata: ${(e as Error).message}`);
   }
+  if (typeof pkgMeta.version !== "string" || !pkgMeta.version) {
+    fail(pkg, `declares no "version" - the manifest pins an extension's version and every load checks the installed package against it`);
+  }
 
   // Shared @cotal-ai/* packages must be PEER dependencies — a regular dependency vendors a second
   // copy: core's would swallow the extension's registrations into its own registry singleton, and
@@ -266,7 +269,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   // Import once; every registration must LAND IN OUR REGISTRY. Runtime-only and other provider
   // packages are first-class extensions too; commands are only the display/dispatch subset.
   const before = new Set(registry.all().map((ext) => `${ext.kind}:${ext.name}`));
-  const version = pkgMeta.version ?? "0.0.0";
+  const version = pkgMeta.version;
   await importExtensionEntry(pkg, version, "the add was rolled back; replace this build");
   const contributed = registry.all().filter((ext) => !before.has(`${ext.kind}:${ext.name}`));
   if (!contributed.length) {
