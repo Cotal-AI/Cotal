@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, rmSync, statSync, type BigIntStats } from "node:fs";
 import { join, dirname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic, writeSecretFileCreateOnly, type SecretStore, type SecretStoreIdentity } from "@cotal-ai/core";
 
@@ -10,6 +10,15 @@ const STORE_ID_FILE = "store.id";
 /** What `randomUUID` writes. An id file holding anything else may hold a secret, so it is never published. */
 const STORE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/** The id file at `p` as lstat sees it, or undefined while the name is free. A link there would make
+ *  the id whatever it points at, a key included, so anything but a regular file is refused, never followed. */
+function idFileStat(p: string): BigIntStats | undefined {
+  const st = lstatSync(p, { bigint: true, throwIfNoEntry: false });
+  if (st !== undefined && !st.isFile())
+    throw new Error(`FsSecretStore: ${p} is not a regular file, so it cannot hold the store id; rename or remove it`);
+  return st;
+}
+
 /** Whether `path` is the id file of the store rooted at `dir`. Its own path is, and so is any other
  *  name the filesystem resolves to that file. No spelling rule can list those (a case-insensitive
  *  filesystem folds `STORE.ID` onto it, and a link reaches it under any name), so they are found by
@@ -17,7 +26,7 @@ const STORE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
 export function isStoreIdFile(dir: string, path: string): boolean {
   const idFile = resolve(dir, STORE_ID_FILE);
   if (resolve(path) === idFile) return true;
-  const id = statSync(idFile, { bigint: true, throwIfNoEntry: false });
+  const id = idFileStat(idFile);
   if (id === undefined) return false;
   const file = statSync(path, { bigint: true, throwIfNoEntry: false });
   return file !== undefined && file.dev === id.dev && file.ino === id.ino;
@@ -54,6 +63,7 @@ export function workspaceSecretStore(root: string): FsSecretStore {
 export class FsSecretStore implements SecretStore {
   private readonly root: string;
   private readonly identityRoot: string;
+  private readonly idPath: string;
 
   /** `identityRoot` is the root the identity names when that is not the store's own directory: the
    *  workspace store lives in `<root>/.cotal` and is named by `<root>`. */
@@ -61,31 +71,43 @@ export class FsSecretStore implements SecretStore {
     if (!root) throw new Error("FsSecretStore: root is required");
     this.root = normalize(resolve(root)); // absolutize so keys are cwd-independent
     this.identityRoot = identityRoot ?? this.root;
+    this.idPath = join(this.root, STORE_ID_FILE);
   }
 
   /** The root is a local path, so two hosts that mount different directories at one path would
    *  name one store by it alone (#2580). The id is random and lives inside the store, so only the
    *  same directory carries it. It is written the first time a process names this store or puts a key. */
   get identity(): SecretStoreIdentity {
-    const p = this.idFile();
-    const id = readFileSync(p, "utf8");
-    if (!STORE_ID.test(id))
-      throw new Error(`FsSecretStore: ${p} does not hold a store id (a lowercase UUID and nothing else); rename or remove it`);
-    return { kind: "fs", root: this.identityRoot, id };
+    const vetted = this.idFile();
+    const fd = openSync(this.idPath, "r");
+    try {
+      // The name can be replaced between lstat and open, so only the file lstat vetted is read.
+      const opened = fstatSync(fd, { bigint: true });
+      if (opened.dev !== vetted.dev || opened.ino !== vetted.ino)
+        throw new Error(`FsSecretStore: ${this.idPath} was replaced while the store id was read`);
+      const id = readFileSync(fd, "utf8");
+      if (!STORE_ID.test(id))
+        throw new Error(`FsSecretStore: ${this.idPath} does not hold a store id (a lowercase UUID and nothing else); rename or remove it`);
+      return { kind: "fs", root: this.identityRoot, id };
+    } finally {
+      closeSync(fd);
+    }
   }
 
-  /** The id file, written only by exclusive create, so an existing one is never replaced. */
-  private idFile(): string {
-    const p = join(this.root, STORE_ID_FILE);
-    if (!existsSync(p)) {
-      mkSecretDir(this.root);
-      try {
-        writeSecretFileCreateOnly(p, randomUUID());
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; // a concurrent first use won
-      }
+  /** The id file as lstat sees it, written only by exclusive create, so an existing one is never replaced. */
+  private idFile(): BigIntStats {
+    const found = idFileStat(this.idPath);
+    if (found !== undefined) return found;
+    mkSecretDir(this.root);
+    try {
+      writeSecretFileCreateOnly(this.idPath, randomUUID());
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     }
-    return p;
+    // EEXIST is a concurrent first use only if what holds the name passes the same lstat check.
+    const made = idFileStat(this.idPath);
+    if (made === undefined) throw new Error(`FsSecretStore: ${this.idPath} was removed as it was created`);
+    return made;
   }
 
   /** Resolve a logical key to an absolute path strictly UNDER `root`, fail-closed: reject empty,
