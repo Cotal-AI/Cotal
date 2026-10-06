@@ -427,18 +427,24 @@ export function remoteManagerActors(instanceId: string): RemoteManagerActors {
   };
 }
 
-/** Deterministic proof binding one remote Manager lifecycle to its owner, identities, and artifacts. */
-export function remoteManagerRegistrationProof(owner: string, request: RemoteManagerAuthorityRequest): string {
-  const artifactDigests = request.operation === "session" ? [] : (request.contractArtifacts ?? []).map((value) => rawDigest(JSON.stringify(value)));
+/** Deterministic proof binding one remote Manager lifecycle to its owner, identities, and artifacts.
+ * Only activation binds contract artifacts. */
+export function remoteManagerRegistrationProof(
+  owner: string,
+  registration: { space: string; instanceId: string; lifecycleUid: string; identities: RemoteManagerAuthorityRequest["identities"] },
+  contractArtifacts: unknown[] = [],
+): string {
   return rawDigest(JSON.stringify({
     v: 1,
-    space: request.space,
+    space: registration.space,
     owner,
-    instanceId: request.instanceId,
-    lifecycleUid: request.managerLifecycleUid,
-    actors: remoteManagerActors(request.instanceId),
-    identities: request.identities,
-    artifactDigests,
+    instanceId: registration.instanceId,
+    lifecycleUid: registration.lifecycleUid,
+    actors: remoteManagerActors(registration.instanceId),
+    // The manager passes its identity state, which also holds the private seeds; the host has only
+    // the ids its request carries.
+    identities: Object.fromEntries(REMOTE_MANAGER_IDENTITY_NAMES.map((name) => [name, { id: registration.identities[name].id }])),
+    artifactDigests: contractArtifacts.map((value) => rawDigest(JSON.stringify(value))),
   }));
 }
 

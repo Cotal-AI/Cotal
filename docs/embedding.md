@@ -184,8 +184,10 @@ authorizes its serve grant, this start is refused with `expired`.
 manager identities stored under an explicit account-local root. Use these public exports when
 composing `ManagerOptions.remoteAuthority`; do not copy CLI validators or import private modules.
 `managerClusterArtifacts()` returns the canonical document, manifest and their digests used by
-registration. Supply its `[document, manifest]` pair when constructing the activation request
-with `remoteManagerClient.remoteManagerAuthorityRequest` and the stock registration proof.
+registration. Pass its `[document, manifest]` pair as `contractArtifacts` to both
+`remoteManagerRegistrationProof(owner, state, contractArtifacts)` from `@cotal-ai/core` and
+`remoteManagerClient.remoteManagerAuthorityRequest(state, actor, "activate", { registrationProof, contractArtifacts })`.
+The request builder takes each operation's coordinates as named fields of its last argument.
 The host still validates the artifact closure and current registration before activation.
 The namespace includes closed standing/run renewal, admission, maintenance, enrollment and
 retirement helpers. `remoteRunHosting` builds the four `runHosting` callbacks from the registration

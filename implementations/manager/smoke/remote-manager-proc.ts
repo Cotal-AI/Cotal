@@ -93,17 +93,10 @@ const registered = await registerRemoteManagerAuthority({
 // 3. Activate
 const artifacts = managerClusterArtifacts();
 const contractArtifacts = [artifacts.document, artifacts.manifest];
-const activateProof = remoteManagerRegistrationProof(
-  owner,
-  remoteManagerAuthorityRequest(mgrIdentity, "cli", "activate", `sha256:${"0".repeat(64)}`, contractArtifacts),
-);
-const activateReq = remoteManagerAuthorityRequest(
-  mgrIdentity,
-  "cli",
-  "activate",
-  activateProof,
+const activateReq = remoteManagerAuthorityRequest(mgrIdentity, "cli", "activate", {
+  registrationProof: remoteManagerRegistrationProof(owner, mgrIdentity, contractArtifacts),
   contractArtifacts,
-);
+});
 const activateMat = (await postHttp(activateReq)) as unknown as RemoteManagerAuthorityMaterial;
 const retainedRegistrationProof = currentRegistrationProof(activateMat);
 
@@ -117,7 +110,7 @@ const standing = remoteStandingBundleRenewal({
 
 const renewExecutor = async () => {
   const renewed = (await postHttp(
-    remoteManagerAuthorityRequest(mgrIdentity, "cli", "renew", retainedRegistrationProof),
+    remoteManagerAuthorityRequest(mgrIdentity, "cli", "renew", { registrationProof: retainedRegistrationProof }),
   )) as unknown as RemoteManagerAuthorityMaterial;
   return materialCredential(renewed, "executor", mgrIdentity.identities.executor);
 };

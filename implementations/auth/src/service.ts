@@ -908,6 +908,7 @@ export async function openAuthAuthorityPlane(opts: {
         }),
         issue: async ({ actors, request: r }) => {
           const signer = { space, account: dataAccount };
+          const registration = { space: r.space, instanceId: r.instanceId, lifecycleUid: r.managerLifecycleUid, identities: r.identities };
           const credential = async (
             key: keyof RemoteManagerAuthorityRequest["identities"],
             profile: Parameters<typeof mintPublicUserJwt>[2],
@@ -965,7 +966,7 @@ export async function openAuthAuthorityPlane(opts: {
             });
           }
           if (r.operation === "session") {
-            const expectedProof = remoteManagerRegistrationProof(owner, r);
+            const expectedProof = remoteManagerRegistrationProof(owner, registration);
             if (r.registrationProof !== expectedProof)
               throw new EpEnvelopeError("permission-denied", "manager-service session proof does not match this owner/lifecycle");
             const session = r.session!;
@@ -984,7 +985,7 @@ export async function openAuthAuthorityPlane(opts: {
             return { credentials };
           }
           if (r.operation === "transferReader") {
-            const expectedProof = remoteManagerRegistrationProof(owner, r);
+            const expectedProof = remoteManagerRegistrationProof(owner, registration);
             if (r.registrationProof !== expectedProof)
               throw new EpEnvelopeError("permission-denied", "manager-service transfer reader proof does not match this owner/lifecycle");
             credentials.transferReader = await mintPublicUserJwt(
@@ -996,7 +997,7 @@ export async function openAuthAuthorityPlane(opts: {
             return { credentials };
           }
           if (r.operation === "retire") {
-            const expectedProof = remoteManagerRegistrationProof(owner, r);
+            const expectedProof = remoteManagerRegistrationProof(owner, registration);
             if (r.registrationProof !== expectedProof)
               throw new EpEnvelopeError("permission-denied", "manager-service retirement proof does not match this owner/lifecycle");
             const retirement = r.retirement!;
@@ -1096,7 +1097,7 @@ export async function openAuthAuthorityPlane(opts: {
             return { credentials };
           }
           if (r.operation === "activate") {
-            const expectedProof = remoteManagerRegistrationProof(owner, r);
+            const expectedProof = remoteManagerRegistrationProof(owner, registration, r.contractArtifacts);
             if (r.registrationProof !== expectedProof)
               throw new EpEnvelopeError("permission-denied", "manager-service registration proof does not match this owner/lifecycle/artifact set");
             // The serve JWT is issued from the registered-surface snapshot the participant
