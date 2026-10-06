@@ -507,7 +507,7 @@ export interface AuthInstanceIdentity {
   serveIdentity: { id: string; seed: string };
 }
 function authInstanceFile(root: string, space: string): string {
-  return join(authDir(root), `auth-instance.${Buffer.from(space, "utf8").toString("hex")}.json`);
+  return join(authDir(root), `auth-instance.${spaceKey(space)}.json`);
 }
 /** Load this workspace root's persisted auth-plane instance identity for `space`, or undefined if
  *  the auth plane has never registered here. A present-but-MALFORMED file fails LOUD: minting a
