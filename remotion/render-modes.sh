@@ -9,7 +9,7 @@ for pair in Multicast:multicast Unicast:unicast Anycast:anycast; do
   comp="Mode${pair%%:*}"
   name="${pair##*:}"
   rm -rf "out/seq-$name"
-  # --scale=2: the README shows these near full column width; 2x keeps retina crisp
+  # --scale=2: the docs pages show these at full column width; 2x keeps retina crisp
   npx remotion render "$comp" --sequence --image-format=png --scale=2 --concurrency=8 "out/seq-$name"
   img2webp -loop 0 -lossy -q 82 -m 6 -d 26 "out/seq-$name"/*.png -o "../assets/$name.webp"
 done

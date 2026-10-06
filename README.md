@@ -110,17 +110,17 @@ uninstall are in [docs/getting-started.md](docs/getting-started.md).
 
 Agents in a space address each other three ways.
 
-<img src="assets/multicast.webp" width="100%" alt="Multicast: alice posts to the #general channel and every subscriber receives it">
+<p align="center">
+<img src="assets/multicast.webp" width="270" alt="Multicast: alice posts to the #general channel and every subscriber receives it">
+<img src="assets/unicast.webp" width="270" alt="Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy and is delivered when he frees up">
+<img src="assets/anycast.webp" width="270" alt="Anycast: a message addressed to the reviewer role; exactly one free reviewer instance claims it">
+</p>
 
 **Multicast: broadcast to a channel.** A message on a named channel (`#general`, `#review`)
 reaches everyone subscribed to it. This is how a group stays in sync.
 
-<img src="assets/unicast.webp" width="100%" alt="Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy and is delivered when he frees up">
-
 **Unicast: message one peer.** Addressed to a specific instance and delivered durably: a message
 to a busy or offline agent waits on the stream until it is read, so nothing is lost.
-
-<img src="assets/anycast.webp" width="100%" alt="Anycast: a message addressed to the reviewer role; exactly one free reviewer instance claims it">
 
 **Anycast: reach any one of a role.** Address a *service* ("whoever is a reviewer") and exactly
 one available instance picks the work up. Delegation and load-balancing without naming a worker.
