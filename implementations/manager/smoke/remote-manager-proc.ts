@@ -87,7 +87,7 @@ const registered = await registerRemoteManagerAuthority({
   serveActor: actors.serve,
   prepareCreds: executorCreds,
   tlsRequired: false,
-  evict: async () => true,
+  evict: async (principals) => principals.map(() => true),
 });
 
 // 3. Activate

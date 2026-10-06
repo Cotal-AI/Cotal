@@ -1340,11 +1340,13 @@ credentials. A manager-service credential is ledgered and gated exactly as this 
 its `holderPrincipal` is the derived-owner/fixed-actor principal, never the endpoint name.
 
 The typed protocol includes two host-owned registration-maintenance operations. An
-`evict-family-principal` request names one principal, but the host MUST enumerate the authenticated
-caller instance's `epcred.manager.<instanceId>.*` family and refuse unless that principal is one of
-its holders. The host, using its signer, then mints the bounded delivery-admin caller, requests
-`evictPrincipal`, and returns the closed `EvictionResult`; a garbled, foreign, or contradictory
-result MUST NOT authorize. The participant never receives that credential. A
+`evict-family-principal` request names `principals`, 1 to 256 distinct holders, so a restart's
+family eviction costs one request and one family scan per 256 holders. The host MUST enumerate the
+authenticated caller instance's `epcred.manager.<instanceId>.*` family once per request and refuse
+unless every named principal is one of its holders. The host, using its signer, then mints the
+bounded delivery-admin caller, requests `evictPrincipals` for the set, and returns `evictions`, one
+closed `EvictionResult` per principal in request order; a garbled, foreign, misordered, or
+contradictory result MUST NOT authorize. The participant never receives that credential. A
 `reconcile-registration` request MAY name another manager instance in the same space only to clear
 an abandoned governance-slot holder. The host MUST observe that target's frozen registration gate,
 prove the freeze-holder `gone` under a complete liveness sweep, run the normal registration repair

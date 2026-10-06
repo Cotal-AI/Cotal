@@ -132,6 +132,26 @@ Check `connectors.<name>.mcpServers` in the operator-level config file and in ea
 a string `url`. Write `args` as a list of strings and `env` and `headers` as objects of strings, or
 remove the server.
 
+## Remote manager family eviction in 0.69.0
+
+A remote manager registered through its host now asks the host to evict up to 256 holders of its
+credential family in one maintenance request, and the host reads the family once for the whole set.
+Before, a restart sent one request per holder and the host read the whole family for each one.
+Meshes with no remote manager are unaffected.
+
+### What stops working
+
+While a remote manager and its issuing host run different sides of this release, each side refuses
+the other's eviction request shape. A restart whose credential family already has holders then fails
+at its eviction step and leaves the manager's registration gate frozen. A first start, a clean stop
+and the host's reconciliation of a foreign slot holder are unchanged.
+
+### Before the upgrade
+
+Upgrade the auth service and every remote manager registered with it in the same window. A manager
+that restarted inside the window resumes its frozen registration on its next start once both sides
+run this release.
+
 ## Carrying a resumed Claude session to another host
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the

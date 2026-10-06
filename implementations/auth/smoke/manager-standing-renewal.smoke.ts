@@ -58,7 +58,7 @@ try {
     principal: { owner, actor: actors.executor }, remoteManager: { instanceId, owner, actor: actors.executor },
   });
   const registered = await registerRemoteManagerAuthority({
-    space, server: SERVERS, owner, instanceId, serveActor: actors.serve, prepareCreds, tlsRequired: false, evict: async () => true,
+    space, server: SERVERS, owner, instanceId, serveActor: actors.serve, prepareCreds, tlsRequired: false, evict: async (principals) => principals.map(() => true),
   });
   const request = (over: Partial<RemoteManagerAuthorityRequest> = {}, proofEpoch = registered.processEpoch): RemoteManagerAuthorityRequest => {
     const base = {
@@ -232,7 +232,7 @@ try {
       principal: { owner, actor: actorsB.executor }, remoteManager: { instanceId: instanceIdB, owner, actor: actorsB.executor },
     });
     const registeredB = await registerRemoteManagerAuthority({
-      space, server: SERVERS, owner, instanceId: instanceIdB, serveActor: actorsB.serve, prepareCreds: prepCredsB, tlsRequired: false, evict: async () => true,
+      space, server: SERVERS, owner, instanceId: instanceIdB, serveActor: actorsB.serve, prepareCreds: prepCredsB, tlsRequired: false, evict: async (principals) => principals.map(() => true),
     });
     const baseReqB = {
       v: 1 as const, kind: "manager-service-authority" as const, operation: "renewStandingBundle" as const,

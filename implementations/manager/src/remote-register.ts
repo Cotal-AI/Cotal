@@ -37,7 +37,7 @@ export async function registerRemoteManagerAuthority(args: {
    *  here. A participant reaches its host through whatever the record says, so this can be a
    *  `wss://` edge; hardcoding `false` would send the prepare credential to it in the clear. */
   tlsRequired: boolean;
-  evict: (principal: string) => Promise<boolean>;
+  evict: (principals: readonly string[]) => Promise<boolean[]>;
   /** Host-side guarded repair for a foreign manager slot holder, used once before a retry. */
   reconcileForeignRegistration?: (instanceId: string) => Promise<void>;
 }): Promise<{ registrationRevision: number; processEpoch: number; serveGrant: EpServeGrant }> {
@@ -69,14 +69,7 @@ export async function registerRemoteManagerAuthority(args: {
       endpoint: MANAGER_ENDPOINT,
       instanceId: args.instanceId,
       opId: args.instanceId,
-      // The host's maintenance verb evicts one principal per call, so each evict call carries one
-      // holder and registration records its verdict before the host is asked about the next.
-      evictMax: 1,
-      evict: async (principals) => {
-        const gone: boolean[] = [];
-        for (const principal of principals) gone.push(await args.evict(principal));
-        return gone;
-      },
+      evict: args.evict,
     });
     const register = () => registerServingInstance(recordsKv, {
       space: args.space,

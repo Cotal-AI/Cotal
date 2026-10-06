@@ -306,7 +306,7 @@ export function remoteManagerMaintenanceRequest(
   actor: string,
   operation: RemoteManagerMaintenanceRequest["operation"],
   targetInstanceId: string,
-  principal?: string,
+  principals?: string[],
 ): RemoteManagerMaintenanceRequest {
   return {
     v: 1,
@@ -319,7 +319,7 @@ export function remoteManagerMaintenanceRequest(
     requestId: `maintain${mintLifecycleUid()}`,
     identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagerMaintenanceRequest["identities"],
     targetInstanceId,
-    ...(principal ? { principal } : {}),
+    ...(principals ? { principals } : {}),
   };
 }
 
@@ -331,8 +331,8 @@ export function remoteManagerMaintenanceResult(
 ): RemoteManagerMaintenanceResult {
   const expectedKeys = [
     "v", "kind", "operation", "space", "owner", "actor", "instanceId", "managerLifecycleUid",
-    "requestId", "identities", "targetInstanceId", ...(request.principal ? ["principal"] : []),
-    request.operation === "evict-family-principal" ? "eviction" : "reconciliation",
+    "requestId", "identities", "targetInstanceId", ...(request.principals ? ["principals"] : []),
+    request.operation === "evict-family-principal" ? "evictions" : "reconciliation",
   ];
   if (!result || typeof result !== "object" || Array.isArray(result) ||
       Object.keys(result).sort().join(",") !== expectedKeys.sort().join(",") ||
@@ -340,17 +340,22 @@ export function remoteManagerMaintenanceResult(
       result.operation !== request.operation || result.space !== request.space || result.actor !== request.actor ||
       result.instanceId !== request.instanceId || result.managerLifecycleUid !== request.managerLifecycleUid ||
       result.requestId !== request.requestId || result.targetInstanceId !== request.targetInstanceId ||
-      JSON.stringify(result.identities) !== JSON.stringify(request.identities) || result.principal !== request.principal)
+      JSON.stringify(result.identities) !== JSON.stringify(request.identities) ||
+      JSON.stringify(result.principals) !== JSON.stringify(request.principals))
     throw new Error("manager maintenance returned different lifecycle, target, principal, or owner coordinates");
   if (request.operation === "evict-family-principal") {
-    const e = result.eviction;
-    if (!e || typeof e !== "object" || Array.isArray(e) ||
-        Object.keys(e).some((key) => !["principal", "kicked", "remaining", "verifiedGone", "scanComplete", "note"].includes(key)) ||
-        e.principal !== request.principal || !Number.isSafeInteger(e.kicked) || e.kicked < 0 ||
-        !Number.isSafeInteger(e.remaining) || e.remaining < 0 || typeof e.verifiedGone !== "boolean" || typeof e.scanComplete !== "boolean")
+    const evictions = result.evictions;
+    if (!Array.isArray(evictions) || evictions.length !== request.principals!.length)
       throw new Error("manager maintenance returned garbled or foreign eviction evidence");
-    if (e.verifiedGone && (!e.scanComplete || e.remaining !== 0))
-      throw new Error("manager maintenance returned contradictory eviction evidence");
+    for (const [i, e] of evictions.entries()) {
+      if (!e || typeof e !== "object" || Array.isArray(e) ||
+          Object.keys(e).some((key) => !["principal", "kicked", "remaining", "verifiedGone", "scanComplete", "note"].includes(key)) ||
+          e.principal !== request.principals![i] || !Number.isSafeInteger(e.kicked) || e.kicked < 0 ||
+          !Number.isSafeInteger(e.remaining) || e.remaining < 0 || typeof e.verifiedGone !== "boolean" || typeof e.scanComplete !== "boolean")
+        throw new Error("manager maintenance returned garbled or foreign eviction evidence");
+      if (e.verifiedGone && (!e.scanComplete || e.remaining !== 0))
+        throw new Error("manager maintenance returned contradictory eviction evidence");
+    }
   } else {
     const r = result.reconciliation;
     const reportKeys = [

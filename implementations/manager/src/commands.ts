@@ -242,8 +242,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
           JSON.stringify(material.actors) !== JSON.stringify(actors))
         throw new Error("the host returned manager-service material for different lifecycle coordinates");
-      const maintain = async (operation: "evict-family-principal" | "reconcile-registration", targetInstanceId: string, principal?: string) => {
-        const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principal);
+      const maintain = async (operation: "evict-family-principal" | "reconcile-registration", targetInstanceId: string, principals?: string[]) => {
+        const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principals);
         const response = await provider.maintainRemoteManager!({
           store: workspaceSecretStore(findCotalRoot()),
           dir: join(findCotalRoot(), ".cotal", "auth", space),
@@ -259,7 +259,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         serveActor: actors.serve,
         prepareCreds: materialCredential(material, "executor", state.identities.executor),
         tlsRequired: target.tlsRequired,
-        evict: async (principal) => (await maintain("evict-family-principal", state.instanceId, principal)).eviction!.verifiedGone,
+        evict: async (principals) => (await maintain("evict-family-principal", state.instanceId, [...principals])).evictions!.map((e) => e.verifiedGone),
         reconcileForeignRegistration: async (instanceId) => { await maintain("reconcile-registration", instanceId); },
       });
       const artifacts = managerClusterArtifacts();
