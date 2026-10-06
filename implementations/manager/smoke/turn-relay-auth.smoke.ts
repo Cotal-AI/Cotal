@@ -31,7 +31,7 @@ import {
   startTimerWriter,
   type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec, type TimerWriterHandle,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { bootBroker } from "./_boot-broker.js";
@@ -79,7 +79,7 @@ try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   delivery = await bootDeliveryDaemon({
     space, servers: broker.servers, auth,
-    reloadStoreIdentity: { kind: "fs", root: resolve(workspaceRoot) },
+    reloadStoreIdentity: workspaceSecretStore(workspaceRoot).identity,
   });
   // The timer writer the delivery daemon hosts on a live mesh, under the delivery credential: the
   // deadline cell below waits on a pause armed through it, never through a suite pump.

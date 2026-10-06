@@ -34,7 +34,7 @@ import {
 import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 import { registry } from "@cotal-ai/core";
-import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, renewalRecordPath, saveSpaceAuth } from "@cotal-ai/workspace";
+import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, renewalRecordPath, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -171,7 +171,7 @@ try {
     evictPrincipal: (principal) => evictDeniedPrincipalWithCreds({
       servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
     }),
-    reloadStoreIdentity: () => ({ kind: "fs", root: resolve(workspaceRoot) }),
+    reloadStoreIdentity: () => workspaceSecretStore(workspaceRoot).identity,
   });
   await delivery.markDeliveryLeaseReady(0, dlvRevision);
   await mgr.start();

@@ -89,6 +89,32 @@ requests. Seats with a TUI, and headless seats that no host drives, are unaffect
 Have each headless host mint a password and pass it to the launcher as `OPENCODE_SERVER_PASSWORD`,
 then use it for basic auth as before. Without that variable the launcher mints its own.
 
+## Filesystem store identity in 0.69.0
+
+The delivery daemon's answer to the manager's store check now names a filesystem store by its root
+and by a random `id` that the store records once in `store.id` inside its own directory:
+`.cotal/store.id` for a workspace root, or the directory of the file for `cotal deliver --creds
+<file>`. A manager no longer counts the daemon's store as its own because the two roots have the
+same path. On a split whose broker host and manager host use one root path, the manager host now
+stays off the daemon-credential renewal lease, so `cotal doctor auth --fix` on the broker host can
+renew the daemon credentials.
+
+### What stops working
+
+A manager and a delivery daemon on different sides of this release refuse each other's answer to
+the store check. The manager then remints no daemon credential, and a manager that is booting does
+not start. This is read from the code and was not measured across two releases. A
+`cotal deliver --creds <file>` whose directory is a read-only mount and holds no `store.id` stops at
+start. So does a `--creds` file that is its directory's `store.id` under any name, and a `store.id`
+that is a symbolic link or holds anything but a lowercase UUID.
+
+### Before the upgrade
+
+Upgrade the broker host and every manager host of a space in the same window. For a `--creds` file
+on a read-only mount, add a regular `store.id` file beside it that holds a new lowercase UUID and no newline,
+as `node -e 'process.stdout.write(crypto.randomUUID())' > store.id` writes. Move a `--creds` file
+named or linked as `store.id` to a file of its own.
+
 ## Detached spawns with `--share-tools` in 0.69.0
 
 The manager's `spawn` operation now takes `shareTools` as a list of MCP server names. The CLI parses

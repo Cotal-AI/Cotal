@@ -21,7 +21,7 @@ import {
   type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import {
-  authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, recordMesh, removeMesh, userAuthStateDir,
+  authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, recordMesh, removeMesh, userAuthStateDir, workspaceSecretStore,
 } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
@@ -103,7 +103,7 @@ try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   delivery = await bootDeliveryDaemon({
     space, servers: broker.servers, auth,
-    reloadStoreIdentity: { kind: "fs", root: resolve(workspaceRoot) },
+    reloadStoreIdentity: workspaceSecretStore(workspaceRoot).identity,
   });
 
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });

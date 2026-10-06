@@ -58,19 +58,22 @@ export interface SecretStore {
  *
  * Fingerprint-only `reloadCreds` is safe only when the renewal owner and the delivery daemon
  * genuinely read one store. This identity is that proof: it names the store, never a secret.
- * Two workstation filesystem stores agree only when they resolve the same directory. An
+ * Two workstation filesystem stores agree only when they name the same root AND carry the same
+ * `id`, a random value the store records inside its own directory. The root alone is a local path,
+ * and two hosts can mount different directories at one path (#2580). An
  * injected (hosted) store is identified by an operator-supplied coordinate, never guessed from
  * a local root. A store may declare this identity itself; otherwise the composition root must
  * provide it explicitly. There is no fallback between the two shapes.
  */
 export type SecretStoreIdentity =
-  | { kind: "fs"; root: string }
+  | { kind: "fs"; root: string; id: string }
   | { kind: "injected"; coordinate: string };
 
-/** Compare two store identities. Filesystem roots are compared after POSIX-style trailing-slash trim. */
+/** Compare two store identities. Filesystem identities match on root, after a POSIX-style
+ *  trailing-slash trim, and on id. */
 export function sameSecretStoreIdentity(a: SecretStoreIdentity, b: SecretStoreIdentity): boolean {
   if (a.kind !== b.kind) return false;
-  if (a.kind === "fs" && b.kind === "fs") return trimStorePath(a.root) === trimStorePath(b.root);
+  if (a.kind === "fs" && b.kind === "fs") return trimStorePath(a.root) === trimStorePath(b.root) && a.id === b.id;
   if (a.kind === "injected" && b.kind === "injected") return a.coordinate === b.coordinate;
   return false;
 }
@@ -81,7 +84,7 @@ function trimStorePath(p: string): string {
 
 /** Operator-facing label used in the divergence notice that names both stores. */
 export function formatSecretStoreIdentity(id: SecretStoreIdentity): string {
-  return id.kind === "fs" ? id.root : `injected:${id.coordinate}`;
+  return id.kind === "fs" ? `${id.root} (store ${id.id})` : `injected:${id.coordinate}`;
 }
 
 /**
@@ -94,11 +97,13 @@ export function parseSecretStoreIdentity(raw: unknown): SecretStoreIdentity {
   const o = raw as Record<string, unknown>;
   const keys = Object.keys(o);
   if (o.kind === "fs") {
-    if (keys.some((k) => k !== "kind" && k !== "root"))
-      throw new Error("secret-store identity of kind fs admits only {kind, root}");
+    if (keys.some((k) => k !== "kind" && k !== "root" && k !== "id"))
+      throw new Error("secret-store identity of kind fs admits only {kind, root, id}");
     if (typeof o.root !== "string" || !o.root.trim())
       throw new Error("secret-store identity of kind fs requires a non-blank root");
-    return { kind: "fs", root: o.root };
+    if (typeof o.id !== "string" || !o.id.trim())
+      throw new Error("secret-store identity of kind fs requires a non-blank id");
+    return { kind: "fs", root: o.root, id: o.id };
   }
   if (o.kind === "injected") {
     if (keys.some((k) => k !== "kind" && k !== "coordinate"))

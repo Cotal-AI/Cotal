@@ -1171,7 +1171,7 @@ try {
     space: SPACE,
     servers: SERVER,
     auth,
-    reloadStoreIdentity: { kind: "fs", root },
+    reloadStoreIdentity: workspaceSecretStore(root).identity,
   });
   // Re-drive the held retirement now that genuine delivery has returned:
   await manager.startAgent({ name: "delta", agent: "e2e", events: false }).catch(() => {});

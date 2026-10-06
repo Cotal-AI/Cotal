@@ -33,7 +33,7 @@ import type { Connector, LaunchOpts, LaunchSpec, RuntimeProvider } from "@cotal-
 import { Manager } from "../src/manager.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { registry } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 import { identityVerdict, type SeatRecord } from "@cotal-ai/seat";
 
@@ -186,7 +186,7 @@ try {
     evictPrincipal: (principal) => evictDeniedPrincipalWithCreds({
       servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
     }),
-    reloadStoreIdentity: () => ({ kind: "fs", root: resolve(workspaceRoot) }),
+    reloadStoreIdentity: () => workspaceSecretStore(workspaceRoot).identity,
   });
   await delivery.markDeliveryLeaseReady(0, dlvRevision);
   await mgr.start();

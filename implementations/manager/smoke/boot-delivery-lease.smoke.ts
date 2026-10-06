@@ -13,11 +13,12 @@
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { createSpaceAuth, mintCreds, newIdentity, openDeliveryRegistry, leaseKey, setupSpaceStreams, standaloneConnectOpts } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
 import { bootBroker } from "./_boot-broker.js";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
+import { workspaceSecretStore } from "@cotal-ai/workspace";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -46,7 +47,7 @@ try {
     return !e || e.operation === "DEL" || e.operation === "PURGE" ? undefined : { info: e.json<{ holder: string; incarnation?: string; ready: boolean }>(), revision: e.revision };
   };
   const boot = async () => {
-    const d = await bootDeliveryDaemon({ space, servers: broker.servers, auth, reloadStoreIdentity: { kind: "fs", root: resolve(ws) }, renewIntervalMs: RENEW_MS });
+    const d = await bootDeliveryDaemon({ space, servers: broker.servers, auth, reloadStoreIdentity: workspaceSecretStore(ws).identity, renewIntervalMs: RENEW_MS });
     daemons.push(d);
     return d;
   };
