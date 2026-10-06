@@ -3721,26 +3721,31 @@ export class CotalEndpoint extends EventEmitter {
    *  read, a refused consumer delete, nats.js's own delete of a rebuilt watch's predecessor) would
    *  still have it emitted as an `error`. The status loop can see that error while the request is
    *  still pending or after it rejected. A request can also time out first, as a rebuild's delete does
-   *  when it is sent into a stalled link, and then its denial arrives matched to nothing; each timed-out
-   *  request takes one later denial on its subject as its answer. */
+   *  when it is sent into a stalled link, and then its denial arrives matched to nothing. The broker
+   *  answers a connection in order, so that denial comes before the pong to a ping sent after the
+   *  timeout: a timed-out request stays pending until that pong, and until the status loop, which
+   *  takes each status on microtasks, has drained what was dispatched ahead of it. */
   private trackRequestDenials(nc: NatsConnection): (denial: PermissionViolationError) => boolean {
     const pending = new Map<string, number>();
-    const timedOut = new Map<string, number>();
     const rejected = new WeakSet<PermissionViolationError>();
     const request = nc.request.bind(nc);
     nc.request = async (subject, payload, opts) => {
       adjustCount(pending, subject, 1);
+      let answered: Promise<void> | undefined;
       try { return await request(subject, payload, opts); }
       catch (err) {
         const { cause } = err as Error;
-        if (err instanceof TimeoutError) adjustCount(timedOut, subject, 1);
+        if (err instanceof TimeoutError) answered = nc.flush();
         else if (cause instanceof PermissionViolationError) rejected.add(cause);
         throw err;
       }
-      finally { adjustCount(pending, subject, -1); }
+      finally {
+        const settle = () => adjustCount(pending, subject, -1);
+        if (!answered) settle();
+        else { const later = () => setImmediate(settle); answered.then(later, later); }
+      }
     };
-    return (denial) => denial.operation === "publish"
-      && (pending.has(denial.subject) || rejected.has(denial) || adjustCount(timedOut, denial.subject, -1));
+    return (denial) => denial.operation === "publish" && (pending.has(denial.subject) || rejected.has(denial));
   }
 
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a
@@ -7004,14 +7009,11 @@ function isJetStreamMissing(e: unknown, ...codes: number[]): boolean {
   return e instanceof JetStreamApiError && codes.includes(e.code);
 }
 
-/** Add `delta` to the count kept for `key`, dropping the key at zero. False, and nothing changed, when
- *  there was no count to take from. */
-function adjustCount(counts: Map<string, number>, key: string, delta: 1 | -1): boolean {
+/** Add `delta` to the count kept for `key`, dropping the key at zero. */
+function adjustCount(counts: Map<string, number>, key: string, delta: 1 | -1): void {
   const next = (counts.get(key) ?? 0) + delta;
-  if (next < 0) return false;
   if (next) counts.set(key, next);
   else counts.delete(key);
-  return true;
 }
 
 /** A membership-watch delete that leaves nothing to retry: the consumer is already gone, or the broker
