@@ -8,14 +8,14 @@
   "mutations": [
     {
       "name": "R1 pending recovery folds the bracket state only on disk, leaving the live emitter at the pre-pending run",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });\n    this.brackets = AguiBrackets.restore(p.brackets);",
       "replace": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });",
       "expectRed": "recover:a-pending-terminal-promotes-its-brackets-before-the-next-pump"
     },
     {
       "name": "R2 acked recovery folds the bracket state only on disk, leaving the live emitter at the pre-pending run",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "      await this.wal.fold();\n      this.brackets = AguiBrackets.restore(p.brackets);\n      return;",
       "replace": "      await this.wal.fold();\n      return;",
       "expectRed": "recover:an-acked-pending-promotes-its-brackets-before-the-next-pump"

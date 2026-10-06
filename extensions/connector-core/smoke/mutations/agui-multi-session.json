@@ -17,7 +17,7 @@
     "still halt. A mutation that removes the expectation would leave the regression cells green.",
     "",
     "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the emitter, the log and the",
-    "record by RELATIVE SOURCE PATH (../src/agui.js, ../src/event-wal.js, ../src/subject-frontier.js),",
+    "record by RELATIVE SOURCE PATH (../src/agui-emitter.js, ../src/event-wal.js, ../src/subject-frontier.js),",
     "so the bytes mutated are the bytes graded. There is no dist in the path and no build in the",
     "command. Its package-name imports are from @cotal-ai/core (a real broker client, unmutated here)",
     "and @cotal-ai/smoke-kit (test-only), neither of which carries the behaviour under test.",
@@ -41,7 +41,7 @@
   "mutations": [
     {
       "name": "S1 the expectation comes from this session's own log again, which is the defect verbatim",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    const E = this.wal.expectedTip;",
       "replace": "    const E = this.wal.frontier.lastSubjectSeq;",
       "expectRed": "session-2:a-NEW-thread-of-the-SAME-principal-publishes",
@@ -77,7 +77,7 @@
     },
     {
       "name": "S6 the frontier is required only in the type, which does not reach an untypechecked caller",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    if (!opts.subjectFrontier || typeof opts.subjectFrontier.advance !== \"function\")",
       "replace": "    if (false)",
       "expectRed": "guard:start-REFUSES-without-a-subject-frontier-at-RUNTIME",
@@ -86,7 +86,7 @@
     },
     {
       "name": "S8 the halt claims the per-principal lock PREVENTS a concurrent emitter, instead of stating its limit",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "            `CONCURRENT emitter under this same principal. The per-principal lock refuses a second ` +\n",
       "replace": "            `CONCURRENT emitter under this same principal (two sessions publishing at once, which the per-principal lock is meant to prevent). The per-principal lock refuses a second ` +\n",
       "expectRed": "control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this",
@@ -95,7 +95,7 @@
     },
     {
       "name": "S9 the halt points at this session's own log instead of the principal directory",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "dirname(dirname(this.wal.path))",
       "replace": "this.wal.path",
       "expectRed": "control:the-halt-LOCATES-the-state-to-remove",
@@ -113,7 +113,7 @@
     },
     {
       "name": "S26 the halt drops the precondition for its own remedy, so an operator destroys the principal directory on a cause that leaves the tip where it is and gets the same halt back, with the sibling logs a tip could have been rebuilt from now gone",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "`subject record together, and it is VALID ONLY ONCE THE SUBJECT IS ACTUALLY EMPTY, which ` +\n            `of the causes above is true of the FILTERED PURGE alone. ",
       "replace": "`subject record together. ",
       "expectRed": "control:the-halt-states-the-PRECONDITION-for-its-own-remedy",
