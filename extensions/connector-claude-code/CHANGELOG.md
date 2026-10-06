@@ -1,5 +1,17 @@
 # @cotal-ai/connector-claude-code
 
+## 0.68.0
+
+### Minor Changes
+
+- 585fdb2: Connectors launch on the model and variant their launcher resolved. `LaunchOpts.model` and `LaunchOpts.variant` are now the launcher's resolved values (the flag, else the agent file's `model:` / `variant:`), and every connector renders them as given instead of reading the agent file again in `buildLaunch`. Before, a model the launcher did not resolve was taken from a later read of a file that could have changed since, so the seat could run a model the launcher never checked or recorded, and a supervised restart re-read it each time. The in-session config takes the model and variant from `COTAL_MODEL` / `COTAL_VARIANT` only, so the card and the orientation pin no longer report a model the seat was not launched on. The Hermes connector no longer falls back to `HERMES_MODEL` from the spawning process, including one `spawn.env` forwards; set the model with `--model` or the persona's `model:`. Code that calls `buildLaunch` directly must pass `model` and `variant` itself.
+
+### Patch Changes
+
+- bdb0132: The Claude connector now finds a session's `/rename` title when the transcript row spells its type with a JSON escape, such as `"custom\u002dtitle"`. Before, such a row was skipped: a detached `--resume <name>` naming that title went to the manager host as an id instead of being refused, the carried title was missing, and a later rename written that way lost to an earlier one. Every transcript line is now parsed before its type is read.
+- 33be936: A Claude Code seat no longer re-prints the wake nudge for a DM it already announced each time JetStream redelivers that DM. While one long tool call kept the hook drain from running, an unacked DM was redelivered every 60s and every copy queued another identical "New dm" notice, so a 51-minute call left about 50 of them per message. The connector now nudges once per message until a hook frame carries it, including a message first counted in a batch notice, and a redelivery after a frame whose reply never reached Claude Code still nudges again, even when the original nudge was still queued behind a full stdout. The retry after a rejected nudge follows the same rule: it counts only messages no live nudge announces, and a rejection that a newer nudge already superseded is not retried. `MeshAgent.pendingWake` takes an optional predicate that leaves out items the caller has already woken the session for.
+- 681c5b0: A supervised Claude seat whose directory the manager host's own Claude does not trust is now refused before it launches, with an error that names the directory and Claude's workspace-trust dialog. Claude opens such a directory on that dialog, whose default answer exits, so the seat used to die on launch with only `EntertoconfirmEsctocancel` as its last output. Trust is read as Claude reads it: a parent directory's trust counts up to the root of the directory's own Git repository, and a linked worktree shares its main checkout's trust. The manager passes the seat's directory to the connector as the new `LaunchOpts.cwd`, so a spawn, a supervised restart and a preserved-seat resume are all checked. A foreground `cotal spawn` still shows the dialog in the operator's terminal. A carried resume uses the same check.
+
 ## 0.67.0
 
 ### Minor Changes

@@ -1,5 +1,23 @@
 # @cotal-ai/workspace
 
+## 0.68.0
+
+### Patch Changes
+
+- a5256fd: Ctrl-C on a foreground `cotal up`, and a broker that exits under it, now stop the delivery daemon with the same stop `cotal down delivery` uses. Before, that teardown took no stop reservation and never escalated past SIGTERM: a concurrent `cotal down delivery` could not see the stop in progress, and a daemon that did not exit on SIGTERM survived the teardown while `up` went on to stop the broker. The teardown now holds the reservation, sends SIGKILL after the 15-second grace, and removes the daemon's credential only once its death is confirmed. If the broker exits while the Ctrl-C teardown is running, `up` waits for that teardown to finish before it exits. `cotal down delivery` now clears a record whose pid belongs to another program without signalling it, as the `up` teardown already did. A local process descriptor can carry `isOwnCommand` for that check; an installed extension's descriptor is cached as data and is refused if it declares one.
+- 41a7e66: A provenance line (`→ using`, `→ wrote`, `→ removed`) is always one line. A control character or Unicode line separator in the announced name or path is printed as a `\uXXXX` escape, so a newline in a path such as `HOME` can no longer split one announcement into a second line the command never wrote, and a carriage return can no longer overwrite it on a terminal. The stdout line printed when stderr fails follows the same rule.
+- Updated dependencies [6141e7b]
+- Updated dependencies [4120c97]
+- Updated dependencies [218006f]
+- Updated dependencies [681c5b0]
+- Updated dependencies [585fdb2]
+- Updated dependencies [0d806ae]
+- Updated dependencies [9b439e8]
+- Updated dependencies [f018376]
+- Updated dependencies [6a1789b]
+- Updated dependencies [237c813]
+  - @cotal-ai/core@0.68.0
+
 ## 0.67.0
 
 ### Minor Changes

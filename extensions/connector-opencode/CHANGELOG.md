@@ -1,5 +1,15 @@
 # @cotal-ai/connector-opencode
 
+## 0.68.0
+
+### Minor Changes
+
+- 585fdb2: Connectors launch on the model and variant their launcher resolved. `LaunchOpts.model` and `LaunchOpts.variant` are now the launcher's resolved values (the flag, else the agent file's `model:` / `variant:`), and every connector renders them as given instead of reading the agent file again in `buildLaunch`. Before, a model the launcher did not resolve was taken from a later read of a file that could have changed since, so the seat could run a model the launcher never checked or recorded, and a supervised restart re-read it each time. The in-session config takes the model and variant from `COTAL_MODEL` / `COTAL_VARIANT` only, so the card and the orientation pin no longer report a model the seat was not launched on. The Hermes connector no longer falls back to `HERMES_MODEL` from the spawning process, including one `spawn.env` forwards; set the model with `--model` or the persona's `model:`. Code that calls `buildLaunch` directly must pass `model` and `variant` itself.
+
+### Patch Changes
+
+- ad30240: An OpenCode 1.x seat whose instance the host disposes now ends instead of staying up off the mesh. OpenCode disposes an instance while its server keeps running, for example after a global config change or on `POST /instance/dispose`, and the next request loaded the plugin again from its process-wide cache. That handed back the stopped seat: the server kept running with the agent off the mesh, every `cotal_*` tool and native prompt was refused, and the manager still listed the seat as running. `dispose` now runs the same teardown as a stop and then exits the server, and the launcher closes the attached TUI when its server exits, killing a stopped or unresponsive one after 3 seconds, so the manager sees the seat end.
+
 ## 0.67.0
 
 ### Patch Changes

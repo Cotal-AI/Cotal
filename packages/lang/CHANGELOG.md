@@ -1,5 +1,17 @@
 # @cotal-ai/lang
 
+## 0.68.0
+
+### Minor Changes
+
+- 6141e7b: The issuing host no longer signs an answering run operator for a checkpoint token a participant manager names. The manager's request now names the run and step it answers (`operator.answers: { runId, stepKey, amend? }`), and the host requires that run admitted on the manager's instance, reads the pause's token off the run's journal under a read it mints for that run, and requires a served answer to name the same run and step as the request it observed. Before, a manager could be issued the answer and settle writes for another instance's waiting pause. The pause lookups `openCheckpointToken`, `settledPauseToken`, `stepPauseToken`, `CheckpointNotOpen` and `CheckpointNotAmendable` move to `@cotal-ai/lang`; `@cotal-ai/runtime` still exports the first four. A participant manager and its issuing host must upgrade together.
+
+### Patch Changes
+
+- b38a683: A `conclave` body may no longer write a binding declared outside it, or a field of a record or array built outside it (L2032), on both engines, as `once` already could not. A settled `conclave` is replayed from its journal entry without entering its body, so the write happened on the live run and never on resume: the resumed run read the old value and diverged at the next effect that took it as input. Return the value from the body and assign the scope's result instead.
+- d5ea4d2: The cotal-lang spec's migrate orphan table has a `waitUntil` row. An orphaned `waitUntil` is ignored whether it settled or is still pending, and its recorded observations stay in the journal. This is what `cotal run migrate` already reported; the table's "any other kind" row required L5015, so an implementation written from the spec refused the same migrations. No behavior changes.
+- 54e0199: The cotal-lang spec lists the scopes and the traits in which they differ in one table (§7): what a scope settles, its verdict when a migration orphans it, and whether a fork re-enters it when the cut lies inside it or refuses the cut (L5020). The journal entry's `kind` field, the absence rule for a scope's settled value, the L2013 admission, the migrate orphan table and the fork cut rule cite that table or the primitive table instead of listing kinds, so a new scope is one row in each. No behavior changes.
+
 ## 0.67.0
 
 ### Patch Changes

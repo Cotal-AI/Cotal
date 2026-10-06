@@ -1,5 +1,15 @@
 # @cotal-ai/connector-jcode
 
+## 0.68.0
+
+### Minor Changes
+
+- 585fdb2: Connectors launch on the model and variant their launcher resolved. `LaunchOpts.model` and `LaunchOpts.variant` are now the launcher's resolved values (the flag, else the agent file's `model:` / `variant:`), and every connector renders them as given instead of reading the agent file again in `buildLaunch`. Before, a model the launcher did not resolve was taken from a later read of a file that could have changed since, so the seat could run a model the launcher never checked or recorded, and a supervised restart re-read it each time. The in-session config takes the model and variant from `COTAL_MODEL` / `COTAL_VARIANT` only, so the card and the orientation pin no longer report a model the seat was not launched on. The Hermes connector no longer falls back to `HERMES_MODEL` from the spawning process, including one `spawn.env` forwards; set the model with `--model` or the persona's `model:`. Code that calls `buildLaunch` directly must pass `model` and `variant` itself.
+
+### Patch Changes
+
+- a96f1c6: A jcode seat now marks a run turn as shown once the Harness accepts the message that carries it, instead of after the whole host turn ends. A `cotal_yield` made during that turn used to be refused with "no turn is active — nothing to yield", and the run then recorded `done` where the seat had said `blocked` or `handoff`. A send the Harness never acknowledges, or one whose acknowledgement cannot be attributed to it, leaves the run turn unshown so the next turn carries it again. A peer message queued behind such a send now waits for that turn to end instead of being written into the session and delivered a second time later.
+
 ## 0.67.0
 
 ## 0.66.1

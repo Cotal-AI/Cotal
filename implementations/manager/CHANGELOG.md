@@ -1,5 +1,37 @@
 # @cotal-ai/manager
 
+## 0.68.0
+
+### Minor Changes
+
+- 6141e7b: The issuing host no longer signs an answering run operator for a checkpoint token a participant manager names. The manager's request now names the run and step it answers (`operator.answers: { runId, stepKey, amend? }`), and the host requires that run admitted on the manager's instance, reads the pause's token off the run's journal under a read it mints for that run, and requires a served answer to name the same run and step as the request it observed. Before, a manager could be issued the answer and settle writes for another instance's waiting pause. The pause lookups `openCheckpointToken`, `settledPauseToken`, `stepPauseToken`, `CheckpointNotOpen` and `CheckpointNotAmendable` move to `@cotal-ai/lang`; `@cotal-ai/runtime` still exports the first four. A participant manager and its issuing host must upgrade together.
+
+### Patch Changes
+
+- 218006f: A bearer command that fails without printing a sentence of its own now reports its cause. The agent auth preflight in `cotal spawn` and in the manager, and a running agent's bearer refresh, reported such a failure with Node's `Command failed` line, which repeated the whole bearer argv (exchange URL or state dir, space, owner, actor, token file and health file) and never said whether the child timed out, was killed or exited. The error now says the bearer command timed out after its limit, was killed by a named signal, or exited with a named code and printed nothing. A failure the command explains on stderr is still reported with that sentence. `bearerCommandFailure` in `@cotal-ai/core` builds the error.
+- 681c5b0: A supervised Claude seat whose directory the manager host's own Claude does not trust is now refused before it launches, with an error that names the directory and Claude's workspace-trust dialog. Claude opens such a directory on that dialog, whose default answer exits, so the seat used to die on launch with only `EntertoconfirmEsctocancel` as its last output. Trust is read as Claude reads it: a parent directory's trust counts up to the root of the directory's own Git repository, and a linked worktree shares its main checkout's trust. The manager passes the seat's directory to the connector as the new `LaunchOpts.cwd`, so a spawn, a supervised restart and a preserved-seat resume are all checked. A foreground `cotal spawn` still shows the dialog in the operator's terminal. A carried resume uses the same check.
+- 52290f4: A spawn refused by a connector's `buildLaunch` or the runtime's spawn now reports what was thrown. A connector that threw `null` or `undefined` used to make the manager reply with its own `Cannot read properties of null (reading 'message')`, a thrown string ended as the generic `spawn failed after accept`, and an object whose `message` is a Symbol left the accepted goal with no terminal. The local user-mode auth preflight refused the same way when the auth provider or the secret store rejected with such a value. Each refusal now carries the thrown value as text, or `an unreadable rejection` when the value cannot be read.
+- 58dde48: A seat resumed after `cotal down --preserve-state` now takes the same harness and capability checks as a spawned seat. Resume used to look its harness up on PATH again and launched without the binary paths the manager resolved at boot, so a harness installed after boot was refused by spawn and launched by resume, and a harness removed after boot was launched by spawn and refused by resume. Both paths now launch from the boot-resolved paths and refuse a connector whose boot row is unavailable with the recorded reason. The variant, prompt and exact-continuity refusals are one check that both paths share.
+- 2638235: A static retirement interrupted after its lifecycle audit was written now completes when a later manager process retries it. The retry compared the stored audit against its own manager process uid and broker eviction counts, so every process after the first, and any retry that found the connections already kicked, failed with `records different evidence` and left the slot `terminalizing`. The comparison now keys on the stable retirement identity: the principal, alias, lifecycle uid, manager instance and retirement op. The pty reaper also treats a custody record from an earlier boot as a seat that is gone. It used to refuse such a record, which held the name after a reboot on every attempt; it now removes the record without signalling anything, since no process outlives a reboot, and `cotal seats` reports it as `childless`.
+- 61025a8: The roster file that `cotal supervise --roster` reads is now documented in `docs/define-a-team.md` under "Roster files", which lists every key an entry takes: `name`, `agent`, `role`, `config`, `cwd` and `share-tools`. `docs/deploy.md` and the `--roster` row in `docs/cli.md` point there. The roster template and the deploy README no longer say an entry maps to the removed `cotal start`; they say each entry starts one agent the way `cotal spawn --detach` does and point at the docs section instead of keeping their own key lists. No behavior changes.
+- 1820d96: A user-mode spawn that fails after its grant is written now rolls back every step and says what it left behind. The rollback ignored a failed grant revoke and failed secret deletes, and a credential file that could not be removed (for example a directory at the health path) aborted it before the broker teardown, leaving the agent's durables and ACL row on the broker and replacing the refusal with the raw filesystem error. Each step now runs whatever an earlier one did, and the refusal keeps its `agent auth preflight failed` sentence and appends each failed step. Despawn teardown no longer stops at a file it cannot remove: it still revokes the grant and deletes the broker footprint, then reports the file and keeps the name held. A hosted spawn whose staged token cannot be deleted from the store after the host re-keys it is refused instead of reporting success.
+- Updated dependencies [6141e7b]
+- Updated dependencies [4120c97]
+- Updated dependencies [218006f]
+- Updated dependencies [681c5b0]
+- Updated dependencies [585fdb2]
+- Updated dependencies [a5256fd]
+- Updated dependencies [0d806ae]
+- Updated dependencies [9b439e8]
+- Updated dependencies [41a7e66]
+- Updated dependencies [2638235]
+- Updated dependencies [f018376]
+- Updated dependencies [6a1789b]
+- Updated dependencies [237c813]
+  - @cotal-ai/core@0.68.0
+  - @cotal-ai/workspace@0.68.0
+  - @cotal-ai/seat@0.68.0
+
 ## 0.67.0
 
 ### Minor Changes
