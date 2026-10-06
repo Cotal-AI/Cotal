@@ -5265,6 +5265,30 @@ export class Manager {
     return `${reason}. This manager cannot launch that harness. The space may have other managers; pin one with --on <instance> (the whole id, as ps prints it)`;
   }
 
+  /** The harness binaries a managed launch runs, as boot resolved them, or the refusal naming what is
+   *  missing. Spawn and resume both take it, so a seat launches from the same files whichever path
+   *  starts it. A connector registered after boot has no inventory row and is checked on PATH now. */
+  private launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
+    const row = this.connectorStatuses.find((status) => status.agent === connector.name);
+    if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
+    if (row) return { binaries: row.binaries };
+    const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
+    if (missing.length) return { refusal: `${connector.name} harness needs ${missing.join(", ")} on PATH - not found` };
+    return {};
+  }
+
+  /** The refusal for a launch choice the connector cannot honour. Spawn and resume both ask before
+   *  any reserve or mint, so a rule changed here holds on both paths. */
+  private capabilityRefusal(connector: Connector, launch: { variant?: string; prompt?: string; exact: boolean }): string | undefined {
+    if (launch.variant && !connector.supportsModelVariant)
+      return `${connector.name} connector does not support model variants (variant)`;
+    if (launch.prompt !== undefined && !connector.supportsPrompt)
+      return `${connector.name} connector does not support an initial prompt (prompt)`;
+    if (launch.exact && (!connector.supportsSessionReopen || !connector.supportsSessionContinuation))
+      return `${connector.name} connector does not support exact session continuity (continuity: exact)`;
+    return undefined;
+  }
+
   /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
    *  local model-list API reports `supported:false` rather than blocking the manager. A connector that
    *  fails to import shows an `error:` row (from manifest enumeration) and never blocks the others. */
@@ -5504,16 +5528,8 @@ export class Manager {
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
     // the reserve gate stays atomic. (The connector itself was resolved up top, before the capacity gate.)
-    const bootStatus = this.connectorStatuses.find((row) => row.agent === agent);
-    const route = opts.route ?? "inst";
-    if (bootStatus?.state === "unavailable") return { ok: false, error: this.harnessUnavailableError(bootStatus.reason ?? `${agent} harness is unavailable`, route) };
-    // A connector registered after boot has no inventory row. Keep the existing pre-mint backstop
-    // for that dynamic library-composition case; ordinary installed connectors were checked at boot.
-    if (!bootStatus) {
-      const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
-      if (missing.length)
-        return { ok: false, error: this.harnessUnavailableError(`${agent} harness needs ${missing.join(", ")} on PATH - not found`, route) };
-    }
+    const harness = this.launchHarness(connector);
+    if ("refusal" in harness) return { ok: false, error: this.harnessUnavailableError(harness.refusal, opts.route ?? "inst") };
     // Resume is a connector capability: reject an unsupported resume HERE, before the reserve/mint, so
     // it can never provision creds + durables and then throw at buildLaunch (mint-then-orphan). Same
     // reject-before-side-effects window as the harness preflight above; buildLaunch stays the backstop.
@@ -5705,18 +5721,14 @@ export class Manager {
         { blockedOp: "retirement", opId: held.opId, remedy: "retry" });
       return { ok: false, error: renderLifecycleBlocked(err.message, err), details: err.details };
     }
-    if (variant && !connector.supportsModelVariant)
-      return { ok: false, error: `${agent} connector does not support model variants (variant)` };
-    if (prompt !== undefined && !connector.supportsPrompt)
-      return { ok: false, error: `${agent} connector does not support an initial prompt (prompt)` };
     // A manifest `continuity: exact` agent reopens the session this manager last bound to its
     // declared name. Refused before any reserve or mint when the connector cannot reopen an exact
     // session or the recorded assignment does not match this declaration.
     const exact = opts.resolved?.continuity === "exact";
+    const unsupported = this.capabilityRefusal(connector, { variant, prompt, exact });
+    if (unsupported) return { ok: false, error: unsupported };
     let reopenSession: string | undefined;
     if (exact) {
-      if (!connector.supportsSessionReopen || !connector.supportsSessionContinuation)
-        return { ok: false, error: `${agent} connector does not support exact session continuity (continuity: exact)` };
       try {
         reopenSession = readContinuityAssignment(this.workspaceRoot, { space: this.space, name: identityName, connector: agent, cwd: resolvedCwd ?? this.workspaceRoot });
       } catch (e) {
@@ -6035,7 +6047,7 @@ export class Manager {
         eventsRequired: this.eventsRequired,
         mcpServers,
         envAllow,
-        resolvedBinaries: bootStatus?.binaries,
+        resolvedBinaries: harness.binaries,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
         // (possibly per-agent) launch cwd.
         workspaceRoot: this.workspaceRoot,
@@ -6643,13 +6655,8 @@ export class Manager {
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
-      const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
-      if (missing.length)
-        return { ok: false, error: `${connector.name} harness needs ${missing.join(", ")} on PATH - not found` };
-      if (entry.launch.variant && !connector.supportsModelVariant)
-        return { ok: false, error: `${connector.name} connector does not support model variants (variant)` };
-      if (entry.launch.prompt !== undefined && !connector.supportsPrompt)
-        return { ok: false, error: `${connector.name} connector does not support an initial prompt (prompt)` };
+      const harness = this.launchHarness(connector);
+      if ("refusal" in harness) return { ok: false, error: harness.refusal };
       let retainedSession: string | undefined;
       try {
         retainedSession = this.retainedSessionId(entry, connector);
@@ -6680,10 +6687,6 @@ export class Manager {
           return { ok: false, error: `retained manifest agent ${launchSource.requested} is missing or its hash changed; refusing same-principal resume` };
         launchOptions = spec.launchOptions;
         exact = spec.continuity === "exact";
-        // An exact seat reopens its retained session or fails, like its manifest launch, so the
-        // connector must honor reopenSession before the batch starts any child.
-        if (exact && (!connector.supportsSessionReopen || !connector.supportsSessionContinuation))
-          return { ok: false, error: `${connector.name} connector does not support exact session continuity (continuity: exact)` };
       } else {
         try {
           launchOptions = loadAgentFile(entry.launch.source.configPath).launchOptions;
@@ -6691,6 +6694,10 @@ export class Manager {
           return { ok: false, error: (e as Error).message };
         }
       }
+      // Asked once `exact` is known: an exact seat reopens its retained session or fails, like its
+      // manifest launch, so the connector must honor reopenSession before the batch starts any child.
+      const unsupported = this.capabilityRefusal(connector, { variant: entry.launch.variant, prompt: entry.launch.prompt, exact });
+      if (unsupported) return { ok: false, error: unsupported };
 
       let authority: Pick<PreparedResume, "id" | "creds" | "userAuth">;
       try {
@@ -6733,6 +6740,7 @@ export class Manager {
           events: entry.launch.events,
           mcpServers,
           envAllow,
+          resolvedBinaries: harness.binaries,
           workspaceRoot: this.workspaceRoot,
           cwd: entry.launch.cwd,
         };

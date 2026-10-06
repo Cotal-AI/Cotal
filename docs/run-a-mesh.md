@@ -192,7 +192,9 @@ Before reporting ready, the manager resolves every installed connector's declare
 binaries against its own environment. A missing binary does not stop unrelated manager work: boot
 continues, but prints a named `connector <name> unavailable` line and records that reason in the
 manager's `status` response. Available connector rows record the absolute paths boot resolved.
-Spawn keeps the same pre-mint check as a backstop for connectors registered after boot.
+A spawned seat and a seat resumed after `cotal down --preserve-state` both launch from those paths,
+and both are refused with the recorded reason when their connector's row is unavailable. A
+connector registered after boot has no row, so both check its binaries on PATH before launching.
 
 On an authenticated manager start, unfinished static lifecycle rows reconcile while the control
 endpoint is already serving. The manager `status` response reports
