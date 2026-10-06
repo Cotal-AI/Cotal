@@ -2,7 +2,7 @@ import { spawn as spawnProcess, execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { hostname } from "node:os";
-import { resolve as resolvePath } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import {
   agentFilePath,
   connectorServers,
@@ -830,9 +830,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     def = loadAgentFile(path);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
+    const fromEnv = !values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : "";
     // The not-found text names the mesh's space and server, which for a handoff are its values.
     if (handoffText !== undefined) {
       console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
+    } else if (code === "ENOENT" && path !== join(target.personaRoot, `${ref}.md`)) {
+      // A path reference opened that one file and never read the catalog, so name the file.
+      console.error(c.red(`✗ no persona "${ref}"${fromEnv} - ${path} not found`));
     } else if (code === "ENOENT") {
       // A refusal that names no root is why this bug cost an hour. The old text asserted an absence
       // ("no default persona yet") and prescribed a remedy (`cotal setup`) without saying WHERE it
@@ -845,7 +849,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         c.red(
           ref === "default" && !defaultPersona
             ? `✗ no default persona in ${where} - run \`cotal setup\` here to seed one into that directory, or name a persona: \`cotal spawn <name>\``
-            : `✗ no persona "${ref}"${!values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : ""} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
+            : `✗ no persona "${ref}"${fromEnv} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
         ),
       );
     } else {

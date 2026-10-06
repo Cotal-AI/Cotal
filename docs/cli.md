@@ -1031,7 +1031,11 @@ not a request to publish to it, so writing an event channel into an agent file's
 does not override `--no-events`.
 
 The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
-target mesh's `.cotal/agents/`; the launch flags override the file. On a user-auth mesh the
+target mesh's `.cotal/agents/` when it is a bare name. A reference that contains a path separator or
+ends in `.md` is loaded from that file. A relative path resolves against the mesh root, except that
+an enrollment or a managed handoff resolves `--config` against the working directory. A missing
+persona is refused with the catalog directory or the file that was checked. The launch flags
+override the file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
 spawn is refused with that explanation before any request is sent. Foreground runs the agent
 attached to your terminal; `--detach` hands the launch to the running manager. Both modes get the
