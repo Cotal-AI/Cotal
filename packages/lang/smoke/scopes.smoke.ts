@@ -795,26 +795,26 @@ log(r.a);
 }
 
 {
-  // `conclave` is a scope but not a race: one body, nothing beside it, so the depth does not move
-  // and a write from inside it is as ordered as a write anywhere else.
+  // `conclave` raises the depth though its one body has nothing to race: a settled conclave is
+  // replayed without entering its body, so a write from it would happen on the live run only. The
+  // body comes from a call, so the validator cannot follow it and only the runtime half refuses.
   const IN_CONCLAVE = `
 let notes = "";
+function bodies() {
+  return { b: async (ch) => { notes = ch.channel; return 1; } };
+}
 const a = await spawn("a", { name: "a" });
-await conclave([a], async (ch) => { notes = ch.channel; return 1; }, { name: "t" });
+await conclave([a], bodies().b, { name: "t" });
 log(notes);
 `;
-  logged.length = 0;
-  // Caught: a conclave that DID raise the depth refuses the write, and an uncaught throw would kill
-  // the suite from outside every assertion rather than reddening this claim.
   let caught: unknown;
   try {
     await run(IN_CONCLAVE, { runId: "c-8", handler: new SimHandler({}), onLog: sink });
   } catch (e) {
     caught = e;
   }
-  ok("a conclave body may write an outer binding at runtime too, not just past the validator",
-    caught === undefined && typeof logged[0]?.[0] === "string" && (logged[0][0] as string).length > 0,
-    caught === undefined ? logged : String(caught).slice(0, 80));
+  ok("a conclave body may not write an outer binding at runtime either, past the validator",
+    (caught as { code?: string })?.code === "L2032", String(caught).slice(0, 100));
 }
 
 // ---- 9) `now()` after a scope is the same value live and on resume ----------------------------

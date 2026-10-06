@@ -115,8 +115,9 @@ class Env {
    * branch the validator cannot resolve to a function node — one that arrives through a parameter
    * or a computed record — is not proven, and banning that shape outright would cost more than the
    * hazard. So the depth travels with the binding: a write from inside a concurrent branch to a
-   * binding declared OUTSIDE it is refused where it happens. `conclave` does not raise the depth,
-   * because its single body has nothing to race.
+   * binding declared OUTSIDE it is refused where it happens. `once` and `conclave` raise it too,
+   * though their single body has nothing to race, because a settled one is replayed without
+   * entering its body.
    */
   constructor(
     readonly parent: Env | null,
@@ -279,9 +280,7 @@ class Frame {
       this.keys.branch(kind, name, occurrence, branchKey),
       this.clock.fork(),
       this.signal.child(),
-      // `conclave` opens a scope but not a RACE: one body, nothing running beside it, so a write
-      // from inside it is as ordered as a write anywhere else and the depth does not move.
-      kind === "conclave" ? this.depth : this.depth + 1,
+      this.depth + 1,
     );
   }
 }

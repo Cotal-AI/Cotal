@@ -1294,10 +1294,10 @@ await parallel({
   const arm = root.branch("parallel", null, occurrence, "a");
 
   ok("a concurrent branch raises the depth", arm.depth === root.depth + 1, { root: root.depth, arm: arm.depth });
-  // `conclave` opens a scope but not a race: one body, nothing running beside it, so a write from
-  // inside it is as ordered as a write anywhere else (interpret.ts, Frame.branch).
+  // `conclave` has no sibling to race, but a settled conclave is replayed without entering its
+  // body, so a write from inside it would happen on the live run only (interpret.ts, Frame.branch).
   const room = root.branch("conclave", null, root.keys.nextScope("conclave", null), "0");
-  ok("and a conclave body does NOT, because it has no sibling to race", room.depth === root.depth, room.depth);
+  ok("and so does a conclave body", room.depth === root.depth + 1, room.depth);
 
   // A branch inherits the clock it forked from and then moves on its own. Sharing one clock would
   // let a sibling's effect decide a race the recorded clocks should decide.
@@ -1329,8 +1329,8 @@ await parallel({
   const inArm = await caught(() => withFrame(arm, () => h.ctx.set(outer, "n", 1)));
   ok("a value born outside a concurrent branch refuses a write inside it", codeOf(inArm) === "L2032", String(inArm));
   const inRoom = await caught(() => withFrame(room, () => h.ctx.set(outer, "n", 2)));
-  ok("and the same write inside a conclave body is allowed, because the depth did not move", inRoom === undefined, String(inRoom));
-  ok("and it actually landed", outer.n === 2, outer.n);
+  ok("and so does the same write inside a conclave body", codeOf(inRoom) === "L2032", String(inRoom));
+  ok("and neither landed", outer.n === 0, outer.n);
 }
 
 {

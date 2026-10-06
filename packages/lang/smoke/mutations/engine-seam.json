@@ -299,14 +299,14 @@
       "note": "A scope cancels its LOSERS. On a shared signal the first loser cancels the run that is still waiting for the winner, so a race would end every program that used one."
     },
     {
-      "name": "a conclave body raises the depth like a racing branch",
+      "name": "a conclave body keeps its parent's depth",
       "file": "packages/lang/src/engine/frame.ts",
-      "find": "      kind === \"conclave\" ? this.depth : this.depth + 1,",
-      "replace": "      this.depth + 1,",
-      "expectRed": "and a conclave body does NOT, because it has no sibling to race",
+      "find": "      this.depth + 1,",
+      "replace": "      kind === \"conclave\" ? this.depth : this.depth + 1,",
+      "expectRed": "and so does a conclave body",
       "completionMarker": "ok a concurrent branch raises the depth",
-      "cell": "and a conclave body does NOT, because it has no sibling to race",
-      "note": "A conclave opens a scope but not a race: one body, nothing running beside it, so a write from inside it is as ordered as a write anywhere else. Under the mutant L2032 refuses writes that the walker allows, and the refusal names a nondeterminism that cannot occur."
+      "cell": "and so does a conclave body",
+      "note": "A settled conclave is replayed without entering its body, so a write from inside it to something outside happens on the live run and never on resume. Under the mutant the runtime half of L2032 lets that write through on this engine, and the resumed run reads the old value."
     },
     {
       "name": "a child signal does not inherit a parent that is already cancelled",

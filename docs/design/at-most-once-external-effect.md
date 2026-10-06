@@ -363,8 +363,8 @@ change.
     path, so neither engine carries a flag of its own.
 - **`packages/lang/src/interpret.ts`** (walker, version 1) and **`packages/lang/src/engine/frame.ts`**
   (compiled engine, version 2): no change. `Frame.branch` and `EngineFrame.branch` raise the depth
-  for every kind but `conclave`, which is the rule `once` takes (§4.1), so the runtime half of L2032
-  refuses a captured write inside `once` on both engines.
+  for every kind, which is the rule `once` takes (§4.1), so the runtime half of L2032 refuses a
+  captured write inside `once` on both engines.
 - **`packages/lang/src/engine/ctx.ts`** (compiled engine, version 2): admits `once` where it admits
   the other scopes, its body at index 0 being a function value as `parallel`'s branches are, so the
   emitter's deferral rule (`transform/emit.ts`, bodies at index 1) is untouched.

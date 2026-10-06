@@ -1164,15 +1164,14 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   // order, the binding ends up holding a different value, and the resumed run takes a path it never
   // recorded — with no divergence raised, because no effect's inputs changed.
   //
-  // `conclave` is deliberately not here. Its body is a single thunk with nothing to race, so a
-  // write from inside it is as ordered as a write anywhere else in the program. `once` is here for
-  // another reason: a settled `once` is replayed without entering its body, so a write from it
-  // happens on the live run only.
-  if (name === "parallel" || name === "race" || name === "fanOut" || name === "once") {
+  // `once` and `conclave` have one body and nothing to race, and are here for another reason: a
+  // settled one is replayed without entering its body, so a write from it happens on the live run
+  // only.
+  if (name === "parallel" || name === "race" || name === "fanOut" || name === "once" || name === "conclave") {
     // One `seen` set per combinator call: two branches calling the same helper is one defect in
     // that helper, not two, and reporting it twice tells an author to fix one line twice.
     const seen = new Set<AnyNode>();
-    const thunks = name === "fanOut" ? branchThunks(args[1], v, scope) : branchThunks(args[0], v, scope);
+    const thunks = branchThunks(name === "fanOut" || name === "conclave" ? args[1] : args[0], v, scope);
     for (const thunk of thunks) checkCapturedWrites(thunk, name, v, seen);
   }
 }
@@ -1265,12 +1264,12 @@ function rootIdentifier(node: AnyNode | undefined): AnyNode | undefined {
 }
 
 function capturedWrite(at: AnyNode, name: string, combinator: string, v: Validator): void {
-  if (combinator === "once") {
+  if (combinator === "once" || combinator === "conclave") {
     v.fail(
       "L2032",
       at,
-      `\`${name}\` is declared outside this \`once\` and written inside it. A settled \`once\` is replayed without entering its body, so the write happens on the live run and never on resume, and the resumed run reads the old value and takes a path it never recorded, with no divergence raised.`,
-      "Return the value from the body and read it out of `once`'s result.",
+      `\`${name}\` is declared outside this \`${combinator}\` and written inside it. A settled \`${combinator}\` is replayed without entering its body, so the write happens on the live run and never on resume, and the resumed run reads the old value and takes a path it never recorded, with no divergence raised.`,
+      `Return the value from the body and read it out of \`${combinator}\`'s result.`,
       combinator,
     );
     return;
