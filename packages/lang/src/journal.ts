@@ -15,7 +15,7 @@
 import { canonicalize } from "json-canonicalize";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { RuntimeFault } from "./errors.js";
-import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
+import { type JournalKind, type StepKey, scopeTraits, stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
 
 export type EntryState = "pending" | "settled";
@@ -346,9 +346,6 @@ function bindingWithoutCanonicalForm(entry: JournalEntry, field: RecordedField, 
   );
 }
 
-/** The entry kinds whose `result` is an assembly of branches rather than one handler's value. */
-const SCOPE_KINDS: ReadonlySet<string> = new Set(["parallel", "race", "fanOut", "conclave", "once"]);
-
 /** What the crossing rule calls the value it is refusing, so its path reads as the record's own. */
 const LABEL_OF: Record<RecordedField, string> = {
   external: "the recorded binding",
@@ -455,7 +452,7 @@ export class Journal {
       // list of branch NAMES (strings) and needs no exemption.
       if (e.result !== undefined) {
         try {
-          if (SCOPE_KINDS.has(e.kind)) {
+          if (scopeTraits(e.kind) !== undefined) {
             const assembled = e.result as { readonly branches?: unknown; readonly value?: unknown };
             if (assembled.branches !== undefined) assertCrossable(assembled.branches, "the recorded branch list");
             assertScopeValueCrossable(assembled.value, "the recorded result.value", e.kind);

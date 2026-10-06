@@ -164,6 +164,7 @@ export {
   holdRequestId,
   programHashOf,
   scopePathString,
+  scopeTraits,
   stepKeyEquals,
   stepKeyString,
   type ScopeFrame,

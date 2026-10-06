@@ -25,7 +25,7 @@ import {
   STEP_NAME_RE,
   primitiveDoc,
 } from "./primitives.js";
-import { KEY_RESERVED_RE } from "./keys.js";
+import { KEY_RESERVED_RE, scopeTraits } from "./keys.js";
 import { isDuration, parseDuration } from "./duration.js";
 import { ADMITTED_NODES, FORBIDDEN_NODES, STRUCTURAL_NODES } from "./syntax.js";
 import { MUTATING_METHODS } from "./library.js";
@@ -1167,7 +1167,7 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   // `once` and `conclave` have one body and nothing to race, and are here for another reason: a
   // settled one is replayed without entering its body, so a write from it happens on the live run
   // only.
-  if (name === "parallel" || name === "race" || name === "fanOut" || name === "once" || name === "conclave") {
+  if (spec.opensScope) {
     // One `seen` set per combinator call: two branches calling the same helper is one defect in
     // that helper, not two, and reporting it twice tells an author to fix one line twice.
     const seen = new Set<AnyNode>();
@@ -1264,7 +1264,7 @@ function rootIdentifier(node: AnyNode | undefined): AnyNode | undefined {
 }
 
 function capturedWrite(at: AnyNode, name: string, combinator: string, v: Validator): void {
-  if (combinator === "once" || combinator === "conclave") {
+  if (!scopeTraits(combinator)?.assembles) {
     v.fail(
       "L2032",
       at,

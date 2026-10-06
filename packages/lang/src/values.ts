@@ -10,7 +10,7 @@
 
 import { createHash } from "node:crypto";
 import type { ScopeFrame } from "./keys.js";
-import { scopePathString } from "./keys.js";
+import { scopePathString, scopeTraits } from "./keys.js";
 
 /** Deep-freeze a value on its way across an effect boundary. Cycles are not reachable here: a
  *  value that crosses a boundary has to canonicalize, and a cycle does not. */
@@ -243,11 +243,9 @@ export class Prng {
  * fence in `perform.ts` and the load scan in `journal.ts`. Two copies of a rule this positional is
  * how the two ends stop agreeing.
  */
-const ASSEMBLING_SCOPES: ReadonlySet<string> = new Set(["parallel", "race", "fanOut"]);
-
 export function assertScopeValueCrossable(value: unknown, where: string, scopeKind: string): void {
   if (value === undefined) return;
-  if (!ASSEMBLING_SCOPES.has(scopeKind)) {
+  if (!scopeTraits(scopeKind)?.assembles) {
     assertCrossable(value, where);
     return;
   }

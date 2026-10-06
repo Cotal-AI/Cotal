@@ -46,6 +46,7 @@ import {
   RunDivergence,
   UnwalkableScope,
   ScopeBranchMissing,
+  scopeTraits,
   stepKeyString,
   type EffectContext,
   type EffectHandler,
@@ -57,9 +58,6 @@ import {
   type StepKey,
 } from "@cotal-ai/lang";
 import { assertPlanningVersion, inspectCompiled } from "./inspect-compiled.js";
-
-/** The journal kinds that open a scope, i.e. whose entry can ENCLOSE a cut point. */
-const SCOPE_KINDS = new Set<string>(["parallel", "race", "fanOut", "conclave", "once"]);
 
 /** One reason a fork was refused, carrying the code a reader repairs against — the `L` catalogue
  *  in `@cotal-ai/lang`. */
@@ -285,16 +283,16 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
   // live from it. That is what a fork means here.
   const enclosing = entries.filter((e) => {
     const k = journalEntryKeyString(e);
-    return SCOPE_KINDS.has(e.kind) && req.fromStepKey.startsWith(`${k}/b:`);
+    return scopeTraits(e.kind) !== undefined && req.fromStepKey.startsWith(`${k}/b:`);
   });
 
-  // Re-entering is only sound for a scope whose branches all RUN (`once` runs its one branch). A
+  // Re-entering is only sound for a scope that decides nothing of its own (its `reenters` trait). A
   // `race` decided a winner, and a child that re-enters would race again — re-deciding, on a fresh
   // handler, something the parent recorded. That is not a fork of the run, it is a different run.
   // Refused rather than re-raced, and refused rather than copied-as-settled, because both of those
   // are silent.
   for (const e of enclosing) {
-    if (e.kind === "parallel" || e.kind === "fanOut" || e.kind === "once") continue;
+    if (scopeTraits(e.kind)?.reenters) continue;
     refusals.push({
       code: "L5020",
       step: journalEntryKeyString(e),
