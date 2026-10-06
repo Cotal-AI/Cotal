@@ -26,7 +26,7 @@ import { abortIfCancel } from "../lib/cancel.js";
 import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, webUp, WEB_URL } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, recordedWebUrl } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 
@@ -440,7 +440,7 @@ export async function readyCard(cwd: string): Promise<void> {
   const mesh = await meshStatus(cwd);
   const m = await machineStatus();
   const connectorRows = await cardConnectorRows();
-  const web = await webUp();
+  const web = recordedWebUrl({ root: mesh.root, space: mesh.space });
   const mgr = managerUp();
   const cmd = displayCmd();
   // Read the demo marker out of the catalog the card's own `spawn` hints will resolve — the same
@@ -462,7 +462,7 @@ export async function readyCard(cwd: string): Promise<void> {
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
       ...connectorRows.map((r) => line(r.state === "ok", `${r.label.padEnd(8)} ${dim(r.text)}`)),
       line(mesh.reachable !== false, `mesh     ${dim(meshLine)}`),
-      line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup`)}`),
+      line(web !== undefined, `web      ${dim(web ?? (webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup`))}`),
       line(mgr, `manager  ${dim(mgr ? "running" : `not running · start: ${cmd} up, or: ${cmd} supervise`)}`),
       "",
       ...(remote ? [] : [`start the mesh:  ${dim(`${cmd} up --detach`)}`]),

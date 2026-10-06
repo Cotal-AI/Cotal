@@ -883,7 +883,10 @@ nothing. The manager row asks the service endpoint once: a live process that doe
 `not serving`, and a probe that could not be made leaves the row `running · service unchecked`.
 A process row whose PID record exists but cannot be read reads `pidfile unreadable` with the error,
 and the other rows still print. A live manager whose delivery-aware marker cannot be read keeps its row
-and names the failure as `delivery-aware marker unreadable` with the error.
+and names the failure as `delivery-aware marker unreadable` with the error. The `Web process` row
+prints the address the selected mesh's dashboard recorded in `web.session` once it was listening,
+while the PID in its `web.pid` is alive. Otherwise it reads `down`, or `not installed` without the
+web extension.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
 stale with the last successful snapshot timestamp and the refresh error. It never calls that state

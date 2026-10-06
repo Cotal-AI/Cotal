@@ -39,7 +39,7 @@ ambiguous or broken target refuses rather than choosing a root.
 persona if it's missing,
 re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-scan gate as first
 run, so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
-installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`connectorStatusRows`/`meshStatus`/`webUp`/`managerUp` for NATS, the rows
+installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`connectorStatusRows`/`meshStatus`/`recordedWebUrl`/`managerUp` for NATS, the rows
 connector setup providers report, the mesh, the web dashboard, and the manager) and for anything down it prints the exact command to start it
 (`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
 still launches nothing.
@@ -152,7 +152,8 @@ the built-in connectors (`SEEDED_EXTENSIONS`), so it always matches the CLI vers
 separate install. Start it with `cotal web`; it records
 `.cotal/web.pid`, self-registers that process with `down`, and is addressed as
 `http://cotal.localhost:7799` (binds loopback; `*.localhost` resolves in Chrome/Firefox/Edge,
-Safari may need plain `127.0.0.1`). `webUp()` probes the port for setup's status card.
+Safari may need plain `127.0.0.1`). Setup's status card prints the address the dashboard recorded in
+`.cotal/web.session` once it was listening, while the PID in `.cotal/web.pid` is alive.
 
 All recorded local processes self-register `local-process` descriptors. Bare `cotal down` resolves
 the full set and stops it in dependency order; `cotal down manager` (or another component name)
