@@ -176,8 +176,9 @@ function yamlEscape(s) {
 // GitHub, so only its links to SPEC.md and top-level docs pages must match the group map.
 // Readers follow the links of the rendered index on GitHub, and a hand-written reading of
 // its Markdown or HTML misses spellings a browser follows, so the index is rendered, parsed
-// as HTML, and each link resolved as a URL against the index's GitHub address. A link back
-// to the index itself, such as one to a heading, names no page.
+// as HTML, and each link resolved as a URL against the index's GitHub address. GitHub serves
+// a percent-encoded path as the same file, so paths are compared decoded. A link back to the
+// index itself, such as one to a heading, names no page.
 const indexUrl = new URL(`${GITHUB_BLOB}/docs/README.md`);
 const blobPath = new URL(`${GITHUB_BLOB}/`).pathname;
 const indexed = new Set();
@@ -186,8 +187,10 @@ const visit = (node) => {
   const href = (node.nodeName === 'a' || node.nodeName === 'area') && node.attrs.find((attr) => attr.name === 'href');
   if (!href) return;
   const url = new URL(href.value, indexUrl);
-  if (url.origin !== indexUrl.origin || !url.pathname.startsWith(blobPath) || url.pathname === indexUrl.pathname) return;
-  const rel = decodeURIComponent(url.pathname.slice(blobPath.length));
+  if (url.origin !== indexUrl.origin) return;
+  const path = decodeURIComponent(url.pathname);
+  if (!path.startsWith(blobPath) || path === indexUrl.pathname) return;
+  const rel = path.slice(blobPath.length);
   if (rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel)) indexed.add(rel);
 };
 visit(parseHtml(marked.parse(readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf8'))));
