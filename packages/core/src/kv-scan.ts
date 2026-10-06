@@ -1,7 +1,6 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
 import { JetStreamApiCodes, JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
-import { TimeoutError } from "@nats-io/nats-core";
 import { isPublishPermissionDenied } from "./endpoint.js";
 
 /**
@@ -163,7 +162,8 @@ export async function liveKvEntries(
   // nats.js rebuilds the consumer after a stall or a sequence gap as `<prefix>_<serial + 1>` and sends
   // that create without awaiting it, so a delete the broker answers first lets the consumer land after
   // cleanup. The client's consumer API is shared by every scan, so this consumer gets its own view of
-  // it that records each create. `answered` is false when the client stopped waiting for the reply.
+  // it that records each create. `answered` holds only for the broker's own reply: a timeout or a closed
+  // connection rejects the request without saying whether the create landed.
   // The client sets `api` and `name` on every push consumer it returns; the cast only hides them from the type.
   const own = oc as unknown as { api: ConsumerAPI; name: string };
   const api = own.api;
@@ -171,7 +171,7 @@ export async function liveKvEntries(
   own.api = Object.assign(Object.create(api) as ConsumerAPI, {
     add: (...args: Parameters<ConsumerAPI["add"]>) => {
       const created = api.add(...args);
-      owned.push({ name: args[1].name!, answered: created.then(() => true, (e) => !(e instanceof TimeoutError)) });
+      owned.push({ name: args[1].name!, answered: created.then(() => true, (e) => e instanceof JetStreamApiError) });
       return created;
     },
   });
