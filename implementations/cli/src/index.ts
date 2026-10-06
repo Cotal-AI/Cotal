@@ -1,9 +1,9 @@
 import { registry, type Command } from "@cotal-ai/core";
 import {
   serverFlag, spaceFlag, targetFlags,
-  MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type LocalProcess,
 } from "@cotal-ai/workspace";
+import { MANAGER_PROCESS } from "./lib/manager-proc.js";
 import { up, upComplete, upFlags } from "./commands/up.js";
 import { runtimes } from "./commands/runtimes.js";
 import { down, downComplete } from "./commands/down.js";
@@ -478,14 +478,7 @@ const baseCommands: Command[] = [
 // TEMPLATES like `auth-service.{space}.pid` already was. A copied literal here is the defect this
 // closes: the manager and the daemon write one name and status/down looked up another.
 const baseProcesses: LocalProcess[] = [
-  {
-    kind: "local-process",
-    name: "manager",
-    label: "manager",
-    order: 10,
-    pidFile: MANAGER_PIDFILE,
-    artifacts: [MANAGER_DELIVERY_AWARE_MARKER, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY],
-  },
+  MANAGER_PROCESS,
   DELIVERY_PROCESS,
   {
     kind: "local-process",

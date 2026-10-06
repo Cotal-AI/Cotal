@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { randomBytes } from "node:crypto";
-import { canonicalLocalProcessPath, MANAGER_PIDFILE, type LocalProcessContext } from "./local-process.js";
+import { canonicalLocalProcessPath, MANAGER_PIDFILE, stopReservationPath, type LocalProcessContext } from "./local-process.js";
 import {
   assertRecordIdentity,
   identityPinPath,
@@ -208,7 +208,7 @@ export function armManagerShutdownIntent(
   tokenAt: ProcessStartTokenReader = defaultStartToken,
 ): void {
   const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, context);
-  if (attempt.stopper.marker !== `${pidPath}.stopping`)
+  if (attempt.stopper.marker !== stopReservationPath(pidPath))
     throw new Error("cannot arm --with-agents: stop reservation marker is not this manager's; destructive policy was not published");
   let stopperPid: number | undefined;
   try { stopperPid = parsePid(readFileSync(attempt.stopper.marker, "utf8")); } catch { stopperPid = undefined; }
@@ -288,11 +288,11 @@ export function consumeManagerShutdownIntent(
       if (recordedPid !== pid)
         return { withAgents: false, warning: "ignored legacy manager shutdown intent because the manager pid record changed; managed agents were spared" };
       let reservationOwner: number | undefined;
-      try { reservationOwner = parsePid(readFileSync(`${pidPath}.stopping`, "utf8")); } catch { reservationOwner = undefined; }
+      try { reservationOwner = parsePid(readFileSync(stopReservationPath(pidPath), "utf8")); } catch { reservationOwner = undefined; }
       if (reservationOwner !== parsed.stopper.pid)
         return { withAgents: false, warning: "ignored stale legacy manager shutdown intent from a different stop attempt; managed agents were spared" };
       let reservation: string | undefined;
-      try { reservation = reservationIdentity(`${pidPath}.stopping`); } catch { reservation = undefined; }
+      try { reservation = reservationIdentity(stopReservationPath(pidPath)); } catch { reservation = undefined; }
       if (reservation !== parsed.stopper.reservation)
         return { withAgents: false, warning: "ignored legacy manager shutdown intent because its stop reservation inode changed; managed agents were spared" };
       if (probeLiveness(parsed.stopper.pid) === "dead")
@@ -303,7 +303,7 @@ export function consumeManagerShutdownIntent(
     if (targetVerdict.kind !== "match")
       return { withAgents: false, warning: `ignored manager shutdown intent with ${targetVerdict.kind} target identity; managed agents were spared` };
     let reservationOwner: number | undefined;
-    try { reservationOwner = parsePid(readFileSync(`${pidPath}.stopping`, "utf8")); } catch { reservationOwner = undefined; }
+    try { reservationOwner = parsePid(readFileSync(stopReservationPath(pidPath), "utf8")); } catch { reservationOwner = undefined; }
     if (reservationOwner !== parsed.stopper.pid)
       return { withAgents: false, warning: "ignored stale manager shutdown intent from a different stop attempt; managed agents were spared" };
     const stopperVerdict = assertRecordIdentity(parsed.stopper, tokenAt);

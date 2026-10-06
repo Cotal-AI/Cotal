@@ -12,9 +12,9 @@ operator-only maintenance verbs. Every command's full flag set is in the
 `cotal up` brings up the whole local stack and bare `cotal down` stops it. Managed
 agents stay running as unmanaged OS processes; pass `--with-agents` to take them
 with the stack. Seats of the built-in pty runtime run inside the manager process, so
-they stop with the manager either way. Ctrl-C on a foreground `up` follows the same sparing rule
-and prints the same report as bare down; when the manager cannot prove it can spare,
-Ctrl-C refuses the teardown and leaves the stack running, and you end it with
+they stop with the manager either way. Ctrl-C on a foreground `up` stops the manager through the
+same stop as bare down and prints the same report; when that stop is refused, for example because
+the manager cannot prove it can spare, Ctrl-C leaves the stack running, and you end it with
 `cotal down --with-agents`. A current manager records what its stop does with its seats before
 bare down signals it. A pre-pin legacy manager instead receives a reduced-guarantee
 warning and is signalled according to the documented upgrade contract. Its running binary

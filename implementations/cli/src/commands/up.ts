@@ -114,11 +114,6 @@ import {
   writeBrokerPolicy,
   removePidPair,
   writePidPair,
-  localProcessPath,
-  MANAGER_PIDFILE,
-  assertManagerCanSpare,
-  type ManagerSpareSeats,
-  verifyIdentityPin,
   isLoopbackHost,
   connectUserControlOrThrow,
   userViewAuth,
@@ -135,12 +130,10 @@ import { deliveryStoppedByDown, deliveryUp, ensureControlPlane, ensureDelivery, 
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
-import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "../lib/teardown-spare.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
 import { failManifest } from "./topology.js";
-import { reserveStop } from "./down.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { askManager, type ControlAuth } from "../lib/control.js";
@@ -1220,19 +1213,22 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
     if (!resumeAttempt) process.exit(1);
   });
-  // The control plane is coupled to the broker: stop the delivery daemon AND the detached manager
+  // The control plane is coupled to the broker: stop the detached manager AND the delivery daemon
   // (AND the space's user-auth service) when this `up` stops (Ctrl-C), so none outlives the broker
   // it serves — a surviving manager would reconnect-loop invisibly against the dead (or the NEXT)
   // broker (the documented orphan-supervisor failure mode). All kill by pidfile, symmetric; the
   // auth service's pid is space-scoped so no other space's daemon can ever be hit.
+  // The manager goes first, in `cotal down`'s order, through the stop `cotal down` runs (#1307): it
+  // holds the stop reservation, asserts the exact manager can spare its seats before any signal,
+  // reports the seats left behind, and escalates a wedged manager to SIGKILL. When that stop throws
+  // the manager may still be serving, so NOTHING else is signalled — no delivery, no auth, no broker:
+  // the refusal is printed with the reap route and the latch is released, so the stack keeps running
+  // in the foreground; the operator ends it with `cotal down --with-agents` from another terminal,
+  // and the broker-exit handler below already ends `up` when the broker goes.
   // stopDelivery is the stop `cotal down delivery` performs (reservation, SIGKILL escalation); the
   // rest of the teardown must run even if it fails — the failure is logged, never swallowed
-  // silently. Order preserved: delivery, manager, auth, broker.
-  // The manager stop is the SPARING one `cotal down` performs (#1307): the seat snapshot is taken
-  // while the manager still answers, the spare capability of the exact recorded process is asserted
-  // before any signal, and the seats left behind are reported with the reap route. Teardown is
-  // AWAITED before the broker is signalled — the same order the broker-exit handler below uses — so
-  // manager teardown never races a broker that is already going away.
+  // silently. Teardown is AWAITED before the broker is signalled, so it never races a broker that is
+  // already going away.
   let stopping = false;
   let teardown: Promise<void> | undefined;
   const stop = () => {
@@ -1242,50 +1238,15 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // `stopping` when it is done.
     if (child.exitCode !== null || child.signalCode !== null) return;
     teardown = (async () => {
-      const managerContext = { root: cotalRoot(), space };
-      let spared: SpareSeatRow[] | undefined;
-      let spareSeats: ManagerSpareSeats | undefined;
-      let legacyManagerSpareUnverified = false;
-      const managerPidPath = localProcessPath(MANAGER_PIDFILE, managerContext);
-      const stopMarker = `${managerPidPath}.stopping`;
-      let reserved = false;
-      if (existsSync(managerPidPath)) {
-        const pin = verifyIdentityPin(managerPidPath);
-        if (pin.kind === "legacy") legacyManagerSpareUnverified = true;
-        else if (pin.kind === "match") {
-          spared = await listManagerSeatsForSpare(managerContext);
-          try {
-            // Taken before the capability read and held until the manager is gone, as bare `down`
-            // holds it, so a concurrent `cotal down` can neither stop this manager nor arm a reap
-            // while this stop is in flight.
-            reserveStop("manager", stopMarker);
-            reserved = true;
-            spareSeats = assertManagerCanSpare(managerContext, undefined, pin.record);
-          } catch (e) {
-            // THE CAPABILITY ASSERT IS THE SIGNAL GATE, the same rule bare `down` enforces inside
-            // its beforeSignal hook: a throw there signals nothing. Signal NOTHING here either — no
-            // manager, no delivery, no auth, no broker — print the refusal with the reap route, and
-            // release the latch so the stack keeps running in the foreground; the operator ends it
-            // with `cotal down --with-agents` from another terminal, and the broker-exit handler
-            // below already ends `up` when the broker goes.
-            if (reserved) rmSync(stopMarker, { force: true });
-            console.error(c.red(`! teardown: ${(e as Error).message}`));
-            console.error(c.red(`the stack is still running; to take managed agents with it, run: cotal down --with-agents`));
-            stopping = false;
-            return;
-          }
-        }
+      try {
+        await stopManager(space);
+      } catch (e) {
+        console.error(c.red(`! teardown: ${(e as Error).message}`));
+        console.error(c.red(`the stack is still running; to take managed agents with it, run: cotal down --with-agents`));
+        stopping = false;
+        return;
       }
       await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
-      try {
-        await stopManager(undefined, undefined, undefined, space);
-        if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
-        else if (spared) printSparedAgents(spared, spareSeats);
-      } catch (e) {
-        console.error(`! manager teardown: ${(e as Error).message}`);
-      } finally {
-        if (reserved) rmSync(stopMarker, { force: true });
-      }
       await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
       child.kill("SIGTERM");
     })();
@@ -1296,11 +1257,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // so a later `cotal spawn` doesn't try to join a dead mesh.
   child.on("exit", async (code, signal) => {
     removePidPair(cotalPath("nats.pid"), String(child.pid));
-    // One teardown at a time: a delivery stop started while another is in flight is refused the
-    // reservation that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
+    // One teardown at a time: a stop started while another is in flight is refused the reservation
+    // that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
     await teardown;
     await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
-    await stopManager(undefined, undefined, undefined, space).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
+    await stopManager(space).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
     await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
     // Unrecording (and the exit code below) both depend on WHY the broker is gone. `stopping` is
     // true only for the intended shutdown `stop()` drives (Ctrl-C, SIGTERM) — everything else here
@@ -2278,7 +2239,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // A leftover detached manager (its broker is gone — the reachability check above proved nothing
   // lives at this address) would win the fresh mesh's lease and the launch manager would refuse.
   // Stop it, so the manager started below WITH the launch spec is THE manager.
-  await stopManager(undefined, undefined, undefined, m.space);
+  await stopManager(m.space);
   let pid: number;
   let controlPlane = false;
   let authService = true;

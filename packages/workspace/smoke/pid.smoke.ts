@@ -26,11 +26,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   commandIsCotalDelivery, commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
-  type CommandReader,
 } from "../src/pid.js";
-// #969: the manager stop cells below grade the EPERM and outlived-SIGTERM refusals, which sit
-// AFTER the creation-identity gate. A bare-pid record is now (correctly) refused as a legacy
-// record before reaching them, so the fixtures write the pin a real launch writes.
+// #969: the delivery stop cells below grade the EPERM refusal, which sits AFTER the
+// creation-identity gate, so the fixtures write the pin a real launch writes.
 import { defaultStartToken, formatRecord } from "../src/pid.js";
 
 let pass = 0;
@@ -246,13 +244,8 @@ try {
   check("it refuses BEFORE the daemon, naming double-binding as the reason", /double-bind/i.test(preflightRefused ?? ""), preflightRefused?.slice(0, 90));
   check("the preflight leaves the manager pidfile untouched too", readFileSync(mgrPid, "utf8") === before);
 
-  // ── THE ORPHAN, which this PR's own EPERM fix made reachable ────────────────────────────────
-  // Resolving EPERM to `alive` is the headline fix. It also means the cutover preflight now
-  // RECOGNISES another user's live manager and tries to stop it. The old stopManager caught every
-  // signal failure as "already gone" and deleted the pidfile and marker regardless, so a process it
-  // was not permitted to signal was recorded as stopped while it kept running and kept its Plane-3
-  // bindings. A correct fix upstream reaching a latent destructive bug downstream is the worst
-  // shape available, and only a review with a kernel harness found it.
+  // The manager's signal path (an EPERM refusal, a process that outlives SIGTERM) is the shared
+  // `stopLocalProcess` now; these cells pin how the manager stop treats its own record.
   const { stopManager } = await import("../../../implementations/cli/src/lib/manager-proc.js");
   const alive = () => "alive" as const;
   const refuseSignal = (): never => {
@@ -260,35 +253,8 @@ try {
     e.code = "EPERM";
     throw e;
   };
-  writeFileSync(mgrPid, `${process.pid}\n`);
-  writeFileSync(join(root, ".cotal", "manager.delivery-aware"), `${process.pid}\n`);
-  writeFileSync(`${mgrPid}.identity`, formatRecord({ pid: process.pid, token: defaultStartToken(process.pid) ?? "0" }));
-  const beforeStop = readFileSync(mgrPid, "utf8");
-  // The record names a MANAGER for these cells: the injected probe supplies the liveness and this
-  // supplies the attribution, so the EPERM rule below is graded on the signal path and not on
-  // whether the fixture pid happens to look like a manager.
-  const asManager: CommandReader = () => ({ kind: "command", command: "node /usr/local/bin/cotal supervise --space main" });
-  let stopRefused: string | undefined;
-  try {
-    await stopManager(alive, refuseSignal, asManager);
-  } catch (e) {
-    stopRefused = (e as Error).message;
-  }
-  check("stopManager REFUSES when the signal is rejected, rather than reporting a stop", stopRefused !== undefined);
-  check("the refusal explains EPERM means another user's LIVE process", /another user/i.test(stopRefused ?? ""), stopRefused?.slice(0, 80));
-  check("THE PIDFILE SURVIVES a refused stop (the orphan this prevents)", readFileSync(mgrPid, "utf8") === beforeStop);
-  check("the delivery-aware marker survives it too", existsSync(join(root, ".cotal", "manager.delivery-aware")));
-
-  // A signal that is ACCEPTED is still not a death. The record goes only on proven death.
-  let outlived: string | undefined;
-  try {
-    await stopManager(alive, () => {}, asManager); // accepted, but the probe keeps saying alive
-  } catch (e) {
-    outlived = (e as Error).message;
-  }
-  check("stopManager REFUSES when the process outlives SIGTERM", outlived !== undefined);
-  check("and still leaves the pidfile in place", readFileSync(mgrPid, "utf8") === beforeStop);
-  check("a proven-dead manager IS cleared (the refusal is not blanket)", (writeFileSync(mgrPid, `${deadPid}\n`), await stopManager()) === "already-gone" && !existsSync(mgrPid), deadPid);
+  writeFileSync(mgrPid, `${deadPid}\n`);
+  check("a proven-dead manager IS cleared (the refusal is not blanket)", (await stopManager()) && !existsSync(mgrPid), deadPid);
 
   const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
 
@@ -309,7 +275,7 @@ try {
   check("the malformed pidfile SURVIVES", existsSync(mgrPid));
   check("and so does the marker beside it", existsSync(join(root, ".cotal", "manager.delivery-aware")));
   writeFileSync(mgrPid, "");
-  check("an EMPTY pidfile IS cleared (a husk, not a claim)", (await stopManager()) === "already-gone" && !existsSync(mgrPid));
+  check("an EMPTY pidfile IS cleared (a husk, not a claim)", (await stopManager()) && !existsSync(mgrPid));
 
   writeFileSync(delPid, "garbled\n");
   let delMalformed: string | undefined;

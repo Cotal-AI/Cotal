@@ -1,4 +1,4 @@
-/** The spare side of a stack teardown, shared by `down` and the foreground `up` Ctrl-C handler.
+/** The spare side of a manager stop, which `stopManager` runs for `down` and every `up` teardown.
  *
  *  One policy, one implementation: a stack stop that is not `--with-agents` snapshots the manager's
  *  seats, verifies the exact manager can release its local custody, and reports the agents left

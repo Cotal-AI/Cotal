@@ -212,10 +212,10 @@ than keeping or stopping it: `cotal down manager` first. For a split topology wi
 host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
-only what actually started. Ctrl-C on a foreground `up` stops the stack and reports managed agents
-under the same rule as bare `cotal down` (see [`down`](#down)): when the manager cannot prove it can
-spare, Ctrl-C refuses the teardown, prints the refusal with the reap route, and leaves the stack
-running. The `-f` form is a
+only what actually started. Ctrl-C on a foreground `up` stops the manager through the same stop as
+bare `cotal down` (see [`down`](#down)), then the rest of the stack, and reports managed agents
+under the same rule: when the manager stop is refused, Ctrl-C prints the refusal with the reap route
+and leaves the stack running. The `-f` form is a
 [manifest deploy](#manifest-deploys).
 
 A repair `up` on a mesh whose broker died reopens the store its record names, and refuses a
@@ -329,10 +329,14 @@ when their runtime lets them outlive the manager. Before signalling the manager 
 capability of the exact recorded manager, which records what that manager's stop does with its
 seats, and it reports the agents left behind plus `cotal down --with-agents` as the explicit reap.
 The built-in pty runtime keeps each PTY inside the manager process, so those seats cannot outlive
-it: every manager stop stops and deprovisions them, and `down` reports them as stopped. Ctrl-C on a
-foreground `cotal up` follows the same rule: it verifies the spare capability, stops the stack, and
-prints the same report. When the capability cannot be verified, Ctrl-C
-refuses the teardown and leaves the stack running; end it with `cotal down --with-agents`.
+it: every manager stop stops and deprovisions them, and `down` reports them as stopped. Every manager
+stop the CLI makes runs this one path: `down`, Ctrl-C on a foreground `cotal up`, the teardown after
+that `up`'s broker exits, the leftover-manager stop before `cotal up -f`, and the delivery cutover.
+Each holds the manager's stop reservation, so a second stop while one is in flight is refused and
+names the process holding it, and each sends `SIGKILL` to a manager still running 15s after
+`SIGTERM`. Ctrl-C stops the manager first; when that stop is refused
+or the manager's exit cannot be confirmed, Ctrl-C signals nothing else, prints the refusal with the
+reap route, and leaves the stack running; end it with `cotal down --with-agents`.
 `--with-agents` is a one-shot destructive policy bound to the exact verified manager process
 and the exact live `down` stop reservation; a stale, malformed, crashed, or different stop attempt
 cannot turn a later bare shutdown destructive. If a managed agent cannot be proven stopped within

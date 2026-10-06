@@ -27,19 +27,19 @@
     {
       "name": "M1 the handler arms the destructive shutdown intent with its own reservation, so the manager reaps every managed seat on Ctrl-C",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "            reserveStop(\"manager\", stopMarker);\n            reserved = true;\n            spareSeats = assertManagerCanSpare(managerContext, undefined, pin.record);",
-      "replace": "            reserveStop(\"manager\", stopMarker);\n            reserved = true;\n            const { armManagerShutdownIntent } = await import(\"@cotal-ai/workspace\");\n            armManagerShutdownIntent(managerContext, { target: pin.record, stopper: { pid: process.pid, marker: stopMarker } });",
+      "find": "        await stopManager(space);",
+      "replace": "        await stopManager(space, { withAgents: true });",
       "expectRed": "the report names the seat as stopped with the manager and claims no spared agent",
       "cell": "the report names the seat as stopped with the manager and claims no spared agent",
       "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "note": "The destructive shape #1307 guards against: the foreground handler publishing the one-shot with-agents intent before signalling the manager. The arm requires the stop reservation, which the handler takes before its capability check, so the mutant arms against that reservation exactly as the destructive regression would; it carries its own dynamic import so the healthy tree needs no unused carrier. The suite's seat runs on the in-process pty runtime, which a default stop also stops (#2440), so the seat dies either way and the seat cell cannot tell the two stops apart. The mutant replaces the capability read, so the handler no longer learns that the manager stops in-process seats and reports the stopped seat as left running: the report cell is the first that can notice. A seat that can outlive the manager is covered by manager-stop-reap's custodial spare phase."
+      "note": "The destructive shape #1307 guards against: the foreground handler's manager stop arming the one-shot with-agents intent under its stop reservation instead of reading the spare capability. The suite's seat runs on the in-process pty runtime, which a default stop also stops (#2440), so the seat dies either way and the seat cell cannot tell the two stops apart. The destructive stop takes no pre-signal seat snapshot and reads no capability, so the handler reports nothing about the stopped seat: the report cell is the first that can notice. A seat that can outlive the manager is covered by manager-stop-reap's custodial spare phase."
     },
     {
       "name": "M2 the handler stops reporting the seats it stopped or left behind",
-      "file": "implementations/cli/src/commands/up.ts",
-      "find": "        if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();\n        else if (spared) printSparedAgents(spared, spareSeats);",
-      "replace": "        if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();\n  else if (spared) printSparedAgents(spared, spareSeats);",
+      "replace": "  if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();",
       "expectRed": "the report names the seat as stopped with the manager and claims no spared agent",
       "cell": "the report names the seat as stopped with the manager and claims no spared agent",
       "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
@@ -49,8 +49,8 @@
     {
       "name": "M3 the refusal stops being the signal gate: the teardown proceeds after the bare-stop refusal",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "            stopping = false;\n            return;",
-      "replace": "            stopping = false;",
+      "find": "        stopping = false;\n        return;",
+      "replace": "        stopping = false;",
       "expectRed": "the refusal gate leaves the manager and broker running",
       "cell": "the refusal gate leaves the manager and broker running",
       "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
