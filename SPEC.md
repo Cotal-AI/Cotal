@@ -4883,8 +4883,10 @@ single-function profiles, each granting only the verbs its function needs and no
   A filesystem identity is `{kind: "fs", root, id}`: `id` is a random value the store records once in
   `store.id` inside its own directory (`.cotal/store.id` for a workstation root, beside a `--creds`
   file otherwise, so that directory must be writable or already hold one). No key of a filesystem
-  store may name its `store.id`, and a `--creds` file of that name is refused at start, because the id
-  is published and a secret stored there would be published with it. Two filesystem identities
+  store and no `--creds` file may be its `store.id`, under that name or any other the filesystem
+  resolves to the same file (a case-insensitive spelling or a link, found by device and inode), and a
+  `store.id` that holds anything but a lowercase UUID is refused, because the id is published and a
+  secret stored there would be published with it. Two filesystem identities
   match only when both `root` and `id` match, because a root is a local path and two hosts can mount
   different directories at one path. An answer whose filesystem identity has no `id` is refused. Uninjected `--creds`
   that names one real workstation while process cwd resolves another is refused at start, because

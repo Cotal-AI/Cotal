@@ -105,13 +105,15 @@ A manager and a delivery daemon on different sides of this release refuse each o
 the store check. The manager then remints no daemon credential, and a manager that is booting does
 not start. This is read from the code and was not measured across two releases. A
 `cotal deliver --creds <file>` whose directory is a read-only mount and holds no `store.id` stops at
-start, and so does a `--creds` file named `store.id`.
+start. So does a `--creds` file that is its directory's `store.id` under any name, and a `store.id`
+that holds anything but a lowercase UUID.
 
 ### Before the upgrade
 
 Upgrade the broker host and every manager host of a space in the same window. For a `--creds` file
-on a read-only mount, add a `store.id` file beside it holding a value no other store uses. Rename a
-`--creds` file named `store.id`.
+on a read-only mount, add a `store.id` file beside it that holds a new lowercase UUID and no newline,
+as `node -e 'process.stdout.write(crypto.randomUUID())' > store.id` writes. Move a `--creds` file
+named or linked as `store.id` to a file of its own.
 
 ## Detached spawns with `--share-tools` in 0.69.0
 

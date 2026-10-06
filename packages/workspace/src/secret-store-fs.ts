@@ -1,11 +1,27 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join, dirname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic, writeSecretFileCreateOnly, type SecretStore, type SecretStoreIdentity } from "@cotal-ai/core";
 
 /** The file in which a filesystem store records the random id its identity carries. No key may name
  *  it: the id is published to peers, so a secret stored there would be published with it. */
-export const STORE_ID_FILE = "store.id";
+const STORE_ID_FILE = "store.id";
+
+/** What `randomUUID` writes. An id file holding anything else may hold a secret, so it is never published. */
+const STORE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Whether `path` is the id file of the store rooted at `dir`. Its own path is, and so is any other
+ *  name the filesystem resolves to that file. No spelling rule can list those (a case-insensitive
+ *  filesystem folds `STORE.ID` onto it, and a link reaches it under any name), so they are found by
+ *  device and inode once the file exists. */
+export function isStoreIdFile(dir: string, path: string): boolean {
+  const idFile = resolve(dir, STORE_ID_FILE);
+  if (resolve(path) === idFile) return true;
+  const id = statSync(idFile, { bigint: true, throwIfNoEntry: false });
+  if (id === undefined) return false;
+  const file = statSync(path, { bigint: true, throwIfNoEntry: false });
+  return file !== undefined && file.dev === id.dev && file.ino === id.ino;
+}
 
 /** THE local composition of the secret keyspace: a filesystem store rooted at the workspace's
  *  `.cotal/` dir, so every canonical key (`delivery.creds`, `auth/<space>/callout.json`, …)
@@ -49,8 +65,17 @@ export class FsSecretStore implements SecretStore {
 
   /** The root is a local path, so two hosts that mount different directories at one path would
    *  name one store by it alone (#2580). The id is random and lives inside the store, so only the
-   *  same directory carries it. It is written the first time a process names this store. */
+   *  same directory carries it. It is written the first time a process names this store or puts a key. */
   get identity(): SecretStoreIdentity {
+    const p = this.idFile();
+    const id = readFileSync(p, "utf8");
+    if (!STORE_ID.test(id))
+      throw new Error(`FsSecretStore: ${p} does not hold a store id (a lowercase UUID and nothing else); rename or remove it`);
+    return { kind: "fs", root: this.identityRoot, id };
+  }
+
+  /** The id file, written only by exclusive create, so an existing one is never replaced. */
+  private idFile(): string {
     const p = join(this.root, STORE_ID_FILE);
     if (!existsSync(p)) {
       mkSecretDir(this.root);
@@ -60,17 +85,14 @@ export class FsSecretStore implements SecretStore {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; // a concurrent first use won
       }
     }
-    const id = readFileSync(p, "utf8").trim();
-    if (!id) throw new Error(`FsSecretStore: ${p} holds no store id`);
-    return { kind: "fs", root: this.identityRoot, id };
+    return p;
   }
 
   /** Resolve a logical key to an absolute path strictly UNDER `root`, fail-closed: reject empty,
-   *  NUL, absolute keys, the root itself (`.`), any key that normalizes outside the root
-   *  (`..` traversal), and the store id file. Containment is checked via `path.relative`, not a
-   *  `root + sep` prefix — the prefix form breaks at a filesystem-root base (`/` doubles the
-   *  separator and rejects every key). A malformed key must never read or clobber a path outside
-   *  the store's tree. */
+   *  NUL, absolute keys, the root itself (`.`), and any key that normalizes outside the root
+   *  (`..` traversal). Containment is checked via `path.relative`, not a `root + sep` prefix —
+   *  the prefix form breaks at a filesystem-root base (`/` doubles the separator and rejects
+   *  every key). A malformed key must never read or clobber a path outside the store's tree. */
   private resolve(key: string): string {
     if (!key || key.includes("\0"))
       throw new Error(`FsSecretStore: invalid key ${JSON.stringify(key)}`);
@@ -80,13 +102,17 @@ export class FsSecretStore implements SecretStore {
     const rel = relative(this.root, abs);
     if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
       throw new Error(`FsSecretStore: key must name a file under the root: ${JSON.stringify(key)}`);
-    if (rel === STORE_ID_FILE)
-      throw new Error(`FsSecretStore: key ${JSON.stringify(key)} names the file that holds the store id`);
     return abs;
+  }
+
+  private refuseIdFile(key: string, p: string): void {
+    if (isStoreIdFile(this.root, p))
+      throw new Error(`FsSecretStore: key ${JSON.stringify(key)} names the file that holds the store id`);
   }
 
   async get(key: string): Promise<string | undefined> {
     const p = this.resolve(key);
+    this.refuseIdFile(key, p);
     try {
       return readFileSync(p, "utf8");
     } catch (e) {
@@ -97,12 +123,15 @@ export class FsSecretStore implements SecretStore {
 
   async put(key: string, value: string): Promise<void> {
     const p = this.resolve(key);
+    this.idFile(); // a name the filesystem folds onto the id file can only be told once that file exists
+    this.refuseIdFile(key, p);
     mkSecretDir(dirname(p)); // harden the parent dir before the secret lands (0700 / private ACL)
     writeSecretFileAtomic(p, value); // temp + rename: a concurrent get sees old or new, never torn
   }
 
   async delete(key: string): Promise<void> {
     const p = this.resolve(key);
+    this.refuseIdFile(key, p);
     try {
       rmSync(p);
     } catch (e) {
