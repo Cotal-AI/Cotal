@@ -140,6 +140,14 @@ function projectStaticSlotObservation(
   };
 }
 
+/** Whether a durable static slot row belongs to a sibling manager instance. A legacy row with no
+ *  `ownerInstanceId` predates multi-manager ownership and counts as this instance's. Every reader
+ *  that decides ownership calls this one rule, because the boot sweep terminalizes the rows it
+ *  believes are its own and `inspect`, `slots` and reconcile must agree with it. */
+export function ownedBySibling(row: StaticManagedSlotRow, managerInstanceId: string): boolean {
+  return row.ownerInstanceId !== undefined && row.ownerInstanceId !== managerInstanceId;
+}
+
 /** Point-read one durable slot, then its principal-keyed lifecycle head. Absence is returned only
  * after the slot read itself succeeded; callers must surface a store failure rather than converting
  * an unknown observation into `not-found`, which is the ambiguity this projection removes. */
@@ -155,20 +163,18 @@ export async function observeStaticSlot(
   // `inspect` remains an instance-local reader: a sibling manager's durable row never becomes this
   // manager's own contradiction. A nonretired one still says the name belongs elsewhere, so it is
   // returned labelled with its owner instead of collapsing into a `not-found` that a caller cannot
-  // tell from absence (#443). Legacy rows predate multi-manager ownership and keep the existing
-  // single-manager interpretation used by boot reconciliation.
-  const sibling = slot.row.ownerInstanceId !== undefined && slot.row.ownerInstanceId !== managerInstanceId ? slot.row.ownerInstanceId : undefined;
+  // tell from absence (#443).
+  const sibling = ownedBySibling(slot.row, managerInstanceId) ? slot.row.ownerInstanceId : undefined;
   if (sibling !== undefined && slot.row.phase === "retired") return undefined;
   const head = await boundedStaticRead("head", headCandidate(t, slot.row.owner, slot.row.actor));
   return { ...projectStaticSlotObservation(slot, head), ...(sibling !== undefined ? { ownerInstanceId: sibling } : {}) };
 }
 
 /** Enumerate every nonretired durable static slot this manager instance owns, projected the same
- * way `observeStaticSlot` projects one. Mirrors the boot sweep's key enumeration exactly
- * (`manager.ts:8466-8470`: alias is the key split on `.` from the third token) so both walk the
- * same rows. Foreign-owner rows (an explicit `ownerInstanceId` that differs) and `retired` rows are
- * dropped BEFORE the head read, so N slot rows cost N slot reads plus only the survivors' head
- * reads. Sorted by alias. */
+ * way `observeStaticSlot` projects one. It walks the owner's `STATIC_SLOT_PREFIX` key range, the
+ * range the boot sweep in `Manager.reconcileStaticLifecycles` also walks. Sibling-owned rows
+ * ({@link ownedBySibling}) and `retired` rows are dropped BEFORE the head read, so N slot rows cost
+ * N slot reads plus only the survivors' head reads. Sorted by alias. */
 export async function listStaticSlotObservations(
   recordsKv: KV,
   owner: string,
@@ -186,7 +192,7 @@ export async function listStaticSlotObservations(
     if (e.operation !== "PUT")
       throw new EpEnvelopeError("failed-precondition", `the static slot row ${e.key} carries a ${e.operation} marker; a slot row is never deleted (corruption, not absence)`);
     const row = parseStaticSlotRow(e.value, e.key);
-    if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== managerInstanceId) continue;
+    if (ownedBySibling(row, managerInstanceId)) continue;
     if (row.phase === "retired") continue;
     survivors.push({ row, revision: e.revision });
   }
