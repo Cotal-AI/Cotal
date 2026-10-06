@@ -327,10 +327,11 @@ async function authenticateRegisteredManager(
 
 /**
  * Host-side first-run admission for a registered signerless manager. The manager is trusted only to
- * forward the `ep.v1` request subject it served (delegation to the registered host, not a proof of
- * an arbitrary message). Everything else is derived here: the caller and generation come from the
+ * forward the `ep.v1` request subject it served, and only once for a request this host observed its
+ * caller publish. Everything else is derived here: the caller and generation come from the
  * subject, the evidence and live sources from the issued store, the ceiling from that evidence.
- * Every refusal happens before the create; an exact retry returns the admission already written.
+ * Every refusal happens before the create; an observed forward whose run is already admitted for
+ * the same caller and instance returns the admission already written.
  */
 export async function admitRemoteRun(args: {
   request: unknown;
@@ -342,6 +343,8 @@ export async function admitRemoteRun(args: {
   observeManagerGate: ObserveManagerGate;
   issued: IssuedStore;
   sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
+  /** Consumes the one observation of a served request subject. */
+  takeObserved: (subject: string) => Promise<ObservedRunRequest | undefined>;
   admissions: KV;
   now?: () => number;
 }): Promise<RemoteRunAdmissionResult> {
@@ -352,6 +355,10 @@ export async function admitRemoteRun(args: {
       parsed.endpoint !== args.endpoint || parsed.command !== "run-start" || parsed.target !== null ||
       (parsed.route === "inst" && parsed.instanceId !== r.instanceId) || !isIssuedCaller(parsed.caller))
     throw new EpEnvelopeError("permission-denied", "manager run admission needs the served v1 run-start subject of this space, endpoint and instance with an issued caller");
+  // The subject's caller is the broker's word only if the broker carried it: a manager can name any
+  // live issuance in a subject it never received.
+  if ((await args.takeObserved(r.run.subject)) === undefined)
+    throw new EpEnvelopeError("permission-denied", "the issuing host did not observe this run-start request, or already admitted a forward of it (SPEC 14.8)");
   const caller = parsed.caller;
   if (isDerivedOwner(caller.owner) && caller.owner !== args.owner)
     throw new EpEnvelopeError("permission-denied", "a user's run is admitted only on the participant manager that user registered");
@@ -437,16 +444,16 @@ export type RunRequestOperation =
   | { command: "run-resume"; runId: string }
   | { command: "run-answer"; endpoint: string; runId: string; stepKey: string; amend: boolean };
 
-/** A served resume or answer as its caller published it: the operation, and the class, pinned
- *  contract and `bind` of its envelope. A manager registered with another class or contract, or
- *  serving at another incarnation than the bound one, refuses it unrun (SPEC 13.2, 13.7). */
+/** A served run-start, resume or answer as its caller published it: the operation, and the class,
+ *  pinned contract and `bind` of its envelope. A manager registered with another class or contract,
+ *  or serving at another incarnation than the bound one, refuses it unrun (SPEC 13.2, 13.7). */
 export interface ObservedRunRequest {
-  operation: RunRequestOperation;
+  operation: RunRequestOperation | { command: "run-start" };
   envelope: Pick<EndpointRequest, "class" | "op" | "bind">;
 }
 
-/** The resume or answer request its caller published on `subject`, or undefined for a request no
- *  manager serves. */
+/** The run-start, resume or answer request its caller published on `subject`, or undefined for a
+ *  request no manager serves. */
 export function observedRunRequest(subject: string, data: Uint8Array): ObservedRunRequest | undefined {
   const parsed = parseEpSubject(subject);
   if (parsed === null || parsed.plane !== "request") return undefined;
@@ -457,9 +464,10 @@ export function observedRunRequest(subject: string, data: Uint8Array): ObservedR
   } catch {
     return undefined;
   }
+  const envelope = { class: env.class, op: env.op, bind: env.bind };
+  if (parsed.command === "run-start") return { operation: { command: "run-start" }, envelope };
   const args = env.args;
   if (args === null || args === undefined || typeof args.runId !== "string") return undefined;
-  const envelope = { class: env.class, op: env.op, bind: env.bind };
   if (parsed.command === "run-resume") return { operation: { command: "run-resume", runId: args.runId }, envelope };
   if (parsed.command !== "run-answer") return undefined;
   const endpoint = args.endpoint ?? parsed.endpoint;
@@ -507,7 +515,7 @@ async function authorizeServedRunCaller(args: {
   const forwarded = args.operation, observed = observation.operation;
   if (observed.command === "run-resume"
     ? forwarded.command !== "run-resume" || forwarded.runId !== observed.runId
-    : forwarded.command !== "run-answer" || forwarded.endpoint !== observed.endpoint || forwarded.runId !== observed.runId ||
+    : observed.command !== "run-answer" || forwarded.command !== "run-answer" || forwarded.endpoint !== observed.endpoint || forwarded.runId !== observed.runId ||
       forwarded.stepKey !== observed.stepKey || forwarded.amend !== observed.amend)
     throw new EpEnvelopeError("permission-denied", `the forwarded ${command} names another run, step, endpoint or amendment than the request the issuing host observed (SPEC 14.8)`);
   // The manager serving at another incarnation than the bound one refuses the request unrun, so a
