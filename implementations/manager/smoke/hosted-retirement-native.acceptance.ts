@@ -907,7 +907,7 @@ try {
     };
   }
   const inventoryOf = (agent: ManagerResumeAgent): ManagerResumeInventory => ({
-    version: "cotal-manager-resume/v1", space, createdAt: new Date().toISOString(), agents: [agent],
+    version: "cotal-manager-resume/v2", space, createdAt: new Date().toISOString(), agents: [agent],
   });
   const livenessDiagnostic = (actor: string, handle: ChildHandle) => {
     const principal = `${owner}.${actor}`;

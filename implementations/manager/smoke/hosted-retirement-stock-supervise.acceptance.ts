@@ -522,7 +522,7 @@ try {
   writeFileSync(personaPath, "---\nname: stock-retained\nagent: stock-acceptance\n---\nstock retained child\n");
   const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
   const inventory: ManagerResumeInventory = {
-    version: "cotal-manager-resume/v1", space, createdAt: new Date().toISOString(),
+    version: "cotal-manager-resume/v2", space, createdAt: new Date().toISOString(),
     agents: [{
       space, name: actor,
       identity: {

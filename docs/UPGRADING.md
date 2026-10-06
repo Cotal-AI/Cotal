@@ -73,6 +73,27 @@ through the window, or follows its timeout if it has one.
 Upgrade the auth service and every participant manager registered with it in the same window, then
 answer the pauses that waited.
 
+## Detached spawns with `--share-tools` in 0.68.0
+
+The manager's `spawn` operation now takes `shareTools` as a list of MCP server names. The CLI parses
+`--share-tools` into that list before it sends the request, and the manager cluster document moves
+to revision 22. A cut taken with `cotal down --preserve-state` before the upgrade still resumes: the
+manager reads its `cotal-manager-resume/v1` inventory and writes new cuts as
+`cotal-manager-resume/v2`.
+
+### What stops working
+
+A CLI and a manager on different sides of this release refuse a detached spawn that passes
+`--share-tools`, because the CLI checks each request against the contract the manager serves. This
+is read from the code and was not measured across two releases. A detached spawn without the flag,
+a foreground spawn and a roster entry are unaffected. A manager older than this release cannot
+resume a cut that this release took.
+
+### Before the upgrade
+
+Upgrade the CLI on every host that runs `cotal spawn --detach` in the same window as the managers
+it reaches.
+
 ## Carrying a resumed Claude session to another host
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the

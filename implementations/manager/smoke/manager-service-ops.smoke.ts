@@ -301,7 +301,7 @@ try {
     const fields = {
       agent: "e2e-stub", defaultAgent: "caller-default", role: "worker", config: "cfg.md", identity: "idfile", model: "m1", variant: "high",
       launchOptions: { flag: "v", n: 2 }, resume: "sess-1", cwd: "/tmp/x", prompt: "hello",
-      subscribe: ["general"], allowSubscribe: ["general", "task"], allowPublish: ["general"], shareTools: "all",
+      subscribe: ["general"], allowSubscribe: ["general", "task"], allowPublish: ["general"], shareTools: ["all"],
     };
     const rEp = await A.call("spawn", { name: "wp1", ...fields });
     M.startAgent = orig;

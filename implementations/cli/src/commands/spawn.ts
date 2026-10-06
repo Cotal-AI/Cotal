@@ -497,7 +497,7 @@ async function spawnDetached(
     resume: values.resume, // host-local session id; the manager preflights connector resume support
     ...(resumeClaim !== undefined ? { resumeClaim, resumeAgent } : {}),
     prompt: values.prompt,
-    shareTools: values["share-tools"],
+    shareTools: parseShareSelection(values["share-tools"]),
     subscribe: splitFlag(values.subscribe),
     allowSubscribe: splitFlag(values["allow-subscribe"]),
     allowPublish: splitFlag(values["allow-publish"]),

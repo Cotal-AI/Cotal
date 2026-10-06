@@ -326,7 +326,7 @@ const SPAWN_INPUT_SCHEMA = {
     subscribe: { type: "array", items: { type: "string" } },
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
-    shareTools: { type: "string" },
+    shareTools: { type: "array", items: { type: "string" } },
     supervise: {
       type: "object",
       additionalProperties: false,
@@ -1030,7 +1030,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  21 = `transcript-receive` stages a resume transcript carried from another host (#1499), `spawn`
  *  input grows `resumeClaim` and `resumeAgent`, the `ps`/`inspect` row's `resume` adds the source
  *  `host` and `transferredAt`, and `attach` output adds `resumedFrom`. A new served command cannot
- *  fold into 20. */
+ *  fold into 20.
+ *
+ *  22 = `spawn` input's `shareTools` is the list of MCP server names rather than the
+ *  `--share-tools` flag string. A changed input contract is a changed described surface even
+ *  though the command name is unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1048,7 +1052,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 21,
+    revision: 22,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

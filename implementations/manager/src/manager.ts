@@ -55,7 +55,6 @@ import {
   newIdentity,
   actionContext,
   parsePrincipalKey,
-  parseShareSelection,
   principalKey,
   probeConnect,
   provisionAgent,
@@ -633,7 +632,7 @@ export interface ManagerResumeAgent {
     allowPublish?: string[];
     capabilities?: string[];
     events: boolean;
-    shareTools?: string;
+    shareTools?: readonly string[];
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
     /** Where the fork came from, as the seat recorded it once it forked (#1500). */
@@ -662,7 +661,7 @@ export interface ManagerResumeAgent {
 }
 
 export interface ManagerResumeInventory {
-  version: "cotal-manager-resume/v1";
+  version: "cotal-manager-resume/v2";
   space: string;
   createdAt: string;
   agents: ManagerResumeAgent[];
@@ -758,9 +757,9 @@ export interface StartAgentOpts {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
-  /** `--share-tools` selection narrowing which of the operator's configured MCP servers this
-   *  agent gets (absent → all declared for the connector — the pre-merge manager behavior). */
-  shareTools?: string;
+  /** Names of the operator's configured MCP servers this agent gets (absent → all declared for the
+   *  connector — the pre-merge manager behavior; `[]` → none). */
+  shareTools?: readonly string[];
   /** Declarative in-place restart policy from a workflow `spawn`. When set, the manager restarts
    *  the process under the same name, lifecycle uid, persona, worktree and permits until
    *  `restarts` deaths fall inside `windowMs`. Absent: only a continuation-capable connector
@@ -797,7 +796,7 @@ interface ManagedLaunch {
   allowPublish?: string[];
   capabilities?: string[];
   events: boolean;
-  shareTools?: string;
+  shareTools?: readonly string[];
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
   resumed?: ForkProvenance;
@@ -2491,7 +2490,7 @@ export class Manager {
     // actually saw.
     const backfillFloor = await this.chatFrontierForPreservation();
     const inventory = this.preservationInventory ?? {
-      version: "cotal-manager-resume/v1",
+      version: "cotal-manager-resume/v2",
       space: this.space,
       createdAt: new Date().toISOString(),
       agents: [...this.agents.values()].map((a) => this.resumeEntry(a, backfillFloor)),
@@ -5101,11 +5100,12 @@ export class Manager {
         throw new Error(`${flag}: expected an array of strings`);
       return v as string[];
     };
-    let subscribe: string[] | undefined, allowSubscribe: string[] | undefined, allowPublish: string[] | undefined;
+    let subscribe: string[] | undefined, allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, shareTools: string[] | undefined;
     try {
       subscribe = strList(args.subscribe, "subscribe");
       allowSubscribe = strList(args.allowSubscribe, "allowSubscribe");
       allowPublish = strList(args.allowPublish, "allowPublish");
+      shareTools = strList(args.shareTools, "shareTools");
     } catch (e) {
       return Promise.resolve({ ok: false, error: (e as Error).message });
     }
@@ -5155,7 +5155,7 @@ export class Manager {
         subscribe,
         allowSubscribe,
         allowPublish,
-        shareTools: args.shareTools !== undefined ? String(args.shareTools) : undefined,
+        shareTools,
         ...(supervise !== undefined ? { supervise } : {}),
         route,
       },
@@ -5456,6 +5456,9 @@ export class Manager {
   }
 
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {
+    // The caller keeps its array, so the selection is copied before the first await: a later write
+    // to it cannot change what this launch shares or what preservation retains.
+    const shareTools = opts.shareTools && [...opts.shareTools];
     if (opts.delegatedIntent) {
       if (!this.remoteAuthority?.executeDelegatedUserIntent)
         return { ok: false, error: `"${opts.name}" names a delegated user intent, and this manager has no host execution for one` };
@@ -5588,7 +5591,7 @@ export class Manager {
         return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
       if (typeof opts.cwd === "string" && opts.cwd !== "")
         return { ok: false, error: `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory` };
-      const shared = Object.keys(connectorServers(loadCotalConfig(this.workspaceRoot), agent, parseShareSelection(opts.shareTools)));
+      const shared = Object.keys(connectorServers(loadCotalConfig(this.workspaceRoot), agent, shareTools));
       if (shared.length)
         return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
     }
@@ -5626,7 +5629,7 @@ export class Manager {
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
-      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.prompt || opts.shareTools || opts.identity)
+      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.prompt || shareTools || opts.identity)
         return { ok: false, error: "a manifest launch (resolved) rejects imperative overrides (identity/subscribe/allow*/prompt/shareTools)" };
       const r = opts.resolved;
       identityName = r.name;
@@ -6003,7 +6006,7 @@ export class Manager {
       // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
       // an optional --share-tools selection (absent → all declared, the pre-merge behavior).
       const cotalConfig = loadCotalConfig(this.workspaceRoot);
-      const mcpServers = connectorServers(cotalConfig, agent, parseShareSelection(opts.shareTools));
+      const mcpServers = connectorServers(cotalConfig, agent, shareTools);
       // The operator's spawn-env policy travels the same route: absent means no extras (the OS
       // allow-list + operator knobs + connector-declared inputs), present means those names too.
       // A connector never reads the config itself.
@@ -6131,7 +6134,7 @@ export class Manager {
           allowPublish,
           capabilities,
           events,
-          shareTools: opts.shareTools,
+          shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
           ...(carried ? { carried: { transcriptSha256: carried.sha256, host: carried.sourceHost, transferredAt: carried.stagedAt } } : {}),
@@ -6293,19 +6296,22 @@ export class Manager {
     const batchReservations: string[] = [];
     const prepared = new Map<string, PreparedResume>();
     try {
-      if (inventory.version !== "cotal-manager-resume/v1")
+      if (inventory.version !== "cotal-manager-resume/v2")
         return { ok: false, agents: [], error: `unsupported manager resume inventory version ${String(inventory.version)}` };
       if (inventory.space !== this.space)
         return { ok: false, agents: [], error: `resume inventory belongs to space "${inventory.space}", not "${this.space}"` };
+      // The caller keeps its inventory, so each selection is copied before the first await: a later
+      // write to it cannot change what a resumed seat shares or what the next preservation retains.
+      const entries = inventory.agents.map((entry) => ({ ...entry, launch: { ...entry.launch, shareTools: entry.launch.shareTools && [...entry.launch.shareTools] } }));
       const seen = new Set<string>();
       const principals = new Set<string>();
       const orphans: Array<{ principal: string; reference: RuntimeReference }> = [];
       await this.ep.waitForPresenceSnapshot();
       const liveRoster = this.ep.getRoster().filter((presence) => presence.status !== "offline");
       const occupancy = this.occupancy();
-      if (occupancy.used + inventory.agents.length > MAX_AGENTS)
-        return { ok: false, agents: [], error: `resume inventory of ${inventory.agents.length} would exceed manager capacity (${this.occupancyText(occupancy)})` };
-      for (const entry of inventory.agents) {
+      if (occupancy.used + entries.length > MAX_AGENTS)
+        return { ok: false, agents: [], error: `resume inventory of ${entries.length} would exceed manager capacity (${this.occupancyText(occupancy)})` };
+      for (const entry of entries) {
         if (seen.has(entry.name))
           return { ok: false, agents: [], error: `resume inventory contains duplicate agent name "${entry.name}"` };
         seen.add(entry.name);
@@ -6360,12 +6366,12 @@ export class Manager {
         if (this.agents.has(entry.name) || this.reserved.has(entry.name))
           return { ok: false, agents: [], error: `retained agent "${entry.name}" is already managed or reserved` };
       }
-      for (const entry of inventory.agents) {
+      for (const entry of entries) {
         this.reserved.add(entry.name);
         batchReservations.push(entry.name);
       }
       const preflight: Array<{ name: string; reply: ControlReply }> = [];
-      for (const entry of inventory.agents) {
+      for (const entry of entries) {
         const reply = await this.resumePreservedAgent(entry, true, true, prepared);
         preflight.push({ name: entry.name, reply });
       }
@@ -6383,12 +6389,12 @@ export class Manager {
         if (refusal) return { ok: false, agents: [], error: refusal };
       }
       const agents: Array<{ name: string; reply: ControlReply }> = [];
-      for (let i = 0; i < inventory.agents.length; i++) {
-        const entry = inventory.agents[i];
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
         const reply = await this.resumePreservedAgent(entry, false, true, prepared);
         agents.push({ name: entry.name, reply });
         if (!reply.ok) {
-          for (const skipped of inventory.agents.slice(i + 1))
+          for (const skipped of entries.slice(i + 1))
             agents.push({ name: skipped.name, reply: { ok: false, error: `not launched because ${entry.name} failed` } });
           return { ok: false, agents, error: reply.error };
         }
@@ -6725,7 +6731,7 @@ export class Manager {
 
       try {
         const resumeConfig = loadCotalConfig(this.workspaceRoot);
-        const mcpServers = connectorServers(resumeConfig, entry.launch.connector, parseShareSelection(entry.launch.shareTools));
+        const mcpServers = connectorServers(resumeConfig, entry.launch.connector, entry.launch.shareTools);
         const envAllow = spawnEnvAllow(resumeConfig);
         const launchOpts: LaunchOpts = {
           space: this.space,
