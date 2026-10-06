@@ -1128,7 +1128,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
         },
       } : {}),
-      skipPostStart: Boolean(resumeAttempt),
     });
     // Transport policy is committed inside startMeshDetached before delivery launch (S5+S9).
     console.log(c.dim(`Started nats-server (${source}).`));
@@ -1321,44 +1320,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       ),
     );
   if (restored) await provePreparedRestoreListener(restored);
-  // Listener ready — commit the transport decision (S5: not before start).
-  commitTransportPolicy(meshRoot, transport);
   {
-    if (!resumeAttempt) await postStart(server, space, setup, seedFile);
-    else await recreateMemoryBuckets(server, space, setup);
-    // USER MODE: the auth service comes up FIRST among the daemons — until its callout answers,
-    // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
-    // (nor let agents race it) on a half-started auth plane. (Foreground `up` doesn't exit here, so
-    // `ok` has no exit code to carry — the red consequence line above is the operator signal.)
-    const svc = await startUserAuthService(space, server, setup, publicExchange);
-    // Record BEFORE the control plane comes up: the manager's fail-closed mode detection requires
-    // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
-    // so the record must exist by the time it boots. A manager/delivery failure after this leaves
-    // a recorded-but-degraded mesh — the documented, healable posture.
-    // Resolve exposure BEFORE recording. This path also serves a RESUME of an already-recorded mesh
-    // (`down --preserve-state` then a bare `up`), where the operator's `--host` lives only in the
-    // registry — and the record below is written whole, so reading it afterwards would find the
-    // field this very call had just erased.
-    const effectiveAttachHost = attachHostFor(space, values.host);
-    const effectiveMaxSessions = maxSessionsFor(space, maxSessions);
-    recordOurMesh({
-      space, server, root: cotalRoot(),
-      mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
-      // Written ALWAYS, as a boolean, unlike `attachHost` below. Absence and `false` resolve
-      // identically for clients, so an omitted field would be indistinguishable from a deliberate
-      // plaintext mesh — and this is the one field whose whole purpose is that the answer was
-      // stated rather than defaulted.
-      tlsRequired: transport.kind === "tls-required",
-      ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
-      // Only a real decision is persisted — an explicit `--host` now, or one carried forward from a
-      // previous launch. The bare case stays absent rather than recording the loopback default as
-      // though the operator had chosen it.
-      ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
-      ...(effectiveMaxSessions !== undefined ? { maxSessions: effectiveMaxSessions } : {}),
-      ...(maxFileStore !== undefined ? { maxFileStore } : {}),
-      storeDir,
-      ts: new Date().toISOString(),
-    }, "started");
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
     // end while this broker serves on. Nothing else brings it back, and every static retirement then
@@ -1404,29 +1366,24 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         restartingDelivery = false;
       })();
     };
-    // Bring up the delivery daemon WITH the server (auth mode only — it self-gates on `.cotal/auth`).
-    // It is part of the server, so `cotal up` starts it by default; open dev mode has no daemon.
-    // Class-2 credential renewal is NOT wired here: the MANAGER is the renewal owner (it is resident
-    // in every mesh mode — foreground, --detach, refresh — where this foreground process is not).
-    const controlPlane = await startDeliveryWithBroker(space, server, transport.kind === "tls-required", {
-      onDeliveryExit,
-      runtime: values.runtime,
-      // The address the broker was bound to. This is what lets `cotal attach` reach this manager
-      // from another machine; without it the attach face stays loopback-only, so exposing terminals
-      // is never a side effect of anything but the operator binding the mesh somewhere reachable.
-      attachHost: effectiveAttachHost,
-      maxSessions: effectiveMaxSessions,
-      noManager,
+    const { authService, controlPlane } = await serveReadyListener({
+      child, server, space, storeDir, setup, seedFile, transport,
+      host: values.host,
+      maxSessions,
+      maxFileStore,
+      publicExchange,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
-      wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
+      runtime: values.runtime,
+      noManager,
+      onDeliveryExit,
     });
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
     await completeResumeActivation(
       resumeAttempt,
-      controlPlane !== undefined && svc.ok,
-      !svc.ok ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
+      controlPlane !== undefined && authService,
+      !authService ? "normal listener started but the user-auth service is unavailable" : "normal listener started but the control plane is degraded",
       server,
       startupLock,
     );
@@ -2395,6 +2352,104 @@ async function startDeliveryWithBroker(
   }
 }
 
+/**
+ * Everything a launch runs once its listener answers: the space setup, the user-auth service, the
+ * mesh record, the transport commit and the control plane. Foreground `up` and
+ * {@link startMeshDetached} both call it, so the two launch modes cannot drift apart (#2496).
+ *
+ * A fresh boot whose setup throws stops the listener and removes `nats.pid` before rethrowing the
+ * original error. Nothing has recorded the mesh yet, so a listener left running would hold the port
+ * with no registry entry for `cotal down` to reach. A channel seed with an unparseable value fails
+ * here, and so does a private CA without `NODE_EXTRA_CA_CERTS`, because the setup client verifies
+ * the certificate. A resume keeps its listener: its maintenance journal is already bound to it.
+ */
+async function serveReadyListener(l: {
+  child: ChildProcess;
+  server: string;
+  space: string;
+  storeDir: string;
+  setup?: Awaited<ReturnType<typeof authSetup>>;
+  seedFile?: ChannelRegistryFile;
+  transport: BrokerTransport;
+  /** The raw `--host` flag, so the record can tell an operator's address from the loopback default. */
+  host?: string;
+  maxSessions?: number;
+  maxFileStore?: number;
+  publicExchange?: string[];
+  resumeAttempt?: string;
+  resumeCommitToken?: string;
+  runtime?: string;
+  launch?: string;
+  noManager?: boolean;
+  onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
+}): Promise<{ authService: boolean; controlPlane: Awaited<ReturnType<typeof ensureControlPlane>> | undefined }> {
+  const { child, server, space, setup, transport } = l;
+  if (l.resumeAttempt) await recreateMemoryBuckets(server, space, setup);
+  else {
+    try {
+      await postStart(server, space, setup, l.seedFile);
+    } catch (e) {
+      try { child.kill("SIGTERM"); } catch { /* already gone */ }
+      try { removePidPair(cotalPath("nats.pid"), String(child.pid)); } catch { /* best effort */ }
+      throw e;
+    }
+  }
+  // USER MODE: the auth service comes up FIRST among the daemons — until its callout answers,
+  // every user-mode connect to this broker is denied, so `up` must not report a usable user mesh
+  // (nor let agents race it) on a half-started auth plane.
+  const svc = await startUserAuthService(space, server, setup, l.publicExchange);
+  // Record BEFORE the control plane comes up: the manager's fail-closed mode detection requires
+  // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
+  // so the record must exist by the time it boots. A manager/delivery failure after this leaves
+  // a recorded-but-degraded mesh — the documented, healable posture.
+  // Resolve exposure BEFORE recording. A RESUME of an already-recorded mesh (`down
+  // --preserve-state` then a bare `up`) carries the operator's `--host` only in the registry, and
+  // the record below is written whole, so reading it afterwards would find the field this very call
+  // had just erased.
+  const attachHost = attachHostFor(space, l.host);
+  const maxSessions = maxSessionsFor(space, l.maxSessions);
+  recordOurMesh({
+    space, server, root: cotalRoot(),
+    mode: setup?.prepared ? "user" : setup ? "auth" : "open",
+    // Written ALWAYS, as a boolean, unlike `attachHost` below. Absence and `false` resolve
+    // identically for clients, so an omitted field would be indistinguishable from a deliberate
+    // plaintext mesh — and this is the one field whose whole purpose is that the answer was
+    // stated rather than defaulted.
+    tlsRequired: transport.kind === "tls-required",
+    ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
+    // Only a real decision is persisted — an explicit `--host` now, or one carried forward from a
+    // previous launch. The bare case stays absent rather than recording the loopback default as
+    // though the operator had chosen it.
+    ...(attachHost ? { attachHost } : {}),
+    ...(maxSessions !== undefined ? { maxSessions } : {}),
+    ...(l.maxFileStore !== undefined ? { maxFileStore: l.maxFileStore } : {}),
+    storeDir: l.storeDir,
+    ts: new Date().toISOString(),
+  }, "started");
+  // Commit the policy only for a listener that is up and recorded (S5), and before the control
+  // plane (S9). startDeliveryWithBroker is HANDED the transport decision, so it does not depend on
+  // the file at all.
+  commitTransportPolicy(cotalRoot(), transport);
+  // The delivery daemon self-gates on `.cotal/auth`, so an open mesh has none. Class-2 credential
+  // renewal is NOT wired here: the MANAGER is the renewal owner (it is resident in every mesh mode,
+  // where a foreground `up` process is not).
+  const controlPlane = await startDeliveryWithBroker(space, server, transport.kind === "tls-required", {
+    onDeliveryExit: l.onDeliveryExit,
+    runtime: l.runtime,
+    launch: l.launch,
+    // The address the broker was bound to. This is what lets `cotal attach` reach this manager
+    // from another machine; without it the attach face stays loopback-only, so exposing terminals
+    // is never a side effect of anything but the operator binding the mesh somewhere reachable.
+    attachHost,
+    maxSessions,
+    noManager: l.noManager,
+    resumeAttempt: l.resumeAttempt,
+    resumeCommitToken: l.resumeCommitToken,
+    wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
+  });
+  return { authService: svc.ok, controlPlane };
+}
+
 export interface DetachOpts {
   /**
    * The listener's transport, resolved and validated by the CALLER.
@@ -2449,8 +2504,6 @@ export interface DetachOpts {
     onSpawn(pid: number, startedAt: string): void;
     verify(): Promise<void>;
   };
-  /** Preservation/restore already established every canonical stream before listener exposure. */
-  skipPostStart?: boolean;
 }
 
 /**
@@ -2544,77 +2597,24 @@ export async function startMeshDetached(
     writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
   }
   if (opts.boundListener) await opts.boundListener.verify();
-  // POST-START MUST NOT LEAVE AN ORPHAN LISTENER.
-  //
-  // Everything above has already bound the port and written `nats.pid`, but NOTHING has recorded the
-  // mesh yet — `recordOurMesh` is below. So a throw between here and there used to exit non-zero
-  // while leaving a live broker holding the port with no registry entry, which `cotal down` cannot
-  // reach because `down` works from the registry. A third state between "started" and "refused",
-  // and the operator's only recourse is to hunt a pid.
-  //
-  // This is reachable BECAUSE of TLS and cannot happen on `main`: the post-start client verifies the
-  // certificate, so a private CA without `NODE_EXTRA_CA_CERTS` fails here — after the listener is up.
-  // The feature introduced the state, so the feature tears it down.
-  //
-  // Deliberately narrow: this is a teardown on the failure path, not a restructuring of the launch
-  // sequence. The listener is stopped and the pid file removed, then the original error is rethrown
-  // unchanged — the operator needs the certificate error, not a message about cleanup.
-  if (!opts.skipPostStart) {
-    try {
-      await postStart(server, space, setup, seedFile);
-    } catch (e) {
-      try { child.kill("SIGTERM"); } catch { /* already gone */ }
-      try { removePidPair(cotalPath("nats.pid"), String(child.pid)); } catch { /* best effort */ }
-      throw e;
-    }
-  } else {
-    await recreateMemoryBuckets(server, space, setup);
-  }
-  // USER MODE: the auth service comes up FIRST among the daemons (see the foreground path).
-  const svc = await startUserAuthService(space, server, setup, opts.publicExchange);
-  // Record BEFORE the control plane: the manager's fail-closed mode detection needs the
-  // authoritative registry entry at boot (marker-without-registry refuses). Detached: the entry
-  // outlives this process — `cotal down` removes it.
-  // Same capture-before-record as the foreground path: this also runs for a bare `up --detach` that
-  // RESUMES an already-recorded mesh, whose exposure decision exists only in the registry entry the
-  // call below rewrites.
-  const effectiveAttachHost = attachHostFor(space, opts.host);
-  const effectiveMaxSessions = maxSessionsFor(space, opts.maxSessions);
-  recordOurMesh({
-    space, server, root: cotalRoot(),
-    mode: setup?.prepared ? "user" : useAuth ? "auth" : "open",
-    // The detached listener is started from `transport` a few lines above, so this is the same
-    // decision that shaped the config file — not a re-derivation.
-    tlsRequired: transport.kind === "tls-required",
-    ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
-    // Persist only a real decision — declared now, or carried forward — never the loopback default.
-    ...(effectiveAttachHost ? { attachHost: effectiveAttachHost } : {}),
-    ...(effectiveMaxSessions !== undefined ? { maxSessions: effectiveMaxSessions } : {}),
-    ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}),
-    storeDir,
-    ts: new Date().toISOString(),
-  }, "started");
-  // Commit policy BEFORE delivery launch (S9). Listener is proved; refuse paths never reach here.
-  // startDeliveryWithBroker is HANDED the transport decision, so it does not depend on the file at all.
-  commitTransportPolicy(cotalRoot(), transport);
-  // Bring up the delivery daemon WITH the detached broker (auth mode only; `cotal down` tears both down).
-  const controlPlane = await startDeliveryWithBroker(space, server, transport.kind === "tls-required", {
-    runtime: opts.runtime,
-    launch: opts.launch,
-    // See the foreground path: the broker's bind address is what makes attach reachable off-box.
-    attachHost: effectiveAttachHost,
-    maxSessions: effectiveMaxSessions,
-    noManager: opts.noManager,
+  const { authService, controlPlane } = await serveReadyListener({
+    child, server, space, storeDir, setup, seedFile, transport,
+    host: opts.host,
+    maxSessions: opts.maxSessions,
+    maxFileStore: opts.maxFileStore,
+    publicExchange: opts.publicExchange,
     resumeAttempt: opts.resumeAttempt,
     resumeCommitToken: opts.resumeCommitToken,
-    wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
+    runtime: opts.runtime,
+    launch: opts.launch,
+    noManager: opts.noManager,
   });
   return {
     server,
     pid: child.pid ?? 0,
     source,
     controlPlane: controlPlane !== undefined,
-    authService: svc.ok,
+    authService,
     delivery: useAuth && deliveryUp(space),
     manager: managerUp(space),
   };
