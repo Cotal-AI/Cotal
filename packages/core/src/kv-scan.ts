@@ -1,6 +1,7 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
-import { JetStreamApiCodes, JetStreamApiError, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
+import { JetStreamApiCodes, JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
+import { TimeoutError } from "@nats-io/nats-core";
 import { isPublishPermissionDenied } from "./endpoint.js";
 
 /**
@@ -159,6 +160,21 @@ export async function liveKvEntries(
   const bucket: Bucket = kv;
   const cc = bucket._buildCC(filter ?? ">", KvWatchInclude.AllHistory, { headers_only: false });
   const oc = await bucket.js.consumers.getPushConsumer(bucket.stream, cc);
+  // nats.js rebuilds the consumer after a stall or a sequence gap as `<prefix>_<serial + 1>` and sends
+  // that create without awaiting it, so a delete the broker answers first lets the consumer land after
+  // cleanup. The client's consumer API is shared by every scan, so this consumer gets its own view of
+  // it that records each create. `answered` is false when the client stopped waiting for the reply.
+  // The client sets `api` and `name` on every push consumer it returns; the cast only hides them from the type.
+  const own = oc as unknown as { api: ConsumerAPI; name: string };
+  const api = own.api;
+  const owned = [{ name: own.name, answered: Promise.resolve(true) }];
+  own.api = Object.assign(Object.create(api) as ConsumerAPI, {
+    add: (...args: Parameters<ConsumerAPI["add"]>) => {
+      const created = api.add(...args);
+      owned.push({ name: args[1].name!, answered: created.then(() => true, (e) => !(e instanceof TimeoutError)) });
+      return created;
+    },
+  });
 
   // THE BIND-TIME PROOF: `num_pending` is how many messages this consumer will deliver, read before
   // a single one arrives. Zero means the bucket (or the filtered subset) really is empty; it is
@@ -173,6 +189,7 @@ export async function liveKvEntries(
   let sawTerminal = false;
   let bucketName = bucket.bucket;
   let expected = 0;
+  let complete = false;
   try {
     // THE BIND-TIME PROOF, continued: zero here is the only thing that yields an empty result.
     const initialInfo = await oc.info(true);
@@ -216,29 +233,35 @@ export async function liveKvEntries(
         }
       }
     }
+    complete = expected === 0 || sawTerminal;
   } finally {
-    // Delete ONLY this scan's own consumers. nats.js rebuilds the consumer after a stall or a
-    // sequence gap as `<prefix>_<serial + 1>`, sends that create without awaiting it, and deletes only
-    // the last predecessor whose create was answered, so a successor superseded while its create was
-    // unanswered is deleted by nobody. The iterator is closed, so the serial is final: delete every
-    // name it reached. Newest first, because nats.js never deletes that one itself, so a refusal
-    // reaches the hook on a subject none of its predecessor deletes shares. A create that lands after
-    // its delete is reaped at its inactive_threshold, like a consumer a crash leaves.
-    const deleteOwn = opts?.deleteOwnConsumer ?? ((_stream, _name, del) => del());
-    // The client sets `name` on every push consumer it returns and moves it to each rebuild; the cast only hides it from the type.
-    const name = (oc as unknown as { name: string }).name;
-    const cut = name.lastIndexOf("_") + 1;
-    if (!/^\d+$/.test(name.slice(cut))) throw new Error(`scan consumer ${name} carries no rebuild serial - the pinned nats.js changed shape`);
-    for (let serial = Number(name.slice(cut)); serial >= 1; serial--) {
-      const target = name.slice(0, cut) + serial;
-      try {
-        await deleteOwn(bucket.stream, target, () => bucket.jsm.consumers.delete(bucket.stream, target));
-      } catch (e) {
-        // A profile without the delete row (#691) is refused for every name alike, and the broker
-        // reaps those consumers at their inactive_threshold.
-        if (isPublishPermissionDenied(e)) break;
-        if (!(e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound)) throw e;
+    try {
+      // Delete ONLY this scan's own consumers. nats.js deletes only the last predecessor whose create
+      // was answered, so a successor superseded while its create was unanswered is deleted by nobody.
+      // The iterator is closed, so no create follows; once each one is answered, none can land after
+      // its delete. Newest first, because nats.js never deletes that one itself, so a refusal reaches
+      // the hook on a subject none of its predecessor deletes shares.
+      const answered = await Promise.all(owned.map((c) => c.answered));
+      if (owned.at(-1)!.name !== own.name) throw new Error(`scan consumer ${own.name} was not created through the scan's consumer API - the pinned nats.js changed shape`);
+      const deleteOwn = opts?.deleteOwnConsumer ?? ((_stream, _name, del) => del());
+      let unanswered: string | undefined;
+      for (let i = owned.length - 1; i >= 0; i--) {
+        const target = owned[i].name;
+        try {
+          await deleteOwn(bucket.stream, target, () => bucket.jsm.consumers.delete(bucket.stream, target));
+        } catch (e) {
+          // A profile without the delete row (#691) is refused for every name alike, and the broker
+          // reaps those consumers at their inactive_threshold.
+          if (isPublishPermissionDenied(e)) break;
+          if (!(e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound)) throw e;
+          if (!answered[i]) unanswered ??= target;
+        }
       }
+      if (unanswered) throw new Error(`the broker never answered the create of scan consumer ${unanswered}, so it can land after its delete and live until its inactive_threshold`);
+    } catch (e) {
+      // The scan's own error, its cancellation and IncompleteKvScan are its answer; a cleanup failure
+      // replaces only a result.
+      if (complete && !opts?.signal?.aborted) throw e;
     }
   }
   if (opts?.signal?.aborted) {

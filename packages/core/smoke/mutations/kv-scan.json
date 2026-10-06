@@ -9,7 +9,7 @@
     {
       "name": "omits consumer deletion in finally",
       "file": "packages/core/src/kv-scan.ts",
-      "find": "        await deleteOwn(bucket.stream, target, () => bucket.jsm.consumers.delete(bucket.stream, target));",
+      "find": "          await deleteOwn(bucket.stream, target, () => bucket.jsm.consumers.delete(bucket.stream, target));",
       "replace": "",
       "expectRed": "every read path reclaims its consumer",
       "cell": "every read path reclaims its consumer",
@@ -27,8 +27,8 @@
     {
       "name": "omits rotated consumer deletion in finally",
       "file": "packages/core/src/kv-scan.ts",
-      "find": "    for (let serial = Number(name.slice(cut)); serial >= 1; serial--) {",
-      "replace": "    for (let serial = 1; serial >= 1; serial--) {",
+      "find": "      for (let i = owned.length - 1; i >= 0; i--) {",
+      "replace": "      for (let i = 0; i >= 0; i--) {",
       "expectRed": "rotation: rotated consumer is deleted in finally (no consumer leaked on broker)",
       "cell": "rotation: rotated consumer is deleted in finally (no consumer leaked on broker)",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

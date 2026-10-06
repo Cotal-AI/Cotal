@@ -347,7 +347,7 @@ try {
           getPushConsumer: async (...a: unknown[]) => {
             const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
             const realConsume = (oc.consume as () => Promise<AsyncIterable<unknown>>).bind(oc);
-            return Object.assign(Object.create(oc as object), {
+            return Object.assign(oc, {
               consume: async () => {
                 const inner = await realConsume() as unknown as {
                   reset: () => void;
