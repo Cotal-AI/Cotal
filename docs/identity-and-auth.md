@@ -346,8 +346,10 @@ loudly instead of serving from a half-dead plane.
 creds file. The agent exchanges its spawn-time secret for short bearers (five minutes or
 less) and refreshes ahead of each expiry. Rows are runtime grants: every start rotates
 the secret, every stop or despawn revokes the row, so a non-running agent holds no
-standing authority. Manifest deploys (`up -f`) stamp the logged-in owner into the launch,
-so those agents are yours too.
+standing authority. A spawn whose auth preflight fails is rolled back: the manager revokes the
+row, shreds the secret files and deletes the broker footprint. Every step runs even when an
+earlier one fails, and the refusal names each step that failed. Manifest deploys (`up -f`)
+stamp the logged-in owner into the launch, so those agents are yours too.
 
 **Despawn tears the lifecycle down, then frees the name.** When you despawn an agent, the manager
 drives the *full* teardown of that lifecycle: it shreds the local credential files, revokes the
@@ -361,8 +363,10 @@ a plain reason and a retry hint rather than quietly handing the alias to a new a
 the old lifecycle's teardown is still running. Only once the broker footprint is gone, the standing
 authority is revoked, and the retirement is confirmed does the name free, and `cotal spawn <same-name>`
 gives you a fresh agent cleanly. This is what makes reusing an agent's name safe: the old lifecycle is
-fully torn down before the new one takes the alias. If the auth service is unreachable or the
-standing-authority revoke fails, the despawn still stops the agent and *holds* the name. **A
+fully torn down before the new one takes the alias. A local file that cannot be removed does not
+stop the rest of the teardown: the broker footprint is still deleted, the failure is reported, and
+the name stays held. If the auth service is unreachable or the standing-authority revoke fails,
+the despawn still stops the agent and *holds* the name. **A
 same-name `cotal spawn` re-drives the whole teardown** and finishes it. Retrying the despawn has no
 effect because the agent is already stopped. The operator copy tells you to recover the stack
 (`cotal supervise`) rather than reusing the name over an unretired predecessor.
