@@ -36,9 +36,9 @@ import {
   mintMembershipObserverCreds, mintConnectionEvictorCreds,
   principalKey, standaloneConnectOpts, epAuthBucket, DEV_OWNER,
   provisionEndpointGateOpen, serveIssuanceGateKv, endpointRegistrationBarrier,
-  epgateKey, parseEndpointGate, mintLifecycleUid,
+  epgateKey, parseEndpointGate, mintLifecycleUid, mkSecretDir, writeSecretFile,
 } from "@cotal-ai/core";
-import { putSpaceAuth, createManagerInstanceIdentity, workspaceSecretStore } from "@cotal-ai/workspace";
+import { putSpaceAuth, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { executePrincipalLiveness } from "../../delivery/src/evict-exec.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -194,8 +194,11 @@ try {
     if (frozen === null) throw new Error("the shipped barrier did not freeze the gate — residue not built");
 
     // The command's DEFAULT instance resolution reads this file. Writing it is what makes the
-    // no-`--instance` invocation below the real operator path.
-    createManagerInstanceIdentity(ROOT, space, { instanceId, serveIdentity: { id: newIdentity().id, seed: newIdentity().seed } });
+    // no-`--instance` invocation below the real operator path. Each residue replaces the previous
+    // one's record, which no shipped writer does, so the fixture writes the file itself.
+    const recordDir = join(ROOT, ".cotal", spaceSegment(space));
+    mkSecretDir(recordDir);
+    writeSecretFile(join(recordDir, "manager-instance.json"), JSON.stringify({ instanceId, serveIdentity: { id: newIdentity().id, seed: newIdentity().seed } }));
     return { instanceId, principal, kv, ...(conn ? { conn } : {}) };
   };
 
