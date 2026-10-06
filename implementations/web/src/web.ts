@@ -802,10 +802,10 @@ async function connectWithoutSeed(
  *  to a different host explicitly. */
 export async function web(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; server?: string; host?: string; port?: string; "no-open"?: boolean; detach?: boolean; creds?: string };
-  // Validate the exposure coordinate before connecting to the broker or claiming local artifacts.
-  // An invalid remote-exposure request must have no dashboard side effects.
+  // Validate the exposure coordinates before connecting to the broker or claiming local artifacts.
+  // An invalid exposure request must have no dashboard side effects.
   const host = normalizeWebHost(values.host);
-  const port = values.port ? Number(values.port) : WEB_PORT;
+  const port = parseWebPort(values.port);
   // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast).
   //
   // USER MODE: the god view rides an exchange-gated "admin" VIEW bearer (ledger scope "admin",
@@ -1223,7 +1223,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // for the link; `cotal status` reads it for the address to probe and the nonce to present. 0600 —
   // same trust boundary as the rest of `~/.cotal`, no wider.
   if (sessionPath) {
-    // The socket's address, not the requested one: `--port 0` binds an ephemeral port.
+    // The socket's address, not the requested one: a hostname `--host` binds the address it resolved to.
     const bound = httpServer.address() as AddressInfo;
     // `mode:` on writeFileSync applies at CREATION ONLY — a stale `web.session` left behind with a
     // broader mode would keep it and quietly hold the launch URL and readiness nonce world-readable.
@@ -1479,6 +1479,17 @@ export function normalizeWebHost(input: string | undefined): string {
   if (WILDCARD_HOSTS.has(host) || host === IPV4_MAPPED_WILDCARD)
     throw new Error(`--host ${input} is a wildcard bind, not a browser address; pass one reachable hostname or IP address`);
   return host;
+}
+
+/** Validate the one port used for the bind, the advertised link, the Origin allow-list and the
+ *  detached readiness probe. Port 0 is refused because the kernel would bind an ephemeral port that
+ *  none of those, all built from the requested value, would name. */
+function parseWebPort(input: string | undefined): number {
+  if (input === undefined) return WEB_PORT;
+  const port = Number(input);
+  if (!/^[0-9]+$/.test(input) || port < 1 || port > 65535)
+    throw new Error(`invalid --port ${quoteForOperator(input)}; pass a decimal port from 1 to 65535`);
+  return port;
 }
 
 export function webUrl(host: string, port: number): string {

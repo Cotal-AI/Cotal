@@ -122,7 +122,7 @@ cotal web --space main --creds ./admin.creds # use a cred you minted yourself
 ```
 
 Flags: `--space` (default `main`), `--server` (the mesh's broker, resolved from the registry),
-`--host` (HTTP bind and browser host, default `127.0.0.1`), `--port` (default `7799`), `--detach`
+`--host` (HTTP bind and browser host, default `127.0.0.1`), `--port` (1 to 65535, default `7799`), `--detach`
 (run in the background), `--no-open` (skip auto-launching the browser), `--creds` (override the
 self-minted cred). Remote exposure requires an explicit concrete `--host`; wildcard addresses
 `0.0.0.0` and `::` are refused because neither is a browser destination. Detached mode waits for

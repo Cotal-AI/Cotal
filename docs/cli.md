@@ -1931,7 +1931,7 @@ cotal web [--detach] [--host <host>] [--port <n>] [--no-open] [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Space to serve |
 | `--host <host>` | `127.0.0.1` | Concrete HTTP bind and browser host; wildcard addresses are refused |
-| `--port <n>` | `7799` | HTTP port |
+| `--port <n>` | `7799` | HTTP port, a decimal number from 1 to 65535 |
 | `--detach` | off | Run in the background; stop with `cotal down web` or bare `cotal down` |
 | `--no-open` | off | Don't open the browser |
 
