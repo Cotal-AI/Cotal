@@ -1,3 +1,0 @@
-/* Self-hosted latin subsets (variable fonts) of Work Sans and JetBrains Mono, from Google Fonts (OFL). */
-@font-face { font-family: 'Work Sans'; font-style: normal; font-weight: 400 800; font-display: swap; src: url(work-sans.woff2) format('woff2'); }
-@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400 700; font-display: swap; src: url(jetbrains-mono.woff2) format('woff2'); }

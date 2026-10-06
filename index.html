@@ -3,73 +3,73 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0d1117">
-<title>Cotal · booth demo</title>
-<link rel="icon" href="assets/cotal-mark.svg">
-<link rel="stylesheet" href="booth.css">
+<meta name="theme-color" content="#FFFCEE">
+<title>Cotal Booth</title>
+<link rel="icon" href="../assets/cotal-mark.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <canvas id="bg" class="mesh" style="position:fixed; z-index:0;"></canvas>
 
-  <section id="attract" class="screen" style="z-index:1;">
-    <div class="overlay">
-      <div class="brand"><img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span></div>
-      <div class="tagline">The open <b>pub/sub</b> standard for AI agents</div>
-      <button class="cta">Tap to see it work</button>
-    </div>
-    <div class="qr-card">
-      <div class="qr"><canvas class="qrc"></canvas></div>
-      <div class="qr-text"><b>Try it on your phone</b><span>booth.apps.cotal.ai</span></div>
-    </div>
-    <div class="attract-foot">
-      <span class="vendors"><img src="assets/claude-code.svg" alt="Claude Code"><img src="assets/opencode.svg" alt="OpenCode"><img src="assets/codex.svg" alt="Codex"><img src="assets/hermes.png" alt="Hermes"><img src="assets/pi.svg" alt="pi"></span>
-    </div>
-  </section>
-
-  <section id="home" class="screen" style="z-index:1;">
-    <div class="wrap">
-      <div class="topbar"><img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span></div>
-      <h1>Pick a demo</h1>
-      <p class="lede">About thirty seconds each.</p>
-      <div class="cards"></div>
-      <div class="home-foot">
-        <div class="qr-block">
-          <div class="qr"><canvas class="qrc"></canvas></div>
-          <div><div class="url">Try it on your phone</div><div>booth.apps.cotal.ai</div></div>
-        </div>
-        <div class="site"><a href="https://cotal.ai" target="_blank" rel="noopener">cotal.ai</a><div>Open source · Apache 2.0</div></div>
+  <!-- idle screen: poster 1, alive -->
+  <section id="attract" class="screen">
+    <header class="bar"><div class="brand"><span data-mark></span>cotal</div><span class="bar-note">Open source · Apache-2.0</span></header>
+    <div class="attract-main">
+      <div class="attract-copy">
+        <h1>Get your agents talking.</h1>
+        <p class="lede">Cotal connects AI agents across tools and machines. Four short demos show how.</p>
+        <span class="sbtn primary big cta"><span class="lbl">Tap to see it work</span><i class="arrow">→</i></span>
+        <p class="works">Works with Claude Code, Codex, OpenCode, Hermes and pi.</p>
+        <div class="qr-card inline"><div class="qr"></div><div><b>Try it on your phone</b><span>booth.apps.cotal.ai</span></div></div>
       </div>
+      <div class="art-box"></div>
     </div>
   </section>
 
-  <section id="demo" class="screen" style="z-index:2;">
-    <div class="topbar">
-      <button class="back" aria-label="All demos">‹</button>
-      <img src="assets/cotal-mark.svg" alt=""><span class="word">Cotal</span><span class="sep">·</span>
-      <span class="title"></span><span class="dots"></span>
-      <span class="auto-badge">touch to take over</span>
+  <!-- demo picker -->
+  <section id="home" class="screen">
+    <header class="bar"><div class="brand"><span data-mark></span>cotal</div><span class="bar-note">Open source · Apache-2.0</span></header>
+    <div class="home-head"><h1>Pick a demo.</h1><p class="lede">About thirty seconds each. Tap one, or press 1 to 4.</p></div>
+    <div class="cards"></div>
+    <div class="home-foot">
+      <div class="qr-card inline"><div class="qr"></div><div><b>Try it on your phone</b><span>booth.apps.cotal.ai</span></div></div>
+      <div class="site"><b>cotal.ai</b><span>github.com/Cotal-AI/Cotal</span></div>
     </div>
+  </section>
+
+  <!-- a demo -->
+  <section id="demo" class="screen">
+    <header class="dbar">
+      <button class="sbtn round back" aria-label="All demos">←</button>
+      <div class="brand small"><span data-mark></span>cotal</div>
+      <span class="title"></span>
+      <span class="dots"></span>
+      <span class="auto-badge"><i></i>Playing by itself · touch to take over</span>
+    </header>
     <div id="stage" class="stage"></div>
-    <div id="capbar" class="capbar">
-      <div class="caption"><div class="lead"></div><div class="detail"></div><div class="stats"></div></div>
+    <footer id="capbar" class="capbar">
+      <div class="caption"><div class="lead"></div><div class="detail"></div></div>
+      <div class="stats"></div>
       <div class="actions"></div>
-    </div>
+    </footer>
   </section>
 
-  <div class="hud"><button id="hud-help">?</button></div>
+  <button id="hud-help" aria-label="Keys">?</button>
   <div id="help">
     <div class="box">
       <h3>Keys</h3>
       <dl>
-        <dt>1 – 4</dt><dd>pick a demo (home) · press a toolbar button (in a demo)</dd>
-        <dt>Space / Enter</dt><dd>press the highlighted button</dd>
+        <dt>1 – 4</dt><dd>pick a demo, or press a button inside one</dd>
+        <dt>Space</dt><dd>press the highlighted button</dd>
         <dt>R</dt><dd>replay this demo</dd>
-        <dt>→ / ←</dt><dd>next / previous demo</dd>
-        <dt>Esc</dt><dd>back to all demos · from there, back to the idle screen</dd>
+        <dt>→ ←</dt><dd>next or previous demo</dd>
+        <dt>Esc</dt><dd>back to all demos, then to the idle screen</dd>
         <dt>F</dt><dd>fullscreen</dd>
-        <dt>M</dt><dd>sound on / off</dd>
+        <dt>M</dt><dd>sound on or off</dd>
       </dl>
-      <p style="color:var(--dim); margin:1.4em 0 0;">Left alone, the screen plays the demos by itself. Any touch hands control back.</p>
+      <p>Left alone, the screen plays the demos by itself. Any touch hands control back.</p>
     </div>
   </div>
 
@@ -106,9 +106,8 @@ window.BOOTH_QR = [ // https://booth.apps.cotal.ai/?qr=1
   '11111110101010101100100011010',
 ];
   </script>
-  <script src="personas.js"></script>
-  <script src="face.js"></script>
+  <script src="characters.js"></script>
   <script src="demos.js"></script>
-  <script src="booth.js"></script>
+  <script src="engine.js"></script>
 </body>
 </html>

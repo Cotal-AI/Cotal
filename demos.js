@@ -58,7 +58,7 @@
     await run.sleep(1400);
 
     // 2. unicast
-    S.caption('A direct message to david.', 'If he is busy it waits in his inbox.', { cls: 'dm', text: 'unicast' });
+    S.caption('A direct message to david.', 'If david is busy, it waits in the inbox.', { cls: 'dm', text: 'unicast' });
     await dm('sven', 'david', 'Spec is in wt-1. Ship it as PR #42.');
     S.status('sven', 'idle'); S.status('david', 'working'); S.think('david', 'building POST /users');
     await run.sleep(2200);
@@ -83,7 +83,7 @@
     S.caption('garry joins late and replays the history.', '', { cls: 'gold', text: 'late join' });
     M.add({ id: 'garry', label: 'garry', vendor: 'pi', x: garry.x, y: garry.y, from: { x: 0.5, y: -0.15 } });
     M.link('garry', '#general'); M.link('garry', '#review');
-    S.rosterAdd(garry);
+    S.rosterAdd(garry); S.mood('garry', 'happy', 1600);
     S.feed({ sys: 'garry joined · replaying 4 messages' });
     await run.sleep(600);
     for (let i = 0; i < 4; i++) { swallow(M.pulse(i % 2 ? '#review' : '#general', 'garry', 'chat', { dur: 320 })); await run.sleep(170); }
@@ -94,6 +94,7 @@
     S.caption('Peers talk to peers.', 'Finding, fix, approval: across vendors.');
     swallow(S.say('ray', 'Missing input validation on /users.'));
     await dm('ray', 'david', 'Missing input validation on /users.');
+    S.mood('david', 'surprised', 1300);
     S.status('david', 'working'); S.think('david', 'fixing');
     await run.sleep(1500);
     swallow(S.say('david', 'Fixed and pushed.'));
@@ -118,12 +119,12 @@
   // ------------------------------------------------------------------ 2. three ways to send
   async function modes(S, run, { pick, next }) {
     const M = S.mesh;
-    M.add({ id: 'alice', label: 'alice', vendor: 'claude', x: 0.13, y: 0.5 });
-    M.add({ id: '#general', kind: 'channel', label: '#general', x: 0.5, y: 0.3 });
-    for (const [id, v, x, y] of [['bob', 'opencode', 0.74, 0.12], ['carol', 'codex', 0.88, 0.32], ['dan', 'hermes', 0.74, 0.5]]) { M.add({ id, label: id, vendor: v, x, y }); M.link(id, '#general'); }
+    M.add({ id: 'alice', label: 'alice', vendor: 'claude', x: 0.12, y: 0.5 });
+    M.add({ id: '#general', kind: 'channel', label: '#general', x: 0.48, y: 0.24 });
+    for (const [id, v, x, y] of [['bob', 'opencode', 0.72, 0.08], ['carol', 'codex', 0.9, 0.24], ['dan', 'hermes', 0.72, 0.42]]) { M.add({ id, label: id, vendor: v, x, y }); M.link(id, '#general'); }
     M.link('alice', '#general');
-    M.add({ id: 'role', kind: 'label', label: 'reviewers', color: 'anycast', x: 0.76, y: 0.64 });
-    for (const [id, v, x, y] of [['rev-1', 'codex', 0.6, 0.84], ['rev-2', 'pi', 0.76, 0.92], ['rev-3', 'hermes', 0.92, 0.8]]) M.add({ id, label: id, vendor: v, x, y });
+    M.add({ id: 'role', kind: 'label', label: 'reviewers', color: 'anycast', x: 0.76, y: 0.6 });
+    for (const [id, v, x, y] of [['rev-1', 'codex', 0.6, 0.82], ['rev-2', 'pi', 0.76, 0.86], ['rev-3', 'hermes', 0.92, 0.82]]) M.add({ id, label: id, vendor: v, x, y });
     M.status('bob', 'working'); M.status('rev-2', 'working');
     S.feed({ sys: '7 agents online · bob and rev-2 are busy' });
 
@@ -137,10 +138,10 @@
       if (draining) return; draining = true;
       try {
         await run.sleep(2800);
-        M.status('bob', 'idle'); S.feed({ sys: 'bob is free · reading inbox' });
+        M.status('bob', 'idle'); M.mood('bob', 'surprised', 1500); S.feed({ sys: 'bob is free · reading inbox' });
         await run.sleep(300);
         while (inbox > 0) { inbox--; M.badge('bob', inbox ? 'inbox ' + inbox : null); M.ring('bob', '#d29922'); S.feed({ sys: 'delivered to bob' }); await run.sleep(480); }
-        S.caption('Delivered when he freed up. Nothing lost.', '', { cls: 'dm', text: 'unicast' });
+        S.caption('Delivered once bob was free. Nothing lost.', '', { cls: 'dm', text: 'unicast' });
         bobBusy = false;
         await run.sleep(5000);
         M.status('bob', 'working'); bobBusy = true;
@@ -163,10 +164,11 @@
         M.dashed('alice', 'bob', 'dm', 1200); await M.pulse('alice', 'bob', 'dm');
         if (bobBusy) {
           inbox++; M.badge('bob', 'inbox ' + inbox);
-          S.caption('bob is busy. It waits in his inbox.', 'Press again: it queues in order.', { cls: 'dm', text: 'unicast' });
+          S.caption('bob is busy. The message waits in the inbox.', 'Press again: it queues in order.', { cls: 'dm', text: 'unicast' });
           S.feed({ sys: 'bob is busy · queued (' + inbox + ')' });
           drain();
         } else {
+          M.mood('bob', 'happy', 1500);
           S.caption('bob is free. Delivered now.', '', { cls: 'dm', text: 'unicast' });
           S.feed({ sys: 'delivered to bob' });
         }
@@ -186,7 +188,7 @@
           free.push('rev-1');
         }
         const winner = free[rr++ % free.length];
-        await M.pulse('alice', winner, 'anycast'); M.status(winner, 'working');
+        await M.pulse('alice', winner, 'anycast'); M.status(winner, 'working'); M.mood(winner, 'happy', 1400);
         const busy = holders.filter((h) => h !== winner && M.get(h).status === 'working');
         S.feed({ sys: winner + ' claimed it' + (busy.length ? ' · ' + busy.join(', ') + ' busy' : '') });
         S.caption('Sent to a role. One free reviewer claims it.', busy.length ? busy.join(' and ') + ' busy, so skipped.' : '', { cls: 'anycast', text: 'anycast' });
@@ -257,7 +259,7 @@
       supervisor: ['A manager with workers.', 'The lead hands each task to a free worker, who reports back.'],
       tree: ['A tree of teams.', 'The lead delegates to sub-leads. Each one splits the work.'],
       chain: ['A pipeline.', 'Each stage hands off to the next.'],
-      hybrid: ['Two teams, and the leads are peers.', ''],
+      hybrid: ['Two teams, and the leads are peers.', 'Each team has its own channel. The leads share #team.'],
       scale: ['Forty more just joined.', 'Same wire, from a laptop to a cluster.'],
     };
 
@@ -269,7 +271,7 @@
         return { x: -0.04 + col * (1.08 / 19) + (row ? 0.028 : 0), y: 0.97 + row * 0.1, hub: mode === 'supervisor' ? 'lead' : col < 10 ? 'ben' : 'gus' };
       }
       const a = ((i + 0.5) / 40) * 6.283 + (Math.random() - 0.5) * 0.08, ring = i % 3;
-      const x = 0.5 + Math.cos(a) * (0.42 + ring * 0.065), y = 0.5 + Math.sin(a) * (0.45 + ring * 0.035);
+      const x = 0.5 + Math.cos(a) * (0.62 + ring * 0.05), y = 0.5 + Math.sin(a) * (0.6 + ring * 0.045);
       return { x, y, hub: mode === 'hybrid' ? (x < 0.5 ? '#a' : '#b') : '#team' };
     };
     const addSwarm = () => {
@@ -280,7 +282,7 @@
         M.add({ id, vendor: pick(vendors), x: p.x, y: p.y, from: { x: 0.5 + (p.x - 0.5) * 2.2, y: 0.5 + (p.y - 0.5) * 2.2 }, size: 0.6, status: pick(['idle', 'idle', 'idle', 'working', 'waiting']) });
         M.link(id, p.hub); swarm.push(id);
       }
-      M.zoomTo(mode === 'supervisor' || mode === 'tree' ? 0.72 : 0.8);
+      M.zoomTo(mode === 'supervisor' || mode === 'tree' ? 0.72 : 0.62);
       S.toolbarMark('scale'); S.caption(CAP.scale[0], CAP.scale[1]); count();
       swarmChurn(g); swarmTraffic(g);
     };
@@ -348,7 +350,7 @@
       later(0, () => Promise.all(kids.map(async (k) => {
         await run.sleep(1600 + Math.random() * 1500); if (mode !== 'tree') return;
         await M.pulse(k, sub, 'dm', { dur: 480 }); left--; M.badge(sub, left ? left + ' tasks' : null);
-      })).then(async () => { if (mode !== 'tree') return; M.status(sub, 'idle'); await M.pulse(sub, 'lead', 'dm'); }));
+      })).then(async () => { if (mode !== 'tree') return; M.status(sub, 'idle'); M.mood(sub, 'happy', 1200); await M.pulse(sub, 'lead', 'dm'); M.mood('lead', 'happy', 900); }));
     };
     const traffic = async () => {
       if (!mode) return;
@@ -365,12 +367,12 @@
         M.status('lead', 'working');
         for (const x of free) M.dashed('lead', x, 'anycast', 450);
         await M.pulse('lead', w, 'anycast'); busyFor(w, 2200 + Math.random() * 1200);
-        later(700, async () => { M.status('lead', 'idle'); await run.sleep(1300 + Math.random() * 900); if (mode === 'supervisor') await M.pulse(w, 'lead', 'dm'); });
+        later(700, async () => { M.status('lead', 'idle'); await run.sleep(1300 + Math.random() * 900); if (mode === 'supervisor') { await M.pulse(w, 'lead', 'dm'); M.mood(w, 'happy', 900); } });
       } else if (mode === 'tree') {
         await treeRound(); await run.sleep(600);
       } else if (mode === 'chain') {
         for (let i = 0; i < names.length - 1 && mode === 'chain'; i++) { busyFor(names[i], 500); M.dashed(names[i], names[i + 1], 'dm', 700); await M.pulse(names[i], names[i + 1], 'dm', { dur: 380 }); }
-        if (mode === 'chain') { busyFor('hana', 600); await M.pulse('hana', '#team', 'chat'); }
+        if (mode === 'chain') { busyFor('hana', 600); M.mood('hana', 'happy', 1000); await M.pulse('hana', '#team', 'chat'); }
       } else if (mode === 'hybrid') {
         const left = ['lead', 'ana', 'ben', 'cleo', 'dev'], right = ['eli', 'fay', 'gus', 'hana'];
         if (r < 0.35) { const a = pick(left); await M.pulse(a, '#a', 'chat'); await Promise.all(left.filter((n) => n !== a).map((n) => M.pulse('#a', n, 'chat', { dur: 420 }))); }
@@ -439,7 +441,7 @@
   const L = { fan: 27, rSpawn: 3, rAsk: 4, tSpawn: 9, tAsk: 10, tRet: 12, fSpawn: 14, fAsk: 15, par: 17, ok: 21, merge: 22, refix: 23 };
   async function lang(S, run, { sfx }) {
     const M = S.mesh;
-    const MACH = { laptop: 0.17, server: 0.5, cloud: 0.83 }, ROW = 0.47, BASE = 0.84;
+    const MACH = { laptop: 0.17, server: 0.5, cloud: 0.83 }, ROW = 0.52, BASE = 0.84;
     const slots = { laptop: [null, null, null], server: [null, null, null], cloud: [null, null, null] }, hostOf = {};
     let home = 'laptop';
     S.code(PROGRAM);
@@ -448,9 +450,9 @@
     S.host(true, 'run on laptop');
     const seat = (id, label, vendor, host) => {
       const k = slots[host].indexOf(null); slots[host][k] = id; hostOf[id] = host;
-      // On a narrow screen the middle seat sits higher so neighbouring badges do not collide.
-      const y = ROW - (M.w < 600 && k === 1 ? 0.08 : 0);
-      M.add({ id, label, vendor, x: MACH[host] + (k - 1) * 0.1, y, from: { x: MACH[host], y: BASE } }); M.link(id, host);
+      // Seats are evenly spaced across the three machines. The middle seat sits higher so neighbouring badges do not collide.
+      const y = ROW - (k === 1 ? 0.08 : 0);
+      M.add({ id, label, vendor, x: MACH[host] + (k - 1) * 0.11, y, from: { x: MACH[host], y: BASE } }); M.link(id, host);
     };
     const unseat = (id) => { const s = slots[hostOf[id]]; s[s.indexOf(id)] = null; M.remove(id); };
     const lane = (id) => '/fanOut:lanes#0/b:' + id + '/';
@@ -469,7 +471,7 @@
     const TRI = [['tA', '#318', 'laptop', 'confirmed', 'green'], ['tB', '#322', 'server', 'confirmed', 'green'], ['tC', '#327', 'cloud', 'duplicate', 'sys']];
     TRI.forEach(([id, iss, host], i) => { seat(id, 'triage', 'opencode', host); J(lane(iss), 'ask:triage#0'); });
     await run.sleep(450); S.hl(L.tAsk);
-    await Promise.all(TRI.map(async ([id, iss, , label, col], i) => { await run.sleep(i * 260); await work(id, 1100 + i * 250); M.badge(id, label, col); ok(lane(iss), 'ask:triage#0', label); }));
+    await Promise.all(TRI.map(async ([id, iss, , label, col], i) => { await run.sleep(i * 260); await work(id, 1100 + i * 250); M.badge(id, label, col); if (label === 'duplicate') M.mood(id, 'surprised'); ok(lane(iss), 'ask:triage#0', label); }));
     S.codeDone(L.tSpawn); S.codeDone(L.tAsk); S.hl(L.tRet);
     S.caption('#327 is a duplicate.', 'Its lane ends there. The other two go on.');
     await run.sleep(1100);
@@ -498,11 +500,11 @@
     // #322 merges; #318 goes back to its fixer
     S.hl(L.merge); J(lane('#322'), 'turn:merge#0');
     S.caption('One PR is blocked.', 'The findings go back to the fixer for another round.', { cls: 'red', text: 'block' });
-    swallow(work('fB', 700).then(() => { M.badge('fB', 'merged', 'green'); ok(lane('#322'), 'turn:merge#0', 'PR #413 merged'); }));
+    swallow(work('fB', 700).then(() => { M.badge('fB', 'merged', 'green'); M.mood('fB', 'happy'); ok(lane('#322'), 'turn:merge#0', 'PR #413 merged'); }));
     await run.sleep(500); for (const id of ['gB', 'mB', 'mA']) unseat(id);
     S.hl(L.refix); J(lane('#318'), 'ask:fix#1');
-    await M.pulse('gA', 'fA', 'dm'); unseat('gA');
-    await work('fA', 1200); M.badge('fA', 'PR #412 · v2'); ok(lane('#318'), 'ask:fix#1', 'PR #412 v2'); S.codeDone(L.refix);
+    await M.pulse('gA', 'fA', 'dm'); M.mood('fA', 'sad'); unseat('gA');
+    await work('fA', 1200); M.mood('fA', null); M.badge('fA', 'PR #412 · v2'); ok(lane('#318'), 'ask:fix#1', 'PR #412 v2'); S.codeDone(L.refix);
 
     // round 2, then pull the plug on the laptop mid-review
     S.hl(L.par);
@@ -517,6 +519,7 @@
     await killed;
 
     sfx.bad(); M.recolor('laptop', 'red'); M.recolor('run', 'sys'); M.status('mA2', 'offline'); M.badge('mA2', null);
+    for (const id of ['fA', 'gA2']) M.mood(id, 'surprised', 2200);
     S.host(false, 'laptop down'); S.journalFreeze(true); S.hl(-1);
     S.journalSet(S318 + 'b:gemini/ask:verdict#1', 'dead', 'seat lost');
     S.caption('The laptop is gone, and the run with it.', 'Any other machine can pick it up.', { cls: 'red', text: 'machine down' });
@@ -530,14 +533,14 @@
     for (const line of [L.fan, L.tSpawn, L.tAsk, L.fSpawn, L.fAsk, L.rSpawn, L.rAsk, L.refix]) { S.hl(line, 'replay'); sfx.kind('chat'); await run.sleep(230); S.codeDone(line); }
     for (const r of S.root.querySelectorAll('.jr.ok')) r.classList.replace('ok', 'replayed');
     S.hl(L.rSpawn); seat('mA3', 'gemini', null, 'cloud'); J(S318 + 'b:gemini/', 'spawn:reviewer-gemini#2', 'on cloud');
-    S.caption('The lost reviewer comes back on another machine.', '');
+    S.caption('The lost reviewer comes back on another machine.', 'Only its step runs again.');
     await run.sleep(500); ok(S318 + 'b:gemini/', 'spawn:reviewer-gemini#2', 'on cloud'); S.hl(L.rAsk);
-    await work('mA3', 1300); M.badge('mA3', 'APPROVE', 'green'); S.journalSet(S318 + 'b:gemini/ask:verdict#1', 'ok', 'approve');
+    await work('mA3', 1300); M.badge('mA3', 'APPROVE', 'green'); M.mood('mA3', 'happy'); S.journalSet(S318 + 'b:gemini/ask:verdict#1', 'ok', 'approve');
 
     // merge
     S.hl(L.merge); J(lane('#318'), 'turn:merge#0');
     await run.sleep(300); unseat('mA3'); unseat('gA2');
-    await work('fA', 800); M.badge('fA', 'merged', 'green'); ok(lane('#318'), 'turn:merge#0', 'PR #412 merged');
+    await work('fA', 800); M.badge('fA', 'merged', 'green'); M.mood('fA', 'happy'); ok(lane('#318'), 'turn:merge#0', 'PR #412 merged');
     S.codeDone(L.par); S.codeDone(L.merge); S.codeDone(L.fan); S.hl(-1);
     S.journal({ key: 'fanOut:lanes', scope: '/', status: 'ok', note: '2 merged · 1 duplicate' }); sfx.ok(); M.ring('run', '#e9c46a');
     S.caption('Two PRs merged. One duplicate closed.', 'One machine lost, no work lost.');
