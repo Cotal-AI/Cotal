@@ -932,7 +932,9 @@ export interface SpawnHooks {
   /** Fires synchronously AFTER the incarnation identity (nkey + lifecycleUid) is minted but BEFORE
    *  any provision/side-effect — the accept seam: it binds the goal and replies the acceptance. A
    *  THROW here aborts the spawn before provisioning (the existing catch returns the failure and the
-   *  finally releases the reserve, so no footprint leaks) — this is the bind-conflict refusal path. */
+   *  finally releases the reserve, so no footprint leaks) — this is the bind-conflict refusal path.
+   *  On the hosted enrollment arm it fires right after the host enrolls the agent, because the host
+   *  picks the uid; a throw there rolls that enrollment back. */
   onAccepted?: (allocated: { name: string; identity: Identity; lifecycleUid: string; agentTriple: { owner: string; actor: string; uid: string } }) => Promise<void> | void;
   /** Fires once the child process has been launched (the "launched" progress edge). A THROW here
    *  aborts the spawn with the seat already running and the handle held only in a local, so the
@@ -5864,7 +5866,8 @@ export class Manager {
       // been provisioned yet — the action serve path binds the goal + replies the acceptance HERE. A
       // throw (bind conflict / duplicate goalId) aborts the spawn before provisioning: the catch below
       // returns the failure and the finally releases the reserve, so a refused accept leaves zero
-      // footprint (pin 1). Blocking callers (roster boot) pass no hooks and this is a no-op.
+      // footprint (pin 1). The hosted enrollment arm is the exception, below. Blocking callers
+      // (roster boot) pass no hooks and this is a no-op.
       // The ALLOCATED agent's addressing triple (the acceptance floor names what was actually
       // allocated, never the requested-but-unallocated name). Static/open key on DEV_OWNER + the
       // freshly-minted nkey; user mode keys on the derived owner (opts.owner, else a u_-owner spawner)
@@ -5918,7 +5921,10 @@ export class Manager {
       }
       if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
       await hooks?.onReadinessWindow?.(readinessTimeoutMs);
-      await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple });
+      // The hosted enrollment arm accepts only once the host has answered: the floor names the uid
+      // the agent runs at, and before the host picks it there is no such uid to name.
+      const hostedEnrollment = this.userMode && (opts.delegatedIntent !== undefined || this.remoteAuthority?.enrollManagedAgent !== undefined);
+      if (!hostedEnrollment) await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple });
       // In auth mode, mint the agent's creds from the space signing key and write them where the
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
       // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
@@ -5959,6 +5965,8 @@ export class Manager {
         userOwner = prep.owner;
         enrolled = prep.enrolled;
         provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner, ...(opts.delegatedIntent ? { delegated: true as const } : {}), secretPaths: prep.files, ...(custody ? { runtime: custody } : {}) };
+        // A refused accept from here rolls the enrollment back through `provisioned`.
+        if (hostedEnrollment) await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple: { owner: prep.owner, actor: name, uid: lifecycleUid } });
       } else if (this.auth) {
         // Unit B (§13.1): reserve + activate this incarnation's DURABLE identity BEFORE any
         // broker footprint — the F3 outer spawn intent first (slot row, phase `provisioning`),
@@ -8339,8 +8347,9 @@ export class Manager {
 
   /** Serve `spawn`/`launch` as an ACTION (P2 item 2). Authz already ran in {@link serveGated}. The
    *  accept path runs INLINE on the handler ({@link startAgent} with hooks): the goal binds + the
-   *  acceptance replies the moment the identity is minted, BEFORE any provision (pin 1); progress and
-   *  the terminal are driven OFF-handler, so the ~30s readiness wait no longer blocks the reply.
+   *  acceptance replies the moment the identity is minted, BEFORE any provision (pin 1), or on the
+   *  hosted enrollment arm once the host has enrolled the agent; progress and the terminal are driven
+   *  OFF-handler, so the ~30s readiness wait no longer blocks the reply.
    *  Returns the acceptance floor payload {name, owner, actor, uid, goalId, fingerprint, executor}
    *  (the ALLOCATED identity). goalId = the request id (env.id, Q3). */
   private async serveSpawnGoal(ctx: EpServeContext, run: (hooks: SpawnHooks) => Promise<ControlReply>): Promise<SpawnAcceptance> {

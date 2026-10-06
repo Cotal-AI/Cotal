@@ -136,6 +136,10 @@ up, the manager accepts the goal and returns the allocated identity at once:
 }
 ```
 
+The `uid` is the lifecycle the agent runs at. On a participant manager whose host enrolls its
+agents, the host picks that uid, so the manager accepts the goal only after the host has answered.
+A host refusal there refuses the spawn, and no goal is bound.
+
 The name is the one actually allocated: a persona-derived collision is auto-numbered
 (`reviewer`, then `reviewer_2`), while a hard-pinned `--name` that collides with a live
 agent is refused at accept, before anything is minted. Auto-numbering never hands out a numbered
