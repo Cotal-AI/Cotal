@@ -41,10 +41,13 @@ import { createBoundClaudeTranscriptSource } from "./agui-source.js";
  *  publishes). This replaces the `tr-<name>` transcript mirror, which is gone. */
 let events: AguiEmitterHolder<ClaudeEntry> | undefined;
 
+/** The `claude/channel` push side — set in main() once the MCP server exists. */
+let wake: WakePolicy | undefined;
+
 /** Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages.
- *  Read `events` lazily: main() assigns it after this handler is built. `onReply` is the commit
- *  half — an injected batch is acked only once its reply is confirmed delivered. */
-const claude = createClaudeHandle({ events: () => events });
+ *  Read `events` and `wake` lazily: main() assigns them after this handler is built. `onReply` is
+ *  the commit half — an injected batch is acked only once its reply is confirmed delivered. */
+const claude = createClaudeHandle({ events: () => events, surfaced: (items) => wake?.surfaced(items) });
 
 /** What a plain session's one tool says. Static: an unmanaged process knows nothing about any mesh. */
 const HOW_TO_JOIN =
@@ -186,10 +189,9 @@ async function main(): Promise<void> {
   const controlToken = control.token;
   // Defined before the server so it can be the cooperative-shutdown handler; only ever CALLED after
   // `controlServer` is assigned (on a signal or an authed `{op:"shutdown"}`), so the forward ref is safe.
-  // `wake` is likewise assigned later — declared with `let` (not `const` further down) so a shutdown
-  // frame arriving before the MCP server exists reads `undefined` instead of hitting the TDZ.
+  // `wake` is likewise assigned later, so a shutdown frame arriving before the MCP server exists
+  // reads `undefined`.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
-  let wake: WakePolicy | undefined;
   const shutdown = async () => {
     try {
       controlServer?.close();

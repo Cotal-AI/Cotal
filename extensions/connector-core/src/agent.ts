@@ -1559,14 +1559,15 @@ export class MeshAgent extends EventEmitter {
    *  - NORMAL automatic ambient → only under global `open` (today's behavior);
    *  - receive-time pull-only ambient → never.
    *  Subsumes {@link directedPendingCount}: in `dnd`/`focus` (no override) the open term is false, so it
-   *  equals the directed count; in `open` it adds normal ambient but excludes quiet-channel ambient. */
-  pendingWake(): number {
+   *  equals the directed count; in `open` it adds normal ambient but excludes quiet-channel ambient.
+   *  `skip` leaves out items the caller has already woken the session for. */
+  pendingWake(skip?: (item: InboxItem) => boolean): number {
     // An unsurfaced run turn is directed-strength: it wakes regardless of attention, exactly like
     // a DM — a run is waiting on this seat, and holding it costs the run its deadline.
     const turns = [...this.activeTurns.values()].filter((t) => !t.surfaced).length;
     return turns + this.inbox.filter((p) => {
       const it = p.item;
-      if (p.pullOnly) return false;
+      if (p.pullOnly || skip?.(it)) return false;
       if (it.kind !== "channel" || it.mentionsMe) return true;
       return this._attention === "open";
     }).length;
