@@ -106,12 +106,14 @@ object.** `Manager.runStart` constructs it with `auth: this.auth` (`manager.ts`)
 | `run-operator` | `withOperator` (one-shot read / answer) |
 
 **Barrier helpers take `opts.auth: SpaceAuth` from the manager (or from the CLI below) and mint
-in-process today:**
+in-process today, each through `withScopedEndpoint` (`endpoint-evict.ts`), which fixes the 60s
+lifetime:**
 
 | Profile | Function |
 |---|---|
-| `endpoint-evictor` | `makeManagerEndpointEvictionEvidence` (`endpoint-evict.ts`) |
+| `endpoint-evictor` | `makeManagerEndpointEvictionEvidence` and `makeManagerEndpointHolderEvictor` (`endpoint-evict.ts`) |
 | `endpoint-evictor` | `makeManagerHolderLivenessProbe` (`holder-liveness.ts`) |
+| `observer` | `makeManagerHolderLivenessProbe`, for its `lease.0` diagnosis read |
 
 **Operator commands in the manager package load their own bundle with `getSpaceAuth` and mint.
 They are not `this.auth`, but they are the same seed on this host:**
