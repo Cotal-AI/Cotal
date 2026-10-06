@@ -335,6 +335,12 @@ A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQ
 publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. An unmanaged
 session with no launch material and no required-policy fallback keeps the generic default behavior.
 
+If the event plane stops for good, the space's policy decides what happens to the seat, on every
+connector. On a space that requires events the seat stops and leaves the mesh. On any other space
+it keeps running without events, and the connector log records `AG-UI emitter stopped` with the
+reason. For Claude Code the connector is the MCP server: it leaves the mesh and exits with code 1,
+and its stderr carries that line.
+
 A new session includes its first run even when Claude writes a positional startup prompt before the
 connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
 `source: "startup"`; resumed, forked, cleared, and compacted sessions adopt at the transcript boundary

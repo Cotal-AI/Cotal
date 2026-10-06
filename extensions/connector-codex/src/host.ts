@@ -63,6 +63,7 @@ import {
   WORKFLOW_STEER,
   AguiEmitter,
   AguiEmitterHolder,
+  eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
   JsonlFileSource,
@@ -482,9 +483,7 @@ export async function runCodexHost(): Promise<void> {
           return em;
       },
       {
-        // Required, and not defaulted to a swallow. The holder is terminal on error and does not
-        // retry, so this line is the whole record of why events stopped.
-        onError: (e: Error) => log(`AG-UI emitter stopped: ${e.message}`),
+        onError: eventPlaneStopped({ required: config.eventsRequired === true, log, stopSeat: () => void shutdown(1) }),
         // A turn terminal closes a run the record stream never described. Without this the mapper
         // would attribute the next records to a run the published stream has already finished.
         onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),

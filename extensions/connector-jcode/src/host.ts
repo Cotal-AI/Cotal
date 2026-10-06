@@ -44,6 +44,7 @@ import {
   MeshAgent,
   AguiEmitter,
   AguiEmitterHolder,
+  eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
   ORIENTATION_BOOTSTRAP,
@@ -488,10 +489,11 @@ export async function runJcodeHost(): Promise<void> {
           });
         },
         {
-          onError: (error: Error) => {
-            writeJcodeDiagnostic(`[cotal-jcode] AG-UI emitter stopped: ${error.message}\n`);
-            if (!stopping) void shutdown(1);
-          },
+          onError: eventPlaneStopped({
+            required: config.eventsRequired === true,
+            log: (line) => writeJcodeDiagnostic(`[cotal-jcode] ${line}\n`),
+            stopSeat: () => void shutdown(1),
+          }),
           onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
           // #1868: a flush landing in a mesh rebuild window measured `max_payload` off a connection
           // that was not there and killed the seat. The holder now rides the window out on this
@@ -994,10 +996,7 @@ export async function runJcodeHost(): Promise<void> {
     if (events) {
       await ensureEventsBound();
       await events.settled();
-      if (events.failure) {
-        writeJcodeDiagnostic(`[cotal-jcode] refusing a new turn because the AG-UI event plane stopped: ${events.failure.message}\n`);
-        return;
-      }
+      if (stopping) return;
     }
     driving = true;
     if (pendingKickoff !== undefined && steering)

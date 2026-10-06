@@ -12,6 +12,7 @@ import {
   controlFromEnv,
   scrubLaunchMaterial,
   resolveEventsStateRoot,
+  eventPlaneStopped,
 } from "@cotal-ai/connector-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.js";
@@ -162,7 +163,15 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     runtime = createRuntime(config, control);
     runtimes.set(key, runtime);
   }
-  if (eventsEnabled) runtime.events ??= new PiEvents(runtime.mesh, config.space);
+  if (eventsEnabled) {
+    const driver = runtime.driver;
+    runtime.events ??= new PiEvents(runtime.mesh, config.space, eventPlaneStopped({
+      required: config.eventsRequired === true,
+      log: (line) => console.error(`Pi ${line}`),
+      // Latched by the driver when no session is open yet, and carried out when one starts.
+      stopSeat: () => driver.requestShutdown(),
+    }));
+  }
   runtime.expectedSessionId = expectedSessionId;
   if (startupSessionId) {
     if (expectedSessionId && startupSessionId !== expectedSessionId)

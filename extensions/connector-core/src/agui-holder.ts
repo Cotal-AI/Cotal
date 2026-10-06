@@ -63,6 +63,26 @@ export interface AguiEmitterHolderHooks {
 }
 
 /**
+ * The one answer every connector gives when its event plane stops for good, used as a holder's
+ * `onError`.
+ *
+ * Whether a seat may outlive its event plane is the space's policy, so it is decided here and not
+ * by each harness: on a space that requires events the seat stops, because a seat that kept taking
+ * turns would be on the roster while breaking the policy that admitted it. Any other space keeps
+ * the seat running with the reason in its log.
+ */
+export function eventPlaneStopped(opts: {
+  required: boolean;
+  log: (line: string) => void;
+  stopSeat: () => void;
+}): (e: Error) => void {
+  return (e) => {
+    opts.log(`AG-UI emitter stopped: ${e.message}`);
+    if (opts.required) opts.stopSeat();
+  };
+}
+
+/**
  * Holds at most one {@link AguiEmitter}, started on first adopt.
  *
  * `T` is the connector's source record type; the holder never inspects one. It owns four things —

@@ -201,7 +201,8 @@ Eight things are specific to Codex and worth knowing before you read a stream:
 - **Recovery after a broker outage.** Initial mesh absence still
   fails the host's readiness gate within 15 seconds, so it never opens an offline-looking TUI. Once
   ready, the plane publishes through the seat's reconnecting mesh endpoint: an outage can stop an
-  emitter, and the first turn boundary after reconnect rebuilds it. A rebind DECLINES to publish two
+  emitter, and the first turn boundary after reconnect rebuilds it. On a space that requires events
+  a stopped emitter stops the seat with exit code 1 instead. A rebind DECLINES to publish two
   things, and they are one rule rather than two exceptions. It declines what the thread wrote while
   the seat was cut off. It also declines the
   turn whose own boundary triggered it: Codex writes a turn's first record before it announces that
