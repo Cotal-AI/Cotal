@@ -154,7 +154,7 @@ const PUBLIC_PEER_BUCKETS_MAX = 1024; // bounded LRU of per-peer failure buckets
 const PUBLIC_MAX_IN_FLIGHT = 64; // global concurrent-admission cap on the public listener
 const PUBLIC_DEADLINE_MS = 10_000; // hard wall-clock deadline per public request
 const HOST_FENCE_POLL_MS = 1_000; // how often awaitHostFence re-reads the host gate
-const OBSERVED_RUN_REQUEST_WINDOW_MS = 5 * 60_000; // how long an observed served resume or answer can still be forwarded
+const OBSERVED_RUN_REQUEST_WINDOW_MS = 5 * 60_000; // how long an observed served run request can still be forwarded
 
 /** Enrollment and retirement preparation of one managed agent run one at a time, so neither acts on
  *  a grant the other is still writing or releasing. The chain lives at module level, keyed by the
@@ -725,10 +725,11 @@ export async function openAuthAuthorityPlane(opts: {
   // ledger this service owns; every other coordinate goes to core's check (SPEC 13.15).
   const composedSourceIsLive = (session: IssuerSession) => (source: IssuedSourceRef): Promise<boolean> =>
     parseActorLedgerSource(source) ? Promise.resolve(ledgerActorSourceIsLive(opts.dir)(source)) : session.sourceIsLive(source);
-  // A served resume or answer is issued only for a request this host saw its caller publish, only
-  // once, and only for what that request's envelope asked (SPEC 14.8): the forward's coordinates
-  // are the manager's word. The manager forwards from inside the handler serving the request, so an
-  // observation older than the window has no forward left to bind; the window also bounds the table.
+  // A served run-start is admitted, and a served resume or answer issued, only for a request this
+  // host saw its caller publish, and only once; a resume or answer only for what that request's
+  // envelope asked (SPEC 14.8): the forward's coordinates are the manager's word. The manager
+  // forwards from inside the handler serving the request, so an observation older than the window
+  // has no forward left to bind; the window also bounds the table.
   const observedRunRequests = new Map<string, { expires: number; request: ObservedRunRequest }>();
   for (const subject of servedRunRequestSubjects(space))
     remoteIssuer.nc.subscribe(subject, {
@@ -1389,6 +1390,7 @@ export async function openAuthAuthorityPlane(opts: {
             observeManagerGate,
             issued: session.store,
             sourceIsLive: composedSourceIsLive(session),
+            takeObserved: takeObservedRunRequest,
             admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
           });
         } finally {

@@ -249,9 +249,10 @@ A logged-in user starts runs on that remote manager with `cotal run start`. The 
 the user's manager connection against the user's actor-ledger row, the CLI reads the generation
 back from the connection's accepted row, and every `run` verb rides the versioned rail. The issuing
 host admits a run only for the owner who registered the manager, and on every resume and answer it
-checks that owner and that the caller's issuance is still live. It also watches the resume and
-answer requests on the broker itself, and issues for one the manager forwards only if it saw that
-request, once, and only for the run, step, endpoint and amendment that request named. An answer's
+checks that owner and that the caller's issuance is still live. It also watches the start, resume
+and answer requests on the broker itself, and admits or issues for one the manager forwards only if
+it saw that request, and only once. A resume or answer gets issuance only for the run, step, endpoint
+and amendment that request named. An answer's
 credential reaches one pause, and the host reads which one off the run's own journal, for a run
 admitted on that manager's instance. A request bound to another manager instance or epoch gets nothing, and so does one whose class or pinned contract is not the one the manager registered. Another user's start, answer or resume is refused, and so is a revoked actor's.
 Such a run spawns, turns and despawns agents owned by that user. A spawn has the reach of the user

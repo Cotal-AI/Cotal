@@ -4639,13 +4639,14 @@ caller-requested resume and every principal answer or amendment ride the version
 forwards the request subject it served with the attempt or operator issuance it asks for, and the
 issuing host re-parses that subject, requires a user caller's owner to be the run's admitted owner
 for a resume and the registered owner for an answer, resolves the caller's own issuance as live, and
-requires its publish ceiling to permit that subject. The issuing host subscribes to those resume and
-answer request subjects itself and never replies on them, and it issues for a forwarded subject only
-when it observed a caller publish that request and has not issued for it before, so a manager cannot
-forward a request its caller never sent. It reads what that request's envelope asked for and issues
-only that: a resume attempt for the run its `runId` names, and an answering issuance for the
-endpoint the answer names, the manager's own when it names none, for the run and step its `runId`
-and `stepKey` name, that amends when the request set `amend: true` and answers when it did not. The
+requires its publish ceiling to permit that subject. The issuing host subscribes to the run-start,
+resume and answer request subjects itself and never replies on them. It admits a forwarded run-start,
+and issues for a forwarded resume or answer, only when it observed a caller publish that request and
+has not admitted or issued for it before, so a manager cannot forward a request its caller never
+sent. For a resume or answer it reads what that request's envelope asked for and issues only that: a
+resume attempt for the run its `runId` names, and an answering issuance for the endpoint the answer
+names, the manager's own when it names none, for the run and step its `runId` and `stepKey` name,
+that amends when the request set `amend: true` and answers when it did not. The
 manager's request names that run and step, never a token. Every manager instance's pauses share one
 token namespace, so the issuing host requires the run to be admitted on the manager's instance and
 reads the pause's token off that run's journal, under a read it mints for that one run, before it

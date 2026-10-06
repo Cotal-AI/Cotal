@@ -62,11 +62,14 @@ try {
   const subjectFor = (caller: { owner: string; actor: string; uid: string; generation?: string }, over: { space?: string; command?: string; instance?: string } = {}) =>
     epRequestSubject(over.space ?? SPACE, { route: { mode: "inst", instanceId: over.instance ?? instanceId }, endpoint: "manager", command: over.command ?? "run-start", caller: caller as never, nonce: "n".repeat(24) });
   const runId = () => `run-${Buffer.from(mintGeneration().slice(0, 16)).toString("hex").slice(0, 32)}`;
+  // These cells call the host function directly, as if every forwarded subject was published;
+  // the HTTP section below publishes each one the host observes.
+  const takeObserved = async () => ({ operation: { command: "run-start" as const }, envelope: { class: "ephemeral" as const, op: { endpoint: "manager", command: "run-start" } } });
   const admit = (run: { runId: string; subject: string }, over: Record<string, unknown> = {}, gateOver: Partial<typeof gate> | null = {}) => admitRemoteRun({
     request: { ...base, requestId: `req-${run.runId}`, registrationProof: proof, run, ...over },
     owner: OWNER, space: SPACE, accountPublicKey: ACCOUNT, proofSecret: SECRET, endpoint: "manager",
     observeManagerGate: async () => gateOver === null ? null : { ...gate, ...gateOver },
-    issued, sourceIsLive: async (s) => liveKeys.has(s.key), admissions,
+    issued, sourceIsLive: async (s) => liveKeys.has(s.key), takeObserved, admissions,
   });
   const absent = async (id: string) => (await admissions.get(`admission.v1.manager.${id}`)) === null;
 
@@ -77,7 +80,7 @@ try {
   const result = await admitRemoteRun({
     request: { ...base, requestId: "req-ok", registrationProof: proof, run: { runId: okRun, subject: okSubject } },
     owner: OWNER, space: SPACE, accountPublicKey: ACCOUNT, proofSecret: SECRET, endpoint: "manager",
-    observeManagerGate: async () => gate, issued, sourceIsLive: async (s) => liveKeys.has(s.key), admissions,
+    observeManagerGate: async () => gate, issued, sourceIsLive: async (s) => liveKeys.has(s.key), takeObserved, admissions,
   }).catch((e: Error) => e);
   const view = await readRunAdmission(jsm, SPACE, "manager", okRun).catch((e: Error) => e);
   c("a registered manager's forwarded v1 run-start admits under the caller's real issued generation",
@@ -260,9 +263,19 @@ try {
 
   const httpSubjectFor = (caller: { owner: string; actor: string; uid: string; generation?: string }, over: { space?: string; command?: string; instance?: string } = {}) =>
     epRequestSubject(over.space ?? SPACE, { route: { mode: "inst", instanceId: over.instance ?? httpInstanceId }, endpoint: "manager", command: over.command ?? "run-start", caller: caller as never, nonce: "n".repeat(24) });
+  // The caller's own run-start request, which the issuing host observes before the manager forwards it.
+  const publishRunStart = async (caller: { owner: string; actor: string; uid: string; generation?: string }) => {
+    const digest = `sha256:${"0".repeat(64)}`;
+    nc.publish(httpSubjectFor(caller), JSON.stringify({
+      v: 1, id: "n".repeat(24), op: { endpoint: "manager", command: "run-start", inputDigest: digest, outputDigest: digest },
+      class: "ephemeral", replyExpected: true, deadlineMs: 5000, args: {}, from: { id: `${caller.owner}.${caller.actor}`, name: caller.actor },
+    }));
+    await nc.flush();
+  };
 
   // Positive HTTP route check
   const httpOkRun = runId();
+  await publishRunStart(httpAlice);
   const httpOkRes = await postHttp({ ...httpBaseReq, requestId: "req-http-ok", registrationProof: httpProof, run: { runId: httpOkRun, subject: httpSubjectFor(httpAlice) } });
   const httpOkView = await readRunAdmission(jsm, SPACE, "manager", httpOkRun).catch((e: Error) => e);
   c("HTTP route: a registered manager's forwarded v1 run-start admits and writes the admission record",
@@ -277,12 +290,15 @@ try {
 
   // Negative HTTP: forged generation
   const forgedHttpRun = runId();
-  const forgedHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-forged", registrationProof: httpProof, run: { runId: forgedHttpRun, subject: httpSubjectFor({ ...httpAlice, generation: mintGeneration() }) } });
+  const forgedCaller = { ...httpAlice, generation: mintGeneration() };
+  await publishRunStart(forgedCaller);
+  const forgedHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-forged", registrationProof: httpProof, run: { runId: forgedHttpRun, subject: httpSubjectFor(forgedCaller) } });
   c("HTTP route: a forged generation refuses (403)",
     forgedHttpRes.status === 403 && String(forgedHttpRes.body.error).includes("no issued evidence") && await absent(forgedHttpRun), forgedHttpRes);
 
   // Negative HTTP: stale source
   const staleHttpRun = runId();
+  await publishRunStart(httpDave);
   const staleHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-stale", registrationProof: httpProof, run: { runId: staleHttpRun, subject: httpSubjectFor(httpDave) } });
   c("HTTP route: a generation whose source is no longer live refuses (403)",
     staleHttpRes.status === 403 && String(staleHttpRes.body.error).includes("no longer live") && await absent(staleHttpRun), staleHttpRes);
@@ -301,6 +317,7 @@ try {
 
   // Negative HTTP: revoked generation
   const rvHttpRun = runId();
+  await publishRunStart(httpCarol);
   const rvHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-rv", registrationProof: httpProof, run: { runId: rvHttpRun, subject: httpSubjectFor(httpCarol) } });
   c("HTTP route: a revoked generation refuses (403)",
     rvHttpRes.status === 403 && String(rvHttpRes.body.error).includes("revoked") && await absent(rvHttpRun), rvHttpRes);
