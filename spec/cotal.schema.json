@@ -228,6 +228,42 @@
       "pattern": "^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$",
       "type": "string"
     },
+    "JsonValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/definitions/JsonValue"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/JsonValue"
+              },
+              {
+                "not": {}
+              }
+            ]
+          },
+          "type": "object"
+        }
+      ],
+      "description": "Any JSON value (SPEC §5): `null`, a boolean, a number, a string, an array, or an object whose members are JSON values. `undefined` is not a JSON value — `JSON.stringify` omits the key carrying it — so it is excluded at the top level, where it would drop the whole `data` key; an optional member is allowed because serialization drops just that key."
+    },
     "Part": {
       "oneOf": [
         {
@@ -248,7 +284,9 @@
         },
         {
           "properties": {
-            "data": {},
+            "data": {
+              "$ref": "#/definitions/JsonValue"
+            },
             "kind": {
               "const": "data",
               "type": "string"
