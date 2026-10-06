@@ -718,8 +718,8 @@ export async function openAuthAuthorityPlane(opts: {
       throw new EpEnvelopeError("unavailable",
         `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
   };
-  // The issuer window's signer: the data account's signing key, the same `hostAuth` shape the run
-  // admission builds.
+  // The plane holds only the data account's signing key. The operator and system halves stay blank
+  // because core's mint reads only the space, the account pub and the signing seed.
   const issuerAuth = (): SpaceAuth => ({
     space,
     operator: { seed: "", jwt: "" },
@@ -1155,13 +1155,7 @@ export async function openAuthAuthorityPlane(opts: {
       }
       const principalOracle = makeDeliveryAdminPrincipalOracle({ space, server, dataAccount, log });
       const executorIdentity = newIdentity();
-      const hostAuth: SpaceAuth = {
-        space,
-        operator: { seed: "", jwt: "" },
-        account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
-        sys: { pub: "", jwt: "" },
-      };
-      const executorCreds = await mintCreds(hostAuth, executorIdentity, "endpoint-serve-executor", {
+      const executorCreds = await mintCreds(issuerAuth(), executorIdentity, "endpoint-serve-executor", {
         endpointServeExecutor: { endpoint: "manager", instanceId: authorized.targetInstanceId },
         expiresInSeconds: 60,
       });
@@ -1374,17 +1368,11 @@ export async function openAuthAuthorityPlane(opts: {
       const { owner } = holder;
       requireManagerAuthorityHolder(holder, String((request as { instanceId?: unknown })?.instanceId), 'manager run admission needs scope "supervise"; spawn/admin do not imply it');
       const runId = parseRemoteRunAdmissionRequest(request).run.runId;
-      const hostAuth: SpaceAuth = {
-        space,
-        operator: { seed: "", jwt: "" },
-        account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
-        sys: { pub: "", jwt: "" },
-      };
-      return withIssuerSession({ servers: server, space, auth: hostAuth, tls: false }, async (session) => {
+      return withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
         const admitterNc = await connect({
           servers: server,
           ...standaloneConnectOpts({
-            creds: await mintCreds(hostAuth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId }, expiresInSeconds: 60 }),
+            creds: await mintCreds(issuerAuth(), newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId }, expiresInSeconds: 60 }),
             tls: false,
           }),
           maxReconnectAttempts: 0,
@@ -1458,21 +1446,15 @@ export async function openAuthAuthorityPlane(opts: {
       const grant = req.attempt?.served !== undefined || req.operator?.served !== undefined
         ? await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, (session) => authorize(session))
         : await authorize();
-      const hostAuth: SpaceAuth = {
-        space,
-        operator: { seed: "", jwt: "" },
-        account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
-        sys: { pub: "", jwt: "" },
-      };
       if (grant.kind === "attempt") {
         const caller = runDriverCaller(grant.driver.runDriver.runId, owner);
-        const driver = await mintPublicUserJwt(hostAuth, grant.driver.id, "run-driver", {
+        const driver = await mintPublicUserJwt(issuerAuth(), grant.driver.id, "run-driver", {
           principal: { owner, actor: caller.actor },
           lifecycleUid: req.managerLifecycleUid,
           runDriver: grant.driver.runDriver,
           expiresInSeconds: standingTtl,
         });
-        const mediator = await mintPublicUserJwt(hostAuth, grant.mediator.id, "run-mediator", {
+        const mediator = await mintPublicUserJwt(issuerAuth(), grant.mediator.id, "run-mediator", {
           principal: { owner, actor: caller.actor },
           lifecycleUid: req.managerLifecycleUid,
           runMediator: grant.mediator.runMediator,
@@ -1495,7 +1477,7 @@ export async function openAuthAuthorityPlane(opts: {
           credentials: { driver, mediator },
         };
       }
-      const operator = await mintPublicUserJwt(hostAuth, grant.operator.id, "run-operator", {
+      const operator = await mintPublicUserJwt(issuerAuth(), grant.operator.id, "run-operator", {
         principal: { owner, actor: req.actor },
         lifecycleUid: req.managerLifecycleUid,
         runOperator: grant.operator.runOperator,
