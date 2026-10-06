@@ -2324,8 +2324,9 @@ export class CotalEndpoint extends EventEmitter {
           this.emit("error", new Error(`rejected ${service} request on ${m.subject}: reply target "${m.reply ?? "(none)"}" is not under the sender's own reply subtree`));
           continue;
         }
-        let reply: ControlReply;
+        let body: string;
         try {
+          let reply: ControlReply;
           const req = m.json<ControlRequest>();
           // Authenticity guard (fail closed): control is the most privileged surface
           // (start/stop). The sender is encoded in the subject (ctl.<svc>.<sender>), which
@@ -2344,13 +2345,22 @@ export class CotalEndpoint extends EventEmitter {
           } else {
             reply = await handler(req);
           }
+          body = JSON.stringify(reply);
         } catch (e) {
-          reply = { ok: false, error: (e as Error).message };
+          body = JSON.stringify({ ok: false, error: (e as Error).message } satisfies ControlReply);
         }
         try {
-          m.respond(JSON.stringify(reply));
-        } catch {
-          /* no reply inbox */
+          m.respond(body);
+        } catch (e) {
+          // `respond` signals a missing reply inbox by returning false; it throws when the reply exceeds the
+          // broker's `max_payload`. Silence would leave the caller a bare timeout it cannot tell apart from
+          // a dead service.
+          const refused: ControlReply = { ok: false, error: `the ${service} reply is ${Buffer.byteLength(body)} bytes and was not published: ${(e as Error).message}` };
+          try {
+            m.respond(JSON.stringify(refused));
+          } catch (err) {
+            this.emit("error", new Error(`could not answer ${service} request on ${m.subject}: ${refused.error}, and the refusal failed too: ${(err as Error).message}`));
+          }
         }
       }
     })().catch((e) => this.emit("error", e as Error));
@@ -4751,9 +4761,8 @@ export class CotalEndpoint extends EventEmitter {
     const wanted = reachedStart ? page : page.slice(-limit);
 
     // A page that cannot be SENT is not a page. The reply rides one NATS message, so `limit` alone is
-    // the wrong bound: 200 large messages serialize past `max_payload`, `m.respond` throws inside
-    // `serveControl`'s swallow, and the caller sees a bare request timeout it cannot tell apart from a
-    // dead daemon. Measured, not predicted: 200 x ~6 KB timed out at 5s with the message "timeout".
+    // the wrong bound: 200 large messages serialize past `max_payload`, and `serveControl` can then only
+    // answer with a refusal in place of the page.
     //
     // So bound by BYTES too, keeping the NEWEST that fit — which needs no new vocabulary, because
     // `complete: false` already means "older history remains behind this page". Trimming here is the
