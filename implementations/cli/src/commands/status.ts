@@ -31,7 +31,7 @@ import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, 
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { listPersonas } from "../lib/personas.js";
-import { c, presenceDetail, statusBadge } from "../ui.js";
+import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
@@ -565,7 +565,7 @@ async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Pro
     for (const p of roster.slice(0, 8)) {
       const label = p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name;
       const condition = presenceDetail(p);
-      console.log(`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${p.activity}`) : ""}`);
+      console.log(`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${p.activity}${activityAge(p)}`) : ""}`);
     }
     if (roster.length > 8) console.log(c.dim(`    +${roster.length - 8} more`));
     row("channels", channels.length ? channels.map((ch) => `${ch.channel}(${ch.messages})`).join(", ") : "none");

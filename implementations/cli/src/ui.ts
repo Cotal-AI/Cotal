@@ -1,4 +1,4 @@
-import type { PresenceStatus } from "@cotal-ai/core";
+import { formatAge, presenceAges, type PresenceStamps, type PresenceStatus } from "@cotal-ai/core";
 import { c } from "@cotal-ai/workspace";
 
 // The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with @cotal-ai/web.
@@ -18,24 +18,24 @@ export function statusBadge(status: PresenceStatus): string {
   }
 }
 
-/** Compact age: `12s`, `47m`, `3h`, `2d`. */
-export function fmtAge(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86_400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86_400)}d`;
+/** The facts a status word needs beside it (#618): the harness-reported condition and how long it has
+ *  held, how long the status has stood (#578), then the age of the seat's last harness-reported work
+ *  event (`activeAt`). A failure 3s old and one 40m old, or a turn that stopped advancing and one that
+ *  is advancing, no longer render alike. The seat reports `activeAt` itself, so the status word keeps
+ *  its own progress wording. */
+export function presenceDetail(p: PresenceStamps & { condition?: { code: string } }, now = Date.now()): string {
+  const age = presenceAges(p, now);
+  const condition = p.condition ? ` (${p.condition.code}${age.conditionSince === undefined ? "" : ` for ${formatAge(age.conditionSince)}`})` : "";
+  const unchanged = age.statusSince === undefined ? "" : c.dim(` · unchanged for ${formatAge(age.statusSince)}`);
+  const active = age.activeAt === undefined ? "" : c.dim(` · active ${formatAge(age.activeAt)} ago`);
+  return condition + unchanged + active;
 }
 
-/** The facts a status word needs beside it (#618): the harness-reported condition and how long it has
- *  held, then the age of the seat's last harness-reported work event (`activeAt`). A failure 3s old
- *  and one 40m old, or a turn that stopped advancing and one that is advancing, no longer render
- *  alike. The seat reports `activeAt` itself, so the status word keeps its own progress wording. */
-export function presenceDetail(p: { condition?: { code: string; since?: number }; activeAt?: number }, now = Date.now()): string {
-  const since = p.condition?.since;
-  const condition = p.condition ? ` (${p.condition.code}${since === undefined ? "" : ` for ${fmtAge(now - since)}`})` : "";
-  const active = p.activeAt === undefined ? "" : c.dim(` · active ${fmtAge(now - p.activeAt)} ago`);
-  return condition + active;
+/** The age that follows an activity (#544): a hook flips the status every turn and leaves the
+ *  activity alone, so the status age cannot date it. */
+export function activityAge(p: PresenceStamps, now = Date.now()): string {
+  const age = presenceAges(p, now).activitySince;
+  return age === undefined ? "" : ` (set ${formatAge(age)} ago)`;
 }
 
 /** A follow-up hint for failures whose signature is stale on-disk broker state: streams/durable
