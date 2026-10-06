@@ -66,7 +66,7 @@ export function isNpx(): boolean {
 }
 
 /** Is a *durable* `cotal` executable resolvable on PATH? A pure PATH scan (no exec): `cotal
- *  --version` isn't a real command, so probing it via `onPath` would always report cotal missing.
+ *  --version` isn't a real command, so an exec probe would always report cotal missing.
  *  Skips npx's transient shim: `npm exec` (npx) prepends the package's own
  *  `<cache>/_npx/<hash>/node_modules/.bin` to PATH, and since `cotal-ai` declares a `cotal` bin,
  *  that dir holds a throwaway `cotal`. Counting it would make a bare `npx cotal-ai setup` conclude

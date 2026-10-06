@@ -1,8 +1,6 @@
-import { accessSync, constants } from "node:fs";
 import { connect } from "node:net";
-import { delimiter, join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable, registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
-import { authDir, extensionConnectors, findCotalRoot, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, resolveMeshTarget, type MeshEntry } from "@cotal-ai/workspace";
+import { authDir, extensionConnectors, findCotalRoot, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, resolveMeshTarget, resolveOnPath, type MeshEntry } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { resolveNatsServer } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
@@ -101,7 +99,7 @@ export function connectorHarnesses(): HarnessStatus[] {
     declared.set(connector.name, { requires: connector.requires ?? [], setup: connector.setup ?? null });
   return [...declared]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, { requires, setup }]) => ({ name, requires, missing: requires.filter((bin) => !onPath(bin)), setup }));
+    .map(([name, { requires, setup }]) => ({ name, requires, missing: requires.filter((bin) => !resolveOnPath(bin)), setup }));
 }
 
 /** The rows each connector's setup provider reports about what it installed. Only a connector that
@@ -124,25 +122,4 @@ export async function connectorStatusRows(harnesses: readonly HarnessStatus[]): 
     }
   }
   return rows;
-}
-
-export function onPath(bin: string): boolean {
-  const exts = process.platform === "win32"
-    ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";")
-    : [""];
-  for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
-    for (const ext of exts) {
-      const name = process.platform === "win32" && ext && !bin.toUpperCase().endsWith(ext.toUpperCase())
-        ? `${bin}${ext}`
-        : bin;
-      const candidate = join(dir, name);
-      try {
-        accessSync(candidate, constants.X_OK);
-        return true;
-      } catch {
-        /* try the next PATH entry */
-      }
-    }
-  }
-  return false;
 }

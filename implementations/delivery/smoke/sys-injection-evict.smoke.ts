@@ -58,7 +58,7 @@ import { randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
   composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, newIdentity,
@@ -72,7 +72,7 @@ import {
 } from "@cotal-ai/auth";
 import {
   connectionEvictorCredsKey, CONNECTION_EVICTOR_CREDS_KIND, deliveryCredsKey, findCotalRoot,
-  membershipObserverCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, membershipRwCredsKey, spaceMaterialDir,
+  membershipObserverCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, membershipRwCredsKey, resolveOnPath, spaceMaterialDir,
 } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { runDelivery } from "../src/delivery.js";
@@ -109,14 +109,6 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 // `COTAL_SMOKE_NATS_SERVER` still wins when set. With it UNSET the binary is resolved from `PATH` and
 // realpath'd rather than refused, because CI does not set that variable and a suite CI cannot run is a
 // suite that proves nothing — the ungated-in-name-of-rigour trade this file briefly made.
-const resolveOnPath = (bin: string): string | undefined => {
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    const p = join(dir, bin);
-    if (existsSync(p)) return p;
-  }
-  return undefined;
-};
 const NATS_BIN_NAMED = process.env.COTAL_SMOKE_NATS_SERVER ?? resolveOnPath("nats-server");
 if (!NATS_BIN_NAMED) {
   console.error(
