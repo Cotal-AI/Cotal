@@ -52,6 +52,7 @@ import {
   writeRunNotice,
   actionContext,
   invokeCommand,
+  invokeRepairingSplit,
   replyRefusedBeforeEffect,
   readGoalResult,
   readGoalStatus,
@@ -265,33 +266,17 @@ export class MeshHandler {
   }
 
   /**
-   * One manager call, with a SPEC 13.2 bind refusal REPAIRED rather than raised.
+   * One manager call, with a SPEC 13.2 bind refusal REPAIRED rather than raised
+   * ({@link invokeRepairingSplit}).
    *
-   * A run resolves the manager on the class rail and binds the incarnation that answered its
-   * describe. The invoke is a second, independent trip through the same anycast queue, so in a
-   * space with more than one manager it routinely reaches another member, and that member refuses
-   * before dispatching. The refusal is honest for one command and destructive for a run: it says
-   * the command did not run and its remedy is to re-issue, but raised as the effect's own failure
-   * it ends the run and consumes the run id and its journal (#1638).
-   *
-   * So a refusal the responder MARKS as pre-effect is re-issued instead of returned. It is a first
-   * attempt and not a second: the marker together with `not-executed` is the responder's own
-   * statement that no effect of the command exists, which is what {@link replyRefusedBeforeEffect}
-   * checks, and it is the same licence core's `Endpoint.invokeService` re-issues on. The stale
-   * class handle is dropped first, so the re-issue re-describes rather than rebinding the
-   * incarnation that was just refused.
-   *
-   * BOUNDED, because a re-issue draws the same queue again. The describe and the invoke stay two
-   * independent trips, so a space of m managers still splits (m-1)/m of the time and the repair
-   * converges geometrically rather than deterministically; after {@link BIND_SPLIT_REISSUES} of
-   * them the refusal surfaces unchanged, still stating that the command did not run. What removes
-   * the residual is addressing one instance, and the run's caller holds no instance-rail grant for
-   * a command its program did not place (SPEC 13.9, `run-driver-grants.ts`), so that is a wider
-   * change than this one.
-   *
-   * A PINNED handle is never repaired. It addresses one instance by name, so a refusal from it is
-   * that incarnation answering about itself, and re-resolving onto the class rail would reinstate
-   * the anycast fallback #1616 removed.
+   * A run resolves the manager on the class rail, so in a space with more than one manager its
+   * invoke routinely reaches a member other than the one that answered the describe, and that
+   * member refuses before dispatching. Raised as the effect's own failure, that refusal ends the
+   * run and consumes the run id and its journal (#1638), although it says the command did not run.
+   * The class memo is dropped before each re-describe, so later calls do not start from the bind
+   * that was just refused. After the shared bound the refusal surfaces unchanged; what removes that
+   * residual is addressing one instance, and the run's caller holds no instance-rail grant for a
+   * command its program did not place (SPEC 13.9, `run-driver-grants.ts`).
    */
   private async invokeManager(
     service: ResolvedService,
@@ -299,22 +284,10 @@ export class MeshHandler {
     args: Record<string, unknown> | undefined,
     opts: { target?: EpVerbTarget; deadlineMs?: number; id?: string },
   ): Promise<EpAttributedReply> {
-    let handle = service;
-    for (let reissues = 0; ; reissues += 1) {
-      const reply = await invokeCommand(this.nc, this.binding.space, handle, command, args, opts);
-      if (reply.reply.ok !== false || !replyRefusedBeforeEffect(reply.reply.error)) return reply;
-      if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return reply;
+    return invokeRepairingSplit(this.nc, this.binding.space, service, command, args, opts, () => {
       this.managerService = undefined;
-      try {
-        handle = await this.manager();
-      } catch {
-        // The repair could not be attempted. The REFUSAL is what surfaces, not the resolve failure:
-        // every caller of this method already reads a refused reply as "the manager declined", and
-        // this one states that nothing ran, which is the fact a describe timeout raised in its
-        // place would lose.
-        return reply;
-      }
-    }
+      return this.manager();
+    });
   }
 
   /**
@@ -2641,19 +2614,11 @@ const GOAL_POLL_MS = 2_000;
 const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
 /** Bound on the manager's synchronous `turn` ACCEPT reply (the relay registration, not the yield). */
 const TURN_ACCEPT_DEADLINE_MS = 30_000;
-/** How many times {@link MeshHandler.invokeManager} re-issues one manager call after a
- *  `not-executed` bind refusal. Every re-issue is a first attempt, so the bound is a loop guard and
- *  not a duplication guard: it stops a class whose describe and invoke never agree from re-issuing
- *  forever. Nine attempts leave a two-manager space a 1-in-512 residual where the unrepaired refusal
- *  was 1-in-2 (#1638). The loop turns only on a refusal that has already been ANSWERED, so an
- *  attempt costs a describe and an invoke round trip and never an elapsed deadline: a call nobody
- *  answers raises its own `deadline-exceeded`, which is not a bind refusal and is not re-issued. */
-const BIND_SPLIT_REISSUES = 8;
 /** How many class-rail despawns a discharge sends before it stops waiting for the allocating
  *  manager to answer. Each is one {@link MeshHandler.invokeManager} call, whose describe and invoke
  *  both land on the allocator with probability 1/m^2 per trip in a space of m managers, so one call
- *  reaches it with probability (1 - ((m-1)/m)^9) / m: about 1/2 for m = 2 and 0.23 for m = 4. All
- *  65 then miss with probability about 2^-65 and 4e-8. */
+ *  reaches it with probability (1 - ((m-1)/m)^17) / m: about 1/2 for m = 2 and 0.25 for m = 4. All
+ *  65 then miss with probability about 2^-65 and 9e-9. */
 const DESPAWN_ROUTE_ATTEMPTS = 64;
 /** A step key's enclosing scope: the journal's own rendering (`entry.scope`), re-derived so the
  *  live path and the adoption rebuild key the handoff memos identically. */

@@ -259,9 +259,10 @@ between a split and a duplicated spawn. Against a manager older than this fence 
 still after the fact, and its message says so. The re-issue is automatic only when the refusal
 states `not-executed` in its `outcome` field; a refusal that omits the field, or states
 `unknown`, is surfaced to the caller instead of repaired, because neither proves the command did
-not run. The CLI's manager commands, `cotal invoke` and the manager row of `cotal status` re-describe
-and re-issue an unpinned call after each such refusal, up to 16 times, so a split reaches the
-operator only when every attempt split. A pinned call is never re-issued. An agent's own manager
+not run. The CLI's manager commands, `cotal invoke`, the `cotal run` verbs and the manager row of
+`cotal status` re-describe and re-issue an unpinned call after each such refusal, up to 16 times,
+so a split reaches the operator only when every attempt split. A hosted run's own manager calls
+use the same bound. A pinned call is never re-issued. An agent's own manager
 tools, such as `cotal_spawn` and `cotal_despawn`, re-describe and re-issue with the same bound,
 including the goal-result read that follows a spawn to its outcome.
 

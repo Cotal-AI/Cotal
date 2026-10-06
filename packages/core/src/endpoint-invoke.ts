@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { PermissionViolationError, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, renderLifecycleBlocked, lifecycleBlockedFrom } from "./endpoint-envelope.js";
+import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, renderLifecycleBlocked, lifecycleBlockedFrom, replyRefusedBeforeEffect } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
 import {
   parseGoalResultFact,
@@ -451,6 +451,47 @@ export async function invokeCommand(
     // the handle is the stale side); a caller-supplied hook is a registry read by epCall's contract.
     currencyReference: opts.currentEpoch ? "registry" : "bind",
   });
+}
+
+/**
+ * {@link invokeCommand} with a SPEC 13.2 bind refusal repaired rather than surfaced.
+ *
+ * An unpinned handle binds the instance that answered its describe, and the invoke is a second,
+ * independent trip through the same class queue, so in a multi-instance space another member
+ * routinely receives it and refuses before dispatching. That refusal states the command did not
+ * run ({@link replyRefusedBeforeEffect}), so re-resolving and re-issuing is a first attempt and is
+ * safe for any command, mutations included. The re-issue repeats until the describe and the invoke
+ * agree or {@link BIND_SPLIT_REISSUES} runs out, and then the last refusal surfaces unchanged.
+ *
+ * `reresolve` defaults to a fresh class resolve as the handle's caller; a caller that memoizes its
+ * handle passes one that drops the memo first, so later calls do not start from the refused bind.
+ * When it throws, the refusal surfaces, because it states that nothing ran, which the resolve
+ * failure raised in its place would lose.
+ *
+ * A pinned handle is never repaired: it names its instance, so a refusal from it is that instance
+ * answering about itself, and re-resolving on the class rail would reach another one.
+ */
+export async function invokeRepairingSplit(
+  nc: NatsConnection,
+  space: string,
+  service: ResolvedService,
+  command: string,
+  args: Record<string, unknown> | undefined,
+  opts: Parameters<typeof invokeCommand>[5],
+  reresolve: () => Promise<ResolvedService> = () =>
+    resolveService(nc, space, service.endpoint, service.caller, { deadlineMs: opts.deadlineMs ?? 10_000, ...(opts.signal ? { signal: opts.signal } : {}) }),
+): Promise<EpAttributedReply> {
+  let handle = service;
+  for (let reissues = 0; ; reissues += 1) {
+    const r = await invokeCommand(nc, space, handle, command, args, opts);
+    if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;
+    if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return r;
+    try {
+      handle = await reresolve();
+    } catch {
+      return r;
+    }
+  }
 }
 
 export interface SubmitAndFollowGoalOptions {
