@@ -1,5 +1,48 @@
 # @cotal-ai/manager
 
+## 0.69.0
+
+### Minor Changes
+
+- 4500563: A filesystem SecretStore identity is now `{kind: "fs", root, id}`, where `id` is a random value the store records once in `store.id` inside its own directory. No key of a filesystem store and no `cotal deliver --creds` file may be that file under any name the filesystem resolves to it, compared by device and inode so a case-insensitive spelling or a link counts, and a `store.id` that is a symbolic link or holds anything but a lowercase UUID is refused, so neither a credential nor another key is ever published as the id. Two filesystem identities match only when both the root and the id match, so a manager on another host whose workspace root has the same path as the delivery daemon's no longer counts as the daemon's store, takes no daemon-credential renewal lease, and no longer blocks `cotal doctor auth --fix` on the broker host. A daemon answer with no `id` is refused, so the manager and the delivery daemon must run this release together. `FsSecretStore` takes the root its identity names as its second constructor argument instead of a full identity.
+- d29d4d3: A remote manager now verify-evicts its credential family through its host with one maintenance request per 256 holders instead of one per holder. The `evict-family-principal` request carries `principals`, 1 to 256 distinct holders, in place of `principal`, and the result carries `evictions`, one `EvictionResult` per principal in request order, in place of `eviction`. The host reads the caller's `epcred.manager.<instanceId>` family once per request, refuses the request when any named holder is outside it, and evicts the set in one `evictPrincipals` sweep. Before, each restart cost one host request, one family read, one credential mint and one daemon sweep per holder, so the host's work grew with holders times family rows. `registerRemoteManagerAuthority` now takes an `evict` that answers one verdict per holder for a set, `makeDeliveryAdminHolderEvictor` answers one `EvictionResult` per holder, and the registration barrier's `evictMax` option is removed, since every evictor now takes up to `EVICT_PRINCIPALS_MAX` holders per call. A remote manager and its issuing host must upgrade together.
+- 8c01391: The manager carries an agent's MCP server selection as a list instead of the `--share-tools` flag string. The CLI parses `--share-tools` once and sends the list, so the `spawn` operation's `shareTools` input is now an array of server names and the manager cluster document moves to revision 22. A `supervise --roster` entry's `share-tools:` list is used as written, so a declared server named `none`, or one whose name contains a comma, now loads and is shared instead of refusing the roster. Preserved-state inventories are written as `cotal-manager-resume/v2`; a v1 inventory from an earlier release still resumes.
+
+### Patch Changes
+
+- 6295b1a: `startAgent` documents its `provisioned` rollback variable once. The older three-line comment above it described only the static footprint and repeated the paragraph that follows, which also covers the user-mode grant and the custody reference. No behavior changes.
+- 189cb2a: The manager's delivery-admin evictor, family evictor and freeze-holder liveness probe now open their one-call connections through one helper, `withScopedEndpoint`, which mints the 60 second credential and builds the endpoint that never joins presence, consumes or watches a channel. Before, four call sites spelled out that lifecycle by hand, so a copy that dropped its explicit lifetime would have minted an `observer` credential with no expiry and still typechecked. Shipped behaviour is unchanged.
+- b9d2902: The manager now decides whether a durable static slot row belongs to a sibling manager instance through one shared rule. `inspect`, `slots`, startup reconcile, the boot sweep and the resume orphan check each spelled that rule inline, so a change at one site could make them disagree about which instance owns a row while the boot sweep terminalizes the rows it believes are its own. Behavior is unchanged.
+- 8e16774: The manager now runs its event-plane and static `endpointCapabilities` spawn refusals before it allocates the agent's name, and reserves the name right before the step whose cleanup releases it. Each of those refusals, and the user-mode provisioning error, used to give the reserved name back by hand, so a refusal added there that forgot the release would silently cost the next spawn of that persona its name. When a hard-pinned `--name` collision and one of these refusals both apply, the spawn now reports the event-plane or capability refusal.
+- 5eb1e24: A manager's clean stop no longer deletes a successor's service registration. When another process had registered the same manager instance before the stop ran (for example after a long pause, or a successor that started while the stop was still draining), the stop removed the successor's record and every later `cotal ps` failed with `service "manager" has no live registered instances`. `deregisterServiceInstance` takes an optional `registrationRevision` and returns `superseded` without deleting anything when the spec is at another revision. The manager passes the revision it registered at; `cotal deregister-instance` stays unpinned.
+- 0b47df3: The manager's teardown chain (`trackDeprovision`, `deprovision`, `driveDeprovision`) and `startAgent`'s spawn-rollback value now share one named `TeardownTarget` type in place of four inline copies of the same object shape. A field the chain needs is declared once, so a copy can no longer fall behind unnoticed when a hop passes the value on as a variable. No behavior changes.
+- adab793: Resolve an agent's read list through one core function, `resolveReadAcl`, at every site: the persona loader, the session config, the manager launch, foreground `cotal spawn` and its user-mode grant, `cotal mint` and the manifest persona merge. An explicit empty `allowSubscribe` now reads `subscribe` everywhere, as an omitted one does. Before, the session refused a persona the loader had accepted. The manager also granted and recorded an empty read list while the provisioner recorded `subscribe`.
+- 561232d: `remoteManagerClient.remoteRunHosting` builds the four signerless run callbacks (`admitRun`, `issueAttempt`, `issueOperator`, `renewRun`) from a manager's registration and a caller-supplied transport. `cotal supervise` and the remote continuity suites now both use it. The suites used to spell the four run requests a second time, so a change to the shipped requests could not fail them. Behavior is unchanged.
+- 98d2b41: Resolve a spawn's harness through one shared rule. Foreground `cotal spawn`, the detached `--resume` carry and the manager's `start` now all call `resolveAgentType` in `@cotal-ai/workspace` (`--agent`, then the persona's `agent:` pin, then a detached caller's default, then `COTAL_DEFAULT_AGENT`, then the product default). The foreground path no longer spells the product default as its own literal, so it can no longer pick a different harness than a detached spawn of the same persona. Behavior is unchanged while the product default stays `claude`.
+- 6540a32: The architecture and control-surface pages, which ship in the bundled docs, and several source comments described spawn auto-numbering as `reviewer-2`. They now spell the series with `_` (`reviewer_2`, `reviewer_3`), the separator the manager and `cotal spawn` use. The control-surface spawn accept example shows `reviewer_2` as both the allocated name and the user-mode actor. No behavior changes.
+- Updated dependencies [f5cb8e1]
+- Updated dependencies [2d45766]
+- Updated dependencies [03a7405]
+- Updated dependencies [a256e2f]
+- Updated dependencies [3f3d04a]
+- Updated dependencies [4500563]
+- Updated dependencies [5eb1e24]
+- Updated dependencies [69232cd]
+- Updated dependencies [02c0a2d]
+- Updated dependencies [93716c3]
+- Updated dependencies [3a1716d]
+- Updated dependencies [9772fd4]
+- Updated dependencies [06429be]
+- Updated dependencies [adab793]
+- Updated dependencies [d29d4d3]
+- Updated dependencies [539266a]
+- Updated dependencies [b584718]
+- Updated dependencies [0c5b205]
+- Updated dependencies [98d2b41]
+  - @cotal-ai/workspace@0.69.0
+  - @cotal-ai/core@0.69.0
+  - @cotal-ai/seat@0.69.0
+
 ## 0.68.0
 
 ### Minor Changes

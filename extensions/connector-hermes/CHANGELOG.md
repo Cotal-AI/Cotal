@@ -1,5 +1,7 @@
 # @cotal-ai/connector-hermes
 
+## 0.69.0
+
 ## 0.68.0
 
 ### Minor Changes

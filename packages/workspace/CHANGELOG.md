@@ -1,5 +1,35 @@
 # @cotal-ai/workspace
 
+## 0.69.0
+
+### Minor Changes
+
+- 4500563: A filesystem SecretStore identity is now `{kind: "fs", root, id}`, where `id` is a random value the store records once in `store.id` inside its own directory. No key of a filesystem store and no `cotal deliver --creds` file may be that file under any name the filesystem resolves to it, compared by device and inode so a case-insensitive spelling or a link counts, and a `store.id` that is a symbolic link or holds anything but a lowercase UUID is refused, so neither a credential nor another key is ever published as the id. Two filesystem identities match only when both the root and the id match, so a manager on another host whose workspace root has the same path as the delivery daemon's no longer counts as the daemon's store, takes no daemon-credential renewal lease, and no longer blocks `cotal doctor auth --fix` on the broker host. A daemon answer with no `id` is refused, so the manager and the delivery daemon must run this release together. `FsSecretStore` takes the root its identity names as its second constructor argument instead of a full identity.
+
+### Patch Changes
+
+- f5cb8e1: Applying a space catalog (`cotal sync` and the lazy catalog refresh) now reads the mesh registry a fixed number of times instead of once or twice per catalog row. Each row reads only its own record file just before writing it, so a registration that `cotal meshes add` or `cotal up` records while the catalog applies still wins its collision check, and the records and the removals each share one legacy-file sweep, so the time spent under the catalog lock grows linearly with the registry. The workspace package adds `readMesh`, which reads one space's record file, and `recordMeshes` and `removeMeshes`, the batch forms of `recordMesh` and `removeMesh`.
+- 02c0a2d: `cotal meshes add --mode user --from <https url>` now fetches the `/.well-known/cotal-mesh` discovery document under the address it is given, as its help says. Passing the mesh's address, such as `https://auth.example`, previously fetched that URL as is, so a host serving its site there failed with the file-oriented "user-auth bundle is not JSON" refusal. A URL that already ends in `/.well-known/cotal-mesh` is fetched as given, and the consent prompt now shows the full URL it will fetch instead of only the origin. The derivation is shared with the manual-registration policy refresh through the new `discoveryDocumentUrl` export of `@cotal-ai/workspace`.
+- 93716c3: The loopback check that lets plain http carry a credential now has one definition, `isLoopbackLiteral` in `@cotal-ai/core`. `agent-bearer --exchange-url`, the pinned exchange, enrollment redeem, the managed handoff reader and workspace `isLoopbackHost` all call it, so a fix to the rule can no longer reach only some of them. It parses the address, so every IPv6 spelling of `::1` is loopback and a dotted host that is not an IPv4 literal, such as `127.0.0.09`, is not. `isLoopbackHost` keeps only the legacy IPv4 canonicalization a `nats://` host needs.
+- 3a1716d: Every manager stop the CLI makes now runs the stop `cotal down` runs. Ctrl-C on a foreground `cotal up`, the teardown after its broker exits, the leftover-manager stop before `cotal up -f` and the delivery cutover preflight used a second stop that took no stop reservation, skipped the spare-capability check and gave up after 2s, leaving a wedged manager running with its record kept. They now hold the reservation, so a stop while another `cotal down` is stopping the manager is refused and leaves that stop's `--with-agents` policy in place, verify the spare capability before signalling, and send `SIGKILL` to a manager still running 15s after `SIGTERM`. Ctrl-C stops the manager first and, when that stop fails, signals nothing else and leaves the stack running. A pre-pin manager record whose pid now runs a process that is not a manager is removed without a signal on every path, `cotal down` included. The workspace exports `stopReservationPath`, the one spelling of a pidfile's stop reservation.
+- b584718: `cotal status` and `cotal setup` now decide whether a connector's `requires` executables are present with the same PATH resolver as the manager and manifest preflights. A `requires` entry written as a path is checked as given instead of being joined under every PATH directory, so an absolute path or `./tool` is no longer reported as missing and `bin/tool` under a PATH directory is no longer reported as ready. The shared resolver now skips a directory that matches on PATH, as exec does, so a directory named like a harness no longer counts as that harness or hides the real binary later on PATH.
+- 98d2b41: Resolve a spawn's harness through one shared rule. Foreground `cotal spawn`, the detached `--resume` carry and the manager's `start` now all call `resolveAgentType` in `@cotal-ai/workspace` (`--agent`, then the persona's `agent:` pin, then a detached caller's default, then `COTAL_DEFAULT_AGENT`, then the product default). The foreground path no longer spells the product default as its own literal, so it can no longer pick a different harness than a detached spawn of the same persona. Behavior is unchanged while the product default stays `claude`.
+- Updated dependencies [2d45766]
+- Updated dependencies [03a7405]
+- Updated dependencies [a256e2f]
+- Updated dependencies [3f3d04a]
+- Updated dependencies [4500563]
+- Updated dependencies [5eb1e24]
+- Updated dependencies [69232cd]
+- Updated dependencies [93716c3]
+- Updated dependencies [9772fd4]
+- Updated dependencies [06429be]
+- Updated dependencies [adab793]
+- Updated dependencies [d29d4d3]
+- Updated dependencies [539266a]
+- Updated dependencies [0c5b205]
+  - @cotal-ai/core@0.69.0
+
 ## 0.68.0
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @cotal-ai/example-07-issue-orchestrator
 
+## 0.0.21
+
+### Patch Changes
+
+- Updated dependencies [1bdc7f2]
+- Updated dependencies [94996e5]
+- Updated dependencies [f409b46]
+  - @cotal-ai/lang@0.69.0
+
 ## 0.0.20
 
 ### Patch Changes
