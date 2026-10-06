@@ -30,7 +30,7 @@ import {
   spacePrefix,
   chatSubject,
   assertValidChannel,
-  channelInAllow,
+  resolveReadAcl,
   principalKey,
   parsePrincipalKey,
   deprovisionTargetPrincipal,
@@ -847,17 +847,6 @@ export async function provisionAgent(
     opts,
   );
   return mintCreds(auth, identity, "agent", { ...opts, allowSubscribe });
-}
-
-/** The read ACL an agent's lists resolve to: an omitted or empty `allowSubscribe` reads exactly
- *  `subscribe`. Throws when a subscription lies outside it. A delegated intent's admission resolves
- *  here too, so its dry walk checks the list this writer provisions. */
-export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined): string[] {
-  const allow = allowSubscribe?.length ? allowSubscribe : subscribe;
-  for (const ch of subscribe)
-    if (!channelInAllow(allow, ch))
-      throw new Error(`subscribe "${ch}" is not within allowSubscribe [${allow.join(", ")}]`);
-  return allow;
 }
 
 /** The DURABLE half of agent onboarding, principal-keyed and credential-agnostic: pre-create the

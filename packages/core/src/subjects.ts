@@ -500,6 +500,18 @@ export function channelInAllow(allow: string[], channel: string): boolean {
   return allow.some((a) => subjectMatches(a, channel));
 }
 
+/** The read ACL an agent's lists resolve to: an omitted or empty `allowSubscribe` reads exactly
+ *  `subscribe`. Throws when a subscription lies outside it. Every site that resolves an agent's
+ *  read list calls this, so a launcher, the session it starts and the provisioner cannot disagree
+ *  on the default. */
+export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined): string[] {
+  const allow = allowSubscribe?.length ? allowSubscribe : subscribe;
+  for (const ch of subscribe)
+    if (!channelInAllow(allow, ch))
+      throw new Error(`subscribe "${ch}" is not within allowSubscribe [${allow.join(", ")}]`);
+  return allow;
+}
+
 /** Does policy pattern `cap` COVER policy pattern `pattern` — i.e. is every channel matched by
  *  `pattern` also matched by `cap`? Both sides use the {@link assertValidChannel} grammar
  *  (`*` = one token, `>` = one-or-more trailing). This is the DELEGATION primitive

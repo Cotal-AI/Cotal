@@ -28,6 +28,7 @@ import {
   provisionAgentDurables,
   registry,
   resolveAuthProvider,
+  resolveReadAcl,
   bearerCommandFailure,
   CotalEndpoint,
   transferBucket,
@@ -974,7 +975,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file and miss the override).
   let subscribe = splitFlag(values.subscribe) ?? def.subscribe;
-  let allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
+  let allowSubscribe: string[];
+  try {
+    allowSubscribe = resolveReadAcl(subscribe ?? [], splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
   let allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
@@ -1437,7 +1444,7 @@ async function provisionUserForeground(
   target: MeshTarget,
   name: string,
   ref: string,
-  opts: { subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean; eventChannel?: (p: { owner: string; actor: string }) => string },
+  opts: { subscribe?: string[]; allowSubscribe: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean; eventChannel?: (p: { owner: string; actor: string }) => string },
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; eventChannel?: string }> {
   const { space, server } = target;
   const dir = userAuthStateDir(target.root, space);
@@ -1476,9 +1483,7 @@ async function provisionUserForeground(
       owner,
       actor: name,
       scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "run" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
-      // Read ACL: the flag, else the boot set, else nothing. A spawn that names no channel grants
-      // no channel (the agent is still DM-reachable) rather than silently granting `general`.
-      allowSubscribe: opts.allowSubscribe?.length ? opts.allowSubscribe : (opts.subscribe ?? []),
+      allowSubscribe: opts.allowSubscribe,
       allowPublish: publish,
       role: opts.role,
       parent: `${owner}.cli`,

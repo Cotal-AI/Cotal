@@ -11,6 +11,7 @@ import {
   newIdentity,
   principalKey,
   provisionAgent,
+  resolveReadAcl,
   stripSpaceAuth,
   writeSecretFile,
   DEV_OWNER,
@@ -225,7 +226,12 @@ export async function mint(args: ParsedArgs): Promise<void> {
   if (profile === "agent") {
     const f = agentFilePath(root, name);
     const def = existsSync(f) ? loadAgentFile(f) : undefined;
-    allowSubscribe = splitList(values["allow-subscribe"]) ?? def?.allowSubscribe ?? def?.subscribe;
+    try {
+      allowSubscribe = resolveReadAcl(def?.subscribe ?? [], splitList(values["allow-subscribe"]) ?? def?.allowSubscribe);
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
     allowPublish = splitList(values["allow-publish"]) ?? def?.allowPublish;
     role = values.role ?? def?.role;
     lifecycleUid = mintLifecycleUid();

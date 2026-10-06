@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, resolveReadAcl, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
 export const FEEDBACK_URL = "https://broker.cotal.ai/v1/feedback";
@@ -275,12 +275,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // session whose launcher, persona and link all name none joins none (DM-reachable, not on `general`).
   const resolvedSubscribe = subscribe.length ? subscribe : (def?.subscribe ?? link?.channels ?? []);
   const allowSub = splitList(env.COTAL_ALLOW_SUBSCRIBE);
-  const resolvedAllowSub = allowSub.length ? allowSub : (def?.allowSubscribe ?? resolvedSubscribe);
-  // Fail loud on an inconsistent env override (the agent-file loader already checks the file): the
-  // active read set must be within the read ACL, or the agent would subscribe to what it can't read.
-  for (const ch of resolvedSubscribe)
-    if (!channelInAllow(resolvedAllowSub, ch))
-      throw new Error(`COTAL config: subscribe channel "${ch}" is not within allowSubscribe [${resolvedAllowSub.join(", ")}]`);
+  // Resolved against the FINAL read set, not the file's: an env `COTAL_SUBSCRIBE` can replace the
+  // persona's list, and the loader only checked the file against itself.
+  let resolvedAllowSub: string[];
+  try {
+    resolvedAllowSub = resolveReadAcl(resolvedSubscribe, allowSub.length ? allowSub : def?.allowSubscribe);
+  } catch (e) {
+    throw new Error(`COTAL config: ${(e as Error).message}`);
+  }
   const allowPub = splitList(env.COTAL_ALLOW_PUBLISH);
   const resolvedAllowPub = allowPub.length ? allowPub : (def?.allowPublish ?? []);
   // Reject channel names the wire layer would rewrite (env overrides bypass the file loader's check).
