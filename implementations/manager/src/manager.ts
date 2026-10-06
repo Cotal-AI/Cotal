@@ -6254,14 +6254,16 @@ export class Manager {
       // Failure after reserve (provision / launch threw): the slot was never live, so no cold-start
       // was paid — the reserved rollback (finally) is enough, no cooling stamp.
       // A lifecycle-blocked envelope already named the barrier; keep its details on the ControlReply
-      // so follow/CLI/cotal_spawn do not collapse it to a generic string (#873). Telling an envelope
-      // apart reads the thrown value, and a thrown Proxy can throw from `instanceof` or from its own
-      // fields, so that read is guarded too and rejectionText names whatever it cannot read.
+      // so follow/CLI/cotal_spawn do not collapse it to a generic string (#873). An extension can throw
+      // any value, and an envelope's `message` is only typed as a string, so the refusal text always
+      // comes from rejectionText; telling an envelope apart is guarded because a thrown Proxy can
+      // throw from `instanceof` or from its own fields.
+      const error = rejectionText(e);
       try {
         if (e instanceof EpEnvelopeError)
-          return { ok: false, error: renderLifecycleBlocked(e.message, e), ...(e.details ? { details: e.details } : {}) };
+          return { ok: false, error: renderLifecycleBlocked(error, e), ...(e.details ? { details: e.details } : {}) };
       } catch { /* not a readable envelope */ }
-      return { ok: false, error: rejectionText(e) };
+      return { ok: false, error };
     } finally {
       this.reserved.delete(name);
       this.reservedLive.delete(name);
