@@ -173,17 +173,19 @@ export function connectorServers(
 ): Record<string, McpServerSpec> {
   const declared = config.connectors?.[connector]?.mcpServers ?? {};
   if (selection === undefined) return { ...declared };
-  const chosen: Record<string, McpServerSpec> = {};
-  for (const name of selection) {
-    const spec = declared[name];
-    if (!spec)
-      throw new Error(
-        `--share-tools: "${name}" is not a shared server for connector "${connector}" ` +
-          `(declared: ${Object.keys(declared).join(", ") || "none"})`,
-      );
-    chosen[name] = spec;
-  }
-  return chosen;
+  // Only an own key is declared: an inherited `toString` is not a server. `fromEntries` defines each
+  // name as an own key, so a declared `__proto__` is kept rather than becoming the result's prototype.
+  return Object.fromEntries(
+    selection.map((name) => {
+      const spec = Object.hasOwn(declared, name) ? declared[name] : undefined;
+      if (!spec)
+        throw new Error(
+          `--share-tools: "${name}" is not a shared server for connector "${connector}" ` +
+            `(declared: ${Object.keys(declared).join(", ") || "none"})`,
+        );
+      return [name, spec];
+    }),
+  );
 }
 
 /** Parse a `--share-tools` flag value into a selection for {@link connectorServers}: flag absent
