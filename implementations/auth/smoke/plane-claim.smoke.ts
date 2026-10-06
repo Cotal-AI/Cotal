@@ -187,9 +187,9 @@ try {
     const scan = makeLedgerScannerOverConnection(wide.nc, space, undefined, h.guard);
     const refusedTuple = await rejects(() => scan.scanStageFamily());
     check("a tuple-only mutation (same claimId + generation) REFUSES the scan", refusedTuple.includes("scanner tuples no longer match"));
-    await h.release();
+    const notReleased = await rejects(() => h.release());
     const after = await wideKv.get(PLANE_CLAIM_KEY);
-    check("release LEAVES a tuple-mutated row alone (a successor may own it)", parsePlaneClaimRow(after!.value)?.state === "held");
+    check("release REFUSES a tuple-mutated row and leaves it alone (a successor may own it)", notReleased.includes("NOT releasing") && parsePlaneClaimRow(after!.value)?.state === "held");
     await cands.ledger.close();
     await cands.records.close();
   }

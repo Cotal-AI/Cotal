@@ -4002,13 +4002,17 @@ frontiers close over live work. The exclusion is broker-visible, not host-local:
 - **Clean close.** Scan-capable clients close FIRST, then the row CASes `held → released`
   (never released while either scanner can still act), then the barrier. A crash leaves
   `held`; the successor reclaims through the oracle. A `released` row is claimed without an
-  oracle round.
+  oracle round. A close whose release did not commit (the row is no longer this plane's, or
+  the write failed) still closes the barrier and then reports the failure to its caller.
 - **Operator faces.** The three refusal states carry DISTINCT copy: a live peer ("stop the
   other auth process", with the space and connection identities), an inconclusive observation
   (fail-safe wait/retry wording that never says "stop the other process"; when the oracle rail
   is down it names the delivery daemon and the restart order), and a mid-life scanner death
   (a deliberate fail-closed stop naming the restart path). An unparseable claim row refuses
-  loudly and is never overwritten automatically.
+  loudly and is never overwritten automatically. Every claim refusal also carries the
+  `ai.cotal.auth.plane-claim-refused` detail (§13.3), whose `reason` names the state
+  (`corrupt`, `live-peer`, `unknown`, `concurrent`, `fenced`, `released`, `lost`), so a host
+  never parses the copy to tell contention from corruption.
 - **Host belt.** Launchers additionally claim an exclusive per-space pidfile, published
   ATOMICALLY and PRE-POPULATED: the claimant writes its pid to a unique temp inode, then
   publishes it as the slot with an atomic no-overwrite `link(2)` — no create-then-write window
