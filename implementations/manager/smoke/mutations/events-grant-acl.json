@@ -75,11 +75,11 @@
     {
       "name": "G5 the refusal keeps the reserved name",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      this.reserved.delete(name);\n      return { ok: false, error: this.eventsRequired",
-      "replace": "      return { ok: false, error: this.eventsRequired",
+      "find": "    if (events && !connector.eventChannel)\n      return { ok: false, error: this.eventsRequired",
+      "replace": "    if (events && !connector.eventChannel && this.reserved.add(identityName))\n      return { ok: false, error: this.eventsRequired",
       "expectRed": "the refusal releases the reserved name",
       "cell": "the refusal releases the reserved name",
-      "note": "A leaked reserve is silent: the next spawn of that persona is auto-numbered and nothing says why."
+      "note": "The shape this refusal had when it ran after the reservation and released it by hand, with the hand release forgotten. A leaked reserve is silent: the next spawn of that persona is auto-numbered and nothing says why."
     },
     {
       "name": "G6 require the arming flag in the resume document, refusing every inventory the previous version wrote",

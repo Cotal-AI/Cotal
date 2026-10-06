@@ -236,7 +236,7 @@ try {
     const before = (mgr as unknown as { reserved: Set<string> }).reserved.size;
     const reply = await mgr.startAgent({ name: "event-bot", agent: "smoke-silent" });
     check("bare spawn on a non-emitting connector fails loud", reply.ok === false && /connector "smoke-silent".*--no-events/.test(reply.error ?? ""), reply);
-    // The refusal runs after the name is reserved, so it has to give the name back. A leaked reserve
+    // The refusal runs before the name is reserved, so it must leave none behind. A leaked reserve
     // is silent: it costs the next spawn its un-suffixed name and nothing reports why.
     check("the refusal releases the reserved name", (mgr as unknown as { reserved: Set<string> }).reserved.size === before, before);
   }
