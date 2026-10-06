@@ -266,7 +266,9 @@ Ordinary bodyless requests keep their connection as usual.
 
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
-raw HTML is stripped and only http(s)/mailto links survive. Long bodies still clamp to a few lines
+raw HTML is stripped and only http(s)/mailto links survive. A peer's name, role and activity show
+as plain text, including inside an attribute such as the activity's hover title. Long bodies still
+clamp to a few lines
 with a per-message *show more*; a channel-wide **expand / collapse all** in the header opens or
 closes every message at once.
 
