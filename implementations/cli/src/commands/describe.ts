@@ -13,6 +13,7 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   dialerFor,
+  invokeRepairingSplit,
   issuedUserCaller,
   parsePrincipalKey,
   resolveService,
@@ -27,7 +28,7 @@ import {
 import { type NatsConnection } from "@nats-io/transport-node";
 import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { resolveControlTarget, onInstanceOrExit, onFlag, invokeRepairingSplit, type ControlAuth } from "../lib/control.js";
+import { resolveControlTarget, onInstanceOrExit, onFlag, type ControlAuth } from "../lib/control.js";
 
 export const describeFlags = [...targetFlags, onFlag] as const satisfies readonly FlagSpec[];
 

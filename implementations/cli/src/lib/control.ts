@@ -1,13 +1,12 @@
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
-  BIND_SPLIT_REISSUES,
   EpEnvelopeError,
   assertLifecycleToken,
   GOAL_BEARING_COMMANDS,
   epProbeInstanceInterest,
   freezeExpectedSet,
   instancePinnedInstrumentCapabilities,
-  invokeCommand,
+  invokeRepairingSplit,
   issuedUserCaller,
   mintCreds,
   parseEpSubject,
@@ -17,7 +16,6 @@ import {
   registryReadFailed,
   undeclaredArg,
   renderLifecycleBlocked,
-  replyRefusedBeforeEffect,
   submitAndFollowGoal,
   scatterCommand,
   mintLifecycleUid,
@@ -26,13 +24,11 @@ import {
   resolveService,
   standaloneConnectOpts,
   type ControlReply,
-  type EpAttributedReply,
   type EpCaller,
   type EpInstanceLiveness,
   type EpVerbTarget,
   type FlagSpec,
   type Profile,
-  type ResolvedService,
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -86,40 +82,6 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
  *  (the spawn capability's standing mint), `any` the admin instrument's cross-agent rows (§13.2
  *  any-mode). Replaces the deleted manager ctl tiers as the CLI's mode selector (1d). */
 export type ControlReach = "owner" | "any";
-
-/**
- * One invoke on a resolved handle, with a SPEC 13.2 bind refusal repaired rather than surfaced.
- *
- * An unpinned handle binds the instance that answered its describe, and the invoke is a second,
- * independent trip through the same class queue, so in a multi-manager space another member
- * routinely receives it and refuses before dispatching. That refusal states the command did not
- * run, so re-describing and re-issuing is a first attempt and is safe for any command, mutations
- * included. The re-issue repeats until the describe and the invoke agree or the bound runs out, and
- * then the last refusal surfaces unchanged. A pinned handle is never repaired: it names its
- * instance, so a refusal from it is that instance answering about itself.
- */
-export async function invokeRepairingSplit(
-  nc: NatsConnection,
-  space: string,
-  service: ResolvedService,
-  command: string,
-  args: Record<string, unknown> | undefined,
-  opts: Parameters<typeof invokeCommand>[5],
-): Promise<EpAttributedReply> {
-  let handle = service;
-  for (let reissues = 0; ; reissues += 1) {
-    const r = await invokeCommand(nc, space, handle, command, args, opts);
-    if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;
-    if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return r;
-    try {
-      handle = await resolveService(nc, space, handle.endpoint, handle.caller, { deadlineMs: opts.deadlineMs ?? 10_000, ...(opts.signal ? { signal: opts.signal } : {}) });
-    } catch {
-      // The repair could not be attempted. The refusal surfaces, because it states that nothing
-      // ran, which a describe timeout raised in its place would lose.
-      return r;
-    }
-  }
-}
 
 /** The ep-rail control call — since 1d {@link askManager}'s ONLY path: one short-lived raw
  *  connection, a fresh `resolveService` (describe → §13.7 store fetch → digest-verified recompile

@@ -217,18 +217,20 @@
     },
     {
       "name": "the not-executed bind refusal is returned to the effect instead of re-issued",
-      "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (reply.reply.ok !== false || !replyRefusedBeforeEffect(reply.reply.error)) return reply;",
-      "replace": "      return reply;",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "    if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;",
+      "replace": "    return r;",
       "expectRed": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
       "cell": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
-      "note": "#1638. The repair removed: every manager call hands the responder's pre-effect refusal back to the effect, so a spawn the class queue gave to another member raises L4000 and ends the run. The forced arm binds an incarnation nothing serves, so the refusal is guaranteed and the red is deterministic rather than a queue draw."
+      "note": "#1638. The repair removed: every manager call hands the responder's pre-effect refusal back to the effect, so a spawn the class queue gave to another member raises L4000 and ends the run. The forced arm binds an incarnation nothing serves, so the refusal is guaranteed and the red is deterministic rather than a queue draw.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "the re-issue keeps the stale class handle instead of re-describing",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return reply;\n      this.managerService = undefined;",
-      "replace": "      if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return reply;",
+      "find": "      this.managerService = undefined;\n      return this.manager();",
+      "replace": "      return this.manager();",
       "expectRed": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
       "cell": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
       "note": "#1638, the other half. The call is re-issued but the handle carrying the refused bind is kept, so every attempt declares the same incarnation and meets the same refusal. It reds because the forced arm binds an incarnation nothing serves; a repair that re-issues without re-describing is indistinguishable from a working one whenever the queue happens to cooperate."
