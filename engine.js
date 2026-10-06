@@ -538,6 +538,7 @@
   const qrSvg = () => { const m = window.BOOTH_QR, n = m.length; let r = ''; for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (m[y][x] === '1') r += `M${x} ${y}h1v1h-1z`; return `<svg viewBox="-2 -2 ${n + 4} ${n + 4}" shape-rendering="crispEdges"><rect x="-2" y="-2" width="${n + 4}" height="${n + 4}" fill="#fff"/><path d="${r}" fill="${NAVY}"/></svg>`; };
 
   // ---------- the app ----------
+  const FS_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path class="go" d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/><path class="back" d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4"/></svg>';
   const PERSONAL = new URLSearchParams(location.search).has('qr') || matchMedia('(max-width: 760px), (max-height: 500px)').matches;
   const PHONE = matchMedia('(max-width: 760px) and (orientation: portrait)');
 
@@ -559,6 +560,10 @@
       window.addEventListener('mousemove', () => { this.lastInput = Date.now(); }, { passive: true });
       setInterval(() => this.tick(), 1000);
       $('#hud-help').onclick = (e) => { e.stopPropagation(); $('#help').classList.toggle('on'); };
+      // the fullscreen buttons show only where the page can go fullscreen (not on an iPhone)
+      const fsButtons = [...document.querySelectorAll('.fs')];
+      for (const b of fsButtons) { if (!document.fullscreenEnabled) { b.remove(); continue; } b.innerHTML = FS_ICON; b.onclick = (e) => { e.stopPropagation(); this.fullscreen(); }; }
+      document.addEventListener('fullscreenchange', () => { for (const b of fsButtons) b.classList.toggle('on', !!document.fullscreenElement); });
       // ?demo=1..4 opens a demo straight away (add &auto=0 to drive it by hand); ?screen=home opens the picker
       const q = new URLSearchParams(location.search);
       if (q.has('demo')) this.startDemo(Number(q.get('demo')) - 1, q.get('auto') !== '0');
@@ -609,7 +614,7 @@
     stopRun() { if (this.run) { this.run.cancel(); this.run = null; } this.stage.teardown(); this.stage.actions([]); },
     onInput(e) {
       this.lastInput = Date.now();
-      if (e.target.closest('#hud-help') || e.target.closest('#help')) return;
+      if (e.target.closest('#hud-help, .fs') || e.target.closest('#help')) return;
       if ($('#help').classList.contains('on')) { $('#help').classList.remove('on'); e.stopPropagation(); e.preventDefault(); return; }
       if (this.screen === 'attract') { e.stopPropagation(); e.preventDefault(); this.swallowClick = Date.now() + 700; this.showHome(); return; }
       if (this.screen === 'demo' && this.run && this.run.auto) { this.run.takeOver(); this.auto = false; document.body.classList.remove('auto'); }

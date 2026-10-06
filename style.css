@@ -27,6 +27,8 @@ canvas.mesh { position: absolute; inset: 0; width: 100%; height: 100%; display: 
 .brand svg { width: 100%; height: 100%; display: block; }
 .brand.small { font-size: clamp(18px, 2.4vmin, 28px); }
 .bar-note { font: 600 clamp(12px, 1.5vmin, 16px)/1 var(--font); color: var(--dim); }
+.bar .bar-note { margin-left: auto; }
+.bar .fs { margin-left: clamp(10px, 1.6vmin, 20px); }
 
 /* ---------- sticker buttons ---------- */
 .sbtn { position: relative; display: inline-flex; align-items: center; gap: .55em; padding: .62em 1.05em; overflow: hidden;
@@ -41,6 +43,9 @@ canvas.mesh { position: absolute; inset: 0; width: 100%; height: 100%; display: 
 .sbtn.danger .k { background: rgba(255,255,255,.2); color: #fff; }
 .sbtn.ghost { background: transparent; box-shadow: none; border-color: transparent; color: var(--dim); }
 .sbtn.round { width: 2.4em; height: 2.4em; padding: 0; justify-content: center; border-radius: 50%; font-size: clamp(16px, 2vmin, 22px); }
+.sbtn.fs svg { width: .8em; height: .8em; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.sbtn.fs .back, .sbtn.fs.on .go { display: none; }
+.sbtn.fs.on .back { display: inline; }
 .sbtn.big { font-size: clamp(18px, 2.6vmin, 30px); padding: .7em 1.2em; border-radius: 18px; box-shadow: 6px 6px 0 var(--ink); }
 .sbtn .fill { position: absolute; left: 0; bottom: 0; height: 100%; width: 0; background: rgba(229,185,78,.35); z-index: 0; }
 .sbtn.primary .fill { background: rgba(229,199,118,.35); }
@@ -122,6 +127,8 @@ canvas.mesh { position: absolute; inset: 0; width: 100%; height: 100%; display: 
 .auto-badge i { width: .6em; height: .6em; border-radius: 50%; background: var(--ink); animation: blink 1.2s infinite; }
 @keyframes blink { 50% { opacity: .2; } }
 body.auto .auto-badge { display: inline-flex; }
+.dbar .fs { margin-left: auto; }
+body.auto .dbar .fs { margin-left: 0; }
 
 .stage { flex: 1; min-height: 0; display: grid; gap: clamp(10px, 1.6vmin, 20px); padding: 0 var(--pad); }
 .stage.team { grid-template-columns: minmax(220px, 23%) 1fr minmax(240px, 26%); }
