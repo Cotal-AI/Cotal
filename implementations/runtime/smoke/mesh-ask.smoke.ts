@@ -729,14 +729,15 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
 {
   console.log("• 8 — outstandingPauseTokens reads the current attempt off the entry");
   const bare = { kind: "ask", requestId: token("f"), state: "pending" } as unknown as JournalEntry;
+  const attempt2 = createHash("sha256").update(`${token("f")}:ask-attempt-2`, "utf8").digest("base64url").slice(0, 43);
   const bound = {
     kind: "ask", requestId: token("f"), state: "pending",
-    external: { attempt: 2, askToken: token("g"), deadlineAt: 1 },
+    external: { attempt: 2, askToken: attempt2, deadlineAt: 1 },
   } as unknown as JournalEntry;
   c("a crash before the first bind re-arms attempt 1, the request id itself",
     outstandingPauseTokens([bare]).join() === token("f"), outstandingPauseTokens([bare]));
   c("a bound entry re-arms the CURRENT attempt's derived token",
-    outstandingPauseTokens([bound]).join() === token("g"), outstandingPauseTokens([bound]));
+    outstandingPauseTokens([bound]).join() === attempt2, outstandingPauseTokens([bound]));
 }
 
 // ── 9) an ask addresses an agent this run spawned: anything else refuses before a pause exists ─

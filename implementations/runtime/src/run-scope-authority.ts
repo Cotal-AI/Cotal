@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { Journal, atMostOnce, digest, holdRequestId, journalEntryKeyString, stepKeyString, type EffectContext, type JournalEntry } from "@cotal-ai/lang";
 import type { RunHostPlanes, RunHostLease, RunJournalActivation } from "@cotal-ai/core";
 import { replayOwnJournal } from "./journal-store.js";
+import { pauseTokens } from "./pause-tokens.js";
 
 interface RunScopeSnapshot {
   readonly entries: readonly JournalEntry[];
@@ -197,30 +197,6 @@ export class RunScopeAuthority {
     const owed = this.cleanup(entries);
     return entries.filter((entry) => this.owns(entry) && entry.state === "pending" && !owed.has(journalEntryKeyString(entry))).flatMap(pauseTokens);
   }
-}
-
-/** Identities a step can own. An ask's old attempt drops out as soon as the next bind lands. A
- *  held step also owns its hold id, whatever its kind, once the hold's bind lands. */
-function pauseTokens(entry: JournalEntry): string[] {
-  const id = entry.requestId;
-  if (id === undefined) return [];
-  const own = kindPauseTokens(entry, id);
-  return entry.hold === undefined ? own : [...own, holdRequestId(id)];
-}
-
-function kindPauseTokens(entry: JournalEntry, id: string): string[] {
-  if (entry.kind === "sleep" || entry.kind === "checkpoint" || entry.kind === "turn") return [id];
-  if (entry.kind === "wait") return [id, derive(id, "wait-timeout")];
-  if (entry.kind !== "ask") return [];
-  const attempt = entry.external?.attempt ?? 1;
-  if (typeof attempt !== "number" || !Number.isSafeInteger(attempt) || attempt < 1) return [];
-  const expected = attempt === 1 ? id : derive(id, `ask-attempt-${attempt}`);
-  if (entry.external?.askToken !== undefined && entry.external.askToken !== expected) return [];
-  return [expected];
-}
-
-function derive(requestId: string, purpose: string): string {
-  return createHash("sha256").update(`${requestId}:${purpose}`, "utf8").digest("base64url");
 }
 
 /** A receipt's identity is held in a WeakMap. Serializing, copying or inventing a receipt
