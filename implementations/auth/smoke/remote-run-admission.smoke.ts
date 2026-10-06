@@ -15,7 +15,7 @@ import {
   mintLifecycleUid, newIdentity, openIssuedStore, readRunAdmission, remoteManagerActors, type IssuedSourceRef,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { deriveOwnerForIdpSubject, grantActor, openAuthAuthorityPlane, handleManagerServiceAuthority } from "../src/index.js";
+import { deriveOwnerForIdpSubject, grantActor, openAuthAuthorityPlane, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx } from "../src/index.js";
 import { admitRemoteRun } from "../src/manager-authority.js";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 import { pickFreePort } from "./_free-port.js";
@@ -201,7 +201,7 @@ try {
   });
 
   const cap = "operator-cap-secret";
-  const httpCtx = {
+  const httpCtx: ManagerServiceAuthorityCtx = {
     space: SPACE,
     dir: authDir,
     ownerSecret,
@@ -209,22 +209,17 @@ try {
     managerServiceAuthority: plane.issueManagerServiceAuthority,
     maintainRemoteManager: plane.maintainRemoteManager,
     validateRetainedAgent: plane.validateRetainedAgent,
-    verifyManagedAgentEnrollment: plane.verifyManagedAgentEnrollment,
-    verifyManagedAgentPrepareRetirement: plane.verifyManagedAgentPrepareRetirement,
+    // This suite runs no callout, so it has no sentinel credentials to enroll with; it sends run kinds only.
+    enrollManagedAgent: () => { throw new Error("this suite sends no managed-agent enrollment"); },
+    prepareManagedAgentRetirement: plane.prepareManagedAgentRetirement,
     scanManagerGoalIndex: plane.scanManagerGoalIndex,
     authorizeManagerAdmin: plane.authorizeManagerAdmin,
     admitManagerRun: plane.admitManagerRun,
     issueManagerRunAttempt: plane.issueManagerRunAttempt,
     secrets: new Map() as never,
-    retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
-    retireManagedLifecycle: plane.retireManagedLifecycle,
     cap,
-    failures: [],
-    badCaps: [],
-    mintConnectCredential: plane.mintConnectCredential,
-    selectManagerInstance: plane.selectManagerInstance,
   };
-  const httpServer = createServer((req, res) => void handleManagerServiceAuthority(req, res, httpCtx as never, {
+  const httpServer = createServer((req, res) => void handleManagerServiceAuthority(req, res, httpCtx, {
     requireCapability: true,
     refuseViews: false,
     allowManagerAuthority: true,

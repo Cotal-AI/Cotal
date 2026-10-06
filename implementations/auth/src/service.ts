@@ -2226,9 +2226,11 @@ interface HandlerCtx {
   verifySession: AuthAuthorityPlane["verifySession"];
 }
 
+type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt">;
+
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
-  ctx: Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt">,
+  ctx: ManagerAuthorityDispatchCtx,
   owner: string,
   body: { request: unknown },
 ): Promise<unknown> {
@@ -2741,9 +2743,13 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   }
 }
 
+/** What {@link handleManagerServiceAuthority} reads. Exported so a host that serves the route with a
+ *  context it builds itself is held by the compiler to every arm the dispatcher calls. */
+export type ManagerServiceAuthorityCtx = ManagerAuthorityDispatchCtx & Pick<HandlerCtx, "cap" | "bridgeIdp" | "ownerSecret">;
+
 /** Loopback/operator-only typed manager authority exchange. The public route table never includes
  * this path, and the loopback capability is checked here in addition to the route separation. */
-export async function handleManagerServiceAuthority(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
+export async function handleManagerServiceAuthority(req: IncomingMessage, res: ServerResponse, ctx: ManagerServiceAuthorityCtx, policy: ExchangePolicy): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
   if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))

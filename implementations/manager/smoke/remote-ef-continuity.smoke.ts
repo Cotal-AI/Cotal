@@ -244,7 +244,6 @@ try {
       cap: "cap",
       ownerSecret: "dummy-secret-value-32-chars-long!",
       bridgeIdp: { issuer: IDP_ISS, audience: "cotal-services", key: idpPair.publicKey as never },
-      failures: [],
       managerServiceAuthority: wrappedMgrAuthority,
       maintainRemoteManager: plane.maintainRemoteManager,
       validateRetainedAgent: plane.validateRetainedAgent,
@@ -257,7 +256,7 @@ try {
       authorizeManagerAdmin: plane.authorizeManagerAdmin,
       admitManagerRun: plane.admitManagerRun,
       issueManagerRunAttempt: wrappedIssueRunAttempt,
-    } as any, {
+    }, {
       requireCapability: false,
       refuseViews: false,
       allowManagerAuthority: true,
