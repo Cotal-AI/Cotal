@@ -187,6 +187,8 @@ export function cacheLocalProcess(component: LocalProcess): LocalProcess {
   }
   if (component.rootedAt !== undefined && component.rootedAt !== "target")
     throw new Error(`local-process ${component.name} declares an unknown rootedAt ${JSON.stringify(component.rootedAt)} - only "target" is defined`);
+  if (component.isOwnCommand !== undefined)
+    throw new Error(`local-process ${component.name} declares isOwnCommand, which an installed extension's cached descriptor cannot carry`);
   return {
     kind: "local-process",
     name: component.name,

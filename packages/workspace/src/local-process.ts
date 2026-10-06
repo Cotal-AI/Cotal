@@ -39,6 +39,10 @@ export interface LocalProcess extends Extension {
    *  target-resolved from any directory and records its pidfile under the TARGET mesh's root; a
    *  cwd-only stop would miss the live process. Bare whole-stack sweeps stay folder-scoped. */
   readonly rootedAt?: "target";
+  /** Whether a live process's command line is this process's. A stop never signals a live pid this
+   *  rejects: the record outlived its process and the pid was reused, so the stale record is cleared.
+   *  A function cannot be cached for an installed extension, so only this CLI's own processes set it. */
+  readonly isOwnCommand?: (command: string) => boolean;
 }
 
 // ---- the runtime records, per space -------------------------------------------------------------

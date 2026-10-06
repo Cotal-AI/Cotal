@@ -34,7 +34,7 @@ import { fileURLToPath } from "node:url";
 import {
   defaultStartToken, formatRecord, identityPinPath, identityStartToken, parsePid, parseRecord,
   parseWin32CreationToken, verifyIdentityPin, writeIdentityPin, writePidPair,
-} from "@cotal-ai/workspace";
+} from "../src/pid.js";
 
 const prevCwd = process.cwd();
 const root = mkdtempSync(join(tmpdir(), "pid-identity-"));
@@ -95,11 +95,10 @@ try {
     // can never equal the live token of any process started this boot.
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(foreign.pid));
     writeFileSync(join(root, ".cotal", "delivery.pid.identity"), `${foreign.pid} 1`);
-    let sent = 0;
     let refused: string | undefined;
-    try { await stopDelivery(() => "alive", (pid) => { sent++; process.kill(pid, "SIGTERM"); }); }
+    try { await stopDelivery(); }
     catch (e) { refused = (e as Error).message; }
-    check("A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled", sent === 0 && refused !== undefined, { sent, head: refused?.split("\n")[0] });
+    check("A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled", refused !== undefined, refused?.split("\n")[0]);
     check("A2 the refusal names the pid reuse and the two starts", /reused/.test(refused ?? "") && /recorded start/.test(refused ?? ""), refused?.split("\n")[0]);
     check("A3 the foreign process SURVIVES the refused stop", foreign.child.exitCode === null && alive(foreign.pid));
     check("A4 the pidfile AND its pin are preserved for the operator", existsSync(join(root, ".cotal", "delivery.pid")) && existsSync(join(root, ".cotal", "delivery.pid.identity")));
@@ -171,7 +170,7 @@ try {
     assert.ok(token !== undefined, "this host must expose a start token for the happy-path cell (Linux/macOS do; a Windows run is the named gap)");
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(target.pid));
     writeFileSync(join(root, ".cotal", "delivery.pid.identity"), formatRecord({ pid: target.pid!, token }));
-    await stopDelivery(undefined, (pid, sig) => process.kill(pid, sig));
+    await stopDelivery();
     await wait(200);
     check("C1 a MATCHING pin IS torn down (SIGTERM, death confirmed, record cleared)", target.child.exitCode === 0, { exitCode: target.child.exitCode });
     check("C2 a proven-death teardown clears the pidfile AND the pin", !existsSync(join(root, ".cotal", "delivery.pid")) && !existsSync(join(root, ".cotal", "delivery.pid.identity")));
@@ -188,9 +187,8 @@ try {
     await wait(100);
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(dead.pid));
     if (token !== undefined) writeFileSync(join(root, ".cotal", "delivery.pid.identity"), formatRecord({ pid: dead.pid!, token }));
-    let sent = 0;
-    await stopDelivery(() => "dead", (pid) => { sent++; process.kill(pid, "SIGTERM"); });
-    check("D1 a pinned record whose pid is ESRCH-dead is cleared with NO signal", sent === 0 && !existsSync(join(root, ".cotal", "delivery.pid")));
+    await stopDelivery();
+    check("D1 a pinned record whose pid is ESRCH-dead is cleared with NO signal", !existsSync(join(root, ".cotal", "delivery.pid")));
   }
 
   // ── E. LEGACY records warn + proceed; TORN records still refuse on a LIVE pid ─────────────
@@ -200,14 +198,13 @@ try {
     strays.push(foreign.child);
     await wait(150);
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(foreign.pid)); // legacy: no pin
-    let sent = 0;
     let warning = "";
     const originalError = console.error;
     console.error = (...args: unknown[]) => { warning += `${args.join(" ")}\n`; };
-    try { await stopDelivery(undefined, (pid) => { sent++; process.kill(pid, "SIGTERM"); }); }
+    try { await stopDelivery(); }
     finally { console.error = originalError; }
     await wait(200);
-    check("E1 a LEGACY (unpinned) live record is signalled with a loud reduced-guarantee warning", sent === 1 && foreign.child.exitCode === 9 && /predates process identity pinning/.test(warning) && /without an identity check/.test(warning) && /relaunch will pin/.test(warning), { sent, exitCode: foreign.child.exitCode, warning });
+    check("E1 a LEGACY (unpinned) live record is signalled with a loud reduced-guarantee warning", foreign.child.exitCode === 9 && /predates process identity pinning/.test(warning) && /without an identity check/.test(warning) && /relaunch will pin/.test(warning), { exitCode: foreign.child.exitCode, warning });
     check("E2 the legacy record auto-clears after confirmed death", !existsSync(join(root, ".cotal", "delivery.pid")));
     const torn = spawnForeign("deliver");
     strays.push(torn.child);
@@ -216,7 +213,7 @@ try {
     // Torn pairing: the pin names a DIFFERENT pid than the pidfile holds.
     writeFileSync(join(root, ".cotal", "delivery.pid.identity"), "999999 1");
     let tornRefused: string | undefined;
-    try { await stopDelivery(() => "alive", (pid) => { process.kill(pid, "SIGTERM"); }); }
+    try { await stopDelivery(); }
     catch (e) { tornRefused = (e as Error).message; }
     check("E3 a TORN pairing is refused as an observation, without claiming a crash caused it", tornRefused !== undefined && /names pid/.test(tornRefused) && !/crash between writes/.test(tornRefused) && /stop it, then rerun/.test(tornRefused), tornRefused?.split("\n")[0]);
     check("E4 the torn pair is preserved", existsSync(join(root, ".cotal", "delivery.pid")) && existsSync(join(root, ".cotal", "delivery.pid.identity")));

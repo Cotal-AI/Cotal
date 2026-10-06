@@ -67,7 +67,7 @@ import {
 import { extensionNames, localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
-import { parsePid, probeLiveness, readPidfile, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, readPidfile, readProcessCommand, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -441,9 +441,19 @@ export async function stopLocalProcess(
         `${component.label} has an unattributable pidfile at ${pidPath} (${JSON.stringify(rawPid)}) - it may still front a running process; refusing to remove it or report a clean stop. Stop that process and remove the file manually.`,
       );
     }
-    // #969 OPEN-VERIFY-TERMINATE: identity before signal, the same rule the manager, delivery and
-    // auth helpers apply. This is the path `cotal down` uses for the BROKER, the web dashboard and
-    // every extension component, so all four teardown surfaces share one identity rule.
+    // Attribution before the pin (#1528): it also catches a reused pid behind a legacy record, which
+    // the pin would let through to the signal. A command that cannot be read proves nothing.
+    if (component.isOwnCommand) {
+      const command = readProcessCommand(pid);
+      if (command.kind === "command" && !component.isOwnCommand(command.command)) {
+        console.error(`! recorded ${component.label} pid ${pid} is alive but is running \`${command.command}\`, which is not a ${component.label} - not signalling it; removing the stale record instead.`);
+        stopped = true;
+        return true;
+      }
+    }
+    // #969 OPEN-VERIFY-TERMINATE: identity before signal, the same rule the manager and auth helpers
+    // apply. This is the path `cotal down` uses for the BROKER, the delivery daemon, the web
+    // dashboard and every extension component, so all of them share one identity rule.
     const identity = verifyIdentityPin(pidPath);
     if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
     if (identity.kind === "legacy") console.error(identityLegacyWarning(component.label, pidPath));

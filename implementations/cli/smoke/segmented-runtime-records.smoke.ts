@@ -111,7 +111,7 @@ try {
   place(DELIVERY_PIDFILE, ALPHA, d1Pid);
   place(DELIVERY_PIDFILE, BETA, d2Pid);
   check("both spaces' delivery records coexist", deliveryUp(ALPHA) && deliveryUp(BETA));
-  await stopDelivery(undefined, undefined, ALPHA);
+  await stopDelivery(ALPHA);
   await waitDead(d1Pid);
   check("stopDelivery(alpha) stops alpha's daemon", !alive(d1Pid) && deliveryLiveness(undefined, ALPHA) === "absent");
   check("...and beta's daemon survives with its record intact", alive(d2Pid) && deliveryUp(BETA));
@@ -152,7 +152,7 @@ try {
   rmSync(record(MANAGER_PIDFILE, ALPHA), { force: true });
   process.kill(twin.pid!, "SIGKILL");
   await stopManager(undefined, undefined, undefined, BETA);
-  await stopDelivery(undefined, undefined, BETA);
+  await stopDelivery(BETA);
   await waitDead(bPid);
   await waitDead(d2Pid);
   const solo = daemon();
