@@ -212,8 +212,8 @@ const FOCUS_EXCLUSION_CAP = 4096;
 /** #662: history reads one channel's recall makes while an id-less copy keeps arriving mid-read. */
 const IDLESS_READS = 3;
 const PROTECTED_DISPOSITION_CAP = 4096;
-/** How many unanswered directed messages, and how many asked questions, one session remembers for
- *  reply correlation. */
+/** How many unanswered directed messages, asked questions, and DM or anycast senders one session
+ *  remembers for reply correlation. */
 const MAX_CORRELATIONS = 1024;
 /** Repeated async NATS status errors can arrive once per ordered-consumer retry. They describe one
  * fault, not one hundred useful facts; keep the first visible and summarize at most twice a minute. */
