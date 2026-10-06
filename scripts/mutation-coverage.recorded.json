@@ -371,17 +371,9 @@
     "sha256": "6a3aaa94ebeef556748173caf03dc78071d58bc56ea5032b80482e91a45f8748",
     "refusal": "mutation \"N1 the pre-dial expiry guard is gone, so the endpoint dials with the dead bearer again\" targets packages/core/src/endpoint.ts, which none of [implementations/auth/smoke/expiry-renewal.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "implementations/auth/smoke/mutations/managed-agent-enrollment.json": {
-    "sha256": "23c3ad151ee3235c2d26c19357cf41b95cdf6e46632b6a7caafb11e8089b4af1",
-    "refusal": "mutation \"prepare-retirement trusts the caller's opId instead of recomputing it\" targets packages/core/src/remote-manager-authority.ts, which none of [implementations/auth/smoke/managed-agent-enrollment.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/auth/smoke/mutations/managed-agent-runtime-transport.json": {
     "sha256": "75095ccade11d3c7263c25796be4605ee96c27e506c162667b5e524c8b1d914d",
     "refusal": "mutation \"shipped runtime client never posts to the transport\" targets implementations/auth/src/provider.ts, which none of [implementations/auth/smoke/remote-exchange.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/auth that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/auth/smoke/mutations/managed-agent-runtime.json": {
-    "sha256": "c736ad8dd04c0f240b31f4358ee3cb8bb2070af1ae5da93b37d6242dd91b9d7a",
-    "refusal": "mutation \"runtime parser lets a top-level providerRef through\" targets packages/core/src/remote-manager-authority.ts, which none of [implementations/auth/smoke/managed-agent-runtime.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "implementations/auth/smoke/mutations/manager-goal-index-scanner.json": {
     "sha256": "d0871cf4969fa9177a129c3987225e8c165d95eb3cd4be8533048d6d3f5aceac",
