@@ -1,5 +1,69 @@
 # cotal-ai
 
+## 0.69.0
+
+### Patch Changes
+
+- Updated dependencies [fa83b25]
+- Updated dependencies [6efcb8a]
+- Updated dependencies [d8adc43]
+- Updated dependencies [259f570]
+- Updated dependencies [a4e4015]
+- Updated dependencies [39efad7]
+- Updated dependencies [c55b463]
+- Updated dependencies [9e59f0a]
+- Updated dependencies [f5cb8e1]
+- Updated dependencies [2d45766]
+- Updated dependencies [ca0923f]
+- Updated dependencies [03a7405]
+- Updated dependencies [a256e2f]
+- Updated dependencies [cd45352]
+- Updated dependencies [5aa48ce]
+- Updated dependencies [809a594]
+- Updated dependencies [3f3d04a]
+- Updated dependencies [c4bfba2]
+- Updated dependencies [4500563]
+- Updated dependencies [94996e5]
+- Updated dependencies [886c3e5]
+- Updated dependencies [6295b1a]
+- Updated dependencies [189cb2a]
+- Updated dependencies [b9d2902]
+- Updated dependencies [8e16774]
+- Updated dependencies [5eb1e24]
+- Updated dependencies [0b47df3]
+- Updated dependencies [69232cd]
+- Updated dependencies [02c0a2d]
+- Updated dependencies [426d72e]
+- Updated dependencies [93716c3]
+- Updated dependencies [3a1716d]
+- Updated dependencies [9772fd4]
+- Updated dependencies [06429be]
+- Updated dependencies [adab793]
+- Updated dependencies [d29d4d3]
+- Updated dependencies [561232d]
+- Updated dependencies [e0ad25c]
+- Updated dependencies [539266a]
+- Updated dependencies [b584718]
+- Updated dependencies [0c5b205]
+- Updated dependencies [848497f]
+- Updated dependencies [8c01391]
+- Updated dependencies [64110e0]
+- Updated dependencies [98d2b41]
+- Updated dependencies [6540a32]
+- Updated dependencies [5195d74]
+- Updated dependencies [1e093df]
+- Updated dependencies [cbbde1d]
+- Updated dependencies [02a989a]
+- Updated dependencies [f409b46]
+  - @cotal-ai/connector-core@0.69.0
+  - @cotal-ai/auth@0.69.0
+  - @cotal-ai/cli@0.69.0
+  - @cotal-ai/workspace@0.69.0
+  - @cotal-ai/core@0.69.0
+  - @cotal-ai/delivery@0.69.0
+  - @cotal-ai/manager@0.69.0
+  - @cotal-ai/runtime@0.69.0
+
 ## 0.68.0
 
 ### Patch Changes

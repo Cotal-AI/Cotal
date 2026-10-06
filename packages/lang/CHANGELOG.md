@@ -1,5 +1,13 @@
 # @cotal-ai/lang
 
+## 0.69.0
+
+### Patch Changes
+
+- 1bdc7f2: A `conclave` now counts toward a run's `effectCeiling` (L4009). Opening one is a dispatch against the world, but it was counted neither by the live counter nor by the journal tally a resume seeds that counter from, so a program whose only effect was `conclave` could open any number of them, live or across a resume, without reaching the ceiling. It is counted once, before its entry begins, on both engines. A resume that re-enters a pending or refused step, a `conclave` or an effect, no longer counts it a second time, so a resumed run reaches the ceiling at the same step as a fresh one instead of faulting where the fresh run goes on. `spec/cotal-lang.md` §8.3 no longer excludes it.
+- 94996e5: The scope kinds' traits now come from one record keyed by `ScopeKind`, exported as `scopeTraits`, which returns a frozen row: whether a scope settles an assembly of branch outcomes, and whether a fork whose cut lies inside it re-enters it. The journal seed check, the scope value rule, the static captured-write check (L2032) and `planFork` read it instead of keeping their own kind lists, so a scope kind added to `ScopeKind` does not compile until it is classified. Before, a new kind compiled with a list missed and failed only at run time, for example a settled no-return scope of that kind refused at the journal seed with L5024. Shipped behaviour is unchanged.
+- f409b46: A `waitUntil` whose first observation is not terminal now waits out its cadence on a host that checks journal authority (a manager-hosted run, or `cotal run start --local`) and fails `L4023` at its deadline. Before, its second observation failed `L4000`: the interpreter sent the observation index as the effect's attempt, which the run authority refused, and the authority listed no pause token for a `waitUntil` cadence. Which pause tokens a step owns is now one table that the run authority, the adoption re-arm and a cancelled branch's discharge all read, so a cancelled `waitUntil` on a hosted run also releases its open cadence pause.
+
 ## 0.68.0
 
 ### Minor Changes

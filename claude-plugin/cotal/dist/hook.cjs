@@ -26467,6 +26467,12 @@ var import_transport_node19 = __toESM(require_transport_node(), 1);
 var import_jetstream18 = __toESM(require_mod4(), 1);
 var import_kv9 = __toESM(require_mod6(), 1);
 
+// ../../packages/core/dist/loopback.js
+var import_node_net = require("node:net");
+var LOOPBACK = new import_node_net.BlockList();
+LOOPBACK.addSubnet("127.0.0.0", 8, "ipv4");
+LOOPBACK.addAddress("::1", "ipv6");
+
 // ../../packages/core/dist/managed-handoff.js
 var TARGET_FIELDS = ["space", "owner", "actor", "lifecycleUid"];
 var STRING_FIELDS = [...TARGET_FIELDS, "kind", "server", "authProvider", "exchangeUrl", "sentinelCreds", "actorToken"];
@@ -26640,8 +26646,6 @@ var TRUNCATABLE_FIELDS = [
   { type: AGUI_EVENT_TYPE.TOOL_CALL_RESULT, field: "content" },
   { type: AGUI_EVENT_TYPE.TEXT_MESSAGE_CONTENT, field: "delta" }
 ];
-var SIZING_ID = "S".repeat(64);
-var SIZING_EXPECTATION = Number.MAX_SAFE_INTEGER;
 var EGRESS_FORBIDDEN_TYPES = /* @__PURE__ */ new Set([
   AGUI_EVENT_TYPE.TOOL_CALL_ARGS,
   AGUI_EVENT_TYPE.TOOL_CALL_RESULT
@@ -26663,6 +26667,10 @@ var KNOWN_EVENT_KEYS_BY_TYPE = /* @__PURE__ */ new Map([
   [AGUI_EVENT_TYPE.REASONING_MESSAGE_END, /* @__PURE__ */ new Set(["type", "timestamp", "rawEvent", "messageId", "cotal"])],
   [AGUI_EVENT_TYPE.CUSTOM, /* @__PURE__ */ new Set(["type", "timestamp", "rawEvent", "name", "value", "cotal"])]
 ]);
+
+// ../connector-core/dist/agui-emitter.js
+var SIZING_ID = "S".repeat(64);
+var SIZING_EXPECTATION = Number.MAX_SAFE_INTEGER;
 
 // ../connector-core/dist/agui-render.js
 var str = (v) => typeof v === "string" ? v : void 0;
@@ -41312,7 +41320,7 @@ var HANDOFF_RECEIPT = '{"handoff":"ok"}\n';
 var MAX_FRAME_BYTES = 1 << 20;
 
 // ../connector-core/dist/relay.js
-var import_node_net = require("node:net");
+var import_node_net2 = require("node:net");
 var TIMEOUT_MS = 2e3;
 var CONNECT_RETRY_INITIAL_MS = 25;
 var CONNECT_RETRY_MAX_MS = 250;
@@ -41421,7 +41429,7 @@ async function runHookRelay() {
   const dial = () => {
     if (settled)
       return;
-    const candidate = (0, import_node_net.connect)(path);
+    const candidate = (0, import_node_net2.connect)(path);
     sock = candidate;
     let connected = false;
     let reply = "";
