@@ -18,6 +18,10 @@ npm run dev                      # syncs docs, then starts Astro
 npm run build                    # syncs docs, then builds to dist/
 ```
 
+`astro.config.mjs` loads the sidebar the sync generates and stops with an error when it
+cannot read or parse that file, so run `npm run sync` before calling `npm run astro`
+directly.
+
 ## Agent-native surface
 
 Every feature below is generated at build time, served at the edge, or drift-guarded
