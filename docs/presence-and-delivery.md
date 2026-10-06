@@ -41,12 +41,13 @@ connector records it as events arrive and the next heartbeat carries it. `cotal 
 `cotal endpoints` and `cotal_roster` print a condition with its age and the age of `activeAt`, such
 as `waiting (rate_limit for 40m) · active 40m ago`. The optional `statusSince` is the epoch ms when the
 instance entered its current status and activity. A change to either moves it, while a heartbeat or a
-repeated report does not, so an activity that outlived what it described reads as old. `cotal_roster`
-prints its age, such as `idle · unchanged for 40m`. An offline record carries none, because an observer
-that derives `offline` from a stale heartbeat does not know when the peer left. The optional
-`activitySince` is when the current activity was set. A status change does not move it, so an
-activity left behind while hooks flip the status every turn still shows its age, such as
-`(set 9h ago)` after the activity on a `cotal_roster` row. The optional `environment` is an opaque provider reference. Core publishes
+repeated report does not, so an activity that outlived what it described reads as old. `cotal status`,
+`cotal endpoints` and `cotal_roster` print its age, such as `idle · unchanged for 40m`. An offline
+record carries none, because an observer that derives `offline` from a stale heartbeat does not know
+when the peer left. The optional `activitySince` is when the current activity was set. A status
+change does not move it, so an activity left behind while hooks flip the status every turn still
+shows its age after the activity on the same three surfaces, such as `(set 9h ago)`. A stamp that
+is not a finite number shows no age. The optional `environment` is an opaque provider reference. Core publishes
 it and never interprets it. Readers reject a row whose `card.id` does not match its KV key, whose
 `card.name` or `status` is missing or has the wrong type, or whose `ts` is not a finite number, and
 report that rejection through the recoverable warning path. A kept row whose `ts` is missing or text

@@ -34,6 +34,7 @@ export * from "./signing-key-rotation.js";
 export * from "./endpoint-traits.js";
 export * from "./safe-pattern.js";
 export * from "./resolve.js";
+export * from "./presence-ages.js";
 export * from "./link.js";
 export * from "./identity.js";
 export * from "./secret-store.js";

@@ -1161,7 +1161,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "derived-output",
-      "anchor": "`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${p.activity}`) : \"\"}`",
+      "anchor": "`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${p.activity}${activityAge(p)}`) : \"\"}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
