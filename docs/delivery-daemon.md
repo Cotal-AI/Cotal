@@ -144,7 +144,8 @@ Ctrl-C on a foreground `up`, and a broker that exits under it, stop the daemon w
 `cotal down delivery` uses. It holds the reservation `down` takes, so a concurrent
 `cotal down delivery` is refused while it runs. It sends SIGKILL to a daemon that has not exited 15
 seconds after SIGTERM, and removes the daemon's credential only once its death is confirmed. A
-record whose pid now belongs to another program is cleared without a signal.
+record whose pid now belongs to another program is cleared without a signal. If the broker exits
+while that stop is running, `up` waits for the stop to finish before it exits.
 
 The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
 removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a
