@@ -65,13 +65,19 @@ export function windowAliveRef(windowId: string): boolean {
   return windowLines("#{window_id}").includes(windowId);
 }
 
+/** True when a tmux call failed because no server is listening on its socket. tmux reports that
+ *  as `no server running on <socket>`, and the socket path may itself hold those words, so only the
+ *  start of stderr counts. A missing socket or an unsafe socket directory is a failed call. */
+function noServer(err: unknown): boolean {
+  return String((err as { stderr?: unknown }).stderr ?? "").startsWith("no server running on ");
+}
+
 /** The running tmux server's pid, or undefined when no server is running. */
 export function serverPid(): string | undefined {
   try {
     return execFileSync("tmux", ["display-message", "-p", "#{pid}"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   } catch (err) {
-    const e = err as { stderr?: unknown; message?: unknown };
-    if (/no server running/i.test(`${String(e.stderr ?? "")} ${String(e.message ?? "")}`)) return undefined;
+    if (noServer(err)) return undefined;
     throw err;
   }
 }
@@ -99,7 +105,7 @@ function windowLines(format: string): string[] {
   } catch (err) {
     const e = err as { stderr?: unknown; message?: unknown };
     const message = `${String(e.stderr ?? "")} ${String(e.message ?? "")}`;
-    if (/no server running/i.test(message)) return [];
+    if (noServer(err)) return [];
     throw new Error(`tmux: couldn't list windows: ${message.trim()}`, { cause: err });
   }
 }
@@ -120,7 +126,7 @@ export function paneWindow(paneId: string): string | undefined {
   } catch (err) {
     const e = err as { stderr?: unknown; message?: unknown };
     const message = `${String(e.stderr ?? "")} ${String(e.message ?? "")}`;
-    if (/no server running/i.test(message)) return undefined;
+    if (noServer(err)) return undefined;
     throw new Error(`tmux: couldn't list the window holding pane ${paneId}: ${message.trim()}`, { cause: err });
   }
 }
@@ -147,7 +153,7 @@ export function paneState(paneId: string): PaneState {
     const message = `${String(e.stderr ?? "")} ${String(e.message ?? "")}`;
     // No tmux server means no pane can still exist. Other failures (including permission/socket
     // errors) are unknown and must fail the preservation cut closed.
-    if (/no server running/i.test(message)) return "exited";
+    if (noServer(err)) return "exited";
     throw new Error(`tmux: couldn't prove pane ${paneId} exited: ${message.trim()}`, { cause: err });
   }
 }
