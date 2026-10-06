@@ -98,6 +98,8 @@ export interface ManagerRecord {
   state: ManagerRecordState;
   /** The recorded pid, when the file held one. */
   pid?: number;
+  /** The record's content, when it is not a pid (present on `unattributable`). */
+  content?: string;
   /** The live process's command line, when it was readable (present on `alive` and `foreign`). */
   command?: string;
 }
@@ -122,7 +124,7 @@ export function managerRecordState(
   // ensure paths OVERWRITE it and launch a replacement, which is the same defect as deleting it:
   // that record may front a live process nobody can identify. `absent` means no pidfile (or an
   // empty husk); corrupt content is its own state and every action path must refuse on it.
-  if (pid === undefined) return { state: "unattributable" };
+  if (pid === undefined) return { state: "unattributable", content: raw };
   const liveness = probe(pid);
   if (liveness !== "alive") return { state: liveness, pid };
   const cmd = readCommand(pid);
@@ -292,13 +294,13 @@ export function assertManagerRecordReplaceable(
     );
   if (state === "unattributable")
     throw new Error(
-      `the manager pidfile at ${p} holds content that is not a pid (${JSON.stringify(readFileSync(p, "utf8").trim())}).\n` +
+      `the manager pidfile at ${p} holds content that is not a pid (${JSON.stringify(record.content)}).\n` +
         `Refusing to start a manager over it: that record may front a live process nobody can identify, and overwriting it would orphan the process while reporting a healthy control plane.\n` +
         `NEXT: find and stop that process, then remove \`${p}\` by hand.`,
     );
   if (state === "unknown")
     throw new Error(
-      `the recorded manager pid (${readFileSync(p, "utf8").trim()}) cannot be attributed: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes).\n` +
+      `the recorded manager pid (${record.pid}) cannot be attributed: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes).\n` +
         `Refusing to start a manager over it: it may still be running and bound to the control plane.\n` +
         `NEXT: verify with \`ps -p <pid>\`. If it is gone, remove \`${p}\` and re-run.`,
     );
