@@ -161,15 +161,17 @@ async function main(): Promise<void> {
         await agent.whenConnected(20_000);
         return startEmitter();
       },
-      // Required, and not defaulted to a swallow: this runs behind a hook that must not throw, so
-      // a failure reaches a human only if it is written somewhere. The holder is terminal on
-      // error, it does not retry, so this line is the whole record of why events stopped.
-      (e: Error) => process.stderr.write(`[cotal-connector] AG-UI emitter stopped: ${e.message}\n`),
-      // The turn terminal closes a run the record stream never described, so the mapper still
-      // believes that run is open. Without this it would attribute the next records to a run the
-      // published stream has already finished and the emitter would refuse the batch. Keyed on the
-      // id, so a newer run opened in between is left alone.
-      (runId: string) => mapper?.forgetOpenRun(runId),
+      {
+        // Required, and not defaulted to a swallow: this runs behind a hook that must not throw, so
+        // a failure reaches a human only if it is written somewhere. The holder is terminal on
+        // error, it does not retry, so this line is the whole record of why events stopped.
+        onError: (e: Error) => process.stderr.write(`[cotal-connector] AG-UI emitter stopped: ${e.message}\n`),
+        // The turn terminal closes a run the record stream never described, so the mapper still
+        // believes that run is open. Without this it would attribute the next records to a run the
+        // published stream has already finished and the emitter would refuse the batch. Keyed on
+        // the id, so a newer run opened in between is left alone.
+        onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
+      },
     );
   }
 

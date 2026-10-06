@@ -165,8 +165,10 @@ const events = new AguiEmitterHolder<ClaudeEntry, unknown>(
       map: mapper.map,
     });
   },
-  (e: Error) => console.log(`  [emitter stopped] ${e.message}`),
-  (runId: string) => mapper?.forgetOpenRun(runId),
+  {
+    onError: (e: Error) => console.log(`  [emitter stopped] ${e.message}`),
+    onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
+  },
 );
 
 const claude = createClaudeHandle({ events: () => events });

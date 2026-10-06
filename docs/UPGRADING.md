@@ -178,6 +178,25 @@ Upgrade the auth service and every remote manager registered with it in the same
 that restarted inside the window resumes its frozen registration on its next start once both sides
 run this release.
 
+## AG-UI emitter holder hooks in 0.69.0
+
+`AguiEmitterHolder` from `@cotal-ai/connector-core` now takes its hooks as one named object after
+the emitter factory: `new AguiEmitterHolder(startEmitter, { onError, onRunClosed, waitLive, runMeta })`.
+Only `onError` is required. Nothing about a running mesh changes, and every shipped connector passes
+its hooks by name. Only a connector of your own that builds a holder is affected.
+
+### What stops working
+
+A holder built with positional hooks, such as `new AguiEmitterHolder(start, onError, onRunClosed)`,
+no longer compiles, because the constructor takes two arguments. Plain JavaScript that keeps the
+positional form still runs, but the holder calls none of its hooks, so a failure never reaches
+`onError`.
+
+### Before the upgrade
+
+Pass each hook by name, for example `new AguiEmitterHolder(start, { onError, onRunClosed })`, and
+drop any `undefined` that filled an earlier slot to reach a later hook.
+
 ## Carrying a resumed Claude session to another host
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the
