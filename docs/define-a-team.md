@@ -143,6 +143,28 @@ cotal ps --space research-team        # finds research-team's broker via the reg
 
 `--server` remains an explicit override for an off-registry broker.
 
+## Roster files
+
+A manager started with `cotal supervise --roster <file>` boots every agent the roster lists, which
+is how the [Docker deploy](deploy.md) runs a team in one container. A roster declares no channels:
+each agent's access comes from its persona file. Each entry starts one agent the way
+`cotal spawn --detach` does.
+
+```yaml
+agents:
+  - { name: planner, agent: claude,   role: planner }
+  - { name: builder, agent: opencode, cwd: services/api, share-tools: [tavily] }
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `name` | yes | The persona to boot, `.cotal/agents/<name>.md`. The agent joins under that file's `name:` |
+| `agent` | yes | The connector, such as `claude` or `opencode`. There is no default |
+| `role` | no | Overrides the persona file's `role:` |
+| `config` | no | An agent file to load instead of `.cotal/agents/<name>.md`, by name or path |
+| `cwd` | no | The agent's working directory, resolved against the manager's workspace root. It must exist |
+| `share-tools` | no | The declared MCP servers to share, as a list. See [the config file](config.md#the-config-file) |
+
 ---
 
 See **[manifest.md](manifest.md)** for the complete field reference and the resolution rules,
