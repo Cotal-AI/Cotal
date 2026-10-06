@@ -21,6 +21,48 @@ import type { CotalMeta } from "./agui.js";
 import type { AguiEmitter } from "./agui-emitter.js";
 
 /**
+ * The connector's hooks into an {@link AguiEmitterHolder}.
+ *
+ * Named rather than positional because the types cannot tell them apart: a `runMeta` provider is
+ * assignable to `onRunClosed`, so a position would let it land there, typecheck, and lose its
+ * metadata with nothing reporting why.
+ */
+export interface AguiEmitterHolderHooks {
+  /** Where a failure goes. Required, and not defaulted to a swallow: the holder runs behind a hook
+   *  that must not throw, so the only way a failure reaches a human is if the caller is made to say
+   *  where it goes. */
+  onError: (e: Error) => void;
+  /**
+   * Told which run {@link AguiEmitterHolder.closeRun} closed, so the connector's own mapper can
+   * forget the run it will no longer attribute records to. Optional, and it is NOT the holder
+   * doing the forgetting: which state a record mapper keeps is the connector's business, and a
+   * holder that reached into it would be a second place that decides what a run is. Without it a
+   * mapper that still believes the run is open would emit under a `runId` the published stream has
+   * already closed, and the emitter would refuse the batch.
+   */
+  onRunClosed?: (runId: string) => void;
+  /**
+   * Rides out a transient endpoint rebuild window before a step pumps or closes a run. Called once
+   * per queued step that needs the broker (a flush, or a close with something open); it resolves
+   * when the endpoint's event plane is live, or rejects to make the whole step fail terminally
+   * exactly as any other emitter failure does. This is the seam the connectors'
+   * `MeshAgent`-adjacent wiring owns: the holder knows WHEN to publish, the caller knows HOW to
+   * observe liveness. Without it, a rebuild window between two pumps reads `max_payload` off a
+   * connection that is not there and kills the seat (#1868).
+   */
+  waitLive?: () => Promise<void>;
+  /**
+   * The Cotal metadata for the run {@link AguiEmitterHolder.closeRun} is about to close, such as
+   * its stop reason or usage, put on whichever terminal closes it. Asked inside the queued close
+   * rather than taken at call time, because the hook calls `closeRun` before the flush queued
+   * ahead of it has mapped the turn's last records, and those are what the metadata comes from.
+   * Keyed on the run id, so a provider that only knows a different run answers `undefined`
+   * instead of attributing its numbers to this one.
+   */
+  runMeta?: (runId: string) => CotalMeta | undefined;
+}
+
+/**
  * Holds at most one {@link AguiEmitter}, started on first adopt.
  *
  * `T` is the connector's source record type; the holder never inspects one. It owns four things —
@@ -64,35 +106,10 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    *   decides what it means. Injected rather than assembled here: the WAL location, the source, and
    *   the record mapper are all connector decisions, and a holder that made them would be a second
    *   place they are decided.
-   * @param onError Where a failure goes. Required, and not defaulted to a swallow: this class runs
-   *   behind a hook that must not throw, so the only way a failure reaches a human is if the caller
-   *   is made to say where it goes.
-   * @param onRunClosed Told which run {@link closeRun} closed, so the connector's own mapper can
-   *   forget the run it will no longer attribute records to. Optional, and it is NOT the holder
-   *   doing the forgetting: which state a record mapper keeps is the connector's business, and a
-   *   holder that reached into it would be a second place that decides what a run is. Without it a
-   *   mapper that still believes the run is open would emit under a `runId` the published stream has
-   *   already closed, and the emitter would refuse the batch.
-   * @param waitLive Rides out a transient endpoint rebuild window before a step pumps or closes a
-   *   run. Called once per queued step that needs the broker (a flush, or a close with something
-   *   open); it resolves when the endpoint's event plane is live, or rejects to make the whole
-   *   step fail terminally exactly as any other emitter failure does. This is the seam the
-   *   connectors' `MeshAgent`-adjacent wiring owns: the holder knows WHEN to publish, the caller
-   *   knows HOW to observe liveness. Without it, a rebuild window between two pumps reads
-   *   `max_payload` off a connection that is not there and kills the seat (#1868).
-   * @param runMeta The Cotal metadata for the run {@link closeRun} is about to close, such as its
-   *   stop reason or usage, put on whichever terminal closes it. Asked inside the queued close
-   *   rather than taken at call time, because the hook calls `closeRun` before the flush queued
-   *   ahead of it has mapped the turn's last records, and those are what the metadata comes from.
-   *   Keyed on the run id, so a provider that only knows a different run answers `undefined`
-   *   instead of attributing its numbers to this one.
    */
   constructor(
     private readonly startEmitter: (path: string, context: StartContext | undefined) => Promise<AguiEmitter<T>>,
-    private readonly onError: (e: Error) => void,
-    private readonly onRunClosed?: (runId: string) => void,
-    private readonly waitLive?: () => Promise<void>,
-    private readonly runMeta?: (runId: string) => CotalMeta | undefined,
+    private readonly hooks: AguiEmitterHolderHooks,
   ) {}
 
   /** True once an emitter is running here. False while a start is still in flight — it reports what
@@ -194,11 +211,11 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       if (this.dead || !emitter || emitter.stopped) return;
       await this.holdForLive();
       const open = emitter.openRunId;
-      const cotal = open === undefined ? undefined : this.runMeta?.(open);
+      const cotal = open === undefined ? undefined : this.hooks.runMeta?.(open);
       const runId = await emitter.closeRun({ timestamp, ...(cotal ? { cotal } : {}), ...(error ? { error } : {}) });
       // Reported for EITHER terminal. The mapper's job here is to stop attributing records to a run
       // the published stream has closed, and an error close closes it exactly as a finish does.
-      if (runId !== null) this.onRunClosed?.(runId);
+      if (runId !== null) this.hooks.onRunClosed?.(runId);
     });
   }
 
@@ -282,7 +299,7 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     // the cause with a symptom.
     if (this.dead) return;
     this.dead = e;
-    this.onError(e);
+    this.hooks.onError(e);
   }
 
   /** Wait for the endpoint to be live, if the caller supplied a wait. SHARED: while one step
@@ -292,8 +309,8 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    *  reorder anything). A wait that rejects fails the step, which is the existing terminal path:
    *  liveness-waiting must never swallow an error the emitter would have surfaced. */
   private holdForLive(): Promise<void> {
-    if (!this.waitLive) return Promise.resolve();
-    this.liveWait ??= this.waitLive().finally(() => {
+    if (!this.hooks.waitLive) return Promise.resolve();
+    this.liveWait ??= this.hooks.waitLive().finally(() => {
       this.liveWait = undefined;
     });
     return this.liveWait;

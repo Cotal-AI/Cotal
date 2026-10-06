@@ -130,7 +130,7 @@ export class PiEvents {
         source: new PiSessionSource(path),
         map,
       });
-    }, (error) => this.fail(error));
+    }, { onError: (error) => this.fail(error) });
   }
 
   private fail(error: Error): void {

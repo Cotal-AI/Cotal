@@ -144,7 +144,7 @@ const rig = (opts?: { fail?: Error; emitter?: FakeEmitter }) => {
       if (opts?.fail) throw opts.fail;
       return emitter as unknown as AguiEmitter<unknown>;
     },
-    (e) => errors.push(e),
+    { onError: (e) => errors.push(e) },
   );
   return {
     holder,
@@ -214,7 +214,7 @@ const B = "/tmp/session-b.jsonl";
       contexts.push(context);
       return emitter as unknown as AguiEmitter<unknown>;
     },
-    () => {},
+    { onError: () => {} },
   );
   holder.adopt(A, "startup");
   await holder.settled();
@@ -358,9 +358,7 @@ const B = "/tmp/session-b.jsonl";
   const r = rig();
   const holder = new AguiEmitterHolder<unknown>(
     async () => r.emitter as unknown as AguiEmitter<unknown>,
-    (e) => r.errors.push(e),
-    undefined,
-    () => gate,
+    { onError: (e) => r.errors.push(e), waitLive: () => gate },
   );
   holder.flush(A);
   await new Promise((r2) => setTimeout(r2, 20));
@@ -383,9 +381,11 @@ const B = "/tmp/session-b.jsonl";
   (emitter as unknown as { closeRun: () => Promise<string | null> }).closeRun = async () => "run-a";
   const holder = new AguiEmitterHolder<unknown>(
     async () => emitter as unknown as AguiEmitter<unknown>,
-    (e) => errors.push(e),
-    (runId) => closedRuns.push(runId),
-    () => gate,
+    {
+      onError: (e) => errors.push(e),
+      onRunClosed: (runId) => closedRuns.push(runId),
+      waitLive: () => gate,
+    },
   );
   holder.adopt(A);
   await holder.settled();
@@ -405,9 +405,7 @@ const B = "/tmp/session-b.jsonl";
   const r = rig();
   const holder = new AguiEmitterHolder<unknown>(
     async () => r.emitter as unknown as AguiEmitter<unknown>,
-    (e) => r.errors.push(e),
-    undefined,
-    () => Promise.reject(boom),
+    { onError: (e) => r.errors.push(e), waitLive: () => Promise.reject(boom) },
   );
   holder.flush(A);
   await holder.settled();
@@ -425,11 +423,12 @@ const B = "/tmp/session-b.jsonl";
   const r = rig();
   const holder = new AguiEmitterHolder<unknown>(
     async () => r.emitter as unknown as AguiEmitter<unknown>,
-    (e) => r.errors.push(e),
-    undefined,
-    () => {
-      waits++;
-      return gate;
+    {
+      onError: (e) => r.errors.push(e),
+      waitLive: () => {
+        waits++;
+        return gate;
+      },
     },
   );
   holder.adopt(A);

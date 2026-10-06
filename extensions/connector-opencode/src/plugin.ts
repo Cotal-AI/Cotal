@@ -333,14 +333,17 @@ export const cotal: Plugin = async () => {
           map: mapper.map,
         });
       },
-      // Required, and not defaulted to a swallow: this runs behind a bus handler that must not
-      // throw, so a failure reaches a human only if it is written somewhere. The holder is terminal
-      // on error and does not retry, so this line is the whole record of why events stopped.
-      (e: Error) => log(`AG-UI emitter stopped: ${e.message}`),
-      // The turn terminal closes a run the record stream never described, so without this the mapper
-      // would still believe that run is open, attribute the next records to it, and have the batch
-      // refused. Keyed on the id, so a newer run opened in between is left alone.
-      (runId: string) => mapper?.forgetOpenRun(runId),
+      {
+        // Required, and not defaulted to a swallow: this runs behind a bus handler that must not
+        // throw, so a failure reaches a human only if it is written somewhere. The holder is
+        // terminal on error and does not retry, so this line is the whole record of why events
+        // stopped.
+        onError: (e: Error) => log(`AG-UI emitter stopped: ${e.message}`),
+        // The turn terminal closes a run the record stream never described, so without this the
+        // mapper would still believe that run is open, attribute the next records to it, and have
+        // the batch refused. Keyed on the id, so a newer run opened in between is left alone.
+        onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
+      },
     );
   }
   if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "") || config.eventsRequired) events = newEventHolder();

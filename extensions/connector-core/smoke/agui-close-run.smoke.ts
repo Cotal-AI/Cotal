@@ -381,8 +381,7 @@ try {
     const closedRuns: string[] = [];
     const holder = new AguiEmitterHolder<Rec>(
       async () => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }),
-      (e) => errors.push(e),
-      (runId) => closedRuns.push(runId),
+      { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId) },
     );
 
     holder.flush(src); // adopt
@@ -482,8 +481,7 @@ try {
     const closedRuns: string[] = [];
     const holder = new AguiEmitterHolder<Rec>(
       async () => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }),
-      (e) => errors.push(e),
-      (runId) => closedRuns.push(runId),
+      { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId) },
     );
 
     holder.flush(src); // adopt
@@ -520,8 +518,7 @@ try {
         started += 1;
         return AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
       },
-      () => {},
-      () => {},
+      { onError: () => {}, onRunClosed: () => {} },
     );
     holder.closeRun(99);
     await holder.settled();
@@ -626,8 +623,7 @@ try {
             source,
             map: mapper,
           }),
-        (e) => errors.push(e),
-        (runId) => closedRuns.push(runId),
+        { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId) },
       );
       holder.flush(src);
       await holder.settled();
