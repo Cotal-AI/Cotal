@@ -127,13 +127,21 @@ async function main(): Promise<void> {
   const agentHome = join(dataRoot, ".cotal", "opencode", name);
   const dbPath = join(agentHome, "opencode.db");
 
-  // Two serves on one agent DB share the SQLite file and stall each other — refuse up front.
+  // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. The
+  // previous launcher removes this record when its serve exits, which can land anywhere in this
+  // check, so a record that vanishes under the read or the removal is no record.
   const pidFile = join(agentHome, "serve.pid");
-  if (existsSync(pidFile)) {
-    const pid = Number(readFileSync(pidFile, "utf8"));
+  let recorded: string | undefined;
+  try {
+    recorded = readFileSync(pidFile, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  if (recorded !== undefined) {
+    const pid = Number(recorded);
     if (isLiveOpencodeServe(pid))
       throw new Error(`agent "${name}" is already running (opencode serve pid ${pid}) — kill it first`);
-    rmSync(pidFile);
+    rmSync(pidFile, { force: true });
   }
 
   // Detect the OpenCode line (1.x opencode-ai vs 2.x @opencode/cli) once, before any spawn, so the
