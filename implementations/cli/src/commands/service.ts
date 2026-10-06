@@ -4,18 +4,8 @@ import { accessSync, constants, existsSync } from "node:fs";
 import { arch, cpus, homedir, totalmem, userInfo } from "node:os";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import type { CompletionResult, ParsedArgs } from "@cotal-ai/core";
-import {
-  commandIsCotalSupervisor,
-  findMesh,
-  localProcessPath,
-  MANAGER_PIDFILE,
-  parsePid,
-  probeLiveness,
-  readPidfile,
-  readProcessCommand,
-  spaceKey,
-  spaceSegment,
-} from "@cotal-ai/workspace";
+import { findMesh, spaceKey, spaceSegment } from "@cotal-ai/workspace";
+import { describeManagerRecord, MANAGER_PID_PATH, managerRecordState, type ManagerRecord } from "../lib/manager-proc.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -121,21 +111,6 @@ function meshOf(values: { mesh?: string }): string {
   return values.mesh ?? resolveRuntimeSpace(process.cwd());
 }
 
-/** The manager's pid + attribution for an explicit root, mirroring `managerRecordState`
- *  (which resolves its root from cwd); `service status` must judge the unit's recorded root,
- *  not whatever folder the operator is standing in. */
-function managerHealthFor(root: string, mesh: string): { state: string; pid?: number } {
-  const raw = readPidfile(localProcessPath(MANAGER_PIDFILE, { root, space: mesh }));
-  if (!raw) return { state: "absent" };
-  const pid = parsePid(raw);
-  if (pid === undefined) return { state: "unattributable" };
-  const liveness = probeLiveness(pid);
-  if (liveness !== "alive") return { state: liveness, pid };
-  const cmd = readProcessCommand(pid);
-  if (cmd.kind !== "command") return { state: "alive", pid };
-  return { state: commandIsCotalSupervisor(cmd.command) ? "alive" : "foreign", pid };
-}
-
 /** `systemctl --user …`; a missing binary or a user session that cannot be reached is a
  *  hard refusal naming what is missing (no fallback). */
 function systemctl(args: string[]): { status: number | null; output: string } {
@@ -174,7 +149,7 @@ interface ServiceStatus {
   mesh: string;
   root?: string;
   unit?: { name: string; state: string; enabled: boolean | "unknown" };
-  manager?: { state: string; pid?: number };
+  manager?: ManagerRecord;
   linger?: boolean | { error: string };
 }
 
@@ -340,11 +315,11 @@ function install(values: { mesh?: string; linger?: boolean }): void {
   // The manager is a singleton per space. Installing over a live one (typically `up --detach`'s)
   // would put the unit in a crash-restart loop against a lease it can never take, so refuse with
   // the exact remedy before anything is written.
-  const incumbent = managerHealthFor(root, mesh);
+  const incumbent = managerRecordState(undefined, undefined, mesh, root);
   if (incumbent.state === "alive")
     throw new Error(`a manager for mesh "${mesh}" is already running (pid ${incumbent.pid}, started by \`cotal up\` or by hand) - stop it first: \`cotal down manager\``);
   if (incumbent.state === "unknown" || incumbent.state === "unattributable")
-    throw new Error(`the recorded manager for mesh "${mesh}" cannot be attributed (${incumbent.state}) - resolve \`${localProcessPath(MANAGER_PIDFILE, { root, space: mesh })}\` before installing the service`);
+    throw new Error(`the recorded manager for mesh "${mesh}" cannot be attributed (${incumbent.state}) - resolve \`${MANAGER_PID_PATH(mesh, root)}\` before installing the service`);
   // BEFORE anything is written: a re-exec that silently does not happen would report a
   // healthy service over nothing, so the argv is proven here, not at unit start. The mesh
   // facts do NOT ride this argv (see the EnvironmentFile below).
@@ -510,7 +485,7 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
       mesh: fields.mesh,
       ...(fields.root ? { root: fields.root } : {}),
       unit: { name: unit, state: state.state, enabled: state.enabled },
-      ...(fields.root ? { manager: managerHealthFor(fields.root, fields.mesh) } : {}),
+      ...(fields.root ? { manager: managerRecordState(undefined, undefined, fields.mesh, fields.root) } : {}),
       linger: readLinger(),
     };
   }
@@ -529,7 +504,7 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
       mesh: fields.mesh,
       ...(fields.root ? { root: fields.root } : {}),
       unit: { name: label, state: listed.status === 0 ? (Number.isInteger(pid) && pid > 0 ? "running" : "loaded") : "not-loaded", enabled: listed.status === 0 },
-      ...(fields.root ? { manager: managerHealthFor(fields.root, fields.mesh) } : {}),
+      ...(fields.root ? { manager: managerRecordState(undefined, undefined, fields.mesh, fields.root) } : {}),
     };
   }
   throw new Error(`\`cotal service\` is not supported on ${process.platform}`);
@@ -552,7 +527,7 @@ function status(values: { mesh?: string; json?: boolean }): void {
     console.log(`  ${"enabled".padEnd(16)} ${unit.enabled === true ? c.green("yes") : unit.enabled === false ? c.red("no") : c.dim("unknown")}`);
     if (s.root) console.log(`  ${"root".padEnd(16)} ${s.root}`);
     const mgr = s.manager!;
-    console.log(`  ${"manager".padEnd(16)} ${mgr.state === "alive" ? c.green(`running (pid ${mgr.pid})`) : c.yellow(mgr.state)}`);
+    console.log(`  ${"manager".padEnd(16)} ${mgr.state === "alive" ? c.green(`running (pid ${mgr.pid})`) : c.yellow(describeManagerRecord(mgr))}`);
     if (s.linger !== undefined) console.log(`  ${"linger".padEnd(16)} ${s.linger === true ? c.green("enabled") : s.linger === false ? c.yellow(`disabled - not boot-persistent; enable as root: ${lingerRemedy()}`) : c.yellow(`unknown - ${s.linger.error}`)}`);
   }
   console.log(`  ${"arch".padEnd(16)} ${facts.arch}`);

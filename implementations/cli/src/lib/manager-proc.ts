@@ -66,7 +66,8 @@ export const managerLogDisplayPath = (space: string, root: string = cotalRoot())
 /** Exported so the delivery cutover preflight can NAME the pid it refused on: an error that says
  *  "cannot be attributed" without saying which pid is not actionable. READ-resolving, so it also
  *  names a pre-segmentation `manager.pid` when that is the record actually on disk. */
-export const MANAGER_PID_PATH = (space: string = folderSpace()): string => localProcessPath(MANAGER_PIDFILE, ctx(space));
+export const MANAGER_PID_PATH = (space: string = folderSpace(), root: string = cotalRoot()): string =>
+  localProcessPath(MANAGER_PIDFILE, { root, space });
 const PID_PATH = MANAGER_PID_PATH;
 /** Sibling marker of `manager.pid`: written by THIS build's manager (which no longer hosts Plane-3 —
  *  the server-side delivery daemon does). Its presence beside a live `manager.pid` proves the manager is
@@ -114,8 +115,9 @@ export function managerRecordState(
   probe: LivenessProbe = probeLiveness,
   readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
+  root: string = cotalRoot(),
 ): ManagerRecord {
-  const raw = readPidfile(PID_PATH(space));
+  const raw = readPidfile(PID_PATH(space, root));
   if (!raw) return { state: "absent" }; // no record, or a pre-protocol husk: nothing is behind it
   const pid = parsePid(raw);
   // NOT `absent`. Folding non-empty corrupt content into "no manager recorded" is what let the
