@@ -221,6 +221,9 @@ cannot change an already-running participant manager. Recovery re-resolves the a
 epoch, preserves the caller lifecycle and validates the result against the accepted goal and any
 acceptance fingerprint. Stopping the caller ends its observation, not the already accepted goal.
 
+A followed call resolves the endpoint before the submission starts, so a refused or unanswered
+describe surfaces as its own error. A describe or command publish that the broker refuses reports
+`not-executed`.
 Cancellation before submission reports `not-executed`. Once submission starts, cancellation or a
 lost reply reports an unknown outcome unless an attributed refusal proves otherwise. A received
 refusal remains a refusal even when stop races it. Local failures do not invent responder identities.

@@ -141,7 +141,7 @@ export async function describeEndpoint(
     // {@link openPublishDenialWatch}: a refused publish is otherwise indistinguishable
     // from an unanswered describe.
     denialWatch = openPublishDenialWatch(nc, subject, () => new EpEnvelopeError("permission-denied",
-      `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "describe");
+      `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`, undefined, "not-executed"), "describe");
     const got = new Promise<{ body: Record<string, unknown>; responder: { instanceId: string; epoch: number } }>((resolve, reject) => {
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
         callback: (err, msg) => {
