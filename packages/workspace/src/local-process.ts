@@ -59,6 +59,10 @@ export interface LocalProcess extends Extension {
  *  about the wrong process. `auth-service.{space}.pid` was already templated; these were not. */
 export const MANAGER_PIDFILE = "manager.{space}.pid";
 
+/** The stop reservation beside a resolved pidfile: whoever holds it is the one process stopping that
+ *  record, and a manager reads it to bind a `--with-agents` intent to the exact stop attempt. */
+export const stopReservationPath = (pidPath: string): string => `${pidPath}.stopping`;
+
 /** `.cotal/manager.<spaceKey>.log` — where a detached manager's output goes. Per-space for the same
  *  reason the pidfile is: two spaces' managers sharing one log interleave two meshes' console URLs
  *  (each a standing credential) into one 0600 file that neither tenant alone owns. */

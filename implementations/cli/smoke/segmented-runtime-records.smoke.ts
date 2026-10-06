@@ -96,9 +96,9 @@ try {
   check("a marker holding ANOTHER space's pid does not make this space delivery-aware", !managerHasDeliveryMarker(BETA));
 
   console.log("\n3) stopping one space's manager leaves the other's running and recorded");
-  const stopped = await stopManager(undefined, undefined, undefined, ALPHA);
+  const stopped = await stopManager(ALPHA);
   await waitDead(aPid);
-  check("stopManager(alpha) reports a stop", stopped === "stopped", stopped);
+  check("stopManager(alpha) reports a stop", stopped, stopped);
   check("...and alpha's process is dead", !alive(aPid));
   check("...and beta's manager is UNTOUCHED — the defect this change fixes", alive(bPid) && managerUp(BETA));
   check("...and alpha's records are gone", !existsSync(record(MANAGER_PIDFILE, ALPHA)) && !existsSync(record(MANAGER_DELIVERY_AWARE_MARKER, ALPHA)));
@@ -123,9 +123,9 @@ try {
   const legacyPid = legacy.pid!;
   writeFileSync(join(root, ".cotal", "manager.pid"), String(legacyPid));
   check("the CLI still FINDS the pre-upgrade manager", managerUp(ALPHA), managerLiveness(undefined, undefined, ALPHA));
-  const legacyStop = await stopManager(undefined, undefined, undefined, ALPHA);
+  const legacyStop = await stopManager(ALPHA);
   await waitDead(legacyPid);
-  check("...and still STOPS it, rather than leaving it orphaned", legacyStop === "stopped" && !alive(legacyPid), legacyStop);
+  check("...and still STOPS it, rather than leaving it orphaned", legacyStop && !alive(legacyPid), legacyStop);
   check("...and removes the pre-upgrade record it acted on", !existsSync(join(root, ".cotal", "manager.pid")));
 
   console.log("\n6) canonical AND pre-upgrade both present is refused, not guessed");
@@ -151,7 +151,7 @@ try {
   rmSync(join(root, ".cotal", "manager.pid"), { force: true });
   rmSync(record(MANAGER_PIDFILE, ALPHA), { force: true });
   process.kill(twin.pid!, "SIGKILL");
-  await stopManager(undefined, undefined, undefined, BETA);
+  await stopManager(BETA);
   await stopDelivery(BETA);
   await waitDead(bPid);
   await waitDead(d2Pid);
@@ -163,7 +163,7 @@ try {
   check("...and it is the recorded process, not a coincidence", managerLiveness() === "alive");
   const soloStop = await stopManager();
   await waitDead(soloPid);
-  check("...and a bare stop REAPS it rather than orphaning it", soloStop === "stopped" && !alive(soloPid), soloStop);
+  check("...and a bare stop REAPS it rather than orphaning it", soloStop && !alive(soloPid), soloStop);
   check("...and the record it acted on is gone", !existsSync(record(MANAGER_PIDFILE, GAMMA)));
 
   console.log("\n8) two spaces RUNNING under one root is refused, not arbitrated");

@@ -45,14 +45,15 @@ let meshesForRoot!: typeof import("@cotal-ai/workspace").meshesForRoot;
 let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let down!: typeof import("../src/commands/down.js").down;
-let stopLocalProcess!: typeof import("../src/commands/down.js").stopLocalProcess;
+let stopLocalProcess!: typeof import("../src/lib/local-process-stop.js").stopLocalProcess;
 let webProcess!: typeof import("../../web/src/web.js").webProcess;
 try {
   home = mkdtempSync(join(scratch, "home-"));
   process.env.COTAL_HOME = home;
   ({ registry } = await import("@cotal-ai/core"));
   ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, meshesForRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace"));
-  ({ down, stopLocalProcess } = await import("../src/commands/down.js"));
+  ({ down } = await import("../src/commands/down.js"));
+  ({ stopLocalProcess } = await import("../src/lib/local-process-stop.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
 } catch (e) { cleanScratch(e); }
 

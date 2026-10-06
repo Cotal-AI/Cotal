@@ -116,11 +116,10 @@ try {
     await wait(150);
     writeFileSync(join(root, ".cotal", "manager.pid"), String(foreign.pid));
     writeFileSync(join(root, ".cotal", "manager.pid.identity"), `${foreign.pid} 1`);
-    let sent = 0;
     let refused: string | undefined;
-    try { await stopManager(() => "alive", (pid) => { sent++; process.kill(pid, "SIGTERM"); }); }
+    try { await stopManager(); }
     catch (e) { refused = (e as Error).message; }
-    check("B1 a reused pid is REFUSED by stopManager too (one rule, four paths)", sent === 0 && refused !== undefined, { sent });
+    check("B1 a reused pid is REFUSED by stopManager too (one rule, four paths)", refused !== undefined && foreign.child.exitCode === null && alive(foreign.pid), refused?.split("\n")[0]);
     check("B2 stopManager preserves pidfile, pin and marker", existsSync(join(root, ".cotal", "manager.pid")) && existsSync(join(root, ".cotal", "manager.pid.identity")));
     reap(foreign.child);
   }
@@ -141,7 +140,7 @@ try {
     reap(foreign.child);
   }
   {
-    const { stopLocalProcess } = await import("../../../implementations/cli/src/commands/down.js");
+    const { stopLocalProcess } = await import("../../../implementations/cli/src/lib/local-process-stop.js");
     const foreign = spawnForeign();
     strays.push(foreign.child);
     await wait(150);

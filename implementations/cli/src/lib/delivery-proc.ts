@@ -8,12 +8,12 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readPidfile, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readPidfile, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
-import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, stopManager, type SignalFn } from "./manager-proc.js";
-import { stopLocalProcess } from "../commands/down.js";
+import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, stopManager } from "./manager-proc.js";
+import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
 
 /** The space this folder's commands mean, and the per-space record paths over it. The daemon is
@@ -87,7 +87,7 @@ export function deliveryStoppedByDown(space: string = folderSpace()): boolean {
   const p = PID_PATH(space);
   let stopper: number | undefined;
   try {
-    stopper = parsePid(readFileSync(`${p}.stopping`, "utf8"));
+    stopper = parsePid(readFileSync(stopReservationPath(p), "utf8"));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
@@ -129,7 +129,6 @@ function oldHostingManagerVerdict(
  *  daemon's durables. A delivery-aware (this-build) manager is left running. No-op on a fresh install. */
 export async function stopOldHostingManagerIfPresent(
   probe: LivenessProbe = probeLiveness,
-  signal?: SignalFn,
   space: string = folderSpace(),
 ): Promise<void> {
   const verdict = oldHostingManagerVerdict(probe, space);
@@ -142,10 +141,11 @@ export async function stopOldHostingManagerIfPresent(
     );
   if (verdict === "stop-it") {
     console.error("• stopping an old Plane-3-hosting manager before starting the delivery daemon (cutover preflight)");
-    // stopManager THROWS rather than reporting a stop it did not achieve (EPERM, or a process that
-    // outlived SIGTERM), so reaching the next line is the proof the old manager is gone. Letting that
-    // throw propagate is the point: the daemon must not start beside a manager still bound to Plane 3.
-    await stopManager(probe, signal, undefined, space);
+    // stopManager THROWS rather than reporting a stop it did not achieve (a refused stop, or a process
+    // whose death it could not confirm), so reaching the next line is the proof the old manager is gone.
+    // Letting that throw propagate is the point: the daemon must not start beside a manager still bound
+    // to Plane 3.
+    await stopManager(space);
   }
 }
 
@@ -337,7 +337,7 @@ export async function ensureControlPlane(
   // ensures took `o.space`; with per-space records that would preflight one tenant's manager and then
   // start another's.
   const space = o.space ?? folderSpace();
-  await stopOldHostingManagerIfPresent(probeLiveness, undefined, space);
+  await stopOldHostingManagerIfPresent(probeLiveness, space);
   // The delivery answer is CARRIED, not discarded (#1576). This used to drop `ensureDelivery`'s
   // result on the floor and return only the manager's, so `cotal up` had no way to say that the
   // dependency every spawn/retirement/join needs had not come up — the boot line inside

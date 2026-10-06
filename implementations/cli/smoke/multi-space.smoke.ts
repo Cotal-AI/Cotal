@@ -637,7 +637,7 @@ try {
   // `cotal down` stops the auth-service through the GENERIC stopLocalProcess, not stopAuthService,
   // so the same attribution contract must hold there or a real `down` orphans a live signer behind a
   // torn pidfile at exit 0. Drive stopLocalProcess directly on the auth descriptor.
-  const { stopLocalProcess } = await import("../src/commands/down.js");
+  const { stopLocalProcess } = await import("../src/lib/local-process-stop.js");
   const authComponent = { kind: "local-process" as const, name: "auth", label: "user-auth service", pidFile: "auth-service.{space}.pid" };
   const dpRoot = await makeRoot("downpath", []);
   roots.push(dpRoot);
