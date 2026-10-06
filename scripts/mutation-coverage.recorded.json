@@ -699,10 +699,6 @@
     "sha256": "00e68dcad326045f9a8e071c9cc59359f573124b0d5586fbd1f24e344f24232d",
     "refusal": "mutation \"PREDICTED KILLED (1 red) - the probe's deadline timer holds the event loop again, so a command whose gather has already finished waits out every LIVE instance's probe budget before it can exit - the 4.0s `cotal ps` regression, measured\" is missing \"cell\""
   },
-  "packages/core/smoke/fixtures/service-deregistration.mutations.json": {
-    "sha256": "e68b1dee7f8b23554a70565c312075c29d648f5978e45cb693bb49fc02198427",
-    "refusal": "mutation \"PREDICTED KILLED (1 red) - the delete stops being pinned to the revision it read, so it removes whatever is at the key NOW, which may be a successor that re-registered under the same id microseconds ago\" is missing \"cell\""
-  },
   "packages/core/smoke/fixtures/unfenced-responder.mutations.json": {
     "sha256": "6aff968c2971b8b520f0715f6545bc5d8de9df2519518937063674ea172c03f8",
     "refusal": "mutation \"PREDICTED KILLED (2 red, corrected from 4) - the allowlist gate removed, so the caller re-issues against a responder that already ran the command\" is missing \"cell\""
