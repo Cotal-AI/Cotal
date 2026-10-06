@@ -623,6 +623,9 @@ export async function openAuthAuthorityPlane(opts: {
   }
   const fileArm = ledgerAuthorizeConnect(opts.dir);
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
+  const authKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
+  const managerIssuanceGate = (instanceId: string) => serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId });
+  const observeManagerGate = async (instanceId: string) => managerIssuanceGate(instanceId).observe();
   const loadLocalManager = opts.localManager ?? (() => undefined);
   // Standing renewal and a served resume or answer read the manager surface from the REGISTERED
   // service spec at the gate's registration revision: spec (leader read) -> closure manifest -> root
@@ -649,7 +652,7 @@ export async function openAuthAuthorityPlane(opts: {
   };
   const managerGate = async (owner: string, instanceId: string): Promise<"candidate" | "unknown" | "not open" | "not this owner's" | "not registered"> => {
     const localManager = loadLocalManager();
-    const gate = await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
+    const gate = await observeManagerGate(instanceId);
     if (!gate) return "unknown";
     if (gate.state !== "open") return "not open";
     const remotePrincipal = `${owner}.${remoteManagerActors(instanceId).serve}`;
@@ -750,8 +753,6 @@ export async function openAuthAuthorityPlane(opts: {
     observedRunRequests.delete(subject);
     return observed !== undefined && observed.expires > Date.now() ? observed.request : undefined;
   };
-  const observeManagerGate: ObserveManagerGate = async (instanceId) =>
-    serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
   // A managed lifecycle's broker footprint, released under a deprovisioner pinned to that uid, so
   // no call here can reach a same-name successor's durables.
   const deprovisionManagedFootprint = async (owner: string, actor: string, lifecycleUid: string, memberChannels: string[]): Promise<void> => {
@@ -816,7 +817,7 @@ export async function openAuthAuthorityPlane(opts: {
         space,
         managerGate: async (owner, instanceId) => {
           const verdict = await managerGate(owner, assertLifecycleToken(instanceId, "serving.instanceId"));
-          const gate = await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
+          const gate = await observeManagerGate(instanceId);
           return { verdict, ...(gate ? { processEpoch: gate.processEpoch } : {}) };
         },
       }, principal, claim);
@@ -891,8 +892,6 @@ export async function openAuthAuthorityPlane(opts: {
     issueManagerServiceAuthority: async (holder) => {
       refuseIfFenced();
       const { owner } = holder;
-      const observeManagerGate = async (instanceId: string) =>
-        (await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe()) ?? null;
       return issueRemoteManagerAuthority({
         ...holder,
         authorizeRenewal: ({ owner: o, request: r }) => authorizeRemoteManagerRenewal({
@@ -907,13 +906,14 @@ export async function openAuthAuthorityPlane(opts: {
           },
         }),
         issue: async ({ actors, request: r }) => {
+          const signer = { space, account: dataAccount };
           const credential = async (
             key: keyof RemoteManagerAuthorityRequest["identities"],
             profile: Parameters<typeof mintPublicUserJwt>[2],
             actor: string,
             opts: Parameters<typeof mintPublicUserJwt>[3],
           ) => mintPublicUserJwt(
-            { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+            signer,
             r.identities[key].id,
             profile,
             { ...opts, principal: { owner, actor }, lifecycleUid: r.managerLifecycleUid },
@@ -938,7 +938,7 @@ export async function openAuthAuthorityPlane(opts: {
             return issued;
           };
           if (r.operation === "renew") {
-            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
+            const gate = managerIssuanceGate(r.instanceId);
             const observed = await gate.observe();
             if (!observed || observed.state !== "open")
               throw new EpEnvelopeError("failed-precondition", "manager-service renewal found no current open manager gate");
@@ -970,7 +970,7 @@ export async function openAuthAuthorityPlane(opts: {
             const session = r.session!;
             const exp = Math.min(session.exp, Math.floor(Date.now() / 1000) + 24 * 60 * 60);
             credentials.sessionServing = await mintPublicUserJwt(
-              { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+              signer,
               session.id,
               "session-serving",
               {
@@ -987,7 +987,7 @@ export async function openAuthAuthorityPlane(opts: {
             if (r.registrationProof !== expectedProof)
               throw new EpEnvelopeError("permission-denied", "manager-service transfer reader proof does not match this owner/lifecycle");
             credentials.transferReader = await mintPublicUserJwt(
-              { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+              signer,
               r.transferReader!.id,
               "transfer-reader",
               { principal: { owner, actor: actors.serve }, lifecycleUid: r.managerLifecycleUid, transferReader: { instanceId: r.instanceId } },
@@ -999,14 +999,14 @@ export async function openAuthAuthorityPlane(opts: {
             if (r.registrationProof !== expectedProof)
               throw new EpEnvelopeError("permission-denied", "manager-service retirement proof does not match this owner/lifecycle");
             const retirement = r.retirement!;
-            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
+            const gate = managerIssuanceGate(r.instanceId);
             const observed = await gate.observe();
             authorizeRemoteManagerRetirement({
               owner, serveActor: actors.serve, instanceId: r.instanceId,
               targetOwner: retirement.target.owner, serveEpoch: retirement.serveEpoch, gate: observed,
             });
             credentials.retirementRequester = await mintPublicUserJwt(
-              { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+              signer,
               retirement.id,
               "retirement-requester",
               {
@@ -1025,7 +1025,7 @@ export async function openAuthAuthorityPlane(opts: {
           if (r.operation === "renewStandingBundle") {
             // authorizeRenewal fresh-checked account, owner, epoch and the current-registration proof
             // (which binds the held nkeys and lifecycle). Re-observe so every row binds one revision.
-            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
+            const gate = managerIssuanceGate(r.instanceId);
             const observed = await gate.observe();
             if (!observed || observed.state !== "open" || observed.processEpoch !== r.processEpoch)
               throw new EpEnvelopeError("conflict", "manager-service standing renewal gate moved before issuance");
@@ -1038,7 +1038,7 @@ export async function openAuthAuthorityPlane(opts: {
               expiresInSeconds: 5 * 60,
             });
             credentials.serve = await mintPublicUserJwt(
-              { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+              signer,
               r.identities.serve.id,
               "endpoint-serve",
               {
@@ -1055,7 +1055,7 @@ export async function openAuthAuthorityPlane(opts: {
             return { credentials };
           }
           if (r.operation === "renewRunDriver") {
-            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
+            const gate = managerIssuanceGate(r.instanceId);
             const observed = await gate.observe();
             if (!observed || observed.state !== "open" || observed.processEpoch !== r.processEpoch)
               throw new EpEnvelopeError("conflict", "manager-service run renewal gate moved before issuance");
@@ -1079,14 +1079,13 @@ export async function openAuthAuthorityPlane(opts: {
               epoch: r.run!.epoch,
               owner,
             };
-            const auth = { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never;
-            credentials.runDriver = await mintPublicUserJwt(auth, r.run!.driverId, "run-driver", {
+            credentials.runDriver = await mintPublicUserJwt(signer, r.run!.driverId, "run-driver", {
               principal: { owner, actor: caller.actor },
               lifecycleUid: r.managerLifecycleUid,
               runDriver: binding,
               expiresInSeconds: standingTtl,
             });
-            credentials.runMediator = await mintPublicUserJwt(auth, r.run!.mediatorId, "run-mediator", {
+            credentials.runMediator = await mintPublicUserJwt(signer, r.run!.mediatorId, "run-mediator", {
               principal: { owner, actor: caller.actor },
               lifecycleUid: r.managerLifecycleUid,
               // Renewed with the placement the attempt was issued with (authorizeRemoteRunAttempt).
@@ -1104,11 +1103,11 @@ export async function openAuthAuthorityPlane(opts: {
             // cross HTTP, so the host independently validates the deterministic proof + canonical
             // artifact set and scopes the JWT to the already-registered instance rails. The grant
             // rows are reconstructed from the canonical manager command set by the host protocol.
-            const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId: r.instanceId });
+            const gate = managerIssuanceGate(r.instanceId);
             const observed = await gate.observe();
-             if (!observed) throw new EpEnvelopeError("failed-precondition", "manager-service activation found no issuance gate");
+            if (!observed) throw new EpEnvelopeError("failed-precondition", "manager-service activation found no issuance gate");
             credentials.serve = await mintPublicUserJwt(
-              { space, account: { pub: dataAccount.pub, signingSeed: dataAccount.signingSeed } } as never,
+              signer,
               r.identities.serve.id,
               "endpoint-serve",
               {
@@ -1119,7 +1118,6 @@ export async function openAuthAuthorityPlane(opts: {
                 serveIssuance: gate,
               },
             );
-            if (!observed) throw new EpEnvelopeError("failed-precondition", "manager-service activation found no issuance gate");
             const sibling = siblingOn(gate, observed);
             credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
             credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
@@ -1138,13 +1136,11 @@ export async function openAuthAuthorityPlane(opts: {
     maintainRemoteManager: async (holder) => {
       refuseIfFenced();
       const { owner } = holder;
-      const gateKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
       const authorized = await authorizeRemoteManagerMaintenance({
         ...holder,
         space,
         scanner,
-        observeManagerGate: async (instanceId) =>
-          serveIssuanceGateKv(gateKv, space, { endpoint: "manager", instanceId }).observe(),
+        observeManagerGate,
       });
       const evict = makeDeliveryAdminEvictor({ space, server, dataAccount, log });
       if (authorized.operation === "evict-family-principal") {
@@ -1195,10 +1191,7 @@ export async function openAuthAuthorityPlane(opts: {
         ...holder,
         proofSecret: dataAccount.signingSeed,
         space,
-        observeManagerGate: async (instanceId) => {
-          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
-          return gate.observe();
-        },
+        observeManagerGate,
       });
     },
     verifyManagedAgentEnrollment: async ({ owner, scope, request }) => {
@@ -1209,10 +1202,7 @@ export async function openAuthAuthorityPlane(opts: {
         proofSecret: dataAccount.signingSeed,
         space,
         request,
-        observeManagerGate: async (instanceId) => {
-          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
-          return gate.observe();
-        },
+        observeManagerGate,
       });
     },
     verifyManagedAgentPrepareRetirement: async ({ owner, scope, request }) => {
@@ -1223,10 +1213,7 @@ export async function openAuthAuthorityPlane(opts: {
         proofSecret: dataAccount.signingSeed,
         space,
         request,
-        observeManagerGate: async (instanceId) => {
-          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
-          return gate.observe();
-        },
+        observeManagerGate,
       });
     },
     enrollManagedAgent: async ({ owner, scope, request, sentinelCreds, agentBearerExchangeUrl }) => {
@@ -1349,10 +1336,7 @@ export async function openAuthAuthorityPlane(opts: {
         dir: opts.dir,
         proofSecret: dataAccount.signingSeed,
         space,
-        observeManagerGate: async (instanceId: string) => {
-          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
-          return gate.observe();
-        },
+        observeManagerGate,
       };
       return request.kind === "manager-managed-agent-runtime-status"
         ? authorizeRemoteManagedAgentRuntimeStatus({ ...args, request })
@@ -1363,10 +1347,7 @@ export async function openAuthAuthorityPlane(opts: {
       const { owner } = holder;
       const authorized = await authorizeRemoteManagerGoalIndexScan({
         ...holder, proofSecret: dataAccount.signingSeed, space,
-        observeManagerGate: async (instanceId) => {
-          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
-          return gate.observe();
-        },
+        observeManagerGate,
       });
       return completeRemoteManagerGoalIndexScan(authorized, owner, await recordsScanner.scanManagerGoalIndex(owner));
     },
@@ -1379,10 +1360,7 @@ export async function openAuthAuthorityPlane(opts: {
         space,
         dir: opts.dir,
         request,
-        observeManagerGate: async (instanceId) => {
-          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
-          return gate.observe();
-        },
+        observeManagerGate,
       });
     },
     admitManagerRun: async ({ request, ...holder }) => {
@@ -1408,10 +1386,7 @@ export async function openAuthAuthorityPlane(opts: {
         try {
           return await admitRemoteRun({
             request, owner, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
-            observeManagerGate: async (instanceId) => {
-              const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
-              return gate.observe();
-            },
+            observeManagerGate,
             issued: session.store,
             sourceIsLive: composedSourceIsLive(session),
             admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
@@ -1445,10 +1420,7 @@ export async function openAuthAuthorityPlane(opts: {
         accountPublicKey: dataAccount.pub,
         proofSecret: dataAccount.signingSeed,
         endpoint: "manager",
-        observeManagerGate: async (instanceId) => {
-          const gate = serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId });
-          return gate.observe();
-        },
+        observeManagerGate,
         readAdmission: (runId) => readRunAdmission(recordsJsm, space, "manager", runId),
         readRunStatus: async (runId) => (await readRunRecord(recordsKv, "manager", runId))?.status?.value,
         // Replayed under a read operator minted for that one run, the rows the manager's own read rides.
@@ -1541,7 +1513,7 @@ export async function openAuthAuthorityPlane(opts: {
     },
     observeManagerInstance: async (instanceId) => {
       refuseIfFenced();
-      const gate = await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint: "manager", instanceId }).observe();
+      const gate = await observeManagerGate(instanceId);
       const rec = await readSvcRecordLeader(recordsJsm, space, recordSpecKey(RECORD_KINDS.svc, ["manager", instanceId]));
       return { registered: rec !== undefined && !("deleted" in rec), gate: gate ?? null };
     },
@@ -1565,7 +1537,7 @@ export async function openAuthAuthorityPlane(opts: {
     },
     observeEndpointGate: async (endpoint, instanceId) => {
       refuseIfFenced();
-      return await serveIssuanceGateKv(await new Kvm(remoteIssuer.nc).open(epAuthBucket(space)), space, { endpoint, instanceId }).observe();
+      return await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe();
     },
     fenced,
     close: async () => {

@@ -1029,9 +1029,10 @@ async function releaseIssuance(
 /** Issue a host-signed NATS user JWT for a caller-generated nkey. The private seed stays with
  * the remote manager. This is deliberately narrower than {@link mintCreds}: only the typed remote
  * manager protocol may request it, and every profile still goes through the same permission and
- * lifetime builders. */
+ * lifetime builders. It signs with the space account's signing key alone, so a host that holds
+ * only that key passes no placeholder broker trust. */
 export async function mintPublicUserJwt(
-  auth: SpaceAuth,
+  auth: { space: string; account: Pick<SpaceAccountAuth["account"], "pub" | "signingSeed"> },
   publicId: string,
   profile: Profile,
   opts: MintOpts,
