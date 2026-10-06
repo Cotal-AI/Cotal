@@ -3,13 +3,15 @@
 // derives a frontmatter title from the first H1 and rewrites cross-links to
 // Starlight routes. Generated files are git-ignored (see .gitignore).
 //
-// The group map below IS the site's information architecture. It moves in lockstep
-// with docs/README.md (the docs index): a page added to /docs joins both in the
-// same change. Missing source files fail the sync loudly — no silent drift.
+// The group map below IS the site's information architecture. It publishes the same
+// pages docs/README.md (the docs index) links, and the sync refuses when the two
+// differ. Missing source files fail the sync loudly — no silent drift.
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { marked } from 'marked';
+import { parse as parseHtml } from 'parse5';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -169,6 +171,31 @@ function firstParagraph(md) {
 function yamlEscape(s) {
   return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
+
+// The index also links design notes (docs/design/) and spec/ references, which stay on
+// GitHub, so only its links to SPEC.md and top-level docs pages must match the group map.
+// Readers follow the links of the rendered index on GitHub, and a hand-written reading of
+// its Markdown or HTML misses spellings a browser follows, so the index is rendered, parsed
+// as HTML, and each link resolved as a URL against the index's GitHub address. GitHub serves
+// a percent-encoded path as the same file, so paths are compared decoded. A link back to the
+// index itself, such as one to a heading, names no page.
+const indexUrl = new URL(`${GITHUB_BLOB}/docs/README.md`);
+const blobPath = new URL(`${GITHUB_BLOB}/`).pathname;
+const indexed = new Set();
+const visit = (node) => {
+  node.childNodes?.forEach(visit);
+  const href = (node.nodeName === 'a' || node.nodeName === 'area') && node.attrs.find((attr) => attr.name === 'href');
+  if (!href) return;
+  const url = new URL(href.value, indexUrl);
+  if (url.origin !== indexUrl.origin) return;
+  const path = decodeURIComponent(url.pathname);
+  if (!path.startsWith(blobPath) || path === indexUrl.pathname) return;
+  const rel = path.slice(blobPath.length);
+  if (rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel)) indexed.add(rel);
+};
+visit(parseHtml(marked.parse(readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf8'))));
+for (const rel of indexed) if (!sources.includes(rel)) throw new Error(`indexed but not in the group map: ${rel}`);
+for (const rel of sources) if (!indexed.has(rel)) throw new Error(`in the group map but not indexed: ${rel}`);
 
 // Clean generated markdown (keep hand-authored .mdx like index.mdx; the
 // generated getting-started.mdx is ours to remove).
