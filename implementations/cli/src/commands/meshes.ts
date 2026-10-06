@@ -3,6 +3,7 @@ import { type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs 
 import {
   authDir,
   clearCurrent,
+  discoveryDocumentUrl,
   findMesh,
   getCurrent,
   loadMeshes,
@@ -281,7 +282,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
     // network choose the pins, which is the exact failure pinning exists to prevent.
     let disco: URL;
     try {
-      disco = new URL(v.from as string);
+      disco = discoveryDocumentUrl(new URL(v.from as string));
     } catch {
       console.error(c.red(`✗ --from is not a URL`));
       process.exit(1);
@@ -300,7 +301,7 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
         console.error(c.red("✗ --from needs a terminal to display and confirm the fetched pins - in a script, export the bundle where the mesh runs and pass it with --user-auth-file"));
         process.exit(1);
       }
-      const goFetch = await clackIO().confirm({ message: `Fetch trust pins from ${disco.origin}?`, initialValue: false });
+      const goFetch = await clackIO().confirm({ message: `Fetch trust pins from ${disco}?`, initialValue: false });
       if (!goFetch) {
         console.error(c.dim("nothing was fetched, nothing was registered"));
         process.exit(1);

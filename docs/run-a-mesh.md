@@ -504,9 +504,10 @@ address spelling changes nothing: `[::ffff:192.168.1.10]`, `3232235786`, `0300.0
 
 A user-auth space's IdP pins are established where the mesh runs and are never guessed. Register
 one from **supplied** trust: `--user-auth-file bundle.json` (exported on the mesh's machine), or
-`--from https://…/.well-known/cotal-mesh`, which asks before it contacts the address at all,
-fetches the discovery document over HTTPS, shows you the pins, and asks again before adopting
-them. Redirects are refused because a 302 can walk a pinned fetch down to
+`--from https://auth.example`, which asks before it contacts the address at all, fetches the
+discovery document at `/.well-known/cotal-mesh` under that address over HTTPS, shows you the pins,
+and asks again before adopting them. A URL that already ends in `/.well-known/cotal-mesh` is
+fetched as given. Redirects are refused because a 302 can walk a pinned fetch down to
 plaintext or onto another host, and the pinned exchange must be an `https://` URL too. The one
 exception is an exchange on **this machine**, where nothing leaves the box: plain `http://` is
 accepted for a loopback *literal* (`127.0.0.1`, `::1`, and any spelling of them), but **not** for
