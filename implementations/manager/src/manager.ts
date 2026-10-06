@@ -5817,9 +5817,6 @@ export class Manager {
         return { ok: false, error: "a static managed spawn refuses endpointCapabilities (Unit B F2): the static lifecycle terminal carries no obligation-drain/frontier steps, so endpoint-rail grants are not containable in static mode" };
       }
     }
-    // Set once the agent's creds + durables are minted; cleared the moment a live slot takes ownership
-    // (`agents.set`, after which freeSlot deprovisions on exit). If it survives to `finally`, the spawn
-    // threw AFTER minting (buildLaunch / runtime.spawn) — tear the orphan down so no footprint leaks (#159 B).
     // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
     // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
     // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
