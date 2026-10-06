@@ -164,7 +164,7 @@ try {
     // The sandboxed XDG_CONFIG_HOME above did not lift the refusal, so a remedy that names only
     // that variable cannot be followed. COTAL_SKIP_CONNECTOR_SEED=1 is what lets a checkout run.
     check(
-      "checkout: the refusal names COTAL_SKIP_CONNECTOR_SEED as the way to run a checkout",
+      "checkout: the refusal names COTAL_SKIP_CONNECTOR_SEED=1 as the way to run without seeding",
       result.ok && result.message.includes("COTAL_SKIP_CONNECTOR_SEED=1"),
       result.message,
     );
@@ -219,6 +219,12 @@ try {
       "unknown identity: staging is refused rather than treated as a released install",
       result.ok,
       result.message || "stageSeedPayload returned without throwing",
+    );
+    // The same line serves an entry that is not a checkout, so its remedy must not assume one.
+    check(
+      "unknown identity: the refusal names COTAL_SKIP_CONNECTOR_SEED=1 without calling the entry a checkout",
+      result.ok && result.message.includes("COTAL_SKIP_CONNECTOR_SEED=1") && !result.message.includes("from a checkout"),
+      result.message,
     );
     check("unknown identity: staging writes no payload", !existsSync(dest), dest);
   }
