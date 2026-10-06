@@ -24,6 +24,7 @@ import {
   type ControlReply,
   type Delivery,
   partsToText,
+  routeToken,
   type MessageMeta,
   type Presence,
   type PresenceCondition,
@@ -1849,22 +1850,29 @@ export class MeshAgent extends EventEmitter {
   ): Promise<{
     msg: CotalMessage;
     ack: { seq: number; duplicate: boolean };
-    /** Live roster rows holding `role`, ourselves excluded; absent when the presence view was not
-     *  current, since only a current view can say that no holder exists (#1229). */
+    /** The work queue the request was stored on: `role` as routing spells it in the subject. */
+    queue: string;
+    /** Live roster rows whose role routes to `queue`, ourselves excluded; absent when the presence
+     *  view was not current, since only a current view can say that no holder exists (#1229). */
     holdersAtSend?: number;
   }> {
     await this.requireConnected();
     // Like a DM's recipient status, the only holder count we can truthfully attribute is the roster
     // snapshot taken right before the publish. Our own task consumer acks and drops our own request
-    // as an echo, so we never serve it and are not counted.
+    // as an echo, so we never serve it and are not counted. Routing rewrites a role into a subject
+    // token, so a holder is any seat whose role routes to the same queue, whatever its spelling.
+    const queue = routeToken(role);
     const holdersAtSend =
       this.ep.presenceView().state === "current"
-        ? this.ep.getRoster().filter((p) => p.card.role === role && p.status !== "offline" && p.card.id !== this.id).length
+        ? this.ep
+            .getRoster()
+            .filter((p) => !!p.card.role && routeToken(p.card.role) === queue && p.status !== "offline" && p.card.id !== this.id)
+            .length
         : undefined;
     const { stamp, own } = this.stamp();
     this.recordQuestion(own, { role });
     const { msg, ack } = await this.ep.anycastAttributed(role, text, stamp);
-    return { msg, ack, holdersAtSend };
+    return { msg, ack, queue, holdersAtSend };
   }
 
   /** Resolve a peer by instance id (exact) or display name. Deterministic and fail-loud: returns
