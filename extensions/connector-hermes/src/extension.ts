@@ -108,7 +108,9 @@ export const hermesConnector: Connector = {
     // An agent file carries identity + persona; the launcher applies the persona as
     // Hermes' SOUL.md (system prompt) at gateway startup, the one place it can be set.
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;
-    // The launcher reads HERMES_MODEL as the gateway model.
+    // The launcher reads HERMES_MODEL as the gateway model, so it carries the resolved model only: a
+    // value spawn.env forwarded would run the gateway on a model the session's COTAL_MODEL does not name.
+    delete env.HERMES_MODEL;
     if (opts.model) {
       env.HERMES_MODEL = opts.model;
       env.COTAL_MODEL = opts.model;

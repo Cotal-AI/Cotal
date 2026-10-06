@@ -52,10 +52,11 @@ server of your own, see [Use a custom endpoint](#use-a-custom-endpoint). Model p
 matches the other connectors: the `--model` flag, else the agent file's `model:`. Hermes exposes no
 `cotal models` catalog (unlike OpenCode).
 
-With neither set, the launch is refused. The managed profile does not read `~/.hermes`, so a
-model configured there is not used, and without a model Hermes would choose one of its own over a
-provider you may have no key for. The refusal names both ways to set a model. To run on your
-own profile instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).
+With neither set, the launch is refused, even when `spawn.env` forwards a `HERMES_MODEL` from your
+environment. The managed profile does not read `~/.hermes`, so a model configured there is not
+used, and without a model Hermes would choose one of its own over a provider you may have no key
+for. The refusal names both ways to set a model. To run on your own profile instead, see
+[Use your own Hermes profile](#use-your-own-hermes-profile).
 
 ## Use a custom endpoint
 

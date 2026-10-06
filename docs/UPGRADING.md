@@ -39,7 +39,7 @@ is down. The sections below give that window's shape so it can be scheduled rath
 A connector now launches on the model and variant its launcher resolved (the `--model` or
 `--variant` flag, else the agent file's `model:` or `variant:`) and no longer reads them again from
 the agent file. The Hermes connector also no longer takes a model from `HERMES_MODEL` in the
-environment of the process that spawns the seat.
+environment of the process that spawns the seat, including when `spawn.env` lists it.
 
 ### What stops working
 
