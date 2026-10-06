@@ -4,7 +4,7 @@
 // a classified + burst-coalesced + windowed feed, channel counts, a msgs/s rate, and the
 // derived operator signals (status counts, who's waiting, a per-peer DM roll-up). No ANSI,
 // no React, no HTML, no color — a surface only lays this out, it never re-derives it.
-// See docs/protocol-view.md.
+// See docs/mesh-view.md.
 
 import { EventEmitter } from "node:events";
 import type { CotalEndpoint, CotalMessage, EndpointRef, MembershipSnapshot, Presence, PresenceStatus } from "@cotal-ai/core";
