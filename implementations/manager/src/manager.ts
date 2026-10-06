@@ -5756,6 +5756,30 @@ export class Manager {
     const unportable = this.runtime.spawnDelegated ? Object.keys(launchOptions ?? {}).filter((k) => typeof launchOptions![k] !== "string") : [];
     if (unportable.length)
       return { ok: false, error: `runtime "${this.runtime.kind}" starts seats outside this host, so it cannot pass non-string launch options (${unportable.join(", ")})` };
+    // The AG-UI event plane is on unless the launch explicitly opted out. Refused HERE, before
+    // anything is minted: a connector that cannot
+    // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
+    // The GRANT itself cannot be derived yet. It is keyed on the agent's PRINCIPAL, and in user mode
+    // the principal's owner is resolved further down, so deriving it from anything in scope here
+    // would mean guessing at the identity the child will actually connect as. It is added at the
+    // accept seam below, where the allocated triple exists.
+    if (this.eventsRequired && opts.events === false)
+      return { ok: false, error: `space "${this.space}" requires the event plane by registration policy; --no-events (events: false on the start op) is not allowed` };
+    const events = this.eventsRequired || opts.events !== false;
+    if (events && !connector.eventChannel)
+      return { ok: false, error: this.eventsRequired
+        ? `space "${this.space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
+        : `connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events (events: false on the start op) to launch it without one` };
+    // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
+    // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
+    // but-uncompleted endpoint obligation could execute AFTER its uid is declared retired. The
+    // refusal sits at spawn-accept, before any provisioning, over the same records a persona or
+    // manifest self-claim would ride in on — capabilities cannot slip past it into the grant path.
+    if (this.auth && !this.userMode) {
+      const claims: Record<string, unknown>[] = [opts as unknown as Record<string, unknown>, (opts.resolved ?? {}) as unknown as Record<string, unknown>];
+      if (claims.some((c) => c.endpointCapabilities !== undefined))
+        return { ok: false, error: "a static managed spawn refuses endpointCapabilities (Unit B F2): the static lifecycle terminal carries no obligation-drain/frontier steps, so endpoint-rail grants are not containable in static mode" };
+    }
 
     // #4 A4 (panel): the roster the allocation consults must reflect the initial presence snapshot,
     // or a spawn immediately after manager boot races an already-live unmanaged peer and re-opens the
@@ -5784,39 +5808,6 @@ export class Manager {
     } else {
       name = this.uniqueName(identityName);
     }
-    this.reserved.add(name);
-    // The AG-UI event plane is on unless the launch explicitly opted out. Refused HERE, before
-    // anything is minted: a connector that cannot
-    // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
-    // The GRANT itself cannot be derived yet. It is keyed on the agent's PRINCIPAL, and in user mode
-    // the principal's owner is resolved further down, so deriving it from anything in scope here
-    // would mean guessing at the identity the child will actually connect as. It is added at the
-    // accept seam below, where the allocated triple exists.
-    if (this.eventsRequired && opts.events === false) {
-      this.reserved.delete(name);
-      return { ok: false, error: `space "${this.space}" requires the event plane by registration policy; --no-events (events: false on the start op) is not allowed` };
-    }
-    const events = this.eventsRequired || opts.events !== false;
-    if (events && !connector.eventChannel) {
-      // Release the just-reserved name on this fail-fast path. A leaked reserve is silent: it costs
-      // the next spawn of this persona its un-suffixed name and nothing reports why.
-      this.reserved.delete(name);
-      return { ok: false, error: this.eventsRequired
-        ? `space "${this.space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
-        : `connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events (events: false on the start op) to launch it without one` };
-    }
-    // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
-    // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
-    // but-uncompleted endpoint obligation could execute AFTER its uid is declared retired. The
-    // refusal sits at spawn-accept, before any provisioning, over the same records a persona or
-    // manifest self-claim would ride in on — capabilities cannot slip past it into the grant path.
-    if (this.auth && !this.userMode) {
-      const claims: Record<string, unknown>[] = [opts as unknown as Record<string, unknown>, (opts.resolved ?? {}) as unknown as Record<string, unknown>];
-      if (claims.some((c) => c.endpointCapabilities !== undefined)) {
-        this.reserved.delete(name);
-        return { ok: false, error: "a static managed spawn refuses endpointCapabilities (Unit B F2): the static lifecycle terminal carries no obligation-drain/frontier steps, so endpoint-rail grants are not containable in static mode" };
-      }
-    }
     // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
     // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
     // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
@@ -5830,6 +5821,9 @@ export class Manager {
     let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference } | undefined;
     // A carried resume's seat-private home, removed by the finally unless a live seat took it.
     let seatHome: string | undefined;
+    // Taken right before the try so its finally is the only release; a refusal belongs above the
+    // allocation, where there is no name to give back.
+    this.reserved.add(name);
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -5936,10 +5930,7 @@ export class Manager {
               }
             : undefined,
         });
-        if ("error" in prep) {
-          this.reserved.delete(name);
-          return { ok: false, error: prep.error };
-        }
+        if ("error" in prep) return { ok: false, error: prep.error };
         // THE HOST'S UID WINS (#1972). On the local arm this is the value passed in, unchanged. On
         // the hosted enrollment arm the host selected it, and from here every lifecycle-keyed thing
         // this spawn records — the slot, the launch, the managed row, the teardown credential — must
