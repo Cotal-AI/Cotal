@@ -2948,16 +2948,17 @@ export class Manager {
       await step("release renewal lease", () => this.ep.releaseDaemonRenewalLease());
     }
     // Capture BEFORE the serve loop is torn down: `stopServiceServe` clears the state, and what is
-    // being asked here is "did this process register a service instance", which only the state
+    // being asked here is "which registration did this process write", which only the state
     // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
     // in-flight command can write a status back onto the record it just removed.
-    const registered = this.serviceServe !== undefined;
+    const registrationRevision = this.serviceServe?.grant.registrationRevision;
     await step("stop service serve", () => this.stopServiceServe());
     // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
     // released run's status write is the last thing this incarnation says about it.
     await step("stop run hosting", () => this.runHosting?.stop());
     this.runHosting = undefined;
-    if (registered && !seatFailure) await step("deregister service", () => this.deregisterServiceOnStop());
+    if (registrationRevision !== undefined && !seatFailure)
+      await step("deregister service", () => this.deregisterServiceOnStop(registrationRevision));
     await step("stop goal writer", () => this.stopGoalWriter());
     await step("stop session plane", () => this.stopSessionPlane());
     await step("stop endpoint", () => this.ep.stop());
@@ -3001,8 +3002,8 @@ export class Manager {
    * deadline — on every `cotal ps`, `stop` and `attach` in that space, for good. A manager that is
    * shutting down is the one participant that KNOWS it is going away, so it says so.
    *
-   * The delete is revision-pinned inside {@link deregisterServiceInstance}, so a successor that
-   * persists the SAME instanceId and has already re-registered loses nothing to a slow stop here.
+   * The delete is pinned to the `registrationRevision` this process registered at, so a successor
+   * that persists the SAME instanceId and has already re-registered loses nothing to a slow stop here.
    *
    * Best-effort and LOUD, matching every other teardown step: a broker that is already gone must not
    * turn a stop into a failure, but a registration that survives a stop is the exact defect this
@@ -3010,12 +3011,13 @@ export class Manager {
    * rather than swallowed. It is not fatal because a crash leaves the same state and the operator
    * verb handles both.
    */
-  private async deregisterServiceOnStop(): Promise<void> {
+  private async deregisterServiceOnStop(registrationRevision: number): Promise<void> {
     const iid = this.managerInstanceId;
     const dereg = ({ recordsKv, authKv }: { recordsKv: KV; authKv: KV }): Promise<ServiceDeregistration> =>
       deregisterServiceInstance(recordsKv, {
         endpoint: MANAGER_ENDPOINT,
         instanceId: iid,
+        registrationRevision,
         observeGeneration: async () => {
           const key = epgateKey(MANAGER_ENDPOINT, iid);
           const entry = await authKv.get(key);
@@ -3031,7 +3033,7 @@ export class Manager {
       if (outcome.removed)
         console.error(`✓ deregistered manager instance ${iid} from the ${MANAGER_ENDPOINT} service registry (spec revision ${outcome.specRevision})`);
       else if (outcome.reason === "superseded")
-        console.error(`! manager instance ${iid} was not deregistered: its registration moved while this stop ran, so another incarnation owns it now - leaving it alone`);
+        console.error(`! manager instance ${iid} was not deregistered: another incarnation has registered it since this process did - leaving it alone`);
       else if (outcome.reason === "registration-in-flight")
         console.error(`! manager instance ${iid} was not deregistered: a registration is still in flight (governance slot held at the live gate generation) - leaving it alone`);
       // `absent` is silent: there was nothing registered to remove, which is not news at shutdown.

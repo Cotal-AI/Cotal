@@ -1113,7 +1113,8 @@ export type ServiceDeregistration =
   | { removed: true; specRevision: number; statusRevision?: number }
   /** No live spec key at the coordinate: never registered, or already deregistered. */
   | { removed: false; reason: "absent" }
-  /** A key moved between the read and its revision-pinned delete: something is WRITING to this
+  /** The spec is not at the caller's `registrationRevision`: another incarnation owns it. Or a key
+   *  moved between the read and its revision-pinned delete: something is WRITING to this
    *  registration, so it is not the dead record that was inspected. Nothing was removed — the
    *  status delete is attempted first precisely so this outcome leaves the record whole. */
   | { removed: false; reason: "superseded" }
@@ -1144,6 +1145,13 @@ export type ServiceDeregistration =
  * microseconds ago under the same instanceId — exactly the case a restart produces. A moved key
  * aborts with `superseded` and removes nothing.
  *
+ * THAT PIN ONLY COVERS A WRITE AFTER THE READ. A successor that registered before the read is what
+ * the read returns, and the instanceId persists across restarts, so the read alone cannot tell it
+ * from the caller's own row. An instance removing its own row therefore passes the
+ * `registrationRevision` it registered at, and a spec at any other revision is another
+ * incarnation's: `superseded`, nothing removed. The operator verb names a dead instance, not an
+ * incarnation, and passes none.
+ *
  * THE RECOVERY PATH, because a deregistration must never be a one-way door: the record is removed,
  * the §13.1 issuance gate is NOT. The same instance can register again and does so on its next
  * start — {@link registerServiceInstance} writes over the tombstone under a revision-pinned CAS and
@@ -1164,6 +1172,8 @@ export async function deregisterServiceInstance(
   args: {
     endpoint: string;
     instanceId: string;
+    /** The `registrationRevision` the caller registered at; the delete is refused for any other. */
+    registrationRevision?: number;
     /** Read this instance's live issuance-gate generation. A read, never a freeze. */
     observeGeneration: () => Promise<number> | number;
   },
@@ -1173,6 +1183,8 @@ export async function deregisterServiceInstance(
   const statusKey = recordStatusKey(RECORD_KINDS.svc, [args.endpoint, iId]);
   const specEntry = await kv.get(specKey);
   if (!specEntry || specEntry.operation !== "PUT") return { removed: false, reason: "absent" };
+  if (args.registrationRevision !== undefined && specEntry.revision !== args.registrationRevision)
+    return { removed: false, reason: "superseded" };
   // Read the spec FIRST, then the governance slot, never the reverse. A govern-then-spec
   // order would let a delete of a LATER spec ride an earlier empty-slot read: Phase 1
   // takes the slot after the previous release, so an empty-slot snapshot can predate a
