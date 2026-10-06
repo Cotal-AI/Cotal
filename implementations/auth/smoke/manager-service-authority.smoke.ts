@@ -71,7 +71,7 @@ const renewalOwner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
 const gate = { state: "open" as const, principal: `${renewalOwner}.${remoteManagerActors(instanceId).serve}`, processEpoch: 3, registrationRevision: 9 };
 const renewWithProof = { ...renewal, registrationProof: remoteManagerCurrentRegistrationProof("test-only-proof", renewalOwner, renewal, gate) };
 const runWithProof = { ...runRenewal, registrationProof: renewWithProof.registrationProof };
-const observedRun = { ...runRenewal.run, state: "running", instanceId };
+const observedRun = { ...runRenewal.run, state: "running" as const, instanceId };
 const verifyRenewal = (candidate: typeof renewWithProof | typeof runWithProof, overrides: {
   owner?: string; accountPublicKey?: string; gate?: typeof gate | null; run?: typeof observedRun | null;
 } = {}) => authorizeRemoteManagerRenewal({
