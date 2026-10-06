@@ -7,7 +7,9 @@
  *
  * Suites should print the canonical line through {@link emitSentinel} (or `createSuite().finish()`)
  * as their last output. A handful of older tally banners are still accepted so a suite that already
- * names its counts is not rewritten just to change the spelling.
+ * names its counts is not rewritten just to change the spelling. A suite that cannot run on this
+ * platform ends through {@link skipSuite}, so the shard can list it as skipped instead of reading a
+ * pass or a missing sentinel.
  */
 export const SENTINEL_PREFIX = "COTAL_SMOKE_SENTINEL";
 
@@ -30,11 +32,24 @@ export function emitSentinel(counts) {
 }
 
 /**
+ * A skip is not a cell: the shard lists the suite with `reason` and adds nothing to its total.
+ *
+ * @param {string} reason
+ * @returns {never}
+ */
+export function skipSuite(reason) {
+  console.log(`${SENTINEL_PREFIX} skipped=${reason}`);
+  process.exit(0);
+}
+
+/**
  * Last sentinel in `text`, or null if the suite never named a cell count.
  * Canonical line wins over a legacy tally when both appear; later lines win over earlier ones.
+ * A skip carries zero cells, so a grader that does not read `kind` still refuses it.
  *
  * @param {string} text
- * @returns {{ cells: number, passed: number, failed: number, kind: "canonical" | "legacy" } | null}
+ * @returns {{ cells: number, passed: number, failed: number, kind: "canonical" | "legacy" }
+ *   | { cells: 0, passed: 0, failed: 0, kind: "skipped", reason: string } | null}
  */
 export function parseSentinel(text) {
   let last = null;
@@ -47,6 +62,11 @@ export function parseSentinel(text) {
       const passed = Number(canonical[2]);
       const failed = Number(canonical[3]);
       last = { cells, passed, failed, kind: "canonical" };
+      continue;
+    }
+    const skipped = line.match(/^COTAL_SMOKE_SENTINEL skipped=(\S.*)$/);
+    if (skipped) {
+      last = { cells: 0, passed: 0, failed: 0, kind: "skipped", reason: skipped[1] };
       continue;
     }
     // A legacy banner must own the whole line. Trailing `;…` or a double-space

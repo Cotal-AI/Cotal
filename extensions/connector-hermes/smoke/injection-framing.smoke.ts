@@ -24,6 +24,7 @@
 import { strict as nodeAssert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { skipSuite } from "@cotal-ai/smoke-kit";
 
 let cells = 0;
 const failures: string[] = [];
@@ -90,11 +91,7 @@ function hard(condition: unknown, name: string): asserts condition {
  *  deliberately when you add a cell; a drop means one vanished. */
 const EXPECTED_CELLS = 36;
 
-if (process.platform === "win32") {
-  console.log("✓ hermes injection framing skipped on Windows (the Hermes connector is Unix-only)");
-  console.log("COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0");
-  process.exit(0);
-}
+if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
 const pkgDir = fileURLToPath(new URL("..", import.meta.url));
 const probe = fileURLToPath(new URL("./injection-framing.probe.py", import.meta.url));

@@ -7,7 +7,7 @@
  *
  * Keep this file in lockstep with `bin/smoke/sentinel.mjs` (the node-loadable copy the shard
  * imports). Suites should print the canonical line through {@link emitSentinel} as their last
- * output.
+ * output, and a suite that cannot run on this platform ends through {@link skipSuite}.
  */
 export const SENTINEL_PREFIX = "COTAL_SMOKE_SENTINEL";
 
@@ -30,12 +30,16 @@ export function emitSentinel(counts: { passed: number; failed: number; cells?: n
   console.log(formatSentinel(counts));
 }
 
-export type ParsedSentinel = {
-  cells: number;
-  passed: number;
-  failed: number;
-  kind: "canonical" | "legacy";
-};
+/** A skip is not a cell: the shard lists the suite with `reason` and adds nothing to its total. */
+export function skipSuite(reason: string): never {
+  console.log(`${SENTINEL_PREFIX} skipped=${reason}`);
+  process.exit(0);
+}
+
+/** A skip carries zero cells, so a grader that does not read `kind` still refuses it. */
+export type ParsedSentinel =
+  | { cells: number; passed: number; failed: number; kind: "canonical" | "legacy" }
+  | { cells: 0; passed: 0; failed: 0; kind: "skipped"; reason: string };
 
 export function parseSentinel(text: string): ParsedSentinel | null {
   let last: ParsedSentinel | null = null;
@@ -50,6 +54,11 @@ export function parseSentinel(text: string): ParsedSentinel | null {
         failed: Number(canonical[3]),
         kind: "canonical",
       };
+      continue;
+    }
+    const skipped = line.match(/^COTAL_SMOKE_SENTINEL skipped=(\S.*)$/);
+    if (skipped) {
+      last = { cells: 0, passed: 0, failed: 0, kind: "skipped", reason: skipped[1] };
       continue;
     }
     // A legacy banner must own the whole line. Trailing `;…` or a double-space

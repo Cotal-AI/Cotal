@@ -12,6 +12,7 @@ import type { ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { skipSuite } from "@cotal-ai/smoke-kit";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
 import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
@@ -48,13 +49,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  */
 const EXPECTED_CELLS = 167;
 
-if (process.platform === "win32") {
-  console.log("✓ launch-env smoke skipped on Windows (the Hermes connector is Unix-only; buildLaunch throws)");
-  // A skip still has to name a cell count, or the shard reads the silence as a suite that ran
-  // nothing and refuses it.
-  console.log("COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0");
-  process.exit(0);
-}
+if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
 /** The provider keys this connector declares. They must still arrive. */
 const PROVIDER_KEYS = [
