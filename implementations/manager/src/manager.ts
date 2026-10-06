@@ -4029,7 +4029,7 @@ export class Manager {
       await attemptCleanup(failed, "deprovision", () =>
         this.deprovision({ id: principalKey(owner, name).key, name, lifecycleUid: opts.lifecycleUid, userOwner: owner, secretPaths: files }));
       const leftover = failed.length ? `; cleanup failed: ${failed.join("; ")}` : "";
-      return { error: `agent auth preflight failed for "${name}": ${(e as Error).message}${leftover}` };
+      return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}` };
     }
   }
 
@@ -6257,7 +6257,7 @@ export class Manager {
       // so follow/CLI/cotal_spawn do not collapse it to a generic string (#873).
       if (e instanceof EpEnvelopeError)
         return { ok: false, error: renderLifecycleBlocked(e.message, e), ...(e.details ? { details: e.details } : {}) };
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: rejectionText(e) };
     } finally {
       this.reserved.delete(name);
       this.reservedLive.delete(name);
