@@ -280,6 +280,10 @@ beside a heartbeat that is still fresh. `cotal_inbox` pulls only buffered quiet
 ambient from that host-owned queue; its shared optional `peek` argument is supported, so `peek: true`
 shows those messages without clearing them.
 
+A run turn rides the message that starts a Cotal-owned turn. It counts as shown once the Harness
+accepts that message, so the seat can `cotal_yield` it during the turn that carries it. A send the
+Harness never accepts leaves it unshown, and the next turn carries it again.
+
 ## Model limits
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model

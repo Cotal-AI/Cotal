@@ -27,44 +27,11 @@
  */
 
 /**
- * Whether a REFUSED queued turn must force a connection boundary before the batch is re-delivered.
- *
- * BOTH OBVIOUS ANSWERS ARE WRONG AND EACH WAS MEASURED BY A REVIEWER, so the discriminator is
- * neither flag but whether the thing blocking attribution CAN CLEAR ON ITS OWN.
- *
- * Trigger only on `!acknowledged` and a run-debt duplicate survives: a run whose acceptance window
- * lapsed owes debt until that TURN ends, while the fallback's own sends are genuinely acknowledged,
- * so the batch is refused, stays owed, and is re-delivered into a healthy Harness that accepts and
- * RUNS each copy. Measured at 4 executions from 4 send frames.
- *
- * Trigger on every refusal and a live run becomes silent starvation: inside the refusal arm
- * `!acknowledged || !attributable` is TAUTOLOGICALLY TRUE, so that spelling is `= true` with extra
- * steps. It suppresses every write until the bridge is replaced, and with a turn held open for
- * minutes the batch cannot reach the seat at all. Measured at 0 executions from 0 send frames.
- *
- * So the question is what owes the debt. A RUN settles its own promise when the turn ends, which
- * genuinely proves the Harness is finished with that request, so attribution returns WITHOUT a
- * boundary and waiting is correct: the batch is late by one turn, not lost. A LAPSED SEND settles
- * nothing, because the SDK resolved it on its own accept timeout while the request stayed live at
- * the Harness; no amount of waiting restores attribution, so only replacing the connection can.
- *
- * `unsettledRunDispatches` is therefore the self-clearing kind and must NOT force a boundary. But
- * waiting alone is not enough either, because that is precisely the state sol measured duplicating:
- * a send issued while a run is open CAN NEVER BE ATTRIBUTED, so it is refused every time and the
- * loop re-sends it forever, and each refused copy was still ACCEPTED AND RUN by the Harness. The
- * answer is to not issue it at all. See {@link attributionBlockedByOpenRun}: the batch is deferred,
- * no frame is written, and the send happens once after the turn ends, when it can be attributed.
- */
-export function refusalNeedsBoundary(sendLapsed: boolean): boolean {
-  return sendLapsed;
-}
-
-/**
  * Whether a queued-turn send must be DEFERRED because no acknowledgement it receives could be
  * attributed to it.
  *
- * This is the half that stops the duplicate at its source rather than cleaning up after it. While a
- * run's acceptance window has lapsed, `message_accepted` carries only a session id, so an event
+ * This stops the duplicate at its source rather than cleaning up after it. While a run's
+ * acceptance window has lapsed, `message_accepted` carries only a session id, so an event
  * arriving now may belong to that run. A send issued into that window is therefore refused on
  * arrival no matter how healthy it was, stays owed, and is re-sent on the next tick, while the
  * Harness accepts and EXECUTES every copy: 4 executions from 4 send frames.
