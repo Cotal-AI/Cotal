@@ -911,6 +911,20 @@ interface ManagedAgent {
   staticCredentialRenewal?: Promise<void>;
 }
 
+/** What the teardown chain (trackDeprovision → deprovision → driveDeprovision) needs to tear one
+ *  incarnation down. Each hop passes the value on as a variable, which TypeScript does not
+ *  excess-check, so the hops share this one declaration. */
+interface TeardownTarget {
+  id: string;
+  name: string;
+  lifecycleUid: string;
+  userOwner?: string;
+  delegated?: true;
+  secretPaths?: ManagedAgent["secretPaths"];
+  runtime?: RuntimeReference;
+  delegatedHandle?: AgentHandle;
+  launch?: { allowSubscribe: readonly string[] };
+}
 
 /** Runtime hooks the spawn-as-action serve path (P2 item 2) injects into {@link Manager.startAgent}.
  *  Roster boot and the blocking callers pass none (unchanged behavior). */
@@ -2428,7 +2442,7 @@ export class Manager {
 
   /** A cleanup spawned by accepted active-mode work is part of that work for maintenance draining,
    * even where the ordinary control reply remains fire-and-forget. */
-  private trackDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; delegatedHandle?: AgentHandle; launch?: { allowSubscribe: readonly string[] } }, context = ""): void {
+  private trackDeprovision(a: TeardownTarget, context = ""): void {
     this.lifecycleInFlight++;
     void this.deprovision(a)
       .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${(e as Error).message}`))
@@ -4332,7 +4346,7 @@ export class Manager {
    *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
    *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
    *  delivery surface a stale copy could use. */
-  private async deprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; delegatedHandle?: AgentHandle; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
+  private async deprovision(a: TeardownTarget): Promise<void> {
     if (!this.auth && !this.remoteAuthority) return; // open mesh mints no creds/durables — nothing to tear down
     // SINGLE-FLIGHT per (name, lifecycleUid) (INT-2/C): join an in-flight teardown for this exact
     // lifecycle rather than launching a second concurrent one whose delayed name-keyed revoke could
@@ -4348,7 +4362,7 @@ export class Manager {
   }
 
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
-  private async driveDeprovision(a: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; delegatedHandle?: AgentHandle; launch?: { allowSubscribe: readonly string[] } }): Promise<void> {
+  private async driveDeprovision(a: TeardownTarget): Promise<void> {
     if (this.remoteAuthority) {
       if (a.delegated) {
         // The agent is its user's: only that user's retirement intent retires it, so the name stays
@@ -5827,7 +5841,7 @@ export class Manager {
     // `finally` with the handle only in a local, so without this the terminal has nothing to reap
     // and retires over a live process. The slot row holds the same reference; this is the copy the
     // in-process rollback can actually read.
-    let provisioned: { id: string; name: string; lifecycleUid: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference } | undefined;
+    let provisioned: TeardownTarget | undefined;
     // A carried resume's seat-private home, removed by the finally unless a live seat took it.
     let seatHome: string | undefined;
     try {
