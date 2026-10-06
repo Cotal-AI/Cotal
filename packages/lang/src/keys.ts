@@ -23,6 +23,34 @@ import { RuntimeFault } from "./errors.js";
 export type ScopeKind = "parallel" | "race" | "fanOut" | "conclave" | "once";
 
 /**
+ * The spec's §7 scope traits that readers branch on, one row per kind. Keyed by `ScopeKind`, so a
+ * kind added to the union does not compile until it has a row: a list per trait let a new kind
+ * compile with a list missed and fail at run time, on some paths only.
+ *
+ * `assembles`: the settled value is an assembly of branch outcomes, where a branch position may be
+ * absent. `conclave` and `once` settle their one body's own value.
+ *
+ * `reenters`: a fork whose cut lies inside the scope enters it again rather than refusing (L5020),
+ * which is sound only for a scope that decides nothing of its own.
+ *
+ * Each row is frozen because `scopeTraits` hands out the shared row, and a write to it would change
+ * the journal's crossing rule and the fork refusal for the whole process.
+ */
+const SCOPE_TRAITS: Readonly<Record<ScopeKind, { readonly assembles: boolean; readonly reenters: boolean }>> = {
+  parallel: Object.freeze({ assembles: true, reenters: true }),
+  race: Object.freeze({ assembles: true, reenters: false }),
+  fanOut: Object.freeze({ assembles: true, reenters: true }),
+  conclave: Object.freeze({ assembles: false, reenters: false }),
+  once: Object.freeze({ assembles: false, reenters: true }),
+};
+
+/** A journal kind's scope traits, or undefined when it is not a scope. It takes a string because a
+ *  kind read back from a store is only that. */
+export function scopeTraits(kind: string): (typeof SCOPE_TRAITS)[ScopeKind] | undefined {
+  return Object.hasOwn(SCOPE_TRAITS, kind) ? SCOPE_TRAITS[kind as ScopeKind] : undefined;
+}
+
+/**
  * What may name a level of the scope PATH: a concurrency combinator, or a `waitUntil`.
  *
  * `waitUntil` is not a concurrency combinator and does not open a scope in the §7 sense: it writes
