@@ -7,7 +7,7 @@
  * point — broad inherited access is actually stripped) is win32-only; Windows CI is the oracle.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -140,11 +140,10 @@ const danglingDest = join(dir, "dangling.secret");
   }
 }
 
-// THE FALLBACK BRANCH, raised in review as the last accepting branch with no refusing case.
+// THE REFUSAL BRANCH.
 // When `link` is unavailable (ENOTSUP/EPERM/ENOSYS on some Windows volumes and network mounts)
-// the helper writes O_EXCL directly to the destination. No POSIX CI host reaches that branch
-// naturally, so it is driven through the named platform seam. It is the WINDOWS primitive: if it
-// is not exclusive, every guarantee above is POSIX-only.
+// the function must refuse rather than falling back to an in-place create that would expose a
+// partially-written file to concurrent readers.
 for (const code of ["ENOTSUP", "EPERM", "ENOSYS"] as const) {
   const fbDir = join(dir, `fallback-${code}`);
   mkSecretDir(fbDir);
@@ -155,20 +154,19 @@ for (const code of ["ENOTSUP", "EPERM", "ENOSYS"] as const) {
   });
   try {
     const fresh = join(fbDir, "fresh.secret");
-    writeSecretFileCreateOnly(fresh, "first\n");
-    check(`ACCEPT: the ${code} fallback still creates a missing path`,
-      readSafe(fresh) === "first\n");
     let fbCode: string | undefined;
+    let fbMsg: string | undefined;
     try {
-      writeSecretFileCreateOnly(fresh, "second\n");
+      writeSecretFileCreateOnly(fresh, "first\n");
     } catch (e) {
       fbCode = (e as NodeJS.ErrnoException).code;
+      fbMsg = (e as Error).message;
     }
-    check(`REFUSE: the ${code} fallback is EEXIST on an existing path, never an overwrite`,
-      fbCode === "EEXIST");
-    check(`...and the ${code} fallback did not replace the first writer's bytes`,
-      readSafe(fresh) === "first\n");
-    check(`...and the ${code} fallback left no .tmp litter`,
+    check(`REFUSE: the ${code} condition refuses rather than falling back to non-atomic create`,
+      fbCode === code && fbMsg !== undefined && fbMsg.includes(fresh) && fbMsg.includes("cannot publish a file atomically"));
+    check(`...and no file was created at the destination on ${code} refusal`,
+      !statSafe(fresh));
+    check(`...and the ${code} refusal left no .tmp litter`,
       readdirSync(fbDir).filter((n) => n.endsWith(".tmp")).length === 0);
   } finally {
     __setPublishLinkForTest(undefined);
@@ -213,14 +211,12 @@ check("...and that failure left no .tmp litter",
   mkSecretDir(atomicDir);
   const contested = join(atomicDir, "contested.secret");
   // The competitor lands DURING the call, after any pre-check has seen a free name. The publish
-  // seam is the seam that runs between the two, so it is where the interleave is injected; it also
-  // forces the link-unavailable fallback, making the raw write the only thing deciding the
-  // destination, the Windows-side primitive, and the one place a check-then-write could hide.
-  __setPublishLinkForTest(() => {
-    writeFileSync(contested, "incumbent\n", { mode: 0o600 }); // the competitor wins the name here
-    const e: NodeJS.ErrnoException = new Error("ENOTSUP: forced fallback");
-    e.code = "ENOTSUP";
-    throw e;
+  // seam is the seam that runs between the two, so it is where the interleave is injected;
+  // `linkSync` publishes the destination, and when a competitor claims the destination first,
+  // linkSync fails with EEXIST without overwriting.
+  __setPublishLinkForTest((from, to) => {
+    writeFileSync(to, "incumbent\n", { mode: 0o600 }); // the competitor wins the name here
+    linkSync(from, to);
   });
   let raced: string | undefined;
   try {
