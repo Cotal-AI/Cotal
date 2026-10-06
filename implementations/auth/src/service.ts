@@ -91,6 +91,7 @@ import { makeDeliveryAdminEvictor, makeDeliveryAdminHolderEvictor } from "./barr
 import { resumeAgentRetirement, runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
 import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
+import { serializedFor } from "./serialized.js";
 import type { DelegatedUserIntentIncarnation } from "./delegated-user-intent.js";
 import { joinOrStartRetirement, openAuthAdminListener, type AuthAdminListener, type RetirementFlights } from "./auth-admin.js";
 import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
@@ -160,14 +161,8 @@ const OBSERVED_RUN_REQUEST_WINDOW_MS = 5 * 60_000; // how long an observed serve
  *  a grant the other is still writing or releasing. The chain lives at module level, keyed by the
  *  ledger directory, so two plane instances over one ledger share it. */
 const MANAGED_ALIAS_CHAINS = new Map<string, Promise<unknown>>();
-const serializedForAlias = <T>(dir: string, owner: string, actor: string, fn: () => Promise<T>): Promise<T> => {
-  const key = `${resolve(dir)}:${principalKey(owner, actor).key}`;
-  const run = (MANAGED_ALIAS_CHAINS.get(key) ?? Promise.resolve()).then(fn, fn);
-  const tail = run.then(() => undefined, () => undefined);
-  MANAGED_ALIAS_CHAINS.set(key, tail);
-  void tail.then(() => { if (MANAGED_ALIAS_CHAINS.get(key) === tail) MANAGED_ALIAS_CHAINS.delete(key); });
-  return run;
-};
+const serializedForAlias = <T>(dir: string, owner: string, actor: string, fn: () => Promise<T>): Promise<T> =>
+  serializedFor(MANAGED_ALIAS_CHAINS, `${resolve(dir)}:${principalKey(owner, actor).key}`, fn);
 
 type Values = Record<string, string | undefined>;
 
