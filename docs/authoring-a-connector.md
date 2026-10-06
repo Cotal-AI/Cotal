@@ -115,12 +115,15 @@ sharing the binary's single `@cotal-ai/core` registry instance:
   lazy materialize path can bring you online without a bespoke hook.
 - **Name yourself.** The connector `name` is the `--agent` value; it must be unique across installed
   extensions and must not be the reserved name `cotal`.
+- **Declare a `version`.** The manifest pins it at add time and every load checks the installed
+  package against that pin, so `ext add` refuses a package without one.
 
 A minimal `package.json`:
 
 ```jsonc
 {
   "name": "@you/cotal-connector-myagent",
+  "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
   "files": ["dist"],                     // whatever `ext add` needs to install + import
