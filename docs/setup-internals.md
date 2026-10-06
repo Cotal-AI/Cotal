@@ -14,7 +14,9 @@ is **configure-only**: it checks prerequisites, installs the Claude Code
 plugin, and seeds persona files, and it **launches nothing**: no mesh, no web dashboard, no
 manager, no delivery daemon, no cmux/tmux session, no demo. Starting the stack is `cotal up`; the
 dashboard is `cotal web`. Every file it writes is announced (`→ wrote …` via `provenance.wrote`)
-on stderr, or on stdout with the error when a stderr write fails.
+on stderr, or on stdout with the error when a stderr write fails. Each announcement is one line: a
+control character or Unicode line separator in a path, such as a newline in `HOME`, is printed as
+a `\uXXXX` escape.
 It is two-tier, gated on a machine marker. Persona seeding resolves the selected mesh root first,
 then uses the same `.cotal/agents` catalog as spawn. With no mesh it names a cwd fallback; an
 ambiguous or broken target refuses rather than choosing a root.
