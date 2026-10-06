@@ -1,7 +1,8 @@
 # Delegated user launch intent
 
-Status: implemented, not released. The `@cotal-ai/core` wire types and parsers of section 4.1, the
-`@cotal-ai/auth` decisions of section 4.2 and the `@cotal-ai/manager` members of section 4.3 ship.
+Status: the `@cotal-ai/core` wire types and parsers of section 4.1, the `@cotal-ai/auth` decisions
+of section 4.2 and the `@cotal-ai/manager` members of section 4.3 shipped in 0.62.0, and the host
+incarnation members of section 11 in 0.65.0.
 The decisions are host policy, as the #1972 enrollment decisions are: a host that owns an intent
 store and the enrollment and retirement writers composes them on its own routes, and passes the
 holder's `executeDelegatedUserIntent`. Stock still has no such route, no record store and no
