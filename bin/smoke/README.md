@@ -56,6 +56,16 @@ suite stops its detached daemon groups on exit and on those signals, including p
 Broker and custodian leaks remain failures. Existing suite watchdogs and the CI job timeout
 remain in force.
 
+## Platform skips
+
+A suite that cannot run on the current platform ends through `skipSuite(reason)` from
+`@cotal-ai/smoke-kit`, which prints `COTAL_SMOKE_SENTINEL skipped=<reason>` and exits 0. The
+shard adds no cell for it, counts it as skipped in the completion line, and lists each skipped
+suite with its reason under that line. A skip that printed a cell count would be reported as a
+covered pass.
+`skipSuite` throws when the reason would not read back as that one skip line, such as a reason
+with a line break, because the shard grades the last sentinel line a suite prints.
+
 ## Failure reports
 
 A shard stops at its first failing suite. It names that suite, lists the planned suites that

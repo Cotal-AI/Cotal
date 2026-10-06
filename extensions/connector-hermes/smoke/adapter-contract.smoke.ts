@@ -23,6 +23,7 @@
 import { strict as nodeAssert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { skipSuite } from "@cotal-ai/smoke-kit";
 
 /**
  * Count every assertion so the terminal sentinel is derived from what ran.
@@ -55,12 +56,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  */
 const EXPECTED_CELLS = 23;
 
-if (process.platform === "win32") {
-  console.log("✓ adapter-contract smoke skipped on Windows (the Hermes connector is Unix-only)");
-  // A skip still names a cell count, or the shard reads the silence as a suite that ran nothing.
-  console.log("COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0");
-  process.exit(0);
-}
+if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
 const pkgDir = fileURLToPath(new URL("..", import.meta.url));
 

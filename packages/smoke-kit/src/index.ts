@@ -33,4 +33,5 @@ export {
   emitSentinel,
   formatSentinel,
   parseSentinel,
+  skipSuite,
 } from "./sentinel.js";
