@@ -74,6 +74,7 @@ export * from "./connector.js";
 export * from "./connector-setup.js";
 export * from "./command.js";
 export * from "./runtime.js";
+export * from "./loopback.js";
 export * from "./managed-handoff.js";
 export * from "./environment.js";
 export * from "./terminal.js";

@@ -13,10 +13,9 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
+import { isLoopbackLiteral, registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
-import { isIPv4, isIPv6 } from "node:net";
 import { resolve, sep } from "node:path";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -671,24 +670,6 @@ export const cotalAuthProvider: AuthProvider = {
 };
 
 registry.register(cotalAuthProvider);
-
-/** The loopback-literal exception for the pinned exchange, decided by PARSING the host as an
- *  address - never by how the text begins. A NAME gets no exception however it starts
- *  (`127.evil.com`, `localhost`): names resolve wherever DNS says, and the exchange body carries
- *  the login proof. Mirrors the registration-side pinned-fetch policy in `meshes add --from`,
- *  which verified this same URL under the same rule before recording it. */
-function isLoopbackLiteral(hostname: string): boolean {
-  const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (isIPv4(h)) return h.startsWith("127.");
-  const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
-  if (isIPv6(h)) {
-    if (h === "::1") return true;
-    const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    return mapped !== null && mapped[1].startsWith("127.");
-  }
-  return false;
-}
 
 /** The pinned exchange base -> the POST target. Same composition as `agent-bearer
  *  --exchange-url` (append `/exchange`, drop search/hash), same transport rule as the

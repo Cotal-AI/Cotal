@@ -6,8 +6,7 @@
  * logged in as YOU across every repo on this box.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { isIPv4, isIPv6 } from "node:net";
-import { assertLifecycleToken, CotalEndpoint, mintCreds, newIdentity, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { assertLifecycleToken, CotalEndpoint, isLoopbackLiteral, mintCreds, newIdentity, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
@@ -23,17 +22,6 @@ import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
-
-function isLoopbackLiteral(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (isIPv4(host)) return host.startsWith("127.");
-  const mappedHex = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
-  if (!isIPv6(host)) return false;
-  if (host === "::1") return true;
-  const mapped = host.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  return mapped !== null && mapped[1].startsWith("127.");
-}
 
 /** Every operational failure in these commands is a deliberately-legible thrown sentence
  *  (a refused client id, a revoked session, a malformed IdP response …) — the CLI's generic
