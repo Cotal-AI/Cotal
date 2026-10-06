@@ -73,6 +73,22 @@ through the window, or follows its timeout if it has one.
 Upgrade the auth service and every participant manager registered with it in the same window, then
 answer the pauses that waited.
 
+## Headless OpenCode handshake in 0.69.0
+
+With `COTAL_SERVE_HEADLESS=1`, the OpenCode launcher's `[cotal-serve]` line on stdout now carries
+only `port` and `session`. The server password no longer appears in it, and the 1.x TUI no longer
+receives the password on its command line.
+
+### What stops working
+
+A headless host that read `password` from that line has no password, and the server refuses its
+requests. Seats with a TUI, and headless seats that no host drives, are unaffected.
+
+### Before the upgrade
+
+Have each headless host mint a password and pass it to the launcher as `OPENCODE_SERVER_PASSWORD`,
+then use it for basic auth as before. Without that variable the launcher mints its own.
+
 ## Detached spawns with `--share-tools` in 0.69.0
 
 The manager's `spawn` operation now takes `shareTools` as a list of MCP server names. The CLI parses

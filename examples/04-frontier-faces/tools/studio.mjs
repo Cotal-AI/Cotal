@@ -8,8 +8,8 @@
 // What it does, end to end — NO scripting, all real agents on a real mesh:
 //   1. ensures a Cotal mesh is up (starts `cotal up --open` if one isn't);
 //   2. joins it as an operator endpoint ("you") — the human seat in the room;
-//   3. spawns each roster member as a REAL headless mesh agent (OpenCode + the cotal plugin),
-//      capturing its private OpenCode server {port, session, password};
+//   3. spawns each roster member as a REAL headless mesh agent (OpenCode + the cotal plugin)
+//      behind a password minted here, capturing its private OpenCode server {port, session};
 //   4. serves a browser studio that renders each agent's animated pixel face driven by that
 //      agent's live OpenCode stream, plus the authoritative mesh transcript (what the operator
 //      endpoint actually receives) and a prompt box that posts into #general.
@@ -24,6 +24,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { connect as netConnect } from "node:net";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join, extname } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -315,10 +316,13 @@ async function spawnAgent(name) {
   const cred = AUTH ? agentCreds.get(name) : undefined;
   if (AUTH && !cred) throw new Error(`no minted cred for ${name}`);
   const auth = AUTH ? { COTAL_CREDS: cred.path, COTAL_LIFECYCLE_UID: cred.lifecycleUid } : {};
+  // The connector's handshake never carries the server password, so the host mints it.
+  const password = randomBytes(24).toString("hex");
   const env = {
     ...cleanEnv(),
     ...auth,
     COTAL_SERVE_HEADLESS: "1",
+    OPENCODE_SERVER_PASSWORD: password,
     COTAL_SPACE: SPACE,
     COTAL_NAME: name,
     COTAL_SERVERS: SERVERS,
@@ -357,7 +361,7 @@ async function spawnAgent(name) {
       } catch (e) {
         return reject(new Error(`agent "${name}" sent a bad handshake: ${e.message}`));
       }
-      const rec = { name, persona, role, model: model || "default", founder, child, ...hs };
+      const rec = { name, persona, role, model: model || "default", founder, child, ...hs, password };
       agents.push(rec);
       log(`agent ${name} joined (face=${persona}, opencode :${hs.port}, session ${hs.session.slice(0, 12)}…)`);
       resolve(rec);
