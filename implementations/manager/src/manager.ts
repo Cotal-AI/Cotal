@@ -61,6 +61,7 @@ import {
   provisionAgentDurables,
   registry,
   resolveAuthProvider,
+  resolveReadAcl,
   bearerCommandFailure,
   saveAgentFile,
   subjectMatches,
@@ -5635,7 +5636,7 @@ export class Manager {
       identityName = r.name;
       role = opts.role ?? r.role;
       subscribe = r.subscribe;
-      allowSubscribe = r.allowSubscribe?.length ? r.allowSubscribe : r.subscribe;
+      allowSubscribe = r.allowSubscribe;
       allowPublish = r.allowPublish;
       capabilities = r.capabilities;
       model = opts.model ?? r.model;
@@ -5656,9 +5657,7 @@ export class Manager {
       // paths of the merged grammar can't diverge. One source feeds BOTH the minted creds and the
       // connector env below.
       subscribe = opts.subscribe ?? def.subscribe;
-      // Defaulted the same way the loader/provisioner do — minted into the creds (the broker
-      // boundary); runtime durable joins are re-authorized against the committed ACL by the daemon.
-      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? [];
+      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? [];
       allowPublish = opts.allowPublish ?? def.allowPublish;
       capabilities = def.capabilities;
       // #651: fold the persona's model into the launch record, mirroring the variant line below
@@ -5668,6 +5667,13 @@ export class Manager {
       model = opts.model ?? def.model;
       variant = opts.variant ?? def.variant;
       launchOptions = mergeLaunchOptions(def.launchOptions, opts.launchOptions);
+    }
+    // Resolved once for both branches, because this one list is granted, minted, recorded on the
+    // launch and forwarded to the session, and each of those must read the list the provisioner does.
+    try {
+      allowSubscribe = resolveReadAcl(subscribe ?? [], allowSubscribe);
+    } catch (e) {
+      return { ok: false, error: opts.resolved ? `launch agent: ${(e as Error).message}` : `persona ${configPath}: ${(e as Error).message}` };
     }
     // #651: an empty or whitespace-only model string is not a pin. Coerce it to undefined here, at
     // the single point every path (persona, manifest, imperative) has resolved `model`, so it
