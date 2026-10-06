@@ -73,7 +73,7 @@ through the window, or follows its timeout if it has one.
 Upgrade the auth service and every participant manager registered with it in the same window, then
 answer the pauses that waited.
 
-## Detached spawns with `--share-tools` in 0.68.0
+## Detached spawns with `--share-tools` in 0.69.0
 
 The manager's `spawn` operation now takes `shareTools` as a list of MCP server names. The CLI parses
 `--share-tools` into that list before it sends the request, and the manager cluster document moves
@@ -797,6 +797,13 @@ no release claims every release and distinguishes none: `## Notes` with a senten
 otherwise satisfy the rule. Naming the release also makes the section the one an operator upgrading
 that release will search for. Use `###` freely for detail inside a section. Subsections belong to
 their release rather than counting as separate coverage.
+
+Name the release that first carries the change: the next version Changesets publishes, which
+`pnpm changeset status --verbose` lists. `bin/package.json` on `main` still reads the release already
+published. If a release is cut while the change is open, the change ships in the release after it,
+so move the heading before merging. The gate accepts any version in a heading, so before merging a
+release pull request, check every heading added since the previous tag against the version it
+publishes.
 
 A section is written for the operator, not for the reviewer. It answers, in this order:
 
