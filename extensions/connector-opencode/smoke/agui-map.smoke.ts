@@ -20,7 +20,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { AguiBrackets, AGUI_EVENT_TYPE } from "@cotal-ai/connector-core";
+import { AguiBrackets, AGUI_EVENT_TYPE, runFinished } from "@cotal-ai/connector-core";
 import { OpenCodeSessionSource, type OpenCodeMessageWithParts, type OpenCodePart } from "../src/agui-source.js";
 import { createOpenCodeMapper } from "../src/agui-map.js";
 
@@ -72,16 +72,18 @@ async function replay(reasoning: boolean) {
     }
     cursor = r.cursor;
   }
-  const closed = mapper.closeOpenRun(1);
-  if (closed) {
-    for (const e of closed.events) {
-      try {
-        brackets.accept(e);
-      } catch (err) {
-        bracketError ??= String((err as Error).message);
-      }
-      events.push(e as Record<string, unknown>);
+  // The plugin closes the last run at `session.idle` through the holder: the emitter publishes
+  // RUN_FINISHED for the run its brackets hold open and reports it to `forgetOpenRun`.
+  const last = brackets.runId;
+  if (last !== undefined) {
+    const e = runFinished({ threadId: "ses_fixture", runId: last, timestamp: 1 });
+    try {
+      brackets.accept(e);
+    } catch (err) {
+      bracketError ??= String((err as Error).message);
     }
+    events.push(e as Record<string, unknown>);
+    mapper.forgetOpenRun(last);
   }
   const byType = new Map<string, number>();
   for (const e of events) byType.set(String(e.type), (byType.get(String(e.type)) ?? 0) + 1);
@@ -96,13 +98,17 @@ const R = await replay(true);
   c("fixture:every record in the session was offered to the mapper", R.records === parts, { R: R.records, parts });
   c("fixture:no frame violated the brackets", R.bracketError === null, R.bracketError);
   c("fixture:no run is left open at the end", R.brackets.runId === undefined, R.brackets.runId ?? null);
-  c("fixture:the mapper agrees that no run is open", R.mapper.openRun() === null, R.mapper.openRun());
+  const next = R.mapper.map({
+    part: { id: "prt_after", messageID: "msg_after", type: "text", text: "x", time: { start: 2, end: 3 } },
+    message: { id: "msg_after", role: "assistant", time: { created: 2 } },
+  });
+  c("fixture:the mapper agrees that no run is open, so the next assistant record opens one",
+    next?.events[0]?.type === AGUI_EVENT_TYPE.RUN_STARTED, next?.events[0]?.type);
   c("fixture:runs are balanced", R.byType.get(AGUI_EVENT_TYPE.RUN_STARTED) === R.byType.get(AGUI_EVENT_TYPE.RUN_FINISHED),
     { started: R.byType.get(AGUI_EVENT_TYPE.RUN_STARTED), finished: R.byType.get(AGUI_EVENT_TYPE.RUN_FINISHED) });
   c("fixture:text brackets are balanced",
     R.byType.get(AGUI_EVENT_TYPE.TEXT_MESSAGE_START) === R.byType.get(AGUI_EVENT_TYPE.TEXT_MESSAGE_END));
   c("fixture:every tool call has a result", R.byType.get(AGUI_EVENT_TYPE.TOOL_CALL_START) === R.byType.get(AGUI_EVENT_TYPE.TOOL_CALL_RESULT));
-  c("fixture:a session with runs diagnoses nothing", R.mapper.diagnose() === null, R.mapper.diagnose());
 }
 
 // ---------------------------------------------------------------- authorship: the safety property
@@ -196,32 +202,29 @@ const R = await replay(true);
   const mapper = createOpenCodeMapper({ threadId: "t", mintRunId: ids });
   const a = { id: "msg_1", role: "assistant", time: { created: 1, completed: 2 } };
   const u = { id: "msg_2", role: "user", time: { created: 3 } };
-  mapper.map({ part: { id: "prt_1", messageID: "msg_1", type: "text", text: "x", time: { start: 1, end: 2 } }, message: a });
-  const openId = mapper.openRun();
-  c("runs:a run is open after the first assistant record", openId !== null, openId);
+  const first = mapper.map({ part: { id: "prt_1", messageID: "msg_1", type: "text", text: "x", time: { start: 1, end: 2 } }, message: a });
+  c("runs:a run is open after the first assistant record", first?.events[0]?.type === AGUI_EVENT_TYPE.RUN_STARTED, first?.events[0]?.type);
   const onUser = mapper.map({ part: { id: "prt_2", messageID: "msg_2", type: "text", text: "prompt" }, message: u });
   c("runs:a user record CLOSES the open run", (onUser?.events[0] as { type?: string } | undefined)?.type === AGUI_EVENT_TYPE.RUN_FINISHED, onUser?.events.length);
   c("runs:and emits nothing of its own", onUser?.events.length === 1, onUser?.events.length);
-  c("runs:the run is gone", mapper.openRun() === null, mapper.openRun());
-  c("runs:closing again returns null rather than a second RUN_FINISHED", mapper.closeOpenRun(9) === null);
+  c("runs:a second user record returns null rather than a second RUN_FINISHED",
+    mapper.map({ part: { id: "prt_3", messageID: "msg_2", type: "text", text: "more" }, message: u }) === null);
+  const after = mapper.map({ part: { id: "prt_4", messageID: "msg_1", type: "text", text: "y", time: { start: 4, end: 5 } }, message: a });
+  c("runs:the run is gone, so the next assistant record opens a new one",
+    after?.events[0]?.type === AGUI_EVENT_TYPE.RUN_STARTED && after.runId !== first?.runId, after?.runId);
 }
 {
   const mapper = createOpenCodeMapper({ threadId: "t", mintRunId: ids });
   const a = { id: "msg_1", role: "assistant", time: { created: 1, completed: 2 } };
-  mapper.map({ part: { id: "prt_1", messageID: "msg_1", type: "text", text: "x", time: { start: 1, end: 2 } }, message: a });
-  const held = mapper.openRun()!;
+  const text = (id: string) => mapper.map({ part: { id, messageID: "msg_1", type: "text", text: "x", time: { start: 1, end: 2 } }, message: a });
+  const held = text("prt_1")!.runId;
   mapper.forgetOpenRun("some-other-run");
-  c("runs:forgetOpenRun keyed on a DIFFERENT id leaves the open run alone", mapper.openRun() === held, mapper.openRun());
+  const same = text("prt_2");
+  c("runs:forgetOpenRun keyed on a DIFFERENT id leaves the open run alone", same?.runId === held, same?.runId);
   mapper.forgetOpenRun(held);
-  c("runs:forgetOpenRun keyed on the open run clears it", mapper.openRun() === null);
-}
-{
-  const mapper = createOpenCodeMapper({ threadId: "t", mintRunId: ids });
-  c("runs:a session with no assistant record says WHY it opened no runs",
-    /no assistant records/.test(mapper.diagnose() ?? ""), mapper.diagnose());
-  mapper.map({ part: { id: "prt_1", messageID: "msg_1", type: "text", text: "p" }, message: { id: "msg_1", role: "user", time: { created: 1 } } });
-  c("runs:a user-only session still says it, rather than going silent",
-    /no assistant records/.test(mapper.diagnose() ?? ""), mapper.diagnose());
+  const fresh = text("prt_3");
+  c("runs:forgetOpenRun keyed on the open run clears it",
+    fresh?.events[0]?.type === AGUI_EVENT_TYPE.RUN_STARTED && fresh.runId !== held, fresh?.runId);
 }
 
 // ---------------------------------------------------------------------------- honest timestamps
@@ -241,7 +244,7 @@ const R = await replay(true);
     })!.events[0] as Record<string, unknown>).cotal as { tsSource?: string }).tsSource === undefined);
 }
 
-const EXPECTED = 42;
+const EXPECTED = 39;
 c(`meta:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(
