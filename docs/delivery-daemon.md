@@ -77,6 +77,10 @@ is still connecting, and nothing is sent after it. A daemon that answers fails t
 it refuses or its reply cannot be read. One that stays silent for the whole wait fails it, and the
 manager log names the rail.
 
+A reply on the `ctl.delivery` or `ctl.delivery-admin` rail that is larger than the broker's
+`max_payload` cannot be published. The daemon answers that request with a refusal giving the reply's
+size in bytes, so the caller fails at once and does not wait out its timeout.
+
 A restart verify-evicts every holder in the manager's credential family, and the family keeps a
 ledger row for every credential an earlier incarnation was issued. The manager keeps its serve,
 goal-writer and session-ledger identities across restarts, so restarts add no holders; each attach
