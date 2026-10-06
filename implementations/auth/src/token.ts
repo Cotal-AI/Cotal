@@ -179,8 +179,6 @@ export interface ValidateUserTokenOpts {
   issuer: string;
   /** Exact expected audience — the space name. */
   audience: string;
-  /** Override of the {@link MAX_TOKEN_TTL_SEC} lifetime cap (tests only; keep short). */
-  maxTtlSec?: number;
   /** Clock skew tolerance in seconds (default 5). */
   clockToleranceSec?: number;
 }
@@ -214,7 +212,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
   // sails through exp/nbf checks, giving it an effective validity far beyond the cap and quietly
   // defeating the short-lived-token revocation lever. So: iat may not be in the future, and exp
   // may not sit further than the cap from now.
-  const maxTtl = Math.min(opts.maxTtlSec ?? MAX_TOKEN_TTL_SEC, viewTtlCapSec((payload.act as UserTokenActor | undefined)?.view));
+  const maxTtl = viewTtlCapSec((payload.act as UserTokenActor | undefined)?.view);
   const tol = opts.clockToleranceSec ?? 5;
   const now = Math.floor(Date.now() / 1000);
   if (payload.iat > now + tol) throw new Error("user token: iat is in the future");

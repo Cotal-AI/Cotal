@@ -246,6 +246,25 @@ Compute the proof as `remoteManagerRegistrationProof(owner, state)`, adding the 
 as a third argument for activation only. A host that recomputes the proof from a received request
 passes `{ space, instanceId, lifecycleUid: managerLifecycleUid, identities }` from that request.
 
+## Bearer validator lifetime cap in 0.70.0
+
+`validateUserToken` from `@cotal-ai/auth` no longer takes `maxTtlSec`. It caps a bearer's lifetime
+at the cap of the bearer's view, the same cap the issuer applies when it mints: 900 seconds, or 300
+for a `transfer-writer` bearer. The auth callout never passed the option, so a running mesh behaves
+as before. Only code of your own that calls the validator with `maxTtlSec` is affected.
+
+### What stops working
+
+A call that passes `maxTtlSec` in an object literal no longer compiles. Plain JavaScript that keeps
+it still runs, and the value is ignored. A `NaN` value, such as `Number()` of an unset environment
+variable, used to turn the lifetime check off and accept a bearer of any lifetime. That bearer is
+now refused at its view's cap.
+
+### Before the upgrade
+
+Remove `maxTtlSec` from each call. A test that needs a bearer to expire sooner mints one with a
+shorter lifetime.
+
 ## Carrying a resumed Claude session to another host
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the
