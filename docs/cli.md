@@ -332,11 +332,11 @@ The built-in pty runtime keeps each PTY inside the manager process, so those sea
 it: every manager stop stops and deprovisions them, and `down` reports them as stopped. Every manager
 stop the CLI makes runs this one path: `down`, Ctrl-C on a foreground `cotal up`, the teardown after
 that `up`'s broker exits, the leftover-manager stop before `cotal up -f`, and the delivery cutover.
-Each holds the manager's stop reservation, so a second stop while one is in flight is refused and
-names the process holding it, and each sends `SIGKILL` to a manager still running 15s after
-`SIGTERM`. Ctrl-C stops the manager first; when that stop is refused
-or the manager's exit cannot be confirmed, Ctrl-C signals nothing else, prints the refusal with the
-reap route, and leaves the stack running; end it with `cotal down --with-agents`.
+Each holds the manager's stop reservation, so a second stop while one is in flight is refused,
+names the process holding it, and leaves that stop's `--with-agents` policy in place. Each sends
+`SIGKILL` to a manager still running 15s after `SIGTERM`. Ctrl-C stops the manager first; when that
+stop is refused or the manager's exit cannot be confirmed, Ctrl-C signals nothing else, prints the
+refusal with the reap route, and leaves the stack running; end it with `cotal down --with-agents`.
 `--with-agents` is a one-shot destructive policy bound to the exact verified manager process
 and the exact live `down` stop reservation; a stale, malformed, crashed, or different stop attempt
 cannot turn a later bare shutdown destructive. If a managed agent cannot be proven stopped within

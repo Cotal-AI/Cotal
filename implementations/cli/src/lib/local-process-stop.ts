@@ -22,6 +22,10 @@ export interface StopLocalProcessOptions {
     target: { pid: number; token: string } | { pid: number; token?: undefined };
     stopper: { pid: number; marker: string };
   }) => void;
+  /** Runs, still under the reservation, when a stop that entered `beforeSignal` ends without a
+   * confirmed stop. It undoes what `beforeSignal` published: done after the reservation is released,
+   * the undo could remove what the next stop to take the reservation published. */
+  afterFailedSignal?: () => void;
   /** Whether a live process's command line is this component's. Consulted only for a record with no
    *  identity pin, where the command line is the only evidence of what the pid now runs. */
   owns?: (command: string) => boolean;
@@ -98,6 +102,7 @@ export async function stopLocalProcess(
   reserveStop(component.name, marker);
 
   let stopped = false;
+  let authorized = false;
   try {
     if (pid === undefined) {
       // An EMPTY pidfile is a pre-protocol husk (no process behind it) and is safe to clear. Any
@@ -150,6 +155,7 @@ export async function stopLocalProcess(
       stopped = true;
       return true;
     }
+    authorized = true;
     options.beforeSignal?.({
       target: identity.kind === "match" ? identity.record : { pid },
       stopper: { pid: process.pid, marker },
@@ -191,6 +197,7 @@ export async function stopLocalProcess(
     // The pin goes with the pidfile (#969), and only while the pidfile still names the stopped pid: a
     // publish that committed a successor meanwhile is left whole (#1238).
     if (stopped) removePidPair(pidPath, rawPid);
+    else if (authorized) options.afterFailedSignal?.();
     rmSync(marker, { force: true });
   }
 }

@@ -15,8 +15,8 @@
     {
       "name": "M1 restore the unconditional legacy-manager refusal before SIGTERM",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "          if (!withAgents)\n            console.error(c.dim(\"could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility\"));\n        }\n        if (withAgents) armManagerShutdownIntent(context, attempt);\n        else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);",
-      "replace": "          throw new Error(\"refusing manager stop: the exact manager process identity is not pinned\");\n        }\n        if (withAgents) armManagerShutdownIntent(context, attempt);\n        else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);",
+      "find": "        if (!withAgents)\n          console.error(c.dim(\"could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility\"));\n      }\n      if (withAgents) armManagerShutdownIntent(context, attempt);\n      else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);",
+      "replace": "        throw new Error(\"refusing manager stop: the exact manager process identity is not pinned\");\n      }\n      if (withAgents) armManagerShutdownIntent(context, attempt);\n      else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);",
       "expectRed": "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
       "cell": "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
       "note": "Restores the blocked-head behavior exactly: both live legacy records stop before SIGTERM, remain alive, and keep their pidfiles. The suite executes bare and --with-agents first, then the named bare cell is the first red.",
@@ -56,8 +56,8 @@
     {
       "name": "M5 signal a pinned manager without spare-capability evidence",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "        else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);",
-      "replace": "        else if (attempt.target.token !== undefined) { /* mutant: signal without spare-capability evidence */ }",
+      "find": "      else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);",
+      "replace": "      else if (attempt.target.token !== undefined) { /* mutant: signal without spare-capability evidence */ }",
       "expectRed": "a pinned manager without a capability prints the legacy-safe route and is not signalled",
       "cell": "a pinned manager without a capability prints the legacy-safe route and is not signalled",
       "note": "Bypasses the fail-closed assertion on the shipped down path. The planted pinned manager then receives SIGTERM and loses its pidfile, so the named integration cell goes red.",

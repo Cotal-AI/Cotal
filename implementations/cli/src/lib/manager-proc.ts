@@ -351,28 +351,25 @@ export async function stopManager(space: string = folderSpace(), { withAgents = 
     if (pin.kind === "legacy") legacyManagerSpareUnverified = true;
     else if (pin.kind === "match") spared = await listManagerSeatsForSpare(context);
   }
-  let found: boolean;
-  try {
-    found = await stopLocalProcess(MANAGER_PROCESS, context, {
-      owns: commandIsCotalSupervisor,
-      beforeSignal: (attempt) => {
-        if (attempt.target.token === undefined) {
-          // Upgrade compatibility follows the shared identity contract: a live pre-pin record
-          // is signalled after the warning emitted by stopLocalProcess. A default stop cannot verify
-          // the newer spare capability. Destructive down uses the helper's reduced-guarantee
-          // pid + reservation-inode handoff. A present pin still takes the fully identity-bound
-          // paths below, and a mismatching pin was already refused before this hook.
-          if (!withAgents)
-            console.error(c.dim("could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility"));
-        }
-        if (withAgents) armManagerShutdownIntent(context, attempt);
-        else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);
-      },
-    });
-  } catch (e) {
-    disarmManagerShutdownIntent(context);
-    throw e;
-  }
+  const found = await stopLocalProcess(MANAGER_PROCESS, context, {
+    owns: commandIsCotalSupervisor,
+    beforeSignal: (attempt) => {
+      if (attempt.target.token === undefined) {
+        // Upgrade compatibility follows the shared identity contract: a live pre-pin record
+        // is signalled after the warning emitted by stopLocalProcess. A default stop cannot verify
+        // the newer spare capability. Destructive down uses the helper's reduced-guarantee
+        // pid + reservation-inode handoff. A present pin still takes the fully identity-bound
+        // paths below, and a mismatching pin was already refused before this hook.
+        if (!withAgents)
+          console.error(c.dim("could not verify that this legacy manager can spare its managed agents; signalling it for upgrade compatibility"));
+      }
+      if (withAgents) armManagerShutdownIntent(context, attempt);
+      else if (attempt.target.token !== undefined) spareSeats = assertManagerCanSpare(context, undefined, attempt.target);
+    },
+    // Disarmed by the attempt that armed it, inside its reservation: a stop refused the reservation
+    // never reaches this, so it cannot remove the intent of the stop that holds it.
+    afterFailedSignal: withAgents ? () => disarmManagerShutdownIntent(context) : undefined,
+  });
   for (const artifact of MANAGER_PROCESS.artifacts) rmSync(localProcessPath(artifact, context), { force: true });
   if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
   else if (spared) printSparedAgents(spared, spareSeats);
