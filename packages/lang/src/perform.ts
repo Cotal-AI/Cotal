@@ -546,7 +546,9 @@ async function performWaitUntil(
       key,
       signal: frame.signal,
       requestId: reqId,
-      attempt,
+      // The attempt `reqId` names. Every observation shares it; which observation this is rides on
+      // the request.
+      attempt: recorded?.attempt ?? 0,
       ...(recorded?.external !== undefined ? { resume: recorded.external } : {}),
       bind: async (external) => {
         assertCrossable(external, `the binding of ${stepKeyString(key)}`);

@@ -39,17 +39,17 @@
   "mutations": [
     {
       "name": "the `wait` arm is removed: the list is back to the kinds that MINT a pause",
-      "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    else if (e.kind === \"wait\") tokens.push(e.requestId, derivedToken(e.requestId, \"wait-timeout\"));",
+      "file": "implementations/runtime/src/pause-tokens.ts",
+      "find": "  if (entry.kind === \"wait\") return [id, derivedToken(id, \"wait-timeout\")];\n",
       "replace": "",
       "expectRed": "REPAIRED: a pending `wait` is an outstanding pause, so a takeover re-arms its deadline",
       "cell": "REPAIRED: a pending `wait` is an outstanding pause, so a takeover re-arms its deadline"
     },
     {
       "name": "only the token ON the entry is recovered, not the idle wait's derived outer deadline",
-      "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "tokens.push(e.requestId, derivedToken(e.requestId, \"wait-timeout\"));",
-      "replace": "tokens.push(e.requestId);",
+      "file": "implementations/runtime/src/pause-tokens.ts",
+      "find": "return [id, derivedToken(id, \"wait-timeout\")];",
+      "replace": "return [id];",
       "expectRed": "...including the outer timeout an idle wait arms, re-derived rather than remembered",
       "cell": "...including the outer timeout an idle wait arms, re-derived rather than remembered",
       "note": "The fix that looks complete and is not. An idle wait's outer timeout is the deadline that ends the wait when the channel never goes quiet, so leaving it unarmed is the original defect with a smaller blast radius."
@@ -57,17 +57,17 @@
     {
       "name": "PARANOID: a SETTLED wait is re-armed too, narrow to `wait` so it grades on its own cell",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (e.state !== \"pending\" || e.requestId === undefined) continue;",
-      "replace": "    if (e.requestId === undefined || (e.state !== \"pending\" && e.kind !== \"wait\")) continue;",
+      "find": ".filter((e) => e.state === \"pending\").flatMap(pauseTokens);",
+      "replace": ".filter((e) => e.state === \"pending\" || e.kind === \"wait\").flatMap(pauseTokens);",
       "expectRed": "while a SETTLED wait contributes nothing: a pause that is over is not re-armed",
       "cell": "while a SETTLED wait contributes nothing: a pause that is over is not re-armed",
       "note": "Adding a kind to a list is the edit that most easily over-fires, and a takeover that re-arms finished pauses is a timer leak rather than a hang -- quieter than the bug it replaces, and therefore worse to find later."
     },
     {
       "name": "a pending turn's deadline authority is not re-armed",
-      "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (e.kind === \"sleep\" || e.kind === \"checkpoint\" || e.kind === \"turn\") tokens.push(e.requestId);",
-      "replace": "    if (e.kind === \"sleep\" || e.kind === \"checkpoint\") tokens.push(e.requestId);",
+      "file": "implementations/runtime/src/pause-tokens.ts",
+      "find": "  if (entry.kind === \"sleep\" || entry.kind === \"checkpoint\" || entry.kind === \"turn\") return [id];",
+      "replace": "  if (entry.kind === \"sleep\" || entry.kind === \"checkpoint\") return [id];",
       "expectRed": "a pending `turn` is an outstanding pause too: its deadline authority is re-armed",
       "cell": "a pending `turn` is an outstanding pause too: its deadline authority is re-armed",
       "note": "Measured 2026-09-03: KILLED. mesh-checkpoint.smoke: 39 passed, 1 failed Named cell red: a pending `turn` is an outstanding pause too: its deadline authority is re-armed"

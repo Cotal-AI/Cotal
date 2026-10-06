@@ -90,17 +90,17 @@
     {
       "name": "the discharge ends attempt 1's pause, not the one actually armed",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      const current = e.kind === \"ask\" && typeof e.external?.askToken === \"string\"\n        ? e.external.askToken\n        : e.requestId;",
-      "replace": "      const current = e.requestId;",
+      "find": "    for (const token of pauseTokens(e)) await this.cancelTimer({ endpoint: this.binding.endpoint, token });",
+      "replace": "    await this.cancelTimer({ endpoint: this.binding.endpoint, token: e.requestId });",
       "expectRed": "the discharge settled the CURRENT attempt's pause, so its timer cannot fire into the run",
       "cell": "the discharge settled the CURRENT attempt's pause, so its timer cannot fire into the run",
       "note": "A cancelled re-asked loser's armed deadline stays live and fires into a run that moved on. Measured 2026-09-02: exactly one red (attempt 2's pause is never settled); 23 passed."
     },
     {
       "name": "the adoption re-arm inventory forgets which attempt is armed",
-      "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    else if (e.kind === \"ask\") tokens.push(typeof e.external?.askToken === \"string\" ? e.external.askToken : e.requestId);",
-      "replace": "    else if (e.kind === \"ask\") tokens.push(e.requestId);",
+      "file": "implementations/runtime/src/pause-tokens.ts",
+      "find": "  return [expected];",
+      "replace": "  return [id];",
       "expectRed": "a bound entry re-arms the CURRENT attempt's derived token",
       "cell": "a bound entry re-arms the CURRENT attempt's derived token",
       "note": "An adopted run re-arms a settled attempt's deadline and leaves the open attempt's unfired at the dead epoch. Measured 2026-09-02: exactly one red; 23 passed."
