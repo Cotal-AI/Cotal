@@ -178,9 +178,11 @@ function yamlEscape(s) {
 // shown in a code example does not. A browser opens the same page whatever a link's query
 // or fragment, and decodes its percent-encoding, so the comparison does the same. Reading an
 // HTML link or a character reference would take an HTML parser, so the index may not use them.
+// An HTML comment links nothing, so comments are cut out first, closed where a browser closes them.
 const indexed = new Set();
 walkTokens(lexer(readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf8')), (token) => {
-  if (token.type === 'html' && /<a\s/i.test(token.text)) throw new Error(`HTML link in the docs index: ${token.text.trim()}`);
+  if (token.type === 'html' && /<a\s/i.test(token.text.replace(/<!--(?:-?>|[\s\S]*?(?:--!?>|$))/g, '')))
+    throw new Error(`HTML link in the docs index: ${token.text.trim()}`);
   if (token.type !== 'link' || isExternal(token.href)) return;
   if (/&#?\w+;/.test(token.href)) throw new Error(`character reference in a docs index link: ${token.href}`);
   const rel = resolveRepoPath('docs', decodeURIComponent(token.href.replace(/[?#].*/, '')));
