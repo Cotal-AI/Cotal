@@ -50,6 +50,7 @@ import {
   WORKFLOW_STEER,
   AguiEmitter,
   AguiEmitterHolder,
+  eventPlaneStopped,
   BoundStartSource,
   EventWal,
   FileSubjectFrontier,
@@ -334,11 +335,7 @@ export const cotal: Plugin = async () => {
         });
       },
       {
-        // Required, and not defaulted to a swallow: this runs behind a bus handler that must not
-        // throw, so a failure reaches a human only if it is written somewhere. The holder is
-        // terminal on error and does not retry, so this line is the whole record of why events
-        // stopped.
-        onError: (e: Error) => log(`AG-UI emitter stopped: ${e.message}`),
+        onError: eventPlaneStopped({ required: config.eventsRequired === true, log, stopSeat: () => void shutdown(1) }),
         // The turn terminal closes a run the record stream never described, so without this the
         // mapper would still believe that run is open, attribute the next records to it, and have
         // the batch refused. Keyed on the id, so a newer run opened in between is left alone.
@@ -706,11 +703,11 @@ export const cotal: Plugin = async () => {
    * stop only, so it ran even when those threw and it ran before any event work could finish. An
    * exit that cannot be delayed by the teardown is an exit that cannot honour it.
    */
-  const shutdown = async (): Promise<void> => {
+  const shutdown = async (code = 0): Promise<void> => {
     try {
       await quiesce();
     } finally {
-      process.exit(0);
+      process.exit(code);
     }
   };
   if (control) {

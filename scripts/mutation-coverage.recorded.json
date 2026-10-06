@@ -175,10 +175,6 @@
     "sha256": "5c717ab7b296782e5d5f06c42c90b4db201ac06c3e829db15580f4f8c063fa41",
     "refusal": "mutation \"A1 the launch stops arming the emitter, which is exactly the state this connector shipped in before\" is missing \"cell\""
   },
-  "extensions/connector-codex/smoke/mutations/codex-events-lifecycle.json": {
-    "sha256": "9d9d383420702500afb20d9607b08f7f0edd6b49fc4fb156fe1f0c0783c37776",
-    "refusal": "mutation \"L1 a restarted thread is adopted into the bound holder, which is exactly the state this PR opened in\" is missing \"cell\""
-  },
   "extensions/connector-codex/smoke/mutations/codex-rollout-path.json": {
     "sha256": "09edc98f6291d06627797299705438477cff1764b6c87528b3190492c9957bfa",
     "refusal": "mutation \"P1 the suffix match becomes a prefix match, letting one thread's emitter consume another's bytes\" is missing \"cell\""

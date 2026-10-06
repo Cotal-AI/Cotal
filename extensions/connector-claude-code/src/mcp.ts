@@ -22,6 +22,7 @@ import {
   WORKFLOW_STEER,
   AguiEmitter,
   AguiEmitterHolder,
+  eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
   ensureEventWalDir,
@@ -162,10 +163,11 @@ async function main(): Promise<void> {
         return startEmitter();
       },
       {
-        // Required, and not defaulted to a swallow: this runs behind a hook that must not throw, so
-        // a failure reaches a human only if it is written somewhere. The holder is terminal on
-        // error, it does not retry, so this line is the whole record of why events stopped.
-        onError: (e: Error) => process.stderr.write(`[cotal-connector] AG-UI emitter stopped: ${e.message}\n`),
+        onError: eventPlaneStopped({
+          required: config.eventsRequired === true,
+          log: (line) => process.stderr.write(`[cotal-connector] ${line}\n`),
+          stopSeat: () => void shutdown(1),
+        }),
         // The turn terminal closes a run the record stream never described, so the mapper still
         // believes that run is open. Without this it would attribute the next records to a run the
         // published stream has already finished and the emitter would refuse the batch. Keyed on
@@ -194,7 +196,7 @@ async function main(): Promise<void> {
   // `wake` is likewise assigned later, so a shutdown frame arriving before the MCP server exists
   // reads `undefined`.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
-  const shutdown = async () => {
+  const shutdown = async (code = 0) => {
     try {
       controlServer?.close();
     } catch {
@@ -204,7 +206,7 @@ async function main(): Promise<void> {
     try {
       await agent.stop();
     } finally {
-      process.exit(0);
+      process.exit(code);
     }
   };
   controlServer = startControlServer(

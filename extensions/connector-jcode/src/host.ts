@@ -44,6 +44,7 @@ import {
   MeshAgent,
   AguiEmitter,
   AguiEmitterHolder,
+  eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
   ORIENTATION_BOOTSTRAP,
@@ -488,10 +489,11 @@ export async function runJcodeHost(): Promise<void> {
           });
         },
         {
-          onError: (error: Error) => {
-            writeJcodeDiagnostic(`[cotal-jcode] AG-UI emitter stopped: ${error.message}\n`);
-            if (!stopping) void shutdown(1);
-          },
+          onError: eventPlaneStopped({
+            required: config.eventsRequired === true,
+            log: (line) => writeJcodeDiagnostic(`[cotal-jcode] ${line}\n`),
+            stopSeat: () => void shutdown(1),
+          }),
           onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
           // #1868: a flush landing in a mesh rebuild window measured `max_payload` off a connection
           // that was not there and killed the seat. The holder now rides the window out on this
@@ -552,7 +554,6 @@ export async function runJcodeHost(): Promise<void> {
     if (!events || !eventJournal || events.running) return;
     events.adopt(eventJournal);
     await events.settled();
-    if (events.failure) throw events.failure;
   };
 
   const releaseEventLock = async (): Promise<void> => {
@@ -994,10 +995,7 @@ export async function runJcodeHost(): Promise<void> {
     if (events) {
       await ensureEventsBound();
       await events.settled();
-      if (events.failure) {
-        writeJcodeDiagnostic(`[cotal-jcode] refusing a new turn because the AG-UI event plane stopped: ${events.failure.message}\n`);
-        return;
-      }
+      if (stopping) return;
     }
     driving = true;
     if (pendingKickoff !== undefined && steering)
@@ -2097,6 +2095,9 @@ export async function runJcodeHost(): Promise<void> {
     // would publish the pre-join orientation tool records and merge the next requested turn into the
     // same AG-UI run. A completed proof can bind now; an open one binds in drive() after turn_done.
     if (!readinessTurnOpen) await ensureEventsBound();
+    // A space that requires events has already stopped a seat whose event plane failed to bind, and
+    // that shutdown owns the exit.
+    if (stopping) return;
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
     // orientation card was pre-join so it cannot later mistake that truthful old snapshot for its
     // current connection state (#778).

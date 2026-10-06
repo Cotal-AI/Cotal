@@ -198,32 +198,19 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   thread, and the developer instructions the persona supplies are all withheld. The events channel
   carries a different read ACL from the channel you typed into, so republishing your own words there
   would widen who can read them. Assistant text, reasoning and tool activity are unaffected.
-- **Recovery after a broker outage.** Initial mesh absence still
+- **A broker outage can stop the plane.** Initial mesh absence still
   fails the host's readiness gate within 15 seconds, so it never opens an offline-looking TUI. Once
-  ready, the plane publishes through the seat's reconnecting mesh endpoint: an outage can stop an
-  emitter, and the first turn boundary after reconnect rebuilds it. A rebind DECLINES to publish two
-  things, and they are one rule rather than two exceptions. It declines what the thread wrote while
-  the seat was cut off. It also declines the
-  turn whose own boundary triggered it: Codex writes a turn's first record before it announces that
-  the turn started, and that announcement is what a rebind runs on, so the record is always behind
-  whatever boundary the rebind takes, and a run is never opened from the middle of a turn. The first
-  turn to start after the rebind is published in full. One case is different and is named here
-  rather than left to be discovered: if the emitter had already been publishing this thread and
-  then died, the seat's log carries its position, and the rebind CONTINUES that log rather than
-  starting where it binds. The rebind publishes the complete outage backlog once the plane is back,
-  including everything the thread wrote after the previous emitter became terminal. A backlog
-  written while the plane was terminal is not discarded; it is delivered on recovery. Tool
-  arguments and tool results are still not republished, on the live plane or on that backlog.
-  What the stream also does not carry is the session's own record of the user's words and the
-  developer instructions. The boundary rule is not confined to the seat whose emitter never
-  started. It changes WHICH RECORDS reach the stream, on every armed seat. A bind announces
+  ready, the plane publishes through the seat's reconnecting mesh endpoint, and an outage can stop
+  its emitter for good. On a space that requires events the seat then stops with exit code 1. On
+  any other space the seat keeps running, its log records `AG-UI emitter stopped`, and the thread
+  publishes nothing more until an app-server restart brings up a new thread with its own plane.
+  Tool arguments and tool results are not published. The stream also does not carry the
+  session's own record of the user's words and the developer instructions. A bind announces
   where the stream starts and the emitter's setup then runs before its first read; what the
-  thread appended inside that window used to land behind the cursor and be dropped, and it is
-  published now. A whole turn can sit in there, so the recovery path now covers a stretch of
-  the session it previously lost. Nothing is sent twice in either case. The boundary itself is
-  written to the log as soon as the bind succeeds, so a host that dies before its first read
-  still resumes from that boundary rather than from wherever the file ends by the time it comes
-  back.
+  thread appends inside that window is published rather than left behind the cursor, and a whole
+  turn can sit in there. Nothing is sent twice. The boundary itself is written to the log as soon
+  as the bind succeeds, so a host that dies before its first read still resumes from that boundary
+  rather than from wherever the file ends by the time it comes back.
 
   The grant still does not decide who may READ a plane. A spawn through the manager gives a seat
   publish rights on its own event channel and nothing else, and a spawn whose grant names a

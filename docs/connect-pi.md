@@ -83,7 +83,9 @@ session JSONL is the durable source; extension hooks only wake the reader after 
 The event plane is enabled by default. `--no-events` opts out only on unrestricted spaces.
 A registration that requires events arms the plane independently of the environment flag, and
 the seat must hold the channel's publish grant. An event-enabled launch needs a stable
-workspace root for its write-ahead log.
+workspace root for its write-ahead log. If the event plane stops for good, the seat stops on a
+space that requires events. On any other space it keeps running without events, and Pi's log
+records `AG-UI emitter stopped` with the reason.
 
 Text is published at **completed-message granularity**, not as live token deltas. Pi emits
 live text updates before writing the assistant record, so those deltas cannot be recovered
