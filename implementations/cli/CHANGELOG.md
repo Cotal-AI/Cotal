@@ -1,5 +1,31 @@
 # @cotal-ai/cli
 
+## 0.68.0
+
+### Patch Changes
+
+- 218006f: A bearer command that fails without printing a sentence of its own now reports its cause. The agent auth preflight in `cotal spawn` and in the manager, and a running agent's bearer refresh, reported such a failure with Node's `Command failed` line, which repeated the whole bearer argv (exchange URL or state dir, space, owner, actor, token file and health file) and never said whether the child timed out, was killed or exited. The error now says the bearer command timed out after its limit, was killed by a named signal, or exited with a named code and printed nothing. A failure the command explains on stderr is still reported with that sentence. `bearerCommandFailure` in `@cotal-ai/core` builds the error.
+- a31363d: A broker URL refused during registration now names where it came from. `cotal meshes add --user-auth-file` or `--from` reports a bad server in the bundle as the bundle's server, and the enrollment bootstrap (`COTAL_ENROLLMENT_URL` with `cotal spawn --space`) reports it as the enrollment bundle's server. Both used to blame `--server`, a flag neither command was given. A typed `--server` is still reported as `--server`.
+- 2dfb9b9: The `up-multi-space-render`, `up-per-space-membership` and `up-resume-render-lock` live smokes now start `cotal` as `node --import tsx` instead of through the `.bin/tsx` shim. The shim runs the CLI in a second process and relays only SIGINT and SIGTERM, so the suites' SIGKILL escalation ended the wrapper and left the real `cotal up` running as an orphan. The spawned child is now the CLI itself, so the SIGKILL reaches it. Shipped behaviour is unchanged.
+- a5256fd: Ctrl-C on a foreground `cotal up`, and a broker that exits under it, now stop the delivery daemon with the same stop `cotal down delivery` uses. Before, that teardown took no stop reservation and never escalated past SIGTERM: a concurrent `cotal down delivery` could not see the stop in progress, and a daemon that did not exit on SIGTERM survived the teardown while `up` went on to stop the broker. The teardown now holds the reservation, sends SIGKILL after the 15-second grace, and removes the daemon's credential only once its death is confirmed. If the broker exits while the Ctrl-C teardown is running, `up` waits for that teardown to finish before it exits. `cotal down delivery` now clears a record whose pid belongs to another program without signalling it, as the `up` teardown already did. A local process descriptor can carry `isOwnCommand` for that check; an installed extension's descriptor is cached as data and is refused if it declares one.
+- 2014b03: `cotal setup` now builds each connector setup step with the input that action's type declares, so the compiler checks which input reaches the `connector`, `skills` and `mcpServers` actions. The step builder used to pick the input by action name behind two casts, which let a swapped or missing input compile and reach the provider only when someone ran `cotal setup`.
+- 237c813: `cotal_spawn` now returns an uncertain launch as a pending result instead of a tool error. A worker that has not joined the mesh within its readiness window is still managed and may yet join, so the result names the allocated agent, its id and its manager, and says to watch the roster, because spawning again starts a second agent. A launch that exits stays an error. The goal follower keeps the acceptance as the reply data of any terminal other than `succeeded`, and `ControlReply` carries the endpoint error code, so the tool keys on the `uncertain` code rather than on the message. A pinned-model spawn that settles uncertain reports its recorded pin the same way.
+- e6b48bf: `cotal status --components` now presents the dashboard's readiness nonce from `web.session` when it probes `/api/meta`, so a live dashboard at its recorded address grades `web serving`. The probe used to ask anonymously, the dashboard's auth gate refused it with 401, and the row could only read `not-serving · http identity mismatch`.
+- Updated dependencies [6141e7b]
+- Updated dependencies [4120c97]
+- Updated dependencies [218006f]
+- Updated dependencies [681c5b0]
+- Updated dependencies [585fdb2]
+- Updated dependencies [a5256fd]
+- Updated dependencies [0d806ae]
+- Updated dependencies [9b439e8]
+- Updated dependencies [41a7e66]
+- Updated dependencies [f018376]
+- Updated dependencies [6a1789b]
+- Updated dependencies [237c813]
+  - @cotal-ai/core@0.68.0
+  - @cotal-ai/workspace@0.68.0
+
 ## 0.67.0
 
 ### Minor Changes

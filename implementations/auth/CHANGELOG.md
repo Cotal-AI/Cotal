@@ -1,5 +1,35 @@
 # @cotal-ai/auth
 
+## 0.68.0
+
+### Minor Changes
+
+- 6141e7b: The issuing host no longer signs an answering run operator for a checkpoint token a participant manager names. The manager's request now names the run and step it answers (`operator.answers: { runId, stepKey, amend? }`), and the host requires that run admitted on the manager's instance, reads the pause's token off the run's journal under a read it mints for that run, and requires a served answer to name the same run and step as the request it observed. Before, a manager could be issued the answer and settle writes for another instance's waiting pause. The pause lookups `openCheckpointToken`, `settledPauseToken`, `stepPauseToken`, `CheckpointNotOpen` and `CheckpointNotAmendable` move to `@cotal-ai/lang`; `@cotal-ai/runtime` still exports the first four. A participant manager and its issuing host must upgrade together.
+
+### Patch Changes
+
+- 171a177: The manager serve grant no longer takes a serve actor it never read. `reconstructRemoteManagerServeGrant` now takes the request, the owner and the observed gate, and `remoteManagerServeGrantFromCluster` no longer computes and discards the manager actors. The grant is unchanged: it is derived from the gate and the cluster document alone.
+- 9b439e8: `mintPublicUserJwt` in `@cotal-ai/core` now takes only what it signs with: the space and the account's public key and signing seed. The auth service passed it that partial context behind a cast that turned the type check off for every remote-manager credential it signs. It now passes the context typed. Its authority plane also opens the auth KV view once and reads every manager issuance gate through one helper, where each operation used to reopen the view and rebuild the gate inline. The activate arm's duplicate missing-gate check, which could never run, is gone.
+- f81a132: The docs index and the platform control authority design page no longer call the door unreleased. It shipped in 0.60.0 and its readiness read in 0.62.0. The delegated user launch intent design page now says it shipped in 0.62.0, with its host incarnation members in 0.65.0. No behavior changes.
+- Updated dependencies [6141e7b]
+- Updated dependencies [4120c97]
+- Updated dependencies [218006f]
+- Updated dependencies [681c5b0]
+- Updated dependencies [585fdb2]
+- Updated dependencies [a5256fd]
+- Updated dependencies [0d806ae]
+- Updated dependencies [b38a683]
+- Updated dependencies [d5ea4d2]
+- Updated dependencies [54e0199]
+- Updated dependencies [9b439e8]
+- Updated dependencies [41a7e66]
+- Updated dependencies [f018376]
+- Updated dependencies [6a1789b]
+- Updated dependencies [237c813]
+  - @cotal-ai/core@0.68.0
+  - @cotal-ai/lang@0.68.0
+  - @cotal-ai/workspace@0.68.0
+
 ## 0.67.0
 
 ### Minor Changes

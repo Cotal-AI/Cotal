@@ -1,5 +1,12 @@
 # @cotal-ai/web
 
+## 0.68.0
+
+### Patch Changes
+
+- e6b48bf: `cotal status --components` now presents the dashboard's readiness nonce from `web.session` when it probes `/api/meta`, so a live dashboard at its recorded address grades `web serving`. The probe used to ask anonymously, the dashboard's auth gate refused it with 401, and the row could only read `not-serving · http identity mismatch`.
+- f2af439: The dashboard's channel-delete route comment now names the cred it purges with: the `channel-purger` cred minted at startup, the connection creds on open and `--creds` meshes, or a per-delete `channel-purger` view in user mode. It used to name a `manager` cred that no longer exists. The observer's `tls` comment now states only why the client's own TLS requirement is the fence, without narrating the change that added it. No behavior changes.
+
 ## 0.67.0
 
 ### Patch Changes
