@@ -6292,24 +6292,25 @@ export class CotalEndpoint extends EventEmitter {
     };
   }
 
-  /** Bind a presence watch on the current connection. Resolves true when the watch was
-   *  installed, false when the endpoint stopped or rebuilt while the bind was in flight: that
-   *  bind's iterator is released here and nothing is installed, because the epoch that asked
-   *  for it is gone and the epoch that replaced it binds its own watch through
+  /** Bind a presence watch on the current connection. Resolves the bound consumer's info when
+   *  the watch was installed, undefined when the endpoint stopped or rebuilt while the bind was
+   *  in flight: that bind's iterator is released here and nothing is installed, because the
+   *  epoch that asked for it is gone and the epoch that replaced it binds its own watch through
    *  {@link connectAndBind}. Without this fence a bind that completes after {@link stop} would
    *  resurrect a watch on a stopped endpoint, and one that completes after a rebuild would
    *  overwrite the fresh epoch's watch with a dead-connection iterator. */
-  private async startPresenceWatch(): Promise<boolean> {
-    if (!this.kv) return false;
+  private async startPresenceWatch(): Promise<ConsumerInfo | undefined> {
+    if (!this.kv) return undefined;
     const epoch = this.presenceEpoch;
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
     const iter = await this.kv.watch();
-    this.recordOwnWatchConsumer(await kvWatchConsumer(iter).info(true));
+    const info = await kvWatchConsumer(iter).info(true);
+    this.recordOwnWatchConsumer(info);
     if (epoch !== this.presenceEpoch) {
       try { iter.stop(); } catch { /* its connection may already be gone */ }
       hydrated();
-      return false;
+      return undefined;
     }
     this.presenceWatchIter = iter;
     void (async () => {
@@ -6329,7 +6330,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       hydrated();
     })().catch((e) => this.emit("error", e as Error));
-    return true;
+    return info;
   }
 
   /**
@@ -6356,18 +6357,17 @@ export class CotalEndpoint extends EventEmitter {
         // one a held link never answers must leave the old watch in place: on a plain stall that
         // watch is the one that recovers by itself, and its replay is still guarded against
         // expired PUTs. Only a successfully bound watch retires its predecessor.
-        const installed = await this.startPresenceWatch();
+        const info = await this.startPresenceWatch();
         // Retired mid-bind (stop or rebuild moved the epoch): the late iterator is already
         // released and the old watch was torn down by whoever moved the epoch. Nothing to
         // retire, nothing to report.
-        if (!installed) return;
+        if (!info) return;
         if (old && old !== this.presenceWatchIter) { try { old.stop(); } catch { /* already closed with its consumer */ } }
         // A bucket with no keys replays nothing, so the new watch cannot refresh
-        // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. Read
-        // the consumer's initial pending count for that one fact; nats.js's KV watch computed it
-        // from the same `info(true)` it used to place the isUpdate marker.
-        const pending = (this.presenceWatchIter as { _data?: { _info?: { num_pending?: number } } } | undefined)?._data?._info?.num_pending;
-        if (pending === 0) await this.onPresenceBucketEmpty();
+        // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. The
+        // bind's consumer info carries the initial pending count for that one fact; nats.js's KV
+        // watch placed the isUpdate marker from the same `info(true)`.
+        if (info.num_pending === 0) await this.onPresenceBucketEmpty();
         this.emit("warning", new Error(
           `presence watch silent for ${silentMs}ms with the connection up; rebound it from the bucket's current state`,
         ));
