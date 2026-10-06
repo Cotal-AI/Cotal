@@ -12,6 +12,7 @@ import {
   UserAuthenticationExpiredError,
   NoRespondersError,
   RequestError,
+  TimeoutError,
   type NatsConnection,
   type Subscription,
 } from "@nats-io/transport-node";
@@ -590,12 +591,6 @@ export class CotalEndpoint extends EventEmitter {
    *  EXPECTED async permission violation that joinChannel turns into a clean throw, so watchStatus
    *  suppresses it rather than surfacing a spurious connection error. */
   private readonly confirmingChatSubs = new Set<string>();
-  /** Delete subjects of this endpoint's own consumers whose refusal watchStatus has not consumed yet
-   *  (see {@link deleteOwnConsumer}). */
-  private readonly ownConsumerDeletes = new Set<string>();
-  /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches,
-   *  running membership scans and running history reads (see {@link recordOwnWatchConsumer}). */
-  private readonly ownWatchDeletePrefixes = new Set<string>();
   /** True until the first successful connect completes its boot backfill — distinguishes first-connect
    *  (backfill the boot channels' history) from a reconnect (reopen the core-subs, no re-backfill).
    *  Persists across reconnect (NOT connection-scoped). Replaces the legacy chat-durable consumed-cursor
@@ -1589,8 +1584,6 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubs.clear();
     this.chatSubDenied.clear();
     this.confirmingChatSubs.clear();
-    this.ownConsumerDeletes.clear();
-    this.ownWatchDeletePrefixes.clear();
     this.roster.clear();
     // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
     // It says "the broker on THIS connection refuses writes to this bucket", so it cannot outlive the
@@ -3003,16 +2996,7 @@ export class CotalEndpoint extends EventEmitter {
     // measured at 30-34s for 89 entries against a mesh at 534ms RTT. `liveKvEntries` is ~3 round
     // trips regardless of N, and (unlike the old loop) refuses to return a truncated view rather
     // than reporting a partial roster as the whole one.
-    let scanPrefix: string | undefined;
-    const entries = await liveKvEntries(kv, {
-      onConsumer: (info) => { scanPrefix = this.recordOwnWatchConsumer(info); },
-      deleteOwnConsumer: (stream, name, del) => this.deleteOwnConsumer(stream, name, del),
-    }).finally(() => {
-      // The scan's own last delete goes out after nats.js closed its consumer, so every predecessor
-      // delete the library sent is answered ahead of it on this connection.
-      if (scanPrefix) this.ownWatchDeletePrefixes.delete(scanPrefix);
-    });
-    for (const e of entries) {
+    for (const e of await liveKvEntries(kv)) {
       if (e.key === MEMBERSHIP_FEED_KEY) {
         try { asOf = e.json<{ observedAt: number }>().observedAt; } catch { /* heartbeat garbled; leave undefined */ }
         continue;
@@ -3072,7 +3056,6 @@ export class CotalEndpoint extends EventEmitter {
     const cc = kv._buildCC(">", KvWatchInclude.LastValue, { headers_only: false });
     const consumer = await kv.js.consumers.getPushConsumer(kv.stream, cc);
     const info = await consumer.info(true);
-    this.recordOwnWatchConsumer(info);
     // The broker resource exists now. Record its identity BEFORE consume() so a concurrent stop or
     // connection close always leaves enough state for strict cleanup or fresh-epoch retry.
     watch.consumer = consumer;
@@ -3124,46 +3107,11 @@ export class CotalEndpoint extends EventEmitter {
     watch.rejectStop = undefined;
   }
 
-  /** Run one delete of a consumer this endpoint created. A profile without the delete row is refused
-   *  by design (#691), and nats.js reports a refused request twice: as the request's rejection, which
-   *  the caller handles, and on the connection status, which watchStatus would emit as an `error`.
-   *  A refused subject stays recorded until watchStatus drops that echo, since the two settle in
-   *  either order. */
-  private async deleteOwnConsumer(stream: string, name: string, del: () => Promise<boolean>): Promise<boolean> {
-    const subject = `$JS.API.CONSUMER.DELETE.${stream}.${name}`;
-    this.ownConsumerDeletes.add(subject);
-    let refused = false;
-    try { return await del(); }
-    catch (err) { refused = isPublishPermissionDenied(err); throw err; }
-    finally { if (!refused) this.ownConsumerDeletes.delete(subject); }
-  }
-
-  /** Record the consumer behind one of this connection's own KV watches, membership scans or history
-   *  reads, and return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
-   *  rebuilding it after a stall or a sequence gap, deletes the predecessor itself with no hook before
-   *  the send, so a profile without the delete row (#691) has that delete refused. A watch's prefix
-   *  stays recorded for the connection because a retired watch's last rebuild can be refused after
-   *  the watch has stopped; {@link readMembership} and {@link drainWindow} retire theirs after their own
-   *  last delete, which goes out once nats.js has stopped the consumer and so is answered after every
-   *  predecessor delete. */
-  private recordOwnWatchConsumer({ stream_name, name }: ConsumerInfo): string {
-    const prefix = `$JS.API.CONSUMER.DELETE.${stream_name}.${name.slice(0, name.lastIndexOf("_") + 1)}`;
-    this.ownWatchDeletePrefixes.add(prefix);
-    return prefix;
-  }
-
-  /** Whether `subject` deletes `<prefix>_<serial>` of a consumer {@link recordOwnWatchConsumer} recorded. */
-  private isOwnWatchDelete(subject: string): boolean {
-    const cut = subject.lastIndexOf("_") + 1;
-    return /^\d+$/.test(subject.slice(cut)) && this.ownWatchDeletePrefixes.has(subject.slice(0, cut));
-  }
-
   /** Delete a history reader's own ephemeral consumer. A refused delete is the designed outcome for
    *  the elevated profile, which holds no stream-wide CONSUMER.DELETE (#691): the broker reaps the
    *  consumer at its inactive threshold. */
   private async deleteReaderConsumer(consumer: Consumer): Promise<void> {
-    const { stream_name, name } = await consumer.info(true);
-    try { await this.deleteOwnConsumer(stream_name, name, () => consumer.delete()); }
+    try { await consumer.delete(); }
     catch (e) {
       if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound) && !isPublishPermissionDenied(e)) throw e;
     }
@@ -3171,7 +3119,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Delete one membership-watch consumer, swallowing ONLY already-gone and a refused delete. */
   private async deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string): Promise<boolean> {
-    try { return await this.deleteOwnConsumer(stream, name, () => jsm.consumers.delete(stream, name)); }
+    try { return await jsm.consumers.delete(stream, name); }
     catch (err) {
       if (membershipConsumerReleased(err)) return true;
       throw err;
@@ -3189,8 +3137,7 @@ export class CotalEndpoint extends EventEmitter {
     try { iter?.stop(); } catch { /* already closed */ }
     if (consumer) {
       try {
-        const { stream_name, name } = await consumer.info(true);
-        const deleted = await this.deleteOwnConsumer(stream_name, name, () => consumer.delete());
+        const deleted = await consumer.delete();
         if (deleted) { watch.consumerStream = undefined; watch.consumerName = undefined; }
       } catch (err) {
         if (membershipConsumerReleased(err)) {
@@ -3644,8 +3591,6 @@ export class CotalEndpoint extends EventEmitter {
     signal?.throwIfAborted();
     const out: { seq: number; subject: string; msg: HistoryMessage }[] = [];
     const consumer = await js.consumers.get(stream, { filter_subjects: subjects, opt_start_seq: start });
-    // A delivery-sequence gap makes nats.js rebuild this consumer and delete the predecessor itself.
-    const readerPrefix = this.recordOwnWatchConsumer(await consumer.info(true));
     try {
       // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
       // explicit uncached `info()` this used to call was a round trip for data we already had.
@@ -3702,7 +3647,7 @@ export class CotalEndpoint extends EventEmitter {
       // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
       // The observer and admin profiles may not delete (#691), so the dashboard's readers do live out
       // that threshold; only a profile holding the delete row reclaims them here.
-      await this.deleteReaderConsumer(consumer).finally(() => { this.ownWatchDeletePrefixes.delete(readerPrefix); });
+      await this.deleteReaderConsumer(consumer);
     }
   }
 
@@ -3710,14 +3655,17 @@ export class CotalEndpoint extends EventEmitter {
 
   /**
    * Surface the connection's async status errors on our `error` event. NATS reports
-   * publish permission violations *only* here (subscription/request ones too), never on
-   * the failing call — so without this an over-tight ACL silently drops the agent's
-   * traffic and it just looks "absent". We annotate permission denials explicitly so a
-   * denial is never mistaken for absence (which already has a benign cause: MCP reconnect).
+   * publish permission violations *only* here (subscription ones too), never on the
+   * failing call — so without this an over-tight ACL silently drops the agent's
+   * traffic and it just looks "absent". A denied request is the exception: nats.js also
+   * rejects that request with the denial, so its caller owns it (see {@link trackRequestDenials}).
+   * We annotate permission denials explicitly so a denial is never mistaken for absence
+   * (which already has a benign cause: MCP reconnect).
    */
   private watchStatus(): void {
     const nc = this.nc;
     if (!nc) return;
+    const handedToRequest = this.trackRequestDenials(nc);
     void (async () => {
       for await (const s of nc.status()) {
         // A rebuild can replace `this.nc` before the old iterator finishes. Late disconnect/close
@@ -3745,12 +3693,7 @@ export class CotalEndpoint extends EventEmitter {
         // and turns into a clean throw — it is not a connection error to surface.
         if (s.error instanceof PermissionViolationError && this.confirmingChatSubs.has(s.error.subject))
           continue;
-        // The echo of a refused delete of this endpoint's own consumer: one its caller already handled,
-        // or the predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
-        // history reads.
-        if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
-          && (this.ownConsumerDeletes.delete(s.error.subject) || this.isOwnWatchDelete(s.error.subject)))
-          continue;
+        if (s.error instanceof PermissionViolationError && handedToRequest(s.error)) continue;
         this.emit("error", describeStatusError(s.error));
       }
     })().catch((e) => {
@@ -3770,6 +3713,34 @@ export class CotalEndpoint extends EventEmitter {
     // through a real pending dial, a stopped endpoint announced a live transport it never had.
     if (this.stopped) return;
     this.emit("transport", { connected: true, server: nc.getServer() } satisfies TransportState);
+  }
+
+  /** Wrap `nc.request` to recognise a publish denial that answers one of this connection's requests.
+   *  nats.js rejects the pending request on the denied subject with it and then dispatches the same
+   *  error on the connection status, so a caller that made the denial its result (an empty history
+   *  read, a refused consumer delete, nats.js's own delete of a rebuilt watch's predecessor) would
+   *  still have it emitted as an `error`. The status loop can see that error while the request is
+   *  still pending or after it rejected. A request can also time out first, as a rebuild's delete does
+   *  when it is sent into a stalled link, and then its denial arrives matched to nothing; each timed-out
+   *  request takes one later denial on its subject as its answer. */
+  private trackRequestDenials(nc: NatsConnection): (denial: PermissionViolationError) => boolean {
+    const pending = new Map<string, number>();
+    const timedOut = new Map<string, number>();
+    const rejected = new WeakSet<PermissionViolationError>();
+    const request = nc.request.bind(nc);
+    nc.request = async (subject, payload, opts) => {
+      adjustCount(pending, subject, 1);
+      try { return await request(subject, payload, opts); }
+      catch (err) {
+        const { cause } = err as Error;
+        if (err instanceof TimeoutError) adjustCount(timedOut, subject, 1);
+        else if (cause instanceof PermissionViolationError) rejected.add(cause);
+        throw err;
+      }
+      finally { adjustCount(pending, subject, -1); }
+    };
+    return (denial) => denial.operation === "publish"
+      && (pending.has(denial.subject) || rejected.has(denial) || adjustCount(timedOut, denial.subject, -1));
   }
 
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a
@@ -6305,7 +6276,6 @@ export class CotalEndpoint extends EventEmitter {
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
     const iter = await this.kv.watch();
-    this.recordOwnWatchConsumer(await kvWatchConsumer(iter).info(true));
     if (epoch !== this.presenceEpoch) {
       try { iter.stop(); } catch { /* its connection may already be gone */ }
       hydrated();
@@ -6389,7 +6359,6 @@ export class CotalEndpoint extends EventEmitter {
   private async startChannelWatch(): Promise<void> {
     if (!this.channelKv) return;
     const iter = await this.channelKv.watch();
-    this.recordOwnWatchConsumer(await kvWatchConsumer(iter).info(true));
     this.channelWatchIter = iter;
     void (async () => {
       for await (const e of iter) this.handleChannelEntry(e);
@@ -7035,11 +7004,14 @@ function isJetStreamMissing(e: unknown, ...codes: number[]): boolean {
   return e instanceof JetStreamApiError && codes.includes(e.code);
 }
 
-/** The ordered consumer behind a KV watch, which nats.js keeps on the iterator and the KV types hide. */
-function kvWatchConsumer(iter: Awaited<ReturnType<KV["watch"]>>): PushConsumer {
-  const consumer = (iter as { _data?: PushConsumer })._data;
-  if (!consumer) throw new Error("KV watch carries no consumer - the pinned nats.js changed shape");
-  return consumer;
+/** Add `delta` to the count kept for `key`, dropping the key at zero. False, and nothing changed, when
+ *  there was no count to take from. */
+function adjustCount(counts: Map<string, number>, key: string, delta: 1 | -1): boolean {
+  const next = (counts.get(key) ?? 0) + delta;
+  if (next < 0) return false;
+  if (next) counts.set(key, next);
+  else counts.delete(key);
+  return true;
 }
 
 /** A membership-watch delete that leaves nothing to retry: the consumer is already gone, or the broker

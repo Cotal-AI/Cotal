@@ -26,7 +26,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable, loadAgentFile,
   setupSpaceStreams, seedChannelRegistry, provisionAgent, mintLifecycleUid, CotalEndpoint,
-  chatStream, chatSubject, chatHistDurable, DEV_OWNER,
+  chatStream, chatSubject, chatHistDurable, DEV_OWNER, isPermissionDenied,
   type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -178,13 +178,13 @@ try {
   check("bob received alice's #general post (live)", B.got.some((g) => g.channel === "general" && g.text === "hello from alice"), B.got);
   check("carol received alice's #general post (live)", C.got.some((g) => g.channel === "general" && g.text === "hello from alice"), C.got);
 
-  // (3) carol posts #general → DENIED (default-deny allowPublish). NATS surfaces the publish
-  // permission violation on the async status channel → the endpoint's "error" event.
+  // (3) carol posts #general → DENIED (default-deny allowPublish). The post is a JetStream publish
+  // request, so the broker's permission violation rejects the multicast call itself.
   console.log("[3] default-deny publish is broker-enforced");
-  C.errors.length = 0;
-  await C.ep.multicast("carol should not post", { channel: "general" }).catch(() => {});
+  let carolDenial: unknown;
+  await C.ep.multicast("carol should not post", { channel: "general" }).catch((e) => { carolDenial = e; });
   await sleep(400);
-  check("carol's post raised a permission error (default-deny)", C.errors.some((e) => /permission|authorization/i.test(e)), C.errors);
+  check("carol's post was rejected with a permission error (default-deny)", isPermissionDenied(carolDenial), String(carolDenial));
   check("nobody received carol's blocked post", !B.got.concat(A.got).some((g) => g.text === "carol should not post"), "leaked");
   // Same boundary, broker-direct + deterministic: a raw publish with carol's creds is denied.
   check("carol's RAW publish to chat.<o>.<a>.general is broker-denied", await rawPubDenied(carol.creds, carol.ident.id, chatSubject(space, DEV_OWNER, carol.ident.id, "general")));

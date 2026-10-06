@@ -55,7 +55,6 @@ const watch = {
   consumerStream: "KV_membership",
   consumerName: "ordered-watch",
   consumer: {
-    info: () => Promise.resolve({ stream_name: "KV_membership", name: "ordered-watch" }),
     delete: () => Promise.reject(new TimeoutError()),
   } as unknown as PushConsumer,
 };
@@ -88,7 +87,6 @@ const authWatch = {
   stopped: false,
   arm: Promise.resolve(),
   consumer: {
-    info: () => Promise.resolve({ stream_name: "KV_membership", name: "auth-watch" }),
     delete: () => Promise.reject(Object.assign(new Error("permissions violation for subscription"), { code: 503 })),
   } as unknown as PushConsumer,
 };
@@ -107,7 +105,6 @@ const missingWatch = {
   consumerStream: "KV_membership",
   consumerName: "gone",
   consumer: {
-    info: () => Promise.resolve({ stream_name: "KV_membership", name: "gone" }),
     delete: () => Promise.reject(Object.assign(new Error("consumer not found"), { code: 404 })),
   } as unknown as PushConsumer,
 };

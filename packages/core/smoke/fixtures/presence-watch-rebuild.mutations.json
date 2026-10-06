@@ -6,21 +6,24 @@
       "file": "packages/core/src/provision.ts",
       "find": "\n      `$JS.API.CONSUMER.INFO.${KV}.>`,\n",
       "replace": "\n      `$JS.API.CONSUMER.INFO.${KV}.>`,\n      `$JS.API.CONSUMER.DELETE.${KV}.>`,\n",
-      "expectRed": "1.4 the rebuild's delete of its predecessor was REFUSED"
+      "expectRed": "1.4 the rebuild's delete of its predecessor was REFUSED",
+      "cell": "1.4 the rebuild's delete of its predecessor was REFUSED: no stream-wide consumer delete"
     },
     {
       "name": "P2 an account-wide consumer delete is added, which reaches the presence bucket without naming it",
       "file": "packages/core/src/provision.ts",
       "find": "\n      `$JS.API.CONSUMER.INFO.${KV}.>`,\n",
       "replace": "\n      `$JS.API.CONSUMER.INFO.${KV}.>`,\n      \"$JS.API.CONSUMER.DELETE.>\",\n",
-      "expectRed": "1.4 the rebuild's delete of its predecessor was REFUSED"
+      "expectRed": "1.4 the rebuild's delete of its predecessor was REFUSED",
+      "cell": "1.4 the rebuild's delete of its predecessor was REFUSED: no stream-wide consumer delete"
     },
     {
-      "name": "P3 the endpoint stops recognising its own watch's rebuild delete, so the refused predecessor delete reaches its error event",
+      "name": "P3 the endpoint stops recognising a denial that answers one of its own requests, so the refused predecessor delete reaches its error event",
       "file": "packages/core/src/endpoint.ts",
-      "find": " || this.isOwnWatchDelete(s.error.subject)",
+      "find": "        if (s.error instanceof PermissionViolationError && handedToRequest(s.error)) continue;\n",
       "replace": "",
-      "expectRed": "1.6 and the client treats that refusal as handled"
+      "expectRed": "1.6 and the client treats that refusal as handled",
+      "cell": "1.6 and the client treats that refusal as handled: no endpoint error names the delete"
     }
   ],
   "suite": [
