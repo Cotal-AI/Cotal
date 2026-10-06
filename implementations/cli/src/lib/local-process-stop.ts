@@ -196,8 +196,13 @@ export async function stopLocalProcess(
     // `unknown` as gone and deleted a live process's record; it is gone.
     // The pin goes with the pidfile (#969), and only while the pidfile still names the stopped pid: a
     // publish that committed a successor meanwhile is left whole (#1238).
-    if (stopped) removePidPair(pidPath, rawPid);
-    else if (authorized) options.afterFailedSignal?.();
-    rmSync(marker, { force: true });
+    try {
+      if (stopped) removePidPair(pidPath, rawPid);
+      else if (authorized) options.afterFailedSignal?.();
+    } finally {
+      // A cleanup that throws still ends this stop: a reservation left behind refuses every other
+      // stop of this component for as long as this process lives.
+      rmSync(marker, { force: true });
+    }
   }
 }
