@@ -96,7 +96,7 @@
  * failure, which means a green total names nothing and cannot show that a NEW cell ran at all.
  */
 import { AguiEmitterHolder } from "../src/agui-holder.js";
-import type { AguiEmitter } from "../src/agui.js";
+import type { AguiEmitter } from "../src/agui-emitter.js";
 
 let ok = 0,
   fail = 0;

@@ -3,6 +3,7 @@ export * from "./agent.js";
 export * from "./runtime.js";
 export * from "./launch.js";
 export * from "./agui.js";
+export * from "./agui-emitter.js";
 export * from "./durable-source.js";
 export * from "./event-wal.js";
 export * from "./subject-frontier.js";

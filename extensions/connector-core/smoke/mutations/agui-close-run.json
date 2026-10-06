@@ -14,7 +14,7 @@
     "consumed that were never mapped, and a consumer would see no seq gap to notice it by.",
     "",
     "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the emitter and the holder",
-    "by RELATIVE SOURCE PATH (../src/agui.js, ../src/agui-holder.js), so the bytes mutated are the",
+    "by RELATIVE SOURCE PATH (../src/agui-emitter.js, ../src/agui-holder.js), so the bytes mutated are the",
     "bytes graded. There is no dist in the path and no build in the command. Its one package-name",
     "import is `type Part` from @cotal-ai/core, which is erased at compile time and carries no",
     "behaviour.",
@@ -44,7 +44,7 @@
   "mutations": [
     {
       "name": "K1 the closing frame takes its cursor from a fresh source read, the copy-paste from pump",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    const cursor = this.wal.frontier.sourceCursor;\n    if (cursor === undefined)",
       "replace": "    const cursor = (await this.source.read(this.wal.frontier.sourceCursor)).cursor;\n    if (cursor === undefined)",
       "expectRed": "close:the-source-cursor-is-REPUBLISHED-UNCHANGED",
@@ -53,7 +53,7 @@
     },
     {
       "name": "K2 mint a run id when none is open instead of answering null",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    const runId = this.brackets.runId;\n    if (runId === undefined) return null;",
       "replace": "    const runId = this.brackets.runId ?? randomUUID();",
       "expectRed": "close:a-stream-at-a-stopping-point-answers-null-and-publishes-NOTHING",
@@ -62,7 +62,7 @@
     },
     {
       "name": "K3 drop the pending guard on the close",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    if (this.wal.pending)\n      throw new Error(\n        `event emitter for ${this.channel}: a frame is still pending; recovery must settle it before a run can be closed`,\n      );",
       "replace": "",
       "expectRed": "close:a-PENDING-frame-refuses-the-close",
@@ -71,7 +71,7 @@
     },
     {
       "name": "K4 drop the halted guard on the close",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "  }): Promise<string | null> {\n    if (this.halted) throw this.halted;",
       "replace": "  }): Promise<string | null> {",
       "expectRed": "close:a-HALTED-emitter-refuses-to-close",
@@ -89,7 +89,7 @@
     },
     {
       "name": "K6 the emitter ignores the failure it was handed and publishes a finish, which is the state this plane shipped in",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    const event = o.error",
       "replace": "    const event = false",
       "expectRed": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-the-fixed-message-and-no-code",
@@ -107,7 +107,7 @@
     },
     {
       "name": "K8 the close publishes the upstream failure detail instead of the fixed message",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "      ? boundRunErrorForFrame({\n          message: RUN_ERROR_EGRESS_MESSAGE,",
       "replace": "      ? boundRunErrorForFrame({\n          message: o.error.message,",
       "expectRed": "close:a-short-failure-detail-is-replaced-by-the-fixed-message",

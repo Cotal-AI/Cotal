@@ -100,11 +100,7 @@ import { join } from "node:path";
 import { eventChannel, principalKey, type Part } from "@cotal-ai/core";
 import {
   aguiFrame,
-  AguiEmitter,
-  AguiBracketStateLost,
-  AguiEmitterHalted,
   AguiVocabularyError,
-  packUnits,
   runFinished,
   runStarted,
   textMessageContent,
@@ -112,8 +108,14 @@ import {
   textMessageStart,
   type AguiEvent,
   type AguiFrame,
-  type EmitUnit,
 } from "../src/agui.js";
+import {
+  AguiEmitter,
+  AguiBracketStateLost,
+  AguiEmitterHalted,
+  packUnits,
+  type EmitUnit,
+} from "../src/agui-emitter.js";
 import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
 import { memorySubjectFrontier } from "@cotal-ai/smoke-kit";

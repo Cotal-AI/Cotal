@@ -18,7 +18,7 @@
     "nothing about which channel was used.",
     "",
     "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the emitter by relative",
-    "source path (../src/agui.js), and agui.ts reaches eventChannelForSession by relative source",
+    "source path (../src/agui-emitter.js), and agui-emitter.ts reaches eventChannelForSession by relative source",
     "path (./launch.js), so the bytes mutated are the bytes graded. No dist is in that chain and no",
     "build is in the command. Its package-name imports are eventChannel and principalKey from",
     "@cotal-ai/core, used by the CELLS to state the expected answer and deliberately not mutated:",
@@ -36,7 +36,7 @@
     },
     {
       "name": "S2 adopt a write-ahead log belonging to another principal",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    if (wal.principal !== live)\n      throw new Error(",
       "replace": "    if (false as boolean)\n      throw new Error(",
       "expectRed": "subject:a-WAL-from-another-principal-REFUSES-rather-than-publishing-under-two-identities",
@@ -45,7 +45,7 @@
     },
     {
       "name": "S3 pin the channel to a constant instead of deriving it from the principal",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    const channel = eventChannelForSession(endpoint);",
       "replace": "    const channel = \"events.local.aaa\";",
       "expectRed": "subject:CONTROL-the-channel-tracks-the-principal-rather-than-being-a-constant",

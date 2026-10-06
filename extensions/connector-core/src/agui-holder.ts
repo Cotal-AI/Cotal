@@ -17,7 +17,8 @@
  * `start()` reaches the broker — work that must not run for a session that never emits. First
  * `adopt` is the earliest moment the emitter is both constructible and needed.
  */
-import type { AguiEmitter, CotalMeta } from "./agui.js";
+import type { CotalMeta } from "./agui.js";
+import type { AguiEmitter } from "./agui-emitter.js";
 
 /**
  * Holds at most one {@link AguiEmitter}, started on first adopt.

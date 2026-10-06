@@ -49,8 +49,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Part } from "@cotal-ai/core";
 import {
-  AguiEmitter,
-  AguiEmitterHalted,
   AguiVocabularyError,
   runStarted,
   textMessageStart,
@@ -60,6 +58,10 @@ import {
   type AguiFrame,
   RUN_ERROR_EGRESS_MESSAGE,
 } from "../src/agui.js";
+import {
+  AguiEmitter,
+  AguiEmitterHalted,
+} from "../src/agui-emitter.js";
 import { AguiEmitterHolder } from "../src/agui-holder.js";
 import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";

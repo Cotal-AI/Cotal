@@ -101,7 +101,7 @@
     },
     {
       "name": "L15 pending-frame recovery updates the WAL on disk but leaves the live emitter at the pre-pending bracket state",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });\n    this.brackets = AguiBrackets.restore(p.brackets);",
       "replace": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
