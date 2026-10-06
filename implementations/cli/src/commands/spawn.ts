@@ -43,6 +43,7 @@ import {
   type LaunchSpec,
   type ManagedLifecycleHandoff,
   type ParsedArgs,
+  type SecretStore,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
@@ -82,6 +83,7 @@ import {
   type ControlAuth,
   type ControlTarget,
   type MeshTarget,
+  type SpaceMaterialComposition,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -1236,7 +1238,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // Launch construction / spawn threw AFTER provisioning — undo BOTH planes (each a no-op in the
     // other's mode): revoke the user-mode actor grant AND roll back the static-auth creds + footprint,
     // before rethrowing, so no standing grant survives a spawn that never started.
-    if (userCleanup) await userCleanup().catch((err) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(err as Error).message}`)));
+    if (userCleanup) await userCleanup().catch((err) => console.error(c.red(`✗ cleaning up after ${name}: ${(err as Error).message}`)));
     await retireProvision("launch build failed");
     // The launch's private files (core launch-artifacts) go too: no child will read them.
     discardLaunchArtifacts(artifacts);
@@ -1266,7 +1268,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // gone, so its standing mint authority (ledger row + secret files) goes with it. Best-effort
   // (a SIGKILLed CLI can't run this; the next same-name spawn's rotation is the backstop), loud
   // on failure, never blocking the exit code already set above.
-  if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(e as Error).message}`)));
+  if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ cleaning up after ${name}: ${(e as Error).message}`)));
   // The child has exited or never started, so nothing reads the launch's private files any more
   // (core launch-artifacts). A SIGKILLed CLI cannot run this; the child's watcher removes those.
   discardLaunchArtifacts(spec.artifacts);
@@ -1310,6 +1312,32 @@ function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; materi
       ...(list("allowPublish") ? { allowPublish: list("allowPublish") } : {}),
     },
   };
+}
+
+/** Run one cleanup step, recording its failure in `failed` as `<what>: <reason>`. A step that threw
+ *  would otherwise skip every step after it, and a swallowed one would leave nothing to report. */
+async function attemptCleanup(failed: string[], what: string, step: () => unknown): Promise<void> {
+  try {
+    await step();
+  } catch (err) {
+    failed.push(`${what}: ${(err as Error).message}`);
+  }
+}
+
+/** Shred a user-mode agent's local material: both secrets from the store, then their files and the
+ *  health file. Each step is attempted and a failed one is recorded in `failed`. */
+async function shredAgentMaterial(
+  failed: string[],
+  store: SecretStore,
+  space: string,
+  name: string,
+  composition: SpaceMaterialComposition,
+  paths: { actorToken: string; sentinelCreds: string; health: string },
+): Promise<void> {
+  for (const key of [agentActorTokenKey(space, name, composition), agentSentinelCredsKey(space, name, composition)])
+    await attemptCleanup(failed, `secret ${key}`, () => store.delete(key));
+  for (const path of [paths.actorToken, paths.sentinelCreds, paths.health])
+    await attemptCleanup(failed, `file ${path}`, () => rmSync(path, { force: true }));
 }
 
 /** Foreground REMOTE-USER onboarding — the participant path for a mesh registered with
@@ -1409,27 +1437,18 @@ async function provisionRemoteUserForeground(
       // Local shred only. The remote row and its durables belong to the mesh's lifecycle; this
       // machine has no authority to retire them and must not pretend otherwise.
       cleanup: async () => {
-        await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
-        await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
-        rmSync(tokenPath, { force: true });
-        rmSync(sentinelPath, { force: true });
-        rmSync(healthPath, { force: true });
+        const failed: string[] = [];
+        await shredAgentMaterial(failed, store, space, name, composition, paths);
+        if (failed.length) throw new Error(failed.join("; "));
       },
     };
   } catch (e) {
-    let cause = e as Error;
-    try {
-      await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
-      await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
-      rmSync(tokenPath, { force: true });
-      rmSync(sentinelPath, { force: true });
-      rmSync(healthPath, { force: true });
-    } catch (shred) {
-      // Material may be left behind, which outranks the failure that started the shred, and an
-      // escaped error would bypass the refusal below.
-      cause = shred as Error;
-    }
-    return fail(refusals?.bearer ?? `agent auth preflight failed for "${name}": ${cause.message}`);
+    // What the shred left behind joins the refusal after its cause. A handoff refusal keeps its
+    // fixed sentence, because the removal errors quote paths named for the handoff's actor.
+    const failed: string[] = [];
+    await shredAgentMaterial(failed, store, space, name, composition, paths);
+    const leftover = failed.length ? `; cleanup failed: ${failed.join("; ")}` : "";
+    return fail(refusals?.bearer ?? `agent auth preflight failed for "${name}": ${(e as Error).message}${leftover}`);
   }
 }
 
@@ -1470,7 +1489,21 @@ async function provisionUserForeground(
   const publish = eventGrant ? [...(opts.allowPublish ?? []), eventGrant] : (opts.allowPublish ?? []);
   const infra = await getSpaceAuth(store, space); // cross-check the bundle names the space we resolved this root for
   if (!infra) return fail(`space "${space}" has user-auth state but no trust record under ${authDir(target.root)} (expected ${spaceAccountPath(authDir(target.root), space)} or the legacy auth.json) - re-run \`cotal up --user-auth\` here`);
-  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, space, name);
+  const paths = agentSecretFilePaths(target.root, space, name);
+  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = paths;
+  // Revoke the row, shred the secret material, and retire the broker footprint the durable
+  // provisioning below creates (DM/DLV durables + ACL row). Every step is attempted, so a failed
+  // removal cannot strand the durables on the broker, and the failures go back to the caller.
+  const teardown = async (): Promise<string[]> => {
+    const failed: string[] = [];
+    await attemptCleanup(failed, "revoke agent grant", () => provider.revokeAgent({ dir, owner, actor: name }));
+    await shredAgentMaterial(failed, store, space, name, composition, paths);
+    const targetId = principalKey(owner, name).key;
+    await attemptCleanup(failed, "deprovision", () =>
+      mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid: opts.lifecycleUid } })
+        .then((creds) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid: opts.lifecycleUid, creds })));
+    return failed;
+  };
   try {
     // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
     // the spawner's own grant), so a refused delegation exits here with zero broker footprint —
@@ -1542,36 +1575,18 @@ async function provisionUserForeground(
       userAuth: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
       ...(eventGrant ? { eventChannel: eventGrant } : {}),
       // The foreground departure's half of the runtime-grant invariant: the caller runs this when
-      // the agent process exits — revoke the row, shred the secret material, and retire the broker
-      // footprint the durable provisioning above created (DM/DLV durables + ACL row), the same
-      // teardown the rollback path below runs on a failed preflight.
+      // the agent process exits, the same teardown the rollback below runs on a failed preflight.
       cleanup: async () => {
-        await provider.revokeAgent({ dir, owner, actor: name });
-        await store.delete(agentActorTokenKey(space, name, composition));
-        await store.delete(agentSentinelCredsKey(space, name, composition));
-        rmSync(tokenPath, { force: true });
-        rmSync(sentinelPath, { force: true });
-        rmSync(healthPath, { force: true });
-        const targetId = principalKey(owner, name).key;
-        await mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid: opts.lifecycleUid } })
-          .then((creds) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid: opts.lifecycleUid, creds }))
-          .catch((err) => console.error(c.red(`✗ retiring ${name}'s broker footprint: ${(err as Error).message}`)));
+        const failed = await teardown();
+        if (failed.length) throw new Error(failed.join("; "));
       },
     };
   } catch (e) {
-    // Roll back EVERYTHING this attempt materialized, including the broker footprint the durable
-    // provisioning above created — a refused spawn leaves no row, no secret, no orphaned durables.
-    await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
-    await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
-    await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
-    rmSync(tokenPath, { force: true });
-    rmSync(sentinelPath, { force: true });
-    rmSync(healthPath, { force: true });
-    const targetId = principalKey(owner, name).key;
-    await mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid: opts.lifecycleUid } })
-      .then((creds) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid: opts.lifecycleUid, creds }))
-      .catch((err) => console.error(c.red(`✗ rollback deprovision ${name}: ${(err as Error).message}`)));
-    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
+    // Roll back EVERYTHING this attempt materialized: a refused spawn leaves no row, no secret, no
+    // orphaned durables. What the teardown could not remove joins the refusal after its cause.
+    const failed = await teardown();
+    const leftover = failed.length ? `; cleanup failed: ${failed.join("; ")}` : "";
+    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}${leftover}`);
   }
 }
 
