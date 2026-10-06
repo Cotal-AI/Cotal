@@ -5,6 +5,11 @@
  * config.json layer) and every write (creds, seeded files) gets one dim arrow line. stderr so
  * it never pollutes machine-readable stdout; plain text so this layer needs no color dep.
  *
+ * One call is one line whatever its arguments hold. A path can carry a newline, and written raw it
+ * would let one call announce a second act the command never made, or a carriage return overwrite
+ * the act it did make. So every control character and Unicode line separator in the line is shown
+ * as a `\uXXXX` escape instead.
+ *
  * Failure policy: a line reports an act that already happened, so a fault on stderr must neither
  * fail that act nor drop the line unsaid. When the stderr write throws or fails (EPIPE, ENOSPC,
  * EIO), at once or after waiting in a full pipe, the line is written to stdout instead with the
@@ -46,9 +51,16 @@ const absorbed = new Set<NodeJS.WriteStream>();
 /** Write one provenance line under the failure policy above: on stderr, else on stdout with the
  *  stderr error named, else counted as unsaid. */
 function say(line: string): void {
-  send(process.stderr, `${line}\n`, (failure) => {
-    send(process.stdout, `${line} (stderr failed: ${nameOf(failure)})\n`, lost);
+  send(process.stderr, oneLine(line), (failure) => {
+    send(process.stdout, oneLine(`${line} (stderr failed: ${nameOf(failure)})`), lost);
   });
+}
+
+/** `text` under the one-line rule above, newline-terminated. The failure name is escaped with the
+ *  rest, since a thrown value's message can carry a newline too. */
+function oneLine(text: string): string {
+  const escaped = text.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  return `${escaped}\n`;
 }
 
 /** A thrown value need not be an Error (`throw null`), and naming one must not throw, since that
