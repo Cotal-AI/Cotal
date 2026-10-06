@@ -900,7 +900,7 @@ export class MeshHandler {
 
     await this.arm(ref, deadline);
 
-    const settled = await this.settle(ref, ctx.signal);
+    const settled = await this.settle(ref, ctx.signal, deadline);
     if (settled.settle === "expired") return { outcome: "expired", at: settled.ts };
     // The settle NAMES its answer, and the record is read under that name rather than by looking
     // for "the answer to this token": two resolvers can have filed answers and only one of them
@@ -1617,9 +1617,7 @@ export class MeshHandler {
         for (;;) {
         if (ctx.signal.cancelled) {
           await this.cancelTimer(primary);
-          // The cancellation is this step's outcome either way: a withdrawal that does not land
-          // here is the discharge's to finish, and it raises there.
-          await this.withdrawRelay(goalId).catch(() => undefined);
+          await this.withdrawCancelledRelay(goalId, deadlineAt);
           throw new Cancelled(ctx.signal.reason ?? "cancelled");
         }
         const fact = await readGoalResult(actx, ref);
@@ -1799,7 +1797,7 @@ export class MeshHandler {
       await this.relayAsk(seat, ctx, token, { attempt, attempts, deadlineAt, ...(refused !== undefined ? { refused } : {}) });
       const ref: CheckpointRef = { endpoint: this.binding.endpoint, token };
       await this.arm(ref, deadlineAt);
-      const settled = await this.settle(ref, ctx.signal);
+      const settled = await this.settle(ref, ctx.signal, deadlineAt);
       if (settled.settle === "expired") {
         // The deadline is the ask's whole budget of time: passing it with no conforming record
         // is the same outcome exhausted attempts name (L4006), never a turn's deadline (L4003).
@@ -1981,6 +1979,25 @@ export class MeshHandler {
       if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the relay "${goalId}" was accepted by manager instance ${accepter}, but none of ${attempt + 1} cancels was answered by it; the discharge stays open to retry`);
       this.managerService = undefined;
+    }
+  }
+
+  /**
+   * Withdraw a cancelled step's relay before the cancellation leaves the step, so the scope it
+   * settles shows the seat nothing the run withdrew. A withdrawal that fails is tried again rather
+   * than left to the discharge, which runs only when the run ends: until then the relay would stay
+   * first on the seat and hold back the run's next turn to it. The retries stop when the relay's
+   * deadline passes, because the manager no longer serves it then, and a failure that outlasts it
+   * is the step's error.
+   */
+  private async withdrawCancelledRelay(goalId: string, deadlineAt: number): Promise<void> {
+    for (;;) {
+      try {
+        return await this.withdrawRelay(goalId);
+      } catch (e) {
+        if (this.now() >= deadlineAt) throw e;
+      }
+      await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
     }
   }
 
@@ -2417,7 +2434,7 @@ export class MeshHandler {
    * optimization, it is the difference between resuming and waiting forever for an event that is
    * already in the past.
    */
-  private async settle(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
+  private async settle(ref: CheckpointRef, signal?: CancelSignal, relayDeadlineAt?: number): Promise<CheckpointSettleFact> {
     // #1508, and the load-bearing half: this is where a `sleep` spends its whole duration, so this
     // is where a starved host was reporting its own scheduling as the effect's failure. The pause
     // and its timer are durable facts on the plane; re-reading them observes the same world, and a
@@ -2425,10 +2442,9 @@ export class MeshHandler {
     try {
       return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`, this.onStarved);
     } catch (e) {
-      // The relay an `ask` attempt or an escalation sent a seat under this token is withdrawn
-      // before the cancellation leaves the step, so the scope it settles shows the seat nothing
-      // the run withdrew. One that does not land is the discharge's to finish, and it raises there.
-      if (e instanceof Cancelled) await this.withdrawRelay(ref.token).catch(() => undefined);
+      // An `ask` attempt or an escalation may have relayed this token to a seat, under the pause's
+      // own deadline.
+      if (e instanceof Cancelled && relayDeadlineAt !== undefined) await this.withdrawCancelledRelay(ref.token, relayDeadlineAt);
       throw e;
     }
   }

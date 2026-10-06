@@ -491,7 +491,9 @@ turn, its ask attempt or its escalation ends `cancelled` through the manager's r
 (SPEC §13.6), so the seat is not shown it after the branch's scope settles and the next turn to
 that seat does not wait behind it. Only the manager that accepted the relay holds it, so in a
 space with more than one manager the run sends the cancel again while another manager refuses it,
-until the accepting one answers.
+until the accepting one answers. A cancel the accepting manager refuses is sent again until it
+lands or the relay's deadline passes, so the branch's cancellation does not complete while the
+seat can still be shown the relay. A refusal that lasts past the deadline fails the branch's step.
 A `spawn` may bind its agent to a **logical worktree** (`spawn("builder", { worktree: "wt-1" })`):
 the handle carries the id, and the run enforces the one rule the language states about it: two
 agents never share a worktree concurrently. The validator rejects the literal case up front
