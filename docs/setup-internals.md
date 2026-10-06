@@ -180,7 +180,7 @@ writes its child marker, so a refusal on those paths leaves none of them behind.
 
 For ergonomics only, an npx run with no global `cotal` offers to `npm i -g cotal-ai`
 (`offerGlobalInstall`, pinned to the running version): gated on `isNpx()` plus a PATH scan
-(`cotalOnPath()`, not `onPath("cotal")`, since `cotal --version` is not a real command). The
+(`cotalOnPath()`, not an exec probe, since `cotal --version` is not a real command). The
 interactive prompt defaults to yes, the non-interactive path (`--yes` or no TTY) takes the
 default, and a failed install is non-fatal (warn plus manual command). The same `self-exec.ts`
 exposes `displayCmd()`, the prefix (`cotal` / `npx cotal-ai` / `pnpm cotal`) used in the

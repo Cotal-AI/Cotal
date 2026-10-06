@@ -13,6 +13,7 @@ import {
   personaDir,
   provenance,
   resolveMeshTarget,
+  resolveOnPath,
   seedConnectorServers,
   type MeshTarget,
 } from "@cotal-ai/workspace";
@@ -25,7 +26,7 @@ import { abortIfCancel } from "../lib/cancel.js";
 import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, webUp, WEB_URL } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 
@@ -274,7 +275,7 @@ export interface SetupConnectorCandidate {
  *  for how that reads — and connector names never gate membership. Exported for the genericity smoke. */
 export function setupConnectorCandidates(
   connectors: readonly Connector[],
-  pathProbe: (bin: string) => boolean = onPath,
+  pathProbe: (bin: string) => boolean = (bin) => !!resolveOnPath(bin),
 ): SetupConnectorCandidate[] {
   return [...connectors]
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -415,7 +416,7 @@ async function connectorAssists(): Promise<ConnectorAssist[]> {
 /** Pure availability rule for connector-owned setup actions. No executable means no harness write;
  * the caller still continues to the cross-vendor Agent Skills reconcile. */
 export function setupProviderAvailable(provider: Pick<ConnectorSetupProvider, "requires">): boolean {
-  return !(provider.requires?.some((command) => !onPath(command)) ?? false);
+  return !(provider.requires?.some((command) => !resolveOnPath(command)) ?? false);
 }
 
 /** True when an installed extension contributes the `web` command (the dashboard moved out to
