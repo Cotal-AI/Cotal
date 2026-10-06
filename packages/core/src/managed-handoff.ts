@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
-import { isIPv4, isIPv6 } from "node:net";
+import { isLoopbackLiteral } from "./loopback.js";
 import { assertLifecycleToken, assertValidOwnerToken } from "./subjects.js";
 
 /** The env var naming the handoff file inside the child. It carries a path, never a secret. */
@@ -89,20 +89,6 @@ function checkField(field: string, validate: () => unknown): void {
   } catch {
     throw new Error(`the managed handoff's ${field} is malformed`);
   }
-}
-
-/** The `agent-bearer --exchange-url` transport rule, so the child refuses at parse what its bearer
- *  preflight would refuse later: the actor token never crosses plaintext off the child's machine,
- *  and a name such as localhost gets no exception because resolution picks where the token goes. */
-function isLoopbackLiteral(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (isIPv4(host)) return host.startsWith("127.");
-  const mappedHex = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
-  if (!isIPv6(host)) return false;
-  if (host === "::1") return true;
-  const mapped = host.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  return mapped !== null && mapped[1].startsWith("127.");
 }
 
 /** Take the handoff file into memory and remove it: open the path without following a link,
