@@ -38,11 +38,11 @@ function transcripts(env: NodeJS.ProcessEnv): string[] {
     readdirSync(dir, { withFileTypes: true }).filter((f) => f.isFile() && f.name.endsWith(".jsonl")).map((f) => join(dir, f.name)));
 }
 
-/** The session's name: the last title the operator gave it with `/rename`. */
+/** The session's name: the last title the operator gave it with `/rename`. Every line is parsed,
+ *  since a writer may escape any character of the row's type and a raw-text match would miss it. */
 function titleOf(path: string): string | undefined {
   let title: string | undefined;
   for (const line of readFileSync(path, "utf8").split("\n")) {
-    if (!line.includes('"custom-title"')) continue;
     try {
       const entry = JSON.parse(line) as { type?: unknown; customTitle?: unknown };
       if (entry.type === "custom-title" && typeof entry.customTitle === "string") title = entry.customTitle;
