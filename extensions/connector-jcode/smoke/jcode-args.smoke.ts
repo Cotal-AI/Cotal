@@ -178,7 +178,7 @@ try {
 
   const persona = join(dir, "agent.md");
   writeFileSync(persona, "---\nname: seat\nmodel: from-file\nvariant: medium\n---\nPersona\n");
-  check("uses agent-file model as a default", launch({ space: "s", name: "seat", configPath: persona, events: false }).env?.COTAL_MODEL === "from-file");
+  check("does not re-read the agent-file model", launch({ space: "s", name: "seat", configPath: persona, events: false }).env?.COTAL_MODEL === undefined);
   check("explicit model wins over agent file", launch({ space: "s", name: "seat", configPath: persona, model: "flag", events: false }).env?.COTAL_MODEL === "flag");
 
   // The variant IS Jcode's per-session reasoning effort. The connector carries the requested tier
@@ -189,7 +189,7 @@ try {
   check("variant rides env as the reasoning effort", tiered.env?.COTAL_VARIANT === "xhigh", tiered.env);
   check("variant reaches the host config seam", configFromEnv(tiered.env).variant === "xhigh");
   check("variant is absent when unrequested", base.env?.COTAL_VARIANT === undefined);
-  check("uses agent-file variant as a default", launch({ space: "s", name: "seat", configPath: persona, events: false }).env?.COTAL_VARIANT === "medium");
+  check("does not re-read the agent-file variant", launch({ space: "s", name: "seat", configPath: persona, events: false }).env?.COTAL_VARIANT === undefined);
   check("explicit variant wins over agent file", launch({ space: "s", name: "seat", configPath: persona, variant: "max", events: false }).env?.COTAL_VARIANT === "max");
 
   // Jcode decorates its MCP calls with these two harness fields. The bridge extends only the

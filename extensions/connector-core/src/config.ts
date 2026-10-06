@@ -83,12 +83,13 @@ export interface AgentConfig {
    *  started it (Hermes): without it, two such seats on one channel start a turn on each other's
    *  output and never stop. */
   channelRepliesPullOnly?: boolean;
-  /** Model the host runs this agent on (e.g. `claude-opus-4`), from the agent file's `model:` or
-   *  `COTAL_MODEL`. Rides {@link AgentCard.meta}.model as display-only discovery metadata; omitted
-   *  when the operator didn't pin one (the harness default isn't knowable from here). */
+  /** Model the host runs this agent on (e.g. `claude-opus-4`), from `COTAL_MODEL`: the value the
+   *  launcher resolved and the connector rendered, never a later read of the agent file. Rides
+   *  {@link AgentCard.meta}.model as display-only discovery metadata; omitted when the operator
+   *  didn't pin one (the harness default isn't knowable from here). */
   model?: string;
-  /** Connector-defined model variant (for example reasoning effort), from `variant:` or
-   *  `COTAL_VARIANT`. Display-only discovery metadata. */
+  /** Connector-defined model variant (for example reasoning effort), from `COTAL_VARIANT`, set the
+   *  same way as {@link model}. Display-only discovery metadata. */
   variant?: string;
   token?: string;
   user?: string;
@@ -408,8 +409,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     tags: def?.tags,
     meta: def?.meta,
     capabilities: splitList(env.COTAL_CAPABILITIES).length ? splitList(env.COTAL_CAPABILITIES) : def?.capabilities,
-    model: env.COTAL_MODEL?.trim() || def?.model || undefined,
-    variant: env.COTAL_VARIANT?.trim() || def?.variant || undefined,
+    model: env.COTAL_MODEL?.trim() || undefined,
+    variant: env.COTAL_VARIANT?.trim() || undefined,
     servers: material?.servers || env.COTAL_SERVERS?.trim() || link?.servers || DEFAULT_SERVER,
     subscribe: resolvedSubscribe,
     allowSubscribe: resolvedAllowSub,

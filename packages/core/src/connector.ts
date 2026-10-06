@@ -50,16 +50,18 @@ export interface LaunchOpts {
   capabilities?: string[];
   /** Path to an agent definition file (`.cotal/agents/<name>.md`). The connector
    *  passes it through (`COTAL_AGENT_FILE`) so the joined session reads its own
-   *  card from it, and applies the file's persona/model at launch. */
+   *  card from it, and applies the file's persona at launch. */
   configPath?: string;
-  /** Explicit model override — the `cotal start --model <m>` flag. Takes precedence over the
-   *  agent file's `model:` and is applied even when no agent file is present. Each connector
-   *  renders it in its host form (Claude `--model`, OpenCode `config.model`, Hermes `HERMES_MODEL`). */
+  /** The model the launcher resolved: the `--model` flag, else the agent file's `model:`. The
+   *  launcher checks and records this value, so a connector renders it as given in its host form
+   *  (Claude `--model`, OpenCode `config.model`, Hermes `HERMES_MODEL`) and never re-reads it from
+   *  {@link configPath}, which may have changed since. Absent means the harness default. */
   model?: string;
-  /** Optional model variant selector — a connector-defined variant of the selected/default model
-   *  (for example provider-specific reasoning effort). Takes precedence over the agent file's
-   *  `variant:`. A connector that supports variants renders it in its host form; unsupported
-   *  connectors fail loud rather than silently ignoring it. */
+  /** The model variant the launcher resolved: the `--variant` flag, else the agent file's
+   *  `variant:`. A connector-defined variant of the selected/default model (for example
+   *  provider-specific reasoning effort), rendered as given like {@link model}. A connector that
+   *  supports variants renders it in its host form; unsupported connectors fail loud rather than
+   *  silently ignoring it. */
   variant?: string;
   /** Opaque, connector-specific launch options — an arbitrary key→value map core forwards VERBATIM
    *  and never inspects. Connectors forward well-shaped keys raw into their own host form (CLI flags,

@@ -34,6 +34,27 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Hermes model from the environment in 0.68.0
+
+A connector now launches on the model and variant its launcher resolved (the `--model` or
+`--variant` flag, else the agent file's `model:` or `variant:`) and no longer reads them again from
+the agent file. The Hermes connector also no longer takes a model from `HERMES_MODEL` in the
+environment of the process that spawns the seat, including when `spawn.env` lists it.
+
+### What stops working
+
+A Hermes spawn whose only model was `HERMES_MODEL` in the spawning environment is refused at launch,
+and the refusal names both ways to set a model. Spawns that set `--model` or `model:` are unchanged,
+on every connector.
+
+Code that calls a connector's `buildLaunch` directly with only `configPath` now gets no model or
+variant from that file. Pass them as `model` and `variant`.
+
+### Before the upgrade
+
+Move each Hermes seat's model from `HERMES_MODEL` onto its spawn with `--model`, or into its
+persona's `model:`.
+
 ## Run answers on a participant manager in 0.68.0
 
 A participant manager now asks its issuing host for an answering credential by naming the run and

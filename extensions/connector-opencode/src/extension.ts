@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { opencodeLine } from "./opencode-line.js";
 
@@ -254,22 +254,14 @@ export const opencodeConnector: Connector = {
       },
     };
 
-    // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus persona + model/variant.
-    // The model/variant are config defaults (the session — and the attached TUI — use them); the persona is
-    // applied in-session by the plugin (opencode has no `--append-system-prompt`).
-    let model = opts.model;
-    let variant = opts.variant;
-    if (opts.configPath) {
-      const path = resolve(opts.configPath);
-      env.COTAL_AGENT_FILE = path; // plugin reads persona from it
-      const def = loadAgentFile(path);
-      model ??= def.model;
-      variant ??= def.variant;
-    }
-    // The `--model` / `--variant` flags win over the agent file, and apply even with no agent file.
-    // Pin them to a dedicated primary agent made the default, so an operator's own `default_agent` in
+    // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus persona, which the
+    // plugin applies in-session (opencode has no `--append-system-prompt`).
+    if (opts.configPath) env.COTAL_AGENT_FILE = resolve(opts.configPath);
+    // The model/variant are config defaults (the session — and the attached TUI — use them). Pin
+    // them to a dedicated primary agent made the default, so an operator's own `default_agent` in
     // ~/.config/opencode (with its own model) can't override what a Cotal spawn asks for — the session
     // the plugin drives runs the persona's selectors, not the operator's default agent's.
+    const { model, variant } = opts;
     const cotalAgent: Record<string, unknown> = { mode: "primary" };
     if (model) {
       config.model = model;

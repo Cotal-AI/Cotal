@@ -123,7 +123,7 @@ export function setupProfile(home: string, opts: { model: string | undefined; pe
   if (!opts.model)
     throw new LaunchRefused(
       "a managed Hermes profile does not read ~/.hermes, and no model was resolved for it — " +
-        `set one with --model, the agent file's model:, or HERMES_MODEL, or run the gateway on your own profile with ${ADOPT_HOME_ENV}=$HOME/.hermes`,
+        `set one with --model or the agent file's model:, or run the gateway on your own profile with ${ADOPT_HOME_ENV}=$HOME/.hermes`,
     );
   mkdirSync(home, { recursive: true });
   const pluginDst = join(home, "plugins", "cotal");
