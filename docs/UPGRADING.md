@@ -110,6 +110,28 @@ resume a cut that this release took.
 Upgrade the CLI on every host that runs `cotal spawn --detach` in the same window as the managers
 it reaches.
 
+## Shared MCP server checks in 0.69.0
+
+The cotal config reader now checks each server under `connectors.<name>.mcpServers` when it reads
+the file, and refuses one that cannot launch as written, naming the file and the field. The rules
+are in [the config file](config.md#the-config-file).
+
+### What stops working
+
+A config file that holds such a server refuses every Claude spawn that reads it, including one with
+`--share-tools none`. Before, a field of the wrong type failed each Claude spawn that shared the
+server with a `TypeError` that named neither the file nor the server, a spawn that did not share it
+launched, and a server with no `command` or `url` was passed to `claude`, which never started it.
+Read from the code and not measured: spawns on other connectors, a manager resume and the step of
+`cotal setup` that records the shared list read the same files, so each stops at the same refusal.
+
+### Before the upgrade
+
+Check `connectors.<name>.mcpServers` in the operator-level config file and in each space's
+`.cotal/config.json`. Give each server a string `command`, or a `type` of `http`, `sse` or `ws` with
+a string `url`. Write `args` as a list of strings and `env` and `headers` as objects of strings, or
+remove the server.
+
 ## Carrying a resumed Claude session to another host
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the

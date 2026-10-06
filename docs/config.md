@@ -19,7 +19,8 @@ most-specific-wins:
 
 They merge per connector and per server name: a server in the space-local file replaces the
 same-named server in the operator-level file; connectors or servers present in only one side are
-kept. A missing file is empty (valid); malformed JSON or a non-object top level is a loud error.
+kept. A missing file is empty (valid); malformed JSON, a non-object top level, or a shared server
+that cannot launch as written is a loud error.
 
 It carries three things: which of your personal MCP servers a connector should **share** with the
 agents it spawns, optional `spawn.env` names that deliberately add environment capability to a
@@ -54,6 +55,13 @@ your own Claude / VS Code / Cursor config. Secrets ride as **`${VAR}` references
 `${VAR:-default}`), resolved from your environment at launch and forwarded to the child **by name**
 (never as literals) so the file stays safe to keep in `~/.config` or a gitignored `.cotal/`. Only
 `command`, `args`, `env`, `url`, and `headers` are expanded; any other key passes through verbatim.
+
+A server that cannot launch as written is refused when the file is read, with its path in the file
+(`connectors.<name>.mcpServers.<server>.<field>`). `command`, `type` and `url` must be strings, `args`
+a list of strings, and `env` and `headers` objects of strings. A server must also name a transport to
+start: a non-empty `command` when `type` is absent or `stdio`, or a non-empty `url` when it is `http`,
+`sse` or `ws`. Any other `type` is refused. Every spawn reads the whole file, so one such entry
+refuses every spawn until it is fixed, `--share-tools none` included.
 
 **`--share-tools` interplay**. The per-spawn selection narrows what this config declares:
 
