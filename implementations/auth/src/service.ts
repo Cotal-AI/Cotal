@@ -274,6 +274,8 @@ export interface AuthAuthorityPlane {
    *  kept minting would look healthy while a successor reclaims its scanners). Never resolves on a
    *  clean close. */
   fenced: Promise<string>;
+  /** Clean close (SPEC 13.13). Rejects when the plane did not release its claim; the barrier and
+   *  the remaining clients still close. */
   close(): Promise<void>;
 }
 
@@ -491,6 +493,9 @@ export async function openAuthAuthorityPlane(opts: {
   let recordsScanner: RecordsScanner | undefined;
   let barrierReg;
   let closing = false;
+  // A failed open throws its own error, so a release failing on the way out is only logged: the
+  // row stays held and the next open reclaims it like a crash.
+  const releaseAfterFailedOpen = async () => hold?.release().catch((r: Error) => log(r.message));
   // The plane-fatal channel (fact HIGH: a fenced plane must never keep serving): the mid-life
   // fence resolves it, every authority operation refuses from then on, and the composition root
   // downs the daemon. A clean close never resolves it.
@@ -528,7 +533,7 @@ export async function openAuthAuthorityPlane(opts: {
     closing = true;
     await recordsCand?.close();
     await ledgerCand?.close();
-    await hold?.release();
+    await releaseAfterFailedOpen();
     await barrier?.close();
     await remoteIssuer.close();
     await reader.close();
@@ -592,7 +597,7 @@ export async function openAuthAuthorityPlane(opts: {
     closing = true;
     await recordsScanner.close();
     await scanner.close();
-    await hold.release();
+    await releaseAfterFailedOpen();
     await barrier.close();
     await remoteIssuer.close();
     await reader.close();
@@ -614,7 +619,7 @@ export async function openAuthAuthorityPlane(opts: {
     closing = true;
     await recordsScanner.close();
     await scanner.close();
-    await hold.release();
+    await releaseAfterFailedOpen();
     await barrier.close();
     await remoteIssuer.close();
     await reader.close();
@@ -1551,10 +1556,13 @@ export async function openAuthAuthorityPlane(opts: {
       await reader.close();
       await recordsScanner.close();
       await scanner.close();
-      await hold.release();
-      await barrier.close();
-      await remoteIssuer.close();
-      await writer.close();
+      try {
+        await hold.release();
+      } finally {
+        await barrier.close();
+        await remoteIssuer.close();
+        await writer.close();
+      }
     },
   };
 }
@@ -1706,7 +1714,12 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   // The CLI wrapper, not the context, owns process signals and exit codes.
   const stop = async () => {
     clearAuthServiceInfo(dir); // a dead service must not satisfy the next start's readiness poll
-    await started.handle.close();
+    try {
+      await started.handle.close();
+    } catch (e) {
+      console.error(`✗ auth-service: ${(e as Error).message} - exiting`);
+      process.exit(1);
+    }
     process.exit(0);
   };
   process.on("SIGINT", () => void stop());
@@ -1812,7 +1825,10 @@ export interface PlatformControlInput {
  *  installs no process signal handler, never exits the process, never selects a root from cwd,
  *  and has no local manager. It returns only after the authority plane, the callout subscription
  *  and the loopback listener are bound. A failed start releases what it acquired and throws. A
- *  mid-life fence or broker loss makes only this context `unavailable` and closes its resources. */
+ *  mid-life fence or broker loss makes only this context `unavailable` and closes its resources.
+ *  `close()` rejects when the context did not release its plane claim (SPEC 13.13): the row was
+ *  no longer its own, or the release write failed. The next start reclaims a row left held through
+ *  the liveness oracle. */
 export async function startAuthService(inputs: HostedContextInputs & {
   port?: number;
   /** Absent: the handle has no `publicUrl` and nothing serves the discovery bundle. */
@@ -2055,8 +2071,11 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       closePromise = (async () => {
         await Promise.all([closeServer(http), closeServer(publicHttp)]);
         await reader?.client.then((c) => c.close(), () => {});
-        await plane.close().catch(() => {});
-        await callNc.close().catch(() => {});
+        try {
+          await plane.close();
+        } finally {
+          await callNc.close();
+        }
       })();
       return closePromise;
     };
@@ -2068,7 +2087,8 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       if (end.kind === "fenced" || end.cause !== undefined || closePromise === undefined) {
         state = "unavailable";
         cause = end.kind === "fenced" ? end.cause : `broker connection closed${end.cause !== undefined ? ` (${end.cause})` : ""}`;
-        void close();
+        // A later close() returns this same promise, so its failure still reaches the host.
+        close().catch(() => {});
       }
       return end;
     });
