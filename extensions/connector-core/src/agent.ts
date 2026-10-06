@@ -1843,11 +1843,28 @@ export class MeshAgent extends EventEmitter {
     );
   }
 
-  async anycast(role: string, text: string): Promise<CotalMessage> {
+  async anycast(
+    role: string,
+    text: string,
+  ): Promise<{
+    msg: CotalMessage;
+    ack: { seq: number; duplicate: boolean };
+    /** Live roster rows holding `role`, ourselves excluded; absent when the presence view was not
+     *  current, since only a current view can say that no holder exists (#1229). */
+    holdersAtSend?: number;
+  }> {
     await this.requireConnected();
+    // Like a DM's recipient status, the only holder count we can truthfully attribute is the roster
+    // snapshot taken right before the publish. Our own task consumer acks and drops our own request
+    // as an echo, so we never serve it and are not counted.
+    const holdersAtSend =
+      this.ep.presenceView().state === "current"
+        ? this.ep.getRoster().filter((p) => p.card.role === role && p.status !== "offline" && p.card.id !== this.id).length
+        : undefined;
     const { stamp, own } = this.stamp();
     this.recordQuestion(own, { role });
-    return this.ep.anycast(role, text, stamp);
+    const { msg, ack } = await this.ep.anycastAttributed(role, text, stamp);
+    return { msg, ack, holdersAtSend };
   }
 
   /** Resolve a peer by instance id (exact) or display name. Deterministic and fail-loud: returns

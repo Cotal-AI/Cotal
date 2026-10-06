@@ -253,6 +253,12 @@ for (const s of specs) {
     );
     lines.push("");
   }
+  if (s.name === "cotal_anycast") {
+    lines.push(
+      "On success the tool answers `Request stored as seq <N> on the @<role> queue (<k> holders online at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. The sequence proves the broker stored the request on the role's work queue. The count is the roster's live holders of the role a moment before the publish, never you: your own task consumer drops your own request as an echo. While the presence view is not current the count reads `holders unknown at send: the presence view was not current`, because a partial roster cannot show that no holder exists. Neither the sequence nor the count proves a holder took the request.",
+    );
+    lines.push("");
+  }
 }
 
 lines.push("---");

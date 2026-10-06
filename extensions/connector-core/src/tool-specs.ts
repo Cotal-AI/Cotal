@@ -1102,8 +1102,13 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
       async run(agent, _config, { role, text: msg }: { role: string; text: string }) {
         try {
-          await agent.anycast(role, msg);
-          return ok(`Sent to one @${role}.`);
+          const { ack, holdersAtSend: n } = await agent.anycast(role, msg);
+          const dup = ack.duplicate ? " duplicate publication." : "";
+          const at =
+            n === undefined
+              ? "holders unknown at send: the presence view was not current"
+              : `${n} holder${n === 1 ? "" : "s"} online at send`;
+          return ok(`Request stored as seq ${ack.seq} on the @${role} queue (${at}; delivery not confirmed).${dup}`);
         } catch (e) {
           return err(`Couldn't send: ${(e as Error).message}`);
         }
