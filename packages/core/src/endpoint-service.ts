@@ -450,7 +450,7 @@ export async function registerServiceInstance(
   // The gate is frozen; every exit below reopens it (token-pinned, at the original coordinate) or
   // deliberately leaves it FROZEN for reconciliation. The successor the completing reopen targets.
   // `processEpoch` defaults to the frozen gate's epoch (an ABORT reopens the UNCHANGED coordinate);
-  // only the completing PHASE-4 reopen of a RE-registration advances it (P2 item 3, below).
+  // only a completing reopen advances it ({@link successorProcessEpoch}).
   const successorAt = (registrationRevision: number, processEpoch: number = obs.processEpoch): EpGateSuccessor => ({
     generation: obs.generation + 1, processEpoch, registrationRevision, nameAuthorityRevision: obs.nameAuthorityRevision,
   });
@@ -681,20 +681,7 @@ export async function registerServiceInstance(
 
   // PHASE 4 — reopen at the successor, TOKEN-pinned: only this barrier (still holding its freeze)
   // may reopen; a lost CAS means a reconciler/newer barrier superseded us → leave frozen.
-  // P2 item 3 (SPEC 13.6 item 7): a RE-registration (a prior spec existed at PHASE 1) is a
-  // restarted/superseded incarnation of the SAME instanceId — advance the processEpoch so the
-  // successor FENCES the predecessor's epoch (old-epoch serve/settle is refused, the (i) fence
-  // bites on a real restart). A FIRST registration keeps the provisioned epoch (0), so a single
-  // never-restarted instance stays at epoch 0. The advance rides THIS completing reopen only; the
-  // old family was already revoked + verify-evicted in PHASE 2, so no old-epoch authority survives.
-  // A DEREGISTRATION TOMBSTONE COUNTS AS A PRIOR INCARNATION. The question this predicate asks is
-  // "did an incarnation of this instanceId exist before me", and a DEL marker answers yes exactly as
-  // a live spec does — the deregistration is what removed it. Reading only `PUT` here would let a
-  // stop-then-start pair re-register at the PREDECESSOR's epoch, so a predecessor process that
-  // outlived its own deregistration would still hold a current-epoch authority. TRUE ABSENCE (never
-  // registered) is the only case that keeps the provisioned epoch.
-  const isReRegistration = current !== undefined && current !== null;
-  const processEpoch = isReRegistration ? obs.processEpoch + 1 : obs.processEpoch;
+  const processEpoch = successorProcessEpoch(obs);
   try {
     if (!(await args.barrier.reopen(token, successorAt(newRev, processEpoch))))
       throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
@@ -775,6 +762,22 @@ async function recoverCommittedSpecWrite(
   return again.revision;
 }
 
+/** The `processEpoch` a completing registration reopen commits (P2 item 3, SPEC 13.6 item 7,
+ *  13.7). A RE-registration is a restarted/superseded incarnation of the SAME instanceId, so it
+ *  advances the epoch and the successor FENCES the predecessor's (old-epoch serve/settle is
+ *  refused). A FIRST registration keeps the provisioned epoch (0), so a never-restarted instance
+ *  stays at epoch 0. The old family was already revoked + verify-evicted under the freeze, so no
+ *  old-epoch authority survives the advance.
+ *
+ *  The question is "did an incarnation of this instanceId exist before me", and only the gate
+ *  answers it: its `registrationRevision` is 0 until a registration commits, and a deregistration
+ *  leaves it untouched, so a stop-then-start pair never re-registers at the predecessor's epoch.
+ *  Both completing reopens ask the gate they hold frozen, never the records store, so the normal
+ *  path and a resumed one commit the same epoch for the same history. */
+function successorProcessEpoch(gate: { processEpoch: number; registrationRevision: number }): number {
+  return gate.registrationRevision === 0 ? gate.processEpoch : gate.processEpoch + 1;
+}
+
 /** After holder-gone eviction, complete a frozen registration whose Phase-3 spec write committed
  *  (gate.registrationRevision still names the pre-write spec). Returns `completed: false` when the
  *  spec has not advanced, so the caller may abort-reopen. A failed spec/governance read stays frozen. */
@@ -803,7 +806,7 @@ export async function completeFrozenRegistrationFromSpec(
     throw new EpEnvelopeError("unavailable", `the frozen registration's spec is unreadable; the gate stays frozen (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
   }
   await promoteHeldGovernance(recordsKv, args.endpoint, args.instanceId, args.gate.generation);
-  const processEpoch = args.gate.registrationRevision === 0 ? args.gate.processEpoch : args.gate.processEpoch + 1;
+  const processEpoch = successorProcessEpoch(args.gate);
   const successor: EpGateSuccessor = {
     generation: args.gate.generation + 1,
     processEpoch,

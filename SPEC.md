@@ -3033,8 +3033,10 @@ instance's `registrationRevision`**, the value scatter freezes (§13.5): it adva
 when the mediated registration path writes the spec key, so an advance during a scatter is
 exactly a re-registration. The `processEpoch` of the instance's issuance gate (§13.1) is 0 after
 the first registration of its `instanceId`, and each later registration of it commits the previous
-epoch plus one. Epoch 0 is open and serving like any later epoch, and a consumer or sweeper MUST NOT
-treat it as absent or not ready. `describe` is a reserved untargeted
+epoch plus one. A registration is the first when the gate's `registrationRevision` is still 0; a
+deregistration leaves the gate unchanged, so the registration after it is a later one. Epoch 0 is
+open and serving like any later epoch, and a consumer or sweeper MUST NOT treat it as absent or not
+ready. `describe` is a reserved untargeted
 ephemeral command every endpoint MUST serve, returning the descriptor with clusters inline or
 by digest. **Authorization-scoped answers use a trusted authorization source only**: the
 answer is intersected against a fresh view of the caller's authority obtained from the
