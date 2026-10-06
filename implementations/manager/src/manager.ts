@@ -55,7 +55,6 @@ import {
   newIdentity,
   actionContext,
   parsePrincipalKey,
-  parseShareSelection,
   principalKey,
   probeConnect,
   provisionAgent,
@@ -632,7 +631,7 @@ export interface ManagerResumeAgent {
     allowPublish?: string[];
     capabilities?: string[];
     events: boolean;
-    shareTools?: string;
+    shareTools?: string[];
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
     /** Where the fork came from, as the seat recorded it once it forked (#1500). */
@@ -661,7 +660,7 @@ export interface ManagerResumeAgent {
 }
 
 export interface ManagerResumeInventory {
-  version: "cotal-manager-resume/v1";
+  version: "cotal-manager-resume/v2";
   space: string;
   createdAt: string;
   agents: ManagerResumeAgent[];
@@ -757,9 +756,9 @@ export interface StartAgentOpts {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
-  /** `--share-tools` selection narrowing which of the operator's configured MCP servers this
-   *  agent gets (absent → all declared for the connector — the pre-merge manager behavior). */
-  shareTools?: string;
+  /** Names of the operator's configured MCP servers this agent gets (absent → all declared for the
+   *  connector — the pre-merge manager behavior; `[]` → none). */
+  shareTools?: string[];
   /** Declarative in-place restart policy from a workflow `spawn`. When set, the manager restarts
    *  the process under the same name, lifecycle uid, persona, worktree and permits until
    *  `restarts` deaths fall inside `windowMs`. Absent: only a continuation-capable connector
@@ -796,7 +795,7 @@ interface ManagedLaunch {
   allowPublish?: string[];
   capabilities?: string[];
   events: boolean;
-  shareTools?: string;
+  shareTools?: string[];
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
   resumed?: ForkProvenance;
@@ -2490,7 +2489,7 @@ export class Manager {
     // actually saw.
     const backfillFloor = await this.chatFrontierForPreservation();
     const inventory = this.preservationInventory ?? {
-      version: "cotal-manager-resume/v1",
+      version: "cotal-manager-resume/v2",
       space: this.space,
       createdAt: new Date().toISOString(),
       agents: [...this.agents.values()].map((a) => this.resumeEntry(a, backfillFloor)),
@@ -5100,11 +5099,12 @@ export class Manager {
         throw new Error(`${flag}: expected an array of strings`);
       return v as string[];
     };
-    let subscribe: string[] | undefined, allowSubscribe: string[] | undefined, allowPublish: string[] | undefined;
+    let subscribe: string[] | undefined, allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, shareTools: string[] | undefined;
     try {
       subscribe = strList(args.subscribe, "subscribe");
       allowSubscribe = strList(args.allowSubscribe, "allowSubscribe");
       allowPublish = strList(args.allowPublish, "allowPublish");
+      shareTools = strList(args.shareTools, "shareTools");
     } catch (e) {
       return Promise.resolve({ ok: false, error: (e as Error).message });
     }
@@ -5154,7 +5154,7 @@ export class Manager {
         subscribe,
         allowSubscribe,
         allowPublish,
-        shareTools: args.shareTools !== undefined ? String(args.shareTools) : undefined,
+        shareTools,
         ...(supervise !== undefined ? { supervise } : {}),
         route,
       },
@@ -5587,7 +5587,7 @@ export class Manager {
         return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
       if (typeof opts.cwd === "string" && opts.cwd !== "")
         return { ok: false, error: `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory` };
-      const shared = Object.keys(connectorServers(loadCotalConfig(this.workspaceRoot), agent, parseShareSelection(opts.shareTools)));
+      const shared = Object.keys(connectorServers(loadCotalConfig(this.workspaceRoot), agent, opts.shareTools));
       if (shared.length)
         return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
     }
@@ -6002,7 +6002,7 @@ export class Manager {
       // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
       // an optional --share-tools selection (absent → all declared, the pre-merge behavior).
       const cotalConfig = loadCotalConfig(this.workspaceRoot);
-      const mcpServers = connectorServers(cotalConfig, agent, parseShareSelection(opts.shareTools));
+      const mcpServers = connectorServers(cotalConfig, agent, opts.shareTools);
       // The operator's spawn-env policy travels the same route: absent means no extras (the OS
       // allow-list + operator knobs + connector-declared inputs), present means those names too.
       // A connector never reads the config itself.
@@ -6286,7 +6286,7 @@ export class Manager {
     const batchReservations: string[] = [];
     const prepared = new Map<string, PreparedResume>();
     try {
-      if (inventory.version !== "cotal-manager-resume/v1")
+      if (inventory.version !== "cotal-manager-resume/v2")
         return { ok: false, agents: [], error: `unsupported manager resume inventory version ${String(inventory.version)}` };
       if (inventory.space !== this.space)
         return { ok: false, agents: [], error: `resume inventory belongs to space "${inventory.space}", not "${this.space}"` };
@@ -6718,7 +6718,7 @@ export class Manager {
 
       try {
         const resumeConfig = loadCotalConfig(this.workspaceRoot);
-        const mcpServers = connectorServers(resumeConfig, entry.launch.connector, parseShareSelection(entry.launch.shareTools));
+        const mcpServers = connectorServers(resumeConfig, entry.launch.connector, entry.launch.shareTools);
         const envAllow = spawnEnvAllow(resumeConfig);
         const launchOpts: LaunchOpts = {
           space: this.space,

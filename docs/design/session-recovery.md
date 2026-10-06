@@ -297,7 +297,7 @@ This section adds the time bound and states plainly which half is new.
 ### 2.1 What the code checks today
 
 `Manager.resumePreserved` in `manager.ts` performs, in order: an inventory version check against
-`cotal-manager-resume/v1`; a space match against its own space; a capacity check against `MAX_AGENTS`
+`cotal-manager-resume/v2`; a space match against its own space; a capacity check against `MAX_AGENTS`
 (50, declared in `resume.ts`); a duplicate-name check; a duplicate-principal check; a manager-local
 retirement-hold check against `this.retiring`, which refuses and re-drives that exact teardown; and a
 roster liveness check that refuses with `retained principal is already live and this runtime cannot

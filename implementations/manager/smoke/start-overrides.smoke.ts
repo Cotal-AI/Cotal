@@ -144,18 +144,18 @@ const j = (v: unknown) => JSON.stringify(v);
   check("no --prompt → LaunchOpts.prompt undefined", lastOpts?.prompt === undefined, lastOpts?.prompt);
 }
 
-// 5 — share-tools selection narrows the declared servers; `none` = none; absent = all; unknown fails.
+// 5 — share-tools selection narrows the declared servers; `[]` = none; absent = all; unknown fails.
 {
   resetOpts();
   await mgr.startAgent({ name: "plain", agent: "smoke-ov", events: false });
   check("absent shareTools → all declared servers", j(Object.keys(lastOpts?.mcpServers ?? {})) === j(["alpha", "beta"]), lastOpts?.mcpServers);
   resetOpts();
-  await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "alpha", events: false });
+  await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: ["alpha"], events: false });
   check("named selection → that server only", j(Object.keys(lastOpts?.mcpServers ?? {})) === j(["alpha"]), lastOpts?.mcpServers);
   resetOpts();
-  await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "none", events: false });
-  check("shareTools none → no servers", j(Object.keys(lastOpts?.mcpServers ?? {})) === j([]), lastOpts?.mcpServers);
-  const bad = await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: "gamma", events: false });
+  await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: [], events: false });
+  check("empty shareTools → no servers", j(Object.keys(lastOpts?.mcpServers ?? {})) === j([]), lastOpts?.mcpServers);
+  const bad = await mgr.startAgent({ name: "plain", agent: "smoke-ov", shareTools: ["gamma"], events: false });
   check("undeclared share-tools name fails loud", bad.ok === false && /gamma/.test(bad.error ?? ""), bad);
 }
 

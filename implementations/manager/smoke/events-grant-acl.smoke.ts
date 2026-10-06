@@ -670,7 +670,7 @@ try {
     const openPersonaPath = join(openAgentsDir, "event-bot.md");
     const openPersonaSha256 = createHash("sha256").update(readFileSync(openPersonaPath)).digest("hex");
     const openInventory: ManagerResumeInventory = {
-      version: "cotal-manager-resume/v1",
+      version: "cotal-manager-resume/v2",
       space,
       createdAt: new Date().toISOString(),
       agents: [
