@@ -141,7 +141,7 @@ export async function describeEndpoint(
     // {@link openPublishDenialWatch}: a refused publish is otherwise indistinguishable
     // from an unanswered describe.
     denialWatch = openPublishDenialWatch(nc, subject, () => new EpEnvelopeError("permission-denied",
-      `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "describe");
+      `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`, undefined, "not-executed"), "describe");
     const got = new Promise<{ body: Record<string, unknown>; responder: { instanceId: string; epoch: number } }>((resolve, reject) => {
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
         callback: (err, msg) => {
@@ -502,6 +502,10 @@ export interface SubmitAndFollowGoalOptions {
   currentNc?: () => NatsConnection | undefined;
   onReconnect?: (handler: (newNc: NatsConnection) => void) => () => void;
   signal?: AbortSignal;
+  /** Work that must finish before the submission and cannot itself carry out the command, such as
+   *  resolving the endpoint. Its failures surface unchanged, and a stop or the deadline while it
+   *  runs reports `not-executed`. */
+  prepare?: (signal: AbortSignal) => Promise<void>;
 }
 
 /** Subscribe before a single submission, then observe its accepted goal through live progress and
@@ -552,9 +556,8 @@ export async function submitAndFollowGoal(
       : "goal observation stopped or exceeded its deadline before submission; the manager request WAS NOT RUN",
     undefined, submitted ? "unknown" : "not-executed");
   let deadline = Date.now() + deadlineMs;
-  const bounded = async <T>(operation: () => Promise<T>, until: number): Promise<T> => {
+  const bounded = async <T>(operation: () => Promise<T>, until: number, remaining = until - Date.now()): Promise<T> => {
     if (stopped || completed) throw phaseError("unavailable");
-    const remaining = until - Date.now();
     if (remaining <= 0) throw phaseError("deadline-exceeded");
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -609,6 +612,15 @@ export async function submitAndFollowGoal(
   try {
     opts?.signal?.addEventListener("abort", onAbort, { once: true });
     if (stopped) throw phaseError("unavailable");
+    if (opts?.prepare) {
+      const prepare = opts.prepare;
+      // The whole budget rather than what is left of it: the deadline timer then has the duration of
+      // a describe in the prepare given that budget and arms after it in the same tick. Node fires
+      // equal-duration timers in the order they were armed, so a describe that drew no reply still
+      // reports itself as unanswered, while a slower step such as a stalled store read ends here.
+      try { await bounded(() => prepare(work.signal), deadline, deadlineMs); }
+      catch (err) { throw stopped ? phaseError("unavailable") : err; }
+    }
     subscribe(opts?.currentNc?.() ?? nc);
     unbindReconnect = opts?.onReconnect?.(replaceConnection);
     // A borrowed submit can publish on another connection. Confirm broker interest first,
