@@ -8817,9 +8817,12 @@ export class Manager {
    *  seat is not shown it again and a late yield is answered from the cancelled terminal. Only a
    *  relay this incarnation holds is moved to `cancelling`, because only its holder can commit the
    *  terminal; an ended goal is refused with its cached outcome, which keeps a repeated cancel
-   *  idempotent. The pending entry is the latch the yield and the deadline sweep race on: it is
-   *  dropped before the commit, and put back when the commit fails so the relay still ends at
-   *  its deadline. */
+   *  idempotent. The pending entry is the latch the yield and the deadline sweep race on, taken
+   *  before the first await so a concurrent cancel finds nothing to take. A failed cancel puts it
+   *  back so the relay still ends at its deadline, unless something ended the relay while it was
+   *  held: a yield that read the entry first, or this commit with only its reply lost. An entry
+   *  whose outcome cannot be read back stays out and converges through the goal index at the
+   *  next boot, as a failed deadline commit does. */
   private async serveTurnCancel(ctx: EpServeContext): Promise<{ goalId: string; state: string }> {
     if (!this.goalReconcileDone)
       throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; the pending-turn index is not rebuilt yet, retry (SPEC 13.6)");
@@ -8835,15 +8838,19 @@ export class Manager {
       if (ended !== undefined) throw goalAlreadyTerminal(goalId, ended);
       throw new EpEnvelopeError("failed-precondition", `no turn "${goalId}" of this caller is pending on this manager; cancel withdraws a relayed turn (SPEC 13.6)`);
     }
-    await requestGoalCancel(gw.ctx, { request: ctx.subject, goalId, mode: (raw.mode ?? "graceful") as "graceful" | "terminate" });
     this.pendingTurns.delete(goalId);
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     let fact: GoalResultFact;
     try {
+      await requestGoalCancel(gw.ctx, { request: ctx.subject, goalId, mode: (raw.mode ?? "graceful") as "graceful" | "terminate" });
       await this.assertGoalWriterEpochCurrent(epoch);
       ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "caller" }, committer: { instanceId: this.managerInstanceId, epoch } }));
     } catch (e) {
-      this.pendingTurns.set(goalId, p);
+      // The remembered answer is read after the durable one, with no await before the put back:
+      // a yield that has dropped the entry remembered its answer, and one still committing drops
+      // the entry it finds. An ended relay is stamped so its acceptance still ages off.
+      if ((await readGoalResult(gw.ctx, ref)) !== undefined) this.markTurnLatchDropped(goalId);
+      else if (this.turnAcceptances.get(goalId)?.settled === undefined) this.pendingTurns.set(goalId, p);
       throw e;
     }
     this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });

@@ -220,8 +220,9 @@ It is served for a turn the manager relays. The goal is the authenticated caller
 withdraws only a turn it submitted. The turn ends `cancelled`, its seat is not shown it again, and a
 later yield of it is answered with that terminal. A goal that already ended is refused
 `failed-precondition` with its cached outcome attached, and a goal this manager does not relay is
-refused without being changed. A workflow run sends it for the turn, ask attempt or escalation of a
-branch it cancelled.
+refused without being changed. So is a second cancel that arrives while a first is still ending the
+turn; a first that fails leaves the turn pending unless something ended it meanwhile. A workflow
+run sends it for the turn, ask attempt or escalation of a branch it cancelled.
 
 A followed mutation requires a manager whose attributed describe includes `goal-result`. Update
 the manager, issuer and client together before using that recovery path. Reloading an issuer alone
