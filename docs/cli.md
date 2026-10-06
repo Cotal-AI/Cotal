@@ -1615,7 +1615,9 @@ daemon's own reason and repair step. Fix that cause, then run `systemctl --user 
 `service status` reports the unit state from systemd/launchd, the manager's own health read from
 its pidfile at the unit's recorded root, and the machine facts a hosting side asks for:
 architecture, OS (the platform, never the hostname), whether `/dev/kvm` is present and
-accessible, CPU count, and total memory. `--json` returns the same fields as one object.
+accessible, CPU count, and total memory. `--json` returns the same fields as one object. The
+manager row names the recorded pid, and the command it runs when another program has reused that
+pid. `--json` also gives the command of a live recorded pid whenever it can be read.
 
 `service uninstall` stops and disables the unit and removes it plus the private state directory.
 It works from any directory: the unit's own records name the mesh and root it serves, and an
