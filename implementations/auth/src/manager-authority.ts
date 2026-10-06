@@ -18,6 +18,7 @@ import {
   type RunOperatorGrantArgs,
   type RemoteRunAdmissionResult,
   type RunAdmission,
+  type HostedRunAttempt,
   type IssuedStore,
   type IssuedSourceRef,
   type EpCommandAuthority,
@@ -41,6 +42,9 @@ import { remoteManagerCurrentRegistrationProof } from "./retained-manager-valida
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 
+/** The run attempt the host observes for itself. A null answer is a run with no record or status. */
+export type ObserveManagerRun = (runId: string) => Promise<HostedRunAttempt | null>;
+
 /** Host-only renewal authorization. The embedding host supplies a fresh gate and active run
  * observation from its authoritative stores, never coordinates asserted by the participant. */
 export async function authorizeRemoteManagerRenewal(args: {
@@ -50,9 +54,7 @@ export async function authorizeRemoteManagerRenewal(args: {
   accountPublicKey: string;
   proofSecret: string | Uint8Array;
   observeManagerGate: ObserveManagerGate;
-  observeRun: (runId: string) => Promise<{
-    state: string; holder: string; takeoverId: string; epoch: number; fencingToken: number; instanceId: string;
-  } | null>;
+  observeRun: ObserveManagerRun;
 }): Promise<void> {
   const r = parseRemoteManagerAuthorityRequest(args.request);
   if (r.operation !== "renewStandingBundle" && r.operation !== "renewRunDriver")

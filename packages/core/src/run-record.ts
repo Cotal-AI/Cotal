@@ -120,6 +120,12 @@ export async function readRunRecord(
   return await readRecord<RunSpecValue, RunStatusValue>(kv, RECORD_KINDS.run, [endpoint, runId]);
 }
 
+/** The run coordinates a renewal issuer compares, as {@link observeHostedRunAttempt} reads them. */
+export type HostedRunAttempt = Pick<RunStatusValue, "state" | "holder" | "epoch" | "fencingToken"> & {
+  readonly takeoverId: string;
+  readonly instanceId: string;
+};
+
 /**
  * The activated attempt of a run hosted by one registered manager, read from the authoritative run
  * record for a renewal issuer. The hosting manager writes the attempt holder as
@@ -133,7 +139,7 @@ export async function observeHostedRunAttempt(
   endpoint: string,
   runId: string,
   registered: { readonly supervisorId: string; readonly instanceId: string },
-): Promise<{ state: string; holder: string; takeoverId: string; epoch: number; fencingToken: number; instanceId: string } | null> {
+): Promise<HostedRunAttempt | null> {
   const status = (await readRunRecord(kv, endpoint, runId))?.status?.value;
   if (!status) return null;
   const dot = status.holder.lastIndexOf(".");
