@@ -60,7 +60,7 @@ try {
   ok("non-canonical --creds is not cwd A", fromB.root !== workspaceA);
   ok("enclosing workspace B is a different findCotalRoot from a non-canonical --creds store", findCotalRoot(workspaceB) === workspaceB && findCotalRoot(workspaceB) !== fromB.root);
 
-  const canonicalArm = { kind: "fs" as const, root: resolve(workspaceC) };
+  const canonicalArm = workspaceSecretStore(workspaceC).identity;
   const fromC = id(credsC);
   ok("canonical --creds names the workstation root", fromC.kind === "fs" && fromC.root === resolve(workspaceC), fromC);
   ok("canonical --creds agrees with the canonical arm at the same root", sameSecretStoreIdentity(canonicalArm, fromC));
@@ -122,11 +122,11 @@ try {
   delete process.env.COTAL_SECRET_STORE;
   throws(
     "injected identity refuses a silent local-root fallback",
-    () => reloadStoreIdentityOf({ injected: true, identity: { kind: "fs", root: workspaceA } }),
+    () => reloadStoreIdentityOf({ injected: true, identity: { kind: "fs", root: workspaceA, id: "dummy" } }),
     "COTAL_SECRET_STORE",
   );
   process.env.COTAL_SECRET_STORE = "vault:prod";
-  const injected = reloadStoreIdentityOf({ injected: true, identity: { kind: "fs", root: workspaceA } });
+  const injected = reloadStoreIdentityOf({ injected: true, identity: { kind: "fs", root: workspaceA, id: "dummy" } });
   ok("injected identity is the coordinate, never the dummy fs root", injected.kind === "injected" && injected.coordinate === "vault:prod");
   delete process.env.COTAL_SECRET_STORE;
 

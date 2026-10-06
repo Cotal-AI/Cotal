@@ -296,7 +296,9 @@ cross-host composition cannot satisfy that by writing one filesystem and fingerp
 divergent pair is refused naming both stores. The identity is the store the daemon actually
 reloads: an injected coordinate, the workstation root only when `--creds` is
 `<root>/.cotal/<spaceSegment(space)>/delivery.creds` (matching the canonical arm), the
-file's own directory for any other `--creds` path, or the workstation root. Uninjected
+file's own directory for any other `--creds` path, or the workstation root. A filesystem
+store is also named by a random id it records in `store.id` inside its own directory, so two
+hosts that use the same root path are two stores. Uninjected
 `--creds` that names one real workstation while process cwd resolves another is refused
 at start, naming both, because membership-rw still uses `findCotalRoot`. A `--creds`
 path that is not under any `.cotal` tree is not that case and is not refused here. It never

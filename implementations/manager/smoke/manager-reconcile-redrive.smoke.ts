@@ -41,7 +41,7 @@ import {
   type LaunchSpec,
   type StaticManagedSlotRow,
 } from "@cotal-ai/core";
-import { authDir, saveManagerInstanceIdentity, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, saveManagerInstanceIdentity, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_CONTRACTS, MANAGER_ENDPOINT, type ManagerStatus } from "../src/manager-service-contract.js";
 import {
@@ -196,7 +196,7 @@ try {
       return {
         ok: true,
         data: {
-          identity: { kind: "fs", root: resolve(root) },
+          identity: workspaceSecretStore(root).identity,
           responder: principalKey("local", dlvIdentity.id).key,
           holdsDeliveryLease: holds,
         },

@@ -20,6 +20,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { workspaceSecretStore } from "@cotal-ai/workspace";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-runhost-home-"));
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
@@ -127,7 +128,7 @@ try {
   recordMesh({ space: spaceA, server: brokerA.servers, root: wsA, mode: "auth", ts: new Date().toISOString() });
   delivery = await bootDeliveryDaemon({
     space: spaceA, servers: brokerA.servers, auth,
-    reloadStoreIdentity: { kind: "fs", root: resolve(wsA) },
+    reloadStoreIdentity: workspaceSecretStore(wsA).identity,
   });
   const deliveryBootAt = Date.now();
   mgr = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
@@ -554,7 +555,7 @@ try {
     }
     delivery = await bootDeliveryDaemon({
       space: spaceA, servers: brokerA.servers, auth,
-      reloadStoreIdentity: { kind: "fs", root: resolve(wsA) },
+      reloadStoreIdentity: workspaceSecretStore(wsA).identity,
     });
     mgrB = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
     await mgrB.start();

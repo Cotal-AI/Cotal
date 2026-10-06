@@ -15,7 +15,6 @@ import {
   leaseKey,
   mintCreds,
   newIdentity,
-  formatSecretStoreIdentity,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   standaloneConnectOpts,
@@ -96,8 +95,8 @@ export function reloadStoreIdentityFromCredsPath(credsPath: string, space: strin
     && basename(fileDir) === spaceSegment(space)
     && grand !== parent
   )
-    return { kind: "fs", root: grand };
-  return { kind: "fs", root: fileDir };
+    return workspaceSecretStore(grand).identity;
+  return new FsSecretStore(fileDir).identity;
 }
 
 /**
@@ -144,12 +143,9 @@ export function assertUninjectedCredsSharesCwdRoot(opts: {
   const cwdRoot = opts.cwdRoot ?? findCotalRoot();
   if (!existsSync(join(cwdRoot, ".cotal"))) return;
   const credsWorkspace = workspaceRootFromCredsPath(opts.credsPath);
-  if (credsWorkspace === undefined) return;
-  const cwdIdentity: SecretStoreIdentity = { kind: "fs", root: cwdRoot };
-  const credsIdentity: SecretStoreIdentity = { kind: "fs", root: credsWorkspace };
-  if (sameSecretStoreIdentity(credsIdentity, cwdIdentity)) return;
+  if (credsWorkspace === undefined || credsWorkspace === resolve(cwdRoot)) return;
   throw new Error(
-    `delivery: --creds names workstation ${formatSecretStoreIdentity(credsIdentity)} while membership-rw resolves under ${formatSecretStoreIdentity(cwdIdentity)} (${opts.via ?? "process cwd"}). Pass both the same workstation root, or inject one SecretStore.`,
+    `delivery: --creds names workstation ${credsWorkspace} while membership-rw resolves under ${cwdRoot} (${opts.via ?? "process cwd"}). Pass both the same workstation root, or inject one SecretStore.`,
   );
 }
 
@@ -231,12 +227,13 @@ function resolveCredsStore(v: Values, space: string, root: string, injected?: Se
     };
   }
   const key = deliveryCredsKey(space, { injected: false, root });
+  const store = workspaceSecretStore(root);
   return {
-    store: workspaceSecretStore(root),
+    store,
     key,
     where: join(root, ".cotal", key),
     injected: false,
-    identity: { kind: "fs", root },
+    identity: store.identity,
   };
 }
 

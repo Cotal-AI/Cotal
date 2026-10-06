@@ -1,6 +1,10 @@
-import { readFileSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
-import { mkSecretDir, writeSecretFileAtomic, type SecretStore, type SecretStoreIdentity } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic, writeSecretFileCreateOnly, type SecretStore, type SecretStoreIdentity } from "@cotal-ai/core";
+
+/** The key under which a filesystem store records the random id its identity carries. */
+const STORE_ID_KEY = "store.id";
 
 /** THE local composition of the secret keyspace: a filesystem store rooted at the workspace's
  *  `.cotal/` dir, so every canonical key (`delivery.creds`, `auth/<space>/callout.json`, …)
@@ -8,7 +12,7 @@ import { mkSecretDir, writeSecretFileAtomic, type SecretStore, type SecretStoreI
  *  root that drifted from `.cotal` would silently split the keyspace in two. */
 export function workspaceSecretStore(root: string): FsSecretStore {
   const workspaceRoot = normalize(resolve(root));
-  return new FsSecretStore(join(workspaceRoot, ".cotal"), { kind: "fs", root: workspaceRoot });
+  return new FsSecretStore(join(workspaceRoot, ".cotal"), workspaceRoot);
 }
 
 /**
@@ -32,12 +36,32 @@ export function workspaceSecretStore(root: string): FsSecretStore {
  */
 export class FsSecretStore implements SecretStore {
   private readonly root: string;
-  readonly identity: SecretStoreIdentity;
+  private readonly identityRoot: string;
 
-  constructor(root: string, identity?: SecretStoreIdentity) {
+  /** `identityRoot` is the root the identity names when that is not the store's own directory: the
+   *  workspace store lives in `<root>/.cotal` and is named by `<root>`. */
+  constructor(root: string, identityRoot?: string) {
     if (!root) throw new Error("FsSecretStore: root is required");
     this.root = normalize(resolve(root)); // absolutize so keys are cwd-independent
-    this.identity = identity ?? { kind: "fs", root: this.root };
+    this.identityRoot = identityRoot ?? this.root;
+  }
+
+  /** The root is a local path, so two hosts that mount different directories at one path would
+   *  name one store by it alone (#2580). The id is random and lives inside the store, so only the
+   *  same directory carries it. It is written the first time a process names this store. */
+  get identity(): SecretStoreIdentity {
+    const p = this.resolve(STORE_ID_KEY);
+    if (!existsSync(p)) {
+      mkSecretDir(this.root);
+      try {
+        writeSecretFileCreateOnly(p, randomUUID());
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; // a concurrent first use won
+      }
+    }
+    const id = readFileSync(p, "utf8").trim();
+    if (!id) throw new Error(`FsSecretStore: ${p} holds no store id`);
+    return { kind: "fs", root: this.identityRoot, id };
   }
 
   /** Resolve a logical key to an absolute path strictly UNDER `root`, fail-closed: reject empty,

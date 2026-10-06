@@ -29,7 +29,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
@@ -41,7 +41,7 @@ import {
   CotalEndpoint, CONTROL_DELIVERY_ADMIN,
   type ControlReply,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh, loadManagerInstanceIdentity } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, recordMesh, loadManagerInstanceIdentity, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { GateReconcileRefused } from "../src/reconcile-gate.js";
@@ -148,7 +148,7 @@ const startDaemon = async (): Promise<CotalEndpoint> => {
         const own = await ep.readDeliveryLeaseEntry(0);
         holds = own !== undefined && ep.ownsDeliveryLease(own.info);
       } catch { holds = false; }
-      return { ok: true, data: { identity: { kind: "fs", root: resolve(workspaceRoot) }, responder: ep.card.id, holdsDeliveryLease: holds } };
+      return { ok: true, data: { identity: workspaceSecretStore(workspaceRoot).identity, responder: ep.card.id, holdsDeliveryLease: holds } };
     }
     return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
   }, { boundReply: true });

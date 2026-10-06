@@ -128,7 +128,9 @@ lease row, so a live holder on record makes that outcome a refusal rather than a
 daemon. Keep delivery on the broker host under `up`, and share one store
 only when you are composing a hosted pair ([embedding](embedding.md#supervisor-signing-authority)).
 On the `--no-manager` split above, the manager host's manager stays off the daemon-credential
-renewal lease once its store check finds the daemon on another root. `cotal doctor auth --fix` on
+renewal lease once its store check finds the daemon on another store. A filesystem store is named
+by its root and by a random id in `.cotal/store.id`, which the copied `.cotal/auth` does not carry,
+so this holds when both hosts use the same root path. `cotal doctor auth --fix` on
 the broker host then renews the daemon credentials once they pass their renewal point.
 
 ### Split host bind

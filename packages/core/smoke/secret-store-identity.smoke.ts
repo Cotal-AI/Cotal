@@ -26,22 +26,22 @@ const throws = (name: string, fn: () => unknown, needle: string) => {
   throw new Error(`FAIL: ${name} - expected a loud throw`);
 };
 
-ok("same fs roots agree", sameSecretStoreIdentity({ kind: "fs", root: "/a/mesh" }, { kind: "fs", root: "/a/mesh" }));
-ok("trailing slash does not split one root", sameSecretStoreIdentity({ kind: "fs", root: "/a/mesh/" }, { kind: "fs", root: "/a/mesh" }));
-ok("two roots disagree", !sameSecretStoreIdentity({ kind: "fs", root: "/a" }, { kind: "fs", root: "/b" }));
+ok("same fs roots agree", sameSecretStoreIdentity({ kind: "fs", root: "/a/mesh", id: "s1" }, { kind: "fs", root: "/a/mesh", id: "s1" }));
+ok("trailing slash does not split one root", sameSecretStoreIdentity({ kind: "fs", root: "/a/mesh/", id: "s1" }, { kind: "fs", root: "/a/mesh", id: "s1" }));
+ok("two roots disagree", !sameSecretStoreIdentity({ kind: "fs", root: "/a", id: "s1" }, { kind: "fs", root: "/b", id: "s1" }));
 ok("same injected coordinates agree", sameSecretStoreIdentity({ kind: "injected", coordinate: "vault:prod" }, { kind: "injected", coordinate: "vault:prod" }));
 ok("injected coordinates disagree", !sameSecretStoreIdentity({ kind: "injected", coordinate: "vault:a" }, { kind: "injected", coordinate: "vault:b" }));
-ok("fs never equals injected", !sameSecretStoreIdentity({ kind: "fs", root: "/a" }, { kind: "injected", coordinate: "/a" }));
+ok("fs never equals injected", !sameSecretStoreIdentity({ kind: "fs", root: "/a", id: "s1" }, { kind: "injected", coordinate: "/a" }));
 
-const a = { kind: "fs" as const, root: "/mgr-root" };
-const b = { kind: "fs" as const, root: "/daemon-root" };
+const a = { kind: "fs" as const, root: "/mgr-root", id: "s1" };
+const b = { kind: "fs" as const, root: "/daemon-root", id: "s2" };
 const msg = divergentSecretStoreNotice(a, b);
 ok("notice names the manager root", msg.includes("/mgr-root"));
 ok("notice names the daemon root", msg.includes("/daemon-root"));
-ok("fs label is the root itself", formatSecretStoreIdentity(a) === "/mgr-root");
+ok("fs label is the root and its store id", formatSecretStoreIdentity(a) === "/mgr-root (store s1)");
 ok("injected label is prefixed", formatSecretStoreIdentity({ kind: "injected", coordinate: "kms:x" }) === "injected:kms:x");
 
-ok("parse fs", parseSecretStoreIdentity({ kind: "fs", root: "/r" }).kind === "fs");
+ok("parse fs", parseSecretStoreIdentity({ kind: "fs", root: "/r", id: "s1" }).kind === "fs");
 ok("parse injected", parseSecretStoreIdentity({ kind: "injected", coordinate: "kms:x" }).kind === "injected");
 throws("parse refuses mixed shape", () => parseSecretStoreIdentity({ kind: "fs", root: "/r", coordinate: "x" }), "admits only");
 throws("parse refuses blank root", () => parseSecretStoreIdentity({ kind: "fs", root: "  " }), "non-blank root");
@@ -52,7 +52,7 @@ throws("parse refuses unknown kind", () => parseSecretStoreIdentity({ kind: "s3"
 // AN answerer unless the reply says whose it is. These cells grade the parser only. Whether a
 // non-holder is refused is the caller's job, and the parser must not pre-empt it: an honest
 // `false` has to survive parsing so the caller can act on it and say why.
-const ANS = { identity: { kind: "fs" as const, root: "/r" }, responder: "dlv-1", holdsDeliveryLease: true };
+const ANS = { identity: { kind: "fs" as const, root: "/r", id: "s1" }, responder: "dlv-1", holdsDeliveryLease: true };
 ok("parse accepts a fully bound store answer",
   parseDaemonStoreAnswer(ANS).responder === "dlv-1" && parseDaemonStoreAnswer(ANS).identity.kind === "fs");
 ok("a lease-less answer parses and reports the claim honestly (refusing is the caller's job, not the parser's)",

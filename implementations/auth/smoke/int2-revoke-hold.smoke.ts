@@ -96,7 +96,7 @@ type PsRow = { name: string };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
-const { join, resolve } = await import("node:path");
+const { join } = await import("node:path");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-fsb-home-"));
 process.env.COTAL_HOME = home;
@@ -344,7 +344,7 @@ try {
     evictPrincipal: (principal: string) => evictDeniedPrincipalWithCreds({
       servers: SERVER, observerCreds: dlvObserverCreds, evictorCreds: dlvEvictorCreds, accountId: auth.account.pub, principal,
     }),
-    reloadStoreIdentity: () => ({ kind: "fs", root: resolve(root) }),
+    reloadStoreIdentity: () => store.identity,
   });
   // The manager's #1694 binding requires the answer to name a real holder of the delivery
   // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so

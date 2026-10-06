@@ -1107,8 +1107,9 @@ export class Manager {
   /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
    *  See {@link ManagerOptions.secretStore}. */
   private readonly secrets: SecretStore;
-  /** Named identity of {@link secrets}: the same coordinate the delivery daemon must reload from. */
-  private readonly secretStoreIdentity: SecretStoreIdentity;
+  /** Named identity of {@link secrets}: the same coordinate the delivery daemon must reload from.
+   *  Set at construction for an injected store; the workspace store is named on first challenge. */
+  private secretStoreIdentity?: SecretStoreIdentity;
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly runtime: Runtime;
@@ -1430,9 +1431,7 @@ export class Manager {
       throw new Error("pooled control requires a proved assigned account for its initial supervisor credential");
     if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
-    this.secretStoreIdentity = opts.secretStore
-      ? injectedManagerStoreIdentity(opts.secretStore)
-      : { kind: "fs", root: resolve(this.workspaceRoot) };
+    if (opts.secretStore) this.secretStoreIdentity = injectedManagerStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     if (opts.pooled && isCustodialRuntime(this.runtime))
@@ -1983,6 +1982,9 @@ export class Manager {
           `reloads from - nothing reminted`,
       );
     const daemon = answer.identity;
+    // The workspace store records its id the first time it is named, so it is named here, where
+    // only an auth manager reaches, rather than in a constructor every open-mode manager runs.
+    this.secretStoreIdentity ??= parseSecretStoreIdentity(this.secrets.identity);
     if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon)) {
       console.error(`! ${divergentSecretStoreNotice(this.secretStoreIdentity, daemon)}`);
       return "divergent";
