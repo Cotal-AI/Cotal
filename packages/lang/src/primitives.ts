@@ -282,7 +282,7 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
     hashesSubject: true,
     opensScope: true,
     signature: "conclave(members, fn, { name, channel? }) -> result",
-    doc: "Open a scoped sub-team: create a conclave channel, join the members, run fn with that channel, then have them leave. It scopes the derived flowchart the same way it scopes the journal.",
+    doc: "Open a scoped sub-team: create a conclave channel, join the members, run fn with that channel, then have them leave. fn returns what the program reads; a write from it to a binding outside it is refused (L2032). It scopes the derived flowchart the same way it scopes the journal.",
     example:
       'await conclave([a, b], (ch) => turn(a, { name: "huddle" }), { name: "triage" })',
   },

@@ -638,7 +638,9 @@ Opens a scoped sub-team: the handler creates (or names, with `channel`) a concla
 returns. It is a scope **and** an effect: its one entry (kind `conclave`) hashes the members and
 channel (§6.4) and carries a `closed` fact stating whether the membership was released (§10.6). A
 body that merely fails is closed; a body that was cancelled is not, and its release travels the
-recovery path of every other branch-local resource.
+recovery path of every other branch-local resource. A settled `conclave` is replayed from its entry
+without entering `fn`, so `fn` MUST NOT write to a binding declared outside it or into a record or
+array born outside it (L2032, §7.7), and returns what the program reads instead.
 
 ### 7.6 Cancellation
 
@@ -665,10 +667,10 @@ into a record or array **born** outside it, through any alias (L2032 at run time
 cover this: nothing crosses an effect boundary. And it is silent: live, branches write in completion
 order; on resume the recorded effects return instantly and they write in launch order, so the run
 takes a path it never recorded with no divergence to catch it. Return the value from the branch and
-read it out of the scope's result. `conclave` has one branch and does not raise the depth. `once`
-raises the depth like a branch of `parallel`, though nothing runs beside it, because a settled `once`
-is replayed without entering its body (§7.8), so a write from the body would happen live and never on
-resume.
+read it out of the scope's result. `conclave` and `once` raise the depth like a branch of
+`parallel`, though nothing runs beside their one body, because a settled `conclave` or `once` is
+replayed without entering its body (§7.5, §7.8), so a write from the body would happen live and never
+on resume.
 
 ```js
 // refused: L2032
@@ -1276,3 +1278,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-03 | The record and array arguments of the free builtins are checked like `len`'s (§5.4): `keys`, `values`, `entries`, `has` and `merge` take a record, and `map`, `filter`, `find`, `some`, `every`, `sort`, `slice`, `join`, `reverse`, `unique`, `sum`, `pick` and `concat`'s first argument take an array; every other kind is refused L4016 before the host is reached. Measured before it: `map(5, f)` and `keys(5)` answered `[]`, `every(5, f)` answered true, `has(f, "length")` answered true off the implementation's function wrapper, `keys("ab")` answered index strings, `concat("a", [1])` answered `"a1"` past L4018, and `keys(null)` refused with the host's error text. A version-1 record that relied on the host's answer is the third known case of §8.4's replay posture. |
 | 2026-10-05 | A fifth scope, `once` (§7.8): every step under it is dispatched at most once, and a resume that finds one pending opens a hold under a token derived from its recorded request id instead of dispatching it again. An entry may carry `hold` (§10.1). An expired hold fails the step with the catchable L4027, and an effect `once` does not admit is refused with L4028. `once` is a reserved name. |
 | 2026-10-06 | The migrate orphan table has a `waitUntil` row (§11.2): an orphaned `waitUntil` is ignored whether it settled or is still pending, and its recorded observations stay in the journal. The reference migrate check already admitted it, while the table's "any other kind" row required L5015, so an implementation written from the table refused every migration that orphaned a `waitUntil`. |
+| 2026-10-06 | A `conclave` body may not write outside itself (L2032, §7.5, §7.7): `conclave` raises the depth on both engines and the validator walks its body, as it does for `once`. Measured before it: a body that assigned an outer `let` or wrote a field of a record built outside it completed, the live run read the new value, and the resume, which delivers a settled `conclave` from its entry, read the old one and diverged (L5001) at the next effect that took it as input. |
