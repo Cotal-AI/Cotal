@@ -84,7 +84,9 @@ const agent = z.strictObject({
     // required field here would refuse every inventory the previous version wrote, so an upgrade
     // that restarts the manager would lose the agents it was supposed to preserve.
     events: z.boolean().default(false),
-    shareTools: stringList.optional(),
+    // Start takes any declared server key as written, empty or long, so a bound per name here would
+    // refuse to preserve an agent that launched. The args byte cap bounds the list.
+    shareTools: z.array(z.string()).optional(),
     forkSource: z.string().min(1).max(4096).optional(),
     // Optional: a seat that was not resumed, or has not recorded its fork yet, has none, and an
     // inventory written before this field existed must still resume.

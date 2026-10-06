@@ -631,7 +631,7 @@ export interface ManagerResumeAgent {
     allowPublish?: string[];
     capabilities?: string[];
     events: boolean;
-    shareTools?: string[];
+    shareTools?: readonly string[];
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
     /** Where the fork came from, as the seat recorded it once it forked (#1500). */
@@ -758,7 +758,7 @@ export interface StartAgentOpts {
   allowPublish?: string[];
   /** Names of the operator's configured MCP servers this agent gets (absent → all declared for the
    *  connector — the pre-merge manager behavior; `[]` → none). */
-  shareTools?: string[];
+  shareTools?: readonly string[];
   /** Declarative in-place restart policy from a workflow `spawn`. When set, the manager restarts
    *  the process under the same name, lifecycle uid, persona, worktree and permits until
    *  `restarts` deaths fall inside `windowMs`. Absent: only a continuation-capable connector
@@ -795,7 +795,7 @@ interface ManagedLaunch {
   allowPublish?: string[];
   capabilities?: string[];
   events: boolean;
-  shareTools?: string[];
+  shareTools?: readonly string[];
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
   resumed?: ForkProvenance;
@@ -5455,6 +5455,9 @@ export class Manager {
   }
 
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {
+    // The caller keeps its array, so the selection is copied before the first await: a later write
+    // to it cannot change what this launch shares or what preservation retains.
+    const shareTools = opts.shareTools && [...opts.shareTools];
     if (opts.delegatedIntent) {
       if (!this.remoteAuthority?.executeDelegatedUserIntent)
         return { ok: false, error: `"${opts.name}" names a delegated user intent, and this manager has no host execution for one` };
@@ -5587,7 +5590,7 @@ export class Manager {
         return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
       if (typeof opts.cwd === "string" && opts.cwd !== "")
         return { ok: false, error: `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory` };
-      const shared = Object.keys(connectorServers(loadCotalConfig(this.workspaceRoot), agent, opts.shareTools));
+      const shared = Object.keys(connectorServers(loadCotalConfig(this.workspaceRoot), agent, shareTools));
       if (shared.length)
         return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
     }
@@ -5625,7 +5628,7 @@ export class Manager {
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
-      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.prompt || opts.shareTools || opts.identity)
+      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.prompt || shareTools || opts.identity)
         return { ok: false, error: "a manifest launch (resolved) rejects imperative overrides (identity/subscribe/allow*/prompt/shareTools)" };
       const r = opts.resolved;
       identityName = r.name;
@@ -6002,7 +6005,7 @@ export class Manager {
       // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
       // an optional --share-tools selection (absent → all declared, the pre-merge behavior).
       const cotalConfig = loadCotalConfig(this.workspaceRoot);
-      const mcpServers = connectorServers(cotalConfig, agent, opts.shareTools);
+      const mcpServers = connectorServers(cotalConfig, agent, shareTools);
       // The operator's spawn-env policy travels the same route: absent means no extras (the OS
       // allow-list + operator knobs + connector-declared inputs), present means those names too.
       // A connector never reads the config itself.
@@ -6130,7 +6133,7 @@ export class Manager {
           allowPublish,
           capabilities,
           events,
-          shareTools: opts.shareTools,
+          shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
           ...(carried ? { carried: { transcriptSha256: carried.sha256, host: carried.sourceHost, transferredAt: carried.stagedAt } } : {}),
