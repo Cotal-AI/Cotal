@@ -346,9 +346,10 @@ loudly instead of serving from a half-dead plane.
 creds file. The agent exchanges its spawn-time secret for short bearers (five minutes or
 less) and refreshes ahead of each expiry. Rows are runtime grants: every start rotates
 the secret, every stop or despawn revokes the row, so a non-running agent holds no
-standing authority. A spawn whose auth preflight fails is rolled back: the manager revokes the
-row, shreds the secret files and deletes the broker footprint. Every step runs even when an
-earlier one fails, and the refusal names each step that failed. Manifest deploys (`up -f`)
+standing authority. A spawn whose auth preflight fails is rolled back: the manager, or `cotal spawn`
+itself for a foreground agent, revokes the row, shreds the secret files and deletes the broker
+footprint. Every step runs even when an earlier one fails, and the refusal names each step that
+failed. A foreground agent's exit runs the same teardown. Manifest deploys (`up -f`)
 stamp the logged-in owner into the launch, so those agents are yours too.
 
 **Despawn tears the lifecycle down, then frees the name.** When you despawn an agent, the manager
