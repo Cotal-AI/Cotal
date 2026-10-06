@@ -2422,7 +2422,15 @@ export class MeshHandler {
     // is where a starved host was reporting its own scheduling as the effect's failure. The pause
     // and its timer are durable facts on the plane; re-reading them observes the same world, and a
     // sleep whose deadline passed while this process was blocked settles `ok`, late.
-    return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`, this.onStarved);
+    try {
+      return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`, this.onStarved);
+    } catch (e) {
+      // The relay an `ask` attempt or an escalation sent a seat under this token is withdrawn
+      // before the cancellation leaves the step, so the scope it settles shows the seat nothing
+      // the run withdrew. One that does not land is the discharge's to finish, and it raises there.
+      if (e instanceof Cancelled) await this.withdrawRelay(ref.token).catch(() => undefined);
+      throw e;
+    }
   }
 
   private async settleOnce(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
@@ -2465,8 +2473,7 @@ export class MeshHandler {
   }
 
   /** Reject with `Cancelled` the moment this branch's signal fires, then claim the pause so its
-   *  armed schedule cannot fire into a run that has moved on, and withdraw the relay an `ask`
-   *  attempt or an escalation sent to a seat under its token. The claim also writes the one-use
+   *  armed schedule cannot fire into a run that has moved on. The claim also writes the one-use
    *  settle, which is what lets an abandoned `awaitSettle` poll loop see a fact and end. */
   private settleCancelled(ref: CheckpointRef, signal: CancelSignal): Promise<never> {
     return new Promise<never>((_, reject) => {
@@ -2476,7 +2483,6 @@ export class MeshHandler {
         fired = true;
         reject(new Cancelled(reason ?? "cancelled"));
         void this.cancelTimer(ref).catch(() => undefined);
-        void this.withdrawRelay(ref.token).catch(() => undefined);
       };
       if (signal.cancelled) {
         fire(signal.reason);

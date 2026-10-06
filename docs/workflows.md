@@ -486,11 +486,12 @@ or cancelled turn is never a reply, so an unanswered wait rides its own mediated
 `null`, and a handle the run never spawned or turned refuses loudly, since only this run's turns
 are observable. A turn the run itself ended without an accepted yield (its deadline, a
 cancellation, a refused handoff) is never a reply, whatever the seat yields to the relay later.
-A cancelled branch also withdraws what it relayed to a seat: its turn, its ask attempt or its
-escalation ends `cancelled` through the manager's reserved `cancel` (SPEC §13.6), so the seat is
-not shown it again and the next turn to that seat does not wait behind it. Only the manager that
-accepted the relay holds it, so in a space with more than one manager the run sends the cancel
-again while another manager refuses it, until the accepting one answers.
+A cancelled branch also withdraws what it relayed to a seat before its cancellation completes: its
+turn, its ask attempt or its escalation ends `cancelled` through the manager's reserved `cancel`
+(SPEC §13.6), so the seat is not shown it after the branch's scope settles and the next turn to
+that seat does not wait behind it. Only the manager that accepted the relay holds it, so in a
+space with more than one manager the run sends the cancel again while another manager refuses it,
+until the accepting one answers.
 A `spawn` may bind its agent to a **logical worktree** (`spawn("builder", { worktree: "wt-1" })`):
 the handle carries the id, and the run enforces the one rule the language states about it: two
 agents never share a worktree concurrently. The validator rejects the literal case up front
