@@ -54,14 +54,7 @@ export function ensureSession(session: string, cwd: string): void {
 /** True if a window named `name` exists in `session`. Name-based — fragile under renames; prefer
  *  {@link windowAliveRef} when you hold a stable `@N` ID. Kept for name-based discovery/cleanup. */
 export function windowAlive(session: string, name: string): boolean {
-  try {
-    const out = execFileSync("tmux", ["list-windows", "-t", session, "-F", "#W"], {
-      encoding: "utf8",
-    });
-    return out.split("\n").map((l) => l.trim()).includes(name);
-  } catch {
-    return false;
-  }
+  return listWindows(session).includes(name);
 }
 
 /** True if a window with the stable ID `windowId` (`@N`) still exists. Window IDs are server-global,
@@ -69,14 +62,7 @@ export function windowAlive(session: string, name: string): boolean {
  *  (name match). (Don't use `display-message -t`: for a stale target it silently falls back to the
  *  current window instead of erroring, so it can't detect a closed window.) */
 export function windowAliveRef(windowId: string): boolean {
-  try {
-    return execFileSync("tmux", ["list-windows", "-a", "-F", "#{window_id}"], { encoding: "utf8" })
-      .split("\n")
-      .map((l) => l.trim())
-      .includes(windowId);
-  } catch {
-    return false;
-  }
+  return windowLines("#{window_id}").includes(windowId);
 }
 
 /** The running tmux server's pid, or undefined when no server is running. */
@@ -94,20 +80,27 @@ export function serverPid(): string | undefined {
  *  server no longer lists it. Like {@link paneState}, a failed listing throws instead of reading as
  *  gone. */
 export function windowSessions(windowId: string): string[] {
+  return windowLines("#{window_id} #{session_name}")
+    .filter((l) => l.startsWith(`${windowId} `))
+    .map((l) => l.slice(windowId.length + 1));
+}
+
+/** Every window on the server in `format`, one line for each session holding it, or none when no
+ *  server is running. A failed listing throws instead of reading as no windows. */
+function windowLines(format: string): string[] {
   try {
-    return execFileSync("tmux", ["list-windows", "-a", "-F", "#{window_id} #{session_name}"], {
+    return execFileSync("tmux", ["list-windows", "-a", "-F", format], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: EXIT_PROBE_MS,
     })
       .split("\n")
-      .filter((l) => l.startsWith(`${windowId} `))
-      .map((l) => l.slice(windowId.length + 1));
+      .filter(Boolean);
   } catch (err) {
     const e = err as { stderr?: unknown; message?: unknown };
     const message = `${String(e.stderr ?? "")} ${String(e.message ?? "")}`;
     if (/no server running/i.test(message)) return [];
-    throw new Error(`tmux: couldn't list the sessions holding window ${windowId}: ${message.trim()}`, { cause: err });
+    throw new Error(`tmux: couldn't list windows: ${message.trim()}`, { cause: err });
   }
 }
 
@@ -278,39 +271,21 @@ export function closeWindowIfHeld(session: string, windowId: string, paneId: str
   }
 }
 
-/** Window names open in `session`, or `[]` if unreachable. */
+/** Window names open in `session`, or none once no server is running. */
 export function listWindows(session: string): string[] {
-  try {
-    return execFileSync("tmux", ["list-windows", "-t", session, "-F", "#W"], {
-      encoding: "utf8",
-    })
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
+  // tmux escapes a tab in a session name, so the first tab ends it; a window name can hold one.
+  const prefix = `${session}\t`;
+  return windowLines("#{session_name}\t#{window_name}")
+    .filter((l) => l.startsWith(prefix))
+    .map((l) => l.slice(prefix.length));
 }
 
 /** Stable window IDs (`@N`) of every window in `session` whose name is exactly `label`. */
 export function windowRefs(session: string, label: string): string[] {
-  try {
-    return execFileSync(
-      "tmux",
-      ["list-windows", "-t", session, "-F", "#{window_id} #{window_name}"],
-      { encoding: "utf8" },
-    )
-      .split("\n")
-      .filter(Boolean)
-      .flatMap((line) => {
-        const sp = line.indexOf(" ");
-        const id = line.slice(0, sp);
-        const name = line.slice(sp + 1).trim();
-        return name === label ? [id] : [];
-      });
-  } catch {
-    return [];
-  }
+  return windowLines("#{window_id}\t#{session_name}\t#{window_name}").flatMap((l) => {
+    const tab = l.indexOf("\t");
+    return l.slice(tab + 1) === `${session}\t${label}` ? [l.slice(0, tab)] : [];
+  });
 }
 
 /** Render `env` as shell-safe `KEY='value'` pairs. tmux (like cmux) shell-renders env into the
