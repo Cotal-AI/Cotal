@@ -10,7 +10,7 @@
  */
 import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, isStackExhaustion, messageOf, stackOf } from "./errors.js";
 import { atMostOnce, digest, holdRequestId, requestId, scopePathString, stepKeyString, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
-import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
+import { Journal, JournalAppendRejected, RunClock, type EntryError, type LookupVerdict } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { HOLDABLE_KINDS, PRIMITIVES, type EffectKind } from "./primitives.js";
 import { parseDuration } from "./duration.js";
@@ -184,6 +184,25 @@ export function onceBodyNotCallable(): RuntimeFault {
 }
 
 /**
+ * Count one live dispatch against the run's effect ceiling (L4009), before its entry is begun so a
+ * dispatch the ceiling stops leaves no pending entry for work nobody performed. Every path that
+ * dispatches counts here, because `Journal.dispatchedEffects` seeds the next activation from the
+ * entries those paths write, and a fresh run and a resumed one must reach the ceiling at the same step.
+ * Only a `miss` counts: a pending or refused key is already in that seed, and counting its
+ * re-entry again would fault a resumed run at a step where a fresh one goes on.
+ */
+function countEffect(host: EffectHost, verdict: LookupVerdict): void {
+  if (verdict.verdict !== "miss") return;
+  host.effectCount += 1;
+  if (host.effectCount > host.ceiling) {
+    throw new RuntimeFault(
+      "L4009",
+      `this run has performed more than ${host.ceiling} effects, which means a loop is not terminating. Add an exit condition or a permit.`,
+    );
+  }
+}
+
+/**
  * Perform one effect, or replay it.
  *
  * Everything durable happens here. A handler is called only in the `miss` and `pending` cases,
@@ -241,13 +260,7 @@ export async function performEffect(
     throw new RunReleased(stop);
   }
 
-  host.effectCount += 1;
-  if (host.effectCount > host.ceiling) {
-    throw new RuntimeFault(
-      "L4009",
-      `this run has performed more than ${host.ceiling} effects, which means a loop is not terminating. Add an exit condition or a permit.`,
-    );
-  }
+  countEffect(host, verdict);
 
   const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
   // RECOVERY SUBMITS UNDER THE RECORDED IDENTITY. Re-deriving happens to agree whenever nothing
@@ -514,13 +527,7 @@ async function performWaitUntil(
   const stop = host.options.shouldStop?.();
   if (stop !== undefined) throw new RunReleased(stop);
 
-  host.effectCount += 1;
-  if (host.effectCount > host.ceiling) {
-    throw new RuntimeFault(
-      "L4009",
-      `this run has performed more than ${host.ceiling} effects, which means a loop is not terminating. Add an exit condition or a permit.`,
-    );
-  }
+  countEffect(host, verdict);
 
   const recorded = verdict.verdict === "pending" ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, key, inputHash);
@@ -1414,6 +1421,8 @@ export async function performScope(
   const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);
+  // A conclave's open is real work against the world, so it spends the ceiling as an effect does.
+  if (dispatches) countEffect(host, verdict);
   if (verdict.verdict === "miss" || verdict.verdict === "refused") {
     await host.journal.begin(scopeKey, inputHash, host.options.handler.now(), dispatches ? reqId : undefined);
     // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a

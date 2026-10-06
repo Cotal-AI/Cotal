@@ -786,17 +786,13 @@ export class Journal {
    * same key, and the interpreter counts the dispatch once. A pending entry still counts — the
    * effect was performed, which is exactly why it was written before the handler was called.
    *
-   * `conclave` is excluded because the interpreter does not count it either: it dispatches
-   * `openConclave` from the scope walker rather than through `performEffect`, so counting it here
-   * would make a resumed run's tally disagree with a fresh one's. That asymmetry is a real gap in
-   * what the ceiling sees and it is reported separately; this method mirrors the counter rather
-   * than quietly repairing it, because a seed that does not match the thing it seeds is worse than
-   * the gap it would paper over.
+   * A `conclave` counts, because its open is a dispatch and the interpreter counts it as one; the
+   * other scope kinds dispatch nothing of their own, so their entries do not.
    */
   dispatchedEffects(): number {
     let n = 0;
     for (const e of this.byKey.values()) {
-      if (e.kind !== "conclave" && (EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 1;
+      if ((EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 1;
     }
     return n;
   }
