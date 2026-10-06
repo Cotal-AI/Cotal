@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
@@ -105,17 +105,13 @@ export const hermesConnector: Connector = {
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
     if (opts.backfillFloor !== undefined) env.COTAL_BACKFILL_FLOOR = String(opts.backfillFloor);
     if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
-    // An agent file carries identity + persona + model; the launcher applies the persona as
+    // An agent file carries identity + persona; the launcher applies the persona as
     // Hermes' SOUL.md (system prompt) at gateway startup, the one place it can be set.
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;
-    // Model precedence, at parity with the Claude/OpenCode connectors: the `--model` flag, else the
-    // agent file's `model:`, else an ambient HERMES_MODEL. The launcher reads HERMES_MODEL as the
-    // gateway model — resolving here is the one place that honors the file's model for Hermes.
-    const fileModel = opts.configPath ? loadAgentFile(opts.configPath).model : undefined;
-    const model = opts.model ?? fileModel ?? process.env.HERMES_MODEL;
-    if (model) {
-      env.HERMES_MODEL = model;
-      env.COTAL_MODEL = model;
+    // The launcher reads HERMES_MODEL as the gateway model.
+    if (opts.model) {
+      env.HERMES_MODEL = opts.model;
+      env.COTAL_MODEL = opts.model;
     }
     return { command: LAUNCH_COMMAND, args: [LAUNCH_ENTRY], env, ...(resumeRecordPath ? { resumeRecordPath } : {}) };
   },

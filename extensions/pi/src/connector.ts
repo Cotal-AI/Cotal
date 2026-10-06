@@ -52,13 +52,7 @@ export const piConnector: Connector = {
     if (connectorLaunchOptions("pi", opts.launchOptions).length > 0)
       throw new Error("pi connector: launch options (--opt / launchOptions) are not implemented");
 
-    let model = opts.model;
-    let persona: string | undefined;
-    if (opts.configPath) {
-      const definition = loadAgentFile(opts.configPath);
-      model ??= definition.model;
-      persona = definition.persona;
-    }
+    const persona = opts.configPath ? loadAgentFile(opts.configPath).persona : undefined;
 
     // Minted before the env is built: the token goes into the launch material, the path into the env.
     const control = controlEndpoint(opts.space, opts.name);
@@ -124,9 +118,9 @@ export const piConnector: Connector = {
       env.COTAL_PI_PERSONA_FILE = file;
       args.push("--append-system-prompt", file);
     }
-    if (model) {
-      env.COTAL_MODEL = model;
-      args.push("--model", model);
+    if (opts.model) {
+      env.COTAL_MODEL = opts.model;
+      args.push("--model", opts.model);
     }
     if (prompt !== undefined) args.push(prompt);
 

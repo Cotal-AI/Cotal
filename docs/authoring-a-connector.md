@@ -35,9 +35,11 @@ registry.register(myConnector);          // registration runs on import, making 
 
 `buildLaunch(opts)` is the whole job: given a `LaunchOpts` (space, name, role, creds, channels,
 model, prompt…), return a `LaunchSpec` (the command, args, and environment) whose process connects to
-the broker as that mesh node. A `buildLaunch` that throws refuses the spawn, and the caller sees
-the thrown value's `message`, or the value itself as text when it has none. Everything else on
-the interface is optional and default-deny: declare
+the broker as that mesh node. `model` and `variant` arrive resolved: the launcher has already applied
+the flag over the agent file's `model:` and `variant:`, and checked and recorded the result. Render
+them as given and read the agent file only for the persona. A `buildLaunch` that throws refuses the
+spawn, and the caller sees the thrown value's `message`, or the value itself as text when it has
+none. Everything else on the interface is optional and default-deny: declare
 `supportsModelVariant`/`supportsPrompt`/`supportsResume`/`supportsSessionContinuation`/`supportsSessionReopen`/`supportsToolListAnnounce` only if you honor them (a request for one you don't declare
 fails loud before any provisioning), list `requires` so a missing CLI fails with a clear message, and
 implement `listModels` only if you want a selector catalog. Implement `eventChannel` only if your

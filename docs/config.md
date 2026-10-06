@@ -131,7 +131,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_SUBSCRIBE` | connector session | Active channel read set | agent file / link, else no channels |
 | `COTAL_ALLOW_SUBSCRIBE` | connector session | Read ACL (channels the agent *may* read) | = `COTAL_SUBSCRIBE` |
 | `COTAL_ALLOW_PUBLISH` | connector session | Post ACL (channels the agent *may* post to) | deny (empty) |
-| `COTAL_MODEL` | connector session | Model label (display metadata) | agent file's `model:`, else none |
+| `COTAL_MODEL` | connector session | Model label (display metadata), set by the launcher | none |
 | `COTAL_KIND` | connector session | Endpoint kind | `agent` |
 | `COTAL_TLS` | connector session | Connect over TLS (`1`) | off |
 | `COTAL_TOKEN` | connector session | Auth token (token / open modes) | none |

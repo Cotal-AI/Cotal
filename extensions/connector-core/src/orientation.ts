@@ -182,8 +182,8 @@ export function renderOrientation(o: Orientation): string {
     `Cotal v${o.identity.cotalVersion} — call cotal_docs for the version-exact spec, schema, and guides. ` +
       "Consult it before answering about Cotal or writing code against it; don't rely on training memory.",
     o.identity.model
-      ? `Model pin: ${o.identity.model} (from COTAL_MODEL / the agent file; the harness default is not knowable from here when this line is absent).`
-      : "Model pin: none recorded (COTAL_MODEL / agent-file model: were unset; the harness default is not knowable from here).",
+      ? `Model pin: ${o.identity.model} (from COTAL_MODEL; the harness default is not knowable from here when this line is absent).`
+      : "Model pin: none recorded (COTAL_MODEL was unset; the harness default is not knowable from here).",
     "",
     `Access — ${o.access.authMode ? "auth mode (grants are broker-enforced)" : "open mode (grants advisory, host-trusted)"}:`,
     `  • read: ${fmt(o.access.read)}`,

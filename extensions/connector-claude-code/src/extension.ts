@@ -272,13 +272,11 @@ export const claudeConnector: Connector = {
     // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
     const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: [MCP_CJS] } };
     // Every refusal below runs before the first private file is written, so a refused launch leaves
-    // none behind. An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus
-    // persona + model, which can only be applied to a `claude` session at launch. The `--model` flag
-    // wins over the agent file, and applies even with no agent file.
+    // none behind. An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus a
+    // persona, which can only be applied to a `claude` session at launch.
     const agentFile = opts.configPath ? resolve(opts.configPath) : undefined;
     const def = agentFile ? loadAgentFile(agentFile) : undefined;
-    const model = opts.model ?? def?.model;
-    if (model) assertServableModel(model);
+    if (opts.model) assertServableModel(opts.model);
     // Rendered to strings here, so a value that cannot become a flag argument refuses before any file
     // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
     // this launch wrote before it does.
@@ -315,9 +313,9 @@ export const claudeConnector: Connector = {
       // The file must outlive buildLaunch for startup and resume, so it is a launch artifact too.
       args.push("--append-system-prompt-file", writeLaunchArtifact(artifacts, "cotal-claude-persona-", "persona.md", def.persona));
     }
-    if (model) {
-      args.push("--model", model);
-      env.COTAL_MODEL = model;
+    if (opts.model) {
+      args.push("--model", opts.model);
+      env.COTAL_MODEL = opts.model;
     }
 
     // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`

@@ -49,12 +49,12 @@ is spawn-only: there is no setup step for it beyond having the toolchain above.
 
 Hermes is model-agnostic; set any one supported provider's API key in your environment. For a
 server of your own, see [Use a custom endpoint](#use-a-custom-endpoint). Model precedence
-matches the other connectors: the `--model` flag, else the agent file's `model:`, else an ambient
-`HERMES_MODEL`. Hermes exposes no `cotal models` catalog (unlike OpenCode).
+matches the other connectors: the `--model` flag, else the agent file's `model:`. Hermes exposes no
+`cotal models` catalog (unlike OpenCode).
 
-With none of those set, the launch is refused. The managed profile does not read `~/.hermes`, so a
+With neither set, the launch is refused. The managed profile does not read `~/.hermes`, so a
 model configured there is not used, and without a model Hermes would choose one of its own over a
-provider you may have no key for. The refusal names the three ways to set a model. To run on your
+provider you may have no key for. The refusal names both ways to set a model. To run on your
 own profile instead, see [Use your own Hermes profile](#use-your-own-hermes-profile).
 
 ## Use a custom endpoint
