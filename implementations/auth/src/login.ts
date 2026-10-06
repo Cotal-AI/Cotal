@@ -85,8 +85,9 @@ export interface DeviceLoginOpts {
   idpUrl: string;
   /** The OAuth client id this CLI presents; the IdP may pin it via its validateClient hook. */
   clientId: string;
-  /** Shows the human the verification URL + code. Called exactly once, before polling starts. */
-  onPrompt: (prompt: DeviceLoginPrompt) => void;
+  /** Shows the human the verification URL + code. Called exactly once; polling starts only after
+   *  it settles, a rejection fails the login, and the device code's lifetime bounds it. */
+  onPrompt: (prompt: DeviceLoginPrompt) => void | Promise<void>;
 }
 
 /** Normalize + guard the IdP base URL: https (or loopback http for dev), no query/hash, no
@@ -233,20 +234,30 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     (grant.interval !== undefined && !sane(grant.interval, 300))
   )
     throw new Error(`idp login: ${base} returned a malformed device grant - refusing to poll on it`);
-  opts.onPrompt({
-    verificationUri: grant.verification_uri,
-    verificationUriComplete: grant.verification_uri_complete,
-    userCode: grant.user_code,
-    expiresInSec: grant.expires_in,
-  });
-
+  const expired = `idp login: the device code expired after ${grant.expires_in}s without approval - run \`cotal login\` again`;
+  // The code's lifetime runs from the grant, so a prompt that never settles fails the login at
+  // expiry instead of holding it open.
   const deadline = Date.now() + grant.expires_in * 1000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      opts.onPrompt({
+        verificationUri: grant.verification_uri,
+        verificationUriComplete: grant.verification_uri_complete,
+        userCode: grant.user_code,
+        expiresInSec: grant.expires_in,
+      }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(expired)), deadline - Date.now()); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+
   // RFC 8628 §3.5: poll at the server's interval; `slow_down` adds 5s to it, permanently.
   let intervalSec = Math.max(1, grant.interval || 5);
   for (;;) {
     await new Promise((r) => setTimeout(r, intervalSec * 1000));
-    if (Date.now() > deadline)
-      throw new Error(`idp login: the device code expired after ${grant.expires_in}s without approval - run \`cotal login\` again`);
+    if (Date.now() > deadline) throw new Error(expired);
     const poll = await idpFetch(`${base}/device/token`, {
       method: "POST",
       headers: { "content-type": "application/json" },
