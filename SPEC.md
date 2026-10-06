@@ -318,7 +318,8 @@ a conformant delivery message MUST validate against it, and where this document'
 tables and the schema diverge on a shape, the schema wins. Delivery *semantics* (routing,
 guarantees, rejection) are defined by this document's prose. The schema is generated from
 the reference source, [`packages/core/src/types.ts`](packages/core/src/types.ts)
-(`pnpm gen:schema`), and committed; the published copy lives at
+(`pnpm gen:schema`), and committed; `pnpm check:docsbundle` fails when the committed file
+differs from the generator's output. The published copy lives at
 `https://docs.cotal.ai/cotal.schema.json`.
 
 **Rejection reasons.** The three permanent anomalies in §4 are terminated, never redelivered.
