@@ -193,6 +193,7 @@ import {
   recordSlotCredential,
   appendStaticCredentialRow,
   planStaticSlotResume,
+  ownedBySibling,
   observeStaticSlot,
   listStaticSlotObservations,
   renderStaticSlotObservation,
@@ -6595,7 +6596,7 @@ export class Manager {
     if (liveRoster.some((p) => p.card.id === principal && p.lifecycleUid !== entry.identity.lifecycleUid)) return undefined;
     const slot = await this.readStaticReconcileSlot(entry.name);
     if (slot?.phase !== "active" || slot.actor !== entry.identity.id || slot.lifecycleUid !== entry.identity.lifecycleUid) return undefined;
-    if (slot.ownerInstanceId !== undefined && slot.ownerInstanceId !== this.managerInstanceId) return undefined;
+    if (ownedBySibling(slot, this.managerInstanceId)) return undefined;
     return slot.runtime?.kind === this.runtime.kind ? slot.runtime : undefined;
   }
 
@@ -9338,7 +9339,7 @@ export class Manager {
       console.error(`✓ static reconcile recovered alias=${item.alias} phase=retired uid=${item.lifecycleUid} attempts=${item.attempts}/${item.maxAttempts}`);
       return;
     }
-    if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== this.managerInstanceId) {
+    if (ownedBySibling(row, this.managerInstanceId)) {
       item.disposition = "refused";
       item.remedy = "the owning manager must reconcile or an operator must perform an explicit CAS takeover";
       item.lastError = `the durable slot belongs to manager instance ${row.ownerInstanceId}, not ${this.managerInstanceId}`;
@@ -9510,7 +9511,7 @@ export class Manager {
         // hazard, now cross-instance). A legacy row (pre-3b-2, no owner recorded) predates multi-manager,
         // so this manager is its legitimate single-manager-past successor and reconciles it. An orphaned
         // sibling row is reclaimed only by an explicit operator CAS takeover (ruling 1), never here.
-        if (row.ownerInstanceId !== undefined && row.ownerInstanceId !== this.managerInstanceId) {
+        if (ownedBySibling(row, this.managerInstanceId)) {
           preservedForeign++;
           continue;
         }
