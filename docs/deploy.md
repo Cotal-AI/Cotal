@@ -37,7 +37,8 @@ The container's command picks the shape:
 | `spawn <name>` | one foreground agent, loading `.cotal/agents/<name>.md` |
 
 Mix connector types freely within a roster (`agent: claude` / `agent: opencode` per entry). See
-[Define a team](define-a-team.md) for the roster and persona files.
+[Roster files](define-a-team.md#roster-files) for the roster format and [Agent files](agent-files.md)
+for personas.
 
 ## Prerequisites
 
@@ -119,6 +120,6 @@ change.
 
 ## See also
 
-- [Define a team](define-a-team.md): roster and persona files
+- [Roster files](define-a-team.md#roster-files) · [Agent files](agent-files.md): the roster and persona files
 - [Identity and auth](identity-and-auth.md): the signer, minting, and account scoping
 - [Connect Claude Code](connect-claude.md) · [Connect OpenCode](connect-opencode.md)
