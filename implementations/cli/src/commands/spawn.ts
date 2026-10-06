@@ -1407,11 +1407,13 @@ async function provisionRemoteUserForeground(
   } catch (e) {
     return fail((e as Error).message);
   }
+  // Checked before the grant is requested, because `fail` exits without running the shred in the
+  // catch below and would leave the granted material on disk.
+  const exchangeUrl = "body" in source ? source.exchangeUrl : target.userAuth?.endpoints?.url;
+  if (!exchangeUrl) return fail(`mesh "${space}" records no exchange endpoint - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
   let body: unknown;
-  let exchangeUrl = target.userAuth?.endpoints?.url;
   if ("body" in source) {
     body = source.body;
-    exchangeUrl = source.exchangeUrl;
   } else {
     const idpUrl = target.userAuth?.idp.url;
     if (!idpUrl) return fail(`mesh "${space}" records no IdP to sign in against - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
@@ -1441,7 +1443,6 @@ async function provisionRemoteUserForeground(
     provenance.wrote(`remote actor material ${material.owner}.${name} (user mode)`, tokenPath);
     // The bearer preflight — the same one-shot proof the local path runs, pointed at the pinned
     // exchange instead of a local service. A dead auth chain stops the spawn here.
-    if (!exchangeUrl) return fail(`mesh "${space}" records no exchange endpoint - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
     const bearerCmd = [
       process.execPath,
       ...process.execArgv,
