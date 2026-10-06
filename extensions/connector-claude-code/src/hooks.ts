@@ -509,6 +509,8 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
    *  reply, and recording it then would bury the redelivery that recovers that loss. Keyed by the
    *  item, so a message re-buffered after it left the inbox is announced afresh. */
   const announced = new WeakMap<InboxItem, readonly InboxItem[]>();
+  /** Wake-eligible work, run turns included, that no live notice covers: what a retry still owes. */
+  const owed = (): number => agent.pendingWake((item) => announced.has(item));
 
   const clearRetry = (resetDelay: boolean): void => {
     if (retryTimer) clearTimeout(retryTimer);
@@ -521,7 +523,9 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
     // A focus-mode @mention is ack-dropped at ingest, not buffered, so `pendingWake()` is 0 for it and
     // JetStream will never redeliver it either: the push we just failed to make WAS its only notice.
     // Gating the retry on the inbox alone therefore drops precisely the wake with no other recovery.
-    if (agent.pendingWake() === 0 && !pendingMentionWake) return;
+    // An item a live notice still announces is owed nothing, so a rejection that a newer push
+    // superseded schedules no retry.
+    if (owed() === 0 && !pendingMentionWake) return;
     const delay = retryMs;
     retryMs = Math.min(retryMs * 2, NUDGE_RETRY_MAX_MS);
     retryTimer = setTimeout(() => {
@@ -530,16 +534,17 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
       // behind it — un-acked, it redelivers and re-announces itself — whereas the ack-dropped mention
       // has nothing but this timer. Checking the inbox first meant any buffered DM starved the
       // mention retry indefinitely, since the batch nudge kept succeeding and rescheduling itself.
+      // The retry stands in for lost notices, so its batch counts only what no live notice announces.
       if (pendingMentionWake) nudge(pendingMentionWake.item, pendingMentionWake.hint, true);
-      else if (agent.pendingWake() > 0) nudge();
+      else if (owed() > 0) nudge(undefined, undefined, false, agent.peekInbox("automatic").filter((it) => !announced.has(it)));
     }, delay);
     retryTimer.unref?.(); // a pending retry must never hold the process open
   };
 
-  const nudge = (item?: InboxItem, pullHint?: string, isMentionWake = false): void => {
+  const nudge = (item?: InboxItem, pullHint?: string, isMentionWake = false, batch?: readonly InboxItem[]): void => {
     if (!channelActive) return;
     // A batch notice announces every automatic item it counts.
-    const covered = item ? [item] : agent.peekInbox("automatic");
+    const covered = item ? [item] : batch ?? agent.peekInbox("automatic");
     const n = covered.length;
     for (const it of covered) announced.set(it, covered);
     const content = pullHint
