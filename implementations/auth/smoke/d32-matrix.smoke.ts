@@ -942,6 +942,7 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
         `cotal.${S}.ep.one.*.describe.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.spawn.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.turn.owner.${cO}.${cO}.${cA}.${cU}.*`,
+        `cotal.${S}.ep.one.${EP}.cancel.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.despawn.owner.${cO}.${cO}.${cA}.${cU}.*`,
         `$JS.API.DIRECT.GET.EPC_${S}.cotal.${S}.epc.>`,
         // SPEC 14.8: the run's admission and revocation state, leader-served, read before every

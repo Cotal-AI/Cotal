@@ -1177,7 +1177,9 @@ export async function commitGoalResult(
 /** The reverse-DNS detail kind carrying a goal's cached terminal fact on an error (§13.3). */
 export const GOAL_TERMINAL_DETAIL_KIND = "ai.cotal.goal.terminal";
 
-function alreadyTerminal(goalId: string, fact: GoalResultFact): EpEnvelopeError {
+/** The §13.6 item 4 refusal of a cancel addressed to a goal that already ended: `failed-precondition`
+ *  with the cached outcome attached. */
+export function goalAlreadyTerminal(goalId: string, fact: GoalResultFact): EpEnvelopeError {
   return new EpEnvelopeError("failed-precondition",
     `goal "${goalId}" is already terminal (${fact.state}); the cached outcome is attached (SPEC 13.6)`,
     [{ kind: GOAL_TERMINAL_DETAIL_KIND, fact }]);
@@ -1198,7 +1200,7 @@ export async function requestGoalCancel(
     throw new EpEnvelopeError("failed-precondition", `cancel mode must be "graceful" or "terminate"; got ${JSON.stringify(args.mode)} (SPEC 13.6)`);
   const ref = goalRefOf(args.request, args.goalId);
   const cached = await readGoalResult(ctx, ref);
-  if (cached !== undefined) throw alreadyTerminal(ref.goalId, cached);
+  if (cached !== undefined) throw goalAlreadyTerminal(ref.goalId, cached);
   let projected: GoalStatusValue | undefined;
   for (let pass = 0; pass < 2 && projected === undefined; pass++) {
     const status = await readGoalStatus(ctx, ref);
@@ -1209,7 +1211,7 @@ export async function requestGoalCancel(
       const fact = await readGoalResult(ctx, ref);
       if (fact === undefined)
         throw new EpEnvelopeError("internal", `goal "${ref.goalId}" status is terminal but no result fact is readable; a projection never leads the journal (SPEC 13.6)`);
-      throw alreadyTerminal(ref.goalId, fact);
+      throw goalAlreadyTerminal(ref.goalId, fact);
     }
     try { projected = await transitionGoal(ctx, ref, "cancelling", { fields: { cancelMode: args.mode } }); }
     catch (e) { if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e; }
@@ -1219,7 +1221,7 @@ export async function requestGoalCancel(
   const raced = await readGoalResult(ctx, ref);
   if (raced !== undefined) {
     await projectGoalTerminal(ctx, ref);
-    throw alreadyTerminal(ref.goalId, raced);
+    throw goalAlreadyTerminal(ref.goalId, raced);
   }
   return projected;
 }

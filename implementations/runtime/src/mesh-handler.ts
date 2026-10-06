@@ -609,6 +609,10 @@ export class MeshHandler {
     for (const e of owed) {
       if (e.requestId === undefined) continue;
       await this.endPause(e);
+      // A relay to a seat rides its step's pause token (a turn's goal, an ask's attempt, an
+      // escalation), and a decision the run withdrew must not reach the seat afterwards.
+      if (e.kind === "turn" || e.kind === "ask" || e.kind === "checkpoint")
+        for (const token of pauseTokens(e)) await this.withdrawRelay(token);
       if (e.kind === "spawn") {
         await this.dischargeSpawn(e);
         continue;
@@ -633,8 +637,8 @@ export class MeshHandler {
   /**
    * End the pauses a step armed: claim every token {@link pauseTokens} says it owns and, for a
    * `wait`, close its consumer. A cancelled loser's discharge calls it, and so does a hold before
-   * its first bind (spec/cotal-lang.md §7.8), which claims the held step's open attempt. An `ask`'s
-   * relay goal is left as the discharge leaves it.
+   * its first bind (spec/cotal-lang.md §7.8), which claims the held step's open attempt. The relay
+   * an `ask` attempt rode is the discharge's to withdraw, not this.
    */
   async endPause(e: JournalEntry): Promise<void> {
     if (e.requestId === undefined) return;
@@ -1612,6 +1616,9 @@ export class MeshHandler {
         for (;;) {
         if (ctx.signal.cancelled) {
           await this.cancelTimer(primary);
+          // The cancellation is this step's outcome either way: a withdrawal that does not land
+          // here is the discharge's to finish, and it raises there.
+          await this.withdrawRelay(goalId).catch(() => undefined);
           throw new Cancelled(ctx.signal.reason ?? "cancelled");
         }
         const fact = await readGoalResult(actx, ref);
@@ -1947,6 +1954,22 @@ export class MeshHandler {
         throw new EffectError("L4002", kind, `${kind}(${step}) found ${name}#${uid} down before its relay began: ${err.message}`);
       throw new Error(`${kind}(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
     }
+  }
+
+  /**
+   * Withdraw the relay a cancelled step sent to a seat, through the manager's reserved `cancel`
+   * (SPEC 13.6 item 4), so the seat is not shown it again. A token no relay rode has no goal and
+   * nothing to withdraw, and a relay that already ended is the outcome either way: the manager
+   * refuses it with the cached terminal, so a repeated withdrawal is a no-op. Any other refusal
+   * throws, which leaves a discharge open to retry.
+   */
+  private async withdrawRelay(goalId: string): Promise<void> {
+    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
+    const actx = await this.actionCtx();
+    if ((await readGoalStatus(actx, ref)) === undefined) return;
+    const reply = await this.invokeManager(await this.manager(), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
+    if (reply.reply.ok === false && (await readGoalResult(actx, ref)) === undefined)
+      throw new Error(`the relay "${goalId}" could not be withdrawn from its seat: ${reply.reply.error?.message ?? "refused with no message"}`);
   }
 
   /**
@@ -2430,7 +2453,8 @@ export class MeshHandler {
   }
 
   /** Reject with `Cancelled` the moment this branch's signal fires, then claim the pause so its
-   *  armed schedule cannot fire into a run that has moved on. The claim also writes the one-use
+   *  armed schedule cannot fire into a run that has moved on, and withdraw the relay an `ask`
+   *  attempt or an escalation sent to a seat under its token. The claim also writes the one-use
    *  settle, which is what lets an abandoned `awaitSettle` poll loop see a fact and end. */
   private settleCancelled(ref: CheckpointRef, signal: CancelSignal): Promise<never> {
     return new Promise<never>((_, reject) => {
@@ -2440,6 +2464,7 @@ export class MeshHandler {
         fired = true;
         reject(new Cancelled(reason ?? "cancelled"));
         void this.cancelTimer(ref).catch(() => undefined);
+        void this.withdrawRelay(ref.token).catch(() => undefined);
       };
       if (signal.cancelled) {
         fire(signal.reason);

@@ -149,6 +149,9 @@ import {
   createGoal,
   transitionGoal,
   commitGoalResult,
+  requestGoalCancel,
+  goalAlreadyTerminal,
+  type GoalResultFact,
   settleGoalUncertain,
   readGoalResult,
   readGoalStatus,
@@ -3637,6 +3640,9 @@ export class Manager {
       // turns addressed to ITS incarnation and yields them; no reach beyond itself exists here.
       turnPending: (ctx) => this.serveGated(ctx, () => this.turnPendingFor(ctx.subject.caller)),
       turnYield: (ctx) => this.serveGated(ctx, () => this.serveTurnYield(ctx.subject.caller, args(ctx))),
+      // The reserved goal cancel (SPEC 13.6 item 4), served for the relay: the goal ref is the
+      // authenticated caller's own, so a run withdraws only the turns it submitted.
+      cancel: (ctx) => this.serveGated(ctx, () => this.serveTurnCancel(ctx)),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
       listPersonas: (ctx) => this.serveGated(ctx, () => unwrap(this.opListPersonas(callerOf(ctx), false))),
@@ -8803,6 +8809,47 @@ export class Manager {
     this.pendingTurns.delete(goalId);
     this.markTurnLatchDropped(goalId, at);
     this.rememberSettledTurn(goalId, fact.state, at);
+    this.maybeStopTurnSweep();
+    return { goalId, state: fact.state };
+  }
+
+  /** The caller withdraws a turn it submitted (the reserved `cancel`, SPEC 13.6 item 4), so the
+   *  seat is not shown it again and a late yield is answered from the cancelled terminal. Only a
+   *  relay this incarnation holds is moved to `cancelling`, because only its holder can commit the
+   *  terminal; an ended goal is refused with its cached outcome, which keeps a repeated cancel
+   *  idempotent. The pending entry is the latch the yield and the deadline sweep race on: it is
+   *  dropped before the commit, and put back when the commit fails so the relay still ends at
+   *  its deadline. */
+  private async serveTurnCancel(ctx: EpServeContext): Promise<{ goalId: string; state: string }> {
+    if (!this.goalReconcileDone)
+      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; the pending-turn index is not rebuilt yet, retry (SPEC 13.6)");
+    const gw = this.goalWriter;
+    if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing (SPEC 13.6)");
+    const raw = (ctx.request.args ?? {}) as Record<string, unknown>;
+    const goalId = String(raw.goalId);
+    const ref = goalRefOf(ctx.subject, goalId);
+    const p = this.pendingTurns.get(goalId);
+    const c = p?.ref.caller;
+    if (p === undefined || c?.owner !== ref.caller.owner || c.actor !== ref.caller.actor || c.uid !== ref.caller.uid) {
+      const ended = await readGoalResult(gw.ctx, ref);
+      if (ended !== undefined) throw goalAlreadyTerminal(goalId, ended);
+      throw new EpEnvelopeError("failed-precondition", `no turn "${goalId}" of this caller is pending on this manager; cancel withdraws a relayed turn (SPEC 13.6)`);
+    }
+    await requestGoalCancel(gw.ctx, { request: ctx.subject, goalId, mode: (raw.mode ?? "graceful") as "graceful" | "terminate" });
+    this.pendingTurns.delete(goalId);
+    const epoch = this.serviceServe?.grant.epoch ?? 0;
+    let fact: GoalResultFact;
+    try {
+      await this.assertGoalWriterEpochCurrent(epoch);
+      ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "caller" }, committer: { instanceId: this.managerInstanceId, epoch } }));
+    } catch (e) {
+      this.pendingTurns.set(goalId, p);
+      throw e;
+    }
+    this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
+    this.markTurnLatchDropped(goalId);
+    this.rememberSettledTurn(goalId, fact.state, Date.now());
+    await clearGoalIndex(gw.ctx, ref);
     this.maybeStopTurnSweep();
     return { goalId, state: fact.state };
   }
