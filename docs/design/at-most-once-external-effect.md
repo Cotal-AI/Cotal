@@ -203,7 +203,8 @@ is unchanged.
 ### 4.3 The hold
 
 On a `pending` verdict under `once`, after the existing cancellation check and host-stop check
-(`shouldStop`, L5012) and the effect ceiling (L4009), all of which apply as they do to any dispatch:
+(`shouldStop`, L5012), which apply as they do to any dispatch (the effect ceiling, L4009, already
+counted the pending key and does not count it again):
 
 1. The kind's handler method is **not** called.
 2. The interpreter calls `handler.checkpoint(req, ctx)` with
