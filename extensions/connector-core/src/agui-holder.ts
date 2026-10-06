@@ -77,8 +77,12 @@ export function eventPlaneStopped(opts: {
   stopSeat: () => void;
 }): (e: Error) => void {
   return (e) => {
-    opts.log(`AG-UI emitter stopped: ${e.message}`);
-    if (opts.required) opts.stopSeat();
+    // A sink that throws must not keep a seat running that the policy says must stop.
+    try {
+      opts.log(`AG-UI emitter stopped: ${e.message}`);
+    } finally {
+      if (opts.required) opts.stopSeat();
+    }
   };
 }
 

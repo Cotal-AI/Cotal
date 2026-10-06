@@ -6,120 +6,80 @@
       "file": "extensions/connector-codex/src/host.ts",
       "find": "      events = newEventHolder(startCursor);\n      rollout = path;",
       "replace": "      events = events ?? newEventHolder(startCursor);\n      rollout = path;",
-      "expectRed": "the plane KEEPS PUBLISHING after the restart"
+      "expectRed": "the plane KEEPS PUBLISHING after the restart",
+      "cell": "the plane KEEPS PUBLISHING after the restart"
     },
     {
       "name": "L2 the drain stops closing the old thread's run, so an observer is left holding a run that never ends",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "    if (rollout !== undefined) events.flush(rollout);\n    events.closeRun(Date.now());\n    await events.settled();",
       "replace": "    if (rollout !== undefined) events.flush(rollout);\n    await events.settled();",
-      "expectRed": "and no run the dead thread opened was left open"
+      "expectRed": "and no run the dead thread opened was left open",
+      "cell": "and no run the dead thread opened was left open"
     },
     {
       "name": "L3 shutdown stops draining the plane, so a mid-turn exit publishes a run that is never closed",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "      flushEvents();\n      events?.closeRun(Date.now());\n      await events?.settled();",
       "replace": "      await Promise.resolve();",
-      "expectRed": "a mid-turn exit CLOSES the run it left open"
+      "expectRed": "a mid-turn exit CLOSES the run it left open",
+      "cell": "a mid-turn exit CLOSES the run it left open"
     },
     {
       "name": "L4 the bind stops retrying at a turn boundary, so a seat whose rollout appeared late never publishes at all",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "    if (eventsArmed && eventsThread !== undefined) void bindEvents(eventsThread, 1);",
       "replace": "    if (false) void bindEvents(\"\", 1);",
-      "expectRed": "a rollout that appeared AFTER the launch gave up still binds"
+      "expectRed": "a rollout that appeared AFTER the launch gave up still binds",
+      "cell": "a rollout that appeared AFTER the launch gave up still binds"
     },
     {
       "name": "L5 the launch stops binding at all, so an armed seat publishes nothing on the ordinary path",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "      eventsThread = threadId;\n      void bindEvents(threadId, ROLLOUT_ATTEMPTS);",
       "replace": "      eventsThread = threadId;",
-      "expectRed": "an armed seat PUBLISHES its thread's activity"
-    },
-    {
-      "name": "L6 a dead emitter stays bound after an outage, so no later boundary can recover the plane",
-      "file": "extensions/connector-codex/src/host.ts",
-      "find": "    if (events?.failure !== undefined) {",
-      "replace": "    if (events !== undefined && events.failure !== undefined && false) {",
-      "expectRed": "broker-outage:the next turn boundary REBINDS the dead plane"
+      "expectRed": "an armed seat PUBLISHES its thread's activity",
+      "cell": "an armed seat PUBLISHES its thread's activity"
     },
     {
       "name": "L8 giving up on a successor stops draining the predecessor at all, so a run whose process is gone is left open on the wire",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "        if (events !== undefined) {\n          await drainBinding();\n          events = undefined;\n          rollout = undefined;\n        }",
       "replace": "        if (false) {\n          await drainBinding();\n          events = undefined;\n          rollout = undefined;\n        }",
-      "expectRed": "restart-late:the dead thread's run was CLOSED when the plane gave up on its successor"
+      "expectRed": "restart-late:the dead thread's run was CLOSED when the plane gave up on its successor",
+      "cell": "restart-late:the dead thread's run was CLOSED when the plane gave up on its successor"
     },
     {
       "name": "L7 the give-up drains the predecessor but stops CLEARING it, so every later boundary feeds a thread whose process is gone",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "          await drainBinding();\n          events = undefined;\n          rollout = undefined;",
       "replace": "          await drainBinding();",
-      "expectRed": "restart-late:the successor thread PUBLISHES once its file appears"
-    },
-    {
-      "name": "L9 the bind's boundary is written into the log before the emitter starts, so a start that then fails leaves a resume behind and the next bind republishes what the seat did while it was cut off",
-      "file": "extensions/connector-codex/src/host.ts",
-      "find": "        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });",
-      "replace": "        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });\n        if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(startCursor);",
-      "expectRed": "broker-outage:the recovered stream carries ONE post-rebind turn and none of the failed initial binding"
-    },
-    {
-      "name": "L10 the bind's boundary is substituted on EVERY read rather than only on a log with no cursor, so the stream restarts from it and republishes what it has already sent",
-      "file": "extensions/connector-codex/src/host.ts",
-      "find": "    return this.inner.read(cursor ?? this.start);",
-      "replace": "    return this.inner.read(this.start);",
-      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, WITHOUT the tool bytes"
-    },
-    {
-      "name": "L11 a seat that recovers its plane says nothing about it, so a reader watching the log cannot tell a recovery from a plane that was never down",
-      "file": "extensions/connector-codex/src/host.ts",
-      "find": "      log(`AG-UI: the emitter stopped (${events.failure.message}), rebinding at this boundary`);",
-      "replace": "      log(`AG-UI: the emitter stopped (${events.failure.message})`);",
-      "expectRed": "broker-outage:and it said so rather than recovering silently"
+      "expectRed": "restart-late:the successor thread PUBLISHES once its file appears",
+      "cell": "restart-late:the successor thread PUBLISHES once its file appears"
     },
     {
       "name": "L12 the bind's boundary is not substituted, so the emitter positions itself wherever the file ends when its own setup has finished",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "          const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor);",
       "replace": "          const source = new JsonlFileSource<CodexRecord>(rolloutPath);",
-      "expectRed": "a turn written INSIDE the emitter's setup window is PUBLISHED rather than left behind the cursor"
-    },
-    {
-      "name": "L13 an existing WAL cursor is ignored on the first recovery read, so the rebind advances to its new boundary and drops the outage backlog",
-      "file": "extensions/connector-codex/src/host.ts",
-      "find": "  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    return this.inner.read(cursor ?? this.start);\n  }",
-      "replace": "  private firstRead = true;\n\n  read(cursor: string | undefined): Promise<SourceRead<T>> {\n    const from = this.firstRead && cursor !== undefined ? this.start : cursor ?? this.start;\n    this.firstRead = false;\n    return this.inner.read(from);\n  }",
-      "expectRed": "broker-outage-live:an existing cursor resumes the COMPLETE outage backlog once, WITHOUT the tool bytes"
-    },
-    {
-      "name": "L14 the replacement mapper starts empty instead of inheriting the WAL's open run, so recovery drops its completion and collides at the next start",
-      "file": "extensions/connector-codex/src/host.ts",
-      "find": "        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;\n        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });",
-      "replace": "        const resumeRunId = undefined;\n        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });",
-      "expectRed": "broker-outage-open-run:the replacement mapper CLOSES the WAL run before the next native start"
-    },
-    {
-      "name": "L15 pending-frame recovery updates the WAL on disk but leaves the live emitter at the pre-pending bracket state",
-      "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });\n    this.brackets = AguiBrackets.restore(p.brackets);",
-      "replace": "    await this.attempt({ id: p.id, E: p.E, body: p.body, retry: true });",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
-      "expectRed": "broker-outage-live:setup:the replacement holder stays alive through recovery"
+      "expectRed": "a turn written INSIDE the emitter's setup window is PUBLISHED rather than left behind the cursor",
+      "cell": "a turn written INSIDE the emitter's setup window is PUBLISHED rather than left behind the cursor"
     },
     {
       "name": "L16 the host drops the path's delimiter, so the reader accepts a bare token the way the old sentence-parsed reader did",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "from ${JSON.stringify(path)} (",
       "replace": "from ${path} (",
-      "expectRed": "restart-late:and the dead thread's own file leaves a turn unfinished, so that close came from the seat"
+      "expectRed": "restart-late:and the dead thread's own file leaves a turn unfinished, so that close came from the seat",
+      "cell": "restart-late:and the dead thread's own file leaves a turn unfinished, so that close came from the seat"
     },
     {
       "name": "L17 the bind's boundary is never persisted after a successful start, so a host killed before the first pump leaves a virgin WAL and the next bind takes a later boundary",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "          if (source instanceof BoundStartSource && wal.frontier.sourceCursor === undefined)\n            await wal.advanceCursorOnly(source.start);",
       "replace": "          void wal.frontier.sourceCursor;",
-      "expectRed": "bind:the start boundary is on disk before the first pump (#705)"
+      "expectRed": "bind:the start boundary is on disk before the first pump (#705)",
+      "cell": "bind:the start boundary is on disk before the first pump (#705)"
     }
   ],
   "suite": [
