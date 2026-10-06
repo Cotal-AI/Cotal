@@ -2239,6 +2239,18 @@ export class CotalEndpoint extends EventEmitter {
     text: string,
     opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
   ): Promise<CotalMessage> {
+    const { msg } = await this.anycastAttributed(service, text, opts);
+    return msg;
+  }
+
+  /** Anycast, returning the JetStream publish ack alongside the message: the broker stored the
+   *  request on the role's work queue at a sequence, which proves neither a holder nor a read. */
+  async anycastAttributed(
+    service: string,
+    text: string,
+    opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
+  ): Promise<{ msg: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
+    if (!this.js) throw new Error(this.notLiveMsg());
     const msg: CotalMessage = {
       id: randomUUID(),
       ts: Date.now(),
@@ -2249,8 +2261,15 @@ export class CotalEndpoint extends EventEmitter {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(anycastSubject(this.space, service, this.owner, this.actor), msg);
-    return msg;
+    assertPartsSerializable(msg.parts);
+    // Publish DIRECTLY rather than through publishMsg, the way unicastAttributed does: this path
+    // must read the ack, and publishMsg deliberately discards it.
+    const ack = await this.js.publish(
+      anycastSubject(this.space, service, this.owner, this.actor),
+      JSON.stringify(msg),
+      { msgID: msg.id },
+    );
+    return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
 
   /** Subscribe to a read-only observer feed. Defaults to the whole space; an observer under

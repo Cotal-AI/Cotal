@@ -148,6 +148,8 @@ Send a request to ANY one available agent of a given role (load-balanced). Use w
 | `role` | string | yes | The role to address (e.g. reviewer). |
 | `text` | string | yes | The request. |
 
+On success the tool answers `Request stored as seq <N> on the @<role> queue (<k> holders online at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. The sequence proves the broker stored the request on the role's work queue, and `<role>` names that queue as the subject spells it, which differs from the role you passed when routing rewrites it into a subject token. The count is the roster's live seats whose role routes to that queue a moment before the publish, never you: your own task consumer drops your own request as an echo. While the presence view is not current the count reads `holders unknown at send: the presence view was not current`, because a partial roster cannot show that no holder exists. Neither the sequence nor the count proves a holder took the request.
+
 ## `cotal_status`
 
 *set your status / attention*

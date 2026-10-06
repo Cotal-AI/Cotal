@@ -79,7 +79,7 @@ function channelPath(channel: string): string {
  *  on every concrete value — it only additionally lets `*` through, e.g. for `svc.*.…` allow rules.
  *  Used for the *service/role* slots (`svc.<role>`, `ctl.<tier>`); the owner/actor identity slots go
  *  through {@link ownerToken} (fail-loud, never rewritten). */
-function routeToken(s: string): string {
+export function routeToken(s: string): string {
   return s === "*" ? "*" : token(s);
 }
 
