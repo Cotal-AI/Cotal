@@ -178,7 +178,7 @@ service is a sibling signer client on the same host. After §3 it dials the same
 
 ### 1.3 What is not the account signer
 
-`loadManagerInstanceIdentity` / `saveManagerInstanceIdentity` (`auth-paths.ts`) persist the
+`loadManagerInstanceIdentity` / `createManagerInstanceIdentity` (`auth-paths.ts`) persist the
 manager's serve nkey seed. That is the instance's own user identity (SPEC 13.6), not the account
 signing seed. Isolation of the account signer does not move it.
 

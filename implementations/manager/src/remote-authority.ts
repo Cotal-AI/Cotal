@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   credsFromJwt,
@@ -9,7 +8,6 @@ import {
   newIdentity,
   parseRemoteManagedAgentRuntimeResult,
   remoteManagerActors,
-  writeSecretFileAtomic,
   REMOTE_MANAGER_IDENTITY_NAMES,
   type Identity,
   type RemoteManagerAdminAuthorizationRequest,
@@ -35,7 +33,7 @@ import {
   type RunAdmission,
   type RetainedAgentAuthority,
 } from "@cotal-ai/core";
-import { spaceKey } from "@cotal-ai/workspace";
+import { claimIdentityRecord, identityOf, spaceKey } from "@cotal-ai/workspace";
 import type { RunHostingContext } from "./run-hosting.js";
 
 export interface RemoteManagerIdentityState {
@@ -218,39 +216,23 @@ function stateFile(root: string, space: string): string {
   return join(root, ".cotal", `remote-manager.${spaceKey(space)}.json`);
 }
 
-function parseIdentity(v: unknown, what: string): Identity {
-  const o = v as Partial<Identity>;
-  if (o === null || typeof o !== "object" || typeof o.id !== "string" || typeof o.seed !== "string")
-    throw new Error(`${what} is malformed`);
-  const identity = { id: o.id, seed: o.seed };
-  // A synthetic JWT subject check is unnecessary here; credsFromJwt validates the seed when the
-  // host-signed generation is materialized, before any connect.
-  return identity;
+function remoteManagerStateOf(space: string) {
+  return (raw: unknown): RemoteManagerIdentityState | undefined => {
+    const o = raw as Partial<RemoteManagerIdentityState> | null;
+    if (o?.v !== 1 || o.space !== space || typeof o.instanceId !== "string" || typeof o.lifecycleUid !== "string" || !o.identities) return undefined;
+    const supervisor = identityOf(o.identities.supervisor);
+    const executor = identityOf(o.identities.executor);
+    const serve = identityOf(o.identities.serve);
+    const goalWriter = identityOf(o.identities.goalWriter);
+    const sessionLedger = identityOf(o.identities.sessionLedger);
+    if (!supervisor || !executor || !serve || !goalWriter || !sessionLedger) return undefined;
+    return { v: 1, space, instanceId: o.instanceId, lifecycleUid: o.lifecycleUid, identities: { supervisor, executor, serve, goalWriter, sessionLedger } };
+  };
 }
 
 /** Load or create one participant-owned manager lifecycle identity. Private seeds never leave it. */
 export function loadOrCreateRemoteManagerIdentity(root: string, space: string): RemoteManagerIdentityState {
-  const path = stateFile(root, space);
-  if (existsSync(path)) {
-    let raw: unknown;
-    try { raw = JSON.parse(readFileSync(path, "utf8")); }
-    catch (e) { throw new Error(`${path}: remote manager authority state does not parse (${(e as Error).message}); refusing to rotate over it`); }
-    const o = raw as Partial<RemoteManagerIdentityState>;
-    if (o.v !== 1 || o.space !== space || typeof o.instanceId !== "string" || typeof o.lifecycleUid !== "string" || !o.identities)
-      throw new Error(`${path}: remote manager authority state is malformed; refusing to mint a fresh instance over it`);
-    const state: RemoteManagerIdentityState = {
-      v: 1, space, instanceId: o.instanceId, lifecycleUid: o.lifecycleUid,
-      identities: {
-        supervisor: parseIdentity(o.identities.supervisor, "supervisor identity"),
-        executor: parseIdentity(o.identities.executor, "executor identity"),
-        serve: parseIdentity(o.identities.serve, "serve identity"),
-        goalWriter: parseIdentity(o.identities.goalWriter, "goal-writer identity"),
-        sessionLedger: parseIdentity(o.identities.sessionLedger, "session-ledger identity"),
-      },
-    };
-    return state;
-  }
-  const state: RemoteManagerIdentityState = {
+  return claimIdentityRecord(stateFile(root, space), "the remote manager authority state", remoteManagerStateOf(space), () => ({
     v: 1,
     space,
     instanceId: mintLifecycleUid(),
@@ -262,9 +244,7 @@ export function loadOrCreateRemoteManagerIdentity(root: string, space: string): 
       goalWriter: newIdentity(),
       sessionLedger: newIdentity(),
     },
-  };
-  writeSecretFileAtomic(path, JSON.stringify(state, null, 2));
-  return state;
+  }));
 }
 
 export function remoteManagerAuthorityRequest(

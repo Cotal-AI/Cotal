@@ -38,7 +38,7 @@ import {
   provisionEndpointGateOpen, serveIssuanceGateKv, endpointRegistrationBarrier,
   epgateKey, parseEndpointGate, mintLifecycleUid,
 } from "@cotal-ai/core";
-import { putSpaceAuth, saveManagerInstanceIdentity, workspaceSecretStore } from "@cotal-ai/workspace";
+import { putSpaceAuth, createManagerInstanceIdentity, workspaceSecretStore } from "@cotal-ai/workspace";
 import { executePrincipalLiveness } from "../../delivery/src/evict-exec.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -195,7 +195,7 @@ try {
 
     // The command's DEFAULT instance resolution reads this file. Writing it is what makes the
     // no-`--instance` invocation below the real operator path.
-    saveManagerInstanceIdentity(ROOT, space, { instanceId, serveIdentity: { id: newIdentity().id, seed: newIdentity().seed } });
+    createManagerInstanceIdentity(ROOT, space, { instanceId, serveIdentity: { id: newIdentity().id, seed: newIdentity().seed } });
     return { instanceId, principal, kv, ...(conn ? { conn } : {}) };
   };
 

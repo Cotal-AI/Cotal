@@ -265,6 +265,33 @@ now refused at its view's cap.
 Remove `maxTtlSec` from each call. A test that needs a bearer to expire sooner mints one with a
 shorter lifetime.
 
+## Persisted identity records in 0.70.0
+
+The manager instance identity, the manager sibling identities, the auth plane instance identity and
+a participant manager's remote authority state now share one reader and one first mint in
+`@cotal-ai/workspace`, exported as `claimIdentityRecord` with the nkey check `identityOf`. Each
+record is read as a regular file, must hold non-empty nkeys and is created exclusively, so
+concurrent first starts of a participant manager on one root now settle on one identity where each
+used to keep its own. `saveManagerInstanceIdentity` and `saveAuthInstanceIdentity` are gone. A
+running mesh whose records are plain files needs nothing.
+
+### What stops working
+
+A manager instance, auth instance or remote authority record that is a symlink, a directory or any
+other non-regular entry is refused where it used to be followed. The manager, the auth plane and a
+participant manager fail to start on it, and `cotal reconcile-gate` and `cotal deregister-instance`
+refuse it. Retirement already refused it. A remote authority record with an empty nkey id or seed
+is refused too. A first mint that loses its race and cannot read the winner now refuses with
+`identity-record-create-lost` in place of `manager-instance-identity-create-lost` or
+`auth-instance-identity-create-lost`. Code that imports either `save` function no longer compiles.
+
+### Before the upgrade
+
+Replace a symlinked identity record with a copy of the file it points to. Code that wrote a record
+with a `save` function plants it with `createManagerInstanceIdentity` or
+`createAuthInstanceIdentity`, which create the record when it is absent and otherwise return the
+stored one unchanged. Nothing replaces an overwrite of a stored identity.
+
 ## Carrying a resumed Claude session to another host
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the

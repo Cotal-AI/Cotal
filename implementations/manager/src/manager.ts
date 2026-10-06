@@ -1649,7 +1649,7 @@ export class Manager {
     // First mint on a fresh root is exclusive create (#1263). Two processes that both observe no
     // file must not keep different in-memory ids: of N concurrent starts exactly one creates the
     // file (`link` / O_EXCL) and the others adopt that identity before taking a lease, or refuse
-    // with manager-instance-identity-create-lost. Atomic rename is not enough, because the loser
+    // with identity-record-create-lost. Atomic rename is not enough, because the loser
     // of a replace would still serve under the id it minted.
     {
       if (this.remoteAuthority) {
