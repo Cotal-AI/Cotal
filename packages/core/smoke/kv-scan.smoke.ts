@@ -347,7 +347,7 @@ try {
           getPushConsumer: async (...a: unknown[]) => {
             const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
             const realConsume = (oc.consume as () => Promise<AsyncIterable<unknown>>).bind(oc);
-            return Object.assign(Object.create(oc as object), {
+            return Object.assign(oc, {
               consume: async () => {
                 const inner = await realConsume() as unknown as {
                   reset: () => void;
@@ -406,12 +406,7 @@ try {
             const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
             const ci = await (oc as { info: (cached?: boolean) => Promise<{ config: { inactive_threshold?: number } }> }).info(true);
             observedTtlNanos = ci.config.inactive_threshold;
-            return Object.assign(Object.create(oc as object), {
-              delete: async () => {
-                deleteAttempted = true;
-                throw new Error("simulated broker deletion failure");
-              },
-            });
+            return oc;
           },
         },
       },
@@ -419,11 +414,16 @@ try {
 
     let scanResult: unknown;
     try {
-      scanResult = await liveKvEntries(victim);
+      scanResult = await liveKvEntries(victim, {
+        deleteOwnConsumer: async () => {
+          deleteAttempted = true;
+          throw new Error("simulated broker deletion failure");
+        },
+      });
     } catch (e) {
       scanResult = e;
     }
-    check("deletion failure: scan succeeds despite consumer delete error (swallowed cleanly in finally)", Array.isArray(scanResult) && scanResult.length === 1, (scanResult as Error)?.message ?? (scanResult as Error)?.stack ?? String(scanResult));
+    check("deletion failure: a consumer delete error is thrown, not swallowed in finally", (scanResult as Error)?.message === "simulated broker deletion failure", (scanResult as Error)?.message ?? scanResult);
     check("deletion failure: delete was attempted in finally", deleteAttempted);
     check("deletion failure: consumer preserves non-zero inactive_threshold TTL as crash/failure backstop", typeof observedTtlNanos === "number" && observedTtlNanos > 0, observedTtlNanos);
   }
@@ -569,8 +569,10 @@ try {
     const stream = "KV_abort_empty_cleanup";
     const jsm = await jetstreamManager(nc);
     await jsm.consumers.add(stream, { durable_name: "unrelated_sentinel", ack_policy: "none", filter_subject: "$KV.abort_empty_cleanup.>" });
-    const js = (bucket as unknown as { js: { consumers: { getPushConsumer: (...args: unknown[]) => Promise<{ delete: () => Promise<unknown>; info: () => Promise<unknown> }> } } }).js;
+    const js = (bucket as unknown as { js: { consumers: { getPushConsumer: (...args: unknown[]) => Promise<{ info: () => Promise<unknown> }> } } }).js;
     const getPushConsumer = js.consumers.getPushConsumer.bind(js.consumers);
+    const consumers = (bucket as unknown as { jsm: { consumers: { delete: (stream: string, name: string) => Promise<boolean> } } }).jsm.consumers;
+    const deleteConsumer = consumers.delete.bind(consumers);
     try {
       for (const shape of ["filtered-control", "filtered", "options", "explicit-undefined"] as const) {
         const ac = new AbortController();
@@ -579,16 +581,11 @@ try {
         const released = new Promise<void>((resolve) => { release = resolve; });
         let entered!: () => void;
         const deleting = new Promise<void>((resolve) => { entered = resolve; });
-        js.consumers.getPushConsumer = async (...args: unknown[]) => {
-          const oc = await getPushConsumer(...args);
-          const originalDelete = oc.delete.bind(oc);
-          oc.delete = async () => {
-            intercepted++;
-            entered();
-            await released;
-            return originalDelete();
-          };
-          return oc;
+        consumers.delete = async (stream, name) => {
+          intercepted++;
+          entered();
+          await released;
+          return deleteConsumer(stream, name);
         };
         const scan = (shape === "filtered" || shape === "filtered-control"
           ? liveKvEntries(bucket, "none.>", { signal: ac.signal })
@@ -614,11 +611,10 @@ try {
       const deleting = new Promise<void>((resolve) => { entered = resolve; });
       js.consumers.getPushConsumer = async (...args: unknown[]) => {
         const oc = await getPushConsumer(...args);
-        const originalDelete = oc.delete.bind(oc);
         oc.info = async () => { throw new Error("original-bind-error"); };
-        oc.delete = async () => { entered(); await released; return originalDelete(); };
         return oc;
       };
+      consumers.delete = async (stream, name) => { entered(); await released; return deleteConsumer(stream, name); };
       const ac = new AbortController();
       const failedScan = liveKvEntries(bucket, { signal: ac.signal }).then(
         () => "RETURN", (e: Error) => `THROW:${e.message}`);
@@ -630,7 +626,7 @@ try {
       check("empty cleanup: original scan error survives later abort", failure === "THROW:original-bind-error", failure);
       const names = (await jsm.consumers.list(stream).next()).map((info) => info.name);
       check("failed-bind cleanup preserves unrelated sentinel", names.length === 1 && names[0] === "unrelated_sentinel", names);
-    } finally { js.consumers.getPushConsumer = getPushConsumer; }
+    } finally { js.consumers.getPushConsumer = getPushConsumer; consumers.delete = deleteConsumer; }
 
     // The explicit-undefined shape must honor an already-aborted signal BEFORE creating a consumer.
     for (const shape of ["filtered", "options", "explicit-undefined"] as const) {

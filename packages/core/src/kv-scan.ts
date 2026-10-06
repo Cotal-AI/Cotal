@@ -1,6 +1,7 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
-import type { ConsumerInfo, MsgRequest, NextMsgRequest } from "@nats-io/jetstream";
+import { JetStreamApiCodes, JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
+import { isPublishPermissionDenied } from "./endpoint.js";
 
 /**
  * The ONE sanctioned way to read every live entry of a KV bucket.
@@ -100,7 +101,7 @@ export class IncompleteKvScan extends Error {
 
 export interface LiveKvEntriesOptions {
   signal?: AbortSignal;
-  /** Runs each delete of the scan's own consumer, for a caller that must recognise a refused one: a
+  /** Runs each delete of the scan's own consumers, for a caller that must recognise a refused one: a
    *  profile without the delete row is refused by design (#691), and the endpoint keeps that
    *  refusal's connection-status echo off its `error` event. */
   deleteOwnConsumer?: (stream: string, name: string, del: () => Promise<boolean>) => Promise<boolean>;
@@ -158,6 +159,22 @@ export async function liveKvEntries(
   const bucket: Bucket = kv;
   const cc = bucket._buildCC(filter ?? ">", KvWatchInclude.AllHistory, { headers_only: false });
   const oc = await bucket.js.consumers.getPushConsumer(bucket.stream, cc);
+  // nats.js rebuilds the consumer after a stall or a sequence gap as `<prefix>_<serial + 1>` and sends
+  // that create without awaiting it, so a delete the broker answers first lets the consumer land after
+  // cleanup. The client's consumer API is shared by every scan, so this consumer gets its own view of
+  // it that records each create. `answered` holds only for the broker's own reply: a timeout or a closed
+  // connection rejects the request without saying whether the create landed.
+  // The client sets `api` and `name` on every push consumer it returns; the cast only hides them from the type.
+  const own = oc as unknown as { api: ConsumerAPI; name: string };
+  const api = own.api;
+  const owned = [{ name: own.name, answered: Promise.resolve(true) }];
+  own.api = Object.assign(Object.create(api) as ConsumerAPI, {
+    add: (...args: Parameters<ConsumerAPI["add"]>) => {
+      const created = api.add(...args);
+      owned.push({ name: args[1].name!, answered: created.then(() => true, (e) => e instanceof JetStreamApiError) });
+      return created;
+    },
+  });
 
   // THE BIND-TIME PROOF: `num_pending` is how many messages this consumer will deliver, read before
   // a single one arrives. Zero means the bucket (or the filtered subset) really is empty; it is
@@ -172,14 +189,11 @@ export async function liveKvEntries(
   let sawTerminal = false;
   let bucketName = bucket.bucket;
   let expected = 0;
-  let activeConsumerName: string | undefined;
-  let initialName: string | undefined;
+  let complete = false;
   try {
     // THE BIND-TIME PROOF, continued: zero here is the only thing that yields an empty result.
     const initialInfo = await oc.info(true);
     opts?.onConsumer?.(initialInfo);
-    initialName = initialInfo.name;
-    activeConsumerName = initialInfo.name;
     expected = initialInfo.num_pending;
 
     if (opts?.signal?.aborted) {
@@ -192,21 +206,6 @@ export async function liveKvEntries(
       // Greatest revision per key, markers INCLUDED — see the header. Collapsing after the fact is
       // what makes concurrent rewrites and drifted `history` settings both correct.
       const iter = await oc.consume();
-      const statusIter = typeof iter.status === "function" ? iter.status() : undefined;
-      if (statusIter) {
-        (async () => {
-          try {
-            for await (const s of statusIter) {
-              if (s.type === "ordered_consumer_recreated" && "name" in s && typeof s.name === "string") {
-                activeConsumerName = s.name;
-              }
-            }
-          } catch {
-            /* status iterator closed */
-          }
-        })();
-      }
-
       const onAbort = () => {
         iter.stop(opts?.signal?.reason ?? new Error("scan aborted"));
       };
@@ -234,25 +233,35 @@ export async function liveKvEntries(
         }
       }
     }
+    complete = expected === 0 || sawTerminal;
   } finally {
-    // Delete ONLY this scan's own consumer in finally. If rotation occurred, delete the rotated consumer too.
-    // TTL (inactive_threshold) remains the crash/deletion-failure backstop.
-    const deleteOwn = opts?.deleteOwnConsumer ?? ((_stream, _name, del) => del());
-    const targetName = (oc as unknown as { name?: string }).name ?? activeConsumerName;
-    if (targetName && initialName && targetName !== initialName) {
-      for (let i = 0; i < 20; i++) {
-        let deleted = false;
+    try {
+      // Delete ONLY this scan's own consumers. nats.js deletes only the last predecessor whose create
+      // was answered, so a successor superseded while its create was unanswered is deleted by nobody.
+      // The iterator is closed, so no create follows; once each one is answered, none can land after
+      // its delete. Newest first, because nats.js never deletes that one itself, so a refusal reaches
+      // the hook on a subject none of its predecessor deletes shares.
+      const answered = await Promise.all(owned.map((c) => c.answered));
+      if (owned.at(-1)!.name !== own.name) throw new Error(`scan consumer ${own.name} was not created through the scan's consumer API - the pinned nats.js changed shape`);
+      const deleteOwn = opts?.deleteOwnConsumer ?? ((_stream, _name, del) => del());
+      let unanswered: string | undefined;
+      for (let i = owned.length - 1; i >= 0; i--) {
+        const target = owned[i].name;
         try {
-          deleted = await deleteOwn(bucket.stream, targetName, () => bucket.jsm.consumers.delete(bucket.stream, targetName));
-        } catch {
-          // in-flight creation or already deleted
+          await deleteOwn(bucket.stream, target, () => bucket.jsm.consumers.delete(bucket.stream, target));
+        } catch (e) {
+          // A profile without the delete row (#691) is refused for every name alike, and the broker
+          // reaps those consumers at their inactive_threshold.
+          if (isPublishPermissionDenied(e)) break;
+          if (!(e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound)) throw e;
+          if (!answered[i]) unanswered ??= target;
         }
-        if (deleted) break;
-        await new Promise((r) => setTimeout(r, 20));
       }
-    } else {
-      // The client sets `name` on every push consumer it returns; the cast above only hides it from the type.
-      await deleteOwn(bucket.stream, targetName!, () => oc.delete()).catch(() => { /* deletion failure: TTL is the backstop */ });
+      if (unanswered) throw new Error(`the broker never answered the create of scan consumer ${unanswered}, so it can land after its delete and live until its inactive_threshold`);
+    } catch (e) {
+      // The scan's own error, its cancellation and IncompleteKvScan are its answer; a cleanup failure
+      // replaces only a result.
+      if (complete && !opts?.signal?.aborted) throw e;
     }
   }
   if (opts?.signal?.aborted) {
