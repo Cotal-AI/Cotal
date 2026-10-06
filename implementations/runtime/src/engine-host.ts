@@ -132,35 +132,34 @@ class WitnessedStore implements JournalStore {
 }
 
 function rehydrate(failed: WorkerRunFailed, store: WitnessedStore): Error {
-  if (failed.code === "L5010") {
-    // The append that failed happened in this process; the thread's L5010 is its reflection. A
-    // reflection with no witnessed failure behind it means the two sides disagree about what
-    // happened, and that is said rather than papered over with a parsed message.
-    if (store.failure === undefined) {
-      return new Error(
-        `the engine thread reported L5010 (journal append rejected) but this host's store recorded no failed append; the run cannot be graded: ${failed.message}`,
-      );
+  switch (failed.class) {
+    case "rejected":
+      // The append that failed happened in this process; the thread's L5010 is its reflection. A
+      // reflection with no witnessed failure behind it means the two sides disagree about what
+      // happened, and that is said rather than papered over with a parsed message.
+      if (store.failure === undefined) {
+        return new Error(
+          `the engine thread reported L5010 (journal append rejected) but this host's store recorded no failed append; the run cannot be graded: ${failed.message}`,
+        );
+      }
+      return new JournalAppendRejected(journalEntryKeyString(store.failure.entry), store.failure.entry.state, store.failure.reason);
+    case "too-large":
+      return new EffectResultTooLarge(failed.stepKey, failed.bytes, failed.bound);
+    case "released":
+      return new RunReleased(failed.reason);
+    case "held":
+      return new RunHeld(failed.step, failed.reason, failed.pending);
+    // An effect failure carries its domain across whole, because callers branch on `kind` exactly as
+    // they do when the walker raises the same class in-process.
+    case "effect":
+      return new EffectError(failed.code, failed.kind, failed.message, failed.detail);
+    case "error": {
+      const e = new Error(failed.message);
+      e.name = failed.name;
+      if (failed.code !== undefined) (e as Error & { code?: string }).code = failed.code;
+      return e;
     }
-    return new JournalAppendRejected(journalEntryKeyString(store.failure.entry), store.failure.entry.state, store.failure.reason);
   }
-  if (failed.tooLarge !== undefined) {
-    return new EffectResultTooLarge(failed.tooLarge.stepKey, failed.tooLarge.bytes, failed.tooLarge.bound);
-  }
-  if (failed.code === "L5012") {
-    return new RunReleased(failed.reason ?? failed.message);
-  }
-  if (failed.code === "L5025") {
-    return new RunHeld(failed.step ?? "(step not carried)", failed.reason ?? failed.message, failed.pending === true);
-  }
-  // An effect failure carries its domain across whole, because callers branch on `kind` exactly as
-  // they do when the walker raises the same class in-process.
-  if (failed.code !== undefined && failed.kind !== undefined) {
-    return new EffectError(failed.code, failed.kind, failed.message, failed.detail);
-  }
-  const e = new Error(failed.message);
-  e.name = failed.name;
-  if (failed.code !== undefined) (e as Error & { code?: string }).code = failed.code;
-  return e;
 }
 
 /** Run or resume a program on the compiled engine, with the walker's `RunResult`. */

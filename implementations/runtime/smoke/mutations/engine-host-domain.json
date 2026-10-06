@@ -10,8 +10,8 @@
     {
       "name": "an effect failure crosses the driver boundary stripped of its domain",
       "file": "implementations/runtime/src/engine-host.ts",
-      "find": "  if (failed.code !== undefined && failed.kind !== undefined) {\n    return new EffectError(failed.code, failed.kind, failed.message, failed.detail);\n  }",
-      "replace": "  if ((false as boolean) && failed.code !== undefined && failed.kind !== undefined) {\n    return new EffectError(failed.code as string, failed.kind as string, failed.message, failed.detail);\n  }",
+      "find": "      return new EffectError(failed.code, failed.kind, failed.message, failed.detail);",
+      "replace": "      return Object.assign(new Error(failed.message), { code: failed.code });",
       "expectRed": "and the effect FAILS rather than returning a resolved checkpoint with an empty value",
       "cell": "and the effect FAILS rather than returning a resolved checkpoint with an empty value",
       "note": "The cell reads `kind === \"handler-fault\"` off the raised failure, which is exactly the field this branch restores. Mutated, a bypassed checkpoint's L4000 arrives as a plain error with a code and no kind, and a caller that branches on the domain - as this suite does on the walker's own raise - reads a different failure than the one that happened. Found live before the branch existed: this cell was the red that demanded it."

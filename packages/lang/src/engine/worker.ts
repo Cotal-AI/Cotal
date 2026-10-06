@@ -97,32 +97,30 @@ export interface WorkerRunOk {
   readonly steps: number;
 }
 
-export interface WorkerRunFailed {
+export type WorkerRunFailed = {
   readonly inspection?: InspectionSnapshot;
   readonly ok: false;
-  /** The language code where there is one (`L4013`, `L5011`), so a caller can branch as it always has. */
-  readonly code?: string;
   readonly name: string;
   readonly message: string;
-  /**
-   * `RunReleased.reason` (L5012) and `RunHeld.reason` (L5025), carried as the field it is so a
-   * host rebuilding either class does not have to parse its own sentence back out of the message.
-   */
-  readonly reason?: string;
-  /** `RunHeld.step` (L5025): the step whose refusal held the run, carried like `reason`. */
-  readonly step?: string;
-  /** `RunHeld.pending` (L5025): the refusal was an at-most-once step's hold, carried like `step`. */
-  readonly pending?: boolean;
-  /**
-   * An `EffectError`'s domain fields, carried so a host can rebuild the class whole: `kind` is what
-   * failure handling branches on and `detail` is a recorded value, already fenced at its throw
-   * site. Present together with `code` exactly when the run failed as an effect failure.
-   */
-  readonly kind?: string;
-  readonly detail?: Readonly<Record<string, unknown>>;
-  /** `EffectResultTooLarge`'s fields (L5006), carried so a host can rebuild the class whole. */
-  readonly tooLarge?: { readonly stepKey: string; readonly bytes: number; readonly bound: number };
-}
+} & WorkerFailure;
+
+/**
+ * The class a run failed as, with the fields a host rebuilds that class from.
+ *
+ * The thread picks the variant by `instanceof`, so a value a program threw crosses as `error`
+ * whatever fields it happens to carry: a program cannot raise a host class by its shape. Each
+ * variant requires its class's fields, so the host rebuilds it with nothing to default.
+ */
+export type WorkerFailure =
+  | { readonly class: "released"; readonly reason: string }
+  | { readonly class: "held"; readonly step: string; readonly reason: string; readonly pending: boolean }
+  // `kind` is what failure handling branches on; `detail` is a recorded value, fenced at its throw site.
+  | { readonly class: "effect"; readonly code: string; readonly kind: string; readonly detail?: Readonly<Record<string, unknown>> }
+  | { readonly class: "too-large"; readonly stepKey: string; readonly bytes: number; readonly bound: number }
+  // L5010: the host rebuilds it from the append it witnessed, so nothing else crosses.
+  | { readonly class: "rejected" }
+  // The language code where there is one (`L4013`, `L5011`), so a caller can branch as it always has.
+  | { readonly class: "error"; readonly code?: string };
 
 export type WorkerRunResult = WorkerRunOk | WorkerRunFailed;
 
