@@ -4168,15 +4168,20 @@ export class Manager {
       // A failed removal joins the refusal instead of throwing, so every removal is attempted and
       // the refusal still reaches the caller.
       const unshredded: string[] = [];
-      for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files]) {
-        for (const path of [family.actorToken, family.sentinelCreds])
-          await attemptCleanup(unshredded, `secret ${path}`, () => secrets.delete(agentSecretKeyForFile(path, this.space)));
-        for (const path of [family.actorToken, family.sentinelCreds, family.health])
-          await attemptCleanup(unshredded, `file ${path}`, () => rmSync(path, { force: true }));
-      }
+      for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files])
+        await this.shredUserSecrets(unshredded, family);
       const leftover = unshredded.length ? `; cleanup failed: ${unshredded.join("; ")}` : "";
       return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}` };
     }
+  }
+
+  /** Shred a user agent's secret family from the store and from disk. Every removal is attempted,
+   *  and each failure joins `unshredded`, so one fault cannot leave the rest of the family behind. */
+  private async shredUserSecrets(unshredded: string[], family: { actorToken?: string; sentinelCreds?: string; health?: string }): Promise<void> {
+    for (const path of [family.actorToken, family.sentinelCreds])
+      if (path) await attemptCleanup(unshredded, `secret ${path}`, () => this.secrets.delete(agentSecretKeyForFile(path, this.space)));
+    for (const path of [family.actorToken, family.sentinelCreds, family.health])
+      if (path) await attemptCleanup(unshredded, `file ${path}`, () => rmSync(path, { force: true }));
   }
 
   /** This manager's registry record for its space, which pins the broker and IdP a delegated seat's
@@ -4433,10 +4438,7 @@ export class Manager {
       // the agent's standing mint authority, so delete it (next exchange refused, next connect
       // denied) and shred the secret/sentinel/health files. A copied actor token dies here; a
       // still-LIVE connection ends at its bearer-bound JWT expiry (≤ the agent TTL).
-      for (const path of [files.actorToken, files.sentinelCreds])
-        if (path) await attemptCleanup(unshredded, `secret ${path}`, () => secrets.delete(agentSecretKeyForFile(path, this.space)));
-      for (const path of [files.actorToken, files.sentinelCreds, files.health])
-        if (path) await attemptCleanup(unshredded, `file ${path}`, () => rmSync(path, { force: true }));
+      await this.shredUserSecrets(unshredded, files);
       // The ledger row IS the agent's STANDING mint authority (a different store from the auth-plane
       // cred ledger the rail retirement covers): while it lives, a copied actor token can still mint a
       // fresh connect credential. So a FAILED revoke must NOT be swallowed into a clean terminal (INT-2):
@@ -5965,8 +5967,18 @@ export class Manager {
         userOwner = prep.owner;
         enrolled = prep.enrolled;
         provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner, ...(opts.delegatedIntent ? { delegated: true as const } : {}), secretPaths: prep.files, ...(custody ? { runtime: custody } : {}) };
-        // A refused accept from here rolls the enrollment back through `provisioned`.
-        if (hostedEnrollment) await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple: { owner: prep.owner, actor: name, uid: lifecycleUid } });
+        if (hostedEnrollment) {
+          try {
+            await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple: { owner: prep.owner, actor: name, uid: lifecycleUid } });
+          } catch (e) {
+            // A refused accept rolls the enrollment back: the host's grant through `provisioned`, and
+            // this participant's secret family here, because the hosted retirement leaves it on disk.
+            const unshredded: string[] = [];
+            await this.shredUserSecrets(unshredded, prep.files);
+            if (unshredded.length) throw new Error(`${rejectionText(e)}; cleanup failed: ${unshredded.join("; ")}`, { cause: e });
+            throw e;
+          }
+        }
       } else if (this.auth) {
         // Unit B (§13.1): reserve + activate this incarnation's DURABLE identity BEFORE any
         // broker footprint — the F3 outer spawn intent first (slot row, phase `provisioning`),
