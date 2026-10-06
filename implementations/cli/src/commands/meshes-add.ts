@@ -76,26 +76,29 @@ export function isDir(path: string): boolean {
  * (`validateBroker`): this record is written to disk and echoed back by `add` and `meshes`, so an
  * inline password would be copied into the registry and onto the operator's screen. No message
  * here repeats the input — the commonest malformed broker URL is a half-typed credential one.
+ *
+ * `what` names where the URL came from (`--server`, or the document that carried it), because a
+ * refusal that blames a flag the operator never typed sends them looking in the wrong place.
  */
-export function checkServer(raw: string): Check<string> {
+export function checkServer(raw: string, what: string): Check<string> {
   let u: URL;
   try {
     u = new URL(raw);
   } catch {
-    return bad("✗ --server is not a valid URL (expected something like nats://127.0.0.1:4222)");
+    return bad(`✗ ${what} is not a valid URL (expected something like nats://127.0.0.1:4222)`);
   }
   if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
-    return bad(`✗ --server scheme "${u.protocol.replace(":", "")}" is not a broker scheme - use nats://, tls://, ws:// or wss://`);
+    return bad(`✗ ${what} scheme "${u.protocol.replace(":", "")}" is not a broker scheme - use nats://, tls://, ws:// or wss://`);
   if (u.username || u.password)
-    return bad(`✗ --server must not embed credentials ("${u.username}:***@…") - the registry records this URL and prints it back; pass trust material under --root instead`);
+    return bad(`✗ ${what} must not embed credentials ("${u.username}:***@…") - the registry records this URL and prints it back; pass trust material under --root instead`);
   if (u.search || u.hash)
-    return bad(`✗ --server must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`);
+    return bad(`✗ ${what} must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`);
   // A path is refused on nats:// and tls:// because the NATS wire protocol has no notion of one,
   // but on ws:// and wss:// it addresses the websocket route (`wss://host/mesh-ws` behind a
   // reverse proxy) — the same contract classifyJoinTarget and the dial already honour.
   if (u.pathname && u.pathname !== "/" && u.protocol !== "ws:" && u.protocol !== "wss:")
-    return bad("✗ --server must be a bare broker URL - drop its path");
-  if (!u.hostname) return bad("✗ --server names no host - a broker URL needs one (e.g. nats://127.0.0.1:4222)");
+    return bad(`✗ ${what} must be a bare broker URL - drop its path`);
+  if (!u.hostname) return bad(`✗ ${what} names no host - a broker URL needs one (e.g. nats://127.0.0.1:4222)`);
   return good(raw);
 }
 

@@ -245,7 +245,7 @@ async function registerEnrollmentMesh(stock: UserBundle, root: string, refusals?
     if (!check.ok) throw new Error(refusals?.[phase] ?? check.message.replace(/^✗\s*/, ""));
     return check.value;
   };
-  await step("server", () => checkServer(stock.server));
+  await step("server", () => checkServer(stock.server, "the enrollment bundle's server"));
   const tlsRequired = stock.tlsRequired || tlsIntent(stock.server, false);
   const dial = await step("server", () => checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false }));
   await step("exchange", () => verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space)));

@@ -1173,7 +1173,7 @@ try {
   check("checkEnforcement refuses auth-on-open", !checkEnforcement("auth", "open", LIVE, "x", root).ok);
   check("checkEnforcement refuses open-on-auth", !checkEnforcement("open", "auth", LIVE, "x", root).ok);
   check("checkEnforcement passes a matching pair", checkEnforcement("auth", "auth", LIVE, "x", root).ok && checkEnforcement("open", "open", LIVE, "x", root).ok);
-  check("the shared URL rule is the one the wizard validates with", !checkServer("nats://alice:pw@h:1").ok && checkServer(LIVE).ok);
+  check("the shared URL rule is the one the wizard validates with", !checkServer("nats://alice:pw@h:1", "--server").ok && checkServer(LIVE, "--server").ok);
   check("the shared root rule is the one the wizard validates with", !checkRoot(join(bare, "a-file"), bare).ok && checkRoot(root, bare).ok);
 
   // ── surface ───────────────────────────────────────────────────────────────────────────────────

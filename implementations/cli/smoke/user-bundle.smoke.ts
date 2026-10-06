@@ -141,8 +141,8 @@ cell(
 // A websocket broker legitimately lives under a path (`wss://host/mesh-ws` behind a reverse
 // proxy) — the bundle's own server URL must clear checkServer, while nats:// stays bare.
 const server = bundle.server as string;
-cell("checkServer accepts the bundle's path-carrying wss server", checkServer(server).ok, JSON.stringify(checkServer(server)));
-cell("checkServer still refuses a path on nats://", !checkServer("nats://10.0.0.7:4222/subject").ok);
+cell("checkServer accepts the bundle's path-carrying wss server", checkServer(server, "the bundle's server").ok, JSON.stringify(checkServer(server, "the bundle's server")));
+cell("checkServer still refuses a path on nats://", !checkServer("nats://10.0.0.7:4222/subject", "the bundle's server").ok);
 
 // The issuer registration pins for the exchange probe is the daemon's OWN issuer (its /health
 // reports `spaceIssuer(space)`), restated in the cli package because cli carries no runtime
