@@ -8,11 +8,12 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readPidfile, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcessContext, workspaceSecretStore, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readPidfile, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, stopManager, type SignalFn } from "./manager-proc.js";
+import { stopLocalProcess } from "../commands/down.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
 
 /** The space this folder's commands mean, and the per-space record paths over it. The daemon is
@@ -295,106 +296,23 @@ export async function ensureDelivery(
   return { running: true, started: launched !== undefined, ...(launched !== undefined ? { pid: launched } : {}), responderBound: ready };
 }
 
-/** Stop the detached delivery daemon if we started one, and drop its creds from the store. The pid
- *  kill runs even if the creds delete fails (finally) — a delete error must never leave the daemon
- *  alive to outlive the teardown and reattach to a restarted broker; the error still propagates
- *  after the kill so the caller can surface it. */
-export async function stopDelivery(
-  probe: LivenessProbe = probeLiveness,
-  signal?: SignalFn,
-  space: string = folderSpace(),
-  readCommand: CommandReader = readProcessCommand,
-): Promise<void> {
-  const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
-  const p = PID_PATH(space);
-  // ORDER MATTERS, AND IT USED TO BE BACKWARDS. The credential was deleted FIRST, in a try whose
-  // finally then signalled and removed the pidfile unconditionally. Under a refused signal that left
-  // a LIVE daemon with no pidfile and no standing credential: still connected, still serving, and its
-  // reconnect and renewal source deleted out from under it, while the function returned success.
-  // Nothing is removed now until the process is proven gone.
-  // Once death is PROVEN, both records are stale and the pidfile goes first: a creds-delete failure
-  // (a blocked path, a store error) must still propagate loudly, but it must not leave behind a
-  // pidfile for a process that is definitely gone. delivery-teardown.smoke.ts pins exactly that
-  // combination, and caught this when the first version of this fix ordered them the other way.
-  const keys = deliveryCredsKeysToClear(space);
-  const dropCreds = async (): Promise<void> => {
-    for (const k of keys) await credsStore().delete(k);
-  };
-  const raw = readPidfile(p);
-  if (raw === undefined) {
-    await dropCreds(); // no pid recorded: no live daemon to strand
-    return;
-  }
-  const removeRecords = async (): Promise<void> => {
-    removePidPair(p, raw); // records go only on proven death; the pin goes with the pidfile (#969), unless a successor was published (#1238)
-    await dropCreds();
-  };
-  const pid = parsePid(raw);
-  if (pid === undefined) {
-    if (raw === "") {
-      await removeRecords(); // pre-protocol husk, nothing behind it
-      return;
-    }
-    // See the manager helper: unattributable content may front a live daemon, and clearing it here
-    // would also delete the standing credential of a process still using it.
-    throw new Error(
-      `the delivery pidfile at ${p} is unattributable (${JSON.stringify(raw)}): it may still front a running daemon nobody can identify.\n` +
-        `Refusing to remove it or its standing credential, and refusing to report a clean stop.\n` +
-        `NEXT: find and stop that process, then remove the file by hand.`,
-    );
-  }
-  const before = probe(pid);
-  if (before === "dead") {
-    await removeRecords();
-    return;
-  }
-  // A LIVE pid that is provably NOT a delivery daemon is never signalled, the same rule
-  // `stopManager` applies (#1528). The record outlived its daemon and the number was reused, so
-  // SIGTERM here would kill an unrelated process. The record is removed because it is PROVABLY
-  // stale, and what was found is printed: an operator told only "already stopped" would not learn
-  // that their pidfile was pointing at a stranger.
-  if (before === "alive") {
-    const cmd = readCommand(pid);
-    if (cmd.kind === "command" && !commandIsCotalDelivery(cmd.command)) {
-      console.error(`! recorded delivery daemon pid ${pid} is alive but is running \`${cmd.command}\`, which is not a delivery daemon - not signalling it; removing the stale record instead.`);
-      await removeRecords();
-      return;
-    }
-  }
-  if (before === "unknown")
-    throw new Error(
-      `refusing to stop the delivery daemon (pid ${pid}): its liveness cannot be determined (a seccomp filter or LSM policy answers kill(pid,0) with an arbitrary errno).\n` +
-        `The pidfile and standing credential are LEFT IN PLACE: removing them would strand a daemon that may still be connected, with its renewal source gone.\n` +
-        `NEXT: verify with \`ps -p ${pid}\`, then stop it yourself or remove \`${p}\` if it is gone.`,
-    );
-  // #969 OPEN-VERIFY-TERMINATE: identity before signal. The `dead` branch above already cleared
-  // the record; everything here is alive or raced-dead, so the pin decides whether the pid still
-  // fronts the recorded process before anything is signalled.
-  const identity = verifyIdentityPin(p);
-  if (identity.kind === "mismatch") throw identityRefusal("the delivery daemon", p, identity.record, identity.liveToken);
-  if (identity.kind === "legacy") console.error(identityLegacyWarning("the delivery daemon", p));
-  else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the delivery daemon", p, identity);
-  try {
-    send(pid, "SIGTERM");
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") {
-      await removeRecords(); // raced to exit between probe and signal
-      return;
-    }
-    throw new Error(
-      `refusing to stop the delivery daemon (pid ${pid}): the signal was rejected (${code ?? "unknown error"}).\n` +
-        `EPERM means it belongs to another user, so it is running and not ours to stop. The pidfile and standing credential are LEFT IN PLACE.\n` +
-        `NEXT: stop it as its owner, or remove \`${p}\` if you are certain it is gone.`,
-    );
-  }
-  const deadline = Date.now() + 15_000;
-  while (probe(pid) !== "dead" && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
-  if (probe(pid) !== "dead")
-    throw new Error(
-      `the delivery daemon (pid ${pid}) accepted SIGTERM but its death could not be confirmed; its pidfile and credential were preserved rather than recording a stop that did not happen.`,
-    );
-  await removeRecords();
+/** The delivery daemon as a local process: `cotal down` and `up`'s teardown stop it through this one
+ *  descriptor, so both take the same reservation, identity check and SIGKILL escalation. */
+export const DELIVERY_PROCESS: LocalProcess = {
+  kind: "local-process",
+  name: "delivery",
+  label: "delivery daemon",
+  order: 20,
+  pidFile: DELIVERY_PIDFILE,
+  artifacts: ["delivery.creds"],
+  isOwnCommand: commandIsCotalDelivery,
+};
+
+/** Stop the space's delivery daemon, then drop its creds from the store. The stop throws unless the
+ *  daemon is proven gone, so the credential is never deleted from under a daemon still running. */
+export async function stopDelivery(space: string = folderSpace()): Promise<void> {
+  await stopLocalProcess(DELIVERY_PROCESS, ctx(space));
+  for (const k of deliveryCredsKeysToClear(space)) await credsStore().delete(k);
 }
 
 /** Bring up the control plane in the correct cutover order: OLD-manager preflight → delivery daemon

@@ -1,7 +1,7 @@
 import { registry, type Command } from "@cotal-ai/core";
 import {
   serverFlag, spaceFlag, targetFlags,
-  DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
+  MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type LocalProcess,
 } from "@cotal-ai/workspace";
 import { up, upComplete, upFlags } from "./commands/up.js";
@@ -34,6 +34,7 @@ import { backup, backupComplete, backupFlags } from "./commands/backup.js";
 import { update, updateFlags } from "./commands/update.js";
 import { service, serviceComplete } from "./commands/service.js";
 import { sync, syncFlags } from "./commands/sync.js";
+import { DELIVERY_PROCESS } from "./lib/delivery-proc.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -485,14 +486,7 @@ const baseProcesses: LocalProcess[] = [
     pidFile: MANAGER_PIDFILE,
     artifacts: [MANAGER_DELIVERY_AWARE_MARKER, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY],
   },
-  {
-    kind: "local-process",
-    name: "delivery",
-    label: "delivery daemon",
-    order: 20,
-    pidFile: DELIVERY_PIDFILE,
-    artifacts: ["delivery.creds"],
-  },
+  DELIVERY_PROCESS,
   {
     kind: "local-process",
     name: "auth",

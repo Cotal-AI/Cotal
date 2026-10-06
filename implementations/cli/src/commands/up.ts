@@ -1225,19 +1225,23 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // it serves — a surviving manager would reconnect-loop invisibly against the dead (or the NEXT)
   // broker (the documented orphan-supervisor failure mode). All kill by pidfile, symmetric; the
   // auth service's pid is space-scoped so no other space's daemon can ever be hit.
-  // stopDelivery is async (its creds delete goes through the secret store); the rest of the teardown
-  // must run even if it fails — the failure is logged, never swallowed silently, and the daemon kill
-  // itself happens inside stopDelivery's finally. Order preserved: delivery, manager, auth, broker.
+  // stopDelivery is the stop `cotal down delivery` performs (reservation, SIGKILL escalation); the
+  // rest of the teardown must run even if it fails — the failure is logged, never swallowed
+  // silently. Order preserved: delivery, manager, auth, broker.
   // The manager stop is the SPARING one `cotal down` performs (#1307): the seat snapshot is taken
   // while the manager still answers, the spare capability of the exact recorded process is asserted
   // before any signal, and the seats left behind are reported with the reap route. Teardown is
   // AWAITED before the broker is signalled — the same order the broker-exit handler below uses — so
   // manager teardown never races a broker that is already going away.
   let stopping = false;
+  let teardown: Promise<void> | undefined;
   const stop = () => {
     if (stopping) return; // a second Ctrl-C during teardown must not start a second teardown
     stopping = true;
-    void (async () => {
+    // Once the broker has exited, its handler below is already running this teardown and reads
+    // `stopping` when it is done.
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    teardown = (async () => {
       const managerContext = { root: cotalRoot(), space };
       let spared: SpareSeatRow[] | undefined;
       let spareSeats: ManagerSpareSeats | undefined;
@@ -1272,7 +1276,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           }
         }
       }
-      await stopDelivery(undefined, undefined, space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
+      await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
       try {
         await stopManager(undefined, undefined, undefined, space);
         if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
@@ -1292,8 +1296,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // so a later `cotal spawn` doesn't try to join a dead mesh.
   child.on("exit", async (code, signal) => {
     removePidPair(cotalPath("nats.pid"), String(child.pid));
-    // Logged, never silently swallowed; the daemon kill runs in stopDelivery's finally regardless.
-    await stopDelivery(undefined, undefined, space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
+    // One teardown at a time: a delivery stop started while another is in flight is refused the
+    // reservation that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
+    await teardown;
+    await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
     await stopManager(undefined, undefined, undefined, space).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
     await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
     // Unrecording (and the exit code below) both depend on WHY the broker is gone. `stopping` is
