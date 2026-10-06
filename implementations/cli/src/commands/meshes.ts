@@ -282,7 +282,9 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
     // network choose the pins, which is the exact failure pinning exists to prevent.
     let disco: URL;
     try {
-      disco = discoveryDocumentUrl(new URL(v.from as string));
+      const from = new URL(v.from as string);
+      // `--from` also takes the document URL itself, the form the `--mode user` refusal names.
+      disco = from.pathname.endsWith("/.well-known/cotal-mesh") ? from : discoveryDocumentUrl(from);
     } catch {
       console.error(c.red(`✗ --from is not a URL`));
       process.exit(1);
