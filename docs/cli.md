@@ -1045,8 +1045,9 @@ the agent's creds and broker footprint, like a manager despawn. On a user-auth m
 differ: a spawn against a mesh this machine provisioned revokes the actor row on exit, while a
 remote spawn (an enrollment or the advertised provisioning endpoint) removes only this machine's
 credential files; its grant stays until the mesh operator revokes it, and the launch line says
-which arm you are on. A remote spawn against a record that pins no exchange URL is refused before
-the grant is requested, so no credential lands on this machine. A `--detach` spawn is an
+which arm you are on. A spawn through the advertised provisioning endpoint against a record that
+pins no exchange URL is refused before the grant is requested, so no credential lands on this
+machine. A `--detach` spawn is an
 **action**: the manager accepts it and returns the allocated identity at once, then the launch
 follows to a terminal outcome rather than blocking (see [the control surface](control-surface.md)).
 See [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
