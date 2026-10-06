@@ -56,6 +56,7 @@ import {
   replyRefusedBeforeEffect,
   readGoalResult,
   readGoalStatus,
+  readGoalIndex,
   resolveService,
   listRunNotices,
   listRunMigrations,
@@ -756,7 +757,7 @@ export class MeshHandler {
       if (!unrun && code !== "not-found" && code !== "expired")
         throw new Error(`the spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
       if (!unrun && (allocator === undefined || reply.responder.instanceId === allocator)) return;
-      if (attempt === DESPAWN_ROUTE_ATTEMPTS)
+      if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator ?? "(unrecorded)"}, but none of ${attempt + 1} despawns was answered by it, and neither another manager's miss nor a refusal that ran nothing means it is gone; the discharge stays open to retry`);
       this.managerService = undefined;
     }
@@ -1962,14 +1963,25 @@ export class MeshHandler {
    * nothing to withdraw, and a relay that already ended is the outcome either way: the manager
    * refuses it with the cached terminal, so a repeated withdrawal is a no-op. Any other refusal
    * throws, which leaves a discharge open to retry.
+   *
+   * Only the manager that accepted the relay holds it, and the class rail reaches any member, so a
+   * refusal is final only from the accepter its index entry names. One from another member is
+   * re-issued on the class rail, as the spawn discharge's despawn is.
    */
   private async withdrawRelay(goalId: string): Promise<void> {
     const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
     const actx = await this.actionCtx();
     if ((await readGoalStatus(actx, ref)) === undefined) return;
-    const reply = await this.invokeManager(await this.manager(), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
-    if (reply.reply.ok === false && (await readGoalResult(actx, ref)) === undefined)
-      throw new Error(`the relay "${goalId}" could not be withdrawn from its seat: ${reply.reply.error?.message ?? "refused with no message"}`);
+    const accepter = (await readGoalIndex(actx, ref))?.iid;
+    for (let attempt = 0; ; attempt += 1) {
+      const reply = await this.invokeManager(await this.manager(), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
+      if (reply.reply.ok !== false || (await readGoalResult(actx, ref)) !== undefined) return;
+      if (accepter === undefined || reply.responder.instanceId === accepter)
+        throw new Error(`the relay "${goalId}" could not be withdrawn from its seat: ${reply.reply.error?.message ?? "refused with no message"}`);
+      if (attempt === MANAGER_ROUTE_ATTEMPTS)
+        throw new Error(`the relay "${goalId}" was accepted by manager instance ${accepter}, but none of ${attempt + 1} cancels was answered by it; the discharge stays open to retry`);
+      this.managerService = undefined;
+    }
   }
 
   /**
@@ -2615,12 +2627,13 @@ const GOAL_POLL_MS = 2_000;
 const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
 /** Bound on the manager's synchronous `turn` ACCEPT reply (the relay registration, not the yield). */
 const TURN_ACCEPT_DEADLINE_MS = 30_000;
-/** How many class-rail despawns a discharge sends before it stops waiting for the allocating
- *  manager to answer. Each is one {@link MeshHandler.invokeManager} call, whose describe and invoke
- *  both land on the allocator with probability 1/m^2 per trip in a space of m managers, so one call
- *  reaches it with probability (1 - ((m-1)/m)^17) / m: about 1/2 for m = 2 and 0.25 for m = 4. All
- *  65 then miss with probability about 2^-65 and 9e-9. */
-const DESPAWN_ROUTE_ATTEMPTS = 64;
+/** How many class-rail calls a despawn or a relay withdrawal sends before it stops waiting for the
+ *  one manager that holds its goal (the spawn's allocator, the relay's accepter) to answer. Each is
+ *  one {@link MeshHandler.invokeManager} call, whose describe and invoke both land on that manager
+ *  with probability 1/m^2 per trip in a space of m managers, so one call reaches it with
+ *  probability (1 - ((m-1)/m)^17) / m: about 1/2 for m = 2 and 0.25 for m = 4. All 65 then miss
+ *  with probability about 2^-65 and 9e-9. */
+const MANAGER_ROUTE_ATTEMPTS = 64;
 /** A step key's enclosing scope: the journal's own rendering (`entry.scope`), re-derived so the
  *  live path and the adoption rebuild key the handoff memos identically. */
 function scopeOf(key: Parameters<typeof stepKeyString>[0]): string {
