@@ -1238,6 +1238,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const stop = () => {
     if (stopping) return; // a second Ctrl-C during teardown must not start a second teardown
     stopping = true;
+    // Once the broker has exited, its handler below is already running this teardown and reads
+    // `stopping` when it is done.
+    if (child.exitCode !== null || child.signalCode !== null) return;
     teardown = (async () => {
       const managerContext = { root: cotalRoot(), space };
       let spared: SpareSeatRow[] | undefined;
@@ -1293,8 +1296,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // so a later `cotal spawn` doesn't try to join a dead mesh.
   child.on("exit", async (code, signal) => {
     removePidPair(cotalPath("nats.pid"), String(child.pid));
-    // A broker that dies while Ctrl-C's teardown is still running would otherwise stop delivery over
-    // the reservation that teardown holds, be refused, and exit before the daemon is gone.
+    // One teardown at a time: a delivery stop started while another is in flight is refused the
+    // reservation that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
     await teardown;
     await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
     await stopManager(undefined, undefined, undefined, space).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
