@@ -132,7 +132,6 @@ export const MANAGER_LEASE_ATTEMPT_MS = 2_000;
  *  not a guess at scale — the design is cap-safe by construction (per-agent, store-patterns-not-expanded). */
 export const MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
 
-/** Bucket-level `max_bytes` cap on the per-space artifact Object Store (`cotal_artifacts_<space>`).
 /** The `max_bytes` a per-space artifact Object Store carried before the reservation was removed:
  *  4 GiB, the stock value every store created by that code holds. Kept for ONE purpose —
  *  {@link ensureArtifactStore} recognizes it and reconciles it to `-1`, releasing the reservation.
