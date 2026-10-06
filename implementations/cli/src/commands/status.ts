@@ -687,7 +687,7 @@ function formatProc(p: Proc): string {
  *    suffix).
  *  - a DEFINITIVE no-answer — the same predicate `managerHealth`'s not-serving branch uses
  *    (`unansweredRequest`, or the service-registry-missing text): red `not serving (pid N)` with
- *    ` · service endpoint not answering`.
+ *    ` · service endpoint not answering`, plus the marker error when the marker could not be read.
  *  - any other failure (a refused probe, an `unavailable` user-mode credential): `running (pid N)`
  *    as today with a dim ` · service unchecked`, so a failed probe never reads as a dead rail.
  *
@@ -696,15 +696,16 @@ function formatProc(p: Proc): string {
  *  dim stopped row, not `not serving` — a dead pid is not a live pid that will not answer. */
 async function managerRowState(target: MeshTarget | undefined, state: Proc, space: string): Promise<string> {
   if (!state.live) return formatProc(state);
-  let deliveryAwareDetail: string;
+  let deliveryAware = false;
+  let markerUnreadable = "";
   try {
-    deliveryAwareDetail = c.dim(managerHasDeliveryMarker(space) ? " · delivery-aware" : " · old/unknown build");
+    deliveryAware = managerHasDeliveryMarker(space);
   } catch (e) {
     // The marker reader throws so `up` and the delivery preflight refuse to act on a marker they
     // cannot read. Status is the recovery command: name the failed read on this row and report the rest.
-    deliveryAwareDetail = c.red(` · delivery-aware marker unreadable: ${(e as Error).message}`);
+    markerUnreadable = c.red(` · delivery-aware marker unreadable: ${(e as Error).message}`);
   }
-  const unprobed = `${formatProc(state)}${deliveryAwareDetail}`;
+  const unprobed = `${formatProc(state)}${markerUnreadable || c.dim(deliveryAware ? " · delivery-aware" : " · old/unknown build")}`;
   if (!target) return unprobed;
   try {
     let auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } };
@@ -719,7 +720,7 @@ async function managerRowState(target: MeshTarget | undefined, state: Proc, spac
     return unprobed;
   } catch (e) {
     const noService = e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test((e as Error).message));
-    if (noService) return `${c.red(`not serving (pid ${state.pid})`)}${c.dim(" · service endpoint not answering")}`;
+    if (noService) return `${c.red(`not serving (pid ${state.pid})`)}${c.dim(" · service endpoint not answering")}${markerUnreadable}`;
     return `${unprobed}${c.dim(" · service unchecked")}`;
   }
 }
