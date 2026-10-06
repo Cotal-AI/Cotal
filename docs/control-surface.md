@@ -317,14 +317,15 @@ A probe makes a dead registration cheap to skip; it does not remove it. Removal 
 registration's own exit, and there are two explicit routes to it
 ([SPEC §13.5](../SPEC.md#135-verbs): a deleted `svc` spec *is* the deregistration).
 
-A manager that stops cleanly removes its own registration if it still owns the recorded revision,
-so an ordinary shutdown leaves no stale row. It refuses that delete while this instance holds the
-endpoint governance slot at the live issuance-gate generation (a registration still completing
-its reopen). A leftover slot whose generation is behind that live generation is not in-flight and
-does not block the stop. A manager that cannot renew or read its lease keeps serving, stays
-registered, and retries. If another process holds the same instance key, that process has taken
-the instance over, so this one logs the conflict and exits without deregistering, leaving the
-successor's registration alone.
+A manager that stops cleanly removes its own registration, so an ordinary shutdown leaves no stale
+row. The delete is pinned to the registration revision that process wrote. When a successor has
+registered the same instance since then, the stop logs that and leaves the successor's registration
+alone. It refuses that delete while this instance holds the endpoint governance slot at the live
+issuance-gate generation (a registration still completing its reopen). A leftover slot whose
+generation is behind that live generation is not in-flight and does not block the stop. A manager
+that cannot renew or read its lease keeps serving, stays registered, and retries. If another process
+holds the same instance key, that process has taken the instance over, so this one logs the conflict
+and exits without deregistering, leaving the successor's registration alone.
 
 A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under
 that op. The successor completes the dead registration on boot when the freeze-holder is
