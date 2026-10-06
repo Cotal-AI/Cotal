@@ -4460,12 +4460,13 @@ there is no read-then-publish window because there is no read. Takeover is repla
 
 1. The successor replays the run subject from the beginning, through a **per-takeover replay
    durable** it creates on the stream (`wfj_<runId>_<takeoverId>`, filtered to the run's subject,
-   explicit ack, deliver-all) and deletes when done. `<takeoverId>` is an id token (§13.2) minted by
-   whoever hands the driver its lease and its journal grant (§14.6), one per takeover of a run and
-   never reused for that run; the driver does not choose it, because a consumer name is one subject
-   token that no grant pattern covers in part, so it has to be known when the grant is minted. The
-   last replayed record's stream sequence is the only authoritative head there is (`STREAM.INFO`'s
-   `last_seq` is stream-wide, and its subject filter answers counts, not sequences).
+   explicit ack, deliver-all, memory storage) and deletes when done. `<takeoverId>` is an id token
+   (§13.2) minted by whoever hands the driver its lease and its journal grant (§14.6), one per
+   takeover of a run and never reused for that run; the driver does not choose it, because a consumer
+   name is one subject token that no grant pattern covers in part, so it has to be known when the
+   grant is minted. The last replayed record's stream sequence is the only authoritative head there
+   is (`STREAM.INFO`'s `last_seq` is stream-wide, and its subject filter answers counts, not
+   sequences).
 2. Its first act is an **activation record** appended at that expected sequence, and it drives
    nothing before that record lands. Its authority is checked against the activation the journal
    already holds: a lower `fencingToken` is refused (stale lease); an equal token is refused unless
