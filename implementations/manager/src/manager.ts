@@ -6293,15 +6293,18 @@ export class Manager {
         return { ok: false, agents: [], error: `unsupported manager resume inventory version ${String(inventory.version)}` };
       if (inventory.space !== this.space)
         return { ok: false, agents: [], error: `resume inventory belongs to space "${inventory.space}", not "${this.space}"` };
+      // The caller keeps its inventory, so each selection is copied before the first await: a later
+      // write to it cannot change what a resumed seat shares or what the next preservation retains.
+      const entries = inventory.agents.map((entry) => ({ ...entry, launch: { ...entry.launch, shareTools: entry.launch.shareTools && [...entry.launch.shareTools] } }));
       const seen = new Set<string>();
       const principals = new Set<string>();
       const orphans: Array<{ principal: string; reference: RuntimeReference }> = [];
       await this.ep.waitForPresenceSnapshot();
       const liveRoster = this.ep.getRoster().filter((presence) => presence.status !== "offline");
       const occupancy = this.occupancy();
-      if (occupancy.used + inventory.agents.length > MAX_AGENTS)
-        return { ok: false, agents: [], error: `resume inventory of ${inventory.agents.length} would exceed manager capacity (${this.occupancyText(occupancy)})` };
-      for (const entry of inventory.agents) {
+      if (occupancy.used + entries.length > MAX_AGENTS)
+        return { ok: false, agents: [], error: `resume inventory of ${entries.length} would exceed manager capacity (${this.occupancyText(occupancy)})` };
+      for (const entry of entries) {
         if (seen.has(entry.name))
           return { ok: false, agents: [], error: `resume inventory contains duplicate agent name "${entry.name}"` };
         seen.add(entry.name);
@@ -6356,12 +6359,12 @@ export class Manager {
         if (this.agents.has(entry.name) || this.reserved.has(entry.name))
           return { ok: false, agents: [], error: `retained agent "${entry.name}" is already managed or reserved` };
       }
-      for (const entry of inventory.agents) {
+      for (const entry of entries) {
         this.reserved.add(entry.name);
         batchReservations.push(entry.name);
       }
       const preflight: Array<{ name: string; reply: ControlReply }> = [];
-      for (const entry of inventory.agents) {
+      for (const entry of entries) {
         const reply = await this.resumePreservedAgent(entry, true, true, prepared);
         preflight.push({ name: entry.name, reply });
       }
@@ -6379,12 +6382,12 @@ export class Manager {
         if (refusal) return { ok: false, agents: [], error: refusal };
       }
       const agents: Array<{ name: string; reply: ControlReply }> = [];
-      for (let i = 0; i < inventory.agents.length; i++) {
-        const entry = inventory.agents[i];
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
         const reply = await this.resumePreservedAgent(entry, false, true, prepared);
         agents.push({ name: entry.name, reply });
         if (!reply.ok) {
-          for (const skipped of inventory.agents.slice(i + 1))
+          for (const skipped of entries.slice(i + 1))
             agents.push({ name: skipped.name, reply: { ok: false, error: `not launched because ${entry.name} failed` } });
           return { ok: false, agents, error: reply.error };
         }
