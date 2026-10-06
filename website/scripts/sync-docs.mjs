@@ -175,11 +175,15 @@ function yamlEscape(s) {
 // The index also links design notes (docs/design/) and spec/ references, which stay on
 // GitHub, so only its links to SPEC.md and top-level docs pages must match the group map.
 // A lexer reads the links so reference, titled and angle-bracket links count and a link
-// shown in a code example does not.
+// shown in a code example does not. A browser opens the same page whatever a link's query
+// or fragment, and decodes its percent-encoding, so the comparison does the same. Reading an
+// HTML link or a character reference would take an HTML parser, so the index may not use them.
 const indexed = new Set();
 walkTokens(lexer(readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf8')), (token) => {
+  if (token.type === 'html' && /<a\s/i.test(token.text)) throw new Error(`HTML link in the docs index: ${token.text.trim()}`);
   if (token.type !== 'link' || isExternal(token.href)) return;
-  const rel = resolveRepoPath('docs', token.href.split('#')[0]);
+  if (/&#?\w+;/.test(token.href)) throw new Error(`character reference in a docs index link: ${token.href}`);
+  const rel = resolveRepoPath('docs', decodeURIComponent(token.href.replace(/[?#].*/, '')));
   if (rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel)) indexed.add(rel);
 });
 for (const rel of indexed) if (!sources.includes(rel)) throw new Error(`indexed but not in the group map: ${rel}`);
