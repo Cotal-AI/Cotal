@@ -2360,8 +2360,7 @@ async function startDeliveryWithBroker(
  * A fresh boot whose setup throws stops the listener and removes `nats.pid` before rethrowing the
  * original error. Nothing has recorded the mesh yet, so a listener left running would hold the port
  * with no registry entry for `cotal down` to reach. A channel seed with an unparseable value fails
- * here, and so does a private CA without `NODE_EXTRA_CA_CERTS`, because the setup client verifies
- * the certificate. A resume keeps its listener: its maintenance journal is already bound to it.
+ * here. A resume keeps its listener: its maintenance journal is already bound to it.
  */
 async function serveReadyListener(l: {
   child: ChildProcess;
