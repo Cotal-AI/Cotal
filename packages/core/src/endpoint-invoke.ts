@@ -502,6 +502,11 @@ export interface SubmitAndFollowGoalOptions {
   currentNc?: () => NatsConnection | undefined;
   onReconnect?: (handler: (newNc: NatsConnection) => void) => () => void;
   signal?: AbortSignal;
+  /** Work that must finish before the submission and cannot itself carry out the command, such as
+   *  resolving the endpoint. Its failures surface unchanged and a stop while it runs reports
+   *  `not-executed`. It is not raced against the deadline, so an unanswered describe keeps its own
+   *  marker, but its time counts against it. */
+  prepare?: (signal: AbortSignal) => Promise<void>;
 }
 
 /** Subscribe before a single submission, then observe its accepted goal through live progress and
@@ -609,6 +614,10 @@ export async function submitAndFollowGoal(
   try {
     opts?.signal?.addEventListener("abort", onAbort, { once: true });
     if (stopped) throw phaseError("unavailable");
+    if (opts?.prepare) {
+      try { await Promise.race([opts.prepare(work.signal), aborted.then(() => { throw phaseError("unavailable"); })]); }
+      catch (err) { throw stopped ? phaseError("unavailable") : err; }
+    }
     subscribe(opts?.currentNc?.() ?? nc);
     unbindReconnect = opts?.onReconnect?.(replaceConnection);
     // A borrowed submit can publish on another connection. Confirm broker interest first,

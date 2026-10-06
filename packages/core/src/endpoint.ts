@@ -2402,7 +2402,7 @@ export class CotalEndpoint extends EventEmitter {
     endpoint: string,
     submit: (signal?: AbortSignal) => Promise<EpAttributedReply>,
     deadlineMs = 10_000,
-    opts: Pick<SubmitAndFollowGoalOptions, "reconcile" | "signal"> = {},
+    opts: Pick<SubmitAndFollowGoalOptions, "reconcile" | "signal" | "prepare"> = {},
   ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     if (this.stopped) throw new Error("endpoint stopped - cannot follow goal");
@@ -2436,6 +2436,7 @@ export class CotalEndpoint extends EventEmitter {
           return () => { reconnectHandler = undefined; };
         },
         signal: abortController.signal,
+        prepare: opts.prepare,
       });
     } finally {
       opts.signal?.removeEventListener("abort", onAbort);
@@ -2502,12 +2503,12 @@ export class CotalEndpoint extends EventEmitter {
     };
     // A `failed-precondition` from the resolve is its own refusal, raised before any command was
     // published, so resolving once more is a repair.
-    const resolveFirst = async (): Promise<ResolvedService> => {
+    const resolveFirst = async (signal = opts.signal): Promise<ResolvedService> => {
       try {
-        return await resolve();
+        return await resolve(signal);
       } catch (e) {
         if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
-        return await resolve();
+        return await resolve(signal);
       }
     };
     const doInvoke = async (service: ResolvedService, signal = opts.signal): Promise<EpAttributedReply> => {
@@ -2618,13 +2619,16 @@ export class CotalEndpoint extends EventEmitter {
         throw e;
       }
     };
-    const service = await resolveFirst();
     // P2 item 2 (2b): a goal-bearing command (spawn/launch) follows its acceptance to the terminal so
     // the caller still returns on the real outcome (UX unchanged); every other command replies directly.
-    if (!opts.follow) return doInvoke(service);
+    if (!opts.follow) return doInvoke(await resolveFirst());
     // Resolved before the submission starts: the follow reports an unmarked failure inside the
     // submission as a command that may have run, and the resolve publishes none of this call.
-    return this.followServiceGoal(endpoint, (signal) => doInvoke(service, signal), opts.deadlineMs ?? 10_000, { signal: opts.signal });
+    let service: ResolvedService;
+    return this.followServiceGoal(endpoint, (signal) => doInvoke(service, signal), opts.deadlineMs ?? 10_000, {
+      signal: opts.signal,
+      prepare: async (signal) => { service = await resolveFirst(signal); },
+    });
   }
 
   /** Send a durable-membership request to the SERVER-SIDE delivery daemon (`ctl.delivery`) and await its
