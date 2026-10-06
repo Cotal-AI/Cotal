@@ -4,9 +4,9 @@
  * - Legitimate first-attempt and resume issuance returning closed response with NO seeds
  * - Real broker authentication with issued role credentials (driver, mediator, operator)
  * - Distinction between initial issue and resume/renewal of an activated run
- * - Read operator and waiting-checkpoint answer operator issuance
+ * - Read operator and answer operator issuance for the pause a run's journal records as waiting
  * - Route refusals: missing supervise, stale registration/epoch, foreign account/instance/run,
- *   unrecorded/revoked admission, non-waiting checkpoint, and malformed request shapes.
+ *   unrecorded/revoked admission, a step with no open checkpoint, and malformed request shapes.
  *
  * Run: (cd implementations/auth && npx tsx smoke/remote-run-attempt-route.smoke.ts)
  */
@@ -24,7 +24,7 @@ import {
   admissionBucket, contractArtifactCanonicalBytes, contractStoreContext, createEndpointStreams, createRunAdmission, createRunSpec, createSpaceAuth,
   credsFromJwt, ensureAdmissionStore, ensureAuthorityStores, ensureIssuedStores, epAuthBucket, epRequestSubject,
   epgateKey, mintCheckpoint, mintGeneration, mintLifecycleUid, newIdentity, openRecordsBucket,
-  publishContractArtifact, readRunAdmission, recordSpecKey, RECORD_KINDS, remoteManagerActors, revokeRunAdmission, standaloneConnectOpts, writeRunStatus,
+  publishContractArtifact, readRunAdmission, recordSpecKey, RECORD_KINDS, remoteManagerActors, revokeRunAdmission, standaloneConnectOpts, wfjSubject, writeRunStatus,
   type IssuedCaller, type RemoteRunAttemptResult, type RemoteRunAttemptRequest,
 } from "@cotal-ai/core";
 import { remoteRunAttemptCredentials } from "../../manager/src/remote-authority.js";
@@ -348,8 +348,13 @@ try {
     !JSON.stringify(opBody).includes("seed") && opConnected, opRes);
 
   // 9. Answer operator for waiting checkpoint, serving a caller with a live issuance, returns closed
-  // response with JWT, authenticating to broker
+  // response with JWT, authenticating to broker. The host reads the pause off the run's journal.
   const cpToken = `cp-${mintGeneration()}`;
+  const journalAt = Date.now();
+  await jetstream(nc).publish(wfjSubject(SPACE, first), JSON.stringify({ v: 1, kind: "activation", run: first, n: 0, holder: "h", fencingToken: 1, epoch: 1, replayedTo: 0, at: journalAt }));
+  await jetstream(nc).publish(wfjSubject(SPACE, first), JSON.stringify({ v: 1, kind: "step", run: first, n: 1, at: journalAt, entry: {
+    v: 1, seq: 0, run: first, scope: "", kind: "checkpoint", name: "approve", occurrence: 0, inputHash: "h", requestId: cpToken, attempt: 0, state: "pending",
+  } }));
   await mintCheckpoint(records, jetstream(nc), SPACE, {
     ref: { endpoint: "manager", token: cpToken },
     instanceId,
@@ -383,7 +388,7 @@ try {
     ...baseReq,
     requestId: `req-${mintLifecycleUid()}`,
     registrationProof: proof,
-    operator: { id: ansIdentity.id, takeoverId: "a".repeat(16), answers: { token: cpToken }, served },
+    operator: { id: ansIdentity.id, takeoverId: "a".repeat(16), answers: { runId: first, stepKey: "/checkpoint:approve#0" }, served },
   };
   const ansRes = await postHttp(ansReq);
   const ansBody = ansRes.body as unknown as RemoteRunAttemptResult;
@@ -411,15 +416,15 @@ try {
     ansCredsKeys === "operator" &&
     !JSON.stringify(ansBody).includes("seed") && ansConnected, ansRes);
 
-  // 10. Answer operator for non-waiting checkpoint refuses
+  // 10. Answer operator for a step with no open checkpoint refuses
   const absentAnsRes = await postHttp({
     ...baseReq,
     requestId: `req-${mintLifecycleUid()}`,
     registrationProof: proof,
-    operator: { id: newIdentity().id, takeoverId: "a".repeat(16), answers: { token: "cp_nonexistent" } },
+    operator: { id: newIdentity().id, takeoverId: "a".repeat(16), answers: { runId: first, stepKey: "/checkpoint:absent#0" } },
   });
-  c("answering operator for a non-waiting checkpoint refuses",
-    absentAnsRes.status === 403 && String(absentAnsRes.body.error).includes("checkpoint that is still waiting"), absentAnsRes);
+  c("answering operator for a step with no open checkpoint refuses",
+    absentAnsRes.status === 403 && String(absentAnsRes.body.error).includes("has no open checkpoint"), absentAnsRes);
 
   // 11. Missing supervise scope refuses (403)
   const nosupProof = remoteManagerCurrentRegistrationProof(auth.account.signingSeed, httpOwner, { ...baseReq, actor: "nosupervise" }, gate);

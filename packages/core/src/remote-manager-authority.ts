@@ -792,8 +792,8 @@ export interface RemoteRunAdmissionResult {
  * attempt. The manager generates the nkeys and sends public ids only. The host authenticates the
  * registration, then derives every grant coordinate from its own stores: the immutable admission
  * (present, unrevoked, admitted on this instance), the run record's next epoch and fencing token,
- * the holder under the registered supervisor id, and for an answer a checkpoint still waiting (for an
- * amendment, one whose answer was accepted).
+ * the holder under the registered supervisor id, and for an answer the pause the named run's journal
+ * records at the named step, still waiting (for an amendment, one whose answer was accepted).
  * Delegation to the registered trusted host; the host signs only the returned grant arguments.
  */
 export interface RemoteRunAttemptRequest {
@@ -814,9 +814,10 @@ export interface RemoteRunAttemptRequest {
      *  Absent for a boot reconcile, which continues under the original admission. */
     served?: string };
   operator?: { id: string; takeoverId: string; runId?: string;
-    /** The one pause an answering operator writes. `amend` asks for an amendment of the answer
-     *  that pause already accepted, so the host checks a settled pause instead of a waiting one. */
-    answers?: { token: string; amend?: true };
+    /** The one pause an answering operator writes, named by its run and step: the host reads the
+     *  pause's token off that run's journal. `amend` asks for an amendment of the answer that pause
+     *  already accepted, so the host checks a settled pause instead of a waiting one. */
+    answers?: { runId: string; stepKey: string; amend?: true };
     /** The served `run-answer` request subject, verbatim. Required with `answers`. */
     served?: string };
 }

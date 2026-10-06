@@ -122,7 +122,7 @@ export interface RunHostingContext {
     served?: string }) => Promise<{ driver: string; mediator: string }>;
   /** Signerless host: one served read or answer's `run-operator` creds for a caller-held nkey (the
    *  callback combines the host JWT with the local seed, as `renewRun` does). */
-  readonly issueOperator?: (args: { identity: Identity; takeoverId: string; runId?: string; answers?: { token: string; amend?: true };
+  readonly issueOperator?: (args: { identity: Identity; takeoverId: string; runId?: string; answers?: { runId: string; stepKey: string; amend?: true };
     /** The served `run-answer` subject, carried with `answers`. */
     served?: string }) => Promise<string>;
 }
@@ -421,7 +421,7 @@ export class RunHosting {
       throw e;
     }
     await authorize?.(open);
-    return await this.withOperator({ endpoint, answers: { token: open.token }, ...(served !== undefined ? { served } : {}) }, (planes) =>
+    return await this.withOperator({ endpoint, answers: { runId: args.runId, stepKey: args.stepKey, token: open.token }, ...(served !== undefined ? { served } : {}) }, (planes) =>
       host.answer(planes, {
         endpoint,
         open,
@@ -455,7 +455,7 @@ export class RunHosting {
       throw e;
     }
     await authorize?.(accepted);
-    return await this.withOperator({ endpoint, answers: { token: accepted.token }, amend: true, ...(served !== undefined ? { served } : {}) }, (planes) =>
+    return await this.withOperator({ endpoint, answers: { runId: args.runId, stepKey: args.stepKey, token: accepted.token, amend: true }, ...(served !== undefined ? { served } : {}) }, (planes) =>
       host.amend(planes, {
         endpoint,
         accepted,
@@ -837,23 +837,25 @@ export class RunHosting {
    *  durable the credential admits. Only an answering call holds the answer and settle writes,
    *  and those are pinned to the one pause it names. */
   private async withOperator<T>(
-    scope: { endpoint?: string; runId?: string; answers?: { token: string }; amend?: true; served?: string },
+    scope: { endpoint?: string; runId?: string; answers?: { runId: string; stepKey: string; token: string; amend?: true }; served?: string },
     fn: (planes: RunHostPlanes, kv: KV, takeoverId: string) => Promise<T>,
   ): Promise<T> {
     const takeoverId = newTakeoverId();
     const endpoint = scope.endpoint ?? this.ctx.endpoint;
     const auth = this.ctx.auth;
-    const pin = { takeoverId, ...(scope.runId !== undefined ? { runId: scope.runId } : {}), ...(scope.answers !== undefined ? { answers: scope.answers } : {}) };
+    const pin = { takeoverId, ...(scope.runId !== undefined ? { runId: scope.runId } : {}) };
+    const answers = scope.answers;
     if (this.remote && endpoint !== this.ctx.endpoint)
       throw new EpEnvelopeError("permission-denied", `a signerless host serves reads and answers for its own endpoint ${this.ctx.endpoint} only`);
     const operator = newIdentity();
     const creds = this.remote
       ? await this.ctx.issueOperator!({
           identity: operator, ...pin,
-          ...(scope.answers !== undefined && scope.amend === true ? { answers: { ...scope.answers, amend: true } } : {}),
+          // The host reads the pause's token off the run's journal itself; it is never handed one.
+          ...(answers !== undefined ? { answers: { runId: answers.runId, stepKey: answers.stepKey, ...(answers.amend === true ? { amend: true as const } : {}) } } : {}),
           ...(scope.served !== undefined ? { served: scope.served } : {}),
         })
-      : auth ? await mintCreds(auth, operator, "run-operator", { runOperator: { endpoint, ...pin } }) : undefined;
+      : auth ? await mintCreds(auth, operator, "run-operator", { runOperator: { endpoint, ...pin, ...(answers !== undefined ? { answers: { token: answers.token } } : {}) } }) : undefined;
     const nc = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
       servers: this.ctx.servers ?? DEFAULT_SERVER,
       ...(creds !== undefined

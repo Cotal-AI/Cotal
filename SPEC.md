@@ -4644,8 +4644,12 @@ answer request subjects itself and never replies on them, and it issues for a fo
 when it observed a caller publish that request and has not issued for it before, so a manager cannot
 forward a request its caller never sent. It reads what that request's envelope asked for and issues
 only that: a resume attempt for the run its `runId` names, and an answering issuance for the
-endpoint the answer names, the manager's own when it names none, that amends when the request set
-`amend: true` and answers when it did not. When the request carries a `bind` (§13.2) naming
+endpoint the answer names, the manager's own when it names none, for the run and step its `runId`
+and `stepKey` name, that amends when the request set `amend: true` and answers when it did not. The
+manager's request names that run and step, never a token. Every manager instance's pauses share one
+token namespace, so the issuing host requires the run to be admitted on the manager's instance and
+reads the pause's token off that run's journal, under a read it mints for that one run, before it
+pins the token into the issuance. When the request carries a `bind` (§13.2) naming
 another instance or epoch than the manager's current registration, it issues nothing, since that
 manager refuses the request unrun. It issues nothing either for a request whose `class` or pinned
 `inputDigest` and `outputDigest` differ from the command's declaration in the manager's registered

@@ -34,6 +34,7 @@ import {
   parseEndpointRequest,
   checkRequestSubjectAgreement,
 } from "@cotal-ai/core";
+import { CheckpointNotAmendable, CheckpointNotOpen, openCheckpointToken, settledPauseToken, type JournalEntry } from "@cotal-ai/lang";
 import type { KV } from "@nats-io/kv";
 import { timingSafeEqual } from "node:crypto";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
@@ -416,12 +417,13 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
   if (typeof op.id !== "string" || !NKEY_USER.test(op.id) || typeof op.takeoverId !== "string" || !ID_TOKEN.test(op.takeoverId) ||
       (op.runId !== undefined && !runIdOk(op.runId)))
     admissionError("operator requires an nkey id, a takeover id and an optional run id");
-  let answers: { token: string; amend?: true } | undefined;
+  let answers: { runId: string; stepKey: string; amend?: true } | undefined;
   if (op.answers !== undefined) {
-    const t = plain(op.answers, ["token"], ["amend"]);
-    if (typeof t.token !== "string" || !ID_TOKEN.test(t.token) || op.runId !== undefined || (t.amend !== undefined && t.amend !== true))
-      admissionError("operator answers carries exactly one checkpoint token, an optional amend: true and no run id");
-    answers = { token: t.token, ...(t.amend === true ? { amend: true as const } : {}) };
+    const t = plain(op.answers, ["runId", "stepKey"], ["amend"]);
+    if (!runIdOk(t.runId) || typeof t.stepKey !== "string" || t.stepKey.length === 0 || t.stepKey.length > 1024 || op.runId !== undefined ||
+        (t.amend !== undefined && t.amend !== true))
+      admissionError("operator answers carries the run id and step key of one pause, an optional amend: true and no outer run id");
+    answers = { runId: t.runId as string, stepKey: t.stepKey, ...(t.amend === true ? { amend: true as const } : {}) };
   }
   if (!servedOk(op.served) || (op.served !== undefined && answers === undefined))
     admissionError("operator served is the run-answer subject, and only an answering operator carries one");
@@ -429,10 +431,11 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
 }
 
 /** What a served resume or answer asks the host to issue for: a resume names its run, an answer
- *  the endpoint it answers on and whether it amends (SPEC 14.8). */
+ *  the endpoint it answers on, the run and step whose pause it answers, and whether it amends
+ *  (SPEC 14.8). */
 export type RunRequestOperation =
   | { command: "run-resume"; runId: string }
-  | { command: "run-answer"; endpoint: string; amend: boolean };
+  | { command: "run-answer"; endpoint: string; runId: string; stepKey: string; amend: boolean };
 
 /** A served resume or answer as its caller published it: the operation, and the class, pinned
  *  contract and `bind` of its envelope. A manager registered with another class or contract, or
@@ -460,8 +463,8 @@ export function observedRunRequest(subject: string, data: Uint8Array): ObservedR
   if (parsed.command === "run-resume") return { operation: { command: "run-resume", runId: args.runId }, envelope };
   if (parsed.command !== "run-answer") return undefined;
   const endpoint = args.endpoint ?? parsed.endpoint;
-  if (typeof endpoint !== "string" || (args.amend !== undefined && typeof args.amend !== "boolean")) return undefined;
-  return { operation: { command: "run-answer", endpoint, amend: args.amend === true }, envelope };
+  if (typeof endpoint !== "string" || typeof args.stepKey !== "string" || (args.amend !== undefined && typeof args.amend !== "boolean")) return undefined;
+  return { operation: { command: "run-answer", endpoint, runId: args.runId, stepKey: args.stepKey, amend: args.amend === true }, envelope };
 }
 
 /** The served caller of a resume or an answer, checked against the run's owner (SPEC 14.8). The
@@ -504,8 +507,9 @@ async function authorizeServedRunCaller(args: {
   const forwarded = args.operation, observed = observation.operation;
   if (observed.command === "run-resume"
     ? forwarded.command !== "run-resume" || forwarded.runId !== observed.runId
-    : forwarded.command !== "run-answer" || forwarded.endpoint !== observed.endpoint || forwarded.amend !== observed.amend)
-    throw new EpEnvelopeError("permission-denied", `the forwarded ${command} names another run, endpoint or amendment than the request the issuing host observed (SPEC 14.8)`);
+    : forwarded.command !== "run-answer" || forwarded.endpoint !== observed.endpoint || forwarded.runId !== observed.runId ||
+      forwarded.stepKey !== observed.stepKey || forwarded.amend !== observed.amend)
+    throw new EpEnvelopeError("permission-denied", `the forwarded ${command} names another run, step, endpoint or amendment than the request the issuing host observed (SPEC 14.8)`);
   // The manager serving at another incarnation than the bound one refuses the request unrun, so a
   // forward of it must not turn into authority for the incarnation registered now.
   const { bind, class: declaredClass, op } = observation.envelope;
@@ -547,8 +551,8 @@ export type RemoteRunAttemptGrant =
  * Host-only authorization for {@link RemoteRunAttemptRequest}. Every coordinate the returned grant
  * pins is derived from host stores: the admission must exist unrevoked on this instance, the
  * attempt must be exactly the next epoch/fencing token the run record implies (1/1 for a first
- * attempt with no record, as stock `start` launches), and an answer must name a waiting pause.
- * Refuses before the host signs anything.
+ * attempt with no record, as stock `start` launches), and an answer pins the pause the named run's
+ * journal records at the named step, which must be waiting. Refuses before the host signs anything.
  */
 export async function authorizeRemoteRunAttempt(args: {
   request: unknown;
@@ -560,6 +564,8 @@ export async function authorizeRemoteRunAttempt(args: {
   observeManagerGate: ObserveManagerGate;
   readAdmission: (runId: string) => Promise<RunAdmissionView>;
   readRunStatus: (runId: string) => Promise<RunStatusValue | undefined>;
+  /** The named run's journal step entries, in append order: what an answer's pause is read off. */
+  readJournal: (runId: string) => Promise<readonly JournalEntry[]>;
   checkpointWaiting: (token: string) => Promise<boolean>;
   /** Whether the pause settled `resumed` naming an accepted answer: what an amendment amends. */
   checkpointSettled: (token: string) => Promise<boolean>;
@@ -609,20 +615,37 @@ export async function authorizeRemoteRunAttempt(args: {
   }
   const op = r.operator!;
   if (op.runId !== undefined) await admitted(op.runId);
+  let token: string | undefined;
   if (op.answers !== undefined) {
+    const { runId, stepKey } = op.answers, amend = op.answers.amend === true;
+    await admitted(runId);
+    // The token is read off the run's own journal, never taken from the manager: every manager
+    // instance's pauses share one token namespace, so a named token could be another run's.
+    token = pauseToken(await args.readJournal(runId), runId, stepKey, amend);
     // The pause is checked first, then the caller. An answer needs a waiting pause; an amendment
     // needs the pause whose answer was accepted, and nothing else.
-    if (op.answers.amend === true
-      ? !(await args.checkpointSettled(op.answers.token))
-      : !(await args.checkpointWaiting(op.answers.token)))
-      throw new EpEnvelopeError("failed-precondition", op.answers.amend === true
+    if (amend ? !(await args.checkpointSettled(token)) : !(await args.checkpointWaiting(token)))
+      throw new EpEnvelopeError("failed-precondition", amend
         ? "run operator amends only a checkpoint whose answer was accepted"
         : "run operator answers only a checkpoint that is still waiting");
     // Every answer and amendment names the caller it serves; the host never answers for the manager.
     if (op.served === undefined)
       throw new EpEnvelopeError("permission-denied", "an answering run operator carries the served run-answer subject of the caller it answers for (SPEC 14.8)");
-    await served(op.served, { command: "run-answer", endpoint: args.endpoint, amend: op.answers.amend === true }, args.owner);
+    await served(op.served, { command: "run-answer", endpoint: args.endpoint, runId, stepKey, amend }, args.owner);
   }
-  const runOperator: RunOperatorGrantArgs = { endpoint: args.endpoint, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId } : {}), ...(op.answers ? { answers: { token: op.answers.token } } : {}) };
+  const runOperator: RunOperatorGrantArgs = { endpoint: args.endpoint, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId } : {}), ...(token !== undefined ? { answers: { token } } : {}) };
   return { kind: "operator", operator: { id: op.id, profile: "run-operator", runOperator } };
+}
+
+/** The token of the pause at `stepKey`: the open one for an answer, the settled one for an amendment. */
+function pauseToken(entries: readonly JournalEntry[], runId: string, stepKey: string, amend: boolean): string {
+  try {
+    if (!amend) return openCheckpointToken(entries, runId, stepKey);
+    const token = settledPauseToken(entries, runId, stepKey);
+    if (token === undefined) throw new CheckpointNotAmendable(runId, stepKey, "unanswered");
+    return token;
+  } catch (e) {
+    if (e instanceof CheckpointNotOpen || e instanceof CheckpointNotAmendable) throw new EpEnvelopeError("failed-precondition", e.message);
+    throw e;
+  }
 }
