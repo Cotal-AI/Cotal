@@ -31,13 +31,13 @@ export function remoteManagerSurface(document: unknown): Record<string, EpComman
     commands?: Array<{ name?: string; class?: string; targeted?: boolean; modes?: string[]; capability?: string; inputDigest?: string; outputDigest?: string; traits?: string[] }>;
   } | undefined;
   if (!cluster || !Number.isSafeInteger(cluster.revision) || !Array.isArray(cluster.commands) || cluster.commands.length === 0)
-    throw new Error("manager-service activation did not carry the canonical manager cluster document");
+    throw new Error("found no canonical manager cluster document");
   const surface: Record<string, EpCommandAuthority> = Object.create(null);
   for (const command of cluster.commands) {
     if (typeof command.name !== "string" || command.class !== "ephemeral" || typeof command.targeted !== "boolean" ||
         typeof command.capability !== "string" || typeof command.inputDigest !== "string" || typeof command.outputDigest !== "string")
-      throw new Error("manager-service activation carried a malformed manager command declaration");
-    if (surface[command.name]) throw new Error(`manager-service activation duplicates command ${command.name}`);
+      throw new Error("the manager cluster document carries a malformed command declaration");
+    if (surface[command.name]) throw new Error(`the manager cluster document declares command ${command.name} twice`);
     surface[command.name] = {
       clusterDigest: contractDigest(cluster),
       class: "ephemeral",
