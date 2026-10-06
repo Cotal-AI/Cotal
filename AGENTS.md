@@ -180,8 +180,8 @@ string a page quotes must be one the source still emits, with a substituted valu
 placeholder such as `<id>`; `pnpm check:docs-literals` checks that.
 A published page may link relatively only to another published page (the group map in
 `website/scripts/sync-docs.mjs`), and the docs index links the same `docs/*.md` pages and
-`SPEC.md` that the group map publishes, with Markdown links; `pnpm check:docs-site` runs that
-sync and fails otherwise.
+`SPEC.md` that the group map publishes; `pnpm check:docs-site` runs that sync and fails
+otherwise.
 `docs/` describes the **protocol** only; each example documents itself in its own
 `examples/*/README.md`.
 - **A doc comment sits directly above what it documents.** TypeScript attaches only the nearest

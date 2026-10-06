@@ -10,7 +10,8 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSy
 import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { lexer, walkTokens } from 'marked';
+import { marked } from 'marked';
+import { parse as parseHtml } from 'parse5';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -122,7 +123,6 @@ const knownSlugs = new Map(
 // Seeded with images used by the hand-authored landing page (index.mdx), which
 // doesn't pass through this rewriter.
 const assetRefs = new Set(['assets/cotal-demo.webp']);
-const isExternal = (target) => /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/');
 
 function resolveRepoPath(srcDir, target) {
   const out = srcDir ? srcDir.split('/') : [];
@@ -138,7 +138,7 @@ function resolveRepoPath(srcDir, target) {
 
 function rewriteLinks(md, srcDir) {
   return md.replace(/\]\(([^)#]+?)(#[^)]*)?\)/g, (whole, target, anchor = '') => {
-    if (isExternal(target)) return whole;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/')) return whole;
     const repoPath = resolveRepoPath(srcDir, target);
     if (repoPath === 'spec/cotal.schema.json') return `](/cotal.schema.json${anchor})`;
     if (repoPath.startsWith('assets/')) {
@@ -174,20 +174,23 @@ function yamlEscape(s) {
 
 // The index also links design notes (docs/design/) and spec/ references, which stay on
 // GitHub, so only its links to SPEC.md and top-level docs pages must match the group map.
-// A lexer reads the links so reference, titled and angle-bracket links count and a link
-// shown in a code example does not. A browser opens the same page whatever a link's query
-// or fragment, and decodes its percent-encoding, so the comparison does the same. Reading an
-// HTML link or a character reference would take an HTML parser, so the index may not use them.
-// An HTML comment links nothing, so comments are cut out first, closed where a browser closes them.
+// Readers follow the links of the rendered index on GitHub, and a hand-written reading of
+// its Markdown or HTML misses spellings a browser follows, so the index is rendered, parsed
+// as HTML, and each link resolved as a URL against the index's GitHub address. A link back
+// to the index itself, such as one to a heading, names no page.
+const indexUrl = new URL(`${GITHUB_BLOB}/docs/README.md`);
+const blobPath = new URL(`${GITHUB_BLOB}/`).pathname;
 const indexed = new Set();
-walkTokens(lexer(readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf8')), (token) => {
-  if (token.type === 'html' && /<a\s/i.test(token.text.replace(/<!--(?:-?>|[\s\S]*?(?:--!?>|$))/g, '')))
-    throw new Error(`HTML link in the docs index: ${token.text.trim()}`);
-  if (token.type !== 'link' || isExternal(token.href)) return;
-  if (/&#?\w+;/.test(token.href)) throw new Error(`character reference in a docs index link: ${token.href}`);
-  const rel = resolveRepoPath('docs', decodeURIComponent(token.href.replace(/[?#].*/, '')));
+const visit = (node) => {
+  node.childNodes?.forEach(visit);
+  const href = (node.nodeName === 'a' || node.nodeName === 'area') && node.attrs.find((attr) => attr.name === 'href');
+  if (!href) return;
+  const url = new URL(href.value, indexUrl);
+  if (url.origin !== indexUrl.origin || !url.pathname.startsWith(blobPath) || url.pathname === indexUrl.pathname) return;
+  const rel = decodeURIComponent(url.pathname.slice(blobPath.length));
   if (rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel)) indexed.add(rel);
-});
+};
+visit(parseHtml(marked.parse(readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf8'))));
 for (const rel of indexed) if (!sources.includes(rel)) throw new Error(`indexed but not in the group map: ${rel}`);
 for (const rel of sources) if (!indexed.has(rel)) throw new Error(`in the group map but not indexed: ${rel}`);
 
