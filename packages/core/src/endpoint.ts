@@ -3665,7 +3665,9 @@ export class CotalEndpoint extends EventEmitter {
   private watchStatus(): void {
     const nc = this.nc;
     if (!nc) return;
-    const handedToRequest = this.trackRequestDenials(nc);
+    const handedToRequest = this.trackRequestDenials(nc, (denial) => {
+      if (this.nc === nc) this.emit("error", describeStatusError(denial));
+    });
     void (async () => {
       for await (const s of nc.status()) {
         // A rebuild can replace `this.nc` before the old iterator finishes. Late disconnect/close
@@ -3723,29 +3725,52 @@ export class CotalEndpoint extends EventEmitter {
    *  still pending or after it rejected. A request can also time out first, as a rebuild's delete does
    *  when it is sent into a stalled link, and then its denial arrives matched to nothing. The broker
    *  answers a connection in order, so that denial comes before the pong to a ping sent after the
-   *  timeout: a timed-out request stays pending until that pong, and until the status loop, which
-   *  takes each status on microtasks, has drained what was dispatched ahead of it. */
-  private trackRequestDenials(nc: NatsConnection): (denial: PermissionViolationError) => boolean {
+   *  timeout. A denial seen while that pong is outstanding is the timed-out request's only if the pong
+   *  then follows within as long as the request waited: a link that lost the ping has lost that order,
+   *  so the denial goes to `unowned`. After the pong the request still counts until the status loop,
+   *  which takes each status on microtasks, has drained what was dispatched ahead of it. */
+  private trackRequestDenials(
+    nc: NatsConnection,
+    unowned: (denial: PermissionViolationError) => void,
+  ): (denial: PermissionViolationError) => boolean {
     const pending = new Map<string, number>();
+    const fenced = new Map<string, Set<{ answered: Promise<void>; waited: number }>>();
     const rejected = new WeakSet<PermissionViolationError>();
+    const fence = (subject: string, waited: number) => {
+      const timedOut = { answered: nc.flush(), waited };
+      const fences = fenced.get(subject) ?? new Set();
+      fenced.set(subject, fences.add(timedOut));
+      const drain = () => {
+        fences.delete(timedOut);
+        if (!fences.size) fenced.delete(subject);
+        adjustCount(pending, subject, 1);
+        setImmediate(() => adjustCount(pending, subject, -1));
+      };
+      timedOut.answered.then(drain, drain);
+    };
     const request = nc.request.bind(nc);
     nc.request = async (subject, payload, opts) => {
+      const sent = Date.now();
       adjustCount(pending, subject, 1);
-      let answered: Promise<void> | undefined;
       try { return await request(subject, payload, opts); }
       catch (err) {
         const { cause } = err as Error;
-        if (err instanceof TimeoutError) answered = nc.flush();
+        if (err instanceof TimeoutError) fence(subject, Date.now() - sent);
         else if (cause instanceof PermissionViolationError) rejected.add(cause);
         throw err;
       }
-      finally {
-        const settle = () => adjustCount(pending, subject, -1);
-        if (!answered) settle();
-        else { const later = () => setImmediate(settle); answered.then(later, later); }
-      }
+      finally { adjustCount(pending, subject, -1); }
     };
-    return (denial) => denial.operation === "publish" && (pending.has(denial.subject) || rejected.has(denial));
+    return (denial) => {
+      if (denial.operation !== "publish") return false;
+      if (pending.has(denial.subject) || rejected.has(denial)) return true;
+      // Pongs answer pings in order, so the oldest fence on the subject is the first that can follow.
+      const [oldest] = fenced.get(denial.subject) ?? [];
+      if (!oldest) return false;
+      void CotalEndpoint.withDeadline(oldest.answered, oldest.waited, "no pong followed the denial")
+        .catch(() => unowned(denial));
+      return true;
+    };
   }
 
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a
