@@ -153,12 +153,21 @@ export async function stopOldHostingManagerIfPresent(
   const record = managerRecordState(probe, undefined, space);
   const verdict = oldHostingManagerVerdict(record.state, space);
   // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
-  if (verdict === "indeterminate")
+  if (verdict === "indeterminate") {
+    const p = MANAGER_PID_PATH(space);
+    const consequence = `Refusing before the daemon starts. If that manager is an old Plane-3-hosting one it is still bound to fanout/reader, and starting the daemon anyway would double-bind them; the daemon's own lease cannot detect that.\n`;
+    if (record.state === "unattributable")
+      throw new Error(
+        `the manager pidfile at ${p} holds content that is not a pid (${JSON.stringify(record.content)}), so the delivery cutover preflight cannot run.\n` +
+          consequence +
+          `NEXT: find and stop that process, then remove \`${p}\` by hand.`,
+      );
     throw new Error(
-      `the recorded manager pid (${record.pid ?? record.content}) cannot be attributed, so the delivery cutover preflight cannot run: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes).\n` +
-        `Refusing before the daemon starts. If that manager is an old Plane-3-hosting one it is still bound to fanout/reader, and starting the daemon anyway would double-bind them; the daemon's own lease cannot detect that.\n` +
-        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`${MANAGER_PID_PATH(space)}\` and re-run. If it is running, stop it with \`cotal down\` first.`,
+      `the recorded manager pid (${record.pid}) cannot be attributed, so the delivery cutover preflight cannot run: the kernel answered neither "running" nor "no such process" (a seccomp filter or LSM policy does this inside some sandboxes).\n` +
+        consequence +
+        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`${p}\` and re-run. If it is running, stop it with \`cotal down\` first.`,
     );
+  }
   if (verdict === "stop-it") {
     console.error("• stopping an old Plane-3-hosting manager before starting the delivery daemon (cutover preflight)");
     // stopManager THROWS rather than reporting a stop it did not achieve (a refused stop, or a process
@@ -245,11 +254,17 @@ export async function ensureDelivery(
   const creds = await mintCreds(auth, id, "delivery");
   const server = o.server ?? DEFAULT_SERVER;
   const delivery = deliveryRecordState(probe, space);
-  // Same refusal as the manager: an unattributable pid must not be silently reused (a daemon
+  // Same refusals as the manager: a record nobody can attribute must not be silently reused (a daemon
   // reported running that is not there) nor silently replaced (two daemons on one fanout).
-  if (delivery.state === "unknown" || delivery.state === "unattributable")
+  if (delivery.state === "unattributable")
     throw new Error(
-      `the recorded delivery daemon pid (${delivery.pid ?? delivery.content}) cannot be attributed: the kernel answered neither "running" nor "no such process".\n` +
+      `the delivery daemon pidfile at ${PID_PATH(space)} holds content that is not a pid (${JSON.stringify(delivery.content)}).\n` +
+        `Refusing to start a daemon over it: that record may front a live daemon nobody can identify, and starting a second would put two daemons on one fanout.\n` +
+        `NEXT: find and stop that process, then remove \`${PID_PATH(space)}\` by hand.`,
+    );
+  if (delivery.state === "unknown")
+    throw new Error(
+      `the recorded delivery daemon pid (${delivery.pid}) cannot be attributed: the kernel answered neither "running" nor "no such process".\n` +
         `A seccomp filter or LSM policy that intercepts \`kill(pid, 0)\` does this, so it is expected inside some sandboxes and containers.\n` +
         `Cotal will not guess: reusing it would report a daemon that is not there, and starting a second would put two daemons on one fanout.\n` +
         `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`${PID_PATH(space)}\` and re-run. If it is running, use it or stop it.`,
