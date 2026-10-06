@@ -3,8 +3,9 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic, writeSecretFileCreateOnly, type SecretStore, type SecretStoreIdentity } from "@cotal-ai/core";
 
-/** The key under which a filesystem store records the random id its identity carries. */
-const STORE_ID_KEY = "store.id";
+/** The file in which a filesystem store records the random id its identity carries. No key may name
+ *  it: the id is published to peers, so a secret stored there would be published with it. */
+export const STORE_ID_FILE = "store.id";
 
 /** THE local composition of the secret keyspace: a filesystem store rooted at the workspace's
  *  `.cotal/` dir, so every canonical key (`delivery.creds`, `auth/<space>/callout.json`, …)
@@ -50,7 +51,7 @@ export class FsSecretStore implements SecretStore {
    *  name one store by it alone (#2580). The id is random and lives inside the store, so only the
    *  same directory carries it. It is written the first time a process names this store. */
   get identity(): SecretStoreIdentity {
-    const p = this.resolve(STORE_ID_KEY);
+    const p = join(this.root, STORE_ID_FILE);
     if (!existsSync(p)) {
       mkSecretDir(this.root);
       try {
@@ -65,10 +66,11 @@ export class FsSecretStore implements SecretStore {
   }
 
   /** Resolve a logical key to an absolute path strictly UNDER `root`, fail-closed: reject empty,
-   *  NUL, absolute keys, the root itself (`.`), and any key that normalizes outside the root
-   *  (`..` traversal). Containment is checked via `path.relative`, not a `root + sep` prefix —
-   *  the prefix form breaks at a filesystem-root base (`/` doubles the separator and rejects
-   *  every key). A malformed key must never read or clobber a path outside the store's tree. */
+   *  NUL, absolute keys, the root itself (`.`), any key that normalizes outside the root
+   *  (`..` traversal), and the store id file. Containment is checked via `path.relative`, not a
+   *  `root + sep` prefix — the prefix form breaks at a filesystem-root base (`/` doubles the
+   *  separator and rejects every key). A malformed key must never read or clobber a path outside
+   *  the store's tree. */
   private resolve(key: string): string {
     if (!key || key.includes("\0"))
       throw new Error(`FsSecretStore: invalid key ${JSON.stringify(key)}`);
@@ -78,6 +80,8 @@ export class FsSecretStore implements SecretStore {
     const rel = relative(this.root, abs);
     if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
       throw new Error(`FsSecretStore: key must name a file under the root: ${JSON.stringify(key)}`);
+    if (rel === STORE_ID_FILE)
+      throw new Error(`FsSecretStore: key ${JSON.stringify(key)} names the file that holds the store id`);
     return abs;
   }
 

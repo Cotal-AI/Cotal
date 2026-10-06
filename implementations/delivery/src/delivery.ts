@@ -26,7 +26,7 @@ import {
   type TimerWriterHandle,
 } from "@cotal-ai/core";
 import { PermissionViolationError } from "@nats-io/transport-node";
-import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removePidPair, requireCotalRoot, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removePidPair, requireCotalRoot, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, STORE_ID_FILE, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { mayServeOn, leaseAction, type LeaseReading } from "./watchdog.js";
 import { DeliveryTransportHealth } from "./transport-health.js";
@@ -96,6 +96,9 @@ export function reloadStoreIdentityFromCredsPath(credsPath: string, space: strin
     && grand !== parent
   )
     return workspaceSecretStore(grand).identity;
+  // Naming the store reads or creates its id file, so this cannot wait for the store to refuse the key.
+  if (basename(p) === STORE_ID_FILE)
+    throw new Error(`delivery: --creds ${p} is named ${STORE_ID_FILE}, the file that holds its directory's store id; rename the credential file`);
   return new FsSecretStore(fileDir).identity;
 }
 
