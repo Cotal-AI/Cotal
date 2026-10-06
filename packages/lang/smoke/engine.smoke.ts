@@ -1772,8 +1772,8 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
     (e: unknown) => e as EffectError,
   );
   ok("a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
-    refused.ok === false && refused.code === walkerRefusal?.code && refused.kind === walkerRefusal?.kind && refused.code === "L4009" && refused.kind === "sim-refusal",
-    { bridged: refused.ok === false ? { code: refused.code, kind: refused.kind } : refused, walker: { code: walkerRefusal?.code, kind: walkerRefusal?.kind } });
+    refused.ok === false && refused.class === "effect" && refused.code === walkerRefusal?.code && refused.kind === walkerRefusal?.kind && refused.code === "L4009" && refused.kind === "sim-refusal",
+    { bridged: refused, walker: { code: walkerRefusal?.code, kind: walkerRefusal?.kind } });
 
   // A CAPABILITY REFUSAL CROSSES AS A HOLD, matching the walker: the refusal crosses the bridge
   // as its class (never a plain Error), the thread settles the entry `refused`, and the run comes
@@ -1794,11 +1794,11 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
     (e: unknown) => e as Error & { reason?: string; step?: string },
   );
   ok("a capability refusal crosses both boundaries as the hold, matching the walker's own raise",
-    held.ok === false && held.code === "L5025" && held.name === "RunHeld"
+    held.ok === false && held.class === "held" && held.name === "RunHeld"
     && walkerHeld?.name === "RunHeld"
     && held.reason === walkerHeld?.reason
     && held.step === walkerHeld?.step,
-    { bridged: held.ok === false ? { code: held.code, name: held.name, step: held.step } : held, walker: { name: walkerHeld?.name, step: walkerHeld?.step } });
+    { bridged: held, walker: { name: walkerHeld?.name, step: walkerHeld?.step } });
   ok("and the thread's journal settled the entry refused under the handler's own code",
     heldStored.some((e) => e.state === "settled" && e.status === "refused" && e.error?.code === "L5016"),
     heldStored.map((e) => `${e.kind}:${e.state}:${e.status ?? ""}`));
@@ -2041,8 +2041,8 @@ log("winner", r.index)
   // thread that died and left the host to guess.
   ok(
     "the thread ANSWERS L5024 by name rather than diverging on replay or dying and leaving the host to guess",
-    refused.code === "L5024" && !/exited/.test(refused.message),
-    { code: refused.code, message: refused.message.slice(0, 120) },
+    refused.class === "error" && refused.code === "L5024" && !/exited/.test(refused.message),
+    JSON.stringify(refused).slice(0, 160),
   );
 }
 

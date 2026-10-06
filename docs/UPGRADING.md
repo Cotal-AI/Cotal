@@ -197,6 +197,27 @@ positional form still runs, but the holder calls none of its hooks, so a failure
 Pass each hook by name, for example `new AguiEmitterHolder(start, { onError, onRunClosed })`, and
 drop any `undefined` that filled an earlier slot to reach a later hook.
 
+## Worker run failure type in 0.70.0
+
+`WorkerRunFailed`, the failed result of `runInWorker` in `@cotal-ai/lang`, is now a union on
+`class`: `released`, `held`, `effect`, `too-large`, `rejected` or `error`. A running mesh needs
+nothing, because the runtime host and the engine thread ship in the same install. A run on the
+compiled engine whose program throws an object with `code: "L5012"` or `code: "L5025"` used to end
+released and now ends failed, as it does on the walker.
+
+### What stops working
+
+TypeScript code that reads `code`, `reason`, `step`, `pending`, `kind`, `detail` or `tooLarge` on a
+`WorkerRunFailed` it has not narrowed fails with TS2339. A released, held, too-large or rejected
+result no longer carries `code`, so JavaScript that branched on `L5012`, `L5025`, `L5006` or
+`L5010` stops matching with no error. `tooLarge` is gone.
+
+### Before the upgrade
+
+Branch on `class` where such code read `code`: `released` for L5012, `held` for L5025, `too-large`
+for L5006 and `rejected` for L5010. An `effect` or `error` result keeps its `code`. Once narrowed to
+`too-large`, a result carries the `stepKey`, `bytes` and `bound` that `tooLarge` held.
+
 ## Carrying a resumed Claude session to another host
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the
