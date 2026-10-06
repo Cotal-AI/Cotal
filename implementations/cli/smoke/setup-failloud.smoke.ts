@@ -6,7 +6,7 @@
  * surface; a PRESENT-but-broken one (in the manifest, but broken/missing on disk) must fail loud
  * with the real repair diagnostic, never be silently dropped or misreported as a removal.
  *
- * Setup seam: a connector that declares no provider yields no step (setup narrates it as ready);
+ * Setup seam: a connector that declares no provider has none (setup narrates it as ready);
  * a connector that DECLARES a provider which cannot be materialized fails loud, because the base
  * CLI never substitutes a built-in harness implementation.
  *
@@ -18,7 +18,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Connector } from "@cotal-ai/core";
 import { setInstalledExtensionsEnabled } from "../src/ext-loader.js";
-import { connectorSetupStep, setupConnectorSurface } from "../src/commands/setup.js";
+import { connectorSetupProvider, setupConnectorSurface } from "../src/commands/setup.js";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
@@ -45,10 +45,10 @@ try {
   ]);
   await assert.rejects(setupConnectorSurface(), /is in the manifest but not installed/, "a broken-present unfamiliar connector must fail loud");
 
-  // A healthy connector that declares no setup provider owns no setup: no step, no crash.
+  // A healthy connector that declares no setup provider owns no setup: no provider, no crash.
   writeManifest([]);
   const bare: Connector = { kind: "connector", name: "failloud-bare", buildLaunch: launch };
-  assert.equal(await connectorSetupStep(bare, "connector"), null, "a connector declaring no provider yields no setup step");
+  assert.equal(await connectorSetupProvider(bare), null, "a connector declaring no provider has no setup provider");
 
   // A DECLARED provider that cannot be materialized is a loud registry error, never a silent skip
   // and never a built-in harness fallback.
@@ -59,7 +59,7 @@ try {
     buildLaunch: launch,
   };
   await assert.rejects(
-    connectorSetupStep(phantom, "connector"),
+    connectorSetupProvider(phantom),
     /no installed extension provides connector-setup/,
     "a declared-but-unresolvable setup provider must fail loud",
   );

@@ -127,23 +127,25 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
       p.log.warn(`${candidate.value} needs ${candidate.missing.join(", ")} on PATH. Install it, then re-run ${displayCmd()} setup.`);
       continue;
     }
-    const step = await connectorSetupStep(candidate.connector, "connector");
-    if (step) {
-      if (!(await runSteps([step], log, { yes, assists: connectorAssists }))) return abort();
+    const provider = await availableSetupProvider(candidate.connector);
+    if (provider?.connector) {
+      if (!(await runSteps([actionStep(provider.connector, undefined)], log, { yes, assists: connectorAssists }))) return abort();
     } else {
       p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
       log.line(`connector ${candidate.value}: ready (no install)`);
     }
-    const share = await connectorSetupStep(candidate.connector, "mcpServers");
-    if (share && !(await runSteps([share], log, { yes, assists: connectorAssists }))) return abort();
+    // Resolved again because the connector action can change what is on PATH, and a provider whose
+    // executables are gone must not write.
+    const share = (await availableSetupProvider(candidate.connector))?.mcpServers;
+    if (share && !(await runSteps([actionStep(share, connectorShareInput(candidate.connector))], log, { yes, assists: connectorAssists }))) return abort();
   }
   // A connector's skills action is independent of the mesh connector selection: it runs for every
   // connector whose harness is present, so someone using that harness gets Cotal's authored skills
   // even without joining the mesh through it (Claude Code, for one, does not read `.agents/skills`).
   for (const candidate of candidates) {
     if (candidate.missing.length) continue;
-    const step = await connectorSetupStep(candidate.connector, "skills");
-    if (step && !(await runSteps([step], log, { yes, assists: connectorAssists }))) return abort();
+    const provider = await availableSetupProvider(candidate.connector);
+    if (provider?.skills && !(await runSteps([actionStep(provider.skills, connectorSkillsInput())], log, { yes, assists: connectorAssists }))) return abort();
   }
 
   // Your agent: the generic `default` persona a bare `cotal spawn` launches — one agent, yours to
@@ -359,21 +361,25 @@ export async function connectorSetupProvider(connector: Connector): Promise<Conn
   return materializeExtension<ConnectorSetupProvider>(connector.setup);
 }
 
-/** One connector-owned setup action as a narrated step, or null when this connector declares no
- * provider, no such action, or its provider's executables are absent — none of which is a failure
- * of guided setup (the cross-vendor skills drop still reconciles). Exported for the fail-loud
- * smoke, which drives this exact seam. */
-export async function connectorSetupStep(connector: Connector, action: "connector" | "skills" | "mcpServers"): Promise<Step | null> {
+/** A connector's setup provider when its executables are on PATH, or null when the connector
+ * declares none or they are absent. Neither is a failure of guided setup: the cross-vendor skills
+ * drop still reconciles. */
+async function availableSetupProvider(connector: Connector): Promise<ConnectorSetupProvider | null> {
   const provider = await connectorSetupProvider(connector);
-  const setup = provider?.[action] as ConnectorSetupAction | undefined;
-  if (!provider || !setup || !setupProviderAvailable(provider)) return null;
-  const input = action === "skills" ? connectorSkillsInput() : action === "mcpServers" ? connectorShareInput(connector) : undefined;
+  return provider && setupProviderAvailable(provider) ? provider : null;
+}
+
+/** One connector-owned setup action as a narrated step. Generic over the action's input so the
+ * compiler checks each call site's pairing of an action with the input it hands it. `NoInfer` infers
+ * `I` from the action alone: inferring it from the input too widens it to accept a dropped
+ * (`undefined`) input. */
+function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>): Step {
   return {
     name: setup.name,
     title: setup.title,
     explain: setup.explain,
     context: [...(setup.context ?? [])],
-    async run() { return setup.run(input as never); },
+    async run() { return setup.run(input); },
   };
 }
 
@@ -390,9 +396,8 @@ function connectorShareInput(connector: Connector): ConnectorShareSetupInput {
 
 async function reconcileConnectorSkills(): Promise<void> {
   for (const connector of await setupConnectorSurface()) {
-    const provider = await connectorSetupProvider(connector);
-    if (!provider?.skills || !setupProviderAvailable(provider)) continue;
-    await provider.skills.run(connectorSkillsInput());
+    const provider = await availableSetupProvider(connector);
+    if (provider?.skills) await provider.skills.run(connectorSkillsInput());
   }
 }
 
@@ -401,8 +406,8 @@ async function reconcileConnectorSkills(): Promise<void> {
 async function connectorAssists(): Promise<ConnectorAssist[]> {
   const assists: ConnectorAssist[] = [];
   for (const connector of await setupConnectorSurface()) {
-    const provider = await connectorSetupProvider(connector);
-    if (provider?.assist && setupProviderAvailable(provider)) assists.push(provider.assist);
+    const provider = await availableSetupProvider(connector);
+    if (provider?.assist) assists.push(provider.assist);
   }
   return assists;
 }

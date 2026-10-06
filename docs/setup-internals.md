@@ -77,10 +77,11 @@ name is written into `setup.ts`. `setupConnectorCandidates` turns that surface i
 reads each hint off the connector's own declarations: `requires` names the executables a candidate
 still needs on PATH, `setup` says whether it owns setup actions at all, and `pluginRoot` says
 whether those actions install plugin assets. A selected candidate runs its connector-owned
-`connector` action through `connectorSetupStep`, which receives the `Connector` itself; a candidate
+`connector` action as a narrated step built by `actionStep`, which takes the action with the input its
+type declares, so the compiler checks each pairing; a candidate
 that declares no provider is simply marked ready (OpenCode auto-wires at spawn, injecting its
 plugin via `buildLaunch` and never writing the user's config). A selected candidate's `mcpServers` action runs next
-through the same seam: the Claude provider reads the user-scope servers from Claude Code's config and
+the same way: the Claude provider reads the user-scope servers from Claude Code's config and
 records them through the `seed` input the CLI hands it. That is workspace's `seedConnectorServers`,
 which writes the operator-level cotal config under a lock and only when it declares no list for that
 connector, so two setups run at once record one list. The `skills` action runs for every
