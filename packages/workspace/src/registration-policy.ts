@@ -130,6 +130,17 @@ export async function pinnedFetch(target: string, what: string): Promise<Respons
   return res;
 }
 
+/** The discovery document under an exchange base. The public exchange face serves
+ *  `/.well-known/cotal-mesh` beneath its own base path, so `meshes add --from` and the policy
+ *  refresh resolve the same URL from the same base. A base path may itself end in that suffix,
+ *  so it is always appended. */
+export function discoveryDocumentUrl(base: URL): URL {
+  const url = new URL(base);
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/.well-known/cotal-mesh`;
+  url.search = "";
+  url.hash = "";
+  return url;
+}
 
 /** How long a trusted policy refresh stays warm. Pinned to the catalog freshness window by the
  *  user-bundle smoke, so the two cannot drift. */
@@ -163,13 +174,10 @@ export async function refreshRegistrationPolicy(target: { space: string; policy?
   if (Number.isFinite(checkedAt) && Date.now() - checkedAt < POLICY_FRESH_MS) return target.policy;
   let base: URL;
   try {
-    base = new URL(entry.userAuth.endpoints.url);
+    base = discoveryDocumentUrl(new URL(entry.userAuth.endpoints.url));
   } catch {
     throw new Error(`manual registration for "${entry.space}" has an invalid pinned exchange URL`);
   }
-  base.pathname = `${base.pathname.replace(/\/$/, "")}/.well-known/cotal-mesh`;
-  base.search = "";
-  base.hash = "";
   let response: Response;
   try {
     response = await pinnedFetch(base.toString(), `manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url}`);
