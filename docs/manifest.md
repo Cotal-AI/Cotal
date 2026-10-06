@@ -73,7 +73,9 @@ fails the launch, and nothing is recorded. The record follows the agent: crash r
 updates it when it rebinds a session, and a stop or a preservation cut records the
 session the agent last ran, including one it switched to itself. Every later launch, and
 a preserved resume of the session that cut retained, reopens the session under the same
-proof and fails if the connector reports a different one. A reopen also fails when the
+proof and fails if the connector reports a different one. A resume that fails this proof
+stops the seat it started and frees it once its exit is proved; a seat whose stop cannot be
+proved stays managed, and the resume's error says so. A reopen also fails when the
 harness no longer has that session, for example after its transcript was deleted or when
 the agent never answered and so nothing was stored; the manager never starts an empty
 session under the old id, and a failed launch names the file to remove to start a new

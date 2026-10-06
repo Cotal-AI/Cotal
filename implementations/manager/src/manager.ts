@@ -6886,18 +6886,7 @@ export class Manager {
       try {
         await this.recordSlotRuntime(managed);
       } catch (error) {
-        const detail = `${managed.name} resumed, but ${(error as Error).message}`;
-        this.stopHandle(managed, false);
-        try {
-          await this.awaitHandleExit(managed.handle);
-        } catch (exit) {
-          // A resumed seat keeps its retained credentials, so freeing it runs no deprovision and
-          // nothing would reap it: it stays managed until it exits or the manager stops it.
-          this.watchExit(managed);
-          return { ok: false, error: `${detail}; it stays managed because its stop is unproven: ${(exit as Error).message}` };
-        }
-        this.freeSlot(managed, true, "resume-custody-unrecorded", true);
-        return { ok: false, error: detail };
+        return await this.stopFailedResume(managed, "resume-custody-unrecorded", `${managed.name} resumed, but ${(error as Error).message}`);
       }
       const readiness = await this.awaitReadiness(managed, readinessTimeoutMs);
       if (!readiness.ok && !readiness.uncertain) return { ok: false, error: readiness.detail };
@@ -6922,9 +6911,11 @@ export class Manager {
             this.recordContinuity(managed, managed.launch.sessionId);
           }
         } catch (error) {
-          this.stopHandle(managed, false);
-          this.freeSlot(managed, true, "resume-session-rebind-failed", true);
-          return { ok: false, error: `${managed.name} resumed, but its exact host session could not be rebound: ${(error as Error).message}` };
+          return await this.stopFailedResume(
+            managed,
+            "resume-session-rebind-failed",
+            `${managed.name} resumed, but its exact host session could not be rebound: ${(error as Error).message}`,
+          );
         }
       }
       if (!this.resumeAttemptId) managed.suppressCleanup = false;
@@ -6943,6 +6934,21 @@ export class Manager {
         this.reservedLive.delete(entry.name);
       }
     }
+  }
+
+  /** A resumed seat keeps its retained credentials, so freeing it runs no deprovision and nothing
+   *  would reap it: it is freed only once its exit is proved, and otherwise stays managed until it
+   *  exits or the manager stops it. */
+  private async stopFailedResume(managed: ManagedAgent, cause: FreeSlotCause, detail: string): Promise<ControlReply> {
+    this.stopHandle(managed, false);
+    try {
+      await this.awaitHandleExit(managed.handle);
+    } catch (exit) {
+      this.watchExit(managed);
+      return { ok: false, error: `${detail}; it stays managed because its stop is unproven: ${(exit as Error).message}` };
+    }
+    this.freeSlot(managed, true, cause, true);
+    return { ok: false, error: detail };
   }
 
   private probeStaticCredential(creds: string) {
