@@ -30,8 +30,8 @@
     {
       "name": "the load door reads the binding but stops looking at the failure detail",
       "file": "packages/lang/src/journal.ts",
-      "find": "      for (const [field, value] of [[\"external\", e.external], [\"error.detail\", e.error?.detail]] as const) {",
-      "replace": "      for (const [field, value] of [[\"external\", e.external]] as const) {",
+      "find": "      for (const [field, value] of [[\"external\", e.external], [\"error.detail\", e.error?.detail], [\"error.thrown\", e.error?.thrown?.value]] as const) {",
+      "replace": "      for (const [field, value] of [[\"external\", e.external], [\"error.thrown\", e.error?.thrown?.value]] as const) {",
       "expectRed": "a recorded failure detail with no canonical form is refused on load by the same door, naming the FIELD",
       "completionMarker": "an ordinary recorded binding still loads, including the `-0` the rule admits and JSON does not preserve",
       "cell": "a recorded failure detail with no canonical form is refused on load by the same door, naming the FIELD",

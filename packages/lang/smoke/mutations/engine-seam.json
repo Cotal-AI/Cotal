@@ -950,7 +950,7 @@
     {
       "name": "the load door stops looking, so the thread's own door is the one that goes quiet",
       "file": "packages/lang/src/journal.ts",
-      "find": "      for (const [field, value] of [[\"external\", e.external], [\"error.detail\", e.error?.detail]] as const) {",
+      "find": "      for (const [field, value] of [[\"external\", e.external], [\"error.detail\", e.error?.detail], [\"error.thrown\", e.error?.thrown?.value]] as const) {",
       "replace": "      for (const [field, value] of [] as [string, unknown][]) {",
       "expectRed": "the thread ANSWERS L5024 by name rather than diverging on replay or dying and leaving the host to guess",
       "cell": "the thread ANSWERS L5024 by name rather than diverging on replay or dying and leaving the host to guess",

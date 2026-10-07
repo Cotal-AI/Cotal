@@ -69,8 +69,11 @@ bounded decision record, not prose.
   recorded clocks and declaration order, never by a scheduler. A failure the program itself caused
   inside the scope settles the entry under its own catalog code (`fanOut` without a stable key is
   `L3021`, kind `runtime`), so a resume reads the same code the live run threw; a plain failure
-  from the handler records the generic `L4000` `scope-fault`. A branch may not write to anything
-  declared outside it; return the value and read it out of the scope's result.
+  from the handler records the generic `L4000` `scope-fault`. A value the program throws inside a
+  branch is recorded with that fault, so `catch` receives the same value on resume, and in a
+  migration's dry walk, as it did live.
+  A branch may not write to anything declared outside it; return the value and read it out of the
+  scope's result.
 - **Time and randomness are tamed.** `now()` is the branch's run clock, the end of the last effect
   it awaited; `random()` is a seeded stream derived per scope. Both replay identically.
 - **Values freeze at the boundary.** What crossed into or out of an effect is what the journal

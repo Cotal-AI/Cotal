@@ -1277,6 +1277,37 @@ function unwrapScope(e: unknown): { reason: unknown; facts: ScopeFacts } {
 }
 
 /**
+ * A value the PROGRAM threw out of a scope, recorded so a replay can hand it back. One the record
+ * cannot carry keeps the generic fault with the crossing rule's refusal as its message, and the live
+ * run is handed that fault too: a value only the live run could deliver is one its resume replaces.
+ */
+function thrownError(value: unknown): EntryError {
+  const fault = { code: "L4000", kind: "scope-fault", message: messageOf(value) };
+  if (value === undefined) return { ...fault, thrown: {} };
+  try {
+    assertCrossable(value, "the thrown value");
+  } catch (cause) {
+    if (!(cause instanceof NotCrossable)) throw cause;
+    // The refusal alone: a thrown function's text is the host's own source, and differs by engine.
+    return { ...fault, message: cause.message };
+  }
+  // A COPY: freezing the value itself would freeze a record the branch threw from outside it for
+  // the rest of the live run, where a resume, which never runs the branch, leaves it writable. And a
+  // copy in the journal's own encoding, JSON: one record held at two places in the value comes back
+  // from a durable store as two records, so a copy that kept them one would hand the live `catch` a
+  // fact its resume cannot.
+  return { ...fault, thrown: { value: deepFreeze(JSON.parse(JSON.stringify(value))) } };
+}
+
+/**
+ * What a failed scope throws, built from its record alone: a replay has nothing else, and a live run
+ * whose scope failed with a thrown value builds it here too, so `catch` binds the same value on both.
+ */
+function scopeFailure(e: EntryError): unknown {
+  return e.thrown !== undefined ? e.thrown.value : new EffectError(e.code, e.kind, e.message, e.detail);
+}
+
+/**
  * The digest fact, written wherever the loser set is: a race that FAILED owes its losers exactly
  * as a winning one does, so it carries the digest too, and `replay-failed` compares it.
  */
@@ -1380,13 +1411,15 @@ export async function performScope(
         // scope that carried it. A live scope wraps a branch's failure so it can record the
         // cancellation intent with it; a walk records nothing and cancels nobody, so the wrapper
         // would only hide a `RunDivergence` behind a generic scope fault.
-        throw unwrapScope(e).reason;
+        const reason = unwrapScope(e).reason;
+        // A VALUE THE PROGRAM THREW out of a scope recorded as failed is that failure walked again,
+        // so the record below delivers it, as it does for the live run and a resume: the raw value is
+        // one neither of them binds. An `Error` is never the program's own and keeps propagating,
+        // the walk's divergence and refusals among them.
+        if (reason instanceof Error || verdict.verdict !== "replay-failed") throw reason;
       }
       if (entry.endedAt !== undefined) frame.clock.advance(entry.endedAt);
-      if (verdict.verdict === "replay-failed") {
-        const e = entry.error as EntryError;
-        throw new EffectError(e.code, e.kind, e.message, e.detail);
-      }
+      if (verdict.verdict === "replay-failed") throw scopeFailure(entry.error as EntryError);
       return (entry.result as { value: unknown }).value;
     }
 
@@ -1397,10 +1430,7 @@ export async function performScope(
     //     reading as done.
     // (3) only now, the outcome.
     if (entry.endedAt !== undefined) frame.clock.advance(entry.endedAt);
-    if (verdict.verdict === "replay-failed") {
-      const e = entry.error as EntryError;
-      throw new EffectError(e.code, e.kind, e.message, e.detail);
-    }
+    if (verdict.verdict === "replay-failed") throw scopeFailure(entry.error as EntryError);
     return (entry.result as { value: unknown }).value;
   }
   if (verdict.verdict === "replay-cancelled") {
@@ -1518,11 +1548,7 @@ export async function performScope(
       );
       throw new RunHeld(stepKeyString(scopeKey), reason.message);
     }
-    // Same rule as the effect path's. The RETHROW below is deliberately left alone: this scope
-    // rethrows the raw reason, so a program catching a scope fault sees no language code where the
-    // effect path hands it one. That asymmetry predates this rule (measured with a plain throw on
-    // both paths) and it is recorded as a finding rather than repaired here, because repairing it
-    // moves the spec, the walker and the engine together.
+    // A handler's `EffectError` is recorded by the same rule as the effect path's.
     //
     // A `RuntimeFault` KEEPS ITS OWN CODE (#1519). It is a classified refusal the LANGUAGE raised
     // (`L3021` for a fanOut with no stable key), and flattening it to `L4000` wrote a code the spec
@@ -1532,19 +1558,28 @@ export async function performScope(
     // `runtime`, the kind a program's `catch` already binds for this class on both engines'
     // `toProgramError` (a fault the PROGRAM caused), so a reader branching on `kind` reads the same
     // verdict from the record that the program read live.
+    //
+    // A VALUE THE PROGRAM THREW IS RECORDED WHOLE (#2845). A replay delivers nothing but this
+    // record, and it used to deliver the generic fault where the live run had rethrown the value, so
+    // a resumed `catch` bound `{ code: "L4000", ... }` where the live one bound `"failure"`, and a
+    // program branching on it diverged. An `Error` is never the program's (it cannot construct one)
+    // and is still rethrown as itself: some classes that reach here unwind the run (the compiled
+    // engine's `EngineFault`), and an `EffectError` built from the record would make them catchable.
     const err: EntryError =
       reason instanceof EffectError
         ? recordableError(reason, "scope-fault").error
         : reason instanceof RuntimeFault
           ? { code: reason.code, kind: "runtime", message: messageOf(reason) }
-          : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
+          : reason instanceof Error
+            ? { code: "L4000", kind: "scope-fault", message: messageOf(reason) }
+            : thrownError(reason);
     // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
     // carries the intent too, and a conclave that closed says so even when its body failed.
     await host.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, {
       ...facts,
       ...digestFacts(branchDigest, facts.cancel?.losers),
     });
-    throw reason;
+    throw reason instanceof Error ? reason : scopeFailure(err);
   }
 
   // THE FACTS A SETTLED SCOPE CARRIES, assembled ONCE. Both the fence below and the success settle
