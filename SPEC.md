@@ -142,8 +142,8 @@ survives an untrusted relay. See the threat model in [docs/security.md](docs/sec
 
 ## 3. Subject layout
 
-Every wire subject is rooted at `cotal.<space>`. `<space>` and every routing token are
-sanitized: any character outside `[A-Za-z0-9_-]` maps to `_`. Sanitization is lossy; tokens
+Every wire subject is rooted at `cotal.<space>`. `<space>` and every routing token except a role
+are sanitized: any character outside `[A-Za-z0-9_-]` maps to `_`. Sanitization is lossy; tokens
 MUST NOT be decoded back into display names.
 
 The **sender** of every delivery is a principal (§2), carried as **two adjacent tokens**
@@ -186,6 +186,12 @@ surfacing boundary (§9). Reference implementation: `parseSubject` in
 `>`; a subscription MAY be wildcard. A channel is at most 4096 characters in total
 (`MAX_CHANNEL_LENGTH`): every grant line a channel mints rides the minted credential's
 CONNECT line (§13.9), so an unbounded channel is an unbounded connect.
+
+**Role tokens.** A role is an address, so it is never sanitized: it MUST be one
+`[A-Za-z0-9_-]` token. A client MUST refuse any other spelling, for the role it holds and for an
+anycast target, because a rewrite would route distinct spellings to one queue while the message
+kept the spelling sent. An anycast target MUST be concrete: `*` is valid only in subscribe and
+allow patterns such as `svc.*.<owner>.<actor>`.
 
 **Reserved prefixes.** Application messages MUST NOT use subjects beginning with `$JS.`,
 `$KV.`, `$SYS.`, `$O.`, or `_INBOX.`. (`$O.` is the Object Store data/meta subject prefix
@@ -5007,6 +5013,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-07 | **A role outside the token grammar is refused (§3), breaking.** A role was sanitized like every other routing token, so ` probe ` reached the `probe` queue and `pro.be` reached `pro_be` while the message kept the spelling sent, and an anycast to `*` was stored on a subject no role consumer matches. A client now refuses a role that is not one `[A-Za-z0-9_-]` token, both for the role it holds and for an anycast target, and refuses `*` as an anycast target. Existing `svc_<role>` durables keep their names, since they were always named from the sanitized token. |
 | 2026-10-07 | **A refusal for a target with no current mapping says that nothing ran (§13.2), additive.** It stays `expired` and now carries `outcome: not-executed` and `details[].kind = ai.cotal.ep.target-unmapped`. A manager resolves targets against the agents it hosts, so in a space with several managers the class queue could hand a targeted `despawn` to a sibling, which refused it the same way it refuses a retired target, with no outcome. The caller could not tell "this agent is gone" from "this manager does not host it", and repaired neither. With the marker a class-rail caller re-resolves and re-issues within its split-repair bound, and a target retired everywhere still ends in the same `expired` refusal once that bound runs out. A caller that ignores the marker sees the old code. |
 | 2026-10-04 | **Managed lifecycle handoff (§13.17), additive.** A managed agent already enrolled through §13.1 may run where the enrolling manager's filesystem is not visible. The manager releases one closed `cotal-managed-handoff/v1` document by value into that one child, carrying the issued owner, actor, lifecycle UID, sentinel, pinned exchange base, and the raw actor token, which the host never receives. The child's entry point removes the handoff file and its variable before it parses its arguments or does anything else, refuses a mismatched owner, actor, or lifecycle UID before any plane opens, never enrolls or mints, and uses the existing agent-bearer exchange unchanged. The manager refuses a spawn choice only its own host can honour before enrolling. Readiness stays presence-observed, a lost create acknowledgement stays held as uncertain and is never retried, a provider's answer that no resource exists is not an exit, and a close by the lifecycle-derived key is fenced against a create that could still land. A provider resource is bound to that key only by the provider's authenticated answer to its create, never by a derived identifier, a name or a listing. Retirement reuses prepare-retirement, then the known runtime handle's fenced close, then the terminal barrier, including after the manager is gone. A preservation cut that holds a handed-off lifecycle is refused, and a manager stop after a refused cut retires it. |
 | 2026-10-04 | **Platform control authority (§13.1, §13.6, §13.9), additive.** A closed server-authored `platform-control` view, beside the unchanged human `manager-service` view, lets a host run one pooled control manager per assigned account. Its holder's owner is a host-derived `p_` platform owner token, disjoint from every `u_` owner. The host's fresh platform-control assignment authorizes it in place of a ledger `supervise` scope. One closed envelope carries the existing typed manager requests through an in-process door of the host's authority context, served on no listener. The unchanged registration proof, process epoch, and all-duty renewal renew and fence it. Its host-owned maintenance reaches only the assigned instance under its own gate. An account has one assignment and so one control instance, which keeps its instance id and lifecycle UID across restarts and enters a deployment only after the assignment's named predecessor manager has left through its own path, read and never written by the host. It refuses human tokens, takeover of another owner's instance, local or custodial runtime, generic signing, exchange issuance, and cross-owner descendants. The reference host is `startAuthService` in `@cotal-ai/auth`. |

@@ -74,19 +74,32 @@ function channelPath(channel: string): string {
     .join(".");
 }
 
-/** A routing token (target, role, service), preserving the literal `*` wildcard used on the
- *  subscribe/allow side but sanitizing everything else. A no-op on real ids and equal to `token()`
- *  on every concrete value — it only additionally lets `*` through, e.g. for `svc.*.…` allow rules.
- *  Used for the *service/role* slots (`svc.<role>`, `ctl.<tier>`); the owner/actor identity slots go
- *  through {@link ownerToken} (fail-loud, never rewritten). */
-export function routeToken(s: string): string {
-  return s === "*" ? "*" : token(s);
+/** Validate a **role**: the anycast address a holder registers and a sender names. It must be one
+ *  NATS-safe token (`[A-Za-z0-9_-]`) and FAILS LOUD rather than sanitizing: a rewrite would route
+ *  distinct spellings to one queue while the envelope kept the spelling the sender typed. Returns the
+ *  role unchanged when valid so callers can use it inline. */
+export function assertValidRole(role: string): string {
+  // typeof guard as in assertValidOwnerToken: RegExp.test() coerces, so 123 or ["probe"] would pass.
+  if (typeof role !== "string" || !/^[A-Za-z0-9_-]+$/.test(role))
+    throw new Error(
+      `invalid role "${role}": must be a single NATS-safe token ([A-Za-z0-9_-]) - a role is an ` +
+        `address, so it is rejected rather than silently rewritten`,
+    );
+  return role;
+}
+
+/** A route token in a *service/role* slot (`svc.<role>`, `ctl.<service>`, `live.<plane>`): the literal
+ *  `*` wildcard passes through for subscribe/allow rules like `svc.*.…`, and every concrete value is
+ *  {@link assertValidRole}-validated. A publish must also refuse `*`, so its caller validates the role
+ *  itself. */
+function routeToken(s: string): string {
+  return s === "*" ? "*" : assertValidRole(s);
 }
 
 /** An owner/actor identity token in a wire subject: the literal `*` wildcard passes through (for
  *  allow/subscribe rules like `chat.*.*.<ch>`), and every concrete value is {@link assertValidOwnerToken}-
  *  validated (fail loud — a `.`/`*`/`>`/`-` in an id is lane breakout, NEVER silently rewritten the way
- *  `token()`/`routeToken()` would). The owner+actor grammar's per-subject enforcement point. */
+ *  `token()` would). The owner+actor grammar's per-subject enforcement point. */
 function ownerToken(s: string): string {
   return s === "*" ? "*" : assertValidOwnerToken(s);
 }
@@ -184,7 +197,7 @@ export const MAX_CHANNEL_LENGTH = 4096;
  *  the sole separator of {@link principalKey}'s JetStream-name form — a `-` *inside* a token would
  *  make `<owner>-<actor>` ambiguous. The ASCII-only alphabet also makes NFC-normalization trivially
  *  hold (any non-ASCII input fails). FAILS LOUD rather than sanitizing — do NOT substitute
- *  {@link token}/`routeToken` here: they silently rewrite illegal characters, and a rewrite hides an
+ *  {@link token} here: it silently rewrites illegal characters, and a rewrite hides an
  *  aliasing attempt. Returns the token unchanged when valid so callers can use it inline. */
 export function assertValidOwnerToken(owner: string): string {
   // typeof guard is load-bearing at JS/JSON boundaries: RegExp.test() coerces its argument, so
@@ -1252,5 +1265,5 @@ export function dmDurable(owner: string, actor: string, lifecycleUid: string): s
 
 /** Durable consumer name (shared across instances of a role) for the task queue. */
 export function taskDurable(service: string): string {
-  return `svc_${token(service)}`;
+  return `svc_${assertValidRole(service)}`;
 }
