@@ -25,8 +25,10 @@ import {
   connectOrExit,
   localProcessPath,
   progressSignal,
+  removePidPair,
   userViewAuth,
   userViewAuthOrExit,
+  writeIdentityPin,
   type ConnectFlags,
   type Connection,
   type LocalProcess,
@@ -234,13 +236,16 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** Atomically claim this mesh's web pidfile so concurrent custom-port launches cannot overwrite it. */
+/** Atomically claim this mesh's web pidfile so concurrent custom-port launches cannot overwrite it,
+ *  then pin this process's identity beside it. The pin follows the exclusive create because
+ *  `writePidPair` publishes by rename, which would replace a concurrent launch's claim. */
 function claimPid(path: string): void {
   let created = false;
   try {
     const fd = openSync(path, "wx", 0o600);
     created = true;
     try { writeFileSync(fd, String(process.pid)); } finally { closeSync(fd); }
+    writeIdentityPin(path, process.pid);
   } catch (e) {
     if (created) rmSync(path, { force: true });
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -262,9 +267,9 @@ function claimPid(path: string): void {
 
 function releasePid(path: string): void {
   try {
-    if (readFileSync(path, "utf8").trim() === String(process.pid)) rmSync(path, { force: true });
+    removePidPair(path, String(process.pid));
   } catch {
-    // Already removed by `down` or another cleanup path.
+    // Unreadable or locked: leaving a record this process cannot prove is its own is the safe error.
   }
 }
 
@@ -1402,7 +1407,7 @@ export async function terminateDetachedWeb(child: ChildProcess, pidPath: string)
         throw new Error(`failed to terminate detached web dashboard (pid ${pid}); ${pidPath} was preserved`);
     }
   }
-  if (pidFileOwned(pidPath, pid)) rmSync(pidPath, { force: true });
+  removePidPair(pidPath, String(pid));
 }
 
 /** The readiness nonce, or `undefined` if the child has not written it yet. Never throws: a missing
