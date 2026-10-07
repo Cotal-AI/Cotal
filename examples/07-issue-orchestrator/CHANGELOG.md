@@ -1,5 +1,11 @@
 # @cotal-ai/example-07-issue-orchestrator
 
+## 0.0.24
+
+### Patch Changes
+
+- @cotal-ai/lang@0.70.2
+
 ## 0.0.23
 
 ### Patch Changes

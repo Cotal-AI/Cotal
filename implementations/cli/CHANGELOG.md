@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.70.2
+
+### Patch Changes
+
+- 9f8b184: The `up-multi-space-render` live smoke no longer imports `tmpdir` from `node:os`. The import was never used: the suite's scratch comes from `makeScratch`, which checks its ancestry. Shipped behaviour is unchanged.
+  - @cotal-ai/core@0.70.2
+  - @cotal-ai/workspace@0.70.2
+
 ## 0.70.1
 
 ### Patch Changes
