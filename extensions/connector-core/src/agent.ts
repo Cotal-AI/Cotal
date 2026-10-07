@@ -18,6 +18,7 @@ import {
   isPublishPermissionDenied,
   unansweredRequest,
   renderLifecycleBlocked,
+  controlReplyFrom,
   bearerCommandFailure,
   type EpAttributedReply,
   type EpVerbTarget,
@@ -2124,17 +2125,7 @@ export class MeshAgent extends EventEmitter {
         };
       return { ok: false, error: (e as Error).message };
     }
-    if (r.reply.ok !== true) {
-      const raw = r.reply.error?.message ?? r.reply.error?.code ?? "error";
-      return {
-        ok: false,
-        error: renderLifecycleBlocked(raw, r.reply.error),
-        ...(r.reply.error?.code ? { code: r.reply.error.code } : {}),
-        ...(r.reply.data !== undefined ? { data: r.reply.data } : {}),
-        ...(r.reply.error?.details ? { details: r.reply.error.details } : {}),
-      };
-    }
-    return { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) };
+    return controlReplyFrom(r.reply);
   }
 
   /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,

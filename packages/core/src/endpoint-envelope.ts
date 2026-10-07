@@ -16,11 +16,11 @@ import type { ValidateFunction } from "ajv/dist/2020.js";
 import { rawDigest, isContractDigest, isWellFormedUnicode } from "./canonical.js";
 import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, type ParsedEpRequest } from "./endpoint-subjects.js";
 import { SCHEMA_PROFILE } from "./schema-profile.js";
-import type { EndpointRef } from "./types.js";
+import type { ControlReply, EndpointRef } from "./types.js";
 // The error catalog + EpEnvelopeError live in a node-free module so the browser session bundle can
 // use them without dragging in schema-profile's load-time digest (node:crypto). Re-exported here so
 // every existing `@cotal-ai/core` consumer keeps its import path.
-import { EP_ERROR_CODES, EpEnvelopeError, type EpErrorCode, type EpError, type EpErrorDetail, type EpEffectOutcome } from "./endpoint-error.js";
+import { EP_ERROR_CODES, EpEnvelopeError, renderLifecycleBlocked, type EpErrorCode, type EpError, type EpErrorDetail, type EpEffectOutcome } from "./endpoint-error.js";
 export { EP_ERROR_CODES, EpEnvelopeError, EP_UNBOUND_RESPONDER, respondedButUnbound, EP_UNANSWERED, unansweredRequest, unansweredRail, EP_REGISTRY_READ_FAILED, registryReadFailed, EP_UNDECLARED_ARG, undeclaredArg, EP_BIND_REFUSED, replyRefusedBeforeEffect, bindRefusalMarked, EP_TARGET_UNMAPPED, replyTargetUnmapped, EP_LIFECYCLE_BLOCKED, lifecycleBlocked, lifecycleBlockedDetail, lifecycleBlockedFrom, renderLifecycleBlocked, type EpErrorCode, type EpError, type EpErrorDetail, type EpUnboundResponderDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpUndeclaredArgDetail, type EpBindRefusedDetail, type EpLifecycleBlockedDetail, type LifecycleBlockedFacts, type LifecycleBlockedOp, type LifecycleHeadState, type LifecycleGateState, type EpEffectOutcome } from "./endpoint-error.js";
 
 /** The envelope schema version — independent of the wire `protocolVersion`; starts at its own
@@ -133,6 +133,22 @@ export interface EndpointReply {
   error?: EpError;
   /** Opaque signed receipt slot (§13.10). */
   receipt?: string;
+}
+
+/** The {@link ControlReply} a caller hands on for an endpoint reply. Every caller converts here, so
+ *  whether it can act on a refusal's code, its details, or the acceptance a non-succeeded terminal
+ *  keeps depends on what the responder sent, never on which caller the reply went through. */
+export function controlReplyFrom(reply: EndpointReply): ControlReply {
+  if (reply.ok) return { ok: true, ...(reply.data !== undefined ? { data: reply.data } : {}) };
+  const { error } = reply;
+  if (!error) throw new Error(`endpoint reply ${reply.id} failed without an error`);
+  return {
+    ok: false,
+    error: renderLifecycleBlocked(error.message, error),
+    code: error.code,
+    ...(reply.data !== undefined ? { data: reply.data } : {}),
+    ...(error.details ? { details: error.details } : {}),
+  };
 }
 
 /** An event (incl. per-goal progress) on the `epe` plane. The publishing instance and epoch are
