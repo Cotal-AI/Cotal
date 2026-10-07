@@ -611,8 +611,7 @@ await parallel({
     !(emptiedLegacy instanceof ScopeBranchMissing),
     `${(emptiedLegacy as Error)?.name}: ${(emptiedLegacy as Error)?.message?.slice(0, 80)}`);
   ok("and it completes with the recorded failure rather than a refusal",
-    (emptiedLegacy as Error)?.name === "EffectError",
-    `${(emptiedLegacy as Error)?.name}: ${(emptiedLegacy as Error)?.message?.slice(0, 80)}`);
+    (emptiedLegacy as unknown) === "x blew up", JSON.stringify(emptiedLegacy)?.slice(0, 90));
 }
 
 console.log(`migrate.smoke: ${pass} passed, ${fail} failed`);

@@ -30,8 +30,8 @@
     {
       "name": "a journal already carrying an unreadable binding loads anyway",
       "file": "packages/lang/src/journal.ts",
-      "find": "      for (const [field, value] of [[\"external\", e.external], [\"error.detail\", e.error?.detail]] as const) {",
-      "replace": "      for (const [field, value] of [[\"error.detail\", e.error?.detail]] as const) {",
+      "find": "      for (const [field, value] of [[\"external\", e.external], [\"error.detail\", e.error?.detail], [\"error.thrown\", e.error?.thrown?.value]] as const) {",
+      "replace": "      for (const [field, value] of [[\"error.detail\", e.error?.detail], [\"error.thrown\", e.error?.thrown?.value]] as const) {",
       "expectRed": "a journal already carrying such a binding is refused ON LOAD, by name",
       "completionMarker": "and the recorded values arrive as they were recorded: the builtin as a function, the namespace and the record carrying code",
       "cell": "a journal already carrying such a binding is refused ON LOAD, by name",

@@ -10,8 +10,8 @@
     {
       "name": "the scope settle flattens a program's RuntimeFault back to the generic L4000",
       "file": "packages/lang/src/perform.ts",
-      "find": "        : reason instanceof RuntimeFault\n          ? { code: reason.code, kind: \"runtime\", message: messageOf(reason) }\n          : { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) };",
-      "replace": "        : { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) };",
+      "find": "        : reason instanceof RuntimeFault\n          ? { code: reason.code, kind: \"runtime\", message: messageOf(reason) }\n          : reason instanceof Error\n            ? { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) }\n            : thrownError(reason);",
+      "replace": "        : reason instanceof Error\n          ? { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) }\n          : thrownError(reason);",
       "expectRed": "a program refusal raised inside a scope settles under its own catalog code, not the generic L4000",
       "completionMarker": "the same rule on the scope's own failure record, which a fix at the effect site alone would leave open",
       "cell": "a program refusal raised inside a scope settles under its own catalog code, not the generic L4000",
@@ -30,7 +30,7 @@
     {
       "name": "the class check is dropped and any thrown object's `code` field is trusted",
       "file": "packages/lang/src/perform.ts",
-      "find": "        : reason instanceof RuntimeFault\n          ? { code: reason.code, kind: \"runtime\", message: messageOf(reason) }\n          : { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) };",
+      "find": "        : reason instanceof RuntimeFault\n          ? { code: reason.code, kind: \"runtime\", message: messageOf(reason) }\n          : reason instanceof Error\n            ? { code: \"L4000\", kind: \"scope-fault\", message: messageOf(reason) }\n            : thrownError(reason);",
       "replace": "        : { code: (reason as { code?: unknown })?.code as string ?? \"L4000\", kind: \"runtime\", message: messageOf(reason) };",
       "expectRed": "the scope wrapper is guarded too, on a real conclave, and the refusal is recorded against the scope",
       "completionMarker": "and it is blamed on the handler's dispatch, where L4000 already says exactly that, rather than on a code of its own",
