@@ -455,8 +455,11 @@ lapsed one is down only after its presence row has stayed gone for 30 seconds, b
 connector stalls past the row's 6-second TTL, under host load or across a reconnect, renews it under
 the same incarnation and is still working. The 30 seconds count only across presence reads that
 each end within 6 seconds of the previous one starting, so a slow read or a run of failed reads, which
-could hide a renewal, starts the count over. A wait that begins after the death resolves once that
-holds, and a timeout resolves null on one absolute deadline a resumed run re-attaches to.
+could hide a renewal, starts the count over. Even then the run asks the manager first: a seat whose
+process the manager still runs is alive however long its row has been gone, so the count starts over.
+When no manager answers, the presence row is the only witness and the lapse stands. A wait that begins
+after the death resolves once that holds, and a timeout resolves null on one absolute deadline a
+resumed run re-attaches to.
 `turn` wakes one seat for one host turn through the manager as a pull-shaped relay: the run
 submits the turn under the step's own identity, the manager holds it as a goal pinned to the
 seat's incarnation, and the seat pulls it under its own reach ahead of its next host turn, so
@@ -476,7 +479,7 @@ turns on one seat, from two branches or from two runs, reach it one at a time: t
 dispatches the second when the first settles, and the manager shows a seat the oldest unsettled
 turn alone. On an auth mesh the relay needs no extra grant: every spawned seat's baseline
 credential carries its own pull, yield, and caller-bound answer rows, the run driver's operator instrument carries the
-turn request, and the manager arms the deadline hold over its own serve grant and expires it
+turn request and the `inspect` read that confirms a lapse, and the manager arms the deadline hold over its own serve grant and expires it
 itself once due. An accept the manager cannot finish is unwound to a failed terminal on the goal
 it bound, and a retry of that submission is refused naming the terminal rather than accepted a
 second time.

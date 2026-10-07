@@ -59,8 +59,8 @@
     {
       "name": "a down leaves its armed timeout live",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "          if (primary !== undefined) await this.cancelTimer(primary);\n          return { agent: ev.agent, reason, at: this.now() };",
-      "replace": "          return { agent: ev.agent, reason, at: this.now() };",
+      "find": "            if (primary !== undefined) await this.cancelTimer(primary);\n            return { agent: ev.agent, reason, at: this.now() };",
+      "replace": "            return { agent: ev.agent, reason, at: this.now() };",
       "expectRed": "the down claims its armed timeout: the pause is settled, so no timer fires into the run",
       "cell": "the down claims its armed timeout: the pause is settled, so no timer fires into the run",
       "note": "A resolved down that forgets its pause leaves a deadline armed to fire into a run that moved on. Measured 2026-09-02: exactly one red — the immediate-down block's settle read is undefined; 22 passed. Re-anchored 2026-10-04 on the claim alone, which now sits inside the lapse confirmation."

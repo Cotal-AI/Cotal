@@ -66,6 +66,7 @@ import {
   readRunRecord,
   writeRunStatus,
   EpEnvelopeError,
+  unansweredRequest,
   type ActionContext,
   type CheckpointRef,
   type CheckpointSettleFact,
@@ -1085,8 +1086,9 @@ export class MeshHandler {
    * the name AND this incarnation is the death, with the reason split by what the name shows now:
    * `"lapsed"` when nothing live holds the name any more, `"superseded"` when a live row holds it
    * under a DIFFERENT incarnation — this incarnation dead with a successor already up. A lapse is
-   * read as the death only once the row has stayed absent for {@link LAPSE_CONFIRM_MS}: a seat whose
-   * connector stalled past the row's TTL renews it under the same uid, and that seat is not down.
+   * read as the death only once the row has stayed absent for {@link LAPSE_CONFIRM_MS} and the manager
+   * no longer runs the seat: a seat whose connector stalled past the row's TTL renews it under the same
+   * uid, and that seat is not down.
    *
    * NOTHING BINDS, because a death is re-observable where a matched message is not: a dead
    * incarnation's uid never heartbeats again, so a crash between the observation and the settle
@@ -1144,8 +1146,11 @@ export class MeshHandler {
         const reason = rows.some((p) => p.card.name === name) ? "superseded" : "lapsed";
         lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
         if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
-          if (primary !== undefined) await this.cancelTimer(primary);
-          return { agent: ev.agent, reason, at: this.now() };
+          if (reason === "lapsed" && await this.seatHeld(name, uid)) lapsedSince = undefined;
+          else {
+            if (primary !== undefined) await this.cancelTimer(primary);
+            return { agent: ev.agent, reason, at: this.now() };
+          }
         }
       } else lapsedSince = undefined;
       lastReadAt = readAt;
@@ -1494,7 +1499,7 @@ export class MeshHandler {
    * DEATH likewise: the manager's reap hook fails pending turns `agent-down`, and this client
    * watches presence itself (the L4002 authority when the manager died with the seat). The watch
    * reads death the way `wait(down)` does: a superseded incarnation at once, a lapsed row only
-   * once it has stayed absent for {@link LAPSE_CONFIRM_MS}.
+   * once it has stayed absent for {@link LAPSE_CONFIRM_MS} and the manager no longer runs the seat.
    *
    * Handoff honoring (lang §5.3) happens HERE: the scope's pending memo is spent at every turn's
    * begin, and when this turn targets its `to`, the link rides the submission (`handoffFrom`, the
@@ -1641,8 +1646,11 @@ export class MeshHandler {
           const reason = rows.some((pr) => pr.card.name === name) ? "superseded" : "lapsed";
           lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
           if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
-            await this.cancelTimer(primary);
-            throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
+            if (reason === "lapsed" && await this.seatHeld(name, uid)) lapsedSince = undefined;
+            else {
+              await this.cancelTimer(primary);
+              throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
+            }
           }
         } else lapsedSince = undefined;
         lastReadAt = readAt;
@@ -2236,6 +2244,23 @@ export class MeshHandler {
       if (isPresenceRow(row)) rows.push(row);
     }
     return rows;
+  }
+
+  /** Whether the manager still runs `name#uid`, asked before a confirmed lapse is read as the death.
+   *  A lapse is only the seat's heartbeats going quiet: on a loaded host a live seat's presence writer
+   *  stalls past {@link LAPSE_CONFIRM_MS} while its process goes on working (#2807), and the manager
+   *  owns that process. A manager that does not answer leaves presence as the only witness, which is
+   *  the case presence is the authority for: the manager died with the seat. */
+  private async seatHeld(name: string, uid: string): Promise<boolean> {
+    let reply: EpAttributedReply;
+    try {
+      reply = await this.invokeManager(await this.manager(), "inspect", { name }, {});
+    } catch (e) {
+      if (unansweredRequest(e)) return false;
+      throw e;
+    }
+    const row = reply.reply.ok ? reply.reply.data as { lifecycleUid?: unknown; status?: unknown } : undefined;
+    return row?.lifecycleUid === uid && row.status === "running";
   }
 
   /**
