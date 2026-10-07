@@ -25,14 +25,18 @@ import {
   connectOrExit,
   localProcessPath,
   progressSignal,
+  readWebSession,
   removePidPair,
   userViewAuth,
   userViewAuthOrExit,
+  WEB_READINESS_HEADER,
+  WEB_SESSION_FILE,
   writeIdentityPin,
   type ConnectFlags,
   type Connection,
   type LocalProcess,
   type UserViewAuth,
+  type WebSession,
 } from "@cotal-ai/workspace";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -58,9 +62,6 @@ export const CROSS_ORIGIN = "cross-origin";
  *  keeps it off cross-site requests; the origin check carries what is left. Stated here rather than
  *  discovered in review. */
 const SESSION_COOKIE = "cotal_web_session";
-/** Lower-case because Node lower-cases incoming header names; matching on a capitalised literal
- *  would never fire and would look like a working check. */
-const READINESS_HEADER = "x-cotal-readiness";
 /** The ONLY path the readiness nonce opens. Shared with the route below so the gate and the route
  *  cannot drift into disagreeing about which path that is. */
 const READINESS_PATH = "/api/meta";
@@ -93,11 +94,6 @@ function requestTargetForLog(req: IncomingMessage, launchToken: string): string 
   safeTarget = `${safeTarget.slice(0, q)}?${safe.toString()}`;
   return safeTarget;
 }
-/** Where a detached parent (and an operator who lost the printed link) finds the launch URL. Written
- *  0600 beside the pidfile — the same place and the same trust boundary as the rest of this mesh's
- *  local process state. */
-const SESSION_FILE = "web.session";
-
 /** Constant-time compare of two secrets that may differ in length. `timingSafeEqual` throws on a
  *  length mismatch, and returning early on that throw would leak the length through timing, so the
  *  length check is folded into the result instead of short-circuiting it. */
@@ -181,7 +177,7 @@ export function makeAuthGate(port: number, host: string = WEB_HOST) {
       // Scoped to the one path its callers poll. The nonce is never consumed and lives as long
       // as the process, so accepting it on every path would leave `web.session` holding a standing
       // full-surface credential beside a link this command calls single-use.
-      const readiness = req.headers[READINESS_HEADER];
+      const readiness = req.headers[WEB_READINESS_HEADER];
       if (pathOf(req) === READINESS_PATH && typeof readiness === "string" && secretEquals(readiness, readinessNonce))
         return undefined;
 
@@ -220,7 +216,7 @@ export const webProcess: LocalProcess = {
   // `web.session` holds the readiness nonce, which is accepted for this process's whole lifetime.
   // The exit handler removes it, but an exit handler does not run on SIGKILL — so without this the
   // credential outlives the process it authenticates.
-  artifacts: [SESSION_FILE],
+  artifacts: [WEB_SESSION_FILE],
   // The dashboard starts target-resolved from any directory and claims its pidfile under the
   // TARGET mesh's root (`conn.root` below); `cotal down web` must resolve the same mesh.
   rootedAt: "target",
@@ -823,7 +819,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   if (!started) return;
   const { conn, user, pidPath, purgeCreds } = started;
   const { server, space } = conn;
-  const sessionPath = conn.root ? localProcessPath(SESSION_FILE, { root: conn.root, space }) : undefined;
+  const sessionPath = conn.root ? localProcessPath(WEB_SESSION_FILE, { root: conn.root, space }) : undefined;
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
@@ -1237,7 +1233,7 @@ export async function web(args: ParsedArgs): Promise<void> {
     const sfd = openSync(sessionPath, "w", 0o600);
     try {
       fchmodSync(sfd, 0o600);
-      writeFileSync(sfd, JSON.stringify({ launchUrl, readiness: gate.readinessNonce, host: bound.address, port: bound.port }));
+      writeFileSync(sfd, JSON.stringify({ launchUrl, readiness: gate.readinessNonce, host: bound.address, port: bound.port } satisfies WebSession));
     } finally { closeSync(sfd); }
     process.once("exit", () => rmSync(sessionPath, { force: true }));
   }
@@ -1300,7 +1296,7 @@ async function launchDetachedWeb(
   child.unref();
 
   const url = webUrl(host, port);
-  const sessionPath = localProcessPath(SESSION_FILE, context);
+  const sessionPath = localProcessPath(WEB_SESSION_FILE, context);
   try {
     await waitForDetachedWeb(child, { pidPath, sessionPath, url: boundUrl(host, port), space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
   } catch (e) {
@@ -1314,7 +1310,7 @@ async function launchDetachedWeb(
   // The child minted the token, so the parent reads the link rather than reconstructing it. If the
   // file is unreadable the dashboard is still up and the operator is told where the link lives,
   // instead of being handed a URL that will refuse them.
-  const launchUrl = readSessionLaunchUrl(sessionPath);
+  const launchUrl = readWebSession(sessionPath)?.launchUrl;
   console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
   if (launchUrl) printLaunchLink(launchUrl, host, port, "(single-use link)");
   else console.log(c.dim(`  launch link: see ${sessionPath}`));
@@ -1378,10 +1374,10 @@ export async function waitForDetachedWeb(
       // unreadable file simply means "not up yet" and the loop keeps waiting — exactly as it did
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
-      const readiness = readSessionSecret(opts.sessionPath);
+      const session = opts.sessionPath === undefined ? undefined : readWebSession(opts.sessionPath);
       const meta = await fetch(`${opts.url}api/meta`, {
         signal: AbortSignal.timeout(500),
-        headers: readiness ? { [READINESS_HEADER]: readiness } : {},
+        headers: session ? { [WEB_READINESS_HEADER]: session.readiness } : {},
       })
         .then(async (res) => res.ok ? await res.json() as { space?: unknown; pid?: unknown } : undefined)
         .catch(() => undefined);
@@ -1408,26 +1404,6 @@ export async function terminateDetachedWeb(child: ChildProcess, pidPath: string)
     }
   }
   removePidPair(pidPath, String(pid));
-}
-
-/** The readiness nonce, or `undefined` if the child has not written it yet. Never throws: a missing
- *  file is the ordinary state during startup, not an error. */
-function readSessionSecret(path: string | undefined): string | undefined {
-  if (path === undefined) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { readiness?: unknown };
-    return typeof parsed.readiness === "string" ? parsed.readiness : undefined;
-  } catch { return undefined; }
-}
-
-/** The launch URL the child recorded, for a detached parent to open. Separate from the nonce reader
- *  so a caller asks for exactly the one it needs. */
-function readSessionLaunchUrl(path: string | undefined): string | undefined {
-  if (path === undefined) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { launchUrl?: unknown };
-    return typeof parsed.launchUrl === "string" ? parsed.launchUrl : undefined;
-  } catch { return undefined; }
 }
 
 function pidFileOwned(path: string, pid: number): boolean {
