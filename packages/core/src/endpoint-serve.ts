@@ -24,7 +24,7 @@ import {
 } from "./endpoint-subjects.js";
 import {
   EpEnvelopeError, parseEndpointRequest, checkRequestSubjectAgreement, assertClassMatches,
-  assertArgsValid, assertOutputValid, EP_BIND_REFUSED,
+  assertArgsValid, assertOutputValid, EP_BIND_REFUSED, EP_TARGET_UNMAPPED,
   type EndpointRequest, type EndpointReply, type EpClass, type EpBindRefusedDetail,
 } from "./endpoint-envelope.js";
 import { compileContract, assertCompiledContract, VOID_SCHEMA, type CompiledContract } from "./schema-profile.js";
@@ -166,7 +166,8 @@ function assertBoundIncarnation(env: EndpointRequest, identity: EpServeIdentity)
  *  cast; a cast has effects too). Fail-closed: no resolver seam means targeted modes are
  *  REFUSED (`unavailable`), never dispatched unchecked; a resolver failure is `unavailable`;
  *  a missing/superseded mapping, a UID mismatch, or a pinned `mappingRevision` mismatch is
- *  `expired` (§13.3). */
+ *  `expired` (§13.3). A missing mapping is also {@link EP_TARGET_UNMAPPED} and `not-executed`,
+ *  because the resolver may know only this instance's targets and a sibling may host this one. */
 async function assertTargetCurrent(env: EndpointRequest, resolve: EpTargetResolver | undefined): Promise<void> {
   const t = env.target;
   if (t === undefined) return;
@@ -179,7 +180,8 @@ async function assertTargetCurrent(env: EndpointRequest, resolve: EpTargetResolv
     throw new EpEnvelopeError("unavailable", `the trusted target resolver failed; refusing the targeted request (SPEC 13.9): ${(err as Error)?.message ?? String(err)}`);
   }
   if (mapping === undefined)
-    throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} has no current lifecycle mapping (SPEC 13.3)`);
+    throw new EpEnvelopeError("expired", `this instance holds no current lifecycle mapping for target ${t.owner}.${t.actor} and ran nothing (SPEC 13.3)`,
+      [{ kind: EP_TARGET_UNMAPPED }], "not-executed");
   if (mapping.lifecycleUid !== t.lifecycleUid)
     throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} expected lifecycle ${t.lifecycleUid} but the current mapping is ${mapping.lifecycleUid} (SPEC 13.3: expired on mapping mismatch)`);
   if (t.mappingRevision !== undefined && mapping.mappingRevision !== t.mappingRevision)

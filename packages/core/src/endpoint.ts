@@ -36,7 +36,7 @@ import {
 } from "./secret-store.js";
 import { BIND_SPLIT_REISSUES, resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import type { GoalResultFact } from "./endpoint-action.js";
-import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
+import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
@@ -705,8 +705,9 @@ export class CotalEndpoint extends EventEmitter {
   /** Active goal followers awaiting outcome, tracked so endpoint stop can cancel them immediately
    *  and connection replacement / reconnect can trigger reconciliation. */
   private readonly activeGoalFollowers = new Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void }>();
-  /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) — the
-   *  class-queue splits this endpoint hit and survived.
+  /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) or a
+   *  member holding no mapping for the target (§13.3) — the class-queue splits this endpoint hit
+   *  and survived.
    *
    *  Counted because it is recovered: handling the split is what makes it invisible, so this is the
    *  only evidence the split rate exists. Always on, never behind a flag — a counter you have to
@@ -2465,7 +2466,9 @@ export class CotalEndpoint extends EventEmitter {
    *     call re-issued for any command, up to {@link BIND_SPLIT_REISSUES} times while each re-issue
    *     is refused the same way. If a re-issue cannot be resolved, the refusal
    *     surfaces — still saying the command did not run — naming the resolve failure as why the
-   *     repair could not be attempted.
+   *     repair could not be attempted. An unpinned targeted call that reached a member holding no
+   *     mapping for its target ({@link replyTargetUnmapped}) is repaired the same way, and when the
+   *     re-issues run out, the latest such refusal is the one surfaced.
    *   - this CLIENT caught it on the reply ({@link respondedButUnbound}: a different instance,
    *     `failed-precondition`; the same instance at any other epoch, `expired`), which is what a
    *     responder too old to know the field produces. A live instance received and answered it, so
@@ -2536,7 +2539,14 @@ export class CotalEndpoint extends EventEmitter {
         // did not run, so each re-issue is a FIRST attempt, not a second. It repeats up to the bound
         // the CLI uses, because the re-issue rides the same class queue and splits again at the same
         // rate; repairing once left a quarter of all calls in a two-manager space failing (#443).
-        for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error); reissues++) {
+        // A member that holds no mapping for the target also ran nothing, and on the class rail a
+        // sibling may host it. A pinned call named its instance, so that refusal is its answer.
+        // That member looked the target up, so when the re-issues run out its refusal is surfaced
+        // in place of a trailing bind refusal, which says nothing about the target.
+        const unmappedHere = (x: EpAttributedReply) => opts.instanceId === undefined && replyTargetUnmapped(x.reply.error);
+        let unmapped = unmappedHere(r) ? r : undefined;
+        for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false
+          && (replyRefusedBeforeEffect(r.reply.error) || unmappedHere(r)); reissues++) {
           // Counted before it is repaired: a recovery that leaves no trace takes the split rate with it.
           this.splitsRecovered++;
           // `boundTo` is the other half of `servedBy`: who the handle THOUGHT it was talking to,
@@ -2592,8 +2602,9 @@ export class CotalEndpoint extends EventEmitter {
             );
           }
           r = await invokeResolved(reissueTarget, signal);
+          if (unmappedHere(r)) unmapped = r;
         }
-        return r;
+        return replyRefusedBeforeEffect(r.reply.error) ? unmapped ?? r : r;
       } catch (e) {
         // DO NOT auto-retry a command a responder already ANSWERED. This path covers the responders
         // WITHOUT the fence above: they ignore `bind`, run the command, and the error is raised
