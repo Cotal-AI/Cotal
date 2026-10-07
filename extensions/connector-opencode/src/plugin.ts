@@ -698,10 +698,9 @@ export const cotal: Plugin = async () => {
     await agent.stop();
   };
   /**
-   * The manager's cooperative stop and the host's dispose. `process.exit` is deliberately AFTER the
-   * shared teardown and not beside it: it used to sit in a `finally` around the presence and agent
-   * stop only, so it ran even when those threw and it ran before any event work could finish. An
-   * exit that cannot be delayed by the teardown is an exit that cannot honour it.
+   * The manager's cooperative stop and the host's dispose. `process.exit` waits for the whole shared
+   * teardown, because an exit the teardown cannot delay cannot honour it. It runs once `quiesce`
+   * settles, whether it resolves or rejects, so a teardown that throws still ends the process.
    */
   const shutdown = async (code = 0): Promise<void> => {
     try {
