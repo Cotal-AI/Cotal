@@ -83,8 +83,8 @@ import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, ope
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
-import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
-import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
+import { openAuthLedgerScannerCandidate } from "./ledger-scanner.js";
+import { openRecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, planeClaimRefusal, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
 import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
 import { makeDeliveryAdminEvictor, makeDeliveryAdminHolderEvictor } from "./barrier-evict.js";
@@ -93,7 +93,7 @@ import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
 import { serializedFor } from "./serialized.js";
 import type { DelegatedUserIntentIncarnation } from "./delegated-user-intent.js";
-import { joinOrStartRetirement, openAuthAdminListener, type AuthAdminListener, type RetirementFlights } from "./auth-admin.js";
+import { joinOrStartRetirement, openAuthAdminListener, type RetirementFlights } from "./auth-admin.js";
 import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
@@ -392,20 +392,28 @@ export async function openAuthAuthorityPlane(opts: {
   /** Bounded trusted-host-only standing renewable credential TTL option for rehearsal (default 24h). */
   standingRenewableTtlSeconds?: number;
 }): Promise<AuthAuthorityPlane> {
+  // Construction records each resource's close here as soon as it opens, so a throw anywhere up to
+  // the returned plane closes exactly what is open, in reverse order.
+  const unwind: (() => Promise<unknown>)[] = [];
+  try {
+    return await buildAuthAuthorityPlane(opts, unwind);
+  } catch (e) {
+    for (const close of unwind.reverse()) await close();
+    throw e;
+  }
+}
+
+/** The body of {@link openAuthAuthorityPlane}, which owns the unwind of a failed construction. */
+async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthorityPlane>[0], unwind: (() => Promise<unknown>)[]): Promise<AuthAuthorityPlane> {
   const { server, space, dataAccount, log } = opts;
   const standingTtl = opts.standingRenewableTtlSeconds ?? STANDING_RENEWABLE_TTL_SEC;
   if (!Number.isSafeInteger(standingTtl) || standingTtl < 5 || standingTtl > STANDING_RENEWABLE_TTL_SEC) {
     throw new Error(`standingRenewableTtlSeconds must be an integer between 5 and ${STANDING_RENEWABLE_TTL_SEC} seconds (got ${standingTtl})`);
   }
   const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
-  let registry;
-  try {
-    await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
-    registry = await openLifecycleRegistry(writer.nc, space);
-  } catch (e) {
-    await writer.close();
-    throw e;
-  }
+  unwind.push(() => writer.close());
+  await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
+  const registry = await openLifecycleRegistry(writer.nc, space);
   // #399 M2: register the auth plane itself as an ordinary `auth` service endpoint — the SAME
   // §13.7 registration ceremony the manager runs (`manager.ts:6562-6690`), before the listener
   // below serves a single request. The persisted instance id + serve nkey (in `identityRoot`,
@@ -414,7 +422,7 @@ export async function openAuthAuthorityPlane(opts: {
   // fences the predecessor; a first registration stays at epoch 0.
   let authServeInstanceId: string;
   let authServeGrant: EpServeGrant;
-  try {
+  {
     const persisted = loadAuthInstanceIdentity(opts.identityRoot, space);
     const authIdentity = persisted ?? createAuthInstanceIdentity(opts.identityRoot, space, {
       instanceId: mintLifecycleUid(),
@@ -439,29 +447,15 @@ export async function openAuthAuthorityPlane(opts: {
     } finally {
       await regClient.close();
     }
-  } catch (e) {
-    await writer.close();
-    throw e;
   }
-  let reader;
-  try {
-    reader = await openSupervisedConnectReader({ server, space, dataAccount, log });
-  } catch (e) {
-    await writer.close();
-    throw e;
-  }
+  const reader = await openSupervisedConnectReader({ server, space, dataAccount, log });
+  unwind.push(() => reader.close());
   // The typed remote-manager issuer is a distinct self-minted connection. It adds only the
   // endpoint-manager gate/credential family to the root issuance surface and is never exposed as
   // a generic mint endpoint. Its JWTs are signed for caller-generated public nkeys; private seeds
   // stay on the participant machine.
-  let remoteIssuer: AuthorityClient | undefined;
-  try {
-    remoteIssuer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:remote-manager-issuer:${space}`, grants: (id) => remoteManagerIssuerGrants(space, id), log });
-  } catch (e) {
-    await reader.close();
-    await writer.close();
-    throw e;
-  }
+  const remoteIssuer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:remote-manager-issuer:${space}`, grants: (id) => remoteManagerIssuerGrants(space, id), log });
+  unwind.push(() => remoteIssuer.close());
 
   // The BARRIER EXECUTOR: the third self-minted connection, with its own registry bind — the
   // mint writer stays the minimal issuance credential ("barriers are NOT this credential's
@@ -484,62 +478,47 @@ export async function openAuthAuthorityPlane(opts: {
   // sweep, adjudicated over the delivery-admin rail (auth holds no $SYS). A mid-life scanner
   // disconnect FENCES the plane: the guard refuses every later scan, the sibling closes, and the
   // in-flight enumeration's result is discarded by the post-scan claim check.
-  let barrier;
-  let ledgerCand: LedgerScannerCandidate | undefined;
-  let recordsCand: RecordsScannerCandidate | undefined;
   let hold: PlaneClaimHold | undefined;
-  let scanner: AuthLedgerScanner | undefined;
-  let recordsScanner: RecordsScanner | undefined;
-  let barrierReg;
   let closing = false;
   let closeScanners: Promise<void> | undefined;
-  // A failed open throws its own error, so a release failing on the way out is only logged: the
-  // row stays held and the next open reclaims it like a crash.
-  const releaseAfterFailedOpen = async () => hold?.release().catch((r: Error) => log(r.message));
   // The plane-fatal channel (fact HIGH: a fenced plane must never keep serving): the mid-life
   // fence resolves it, every authority operation refuses from then on, and the composition root
   // downs the daemon. A clean close never resolves it.
   let fatalReason: string | undefined;
   let fireFatal!: (reason: string) => void;
   const fenced = new Promise<string>((r) => { fireFatal = r; });
-  try {
-    barrier = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
-    ledgerCand = await openAuthLedgerScannerCandidate({ server, space, dataAccount, log });
-    recordsCand = await openRecordsScannerCandidate({ server, space, dataAccount, log });
-    const oracle = opts.probePlaneOracle ?? makeDeliveryAdminPlaneOracle({ space, server, dataAccount, log });
-    hold = await acquirePlaneClaim({ nc: barrier.nc, space, ledger: ledgerCand.tuple, records: recordsCand.tuple, oracle, log });
-    scanner = ledgerCand.activate(hold.guard);
-    recordsScanner = recordsCand.activate(hold.guard);
-    // Mid-life disconnect = the FENCING event (security req: an owned scanner that dies must not
-    // leave the plane half-running). First death wins: fence the guard with the ux state-3 copy,
-    // close the sibling so a successor's reclaim isn't blocked by a half-dead pair, log loud.
-    const fenceOnDeath = (role: "auth-ledger" | "records", sibling: () => Promise<void>) => {
-      if (closing) return;
-      const copy = scannerDeathCopy(space, role);
-      hold?.fence(copy);
-      fatalReason = fatalReason ?? copy;
-      fireFatal(copy);
-      log(`auth-plane: ${copy}`);
-      void sibling().catch(() => {});
-    };
-    void ledgerCand.gone.then(() => fenceOnDeath("auth-ledger", () => recordsCand?.close() ?? Promise.resolve()));
-    void recordsCand.gone.then(() => fenceOnDeath("records", () => ledgerCand?.close() ?? Promise.resolve()));
-    const lc = ledgerCand, rc = recordsCand;
-    opts.probePlaneDeath?.({ ledger: () => lc.close(), records: () => rc.close() });
-    barrierReg = await openLifecycleRegistry(barrier.nc, space, scanner, recordsScanner);
-  } catch (e) {
-    // Clean-close order even on a failed open: scan-capable clients first, THEN the claim release
-    // (held → released is valid only once neither scanner can act), then the rest.
-    closing = true;
-    await recordsCand?.close();
-    await ledgerCand?.close();
-    await releaseAfterFailedOpen();
-    await barrier?.close();
-    await remoteIssuer.close();
-    await reader.close();
-    await writer.close();
-    throw e;
-  }
+  const barrier = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
+  unwind.push(() => barrier.close());
+  // Unwound after both scanners close: held → released is valid only once neither scanner can act.
+  // A failed open throws its own error, so a release failing on the way out is only logged: the
+  // row stays held and the next open reclaims it like a crash.
+  unwind.push(async () => hold?.release().catch((r: Error) => log(r.message)));
+  const ledgerCand = await openAuthLedgerScannerCandidate({ server, space, dataAccount, log });
+  unwind.push(() => ledgerCand.close());
+  const recordsCand = await openRecordsScannerCandidate({ server, space, dataAccount, log });
+  unwind.push(() => recordsCand.close());
+  const oracle = opts.probePlaneOracle ?? makeDeliveryAdminPlaneOracle({ space, server, dataAccount, log });
+  hold = await acquirePlaneClaim({ nc: barrier.nc, space, ledger: ledgerCand.tuple, records: recordsCand.tuple, oracle, log });
+  const scanner = ledgerCand.activate(hold.guard);
+  const recordsScanner = recordsCand.activate(hold.guard);
+  // Mid-life disconnect = the FENCING event (security req: an owned scanner that dies must not
+  // leave the plane half-running). First death wins: fence the guard with the ux state-3 copy,
+  // close the sibling so a successor's reclaim isn't blocked by a half-dead pair, log loud.
+  const fenceOnDeath = (role: "auth-ledger" | "records", sibling: () => Promise<void>) => {
+    if (closing) return;
+    const copy = scannerDeathCopy(space, role);
+    hold?.fence(copy);
+    fatalReason = fatalReason ?? copy;
+    fireFatal(copy);
+    log(`auth-plane: ${copy}`);
+    void sibling().catch(() => {});
+  };
+  void ledgerCand.gone.then(() => fenceOnDeath("auth-ledger", () => recordsCand.close()));
+  void recordsCand.gone.then(() => fenceOnDeath("records", () => ledgerCand.close()));
+  // A failed open closes the scanners deliberately, which must not fence like a mid-life death.
+  unwind.push(async () => { closing = true; });
+  opts.probePlaneDeath?.({ ledger: () => ledgerCand.close(), records: () => recordsCand.close() });
+  const barrierReg = await openLifecycleRegistry(barrier.nc, space, scanner, recordsScanner);
   const evictPrincipal = opts.probeEvictor ?? makeDeliveryAdminEvictor({ space, server, dataAccount, log });
   // The RETIREMENT deps (#29 piece 4): the barrier's injected mechanics, assembled from reviewed
   // §13.9 profiles only. The obligation drain runs per endpoint on a SHORT-LIVED client minted
@@ -591,19 +570,7 @@ export async function openAuthAuthorityPlane(opts: {
   // know what we owe); an individual resume failure is LOUD but non-fatal — that alias stays
   // frozen (nothing mints for it, fail-closed) while every other alias keeps working, and a
   // later restart re-drives it.
-  try {
-    await resumeOpenOperations(barrierReg, evictPrincipal, retirement, log);
-  } catch (e) {
-    closing = true;
-    await recordsScanner.close();
-    await scanner.close();
-    await releaseAfterFailedOpen();
-    await barrier.close();
-    await remoteIssuer.close();
-    await reader.close();
-    await writer.close();
-    throw e;
-  }
+  await resumeOpenOperations(barrierReg, evictPrincipal, retirement, log);
   // ONE in-flight map for the rail and the loopback managed-retire door: both run the same
   // `managedRetirementOpId(uid)` operation, and a process must never execute it twice at once.
   const retirementFlights: RetirementFlights = new Map();
@@ -612,20 +579,8 @@ export async function openAuthAuthorityPlane(opts: {
   // stays with the plane's own registry + retirement deps (the drain rides the ONE sealed records
   // scanner exactly like the boot resume); the listener only authorizes (subject attribution +
   // the FRESH space-manager-lease holder check) and dispatches.
-  let authAdmin: AuthAdminListener | undefined;
-  try {
-    authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, log });
-  } catch (e) {
-    closing = true;
-    await recordsScanner.close();
-    await scanner.close();
-    await releaseAfterFailedOpen();
-    await barrier.close();
-    await remoteIssuer.close();
-    await reader.close();
-    await writer.close();
-    throw e;
-  }
+  const authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, log });
+  unwind.push(() => authAdmin.close());
   const fileArm = ledgerAuthorizeConnect(opts.dir);
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
   const authKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
@@ -1536,7 +1491,7 @@ export async function openAuthAuthorityPlane(opts: {
       // for a later close retry; the scanner teardown is not run a second time.
       closing = true;
       await (closeScanners ??= (async () => {
-        await authAdmin?.close();
+        await authAdmin.close();
         await reader.close();
         await recordsScanner.close();
         await scanner.close();
