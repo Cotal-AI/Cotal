@@ -218,6 +218,7 @@ export function makeDrainRepairers(opts: {
   server: string;
   space: string;
   dataAccount: { pub: string; signingSeed: string };
+  onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }) {
   const { server, space, dataAccount, log } = opts;
@@ -229,6 +230,7 @@ export function makeDrainRepairers(opts: {
       throw new EpEnvelopeError("permission-denied", `the commit base revision ${String(baseRevision)} is not a non-negative integer; no applier credential mints (SPEC 13.8)`);
     const subject = `${kvPrefix}.${commitKey}`;
     const client = await openAuthorityClient({
+      onConnection: opts.onConnection,
       server, space, dataAccount,
       label: `cotal:ep-apply:${space}:${commitKey}`,
       principal: { owner: INFRA_OWNER, actor: opActor("epapl", opId) },
@@ -265,6 +267,7 @@ export function makeDrainRepairers(opts: {
     if (!(repair.bytes instanceof Uint8Array) || repair.bytes.length === 0)
       throw new EpEnvelopeError("permission-denied", `the pool repair for ${repair.subject} carries no item bytes; no reconciler credential mints (SPEC 13.6)`);
     const client = await openAuthorityClient({
+      onConnection: opts.onConnection,
       server, space, dataAccount,
       label: `cotal:ep-reenqueue:${space}`,
       principal: { owner: INFRA_OWNER, actor: opActor("eprec", opId) },
@@ -303,6 +306,7 @@ export function makeDrainRepairers(opts: {
       ? goalCancelledResultOf(repair.acceptance, { opId, target }, Date.now())
       : effectCancelledFactOf(repair.acceptance, { opId, target }, Date.now());
     const client = await openAuthorityClient({
+      onConnection: opts.onConnection,
       server, space, dataAccount,
       label: `cotal:ep-cancel:${space}`,
       principal: { owner: INFRA_OWNER, actor: opActor("epcan", opId) },

@@ -193,3 +193,5 @@ export {
 // not own that composition (the #29 slice does). Until it lands, the whole coordinate is
 // reached by importing the module directly (smokes do); nothing of it is on the package
 // surface.
+
+export type { AuthConnectionState, AuthServiceClosed } from "./owned-connections.js";

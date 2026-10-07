@@ -145,6 +145,7 @@ export function makeRetirementCleaners(opts: {
   server: string;
   space: string;
   dataAccount: { pub: string; signingSeed: string };
+  onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): {
   openCleaner: (args: { opId: string; endpoint: string; pools: string[] }) => Promise<PoolCleanerBind>;
@@ -166,6 +167,7 @@ export function makeRetirementCleaners(opts: {
     const actor = opActor(role, args.opId);
     const principal = principalKey(INFRA_OWNER, actor).key;
     return acquire(clients, principal, what, () => openAuthorityClient({
+      onConnection: opts.onConnection,
       server: opts.server,
       space: opts.space,
       dataAccount: opts.dataAccount,

@@ -186,10 +186,12 @@ export async function openAuthLedgerScannerCandidate(opts: {
   server: string;
   space: string;
   dataAccount: { pub: string; signingSeed: string };
+  onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): Promise<LedgerScannerCandidate> {
   const client: AuthorityClient = await openAuthorityClient({
     server: opts.server, space: opts.space, dataAccount: opts.dataAccount, label: `cotal:auth-scan:${opts.space}`,
+    onConnection: opts.onConnection,
     grants: (id) => authorityScannerGrants(opts.space, id), log: opts.log, planeCandidate: true,
   });
   // planeCandidate guarantees both (openAuthorityClient throws otherwise); the assert keeps the

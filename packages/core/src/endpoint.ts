@@ -204,6 +204,9 @@ export const MULTI_FILTER_BATCH = 1_000;
 export const MULTI_FILTER_READ_CONCURRENCY = 4;
 
 export interface EndpointOptions {
+  /** Trusted composition custody of each opened transport, including replacement epochs.
+   * Called before binding so the owner can await its terminal closed signal on bind failure. */
+  onConnection?: (nc: NatsConnection) => void;
   /** The collaboration to join. */
   space: string;
   /** Identity. `id` is generated if omitted. */
@@ -472,6 +475,7 @@ export class CotalEndpoint extends EventEmitter {
   private readonly inactiveThresholdMs: number;
 
   private nc?: NatsConnection;
+  private readonly onConnection?: (nc: NatsConnection) => void;
   private js?: JetStreamClient;
   private jsm?: JetStreamManager;
   private kv?: KV;
@@ -864,6 +868,7 @@ export class CotalEndpoint extends EventEmitter {
     }
     if ((opts.transportPingIntervalMs === undefined) !== (opts.transportMaxPingOut === undefined))
       throw new Error("EndpointOptions transportPingIntervalMs and transportMaxPingOut must be configured together");
+    this.onConnection = opts.onConnection;
     this.transportPingIntervalMs = opts.transportPingIntervalMs;
     this.transportMaxPingOut = opts.transportMaxPingOut;
     // No implicit channel: an endpoint reads exactly what its caller lists. Omitted means none.
@@ -1392,6 +1397,7 @@ export class CotalEndpoint extends EventEmitter {
     });
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including the reconnects the library performs on its own here.
+    this.onConnection?.(this.nc);
     requireBrokerFloor(this.nc);
     this.armAuthExpiryReconnectFence(this.nc);
     this.watchStatus();

@@ -63,6 +63,7 @@ export function makeDeliveryAdminEvictor(opts: {
   space: string;
   server: string;
   dataAccount: { pub: string; signingSeed: string };
+  onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): EvictPrincipal {
   // The stripped mint view (core's stripSpaceAuth shape): mintCreds reads ONLY space +
@@ -88,6 +89,7 @@ export function makeDeliveryAdminEvictor(opts: {
       // delivery-admin infra profile is the #30 target; until then, bound the lifetime here.)
       const creds = await mintCreds(auth, id, "supervisor", { expiresInSeconds: EVICTOR_CRED_TTL_SECONDS });
       ep = new CotalEndpoint({
+        onConnection: (nc) => opts.onConnection?.(nc, `cotal:auth-barrier-evict:${opts.space}`),
         space: opts.space,
         servers: opts.server,
         creds,
@@ -135,6 +137,7 @@ export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliv
     try {
       const creds = await mintCreds(auth, id, "supervisor", { expiresInSeconds: EVICTOR_CRED_TTL_SECONDS });
       ep = new CotalEndpoint({
+        onConnection: (nc) => opts.onConnection?.(nc, `cotal:auth-barrier-evict:${opts.space}`),
         space: opts.space,
         servers: opts.server,
         creds,

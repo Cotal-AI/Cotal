@@ -344,6 +344,7 @@ export function makeDeliveryAdminPlaneOracle(opts: {
   space: string;
   server: string;
   dataAccount: { pub: string; signingSeed: string };
+  onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): PlaneLivenessOracle {
   const auth: SpaceAuth = {
@@ -362,6 +363,7 @@ export function makeDeliveryAdminPlaneOracle(opts: {
     try {
       const creds = await mintCreds(auth, id, "supervisor", { expiresInSeconds: ORACLE_CRED_TTL_SECONDS });
       ep = new CotalEndpoint({
+        onConnection: (nc) => opts.onConnection?.(nc, `cotal:auth-plane-oracle:${opts.space}`),
         space: opts.space,
         servers: opts.server,
         creds,
@@ -402,6 +404,7 @@ export function makeDeliveryAdminPrincipalOracle(opts: {
   space: string;
   server: string;
   dataAccount: { pub: string; signingSeed: string };
+  onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): (principal: string) => Promise<import("@cotal-ai/core").PrincipalLivenessResult> {
   const auth: SpaceAuth = {
@@ -420,6 +423,7 @@ export function makeDeliveryAdminPrincipalOracle(opts: {
     try {
       const creds = await mintCreds(auth, id, "endpoint-evictor", { expiresInSeconds: ORACLE_CRED_TTL_SECONDS });
       ep = new CotalEndpoint({
+        onConnection: (nc) => opts.onConnection?.(nc, `cotal:auth-principal-oracle:${opts.space}`),
         space: opts.space, servers: opts.server, creds,
         card: { id: id.id, name: "auth-principal-oracle", kind: "endpoint" },
         channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,

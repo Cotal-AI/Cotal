@@ -65,6 +65,7 @@ import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
+import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
@@ -350,19 +351,8 @@ async function registerSelfAuthorizedInstance<R extends { registrationRevision: 
   return registered;
 }
 
-/**
- * Open the authority plane — the PRODUCTION connect/exchange composition (exported so the live
- * deny-new smoke exercises exactly what the daemon runs). Boot order is the readiness contract:
- * the MINT WRITER connects first and ensures both authority stores exist with their normative
- * shape ({@link ensureAuthorityStores}; the reader's bind proof requires them), then the
- * lifecycle registry binds (its own §13.12 shape proof), then the supervised CONNECT READER
- * binds + proves. Any failure throws — the daemon refuses to come up rather than serving
- * connects it cannot credential-check (no file-only fallback).
- *
- * These are STATIC data-account users (signed by the data-account signing key), so they never
- * transit the auth callout — the callout cannot deadlock on its own reader.
- */
-export async function openAuthAuthorityPlane(opts: {
+/** Inputs to the sealed authority-plane composition. */
+export interface OpenAuthAuthorityPlaneOptions {
   server: string;
   space: string;
   /** The provider state dir — the file-ledger connect arm reads it fresh per connect. */
@@ -391,26 +381,43 @@ export async function openAuthAuthorityPlane(opts: {
   localManager?: () => ManagerInstanceIdentity | undefined;
   /** Bounded trusted-host-only standing renewable credential TTL option for rehearsal (default 24h). */
   standingRenewableTtlSeconds?: number;
-}): Promise<AuthAuthorityPlane> {
-  // Construction records each resource's close here as soon as it opens, so a throw anywhere up to
-  // the returned plane closes exactly what is open, in reverse order.
+}
+
+/**
+ * Open the authority plane — the PRODUCTION connect/exchange composition (exported so the live
+ * deny-new smoke exercises exactly what the daemon runs). Boot order is the readiness contract:
+ * the MINT WRITER connects first and ensures both authority stores exist with their normative
+ * shape ({@link ensureAuthorityStores}; the reader's bind proof requires them), then the
+ * lifecycle registry binds (its own §13.12 shape proof), then the supervised CONNECT READER
+ * binds + proves. Any failure throws — the daemon refuses to come up rather than serving
+ * connects it cannot credential-check (no file-only fallback).
+ *
+ * These are STATIC data-account users (signed by the data-account signing key), so they never
+ * transit the auth callout — the callout cannot deadlock on its own reader.
+ */
+export async function openAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions): Promise<AuthAuthorityPlane> {
+  return await openAuthAuthorityPlaneWithCustody(opts);
+}
+
+/** The context's custody callback is private. Failed construction unwinds from one place. */
+async function openAuthAuthorityPlaneWithCustody(opts: OpenAuthAuthorityPlaneOptions, onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"]): Promise<AuthAuthorityPlane> {
   const unwind: (() => Promise<unknown>)[] = [];
   try {
-    return await buildAuthAuthorityPlane(opts, unwind);
+    return await buildAuthAuthorityPlane(opts, unwind, onConnection);
   } catch (e) {
     for (const close of unwind.reverse()) await close();
     throw e;
   }
 }
 
-/** The body of {@link openAuthAuthorityPlane}, which owns the unwind of a failed construction. */
-async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthorityPlane>[0], unwind: (() => Promise<unknown>)[]): Promise<AuthAuthorityPlane> {
+/** The body of the plane opener, which owns the unwind of a failed construction. */
+async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwind: (() => Promise<unknown>)[], onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"]): Promise<AuthAuthorityPlane> {
   const { server, space, dataAccount, log } = opts;
   const standingTtl = opts.standingRenewableTtlSeconds ?? STANDING_RENEWABLE_TTL_SEC;
   if (!Number.isSafeInteger(standingTtl) || standingTtl < 5 || standingTtl > STANDING_RENEWABLE_TTL_SEC) {
     throw new Error(`standingRenewableTtlSeconds must be an integer between 5 and ${STANDING_RENEWABLE_TTL_SEC} seconds (got ${standingTtl})`);
   }
-  const writer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
+  const writer = await openAuthorityClient({ onConnection, server, space, dataAccount, label: `cotal:auth-mint:${space}`, grants: (id) => authorityWriterGrants(space, id), log });
   unwind.push(() => writer.close());
   await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), space);
   const registry = await openLifecycleRegistry(writer.nc, space);
@@ -431,7 +438,7 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
     const iid = authIdentity.instanceId;
     const artifacts = authClusterArtifacts();
     const values = [...authContractArtifactValues(), artifacts.document, artifacts.manifest];
-    const regClient = await openAuthorityClient({
+    const regClient = await openAuthorityClient({ onConnection,
       server, space, dataAccount, label: `cotal:auth-registration:${space}`,
       grants: (id) => registrationExecutorGrants(space, id, AUTH_SERVICE_ENDPOINT, iid),
       log,
@@ -448,13 +455,13 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
       await regClient.close();
     }
   }
-  const reader = await openSupervisedConnectReader({ server, space, dataAccount, log });
+  const reader = await openSupervisedConnectReader({ onConnection, server, space, dataAccount, log });
   unwind.push(() => reader.close());
   // The typed remote-manager issuer is a distinct self-minted connection. It adds only the
   // endpoint-manager gate/credential family to the root issuance surface and is never exposed as
   // a generic mint endpoint. Its JWTs are signed for caller-generated public nkeys; private seeds
   // stay on the participant machine.
-  const remoteIssuer = await openAuthorityClient({ server, space, dataAccount, label: `cotal:remote-manager-issuer:${space}`, grants: (id) => remoteManagerIssuerGrants(space, id), log });
+  const remoteIssuer = await openAuthorityClient({ onConnection, server, space, dataAccount, label: `cotal:remote-manager-issuer:${space}`, grants: (id) => remoteManagerIssuerGrants(space, id), log });
   unwind.push(() => remoteIssuer.close());
 
   // The BARRIER EXECUTOR: the third self-minted connection, with its own registry bind — the
@@ -487,17 +494,17 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
   let fatalReason: string | undefined;
   let fireFatal!: (reason: string) => void;
   const fenced = new Promise<string>((r) => { fireFatal = r; });
-  const barrier = await openAuthorityClient({ server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
+  const barrier = await openAuthorityClient({ onConnection, server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
   unwind.push(() => barrier.close());
   // Unwound after both scanners close: held → released is valid only once neither scanner can act.
   // A failed open throws its own error, so a release failing on the way out is only logged: the
   // row stays held and the next open reclaims it like a crash.
   unwind.push(async () => hold?.release().catch((r: Error) => log(r.message)));
-  const ledgerCand = await openAuthLedgerScannerCandidate({ server, space, dataAccount, log });
+  const ledgerCand = await openAuthLedgerScannerCandidate({ onConnection, server, space, dataAccount, log });
   unwind.push(() => ledgerCand.close());
-  const recordsCand = await openRecordsScannerCandidate({ server, space, dataAccount, log });
+  const recordsCand = await openRecordsScannerCandidate({ onConnection, server, space, dataAccount, log });
   unwind.push(() => recordsCand.close());
-  const oracle = opts.probePlaneOracle ?? makeDeliveryAdminPlaneOracle({ space, server, dataAccount, log });
+  const oracle = opts.probePlaneOracle ?? makeDeliveryAdminPlaneOracle({ onConnection, space, server, dataAccount, log });
   hold = await acquirePlaneClaim({ nc: barrier.nc, space, ledger: ledgerCand.tuple, records: recordsCand.tuple, oracle, log });
   const scanner = ledgerCand.activate(hold.guard);
   const recordsScanner = recordsCand.activate(hold.guard);
@@ -519,7 +526,7 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
   unwind.push(async () => { closing = true; });
   opts.probePlaneDeath?.({ ledger: () => ledgerCand.close(), records: () => recordsCand.close() });
   const barrierReg = await openLifecycleRegistry(barrier.nc, space, scanner, recordsScanner);
-  const evictPrincipal = opts.probeEvictor ?? makeDeliveryAdminEvictor({ space, server, dataAccount, log });
+  const evictPrincipal = opts.probeEvictor ?? makeDeliveryAdminEvictor({ onConnection, space, server, dataAccount, log });
   // The RETIREMENT deps (#29 piece 4): the barrier's injected mechanics, assembled from reviewed
   // §13.9 profiles only. The obligation drain runs per endpoint on a SHORT-LIVED client minted
   // with that endpoint's admission-mediator profile (the daemon owns no standing mediator; the
@@ -542,11 +549,11 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
   //     effect gets the EffectCancelledFact union member. Never a forged success: a reader sees
   //     the effect did NOT run and which retirement cancelled it; a racing real completion wins
   //     by landing first.
-  const repairers = makeDrainRepairers({ server, space, dataAccount, log });
+  const repairers = makeDrainRepairers({ onConnection, server, space, dataAccount, log });
   const retirement: RetirementDeps = {
     evictPrincipal,
     drainTargetObligations: async (endpoint, targetUid, opId) => {
-      const drain = await openAuthorityClient({
+      const drain = await openAuthorityClient({ onConnection,
         server, space, dataAccount,
         label: `cotal:ep-drain:${space}:${endpoint}`,
         grants: (id) => admissionMediatorGrants(space, endpoint, id),
@@ -562,7 +569,7 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
         await drain.close();
       }
     },
-    ...makeRetirementCleaners({ server, space, dataAccount, log }),
+    ...makeRetirementCleaners({ onConnection, server, space, dataAccount, log }),
     now: Date.now,
   };
   // Boot crash-resume BEFORE the plane answers anything (SPEC 13.1): finish every takeover this
@@ -579,7 +586,7 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
   // stays with the plane's own registry + retirement deps (the drain rides the ONE sealed records
   // scanner exactly like the boot resume); the listener only authorizes (subject attribution +
   // the FRESH space-manager-lease holder check) and dispatches.
-  const authAdmin = await openAuthAdminListener({ server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, log });
+  const authAdmin = await openAuthAdminListener({ onConnection, server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, log });
   unwind.push(() => authAdmin.close());
   const fileArm = ledgerAuthorizeConnect(opts.dir);
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
@@ -669,7 +676,7 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
   // window, not the operator — the agent cannot "restart the auth service", so it gets a retryable
   // unavailability, while the operator's state-3 copy stays on the log and the exit line.
   const refuseIfFenced = () => {
-    if (fatalReason !== undefined)
+    if (fatalReason !== undefined || closing)
       throw new EpEnvelopeError("unavailable",
         `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
   };
@@ -1103,12 +1110,12 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
         scanner,
         observeManagerGate,
       });
-      const evictHolders = makeDeliveryAdminHolderEvictor({ space, server, dataAccount, log });
+      const evictHolders = makeDeliveryAdminHolderEvictor({ onConnection, space, server, dataAccount, log });
       if (authorized.operation === "evict-family-principal") {
         const evictions = await evictHolders(authorized.principals!);
         return completeRemoteManagerMaintenance(authorized, owner, { evictions });
       }
-      const principalOracle = makeDeliveryAdminPrincipalOracle({ space, server, dataAccount, log });
+      const principalOracle = makeDeliveryAdminPrincipalOracle({ onConnection, space, server, dataAccount, log });
       const executorIdentity = newIdentity();
       const executorCreds = await mintCreds(issuerAuth(), executorIdentity, "endpoint-serve-executor", {
         endpointServeExecutor: { endpoint: "manager", instanceId: authorized.targetInstanceId },
@@ -1119,6 +1126,7 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
         ...standaloneConnectOpts({ creds: executorCreds, tls: false }),
         maxReconnectAttempts: 0,
       });
+      onConnection?.(maintenanceNc, `cotal:remote-manager-maintenance:${space}`);
       let report;
       try {
         const maintenanceKvm = new Kvm(maintenanceNc);
@@ -1206,6 +1214,7 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
           const provisioner = new CotalEndpoint({
             space,
             servers: server,
+            onConnection: (nc) => onConnection?.(nc, `cotal:provisioner:${space}`),
             channels: [],
             creds: await mintCreds(issuerAuth(), identity, "provisioner"),
             card: { id: identity.id, name: "provisioner", role: "provisioner", kind: "endpoint" },
@@ -1332,6 +1341,7 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
           }),
           maxReconnectAttempts: 0,
         });
+        onConnection?.(admitterNc, `cotal:run-admitter:${space}`);
         try {
           return await admitRemoteRun({
             request, owner, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
@@ -1384,6 +1394,7 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
             }),
             maxReconnectAttempts: 0,
           });
+          onConnection?.(readerNc, `cotal:run-attempt-reader:${space}`);
           try {
             const replay = await replayRunJournal(jetstream(readerNc), await jetstreamManager(readerNc), space, runId, takeoverId);
             return replay.records.flatMap((stored) => stored.record.kind === "step" ? [stored.record.entry as JournalEntry] : []);
@@ -1463,7 +1474,7 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
     },
     registerHostInstance: async (host, instanceId) => {
       refuseIfFenced();
-      const regClient = await openAuthorityClient({
+      const regClient = await openAuthorityClient({ onConnection,
         server, space, dataAccount, label: `cotal:host-registration:${space}`,
         grants: (id) => registrationExecutorGrants(space, id, host.endpoint, instanceId),
         log,
@@ -1488,27 +1499,28 @@ async function buildAuthAuthorityPlane(opts: Parameters<typeof openAuthAuthority
       // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
       // clients down, then `held → released` (never released while either scanner can still
       // act), then the barrier that wrote it. An unreachable release keeps the barrier alive
-      // for a later close retry; the scanner teardown is not run a second time.
+      // for a later close retry; successful scanner teardown is not run a second time.
       closing = true;
-      await (closeScanners ??= (async () => {
-        await authAdmin.close();
-        await reader.close();
-        await recordsScanner.close();
-        await scanner.close();
-      })());
-      let retryable = false;
-      try {
-        await hold.release();
-      } catch (e) {
-        retryable = planeClaimRefusal(e) === "release-unreachable";
-        throw e;
-      } finally {
-        if (!retryable) {
-          await barrier.close();
-          await remoteIssuer.close();
-          await writer.close();
-        }
+      const scannerFlight = closeScanners ??= (async () => {
+        await authAdmin?.close();
+        const results = await Promise.allSettled([reader.close(), recordsScanner.close(), scanner.close()]);
+        const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason);
+        if (errors.length) throw new AggregateError(errors, "auth scan-capable clients failed to close");
+      })();
+      try { await scannerFlight; }
+      catch (e) { if (closeScanners === scannerFlight) closeScanners = undefined; throw e; }
+      let releaseFailure: unknown;
+      try { await hold.release(); } catch (e) { releaseFailure = e; }
+      // Keep the barrier for an unreachable release retry. All other release refusals terminate
+      // the remaining clients but retain the release failure, even if their closes fail too.
+      if (planeClaimRefusal(releaseFailure) !== "release-unreachable") {
+        const results = await Promise.allSettled([barrier.close(), remoteIssuer.close(), writer.close()]);
+        const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason);
+        if (releaseFailure !== undefined && errors.length)
+          throw new AggregateError([releaseFailure, ...errors], "auth claim release and connection close failed");
+        if (errors.length) throw new AggregateError(errors, "auth remaining clients failed to close");
       }
+      if (releaseFailure !== undefined) throw releaseFailure;
     },
   };
 }
@@ -1693,6 +1705,11 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
 /** An embedded auth-service context: what `runAuthService` writes to `auth-service.json` (the
  *  loopback URL, the public URL and the capability) plus the hosted lifecycle handle. */
 export interface AuthServiceHandle extends HostedServiceHandle {
+  /** Settles after clean-close ordering and every owned connection's terminal closed signal.
+   * A failed close leaves it pending while any connection has not ended. Retry close after repair. */
+  readonly closed: Promise<AuthServiceClosed>;
+  /** Snapshot of all connections acquired by this context, including replaced readers. */
+  connections(): AuthConnectionState[];
   readonly url: string;
   readonly publicUrl?: string;
   /** The per-start loopback capability. It alone authorizes the loopback host actions (lifecycle
@@ -1874,7 +1891,9 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
 
   // ---- The authority plane (R1): stores ensured + registry + supervised reader, BEFORE the
   // callout exists — a connect must never be answered without the credential arm bound.
-  const plane = await openAuthAuthorityPlane({
+  const owned = new OwnedConnections();
+  const onConnection = (nc: NatsConnection, label: string) => owned.track(nc, label);
+  const plane = await openAuthAuthorityPlaneWithCustody({
     server,
     space,
     dir,
@@ -1883,7 +1902,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     log: (l) => console.error(l),
     localManager: o.localManager,
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
-  });
+  }, onConnection);
   let nc: NatsConnection | undefined;
   let http: ReturnType<typeof createServer> | undefined;
   let publicHttp: ReturnType<typeof createServer> | undefined;
@@ -1905,6 +1924,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       authenticator: credsAuthenticator(new TextEncoder().encode(callout.calloutCreds)),
       name: `cotal:auth-service:${space}`,
     });
+    onConnection(nc, `cotal:auth-service:${space}`);
     startAuthCallout(nc as never, {
       xkeySeed: callout.xkey.seed,
       authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
@@ -2022,19 +2042,27 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       closeStarted = true;
       if (state === "ready") state = "draining";
       const flight = (async () => {
-        await (closeAdmission ??= (async () => {
+        const admissionFlight = closeAdmission ??= (async () => {
           await Promise.all([closeServer(http), closeServer(publicHttp)]);
           await reader?.client.then((c) => c.close(), () => {});
-        })());
-        try {
-          await plane.close();
-        } finally {
-          await callNc.close();
-        }
+        })();
+        let admissionFailure: unknown;
+        try { await admissionFlight; }
+        catch (e) { admissionFailure = e; if (closeAdmission === admissionFlight) closeAdmission = undefined; }
+        let planeFailure: unknown;
+        try { await plane.close(); } catch (e) { planeFailure = e; }
+        let calloutFailure: unknown;
+        try { await callNc.close(); }
+        catch (cause) { calloutFailure = new Error(`auth connection cotal:auth-service:${space} failed to close`, { cause }); }
+        const failures = [admissionFailure, planeFailure, calloutFailure].filter((e) => e !== undefined);
+        if (failures.length > 1) throw new AggregateError(failures, "auth context close failed");
+        if (failures.length) throw failures[0];
+        await owned.closeRemaining();
+        owned.complete();
       })();
       closePromise = flight;
-      void flight.catch((e: unknown) => {
-        if (planeClaimRefusal(e) === "release-unreachable" && closePromise === flight) closePromise = undefined;
+      void flight.catch(() => {
+        if (closePromise === flight) closePromise = undefined;
       });
       return flight;
     };
@@ -2080,9 +2108,12 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     const readStatus = (owner: string) => async (instanceId: string): Promise<EpAttributedReply> => {
       refuseUnlessReady();
       if (reader?.instanceId !== instanceId) {
-        void reader?.client.then((c) => c.close(), () => {});
+        void reader?.client.then((c) => c.close(), () => {}).catch((e: unknown) => {
+          console.error(`auth readiness reader close failed: ${e instanceof Error ? e.message : String(e)}`);
+        });
         const caller = { owner, actor: `manager_ready_${instanceId}`, uid: mintLifecycleUid() };
         const client = openAuthorityClient({
+          onConnection,
           server,
           space,
           dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
@@ -2102,6 +2133,8 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       url,
       ...(publicUrl !== undefined ? { publicUrl } : {}),
       cap,
+      closed: owned.closed,
+      connections: () => owned.connections(),
       ...(platformDeps !== undefined ? {
         platformControlAuthority: makePlatformControlAuthority({
           ...platformDeps,
