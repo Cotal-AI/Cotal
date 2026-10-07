@@ -459,7 +459,8 @@ could hide a renewal, starts the count over. Even then the run asks the manager 
 process the manager still runs is alive however long its row has been gone, so the count starts over.
 Only the manager that spawned the seat can report it gone, because another manager in the space knows
 only its own seats, so the run asks again until that one answers. When it does not answer, the presence
-row is the only witness and the lapse stands. A wait that begins
+row is the only witness and the lapse stands. The asking stops at the wait's timeout or cancellation,
+and at a turn's deadline, yield or cancellation, which then decide. A wait that begins
 after the death resolves once that holds, and a timeout resolves null on one absolute deadline a
 resumed run re-attaches to.
 `turn` wakes one seat for one host turn through the manager as a pull-shaped relay: the run

@@ -1122,6 +1122,7 @@ export class MeshHandler {
     if (primary !== undefined) await this.arm(primary, this.now() + parseDuration(req.timeout!));
     let lapsedSince: number | undefined;
     let lastReadAt = 0;
+    const decided = async (): Promise<boolean> => ctx.signal.cancelled || (await this.expired(primary)) !== undefined;
     for (;;) {
       if (ctx.signal.cancelled) {
         if (primary !== undefined) await this.cancelTimer(primary);
@@ -1148,7 +1149,7 @@ export class MeshHandler {
         const reason = rows.some((p) => p.card.name === name) ? "superseded" : "lapsed";
         lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
         if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
-          if (reason === "lapsed" && await this.seatHeld(name, uid)) lapsedSince = undefined;
+          if (reason === "lapsed" && !(await this.lapseStands(name, uid, decided))) lapsedSince = undefined;
           else {
             if (primary !== undefined) await this.cancelTimer(primary);
             return { agent: ev.agent, reason, at: this.now() };
@@ -1622,6 +1623,8 @@ export class MeshHandler {
     const actx = await this.actionCtx();
     let lapsedSince: number | undefined;
     let lastReadAt = 0;
+    const decided = async (): Promise<boolean> =>
+      ctx.signal.cancelled || (await readGoalResult(actx, ref)) !== undefined || (await this.expired(primary)) !== undefined;
     try {
         for (;;) {
         if (ctx.signal.cancelled) {
@@ -1649,7 +1652,7 @@ export class MeshHandler {
           const reason = rows.some((pr) => pr.card.name === name) ? "superseded" : "lapsed";
           lapsedSince = lapseWindow(lapsedSince, lastReadAt, this.now());
           if (reason === "superseded" || readAt - lapsedSince >= LAPSE_CONFIRM_MS) {
-            if (reason === "lapsed" && await this.seatHeld(name, uid)) lapsedSince = undefined;
+            if (reason === "lapsed" && !(await this.lapseStands(name, uid, decided))) lapsedSince = undefined;
             else {
               await this.cancelTimer(primary);
               throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
@@ -2249,39 +2252,42 @@ export class MeshHandler {
     return rows;
   }
 
-  /** Whether the manager still runs `name#uid`, asked before a confirmed lapse is read as the death.
-   *  A lapse is only the seat's heartbeats going quiet: on a loaded host a live seat's presence writer
-   *  stalls past {@link LAPSE_CONFIRM_MS} while its process goes on working (#2807), and the manager
-   *  owns that process. Only the manager holding the seat has a running row under its incarnation, so
-   *  that row keeps it alive whoever reports it. A miss decides only from the manager that allocated
-   *  it, the committer of its spawn terminal: another member of the class rail knows only its own
-   *  seats, so the class rail is asked again, as a spawn's discharge asks it. An allocator that does
-   *  not answer leaves presence as the only witness, which is the case presence is the authority for:
-   *  the manager died with the seat. */
-  private async seatHeld(name: string, uid: string): Promise<boolean> {
+  /** Whether a lapse of `name#uid` confirmed from presence stands as the death, asked of the manager
+   *  first. A lapse is only the seat's heartbeats going quiet: on a loaded host a live seat's presence
+   *  writer stalls past {@link LAPSE_CONFIRM_MS} while its process goes on working (#2807), and the
+   *  manager owns that process. Only the manager holding the seat has a running row under its
+   *  incarnation, so that row keeps it alive whoever reports it. A miss decides only from the manager
+   *  that allocated it, the committer of its spawn terminal: another member of the class rail knows
+   *  only its own seats, so the class rail is asked again, as a spawn's discharge asks it. An allocator
+   *  that does not answer leaves presence as the only witness, which is the case presence is the
+   *  authority for: the manager died with the seat. The asking can outlast the caller's own
+   *  cancellation, deadline or terminal, so nothing stands once `decided` holds: that authority decides
+   *  at the caller's next check. */
+  private async lapseStands(name: string, uid: string, decided: () => Promise<boolean>): Promise<boolean> {
     const entry = this.roster.get(name);
     const spawned = entry?.uid === uid && entry.goalId !== undefined
       ? await readGoalResult(await this.actionCtx(), { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId: entry.goalId })
       : undefined;
     const allocator = spawned?.committer?.instanceId;
     for (let attempt = 0; attempt <= MANAGER_ROUTE_ATTEMPTS; attempt += 1) {
+      if (await decided()) return false;
       let answer: EpAttributedReply;
       try {
         answer = await this.invokeManager(await this.manager(), "inspect", { name }, {});
       } catch (e) {
-        if (unansweredRequest(e)) return false;
+        if (unansweredRequest(e)) break;
         throw e;
       }
       const { reply, responder } = answer;
       const row = reply.ok ? reply.data as { lifecycleUid?: unknown; status?: unknown } : undefined;
-      if (row?.lifecycleUid === uid && row.status === "running") return true;
+      if (row?.lifecycleUid === uid && row.status === "running") return false;
       if (responder.instanceId === allocator && !replyRefusedBeforeEffect(reply.error)) {
-        if (reply.ok || reply.error?.code === "not-found") return false;
+        if (reply.ok || reply.error?.code === "not-found") break;
         throw new Error(`inspect(${name}) was refused by manager instance ${allocator}, which allocated ${name}#${uid}: ${reply.error?.message ?? "refused with no message"}`);
       }
       this.managerService = undefined;
     }
-    return false;
+    return !(await decided());
   }
 
   /**
