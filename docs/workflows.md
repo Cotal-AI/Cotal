@@ -261,7 +261,7 @@ admitted on that manager's instance. A request bound to another manager instance
 Such a run spawns, turns and despawns agents owned by that user. A spawn has the reach of the user
 who started the run, as their actor-ledger row reads at that moment, and the host enrolls each agent
 through its managed-agent enrollment. A spawn may be placed on the manager that hosts the run and on
-no other instance. [User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
+no other instance. [User-auth run start](design/user-auth-run-start.md)
 records the path.
 
 A hosted run is **admitted** under the caller that started it. The caller's credential is an

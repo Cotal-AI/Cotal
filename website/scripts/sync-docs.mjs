@@ -7,7 +7,7 @@
 // The group map below IS the site's information architecture. It publishes the same
 // pages docs/README.md (the docs index) links, and the sync refuses when the two
 // differ. Missing source files fail the sync loudly — no silent drift.
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -112,20 +112,23 @@ const groups = [
 
 const sources = groups.flatMap((g) => g.files);
 
-// Slugs we publish, keyed by source basename (no extension).
-const knownSlugs = new Map(
-  sources.map((rel) => [basename(rel).replace(/\.md$/, ''), slugFor(basename(rel).replace(/\.md$/, ''))]),
-);
+// Slugs we publish, keyed by source path so a design note cannot take the route of a
+// published page that shares its name.
+const knownSlugs = new Map(sources.map((rel) => [rel, slugFor(basename(rel).replace(/\.md$/, ''))]));
+
+// The site publishes only SPEC.md and top-level docs pages, so one of these the group map
+// leaves out is drift, and every other repo file stays on GitHub.
+const isSitePage = (rel) => rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel);
 
 // Rewrite repo-relative links to site routes. Every link is first resolved as a URL
 // against its source file's GitHub address (sources live at different depths:
 // docs/*.md vs the root SPEC.md), then its path, percent-decoded, is mapped:
-//   docs/<page>.md, SPEC.md   → the published Starlight slug (docs/README.md → /)
+//   a group-map source        → the published Starlight slug (docs/README.md → /)
 //   spec/cotal.schema.json    → the published /cotal.schema.json
 //   assets/*                  → /assets/* (copied into public/ below)
 //   anything else in the repo → GitHub
-// A query or fragment is kept. Absolute URLs and same-page #anchors pass through. A doc
-// link that resolves to an unpublished page throws — no silent drift.
+// A query or fragment is kept. Absolute URLs and same-page #anchors pass through. A link
+// to an unpublished site page or to a missing repo path throws — no silent drift.
 // Seeded with images used by the hand-authored landing page (index.mdx), which
 // doesn't pass through this rewriter.
 const assetRefs = new Set(['assets/cotal-demo.webp']);
@@ -142,13 +145,11 @@ function rewriteTarget(target, rel) {
     assetRefs.add(repoPath);
     return url.href.slice(GITHUB_BLOB.length);
   }
-  if (repoPath === 'SPEC.md' || (repoPath.startsWith('docs/') && repoPath.endsWith('.md'))) {
-    const name = basename(repoPath).replace(/\.md$/, '');
-    if (name === 'README') return `/${suffix}`;
-    if (!knownSlugs.has(name)) throw new Error(`link to unpublished doc: ${target}`);
-    return `/${knownSlugs.get(name)}/${suffix}`;
-  }
-  // Anything else in the repo (sources, examples, extension READMEs) → GitHub.
+  if (repoPath === 'docs/README.md') return `/${suffix}`;
+  if (knownSlugs.has(repoPath)) return `/${knownSlugs.get(repoPath)}/${suffix}`;
+  if (isSitePage(repoPath)) throw new Error(`link to unpublished doc: ${target}`);
+  if (!existsSync(join(repoRoot, repoPath))) throw new Error(`link to missing file: ${target}`);
+  // Anything else in the repo (design notes, sources, examples, extension READMEs) → GitHub.
   return url.href;
 }
 
@@ -232,7 +233,7 @@ const visit = (node) => {
   const path = decodeURIComponent(url.pathname);
   if (!path.startsWith(blobPath) || path === indexUrl.pathname) return;
   const rel = path.slice(blobPath.length);
-  if (rel === 'SPEC.md' || /^docs\/[^/]+\.md$/.test(rel)) indexed.add(rel);
+  if (isSitePage(rel)) indexed.add(rel);
 };
 visit(parseHtml(marked.parse(readFileSync(join(repoRoot, 'docs', 'README.md'), 'utf8'))));
 for (const rel of indexed) if (!sources.includes(rel)) throw new Error(`indexed but not in the group map: ${rel}`);
