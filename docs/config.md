@@ -144,7 +144,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_TOKEN` | connector session | Auth token (token / open modes) | none |
 | `COTAL_CAPABILITIES` | connector session | Control-plane capabilities (e.g. `spawn`) that gate manager tools | agent file's `capabilities:` |
 | `COTAL_QUIET` / `COTAL_MUTED` | connector session | Per-channel attention defaults (never-wake / drop-on-receive) | agent file's, else none |
-| `COTAL_CHANNEL` | Claude connector | Force channel wake-nudges on (`1`) / off; set to `1` by the Claude launcher | auto-detect |
+| `COTAL_CHANNEL` | Claude connector | Force channel wake-nudges on (`1`) / off; set to `1` by the Claude launcher | on when the MCP client declares the `claude/channel` capability in `initialize` |
 | `COTAL_EVENTS` | connector session | Arm this session's event plane (`1`); set by the launcher unless the launch used `--no-events` | launcher-managed |
 | `COTAL_EVENTS_REQUIRED` | hand-driven user-mode connector | Trusted registration says events are mandatory; arms the plane and refuses if the session grant omits its event channel. Launcher-managed sessions carry this in launch material instead | off |
 | `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn (below an explicit `--agent` and the persona's `agent:` pin) | `claude` |
