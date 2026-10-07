@@ -37,8 +37,8 @@
     {
       "name": "postfix update returns the new value",
       "file": "packages/lang/src/interpret.ts",
-      "find": "          env.set(name, next, frame.depth);\n          return prefix ? next : old;",
-      "replace": "          env.set(name, next, frame.depth);\n          return next;",
+      "find": "          env.set(name, next, frame);\n          return prefix ? next : old;",
+      "replace": "          env.set(name, next, frame);\n          return next;",
       "expectRed": "update expressions, prefix and postfix, on bindings and members",
       "completionMarker": "ok compound assignment, every operator",
       "cell": "update expressions, prefix and postfix, on bindings and members"

@@ -23,7 +23,7 @@ import { Cancelled, EffectError, type EffectHandler } from "../effects.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "../library.js";
 import type { Journal } from "../journal.js";
 import type { RunPins } from "../pins.js";
-import { NotCrossable, Prng, assertNoCode, birthDepth, born as stampBirth, deepFreeze, setOwn } from "../values.js";
+import { NotCrossable, Prng, assertNoCode, assertWritable, born as stampBirth, deepFreeze, setOwn } from "../values.js";
 import type { AgentHandleValue } from "../effects.js";
 import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
@@ -70,7 +70,8 @@ export interface EngineCtx {
    * It is present ONLY on an ASSIGNMENT to a cell, never on the declaration's own initialising write,
    * and an absent OWN key there means the declaration has not run: L2004 naming the binding, in the
    * walker's assignment words, which are not the read's. The key is LEFT ABSENT by the refusal, so
-   * the declaration that has not run yet still initialises the binding when it does.
+   * the declaration that has not run yet still initialises the binding when it does. A write from
+   * inside a scope the binding was declared outside is L2032 naming it, as the walker's is.
    */
   set(o: unknown, k: unknown, v: unknown, binding?: string): unknown;
   /**
@@ -258,22 +259,6 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     } as RunOptions,
     ceiling: run.pins.effectCeiling,
     effectCount: run.journal.dispatchedEffects(),
-  };
-
-  /** May this frame write into this container? The value half of freeze-on-share, whole. */
-  const assertWritable = (target: object, frame: { readonly depth: number }): void => {
-    if (Object.isFrozen(target)) {
-      throw new RuntimeFault(
-        "L2031",
-        "this value crossed an effect boundary and is frozen: what crossed is what the journal recorded, so it cannot change afterwards. Build a new value instead: `{ ...record, field: value }` or `[...list, item]`.",
-      );
-    }
-    if (birthDepth(target) < frame.depth) {
-      throw new RuntimeFault(
-        "L2032",
-        "this value was built outside this concurrent branch and is written inside it. Two branches writing one value is nondeterministic, and it is silent: live they write in completion order, on resume the recorded effects return instantly and they write in launch order, so the value differs and the run takes a path it never recorded. Build the value inside the branch and return it, and read it out of the combinator's result.",
-      );
-    }
   };
 
   // A LOG LINE IS DATA on this engine: a function anywhere inside a logged value is refused HERE, in
@@ -727,7 +712,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
           `cannot write \`${prop}\` of ${o === null ? "null" : typeof o === "undefined" ? "undefined" : `a ${typeof o}`}`,
         );
       }
-      assertWritable(o, currentFrame());
+      assertWritable(o, currentFrame(), binding);
       if (Array.isArray(o)) {
         if (prop === "length") {
           // `xs.length = n` truncates, as in JavaScript. A LONGER length is refused: JavaScript
