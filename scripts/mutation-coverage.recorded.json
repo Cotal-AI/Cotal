@@ -23,10 +23,6 @@
     "sha256": "2ae0c6e91175dff24e436c33bfa846cdf87a0f0082945fb15adeb7c00d3d8791",
     "refusal": "mutation \"M1 the delivery launcher re-derives the transport from the broker policy instead of taking the caller's decision (#836)\" is missing \"cell\""
   },
-  "bin/smoke/mutations/delivery-starvation.json": {
-    "sha256": "d7252dfa3ecafa404714ef38abb740c039a23800f870f466361030f0666a3eba",
-    "refusal": "mutation \"M1-live the same defect, graded end to end against a real daemon and a real broker\" targets implementations/delivery/src/transport-health.ts, which none of [implementations/delivery/smoke/delivery-watchdog-evidence.smoke.ts, implementations/delivery/smoke/delivery-starvation.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/delivery that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "bin/smoke/mutations/discovery-bundle-consumable.json": {
     "sha256": "31a2fc4842df6e0ad1be2aa2b8cab60efe8341cd3489ad049564cb5d7fef1fd9",
     "refusal": "mutation \"M1 the bundle re-hardcodes a provider name, diverging from the one the registry dispatches to\" targets implementations/auth/src/service.ts, which none of [bin/smoke/discovery-bundle-consumable.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/auth that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."

@@ -1341,8 +1341,6 @@ async function runStartedDelivery(
     })();
   }, Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
 
-  // Native transport health is driven by DeliveryTransportHealth above (resident transport events).
-
   return {
     status: (): DeliveryStatus =>
       unavailable !== undefined ? { state: "unavailable", cause: unavailable } : { state: stopping ? "draining" : "ready" },
