@@ -135,7 +135,8 @@ function rewriteTarget(target, rel) {
   const path = decodeURIComponent(url.pathname);
   if (!path.startsWith(blobPath)) throw new Error(`link escapes the repo: ${target}`);
   const repoPath = path.slice(blobPath.length);
-  const suffix = url.search + url.hash;
+  // Taken from the destination itself: URL getters drop an empty `?` or `#`.
+  const suffix = target.slice(target.search(/[?#]|$/));
   if (repoPath === 'spec/cotal.schema.json') return `/cotal.schema.json${suffix}`;
   if (repoPath.startsWith('assets/')) {
     assetRefs.add(repoPath);
@@ -154,17 +155,20 @@ function rewriteTarget(target, rel) {
 // The page is parsed as the site renders it (micromark with GFM), so only real link and
 // definition destinations are rewritten: code and HTML keep their text, and titled,
 // angle-bracket and reference-style links are all seen. A destination is read as the site
-// reads it: its backslash escapes and character references are decoded and the result is
-// percent-encoded as the renderer encodes it, so URL parsing neither strips whitespace nor
-// reads a backslash as a path separator. The rewritten one is escaped so it parses back to
-// the same address.
+// reads it, from the parser's text, where a NUL is already U+FFFD: its backslash escapes and
+// character references are decoded and the result is percent-encoded as the renderer encodes
+// it, so URL parsing neither strips whitespace nor reads a backslash as a path separator. The
+// rewritten one is escaped so it parses back to the same address.
 function rewriteLinks(md, rel) {
+  // micromark skips a leading BOM, so its offsets count from after it.
+  md = md.replace(/^\uFEFF/, '');
   const events = postprocess(parse({ extensions: [gfm()] }).document().write(preprocess()(md, undefined, true)));
   let out = '';
   let at = 0;
-  for (const [kind, { type, start, end }] of events) {
+  for (const [kind, token, context] of events) {
+    const { type, start, end } = token;
     if (kind !== 'enter' || (type !== 'resourceDestinationString' && type !== 'definitionDestinationString')) continue;
-    const target = normalizeUri(decodeString(md.slice(start.offset, end.offset)));
+    const target = normalizeUri(decodeString(context.sliceSerialize(token)));
     if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/') || target.startsWith('#')) continue;
     out += md.slice(at, start.offset) + rewriteTarget(target, rel).replace(/[&()]/g, '\\$&');
     at = end.offset;
