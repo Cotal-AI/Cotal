@@ -1,5 +1,19 @@
 # @cotal-ai/cli
 
+## 0.73.0
+
+### Minor Changes
+
+- 8182b64: The IdP URL, the pinned JWKS URL, the space-catalog link and `cotal sync`'s account binding now share one plain-http rule: `https://`, or `http://` on a loopback IP literal, decided by core's `isLoopbackLiteral`. Before, each spelled its own host list, so `cotal login --idp http://127.0.0.2/api/auth` and `http://[::ffff:127.0.0.1]/api/auth` were refused, `http://localhost/api/auth` signed in but dropped its same-origin catalog link, and the JWKS pin accepted any scheme on `127.0.0.1` or `localhost`, such as `ftp:` or `ws:`. Every loopback literal now passes and `localhost` is refused everywhere, because a hosts entry would choose the IdP and the keys the callout trusts. A mesh with an IdP pinned on `localhost` must move its pin to `127.0.0.1`; see the upgrading guide.
+
+### Patch Changes
+
+- 6b3f7b0: `cotal ext list --json` (and bare `cotal ext --json`) prints one JSON object per installed extension per line, so a script no longer has to strip the table's header and footer and split `pkg@version` itself. A row carries `pkg`, `version`, `spec` (what `ext add` was given), `seeded` (`true` when the built-in seed installed the entry) and `provides` (the `kind:name` refs the table shows). An empty prefix prints nothing and exits 0. `ext add`, `remove`, `root` and `seed` refuse `--json`, and the table is unchanged.
+- d1cb0ed: The up-resume-render-lock live smoke no longer removes the root maintenance lock on its own line in teardown. The root lives inside the suite's scratch directory, so the recursive scratch removal on the next line already deletes the lock. The line's `catch` swallowed any error from resolving the root or removing the file, while a missing lock never reached it. Shipped behaviour is unchanged.
+- Updated dependencies [9873985]
+  - @cotal-ai/core@0.73.0
+  - @cotal-ai/workspace@0.73.0
+
 ## 0.72.1
 
 ### Patch Changes

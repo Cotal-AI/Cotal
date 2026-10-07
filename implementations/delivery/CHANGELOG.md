@@ -1,5 +1,14 @@
 # @cotal-ai/delivery
 
+## 0.73.0
+
+### Patch Changes
+
+- 3bcc701: The delivery package no longer ships the broker-probe verdict that native transport health replaced. `brokerGoneVerdict`, `classifyProbe`, `DescheduleSampler` and the probe constants had no caller in the daemon, which decides broker loss from its resident connection, so they are deleted with the smoke cells and mutations that graded only them. `LoopLagMeter` now takes its interval as a required argument.
+- Updated dependencies [9873985]
+  - @cotal-ai/core@0.73.0
+  - @cotal-ai/workspace@0.73.0
+
 ## 0.72.1
 
 ### Patch Changes

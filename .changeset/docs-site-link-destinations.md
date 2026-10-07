@@ -1,4 +1,0 @@
----
----
-
-The docs site sync now rewrites only real link destinations. It parses each page as the site renders it, so a code span or a code example keeps its text, and a titled, angle-bracket or reference-style link reaches the site page, or is refused when it names an unpublished page. Each destination is decoded and percent-encoded as the renderer does it: one written with percent-encoding, a backslash escape or a character reference names the page it renders as, and a rewritten link keeps the query and fragment it renders with, including whitespace, backslashes and an empty `?` or `#`. The sync now depends on `micromark`, `micromark-extension-gfm`, `micromark-util-decode-string` and `micromark-util-sanitize-uri`. This changes the docs site and repository tooling only; no published package changes.
