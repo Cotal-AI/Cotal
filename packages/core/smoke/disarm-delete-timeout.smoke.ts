@@ -14,6 +14,7 @@
  */
 import { CotalEndpoint } from "../src/endpoint.js";
 import type { PushConsumer } from "@nats-io/jetstream";
+import { TimeoutError } from "@nats-io/transport-node";
 
 let pass = 0;
 let fail = 0;
@@ -24,13 +25,6 @@ function check(name: string, cond: boolean, extra?: unknown): void {
   } else {
     fail++;
     console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-}
-
-class TimeoutError extends Error {
-  constructor() {
-    super("timeout");
-    this.name = "TimeoutError";
   }
 }
 
