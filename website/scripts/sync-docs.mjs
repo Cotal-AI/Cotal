@@ -162,16 +162,23 @@ function firstH1(md) {
   return m ? m[1].trim() : null;
 }
 
-const textOf = (node) => (node.nodeName === '#text' ? node.value : (node.childNodes ?? []).map(textOf).join(''));
+// A hard line break renders as a br with no text, but it separates the words on either side.
+const textOf = (node) =>
+  node.nodeName === '#text' ? node.value : node.nodeName === 'br' ? ' ' : (node.childNodes ?? []).map(textOf).join('');
+
+const graphemes = new Intl.Segmenter();
 
 // Every page opens with a banner blockquote and some with headings, so the description is the
 // first top-level paragraph after them that has text; an image alone has none. It is rendered and
-// read back as text, so a link keeps its label and loses its target.
+// read back as text, so a link keeps its label and loses its target. A long one is cut where the
+// character that crosses the limit begins, so the cut never splits an emoji or an accented letter.
 function firstParagraph(md, rel) {
   for (const token of marked.lexer(md)) {
     if (token.type !== 'paragraph') continue;
     const text = textOf(parseFragment(marked.parser([token]))).replace(/\s+/g, ' ').trim();
-    if (text) return text.length <= 160 ? text : `${text.slice(0, 159).replace(/\s+\S*$/, '')}…`;
+    if (!text) continue;
+    if (text.length <= 160) return text;
+    return `${text.slice(0, graphemes.segment(text).containing(159).index).replace(/\s+\S*$/, '')}…`;
   }
   throw new Error(`no paragraph with text to describe the page: ${rel}`);
 }
