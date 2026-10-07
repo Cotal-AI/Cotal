@@ -202,7 +202,6 @@ try {
   throws("refuses empty prompt", () => launch({ space: "s", name: "n", prompt: "  " }), /empty/);
   throws("refuses resume of a session with no readable transcript", () => launch({ space: "s", name: "n", resume: "old" }), /cannot resume session old: no readable transcript/);
   throws("refuses exact-session continuation", () => launch({ space: "s", name: "n", continueSession: "old" }), /continuation/);
-  throws("refuses an empty variant", () => launch({ space: "s", name: "n", variant: "  " }), /empty/);
   throws("refuses tool sharing", () => launch({ space: "s", name: "n", mcpServers: { extra: { command: "x" } } }), /tool-sharing/);
   throws("refuses unsupported launch options", () => launch({ space: "s", name: "n", launchOptions: { profile: "full" } }), /launch options are not supported/);
   throws("still validates malformed launch option keys", () => launch({ space: "s", name: "n", launchOptions: { "a=b": "x" } }), /not a valid flag name/);

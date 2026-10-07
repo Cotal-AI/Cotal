@@ -717,6 +717,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error("--resume needs a session id (got an empty value)");
     process.exit(1);
   }
+  if (values.model !== undefined && !values.model.trim()) {
+    console.error("--model needs a model name (got an empty value)");
+    process.exit(1);
+  }
   if (values.variant !== undefined && !values.variant.trim()) {
     console.error("--variant needs a variant name (got an empty value)");
     process.exit(1);

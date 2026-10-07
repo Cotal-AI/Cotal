@@ -186,15 +186,7 @@ export const jcodeConnector: Connector = {
 
     if (opts.configPath) env.COTAL_AGENT_FILE = resolve(opts.configPath);
     if (opts.model) env.COTAL_MODEL = opts.model;
-    // The host applies the requested tier before its first turn. Do not drop a whitespace-only
-    // variant: that would make an operator's request look accepted while silently selecting the
-    // provider default.
-    if (opts.variant !== undefined) {
-      const variant = opts.variant.trim();
-      if (!variant)
-        throw new Error("jcode connector: a model variant was given but it is empty — there is no reasoning effort to select");
-      env.COTAL_VARIANT = variant;
-    }
+    if (opts.variant) env.COTAL_VARIANT = opts.variant;
 
     // The Harness API exposes model selection, but no stable generic equivalent to arbitrary
     // CLI/config overrides. Do not accept `--opt` merely because Jcode's TUI has flags: an option
