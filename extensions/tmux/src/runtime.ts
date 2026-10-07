@@ -19,20 +19,6 @@ const GRACE_MS = 1_500;
  *  loop; the driver bounds its reads. */
 const CONFIRM_CALL = { timeoutMs: 1_000 };
 
-/** Schedule Enter keypresses to `target` every second for 5 seconds — auto-clears a
- *  one-time confirmation prompt (e.g. Claude's dev-channels prompt) without blocking. */
-function scheduleConfirm(target: string): void {
-  for (let i = 1; i <= 5; i++) {
-    setTimeout(() => {
-      try {
-        tmux.sendKey("Enter", target);
-      } catch {
-        /* window may be gone — ignore */
-      }
-    }, i * 1_000);
-  }
-}
-
 /**
  * Spawns each agent into its own new tmux window in a shared per-space session, so
  * spawned teammates get room rather than crowding the spawner. Opened unfocused so the
@@ -189,9 +175,9 @@ function tmuxLayout(session: string, label: string, tab: Tab): string {
   if (!first) throw new Error(`tmux layout "${label}": tab has no panes`);
 
   const firstCmd = tmux.privateLaunch(tmux.mergedCommand(first.env ?? {}, first.command, first.args ?? []));
-  // Drive splits/focus/confirm off the STABLE window/pane IDs returned here — never `session:label`
-  // (labels can collide or be renamed) or pane indexes `.0`/`.1` (shift under `pane-base-index`).
-  const { windowId, paneId: firstPane } = tmux.openWindow(session, label, firstCmd, first.cwd ?? ".", {
+  // Drive splits/focus off the STABLE window ID returned here — never `session:label` (labels can
+  // collide or be renamed) or pane indexes `.0`/`.1` (shift under `pane-base-index`).
+  const { windowId } = tmux.openWindow(session, label, firstCmd, first.cwd ?? ".", {
     focus: false,
   });
 
@@ -200,12 +186,9 @@ function tmuxLayout(session: string, label: string, tab: Tab): string {
       `tmux layout "${label}": ${tab.panes.length} panes need a split (direction + ratio)`,
     );
 
-  if (first.confirm) scheduleConfirm(firstPane);
-
   rest.forEach((pane) => {
     const cmd = tmux.privateLaunch(tmux.mergedCommand(pane.env ?? {}, pane.command, pane.args ?? []));
-    const newPane = tmux.splitWindow(windowId, cmd, pane.cwd ?? ".", tab.split!.direction, tab.split!.ratio);
-    if (pane.confirm) scheduleConfirm(newPane);
+    tmux.splitWindow(windowId, cmd, pane.cwd ?? ".", tab.split!.direction, tab.split!.ratio);
   });
 
   return windowId;

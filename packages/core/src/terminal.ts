@@ -12,15 +12,13 @@ import type { Extension } from "./registry.js";
 /**
  * One terminal pane in a {@link Tab}: a `command` (+ `args`) to run, optionally in `cwd` with extra
  * `env`. Given in argv form — the backend is responsible for shell-quoting it safely, so callers
- * never build shell strings. `confirm` asks the backend to auto-accept a one-time confirmation
- * prompt the command may show on start (e.g. Claude's dev-channels prompt).
+ * never build shell strings.
  */
 export interface Pane {
   command: string;
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
-  confirm?: boolean;
 }
 
 /**
