@@ -309,14 +309,26 @@ function retireOpId(lifecycleUid: string): string {
  *  principal fail-closes to an empty `ps` instead of an unbounded one. */
 const NO_OWNER_MATCHES = "-no-owner-";
 
-/** A caught value's text for a refusal. A host-supplied store or callback may reject with any value,
- *  including one whose `message` is a Symbol or whose `message` getter or `toString` throws, and the
- *  refusal must still be returned, so the coercion to text runs inside the guard. */
+/** A caught value's text for a refusal or a log line. A host-supplied store, runtime or callback may
+ *  reject with any value, including `null` or one whose `message` is a Symbol or whose `message`
+ *  getter or `toString` throws. A handler that throws while building its text skips the work after
+ *  it, and on a detached chain ends the manager with an unhandled rejection, so the coercion to text
+ *  runs inside the guard. */
 function rejectionText(e: unknown): string {
   try {
     return String((e as Error)?.message ?? e);
   } catch {
     return "an unreadable rejection";
+  }
+}
+
+/** A caught value as a lifecycle envelope, or undefined when it is not one. A thrown Proxy can throw
+ *  from `instanceof` itself, so the test runs inside the guard. */
+function caughtEnvelope(e: unknown): EpEnvelopeError | undefined {
+  try {
+    return e instanceof EpEnvelopeError ? e : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1733,7 +1745,7 @@ export class Manager {
       throw new Error(
         held
           ? `manager instance ${this.managerInstanceId} already serves space "${this.space}" from ${held.root === this.leaseInfo.root ? "this" : "another"} workspace root (${held.runtime}, pid ${held.pid}, root ${held.root}) - stop it first before restarting the same instance`
-          : `could not acquire the manager lease for space "${this.space}": ${(e as Error).message}`,
+          : `could not acquire the manager lease for space "${this.space}": ${rejectionText(e)}`,
       );
     }
     this.leaseTimer = setInterval(() => { void this.renewLease(); }, MANAGER_LEASE_RENEW_MS);
@@ -1771,7 +1783,7 @@ export class Manager {
     // attempt returns.
     const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
     if (startupReconcile)
-      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
+      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${rejectionText(e)} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
     // P2 item 1 (1d): the manager serves NO ctl tiers - its whole control surface is the v0.4
     // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
     // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
@@ -1815,12 +1827,12 @@ export class Manager {
           if (this.remoteAuthority?.renewStandingBundle) await this.renewRemoteStandingBundle();
           else await this.renewRemoteExecutor();
         } catch (e) {
-          console.error(`! remote manager renewal pass failed: ${(e as Error).message}`);
+          console.error(`! remote manager renewal pass failed: ${rejectionText(e)}`);
         }
         try {
           await this.runHosting?.renew();
         } catch (e) {
-          console.error(`! remote run-hosting renewal pass failed: ${(e as Error).message}`);
+          console.error(`! remote run-hosting renewal pass failed: ${rejectionText(e)}`);
         }
       }, intervalMs);
       this.credRenewTimer.unref?.();
@@ -1929,7 +1941,7 @@ export class Manager {
     try {
       reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, timeoutMs);
     } catch (e) {
-      const msg = (e as Error).message;
+      const msg = rejectionText(e);
       if (isAbsentDeliveryAdmin(msg)) return this.absentByLeaseRow(isUnansweredDeliveryAdmin(e));
       const failure = `could not challenge the delivery daemon's SecretStore: ${msg}`;
       throw isUnansweredDeliveryAdmin(e) ? new DeliveryAdminUnanswered(failure) : new Error(failure);
@@ -1943,7 +1955,7 @@ export class Manager {
       answer = parseDaemonStoreAnswer(reply.data);
     } catch (e) {
       throw new Error(
-        `delivery daemon named an unreadable SecretStore: ${(e as Error).message}. A daemon older ` +
+        `delivery daemon named an unreadable SecretStore: ${rejectionText(e)}. A daemon older ` +
           `than #1694 replies with a bare store identity and no answerer binding; this manager ` +
           `cannot establish which process answered, so nothing reminted - upgrade the delivery daemon`,
       );
@@ -2007,7 +2019,7 @@ export class Manager {
     } catch (e) {
       throw new Error(
         `could not read the delivery lease row to settle whether the delivery daemon is absent ` +
-          `(${(e as Error).message}) - absence is undetermined, nothing reminted`,
+          `(${rejectionText(e)}) - absence is undetermined, nothing reminted`,
       );
     }
     const holder = entry?.info.holder;
@@ -2033,7 +2045,7 @@ export class Manager {
         console.error(`! daemon credential renewal for space "${this.space}" passed to another manager (this one lost the renewal lease) - it keeps serving its seats`);
       this.daemonRenewalOwner = held;
     } catch (e) {
-      console.error(`! could not refresh the daemon renewal lease: ${(e as Error).message} - ownership is re-decided on the next pass`);
+      console.error(`! could not refresh the daemon renewal lease: ${rejectionText(e)} - ownership is re-decided on the next pass`);
     }
   }
 
@@ -2121,7 +2133,7 @@ export class Manager {
       try {
         if (await attempt()) return true;
       } catch (e) {
-        console.error(`! manager ${label} re-dial attempt failed: ${(e as Error).message}`);
+        console.error(`! manager ${label} re-dial attempt failed: ${rejectionText(e)}`);
       }
     }
     return false;
@@ -2171,7 +2183,7 @@ export class Manager {
             ? { ok: true, detail: reply.data }
             : { ok: false, error: reply.error, detail: reply.data };
         } catch (e) {
-          adoption = { ok: false, error: `no delivery-admin responder (${(e as Error).message}) - the daemon's 75% re-read backstop adopts the re-signed file` };
+          adoption = { ok: false, error: `no delivery-admin responder (${rejectionText(e)}) - the daemon's 75% re-read backstop adopts the re-signed file` };
         }
       }
       for (const r of results.filter((x) => !x.ok && !x.skipped))
@@ -2209,7 +2221,7 @@ export class Manager {
             }
             await this.renewManagedStaticCred(a);
           } catch (e) {
-            console.error(`! managed cred renewal ${a.name}: ${(e as Error).message} - the agent dies loud at this cred's expiry unless it is reminted`);
+            console.error(`! managed cred renewal ${a.name}: ${rejectionText(e)} - the agent dies loud at this cred's expiry unless it is reminted`);
           }
         }
       }
@@ -2237,7 +2249,7 @@ export class Manager {
             this.scheduleServeRenewal(s.creds);
           }
         } catch (e) {
-          console.error(`! endpoint-serve renewal: ${(e as Error).message} - the manager's service endpoint dies loud at this cred's expiry unless it is re-registered`);
+          console.error(`! endpoint-serve renewal: ${rejectionText(e)} - the manager's service endpoint dies loud at this cred's expiry unless it is re-registered`);
         }
       }
       // The manager is also the goal-writer's renewal owner — re-mint the SAME
@@ -2255,7 +2267,7 @@ export class Manager {
             await this.pushRenewedCreds(gw.nc);
           }
         } catch (e) {
-          console.error(`! goal-writer renewal: ${(e as Error).message} - spawn-as-action stops accepting at this cred's expiry unless the manager restarts`);
+          console.error(`! goal-writer renewal: ${rejectionText(e)} - spawn-as-action stops accepting at this cred's expiry unless the manager restarts`);
         }
       }
       // P2 item 6: the manager is also the session-ledger's renewal owner — re-mint the SAME nkey
@@ -2276,11 +2288,11 @@ export class Manager {
             await this.pushRenewedCreds(sw.nc);
           }
         } catch (e) {
-          console.error(`! session-ledger renewal: ${(e as Error).message} - attach stops establishing sessions at this cred's expiry unless the manager restarts`);
+          console.error(`! session-ledger renewal: ${rejectionText(e)} - attach stops establishing sessions at this cred's expiry unless the manager restarts`);
         }
       }
     } catch (e) {
-      console.error(`! credential renewal pass failed: ${(e as Error).message}`);
+      console.error(`! credential renewal pass failed: ${rejectionText(e)}`);
     } finally {
       release();
     }
@@ -2295,7 +2307,7 @@ export class Manager {
     try {
       this.remoteExecutorCreds = await this.remoteAuthority.renewExecutor();
     } catch (e) {
-      console.error(`! remote manager executor renewal: ${(e as Error).message} - registration maintenance and clean deregistration remain unavailable until renewal succeeds`);
+      console.error(`! remote manager executor renewal: ${rejectionText(e)} - registration maintenance and clean deregistration remain unavailable until renewal succeeds`);
       if (force) throw e;
     }
   }
@@ -2356,7 +2368,7 @@ export class Manager {
       // endpoint's own reconnect loop retries with the adopted credential, not unadopted debt.
       this.remoteRenewalDebt = undefined;
       await Promise.all([
-        this.ep.reconnect().catch((e) => console.error(`! remote manager supervisor reconnect after renewal: ${(e as Error).message}`)),
+        this.ep.reconnect().catch((e) => console.error(`! remote manager supervisor reconnect after renewal: ${rejectionText(e)}`)),
         this.pushRenewedCreds(this.serviceServe.nc),
         ...(this.goalWriter ? [this.pushRenewedCreds(this.goalWriter.nc)] : []),
         ...(this.sessionLedgerConn ? [this.pushRenewedCreds(this.sessionLedgerConn.nc)] : []),
@@ -2365,8 +2377,8 @@ export class Manager {
       const unadoptedSubjects = candidate && typeof candidate === "object"
         ? Object.values(candidate).flatMap((cred) => { try { return typeof cred === "string" && credsClaims(cred).sub ? [credsClaims(cred).sub!] : []; } catch { return []; } })
         : [];
-      this.remoteRenewalDebt = { at: Date.now(), processEpoch, reason: (e as Error).message, unadoptedSubjects };
-      console.error(`! remote manager all-duty renewal: ${(e as Error).message} - no unsigned or local replacement is available`);
+      this.remoteRenewalDebt = { at: Date.now(), processEpoch, reason: rejectionText(e), unadoptedSubjects };
+      console.error(`! remote manager all-duty renewal: ${rejectionText(e)} - no unsigned or local replacement is available`);
       if (force) throw e;
     }
   }
@@ -2439,7 +2451,7 @@ export class Manager {
   private trackDeprovision(a: TeardownTarget, context = ""): void {
     this.lifecycleInFlight++;
     void this.deprovision(a)
-      .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${(e as Error).message}`))
+      .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${rejectionText(e)}`))
       .finally(() => this.releaseLifecycle());
   }
 
@@ -2538,7 +2550,7 @@ export class Manager {
     try {
       parseResumeControlArgs({ attemptId, inventory });
     } catch (e) {
-      failures.push({ name: "<inventory>", id: attemptId, error: `prepared inventory would be rejected at resume: ${(e as Error).message}` });
+      failures.push({ name: "<inventory>", id: attemptId, error: `prepared inventory would be rejected at resume: ${rejectionText(e)}` });
     }
     this.preservationInventory = inventory;
     this.preservationFailures = failures;
@@ -2623,14 +2635,14 @@ export class Manager {
           // A preservation cut must not run the connector's logical leave/cleanup hooks.
           a.handle.stop({ graceful: false });
         } catch (e) {
-          failures.push({ name: a.name, id: a.id, error: `stop failed: ${(e as Error).message}` });
+          failures.push({ name: a.name, id: a.id, error: `stop failed: ${rejectionText(e)}` });
           return;
         }
         try {
           await this.awaitHandleExit(a.handle);
           if (this.agents.get(a.name) === a) this.agents.delete(a.name);
         } catch (e) {
-          failures.push({ name: a.name, id: a.id, error: (e as Error).message });
+          failures.push({ name: a.name, id: a.id, error: rejectionText(e) });
         }
       }),
     );
@@ -2679,7 +2691,7 @@ export class Manager {
         const st = lstatSync(path);
         if (!st.isFile() || st.isSymbolicLink()) return `retained reference is not a regular non-symlink file: ${path}`;
       } catch (e) {
-        return `retained reference unavailable: ${path} (${(e as Error).message})`;
+        return `retained reference unavailable: ${path} (${rejectionText(e)})`;
       }
     }
     if (process.platform !== "win32") {
@@ -2706,7 +2718,7 @@ export class Manager {
           return `manifest source changed since it became effective: ${specPath}`;
       }
     } catch (e) {
-      return `retained reference cannot be hashed: ${(e as Error).message}`;
+      return `retained reference cannot be hashed: ${rejectionText(e)}`;
     }
     return undefined;
   }
@@ -2817,13 +2829,13 @@ export class Manager {
       try {
         await this.awaitHandleExit(a.handle);
       } catch (e) {
-        failures.push(`${a.name}: ${(e as Error).message}`);
+        failures.push(`${a.name}: ${rejectionText(e)}`);
       }
     }));
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
       managed.filter((a) => !a.suppressCleanup).map((a) =>
-        this.deprovision({ ...a, ...(a.handedOff ? { delegatedHandle: a.handle } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${(e as Error).message}`)),
+        this.deprovision({ ...a, ...(a.handedOff ? { delegatedHandle: a.handle } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`)),
       ),
     );
     if (failures.length)
@@ -2842,7 +2854,7 @@ export class Manager {
         a.suppressCleanup = true;
         this.agents.delete(a.name);
       } catch (e) {
-        failures.push(`${a.name}: ${(e as Error).message}`);
+        failures.push(`${a.name}: ${rejectionText(e)}`);
       }
     }
     return failures;
@@ -2858,13 +2870,13 @@ export class Manager {
         if (a.handedOff) await this.deprovision({ ...a, delegatedHandle: a.handle });
         else a.handle.stop({ graceful: false });
       } catch (e) {
-        failures.push(`${a.name}: stop failed: ${(e as Error).message}`);
+        failures.push(`${a.name}: stop failed: ${rejectionText(e)}`);
       }
       try {
         await this.awaitHandleExit(a.handle);
         if (this.agents.get(a.name) === a) this.agents.delete(a.name);
       } catch (e) {
-        failures.push(`${a.name}: ${(e as Error).message}`);
+        failures.push(`${a.name}: ${rejectionText(e)}`);
       }
     }));
     if (failures.length)
@@ -2905,7 +2917,7 @@ export class Manager {
     // snapshot below, or it would outlive a stop that reported success.
     await this.awaitLifecycleDrain();
     let releaseFailures: string[] = [];
-    let seatFailure: Error | undefined;
+    let seatFailure: string | undefined;
     try {
       if (this.maintenanceState === "active" && !this.resumeRequired) {
         if (withAgents) await this.teardownManagedAgents();
@@ -2921,7 +2933,7 @@ export class Manager {
         await this.stopRetainedAgentsOnExit();
       }
     } catch (e) {
-      seatFailure = e as Error;
+      seatFailure = rejectionText(e);
     }
     // Every step below runs even when an earlier one fails, so a failed stop still closes this
     // process's connections and listener (#2290). Failures are collected and thrown at the end.
@@ -2930,7 +2942,7 @@ export class Manager {
       try {
         await run();
       } catch (e) {
-        failures.push(`${name}: ${(e as Error).message}`);
+        failures.push(`${name}: ${rejectionText(e)}`);
       }
     };
     // A seat that may still be alive keeps this instance's leases and registration (see
@@ -2958,7 +2970,7 @@ export class Manager {
     await step("stop endpoint", () => this.ep.stop());
     await step("stop attach endpoint", () => this.attach.stop());
     const also = failures.length ? `; teardown also failed: ${failures.join("; ")}` : "";
-    if (seatFailure) throw new Error(`${seatFailure.message}${also}`);
+    if (seatFailure) throw new Error(`${seatFailure}${also}`);
     if (releaseFailures.length)
       throw new Error(`manager shutdown could not release every detachable seat: ${releaseFailures.join("; ")}${also}`);
     if (failures.length) throw new Error(`manager shutdown incomplete: ${failures.join("; ")}`);
@@ -3033,7 +3045,7 @@ export class Manager {
       // `absent` is silent: there was nothing registered to remove, which is not news at shutdown.
     } catch (e) {
       console.error(
-        `! could not deregister manager instance ${iid}: ${(e as Error).message}\n` +
+        `! could not deregister manager instance ${iid}: ${rejectionText(e)}\n` +
           `  Its registration now outlives this process and will be frozen into every class scatter in space "${this.space}", each paying the full deadline.\n` +
           `  NEXT: remove it with \`cotal deregister-instance --instance ${iid}\` once this process is gone.`,
       );
@@ -3096,7 +3108,7 @@ export class Manager {
         this.noteLease("held", `renews its liveness lease again (revision ${this.leaseRevision})`);
         return;
       } catch (renewError) {
-        const why = (renewError as Error).message;
+        const why = rejectionText(renewError);
         const verdict = await this.reconcileLease();
         switch (verdict.kind) {
           case "held":
@@ -3119,7 +3131,7 @@ export class Manager {
               this.noteLease("held", `found its liveness lease key gone (renew: ${why}) and re-acquired it at revision ${this.leaseRevision}`);
             } catch (e) {
               this.leaseState = before;
-              this.noteLease("gone", `found its liveness lease key gone (renew: ${why}) and could not re-acquire it yet (${(e as Error).message}); serving, retrying`);
+              this.noteLease("gone", `found its liveness lease key gone (renew: ${why}) and could not re-acquire it yet (${rejectionText(e)}); serving, retrying`);
             }
             return;
           }
@@ -3162,7 +3174,7 @@ export class Manager {
     try {
       current = await this.ep.readOwnManagerLease(this.managerInstanceId);
     } catch (e) {
-      return { kind: "unknown", why: (e as Error).message };
+      return { kind: "unknown", why: rejectionText(e) };
     }
     if (current === undefined) return { kind: "gone" };
     // The pid is what distinguishes US from a same-id restart: the logical instance id and the serve
@@ -3177,7 +3189,7 @@ export class Manager {
       try {
         args = parseResumeFinalizeArgs(rawArgs);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
       if (!this.resumeAttemptId || this.resumeAttemptId !== args.attemptId)
         return { ok: false, error: `manager expects resume attempt ${this.resumeAttemptId ?? "<none>"}, not ${args.attemptId}` };
@@ -3193,7 +3205,7 @@ export class Manager {
       try {
         inactive = this.resumeLivenessErrors(inventory, this.ep.getRoster());
       } catch (e) {
-        return { ok: false, error: `resume attempt ${args.attemptId} cannot verify live principals at finalize: ${(e as Error).message}` };
+        return { ok: false, error: `resume attempt ${args.attemptId} cannot verify live principals at finalize: ${rejectionText(e)}` };
       }
       if (inactive.length)
         return { ok: false, error: `resume attempt ${args.attemptId} is not live at finalize: ${inactive.join("; ")}` };
@@ -3211,7 +3223,7 @@ export class Manager {
       // retiredPrincipals, so a copied JWT is refused). Best-effort + loud: a sweep failure must
       // not fail the finalize (the next non-resume boot re-drives it), but it is never swallowed.
       if (this.auth && !this.userMode)
-        await this.reconcileStaticLifecycles(true).catch((e) => console.error(`! post-resume static reconcile: ${(e as Error).message} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
+        await this.reconcileStaticLifecycles(true).catch((e) => console.error(`! post-resume static reconcile: ${rejectionText(e)} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
       this.resumeFinalized = true;
       this.resumeRequired = false;
       return { ok: true, data: { attemptId: args.attemptId, state: "active" } };
@@ -3224,7 +3236,7 @@ export class Manager {
       try {
         attemptId = parseResumeCommitArgs(rawArgs).attemptId;
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
       if (!this.resumeAttemptId || this.resumeAttemptId !== attemptId)
         return { ok: false, error: `manager expects resume attempt ${this.resumeAttemptId ?? "<none>"}, not ${attemptId}` };
@@ -3277,7 +3289,7 @@ export class Manager {
           ? { ok: true, data }
           : { ok: false, data, error: result.error ?? "retained-agent resume failed" };
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
     }
   }
@@ -3302,7 +3314,7 @@ export class Manager {
             error: `preservation incomplete: ${result.failures.map((f) => `${f.name}: ${f.error}`).join("; ")}`,
           };
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: rejectionText(e) };
     }
   }
 
@@ -3531,7 +3543,7 @@ export class Manager {
             try {
               observed = await observeStaticSlot(recordsKv, DEV_OWNER, name, this.managerInstanceId);
             } catch (error) {
-              throw new EpEnvelopeError("unavailable", `the durable static slot state for "${name}" could not be read: ${(error as Error).message}`, [
+              throw new EpEnvelopeError("unavailable", `the durable static slot state for "${name}" could not be read: ${rejectionText(error)}`, [
                 { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: error instanceof StaticSlotReadError ? error.record : "slot-or-head", operation: "read" },
               ]);
             }
@@ -3567,7 +3579,7 @@ export class Manager {
         try {
           observed = await listStaticSlotObservations(recordsKv, DEV_OWNER, this.managerInstanceId);
         } catch (error) {
-          throw new EpEnvelopeError("unavailable", `the durable static slot state could not be scanned: ${(error as Error).message}`, [
+          throw new EpEnvelopeError("unavailable", `the durable static slot state could not be scanned: ${rejectionText(error)}`, [
             { kind: STATIC_SLOT_READ_FAILED_DETAIL, name: "*", record: error instanceof StaticSlotReadError ? error.record : "slot-or-head", operation: "scan" },
           ]);
         }
@@ -3699,7 +3711,7 @@ export class Manager {
         await this.validateRetainedAuthority(entry);
         return undefined;
       } catch (e) {
-        return `${entry.name}: ${(e as Error).message}`;
+        return `${entry.name}: ${rejectionText(e)}`;
       }
     }));
     const drift = authority.filter((error): error is string => error !== undefined);
@@ -3709,7 +3721,7 @@ export class Manager {
     try {
       inactive = this.resumeLivenessErrors(inventory, this.ep.getRoster());
     } catch (e) {
-      return { ok: false, error: `resume attempt ${attemptId} cannot verify live principals: ${(e as Error).message}` };
+      return { ok: false, error: `resume attempt ${attemptId} cannot verify live principals: ${rejectionText(e)}` };
     }
     if (inactive.length)
       return { ok: false, error: `resume attempt ${attemptId} is not live at commit: ${inactive.join("; ")}` };
@@ -3803,7 +3815,7 @@ export class Manager {
           continue;
         }
       } catch (e) {
-        inactive.push(`${entry.name} runtime status failed: ${(e as Error).message}`);
+        inactive.push(`${entry.name} runtime status failed: ${rejectionText(e)}`);
         continue;
       }
       if (!roster.some((presence) =>
@@ -3858,7 +3870,7 @@ export class Manager {
       if (a.handedOff) this.trackDeprovision({ ...a, delegatedHandle: a.handle });
       else a.handle.stop({ graceful });
     } catch (e) {
-      console.error(`stop ${a.name} (${a.id}): ${(e as Error).message}`);
+      console.error(`stop ${a.name} (${a.id}): ${rejectionText(e)}`);
     }
   }
 
@@ -3900,7 +3912,7 @@ export class Manager {
           id: a.id,
           handle: a.handle,
           authoritative: true,
-          error: `accepted stop could not prove exit: ${(e as Error).message}`,
+          error: `accepted stop could not prove exit: ${rejectionText(e)}`,
         });
       })
       .finally(() => this.releaseLifecycle());
@@ -3961,7 +3973,7 @@ export class Manager {
     try {
       provider = resolveAuthProvider();
     } catch (e) {
-      return { error: (e as Error).message };
+      return { error: rejectionText(e) };
     }
     const dir = userAuthStateDir(this.workspaceRoot, this.space);
     // The agent's capability scope rides its ledger row (act.scope in every bearer) — same
@@ -4086,7 +4098,7 @@ export class Manager {
     try {
       provider = resolveAuthProvider();
     } catch (e) {
-      return { error: (e as Error).message };
+      return { error: rejectionText(e) };
     }
     const secrets = this.secrets;
     // The token the agent will present to `POST /exchange` for the rest of its life. Generated
@@ -4244,7 +4256,7 @@ export class Manager {
     } catch (e) {
       // A runtime that throws while being asked has told us something real; it must not take the
       // log line (or the free path it sits on) down with it.
-      detail = `exit detail unreadable from runtime "${a.handle.kind}": ${(e as Error).message}`;
+      detail = `exit detail unreadable from runtime "${a.handle.kind}": ${rejectionText(e)}`;
     }
     console.error(
       `seat reaped: ${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""}) - ${causeText}; ${detail}`,
@@ -4454,8 +4466,8 @@ export class Manager {
       } catch (e) {
         const h = this.retiring.get(a.name);
         if (h && h.lifecycleUid === a.lifecycleUid)
-          h.lastError = `the agent's standing mint authority could not be revoked (${(e as Error).message}); the name stays held so a copied actor token cannot mint fresh credentials. NEXT: a same-name spawn re-drives the full teardown (including the revoke), or recover the auth state.`;
-        console.error(`revoke agent grant ${a.name}: ${(e as Error).message}`);
+          h.lastError = `the agent's standing mint authority could not be revoked (${rejectionText(e)}); the name stays held so a copied actor token cannot mint fresh credentials. NEXT: a same-name spawn re-drives the full teardown (including the revoke), or recover the auth state.`;
+        console.error(`revoke agent grant ${a.name}: ${rejectionText(e)}`);
       }
     }
     const shredFailure = unshredded.length ? `could not shred "${a.name}": ${unshredded.join("; ")}` : undefined;
@@ -4466,7 +4478,7 @@ export class Manager {
     } catch (e) {
       const h = this.retiring.get(a.name);
       if (h && h.lifecycleUid === a.lifecycleUid) {
-        h.lastError = (e as Error).message;
+        h.lastError = rejectionText(e);
         if (e instanceof DeprovisionError) h.lastResources = e.accounting;
       }
       if (shredFailure) throw new Error(`${rejectionText(e)}; ${shredFailure}`, { cause: e });
@@ -4600,7 +4612,7 @@ export class Manager {
         await nc.close().catch(() => {});
       }
     } catch (e) {
-      const copy = uncertain((e as Error).message);
+      const copy = uncertain(rejectionText(e));
       if (held) held.lastError = copy;
       console.error(`despawn ${a.name}: ${copy}`);
     }
@@ -4695,7 +4707,7 @@ export class Manager {
         return { complete: false, channels: [], reason: r.ok ? "malformed inventory reply" : (r.error ?? "refused") };
       return { complete: true, channels: data.channels as string[] };
     } catch (e) {
-      return { complete: false, channels: [], reason: (e as Error).message };
+      return { complete: false, channels: [], reason: rejectionText(e) };
     }
   }
 
@@ -4717,7 +4729,7 @@ export class Manager {
     try {
       parsed = JSON.parse(readFileSync(path, "utf8"));
     } catch (error) {
-      throw new Error(`cannot read connector session state ${path}: ${(error as Error).message}`);
+      throw new Error(`cannot read connector session state ${path}: ${rejectionText(error)}`);
     }
     const state = parsed as { version?: unknown; sessionId?: unknown; status?: unknown };
     if (state.version !== 1 || typeof state.sessionId !== "string" || !state.sessionId.trim() || state.sessionId.length > 4096 ||
@@ -4743,7 +4755,7 @@ export class Manager {
     } catch (error) {
       throw new Error(
         `retained ${connector.name} agent ${entry.name} has no sessionId in its older inventory and no usable upgrade state at ${path} ` +
-          `(${(error as Error).message}). Reload the live Pi seat before the preservation cut; refusing to resume fresh and lose its context.`,
+          `(${rejectionText(error)}). Reload the live Pi seat before the preservation cut; refusing to resume fresh and lose its context.`,
       );
     }
   }
@@ -4825,7 +4837,7 @@ export class Manager {
     try {
       this.recordContinuity(a, this.readManagedSession(a));
     } catch (error) {
-      console.error(`! ${a.name}: continuity: exact assignment not updated at ${boundary}: ${(error as Error).message}`);
+      console.error(`! ${a.name}: continuity: exact assignment not updated at ${boundary}: ${rejectionText(error)}`);
     }
   }
 
@@ -4837,7 +4849,7 @@ export class Manager {
       try {
         return this.readManagedSessionState(a);
       } catch (error) {
-        last = (error as Error).message;
+        last = rejectionText(error);
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -4872,7 +4884,7 @@ export class Manager {
           if (reported !== expected) throw new Error(`replacement reported session ${reported}, expected ${expected}`);
           return;
         } catch (error) {
-          last = (error as Error).message;
+          last = rejectionText(error);
         }
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -4965,7 +4977,7 @@ export class Manager {
         restart.armed = false;
         let tail = "";
         try { tail = await this.tail((replacement ?? a.handle).attach()); } catch { /* runtime has no readable tail */ }
-        console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${(error as Error).message}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
+        console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${rejectionText(error)}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
         // The replacement may be alive but unable to prove readiness. Stop it BEFORE
         // retiring credentials/durables; otherwise an untracked process survives under torn auth.
         try { replacement?.stop({ graceful: false }); } catch { /* terminal cleanup continues */ }
@@ -4999,7 +5011,7 @@ export class Manager {
           return;
         }
       } catch (error) {
-        console.error(`! ${a.name}: cannot classify Pi process exit for recovery: ${(error as Error).message} - retiring the seat`);
+        console.error(`! ${a.name}: cannot classify Pi process exit for recovery: ${rejectionText(error)} - retiring the seat`);
       }
     }
     this.freeSlot(a, true, "process-exit");
@@ -5125,7 +5137,7 @@ export class Manager {
       allowPublish = strList(args.allowPublish, "allowPublish");
       shareTools = strList(args.shareTools, "shareTools");
     } catch (e) {
-      return Promise.resolve({ ok: false, error: (e as Error).message });
+      return Promise.resolve({ ok: false, error: rejectionText(e) });
     }
     // #373: the event-plane admission gate. `startAgent` resolves `eventsRequired || opts.events
     // !== false`, so omission ARMS the plane — a gate on the explicit bit alone is bypassed by
@@ -5190,12 +5202,12 @@ export class Manager {
     try {
       cwd = realpathSync(resolved);
     } catch (error) {
-      return { refusal: `path cannot be resolved: ${(error as Error).message}` };
+      return { refusal: `path cannot be resolved: ${rejectionText(error)}` };
     }
     try {
       if (!statSync(cwd).isDirectory()) return { refusal: "path is not a directory" };
     } catch (error) {
-      return { refusal: (error as Error).message };
+      return { refusal: rejectionText(error) };
     }
     return { cwd, host: hostname() };
   }
@@ -5242,7 +5254,7 @@ export class Manager {
       try {
         declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
       } catch (error) {
-        const reason = (error as Error).message;
+        const reason = rejectionText(error);
         console.error(`! manager boot: connector inventory unavailable - ${reason}`);
         this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, reason }];
         console.error("! manager boot: no connector available - spawn and launch stay on this instance rail only so a sibling that can launch them can take the class queue");
@@ -5338,7 +5350,7 @@ export class Manager {
         const catalog = await connector.listModels({ refresh });
         return { agent: connector.name, supported: true, ...catalog };
       } catch (e) {
-        return { agent: connector.name, supported: true, models: [], error: (e as Error).message };
+        return { agent: connector.name, supported: true, models: [], error: rejectionText(e) };
       }
     };
 
@@ -5347,7 +5359,7 @@ export class Manager {
       try {
         connector = await this.resolveConnector(requested);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
       const result = await one(connector);
       return result.error ? { ok: false, error: result.error } : { ok: true, data: result };
@@ -5362,7 +5374,7 @@ export class Manager {
         try {
           connector = await this.resolveConnector(name);
         } catch (e) {
-          return { agent: name, supported: false, models: [], error: (e as Error).message };
+          return { agent: name, supported: false, models: [], error: rejectionText(e) };
         }
         return one(connector);
       }),
@@ -5421,13 +5433,13 @@ export class Manager {
           return { ok: false, error: `inline launch spec runId "${spec.runId}" does not match requested "${runId}"` };
         persistLaunchSpec(this.workspaceRoot, spec);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
     } else {
       try {
         spec = launchSpecForRun(this.workspaceRoot, runId);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
     }
     const la = spec.agents.find((a) => a.name === name);
@@ -5447,7 +5459,7 @@ export class Manager {
     try {
       configPath = materializePersona(this.workspaceRoot, runId, la);
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: rejectionText(e) };
     }
     const reply = await this.startAgent({ ...launchAgentToStartOpts(la, configPath, spec.owner, runId), route }, caller, hooks);
     if (reply.ok)
@@ -5526,7 +5538,7 @@ export class Manager {
       try {
         def = loadAgentFile(configPath);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
     }
     const agent = resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent });
@@ -5540,7 +5552,7 @@ export class Manager {
     try {
       connector = await this.resolveConnector(agent);
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: rejectionText(e) };
     }
 
     const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.readinessTimeoutMs;
@@ -5576,7 +5588,7 @@ export class Manager {
       try {
         carried = this.transcripts.peek(opts.resumeClaim, opts.resume);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
     }
     // A restart policy this host cannot honour is refused at accept, never accepted and ignored.
@@ -5598,7 +5610,7 @@ export class Manager {
       try {
         this.delegatedMeshRecord();
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
       if (opts.resume)
         return { ok: false, error: `${delegatedBy}, so it cannot resume a session held on this host (resume)` };
@@ -5687,7 +5699,7 @@ export class Manager {
     try {
       allowSubscribe = resolveReadAcl(subscribe ?? [], allowSubscribe);
     } catch (e) {
-      return { ok: false, error: opts.resolved ? `launch agent: ${(e as Error).message}` : `persona ${configPath}: ${(e as Error).message}` };
+      return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${configPath}: ${rejectionText(e)}` };
     }
     // #651: an empty or whitespace-only model string is not a pin. Coerce it to undefined here, at
     // the single point every path (persona, manifest, imperative) has resolved `model`, so it
@@ -5736,7 +5748,7 @@ export class Manager {
         launchOptions,
       });
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: rejectionText(e) };
     }
     if (policyRefusal) return { ok: false, error: policyRefusal };
     // The alias-reuse gate (#29 piece 3): a name whose previous agent is still retiring REFUSES
@@ -5766,7 +5778,7 @@ export class Manager {
       try {
         reopenSession = readContinuityAssignment(this.workspaceRoot, { space: this.space, name: identityName, connector: agent, cwd: resolvedCwd ?? this.workspaceRoot });
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
     }
     // The child takes launch options as `--opt k=v`, so only string values can cross to it.
@@ -6255,7 +6267,7 @@ export class Manager {
               this.recordContinuity(managed, managed.launch.sessionId);
             }
           } catch (error) {
-            const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
+            const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${rejectionText(error)}`;
             this.stopHandle(managed, false);
             this.freeSlot(managed, true, "session-bind-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
@@ -6367,7 +6379,7 @@ export class Manager {
             ? principalKey(entry.identity.owner, entry.identity.actor).key
             : principalKey(DEV_OWNER, entry.identity.id).key;
         } catch (e) {
-          return { ok: false, agents: [], error: `invalid retained principal for ${entry.name}: ${(e as Error).message}` };
+          return { ok: false, agents: [], error: `invalid retained principal for ${entry.name}: ${rejectionText(e)}` };
         }
         if (principals.has(principal))
           return { ok: false, agents: [], error: `resume inventory contains duplicate principal "${principal}"` };
@@ -6437,7 +6449,7 @@ export class Manager {
         try {
           discardLaunchArtifacts(spec.artifacts);
         } catch (e) {
-          console.error(`! resume: ${(e as Error).message}`);
+          console.error(`! resume: ${rejectionText(e)}`);
         }
       }
       release();
@@ -6521,7 +6533,7 @@ export class Manager {
         if (actual !== entry.identity.id)
           throw new Error(`retained credential identity ${actual} does not match inventory principal ${entry.identity.id}`);
       } catch (e) {
-        throw new Error(`retained credential for ${entry.name} is unusable: ${(e as Error).message}`);
+        throw new Error(`retained credential for ${entry.name} is unusable: ${rejectionText(e)}`);
       }
       const accepted = await this.probeStaticCredential(credentialText);
       if (!accepted.ok)
@@ -6609,7 +6621,7 @@ export class Manager {
         },
       };
     } catch (e) {
-      throw new Error(`retained user principal ${entry.identity.owner}.${entry.identity.actor} could not be reused: ${(e as Error).message}`);
+      throw new Error(`retained user principal ${entry.identity.owner}.${entry.identity.actor} could not be reused: ${rejectionText(e)}`);
     }
   }
 
@@ -6638,7 +6650,7 @@ export class Manager {
       const evidence = await requireRuntimeReap(this.runtime, reference);
       console.error(`resume: reaped orphaned seat ${reference.kind}:${reference.id} of retained principal "${principal}" (${evidence.detail})`);
     } catch (e) {
-      return `retained principal "${principal}" is already live and its recorded seat ${reference.kind}:${reference.id} could not be reaped: ${(e as Error).message}`;
+      return `retained principal "${principal}" is already live and its recorded seat ${reference.kind}:${reference.id} could not be reaped: ${rejectionText(e)}`;
     }
     const deadline = Date.now() + ORPHAN_PRESENCE_CLEAR_MS;
     while (this.ep.getRoster().some((p) => p.card.id === principal && p.status !== "offline")) {
@@ -6677,7 +6689,7 @@ export class Manager {
           // Do not trust the earlier batch preflight across another agent's sequential readiness wait.
           await this.validateRetainedAuthority(entry);
         } catch (e) {
-          return { ok: false, error: (e as Error).message };
+          return { ok: false, error: rejectionText(e) };
         }
         return this.launchPreparedResume(entry, cached, batchReserved);
       }
@@ -6686,7 +6698,7 @@ export class Manager {
         if (!cwd.isDirectory() || cwd.isSymbolicLink())
           return { ok: false, error: `retained cwd is not a real directory: ${entry.launch.cwd}` };
       } catch (e) {
-        return { ok: false, error: `retained cwd unavailable: ${entry.launch.cwd} (${(e as Error).message})` };
+        return { ok: false, error: `retained cwd unavailable: ${entry.launch.cwd} (${rejectionText(e)})` };
       }
 
       let connector: Connector;
@@ -6700,7 +6712,7 @@ export class Manager {
         // included, since the asymmetry is about materialization, not about which connector it is.
         connector = await this.resolveConnector(entry.launch.connector);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
       const harness = this.launchHarness(connector);
       if ("refusal" in harness) return { ok: false, error: harness.refusal };
@@ -6708,7 +6720,7 @@ export class Manager {
       try {
         retainedSession = this.retainedSessionId(entry, connector);
       } catch (error) {
-        return { ok: false, error: (error as Error).message };
+        return { ok: false, error: rejectionText(error) };
       }
       if (entry.launch.forkSource && !retainedSession && !connector.supportsResume)
         return { ok: false, error: `${connector.name} connector does not support session fork (resume)` };
@@ -6728,7 +6740,7 @@ export class Manager {
             return { ok: false, error: `retained launch spec space "${source.space}" does not match manager space "${this.space}"` };
           spec = source.agents.find((a) => a.name === launchSource.requested);
         } catch (e) {
-          return { ok: false, error: (e as Error).message };
+          return { ok: false, error: rejectionText(e) };
         }
         if (!spec || spec.hash !== launchSource.hash)
           return { ok: false, error: `retained manifest agent ${launchSource.requested} is missing or its hash changed; refusing same-principal resume` };
@@ -6738,7 +6750,7 @@ export class Manager {
         try {
           launchOptions = loadAgentFile(entry.launch.source.configPath).launchOptions;
         } catch (e) {
-          return { ok: false, error: (e as Error).message };
+          return { ok: false, error: rejectionText(e) };
         }
       }
       // Asked once `exact` is known: an exact seat reopens its retained session or fails, like its
@@ -6750,7 +6762,7 @@ export class Manager {
       try {
         authority = await this.validateRetainedAuthority(entry);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
 
       try {
@@ -6798,7 +6810,7 @@ export class Manager {
         if (preflightOnly) return { ok: true, data: { name: entry.name, preflight: true } };
         return this.launchPreparedResume(entry, value, batchReserved);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
     } finally {
       release();
@@ -6881,7 +6893,7 @@ export class Manager {
       try {
         await this.recordSlotRuntime(managed);
       } catch (error) {
-        return await this.stopFailedResume(managed, "resume-custody-unrecorded", `${managed.name} resumed, but ${(error as Error).message}`);
+        return await this.stopFailedResume(managed, "resume-custody-unrecorded", `${managed.name} resumed, but ${rejectionText(error)}`);
       }
       const readiness = await this.awaitReadiness(managed, readinessTimeoutMs);
       if (!readiness.ok && !readiness.uncertain) return { ok: false, error: readiness.detail };
@@ -6909,7 +6921,7 @@ export class Manager {
           return await this.stopFailedResume(
             managed,
             "resume-session-rebind-failed",
-            `${managed.name} resumed, but its exact host session could not be rebound: ${(error as Error).message}`,
+            `${managed.name} resumed, but its exact host session could not be rebound: ${rejectionText(error)}`,
           );
         }
       }
@@ -6922,7 +6934,7 @@ export class Manager {
         data: { name: managed.name, role: managed.role, agent: managed.agent, id: managed.id, mode: handle.kind, resumed: true },
       };
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: rejectionText(e) };
     } finally {
       if (!batchReserved) {
         this.reserved.delete(entry.name);
@@ -6940,7 +6952,7 @@ export class Manager {
       await this.awaitHandleExit(managed.handle);
     } catch (exit) {
       this.watchExit(managed);
-      return { ok: false, error: `${detail}; it stays managed because its stop is unproven: ${(exit as Error).message}` };
+      return { ok: false, error: `${detail}; it stays managed because its stop is unproven: ${rejectionText(exit)}` };
     }
     this.freeSlot(managed, true, cause, true);
     return { ok: false, error: detail };
@@ -7684,7 +7696,7 @@ export class Manager {
     // One registration operation for this boot. Fresh executors may replace a dead connection, but
     // they must resume THIS freeze rather than minting a new op that discards Phase-2 progress.
     const registrationOpId = mintLifecycleUid();
-    const executorExpired = (e: unknown): boolean => /closed connection/i.test((e as Error)?.message ?? String(e));
+    const executorExpired = (e: unknown): boolean => /closed connection/i.test(rejectionText(e));
     const retryExpiredExecutor = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
       for (;;) {
         try {
@@ -8269,11 +8281,11 @@ export class Manager {
           if (entry.note !== undefined) await this.adoptTurnGoal(entry);
           else await this.reconcileOneGoal(entry.ref, entry.iid);
         }
-        catch (e) { console.error(`! goal reconcile for ${entry.ref.goalId}: ${(e as Error).message}`); }
+        catch (e) { console.error(`! goal reconcile for ${entry.ref.goalId}: ${rejectionText(e)}`); }
       }
       if (entries.length) console.error(`goal-index boot reconcile: swept ${entries.length} inherited goal(s)`);
     } catch (e) {
-      console.error(`! goal-index boot reconcile failed: ${(e as Error).message} - accepted goals from a predecessor may stay unsettled until the next restart`);
+      console.error(`! goal-index boot reconcile failed: ${rejectionText(e)} - accepted goals from a predecessor may stay unsettled until the next restart`);
     } finally {
       this.goalReconcileDone = true;
     }
@@ -8314,7 +8326,7 @@ export class Manager {
     const remaining = spec.value.acceptedAt + (spec.value.readinessDeadlineMs ?? this.readinessTimeoutMs) - Date.now();
     if (remaining <= 0) { await settle(); return; }
     console.error(`goal reconcile ${ref.goalId}: within the readiness window (${remaining}ms) - arming a bounded settle`);
-    const t = setTimeout(() => { settle().catch((e) => console.error(`! goal reconcile settle ${ref.goalId}: ${(e as Error).message}`)); }, remaining + 100);
+    const t = setTimeout(() => { settle().catch((e) => console.error(`! goal reconcile settle ${ref.goalId}: ${rejectionText(e)}`)); }, remaining + 100);
     t.unref?.();
   }
 
@@ -8332,7 +8344,7 @@ export class Manager {
         new TextEncoder().encode(JSON.stringify({ v: 1, goalId: ref.goalId, ...event })),
       );
     } catch (e) {
-      console.error(`! goal progress emit for ${ref.goalId} failed: ${(e as Error).message}`);
+      console.error(`! goal progress emit for ${ref.goalId} failed: ${rejectionText(e)}`);
     }
   }
 
@@ -8469,7 +8481,7 @@ export class Manager {
         // ENTRY. This leg is infrastructure-class and converges through the reconcile index at the
         // next boot, which is why the index is NOT cleared above on this path. Do not "close" it
         // here with a retry loop.
-        console.error(`! goal terminal commit for ${goalId} failed: ${(e as Error).message}`);
+        console.error(`! goal terminal commit for ${goalId} failed: ${rejectionText(e)}`);
       }
     };
 
@@ -8559,10 +8571,12 @@ export class Manager {
     }).catch((e) => {
       if (acceptance === undefined) { rejectAccept(e); return; }
       // Same obligation for a genuine rejection (one that escaped `run`'s own catch).
-      if (!terminalEntered)
-        return onOutcome({ kind: "failed", data: { error: (e as Error)?.message ?? String(e), ...(e instanceof EpEnvelopeError && e.details ? { details: e.details } : {}) } });
-      console.error(`! spawn-as-action async body for ${goalId}: ${(e as Error)?.message ?? String(e)}`);
-    }).catch((e) => console.error(`! goal terminal fallback for ${goalId}: ${(e as Error)?.message ?? String(e)}`));
+      if (!terminalEntered) {
+        const details = caughtEnvelope(e)?.details;
+        return onOutcome({ kind: "failed", data: { error: rejectionText(e), ...(details ? { details } : {}) } });
+      }
+      console.error(`! spawn-as-action async body for ${goalId}: ${rejectionText(e)}`);
+    }).catch((e) => console.error(`! goal terminal fallback for ${goalId}: ${rejectionText(e)}`));
     return acceptP;
   }
 
@@ -8707,7 +8721,7 @@ export class Manager {
       // The accept is inline (no launch closure to fail later), so a post-bind throw unwinds HERE:
       // commit the failed terminal this attempt owns, clear the index, and refuse the accept — an
       // accepted-but-unanswered goal must never be left for the boot sweep to find (H1's rule).
-      const msg = (e as Error)?.message ?? String(e);
+      const msg = rejectionText(e);
       try {
         await this.assertGoalWriterEpochCurrent(executor.epoch);
         // The goal is TARGET-PINNED, so its completion proves the seat's currency exactly as the
@@ -8721,8 +8735,8 @@ export class Manager {
           resolveCurrentEpoch: (target) => this.agents.get(a.name)?.lifecycleUid === target.lifecycleUid ? 0 : null,
         });
         await clearGoalIndex(gw.ctx, ref);
-      } catch (e2) { console.error(`! turn accept unwind for ${goalId}: ${(e2 as Error).message}`); }
-      throw e instanceof EpEnvelopeError ? e : new EpEnvelopeError("internal", `turn accept for ${goalId} failed: ${msg}`);
+      } catch (e2) { console.error(`! turn accept unwind for ${goalId}: ${rejectionText(e2)}`); }
+      throw caughtEnvelope(e) ?? new EpEnvelopeError("internal", `turn accept for ${goalId} failed: ${msg}`);
     }
     const pending: PendingTurn = {
       ref, goalId,
@@ -8913,7 +8927,7 @@ export class Manager {
       // turn and no settled answer, wiped the acceptance, and rememberSettledTurn no-op'd.
       this.rememberSettledTurn(p.goalId, fact.state, Date.now());
       await clearGoalIndex(gw.ctx, p.ref);
-    } catch (e) { console.error(`! turn deadline terminal for ${p.goalId}: ${(e as Error).message}`); }
+    } catch (e) { console.error(`! turn deadline terminal for ${p.goalId}: ${rejectionText(e)}`); }
     this.maybeStopTurnSweep();
   }
 
@@ -8944,7 +8958,7 @@ export class Manager {
 
   private ensureTurnSweep(): void {
     if (this.turnSweepTimer !== undefined) return;
-    const t = setInterval(() => { void this.sweepTurnDeadlines().catch((e) => console.error(`! turn deadline sweep: ${(e as Error).message}`)); }, TURN_SWEEP_MS);
+    const t = setInterval(() => { void this.sweepTurnDeadlines().catch((e) => console.error(`! turn deadline sweep: ${rejectionText(e)}`)); }, TURN_SWEEP_MS);
     t.unref?.();
     this.turnSweepTimer = t;
   }
@@ -9007,7 +9021,7 @@ export class Manager {
       try {
         const settle = await this.expireTurnHold(p);
         if (settle?.settle === "expired") await this.commitTurnDeadline(p);
-      } catch (e) { console.error(`! turn deadline sweep for ${p.goalId}: ${(e as Error).message}`); }
+      } catch (e) { console.error(`! turn deadline sweep for ${p.goalId}: ${rejectionText(e)}`); }
     }
   }
 
@@ -9130,7 +9144,7 @@ export class Manager {
         await casStaticSlot(t, { ...slot.row, runtime }, slot.revision);
       });
     } catch (e) {
-      throw new Error(`could not record the custody reference ${runtime.kind}:${runtime.id} on the static slot of "${a.name}": ${(e as Error).message}`);
+      throw new Error(`could not record the custody reference ${runtime.kind}:${runtime.id} on the static slot of "${a.name}": ${rejectionText(e)}`);
     }
   }
 
@@ -9171,7 +9185,7 @@ export class Manager {
         disposal =
           e instanceof RuntimeReapUnproven
             ? `the spawned seat was NOT proved gone and may still be running as ${e.reference.kind}:${e.reference.id} (${e.message})`
-            : `the spawned seat could NOT be reaped: ${(e as Error).message}`;
+            : `the spawned seat could NOT be reaped: ${rejectionText(e)}`;
       }
     }
     throw new Error(
@@ -9271,8 +9285,8 @@ export class Manager {
     } catch (e) {
       const h = this.retiring.get(a.name);
       if (h && h.lifecycleUid === a.lifecycleUid)
-        h.lastError = `the static retirement did not complete (${(e as Error).message}); the name stays held - a same-name spawn retries the same terminal (op ${opId})`;
-      console.error(`static retirement ${a.name} (${a.id}): ${(e as Error).message}`);
+        h.lastError = `the static retirement did not complete (${rejectionText(e)}); the name stays held - a same-name spawn retries the same terminal (op ${opId})`;
+      console.error(`static retirement ${a.name} (${a.id}): ${rejectionText(e)}`);
       if (surfaceFailure) throw e;
     }
   }
@@ -9372,7 +9386,7 @@ export class Manager {
         await this.retryStaticReconcile(key);
       };
       void run().catch((error) => {
-        item.lastError = `retry driver failed before the exact terminal: ${(error as Error).message}`;
+        item.lastError = `retry driver failed before the exact terminal: ${rejectionText(error)}`;
         item.disposition = "retry-exhausted";
         item.remedy = "restart this manager for a fresh per-process retry budget";
         console.error(`! static reconcile retry-exhausted alias=${item.alias} phase=${item.phase} uid=${item.lifecycleUid}: ${item.lastError}; NEXT: restart this manager for a fresh per-process retry budget`);
@@ -9409,7 +9423,7 @@ export class Manager {
     try {
       row = await this.readStaticReconcileSlot(item.alias);
     } catch (error) {
-      item.lastError = `durable slot re-read failed: ${(error as Error).message}`;
+      item.lastError = `durable slot re-read failed: ${rejectionText(error)}`;
       if (item.attempts >= item.maxAttempts) {
         item.disposition = "retry-exhausted";
         item.remedy = "restart this manager for a fresh per-process retry budget";
@@ -9487,7 +9501,7 @@ export class Manager {
         }
         return true;
       } catch (error) {
-        item.lastError = (error as Error).message;
+        item.lastError = rejectionText(error);
         try {
           const fresh = await this.readStaticReconcileSlot(item.alias);
           if (fresh?.lifecycleUid === item.lifecycleUid && fresh.actor === item.actor) item.phase = fresh.phase;
@@ -9817,7 +9831,7 @@ export class Manager {
       });
       return { ok: true, data: result };
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: rejectionText(e) };
     }
   }
 
@@ -9846,7 +9860,7 @@ export class Manager {
       try {
         existing = loadAgentFile(path);
       } catch (e) {
-        return { ok: false, error: (e as Error).message };
+        return { ok: false, error: rejectionText(e) };
       }
       if (!admin && existing.owner !== caller) {
         const owner = existing.owner ? `owned by ${existing.owner}` : "operator-owned (legacy file - no agent owner)";
@@ -9874,12 +9888,12 @@ export class Manager {
         existing,
       );
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: rejectionText(e) };
     }
     try {
       saveAgentFile(path, def);
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: rejectionText(e) };
     }
     return { ok: true, data: { name, path } };
   }
@@ -10032,7 +10046,7 @@ export class Manager {
       try {
         accepted = await write(part.data);
       } catch (error) {
-        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: ${(error as Error).message}`);
+        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: ${rejectionText(error)}`);
       }
       if (!Number.isSafeInteger(accepted)) {
         throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(accepted)} of ${intendedBytes} bytes`);
@@ -10080,7 +10094,7 @@ export class Manager {
       session = a.handle.attach();
     } catch (e) {
       slot.release();
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: rejectionText(e) };
     }
     // establishAttach releases the claim it was handed on every exit; nothing to unwind here.
     const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
