@@ -7126,11 +7126,16 @@ export class Manager {
       const row = screen.getLine(y)!;
       // A line wider than the screen continues across wrapped rows, so it is read whole.
       text = row.translateToString(text === "") + text;
-      if (text && !row.isWrapped) break;
+      if (row.isWrapped) continue;
+      // Blanks a program painted survive the right trim, so a line of only blanks is skipped.
+      if (text.trim()) break;
+      text = "";
     }
     term.dispose();
     text = text.trim();
-    return text.length > 160 ? `…${text.slice(-160)}` : text;
+    // Cut on code points: half a surrogate pair is not I-JSON, and a launch terminal carrying it is refused.
+    const chars = [...text];
+    return chars.length > 160 ? `…${chars.slice(-160).join("")}` : text;
   }
 
   /** Subscribe to a managed agent's process-exit so a self-driven exit frees its slot and reaps
