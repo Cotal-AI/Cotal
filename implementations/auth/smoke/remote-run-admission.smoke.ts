@@ -196,6 +196,7 @@ try {
     server: servers,
     space: SPACE,
     dir: authDir,
+    identityRoot: authDir,
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     log: () => {},
   });

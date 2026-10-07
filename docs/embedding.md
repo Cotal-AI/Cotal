@@ -136,8 +136,9 @@ and closes any resources created by that late completion.
 
 `startAuthService` takes the same `HostedContextInputs`. The store must declare the assigned
 injected identity, and its data account must be the assigned account. The IdP pin and ledger live
-under the explicit `stateDir`. The context never resolves a workspace root from the working
-directory and has no local manager, so only remote manager gates can be selected. It returns after
+under the explicit `stateDir`, and the auth plane's instance identity in its `.cotal/space.<hex>/`.
+The context never resolves a workspace root from the working directory and has no local manager, so
+only remote manager gates can be selected. It returns after
 the authority plane, the callout subscription and the loopback listener are bound. A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
 The host writes no discovery file for it. The handle carries what `auth-service.json` holds for a

@@ -230,7 +230,7 @@ try {
 
   // A boot whose eviction STILL fails comes up anyway — the alias stays frozen, loudly.
   const lines: string[] = [];
-  const planeStillWedged = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => lines.push(l), probeEvictor: failEvictor });
+  const planeStillWedged = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: (l) => lines.push(l), probeEvictor: failEvictor });
   await planeStillWedged.close();
   const stillFrozen = await observeGate(breg, uid2);
   check("a boot with failing eviction still comes up; the alias stays frozen (fail-closed)", stillFrozen?.row.state === "frozen" && stillFrozen.row.op?.opId === wedgeOp, stillFrozen?.row);
@@ -238,7 +238,7 @@ try {
 
   // The next boot, with eviction verifying, finishes the owed operation before answering.
   const resumeEvicted: string[] = [];
-  const planeResumed = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet, probeEvictor: okEvictor(resumeEvicted) });
+  const planeResumed = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet, probeEvictor: okEvictor(resumeEvicted) });
   await planeResumed.close();
   const resumedGate = await observeGate(breg, uid2);
   const resumedHead = await readLifecycleHeadForOperation(breg, OWNER, "worker2");
@@ -274,7 +274,7 @@ try {
   check("the wedged retirement gate stays FROZEN by the crashed op", retireWedged?.row.state === "frozen" && retireWedged.row.op?.opId === retireOp, retireWedged?.row);
 
   const retireLines: string[] = [];
-  const planeRetireWedged = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => retireLines.push(l), probeEvictor: failEvictor });
+  const planeRetireWedged = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: (l) => retireLines.push(l), probeEvictor: failEvictor });
   await planeRetireWedged.close();
   check("a boot with failing eviction leaves the retirement frozen and is LOUD",
     (await observeGate(breg, uid3))?.row.state === "frozen"
@@ -282,7 +282,7 @@ try {
 
   const retireEvicted: string[] = [];
   const retireResumeLines: string[] = [];
-  const planeRetireResumed = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => retireResumeLines.push(l), probeEvictor: okEvictor(retireEvicted) });
+  const planeRetireResumed = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: (l) => retireResumeLines.push(l), probeEvictor: okEvictor(retireEvicted) });
   await planeRetireResumed.close();
   const retiredGate = await observeGate(breg, uid3);
   const retiredHead = await readLifecycleHeadForOperation(breg, OWNER, "worker3");
@@ -343,7 +343,7 @@ try {
   // EFFECTS work — the per-op canceller terminalizes it with the first-terminal-wins CANCELLED
   // union member on the SAME completion coordinate, and the retirement COMPLETES.
   const drainLines: string[] = [];
-  const planeDrainWedged = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => drainLines.push(l), probeEvictor: okEvictor([]) });
+  const planeDrainWedged = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: (l) => drainLines.push(l), probeEvictor: okEvictor([]) });
   await planeDrainWedged.close();
   check("the resume gets past eviction and CANCELS the in-flight accepted EFFECTS work (the retirement COMPLETES)",
     (await readLifecycleHeadForOperation(breg, OWNER, "worker4"))?.mapping.state === "retired"
@@ -417,7 +417,7 @@ try {
   }, wedgeDeps(failEvictor)));
   check("F4: the retirement wedges at eviction with covered accepted work still pending", wedge5.length > 0, wedge5.slice(0, 80));
   const repairLines: string[] = [];
-  const planeRepair = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: (l) => repairLines.push(l), probeEvictor: okEvictor([]) });
+  const planeRepair = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: (l) => repairLines.push(l), probeEvictor: okEvictor([]) });
   await planeRepair.close();
   {
     const committed = await readRecordLeader(registryStores(wreg).jsm, space, F4_COMMIT_KEY);

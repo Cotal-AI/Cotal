@@ -263,13 +263,13 @@ try {
     const logs: string[] = [];
     let kills: { ledger: () => Promise<void>; records: () => Promise<void> } | undefined;
     const plane1 = await openAuthAuthorityPlane({
-      server: SERVERS, space, dir, dataAccount, log: (l) => logs.push(l),
+      server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: (l) => logs.push(l),
       probeEvictor: okEvictor, probePlaneOracle: neverOracle, probePlaneDeath: (k) => { kills = k; },
     });
     check("the real plane opens over the released row without an oracle round", logs.some((l) => l.includes("plane-claim: space")));
     // A second same-space plane: its adjudication sees plane1's LIVE scanners.
     const dual = await rejects(() => openAuthAuthorityPlane({
-      server: SERVERS, space, dir, dataAccount, log: quiet,
+      server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet,
       probeEvictor: okEvictor, probePlaneOracle: verdictOracle("live", "live", true),
     }));
     check("a second same-space plane REFUSES with the live-peer copy", dual.includes("another auth plane already owns"));
@@ -290,7 +290,7 @@ try {
     await plane1.close();
     // The successor takes over cleanly (the fenced plane released on close; no oracle needed).
     const plane2 = await openAuthAuthorityPlane({
-      server: SERVERS, space, dir, dataAccount, log: quiet,
+      server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet,
       probeEvictor: okEvictor, probePlaneOracle: neverOracle,
     });
     check("a successor plane opens cleanly after the fenced plane's close", true);

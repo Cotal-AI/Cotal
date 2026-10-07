@@ -461,11 +461,12 @@ without a terminal nothing prompts.
 `--root` is the local folder holding that mesh's `.cotal/auth` and `.cotal/agents` (its personas);
 the mode is inferred from what that folder holds.
 
-The manager's instance identity is not part of that folder. Each root keeps its own in
-`.cotal/space.<hex>/`, so `cotal supervise` in the root you copied the folder to starts a manager
-instance of its own. A root last run by an older Cotal still holds its identity in `.cotal/auth` as
-`manager-instance.<hex>.json` and `manager-siblings.<hex>.json`. Delete those two files from a copy
-of such a folder before the first `cotal supervise` there.
+The instance identities of the manager and the user-auth service are not part of that folder.
+Each root keeps its own in `.cotal/space.<hex>/`, so `cotal supervise` or `cotal up --user-auth` in
+the root you copied the folder to starts an instance of its own. A root last run by an older Cotal
+still holds them in `.cotal/auth`, as `manager-instance.<hex>.json`, `manager-siblings.<hex>.json`
+and `space.<hex>/.cotal/auth/auth-instance.<hex>.json`. Delete those files from a copy of such a
+folder before the first `cotal supervise` or `cotal up` there.
 
 **Know what you are copying.** For an authenticated mesh that folder carries the space's account
 **signing seed**, which is the authority to mint any identity in the space. A machine holding it

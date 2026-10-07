@@ -170,7 +170,7 @@ const bootPlane = async (opts: { log?: (l: string) => void; evictor: EvictPrinci
   for (const c of [ledgerCand, recordsCand])
     claimCandidates.set(`${c.tuple.serverId}|${c.tuple.cid}|${c.tuple.userNkey}`, { gone: c.gone });
   const p = await openAuthAuthorityPlane({
-    server: SERVERS, space, dir, dataAccount,
+    server: SERVERS, space, dir, identityRoot: dir, dataAccount,
     log: opts.log ?? quiet, probeEvictor: opts.evictor, probePlaneOracle: planeClaimOracle,
   });
   const close = p.close.bind(p);

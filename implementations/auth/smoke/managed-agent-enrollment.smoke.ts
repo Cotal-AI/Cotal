@@ -179,7 +179,7 @@ try {
   await putGate(FROZEN_INSTANCE, { state: "frozen", principal: `${OWNER}.${remoteManagerActors(FROZEN_INSTANCE).serve}`, processEpoch: EPOCH, registrationRevision: REVISION });
   await putGate(FOREIGN_INSTANCE, { state: "open", principal: `${OTHER_OWNER}.${remoteManagerActors(FOREIGN_INSTANCE).serve}`, processEpoch: EPOCH, registrationRevision: REVISION });
 
-  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet });
+  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet });
   const enroll = (request: RemoteManagedAgentEnrollmentRequest, scope = ["supervise"]) =>
     plane!.verifyManagedAgentEnrollment({ owner: OWNER, scope, request });
   const release = (request: RemoteManagedAgentPrepareRetirementRequest, scope = ["supervise"], owner = OWNER) =>

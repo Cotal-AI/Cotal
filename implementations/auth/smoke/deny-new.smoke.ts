@@ -103,13 +103,13 @@ try {
   await createEndpointStreams(await jetstreamManager(streamsSetup.nc), new Kvm(streamsSetup.nc), space);
 
   // ---- the authority plane boots on a VIRGIN space (ensure + registry + proved reader) ----
-  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet });
+  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet });
   check("the authority plane boots on a virgin space (stores ensured, reader shape-proved)", true);
   // SEQUENTIAL re-boot (close first): a CONCURRENT second plane now correctly REFUSES under the
   // §13.13 plane claim (plane-claim.smoke.ts proves that face); what this asserts is that a
   // RESTART verifies the existing stores instead of failing the re-create, over the released row.
   await plane.close();
-  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet });
+  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet });
   check("a re-boot verifies the existing stores instead of failing the re-create (create-or-verify), over the released plane claim", true);
 
   // ---- the file grant + the exchange arm's root-credential ensure ----
