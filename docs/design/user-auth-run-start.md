@@ -529,8 +529,15 @@ the run completed, `cotal ps` still listed the seat, and `cotal stop --name` sto
 and the run's roster now take the succeeded terminal's identity first. A static seat's terminal
 names no `owner.actor` principal, so it keeps the floor.
 
-Revoking the user's row demotes the run's next spawn, because the admin door reads the row at that
-moment, and the participant manager's own host calls stop under the same row.
+Owned event-plane arming now uses the same owner-domain boundary as named agent control. A
+typed spawn may arm a child under the caller's owner without `admin`, including when the
+registration policy requires the plane. A participant's host enrolls the child under the
+participant owner, and local user-mode provisioning derives the owner from the authenticated
+caller. Cross-owner arming still needs `admin`. The own-channel rule and the host's ledger
+envelope remain in force, so arming adds no reader grant.
+
+Revoking the user's row stops the participant manager's next host call under that row. The host
+rechecks the delegation envelope when it enrolls a child and when the child exchanges its bearer.
 
 Checked by hand on a fresh stack, before and after: a placed and an unplaced run each spawn an agent,
 turn it to `done`, receive its `ask` record from the seat, complete and release the seat. A
