@@ -526,9 +526,14 @@ export async function openSupervisedConnectReader(
   void (async () => {
     for await (const s of c.nc.status()) {
       if (closed) break;
-      if (s.type === "disconnect" || s.type === "error") {
+      if (s.type === "disconnect") {
         reader = undefined;
-        opts.log(`${label}: connection lost (${s.type}) - connects DENY until the rebind shape proof passes`);
+        opts.log(`${label}: connection lost - connects DENY until the rebind shape proof passes`);
+      } else if (s.type === "error") {
+        // An -ERR leaves the bind as it was. nats.js reports every loss of the link as
+        // `disconnect`, the losses an -ERR causes included, and an -ERR that keeps the link up
+        // (a refused publish or subscribe) is followed by no `reconnect` that could restore it.
+        opts.log(`${label}: broker error (${s.error.message})`);
       } else if (s.type === "reconnect") {
         try {
           reader = await openConnectReader(c.nc, opts.space);
