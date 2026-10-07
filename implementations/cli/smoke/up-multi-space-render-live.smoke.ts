@@ -25,7 +25,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
