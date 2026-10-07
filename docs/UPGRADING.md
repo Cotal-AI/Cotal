@@ -339,6 +339,24 @@ A copy of `.cotal/auth` taken from a root last run by an older Cotal carries tha
 Delete `.cotal/auth/space.<hex>/.cotal/auth/auth-instance.<hex>.json` from the root you copied it to
 before the first `cotal up --user-auth` there.
 
+## Per-seat `COTAL_` names in `spawn.env` in 0.71.0
+
+`spawn.env` in the cotal config no longer forwards a `COTAL_` name the launcher sets for each seat,
+such as `COTAL_ROLE`, `COTAL_MODEL` or `COTAL_SUBSCRIBE`. Before, a seat launched with no value of
+its own took the spawning process's value and ran under that role, model or read set. The
+machine-wide knobs a seat already receives, such as `COTAL_HOME`, may still be listed.
+
+### What stops working
+
+Every spawn and resume under a config whose `spawn.env` lists such a name is refused before
+launch, and the refusal names the entry. Code that calls `launchEnv` from `@cotal-ai/connector-core`
+with such a name in `envAllow` gets the same error.
+
+### Before the upgrade
+
+Remove those names from `spawn.env`. Give each seat its role, model and channels with `--role`,
+`--model` and `--subscribe`, or in its persona's `role:`, `model:` and `subscribe:`.
+
 ## Carrying a resumed Claude session to another host in 0.67.0
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the
