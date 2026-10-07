@@ -1,5 +1,17 @@
 # @cotal-ai/manager
 
+## 0.72.0
+
+### Patch Changes
+
+- 3d0b46c: The manager no longer ends when a runtime, store or extension rejects with `null` or `undefined`. Its catch handlers read `.message` off the caught value, so a runtime whose `waitForExit` rejected `null` after a `stop` ended the manager with an unhandled `Cannot read properties of null (reading 'message')`, a detached deprovision did the same, and a runtime whose `stop` threw `null` turned the stop reply into that `TypeError`. Every log line, refusal and recorded failure in the manager now takes its text from the caught value's `message`, or the value itself when it has none, and falls back to `an unreadable rejection`. A thrown value that cannot be tested as a lifecycle envelope no longer leaves a spawn-as-action goal or a turn accept without its terminal, and a spawn that fails after acceptance now settles its goal failed when its envelope details cannot be read or carried as JSON, such as details holding an accessor, a cycle or a value that reads differently each time, which it drops, or when its error text holds a lone surrogate, which becomes U+FFFD. A manager stop whose seat teardown fails with `null` or an empty message now fails and keeps the instance's lease and registration, as any other failed teardown does.
+- 18e7e91: A static slot row whose latest KV operation is a DEL or PURGE marker is now refused as corruption by the manager's startup reconcile sweep and by the `slots` listing behind `cotal ps --slots`, the way `inspect` and a new spawn of that name already refused it. Both enumerations used to drop a marked row: the sweep reported nothing to reconcile for it and the listing omitted it. They now read through one slot walk built on the new core `walkKvLatest`, which returns the latest entry of every matching key with its markers.
+- Updated dependencies [c5a45ab]
+- Updated dependencies [18e7e91]
+  - @cotal-ai/core@0.72.0
+  - @cotal-ai/workspace@0.72.0
+  - @cotal-ai/seat@0.72.0
+
 ## 0.71.0
 
 ### Patch Changes
