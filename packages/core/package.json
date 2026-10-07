@@ -35,6 +35,10 @@
     "./session-browser": {
       "types": "./dist/session-browser.d.ts",
       "import": "./dist/session-browser.js"
+    },
+    "./launch-material": {
+      "types": "./dist/launch-material.d.ts",
+      "import": "./dist/launch-material.js"
     }
   },
   "scripts": {

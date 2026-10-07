@@ -19,6 +19,10 @@
     "./agui-render": {
       "types": "./dist/agui-render.d.ts",
       "import": "./dist/agui-render.js"
+    },
+    "./relay": {
+      "types": "./dist/relay.d.ts",
+      "import": "./dist/relay.js"
     }
   },
   "scripts": {

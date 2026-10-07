@@ -1,4 +1,5 @@
 export * from "./config.js";
+export { controlFromEnv, hasIdentity } from "./session-env.js";
 export * from "./agent.js";
 export * from "./runtime.js";
 export * from "./launch.js";
