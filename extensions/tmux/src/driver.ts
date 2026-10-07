@@ -265,9 +265,9 @@ export function selectWindow(target: string): void {
 }
 
 /** Kill a tmux window by target (window ID `@N`, or `session:name`). Idempotent: already-gone is a no-op. */
-export function closeWindow(target: string): void {
+export function closeWindow(target: string, opts: { timeoutMs?: number } = {}): void {
   try {
-    execFileSync("tmux", ["kill-window", "-t", target], { stdio: "pipe" });
+    execFileSync("tmux", ["kill-window", "-t", target], { stdio: "pipe", timeout: opts.timeoutMs });
   } catch (err) {
     if (isWindowGone(err)) return;
     throw err;
@@ -364,6 +364,6 @@ export function send(text: string, target: string): void {
 
 /** Send a named key sequence (e.g. `"Enter"`, `"C-c"`) to a tmux target.
  *  `--` guards against key names starting with `-`. */
-export function sendKey(key: string, target: string): void {
-  execFileSync("tmux", ["send-keys", "-t", target, "--", key], { stdio: "ignore" });
+export function sendKey(key: string, target: string, opts: { timeoutMs?: number } = {}): void {
+  execFileSync("tmux", ["send-keys", "-t", target, "--", key], { stdio: "ignore", timeout: opts.timeoutMs });
 }

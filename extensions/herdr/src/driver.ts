@@ -487,8 +487,8 @@ export function sendText(session: string, paneId: string, text: string): void {
 
 /** Send a named key (e.g. `enter`, `ctrl+c`) to a pane. Pane-scoped: the caller must pass a
  *  freshly re-resolved pane id ({@link agentInfo}), never a cached one. */
-export function sendKeys(session: string, paneId: string, key: string): void {
-  run(session, ["pane", "send-keys", paneId, key], { void: true });
+export function sendKeys(session: string, paneId: string, key: string, opts: { timeoutMs?: number } = {}): void {
+  run(session, ["pane", "send-keys", paneId, key], { void: true, ...opts });
 }
 
 /** The text a pane shows now. Pane-scoped: the caller must pass a freshly re-resolved pane id
@@ -503,9 +503,9 @@ export function readPane(session: string, paneId: string, opts: { timeoutMs?: nu
 }
 
 /** Close a pane. Idempotent for an already-gone pane only; every other error propagates. */
-export function closePane(session: string, paneId: string): void {
+export function closePane(session: string, paneId: string, opts: { timeoutMs?: number } = {}): void {
   try {
-    run(session, ["pane", "close", paneId]);
+    run(session, ["pane", "close", paneId], opts);
   } catch (err) {
     if (err instanceof HerdrCliError && err.code === "pane_not_found") return;
     throw err;

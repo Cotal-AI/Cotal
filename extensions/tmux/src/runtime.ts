@@ -15,6 +15,9 @@ import * as tmux from "./driver.js";
 
 /** Grace window for a clean exit before a graceful stop force-closes the window. */
 const GRACE_MS = 1_500;
+/** Bounds the startup-confirm watch's Enter and close, because the watch runs on the manager's event
+ *  loop; the driver bounds its reads. */
+const CONFIRM_CALL = { timeoutMs: 1_000 };
 
 /** Schedule Enter keypresses to `target` every second for 5 seconds — auto-clears a
  *  one-time confirmation prompt (e.g. Claude's dev-channels prompt) without blocking. */
@@ -71,11 +74,11 @@ export class TmuxRuntime implements Runtime {
 
     watch?.({
       read: () => tmux.capturePane(paneId),
-      enter: () => tmux.sendKey("Enter", paneId),
+      enter: () => tmux.sendKey("Enter", paneId, CONFIRM_CALL),
       fail: (message) => {
         console.error(`tmux runtime: "${name}": ${message}`);
         try {
-          tmux.closeWindow(windowId);
+          tmux.closeWindow(windowId, CONFIRM_CALL);
         } catch (err) {
           console.error(`tmux runtime: failed to close window for "${name}":`, err);
         }

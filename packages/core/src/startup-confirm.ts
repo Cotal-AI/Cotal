@@ -13,10 +13,11 @@ function normalizeConfirmText(value: string): string {
   return value.replace(OSC, "").replace(CSI, "").replace(ESC, "").replace(/\s+/g, "");
 }
 
-/** A seat's pane, as a {@link confirmWatch} watch drives it from a timer. */
+/** A seat's pane, as a {@link confirmWatch} watch drives it from a timer. Every method runs on the
+ *  event loop, so each must be bounded. */
 export interface ConfirmPane {
-  /** The text the pane shows now, or undefined once the seat has exited. Must be bounded: it runs
-   *  on the event loop, and the watch cannot end the seat while a read is still blocked. */
+  /** The text the pane shows now, or undefined once the seat has exited. The watch cannot end the
+   *  seat while a read is still blocked. */
   read(): string | undefined;
   /** Press Enter in the pane. */
   enter(): void;

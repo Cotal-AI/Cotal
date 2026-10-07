@@ -18,6 +18,9 @@ import * as cmux from "./driver.js";
 
 /** Grace window for a clean exit before a graceful stop force-closes the tab. */
 const GRACE_MS = 1_500;
+/** Bounds the startup-confirm watch's Enter and close, because the watch runs on the manager's event
+ *  loop; the driver bounds its reads. */
+const CONFIRM_CALL = { timeoutMs: 1_000 };
 
 /** Background snippet that auto-accepts a one-time confirm prompt by pressing Enter on the
  *  pane's own cmux surface a few times. Gated on the cmux env vars so it's a no-op off cmux. */
@@ -109,11 +112,11 @@ export class CmuxRuntime implements Runtime {
 
     watch?.({
       read: () => (cmux.workspaceState(workspace) === "exited" ? undefined : cmux.readScreen({ workspace })),
-      enter: () => cmux.sendKey("enter", { workspace }),
+      enter: () => cmux.sendKey("enter", { workspace }, CONFIRM_CALL),
       fail: (message) => {
         console.error(`cmux runtime: "${name}": ${message}`);
         try {
-          cmux.closeWorkspace(workspace);
+          cmux.closeWorkspace(workspace, CONFIRM_CALL);
         } catch (err) {
           console.error(`cmux runtime: failed to close tab for "${name}":`, err);
         }

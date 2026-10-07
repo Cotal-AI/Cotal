@@ -87,10 +87,11 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     }
   };
 
-  // Built before the child exists, so a prompt that cannot match starts nothing.
-  const confirmMatcher = launch.confirm === undefined ? undefined : new StartupConfirmMatcher(launch.confirm);
+  let confirmMatcher: StartupConfirmMatcher | undefined;
   let proc: pty.IPty;
   try {
+    // Built before the child exists, so a prompt that cannot match starts nothing.
+    confirmMatcher = launch.confirm === undefined ? undefined : new StartupConfirmMatcher(launch.confirm);
     proc = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,

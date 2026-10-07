@@ -16,8 +16,9 @@ import {
 import * as herdr from "./driver.js";
 
 const GRACE_MS = 2_000;
-/** Bounds each read the startup-confirm watch makes, because it polls on the manager's event loop. */
-const CONFIRM_READ = { timeoutMs: 1_000 };
+/** Bounds every Herdr call the startup-confirm watch makes, because it polls on the manager's event
+ *  loop. */
+const CONFIRM_CALL = { timeoutMs: 1_000 };
 
 interface LauncherPayload {
   cwd: string;
@@ -166,22 +167,22 @@ export class HerdrRuntime implements Runtime {
 
     /** The CURRENT pane id for this terminal — resolved fresh for every pane-scoped op, never
      *  the (possibly stale) id from spawn time. Gone terminal → HerdrCliError(pane_not_found). */
-    const currentPane = (): string => {
-      const info = herdr.agentInfo(session, terminalId);
+    const currentPane = (opts: { timeoutMs?: number } = {}): string => {
+      const info = herdr.agentInfo(session, terminalId, opts);
       if (!info) throw new herdr.HerdrCliError("pane_not_found", `terminal ${terminalId} is gone`);
       return info.paneId;
     };
 
     watch?.({
       read: () => {
-        const info = herdr.agentInfo(session, terminalId, CONFIRM_READ);
-        return info && herdr.readPane(session, info.paneId, CONFIRM_READ);
+        const info = herdr.agentInfo(session, terminalId, CONFIRM_CALL);
+        return info && herdr.readPane(session, info.paneId, CONFIRM_CALL);
       },
-      enter: () => herdr.sendKeys(session, currentPane(), "enter"),
+      enter: () => herdr.sendKeys(session, currentPane(CONFIRM_CALL), "enter", CONFIRM_CALL),
       fail: (message) => {
         console.error(`herdr runtime: "${name}": ${message}`);
         try {
-          herdr.closePane(session, currentPane());
+          herdr.closePane(session, currentPane(CONFIRM_CALL), CONFIRM_CALL);
         } catch (err) {
           if (!(err instanceof herdr.HerdrCliError && err.code === "pane_not_found"))
             console.error(`herdr runtime: failed to close pane for "${name}":`, err);
