@@ -73,7 +73,7 @@ export class TmuxRuntime implements Runtime {
     const { windowId, paneId, serverPid } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
 
     // A restarted tmux server reuses window and pane ids, so the watch acts only on the one that opened
-    // this window.
+    // this window. It ends the seat's pane, wherever it is now: the window may hold another pane by then.
     const call = { ...CONFIRM_CALL, server: serverPid };
     watch?.({
       read: () => tmux.capturePane(paneId, serverPid),
@@ -81,9 +81,9 @@ export class TmuxRuntime implements Runtime {
       fail: (message) => {
         console.error(`tmux runtime: "${name}": ${message}`);
         try {
-          tmux.closeWindow(windowId, call);
+          tmux.closePane(paneId, call);
         } catch (err) {
-          console.error(`tmux runtime: failed to close window for "${name}":`, err);
+          console.error(`tmux runtime: failed to close pane for "${name}":`, err);
         }
       },
     });

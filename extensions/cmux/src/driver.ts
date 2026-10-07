@@ -17,7 +17,9 @@ function cmuxBin(): string {
  * anywhere else.
  */
 function cmux(args: string[], opts: { timeoutMs?: number } = {}): string {
-  return execFileSync(cmuxBin(), args, { encoding: "utf8", timeout: opts.timeoutMs }).trim();
+  // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM would
+  // outlast the timeout.
+  return execFileSync(cmuxBin(), args, { encoding: "utf8", timeout: opts.timeoutMs, killSignal: "SIGKILL" }).trim();
 }
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;

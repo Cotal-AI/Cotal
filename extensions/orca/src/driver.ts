@@ -104,6 +104,9 @@ function execOrca(args: string[], opts: { cwd?: string; timeoutMs?: number } = {
         stdio: ["ignore", "pipe", "pipe"],
         maxBuffer: MAX_BUFFER,
         timeout: opts.timeoutMs,
+        // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM
+        // would outlast the timeout.
+        killSignal: "SIGKILL",
       });
       if (!explicit) selectedBin = bin;
       return out;

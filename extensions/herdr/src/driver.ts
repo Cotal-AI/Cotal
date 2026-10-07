@@ -111,6 +111,9 @@ export function run(
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: opts.timeoutMs ?? RUN_TIMEOUT_MS,
+      // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM would
+      // outlast the timeout.
+      killSignal: "SIGKILL",
     });
   } catch (err) {
     // A JSON error rides stderr (sometimes stdout) with a nonzero exit; surface its code.
@@ -499,6 +502,7 @@ export function readPane(session: string, paneId: string, opts: { timeoutMs?: nu
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: opts.timeoutMs ?? RUN_TIMEOUT_MS,
+    killSignal: "SIGKILL",
   });
 }
 
