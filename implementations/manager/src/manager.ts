@@ -111,7 +111,6 @@ import {
   publishContractArtifact,
   contractArtifactCanonicalBytes,
   standaloneConnectOpts,
-  STATIC_SLOT_PREFIX,
   rawDigest,
   STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
   newArtifactSigner,
@@ -200,6 +199,7 @@ import {
   ownedBySibling,
   observeStaticSlot,
   listStaticSlotObservations,
+  walkStaticSlots,
   renderStaticSlotObservation,
   StaticSlotReadError,
   STATIC_SLOT_READ_FAILED_DETAIL,
@@ -9623,14 +9623,7 @@ export class Manager {
         const kvm = new Kvm(nc);
         await ensureAuthorityStores(jsm, kvm, this.space);
         const recordsKv = await kvm.open(recordsBucket(this.space));
-        const t = staticLifecycleTransport(recordsKv, recordsKv /* auth reads unused in the sweep */);
-        const keys = await recordsKv.keys(`${STATIC_SLOT_PREFIX}.${DEV_OWNER}.>`);
-        const aliases: string[] = [];
-        for await (const k of keys) aliases.push(k.split(".").slice(2).join("."));
-        for (const alias of aliases) {
-          const slot = await readStaticSlot(t, DEV_OWNER, alias);
-          if (slot !== undefined) slotRows.push(slot.row);
-        }
+        for (const slot of await walkStaticSlots(recordsKv, DEV_OWNER)) slotRows.push(slot.row);
       } catch (error) {
         sweep.completedAt = new Date().toISOString();
         throw error;

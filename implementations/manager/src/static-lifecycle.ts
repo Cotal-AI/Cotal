@@ -46,7 +46,7 @@ import {
   headCompleteRetirement,
   type EvictionResult,
   STATIC_SLOT_PREFIX,
-  walkKvEntries,
+  walkKvLatest,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
 
@@ -171,8 +171,8 @@ export async function observeStaticSlot(
 }
 
 /** Enumerate every nonretired durable static slot this manager instance owns, projected the same
- * way `observeStaticSlot` projects one. It walks the owner's `STATIC_SLOT_PREFIX` key range, the
- * range the boot sweep in `Manager.reconcileStaticLifecycles` also walks. Sibling-owned rows
+ * way `observeStaticSlot` projects one. It reads the rows through {@link walkStaticSlots}, the
+ * enumeration the boot sweep in `Manager.reconcileStaticLifecycles` also uses. Sibling-owned rows
  * ({@link ownedBySibling}) and `retired` rows are dropped BEFORE the head read, so N slot rows cost
  * N slot reads plus only the survivors' head reads. Sorted by alias. */
 export async function listStaticSlotObservations(
@@ -181,21 +181,8 @@ export async function listStaticSlotObservations(
   managerInstanceId: string,
 ): Promise<StaticSlotObservationDetail[]> {
   const t = staticLifecycleTransport(recordsKv, recordsKv);
-  // `.keys()` binds an ephemeral ordered CONSUMER, a verb the goal-writer's standing connection
-  // is deliberately denied on the records stream (SPEC 13.9 site 3 / nats-server#8274: a
-  // CONSUMER.CREATE body is not subject-ACL confinable, so a durable minted here would outlive
-  // this connection). `walkKvEntries` reads the same rows over `STREAM.MSG.GET`, the verb the
-  // goal-writer already holds for every point read (`commitPrincipalGrants`).
-  const entries = await walkKvEntries(recordsKv, `${STATIC_SLOT_PREFIX}.${owner}.>`);
-  const survivors: { row: StaticManagedSlotRow; revision: number }[] = [];
-  for (const e of entries) {
-    if (e.operation !== "PUT")
-      throw new EpEnvelopeError("failed-precondition", `the static slot row ${e.key} carries a ${e.operation} marker; a slot row is never deleted (corruption, not absence)`);
-    const row = parseStaticSlotRow(e.value, e.key);
-    if (ownedBySibling(row, managerInstanceId)) continue;
-    if (row.phase === "retired") continue;
-    survivors.push({ row, revision: e.revision });
-  }
+  const survivors = (await walkStaticSlots(recordsKv, owner))
+    .filter(({ row }) => !ownedBySibling(row, managerInstanceId) && row.phase !== "retired");
   const out: StaticSlotObservationDetail[] = [];
   for (const slot of survivors) {
     const head = await boundedStaticRead("head", headCandidate(t, slot.row.owner, slot.row.actor));
@@ -286,6 +273,12 @@ export function staticLifecycleTransport(recordsKv: KV, authKv: KV): LifecycleSt
   };
 }
 
+function slotOf(key: string, entry: LifecycleKvEntry): { row: StaticManagedSlotRow; revision: number } {
+  if (entry.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", `the static slot row ${key} carries a ${entry.operation} marker; a slot row is never deleted (corruption, not absence)`);
+  return { row: parseStaticSlotRow(entry.value, key), revision: entry.revision };
+}
+
 /** Read one slot row (DEL/PURGE marker = corruption, never absence — supervision state is
  *  CASed over, never deleted). */
 export async function readStaticSlot(
@@ -295,10 +288,18 @@ export async function readStaticSlot(
 ): Promise<{ row: StaticManagedSlotRow; revision: number } | undefined> {
   const key = staticSlotKey(owner, alias);
   const entry = await t.getRecord(key);
-  if (!entry) return undefined;
-  if (entry.operation !== "PUT")
-    throw new EpEnvelopeError("failed-precondition", `the static slot row ${key} carries a ${entry.operation} marker; a slot row is never deleted (corruption, not absence)`);
-  return { row: parseStaticSlotRow(entry.value, key), revision: entry.revision };
+  return entry ? slotOf(key, entry) : undefined;
+}
+
+/** Read every slot row of `owner` in one walk of its `STATIC_SLOT_PREFIX` key range. The walk keeps
+ *  markers, because a reader that skipped one would report a corrupt row as absent where
+ *  {@link readStaticSlot} refuses it. It reads over `STREAM.MSG.GET`, the verb every point read
+ *  already holds: `.keys()` would bind an ephemeral ordered CONSUMER, which the goal-writer's
+ *  standing connection is deliberately denied on the records stream (SPEC 13.9 site 3 /
+ *  nats-server#8274: a CONSUMER.CREATE body is not subject-ACL confinable, so a durable minted
+ *  there would outlive the connection). */
+export async function walkStaticSlots(recordsKv: KV, owner: string): Promise<{ row: StaticManagedSlotRow; revision: number }[]> {
+  return (await walkKvLatest(recordsKv, `${STATIC_SLOT_PREFIX}.${owner}.>`)).map((e) => slotOf(e.key, e));
 }
 
 /** Persist the F3 durable OUTER spawn intent — phase `provisioning`, written BEFORE the head
