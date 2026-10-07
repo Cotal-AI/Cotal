@@ -3,7 +3,7 @@
 "@cotal-ai/core": minor
 ---
 
-Expose the auth context's owned connection inventory and terminal `closed` signal. Underlying connection close failures now reject with their labels instead of being suppressed. Add a read-only, space-bound `readPlaneClaim` export and an account-scoped `observeAccountLivenessWithCreds` observer over the existing native CONNZ sweep.
+Expose the auth context's owned connection inventory and terminal `closed` signal (#3054). Underlying connection close failures now reject with their labels instead of being suppressed. Add a read-only, space-bound `readPlaneClaim` export (#3270) and an account-scoped `observeAccountLivenessWithCreds` observer over the existing native CONNZ sweep.
 
 UPGRADING (`@cotal-ai/auth`): After `close()` or `drain()`, await `handle.closed` to prove all owned connections ended. `handle.connections()` returns a detached snapshot, including replaced readiness readers and short-lived clients. A close failure leaves the end signal pending while a connection remains live. Repair the failure and retry `close()` before awaiting the terminal signal. Read another process's claim with `readPlaneClaim(kv, space)` using that account's leader-only auth bucket. An unclaimed space returns `undefined`. Deleted or malformed claim rows refuse, and the package now exports `PlaneClaimRow` and `PLANE_CLAIM_KEY`.
 
