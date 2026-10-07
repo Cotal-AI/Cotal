@@ -331,50 +331,6 @@ export const Beam: React.FC<{
   );
 };
 
-// A pulse of light running along a wire: a tapered dash sliding down the path,
-// with a small bright head. No comet balls.
-export const Pulse: React.FC<{
-  d: string;
-  pos: (t: number) => Pt;
-  t: number; // eased 0..1
-  visible: boolean;
-}> = ({ d, pos, t, visible }) => {
-  if (!visible) return null;
-  const TAIL = 0.16;
-  const head = pos(t);
-  // dash window [t - TAIL, t], clamped by offset motion
-  const off = -(t - TAIL);
-  return (
-    <>
-      <svg style={{ position: "absolute", inset: 0 }} width="100%" height="100%">
-        <path
-          d={d}
-          pathLength={1}
-          stroke={GOLD}
-          strokeOpacity={0.28}
-          strokeWidth={2.5}
-          strokeLinecap="round"
-          strokeDasharray={`${TAIL} 1`}
-          strokeDashoffset={off}
-          fill="none"
-        />
-        <path
-          d={d}
-          pathLength={1}
-          stroke={GOLD}
-          strokeOpacity={0.85}
-          strokeWidth={2.5}
-          strokeLinecap="round"
-          strokeDasharray={`${TAIL * 0.4} 1`}
-          strokeDashoffset={-(t - TAIL * 0.4)}
-          fill="none"
-        />
-      </svg>
-      <Dot at={head} />
-    </>
-  );
-};
-
 // A concentric gold ring expanding from a point and fading. Multicast's
 // signature "broadcast" beat. p is eased 0..1; render one or two staggered.
 export const Ripple: React.FC<{ at: Pt; p: number }> = ({ at, p }) => {
