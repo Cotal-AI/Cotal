@@ -140,6 +140,17 @@ function splitList(v: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/** One boolean `COTAL_*` flag: `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off` in any case, and
+ *  `undefined` when unset or blank so the caller keeps its own default. Any other value throws,
+ *  because reading it as off starts the session with the feature quietly disabled. */
+export function envFlag(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
+  const value = env[name]?.trim();
+  if (!value) return undefined;
+  if (/^(1|true|yes|on)$/i.test(value)) return true;
+  if (/^(0|false|no|off)$/i.test(value)) return false;
+  throw new Error(`COTAL config: ${name} must be 1/true/yes/on or 0/false/no/off, got "${env[name]}"`);
+}
+
 /**
  * Drop the reference to the launch material once this process has read it.
  *
@@ -295,7 +306,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
       bearerCmd: bearerCmd as string[],
     };
   }
-  const eventsRequired = material?.eventsRequired === true || (!material && /^(1|true|yes|on)$/i.test(env.COTAL_EVENTS_REQUIRED ?? ""));
+  const eventsRequired = material?.eventsRequired === true || (!material && envFlag(env, "COTAL_EVENTS_REQUIRED") === true);
   if (eventsRequired && !userAuth)
     throw new Error("COTAL config: COTAL_EVENTS_REQUIRED is valid only for a user-mode registration launch");
   if (eventsRequired) {

@@ -115,8 +115,9 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   way, only the UI differs.
   **Which mode you get** is decided by whether *stdout* is a terminal, and `COTAL_CODEX_TUI=1|0`
   overrides that check when it would guess wrong (a wrapper that redirects output, a CI run that
-  wants deterministic text). It is read from the environment of **whichever process builds the
-  launch**, so set it in the right place:
+  wants deterministic text). The host refuses any value outside the on/off spellings in
+  [Configuration](config.md#environment-variables) when it starts. It is read from the environment
+  of **whichever process builds the launch**, so set it in the right place:
   - foreground `cotal spawn`: your own shell, per spawn;
   - detached (`-d`): the **manager's** environment, because the manager builds the launch. Set it
     where you start the manager (`COTAL_CODEX_TUI=0 cotal up`) and it applies to every codex agent

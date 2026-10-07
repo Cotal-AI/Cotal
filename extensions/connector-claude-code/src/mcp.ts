@@ -12,6 +12,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   configFromEnv,
+  envFlag,
   hasIdentity,
   MeshAgent,
   startControlServer,
@@ -86,10 +87,13 @@ async function main(): Promise<void> {
   }
   const config = configFromEnv();
   config.connector = "claude"; // advertise the host harness on our AgentCard (meta.connector)
+  // Parsed here, not in the handshake handler that applies it: the SDK routes a throw from that
+  // handler to its error hook and the session would run on with the flag unread.
+  const channelFlag = envFlag(process.env, "COTAL_CHANNEL");
   const agent = new MeshAgent(config);
   agent.start(); // background connect with retry — never blocks tool serving
 
-  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "") || config.eventsRequired) {
+  if (envFlag(process.env, "COTAL_EVENTS") || config.eventsRequired) {
     // The mapper is built inside the emitter factory, because it is keyed on the thread the
     // transcript names and that is not known until a hook hands one over. It is HELD here because
     // `onRunClosed` below has to reach it, and the two are assigned at different times.
@@ -270,10 +274,8 @@ async function main(): Promise<void> {
   // attached, before any client message has been read. The handlers registered above no-op until then.
   server.server.oninitialized = () => {
     const clientCaps = server.server.getClientCapabilities();
-    const envFlag = process.env.COTAL_CHANNEL;
-    const channelActive = envFlag
-      ? /^(1|true|yes|on)$/i.test(envFlag)
-      : Boolean((clientCaps?.experimental as Record<string, unknown> | undefined)?.["claude/channel"]);
+    const channelActive =
+      channelFlag ?? Boolean((clientCaps?.experimental as Record<string, unknown> | undefined)?.["claude/channel"]);
     wake?.setChannelActive(channelActive);
     process.stderr.write(
       `[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}\n`,

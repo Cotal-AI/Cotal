@@ -52,6 +52,7 @@ import {
   WORKFLOW_STEER,
   configFromEnv,
   controlFromEnv,
+  envFlag,
   feedbackLine,
   formatInjection,
   parseToolArgs,
@@ -394,7 +395,7 @@ export async function runJcodeHost(): Promise<void> {
   const control = controlFromEnv();
   if (!control) throw new Error("jcode connector: managed session has no control endpoint");
   const binary = process.env.COTAL_JCODE_BIN?.trim() || "jcode";
-  const tuiOverride = process.env.COTAL_JCODE_TUI?.trim();
+  const tuiOverride = envFlag(process.env, "COTAL_JCODE_TUI");
   const bootPrompt = process.env.COTAL_JCODE_PROMPT?.trim();
   // Startup owns the kickoff until the Harness request is invoked. Any return before that boundary
   // is provably unsent and safe to defer; after invocation acceptance is not knowable, so it is
@@ -405,7 +406,7 @@ export async function runJcodeHost(): Promise<void> {
   // the sole reader of Cotal material and every COTAL_ key is deleted from the environment before
   // the private instance is launched, so a value read at launch time would always be absent.
   const requestTimeoutMs = requestTimeoutOverrideMs();
-  const eventsArmed = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "");
+  const eventsArmed = envFlag(process.env, "COTAL_EVENTS") === true;
   const eventsWorkspaceRoot = eventsArmed ? resolveEventsStateRoot(process.env) : undefined;
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const cwd = process.cwd();
@@ -1944,7 +1945,7 @@ export async function runJcodeHost(): Promise<void> {
       await client.sendMessage(sessionId, instructions(config, def?.persona || undefined), { noReply: true });
       if (fork) markJcodeForkBriefed(home, resumeSource!);
     }
-    const useTui = tuiOverride ? /^(1|true|yes|on)$/i.test(tuiOverride) : Boolean(process.stdout.isTTY);
+    const useTui = tuiOverride ?? Boolean(process.stdout.isTTY);
     // The viewer needs only the fresh session's socket. Start it before the readiness LLM turn so
     // a foreground operator sees boot activity while presence remains gated on readiness below.
     if (useTui) launchTui();
