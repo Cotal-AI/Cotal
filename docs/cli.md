@@ -36,7 +36,7 @@ pnpm build
 COTAL_SKIP_CONNECTOR_SEED=1 pnpm cotal status
 ```
 
-Pointing `XDG_CONFIG_HOME` at a scratch dir, as the refusal suggests, is not enough by itself. A test
+Pointing `XDG_CONFIG_HOME` at a scratch dir is not enough by itself. A test
 that needs the seed from a checkout also sets `COTAL_ALLOW_CHECKOUT_SEED=1`, as described under
 [Built-in connectors are seeded extensions](#built-in-connectors-are-seeded-extensions).
 
