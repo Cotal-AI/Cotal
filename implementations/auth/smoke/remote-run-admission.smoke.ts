@@ -78,7 +78,7 @@ try {
   const okRun = runId();
   const okSubject = subjectFor(alice);
   const result = await admitRemoteRun({
-    request: { ...base, requestId: "req-ok", registrationProof: proof, run: { runId: okRun, subject: okSubject } },
+    request: { ...base, requestId: `req-${okRun}`, registrationProof: proof, run: { runId: okRun, subject: okSubject } },
     owner: OWNER, space: SPACE, accountPublicKey: ACCOUNT, proofSecret: SECRET, endpoint: "manager",
     observeManagerGate: async () => gate, issued, sourceIsLive: async (s) => liveKeys.has(s.key), takeObserved, admissions,
   }).catch((e: Error) => e);
@@ -271,7 +271,7 @@ try {
   // Positive HTTP route check
   const httpOkRun = runId();
   await publishRunStart(httpAlice);
-  const httpOkRes = await postHttp({ ...httpBaseReq, requestId: "req-http-ok", registrationProof: httpProof, run: { runId: httpOkRun, subject: httpSubjectFor(httpAlice) } });
+  const httpOkRes = await postHttp({ ...httpBaseReq, requestId: `req-${httpOkRun}`, registrationProof: httpProof, run: { runId: httpOkRun, subject: httpSubjectFor(httpAlice) } });
   const httpOkView = await readRunAdmission(jsm, SPACE, "manager", httpOkRun).catch((e: Error) => e);
   c("HTTP route: a registered manager's forwarded v1 run-start admits and writes the admission record",
     httpOkRes.status === 200 && (httpOkRes.body as { v?: number }).v === 1 && !(httpOkView instanceof Error) &&
@@ -279,7 +279,7 @@ try {
 
   // Negative HTTP: missing supervise scope
   const nosupProof = remoteManagerCurrentRegistrationProof(auth.account.signingSeed, httpOwner, { ...httpBaseReq, actor: "nosupervise" }, httpGate);
-  const nosupRes = await postHttp({ ...httpBaseReq, actor: "nosupervise", requestId: "req-nosup", registrationProof: nosupProof, run: { runId: runId(), subject: httpSubjectFor(httpAlice) } });
+  const nosupRes = await postHttp({ ...httpBaseReq, actor: "nosupervise", requestId: `req-${mintLifecycleUid()}`, registrationProof: nosupProof, run: { runId: runId(), subject: httpSubjectFor(httpAlice) } });
   c("HTTP route: missing supervise scope refuses (403)",
     nosupRes.status === 403 && String(nosupRes.body.error).includes('manager run admission needs scope "supervise"'), nosupRes);
 
@@ -287,39 +287,39 @@ try {
   const forgedHttpRun = runId();
   const forgedCaller = { ...httpAlice, generation: mintGeneration() };
   await publishRunStart(forgedCaller);
-  const forgedHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-forged", registrationProof: httpProof, run: { runId: forgedHttpRun, subject: httpSubjectFor(forgedCaller) } });
+  const forgedHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${forgedHttpRun}`, registrationProof: httpProof, run: { runId: forgedHttpRun, subject: httpSubjectFor(forgedCaller) } });
   c("HTTP route: a forged generation refuses (403)",
     forgedHttpRes.status === 403 && String(forgedHttpRes.body.error).includes("no issued evidence") && await absent(forgedHttpRun), forgedHttpRes);
 
   // Negative HTTP: stale source
   const staleHttpRun = runId();
   await publishRunStart(httpDave);
-  const staleHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-stale", registrationProof: httpProof, run: { runId: staleHttpRun, subject: httpSubjectFor(httpDave) } });
+  const staleHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${staleHttpRun}`, registrationProof: httpProof, run: { runId: staleHttpRun, subject: httpSubjectFor(httpDave) } });
   c("HTTP route: a generation whose source is no longer live refuses (403)",
     staleHttpRes.status === 403 && String(staleHttpRes.body.error).includes("no longer live") && await absent(staleHttpRun), staleHttpRes);
 
   // Negative HTTP: foreign space
   const fsHttpRun = runId();
-  const fsHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-fs", registrationProof: httpProof, run: { runId: fsHttpRun, subject: httpSubjectFor(httpAlice, { space: "other" }) } });
+  const fsHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${fsHttpRun}`, registrationProof: httpProof, run: { runId: fsHttpRun, subject: httpSubjectFor(httpAlice, { space: "other" }) } });
   c("HTTP route: a subject of another space refuses (403)",
     fsHttpRes.status === 403 && String(fsHttpRes.body.error).includes("served v1 run-start subject") && await absent(fsHttpRun), fsHttpRes);
 
   // Negative HTTP: foreign manager instance
   const fiHttpRun = runId();
-  const fiHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-fi", registrationProof: httpProof, run: { runId: fiHttpRun, subject: httpSubjectFor(httpAlice, { instance: mintLifecycleUid() }) } });
+  const fiHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${fiHttpRun}`, registrationProof: httpProof, run: { runId: fiHttpRun, subject: httpSubjectFor(httpAlice, { instance: mintLifecycleUid() }) } });
   c("HTTP route: a subject addressed to another manager instance refuses (403)",
     fiHttpRes.status === 403 && String(fiHttpRes.body.error).includes("instance") && await absent(fiHttpRun), fiHttpRes);
 
   // Negative HTTP: revoked generation
   const rvHttpRun = runId();
   await publishRunStart(httpCarol);
-  const rvHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-rv", registrationProof: httpProof, run: { runId: rvHttpRun, subject: httpSubjectFor(httpCarol) } });
+  const rvHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${rvHttpRun}`, registrationProof: httpProof, run: { runId: rvHttpRun, subject: httpSubjectFor(httpCarol) } });
   c("HTTP route: a revoked generation refuses (403)",
     rvHttpRes.status === 403 && String(rvHttpRes.body.error).includes("revoked") && await absent(rvHttpRun), rvHttpRes);
 
   // Negative HTTP: caller-supplied ceiling field
   const clHttpRun = runId();
-  const clHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-cl", registrationProof: httpProof, ceiling: { publish: { allow: { mode: "all" }, deny: [] } }, run: { runId: clHttpRun, subject: httpSubjectFor(httpAlice) } });
+  const clHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${clHttpRun}`, registrationProof: httpProof, ceiling: { publish: { allow: { mode: "all" }, deny: [] } }, run: { runId: clHttpRun, subject: httpSubjectFor(httpAlice) } });
   c("HTTP route: a caller-supplied ceiling field refuses before any write",
     (clHttpRes.status === 400 || clHttpRes.status === 403) && String(clHttpRes.body.error).includes("unknown field ceiling") && await absent(clHttpRun), clHttpRes);
 

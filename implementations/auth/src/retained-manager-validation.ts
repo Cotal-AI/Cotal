@@ -5,7 +5,7 @@ import {
   assertPrincipalOwnerToken,
   assertValidOwnerToken,
   remoteManagerActors,
-  parseRemoteManagerIdentities,
+  parseRemoteManagerEnvelope,
   type RemoteRetainedAgentValidationRequest,
   type RemoteRetainedAgentValidationResult,
   type RetainedAgentAuthority,
@@ -53,21 +53,13 @@ export function parseRemoteRetainedAgentValidationRequest(raw: unknown, opts: { 
     "registrationProof", "serveEpoch", "identities", "target", "actorToken", "sentinelCreds",
   ]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  if (o.v !== 1 || o.kind !== "manager-retained-agent-validation")
-    requestError('must carry { v: 1, kind: "manager-retained-agent-validation" }');
-  for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "actorToken", "sentinelCreds"] as const)
+  const envelope = parseRemoteManagerEnvelope(o, "manager-retained-agent-validation", requestError);
+  for (const key of ["actorToken", "sentinelCreds"] as const)
     if (typeof o[key] !== "string" || o[key].length === 0) requestError(`requires non-empty ${key}`);
   if ((o.actorToken as string).length > 4096 || (o.sentinelCreds as string).length > 16 * 1024)
     requestError("secret material exceeds its bounded wire size");
-  assertValidOwnerToken(o.actor as string);
-  assertLifecycleToken(o.instanceId as string, "manager retained validation instanceId");
-  assertLifecycleToken(o.managerLifecycleUid as string, "manager retained validation lifecycleUid");
-  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string)) requestError("requestId must be a 22-64 character idempotency token");
-  if (!/^sha256:[0-9a-f]{64}$/.test(o.registrationProof as string)) requestError("requires a sha256 registrationProof");
   if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0)
     requestError("serveEpoch must be a non-negative safe integer");
-
-  const identities = parseRemoteManagerIdentities(o.identities, requestError);
 
   const target = o.target;
   if (target === null || typeof target !== "object" || Array.isArray(target) ||
@@ -85,14 +77,8 @@ export function parseRemoteRetainedAgentValidationRequest(raw: unknown, opts: { 
   return {
     v: 1,
     kind: "manager-retained-agent-validation",
-    space: o.space as string,
-    actor: o.actor as string,
-    instanceId: o.instanceId as string,
-    managerLifecycleUid: o.managerLifecycleUid as string,
-    requestId: o.requestId as string,
-    registrationProof: o.registrationProof as string,
+    ...envelope,
     serveEpoch: o.serveEpoch,
-    identities,
     target: parsedTarget,
     actorToken: o.actorToken as string,
     sentinelCreds: o.sentinelCreds as string,

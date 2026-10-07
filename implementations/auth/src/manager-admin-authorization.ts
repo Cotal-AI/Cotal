@@ -5,7 +5,7 @@ import {
   assertLifecycleToken,
   assertValidOwnerToken,
   remoteManagerActors,
-  parseRemoteManagerIdentities,
+  parseRemoteManagerEnvelope,
   type RemoteManagerAdminAuthorizationRequest,
   type RemoteManagerAdminAuthorizationResult,
   type PlatformControlAssignment,
@@ -25,16 +25,8 @@ export function parseRemoteManagerAdminAuthorizationRequest(raw: unknown, opts: 
   const o = raw as Record<string, unknown>;
   const fields = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "caller"];
   for (const key of Object.keys(o)) if (!fields.includes(key)) bad(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  if (o.v !== 1 || o.kind !== "manager-admin-authorization") bad('must carry { v: 1, kind: "manager-admin-authorization" }');
-  for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof"] as const)
-    if (typeof o[key] !== "string" || o[key].length === 0) bad(`requires non-empty ${key}`);
-  assertValidOwnerToken(o.actor as string);
-  assertLifecycleToken(o.instanceId as string, "manager admin authorization instanceId");
-  assertLifecycleToken(o.managerLifecycleUid as string, "manager admin authorization lifecycleUid");
-  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string)) bad("requestId must be a 22-64 character idempotency token");
-  if (!/^sha256:[0-9a-f]{64}$/.test(o.registrationProof as string)) bad("requires a sha256 registrationProof");
+  const envelope = parseRemoteManagerEnvelope(o, "manager-admin-authorization", bad);
   if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0) bad("serveEpoch must be a non-negative safe integer");
-  const identities = parseRemoteManagerIdentities(o.identities, bad);
   if (o.caller === null || typeof o.caller !== "object" || Array.isArray(o.caller)) bad("requires caller");
   const caller = o.caller as Record<string, unknown>;
   if (Object.keys(caller).sort().join(",") !== "actor,lifecycleUid,owner") bad("caller must contain exactly owner, actor, lifecycleUid");
@@ -45,10 +37,7 @@ export function parseRemoteManagerAdminAuthorizationRequest(raw: unknown, opts: 
   assertValidOwnerToken(caller.actor as string);
   assertLifecycleToken(caller.lifecycleUid as string, "manager admin authorization caller lifecycleUid");
   return {
-    v: 1, kind: "manager-admin-authorization", space: o.space as string, actor: o.actor as string,
-    instanceId: o.instanceId as string, managerLifecycleUid: o.managerLifecycleUid as string,
-    requestId: o.requestId as string, registrationProof: o.registrationProof as string,
-    serveEpoch: o.serveEpoch as number, identities,
+    v: 1, kind: "manager-admin-authorization", ...envelope, serveEpoch: o.serveEpoch as number,
     caller: { owner: caller.owner as string, actor: caller.actor as string, lifecycleUid: caller.lifecycleUid as string },
   };
 }

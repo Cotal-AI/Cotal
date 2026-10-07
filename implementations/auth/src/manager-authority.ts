@@ -6,6 +6,7 @@ import {
   assertLifecycleToken,
   assertValidOwnerToken,
   managedRetirementOpId,
+  parseRemoteManagerEnvelope,
   parseRemoteManagerIdentities,
   remoteManagerActors,
   type RemoteManagerAuthorityMaterial,
@@ -113,6 +114,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     requestError('operation must be "prepare", "activate", "renew", "session", "retire", "renewStandingBundle", "renewRunDriver", or "transferReader"');
   for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId"] as const)
     if (typeof o[key] !== "string" || o[key].length === 0) requestError(`requires non-empty ${key}`);
+  assertValidOwnerToken(o.actor as string);
   assertLifecycleToken(o.instanceId as string, "manager authority instanceId");
   assertLifecycleToken(o.managerLifecycleUid as string, "manager authority lifecycleUid");
   if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string)) requestError("requestId must be a 22-64 character idempotency token");
@@ -285,22 +287,15 @@ export function parseRemoteRunAdmissionRequest(raw: unknown): RemoteRunAdmission
   const o = raw as Record<string, unknown>;
   const allowed = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "accountPublicKey", "processEpoch", "identities", "run"];
   for (const k of Object.keys(o)) if (!allowed.includes(k)) admissionError(`has unknown field ${k}`);
-  if (o.v !== 1 || o.kind !== "manager-run-admission") admissionError("must be v1 manager-run-admission");
-  for (const k of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId", "accountPublicKey"] as const)
-    if (typeof o[k] !== "string" || (o[k] as string).length === 0) admissionError(`requires ${k}`);
-  assertLifecycleToken(o.instanceId as string, "instanceId");
-  assertLifecycleToken(o.managerLifecycleUid as string, "managerLifecycleUid");
-  if (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof)) admissionError("requires a sha256 registrationProof");
+  const envelope = parseRemoteManagerEnvelope(o, "manager-run-admission", admissionError);
+  if (typeof o.accountPublicKey !== "string" || o.accountPublicKey.length === 0) admissionError("requires accountPublicKey");
   if (!Number.isSafeInteger(o.processEpoch) || (o.processEpoch as number) < 0) admissionError("requires a non-negative processEpoch");
-  const identities = parseRemoteManagerIdentities(o.identities, admissionError);
   const run = o.run as Record<string, unknown> | null;
   if (run === null || typeof run !== "object" || Object.keys(run).sort().join(",") !== "runId,subject" ||
       typeof run.runId !== "string" || !/^run-[0-9a-f]{32}$/.test(run.runId) || typeof run.subject !== "string")
     admissionError("requires exactly run.runId (host-minted) and run.subject");
   return {
-    v: 1, kind: "manager-run-admission", space: o.space as string, actor: o.actor as string, instanceId: o.instanceId as string,
-    managerLifecycleUid: o.managerLifecycleUid as string, requestId: o.requestId as string, registrationProof: o.registrationProof as string,
-    accountPublicKey: o.accountPublicKey as string, processEpoch: o.processEpoch as number, identities,
+    v: 1, kind: "manager-run-admission", ...envelope, accountPublicKey: o.accountPublicKey, processEpoch: o.processEpoch as number,
     run: { runId: run.runId as string, subject: run.subject as string },
   };
 }
