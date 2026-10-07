@@ -2,7 +2,7 @@
 // dave busy); bob is busy, so the message parks durably in his inbox and
 // delivers the moment he frees up. Unicast is point-to-point, so there is no
 // shared hub at center: the inbox lives on the direct route to bob, its owner.
-// Loops seamlessly at the length Root.tsx registers.
+// Loops seamlessly at UNICAST_DURATION.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";
@@ -51,6 +51,8 @@ const T = {
   flashEnd: 140,
   bobBack: 152,
 };
+
+export const UNICAST_DURATION = 168;
 
 export const ModeUnicast: React.FC = () => {
   const frame = useCurrentFrame();
