@@ -165,13 +165,15 @@ function firstH1(md) {
 const textOf = (node) => (node.nodeName === '#text' ? node.value : (node.childNodes ?? []).map(textOf).join(''));
 
 // Every page opens with a banner blockquote and some with headings, so the description is the
-// first top-level paragraph after them. It is rendered and read back as text, so a link keeps its
-// label and loses its target.
+// first top-level paragraph after them that has text; an image alone has none. It is rendered and
+// read back as text, so a link keeps its label and loses its target.
 function firstParagraph(md, rel) {
-  const paragraph = marked.lexer(md).find((token) => token.type === 'paragraph');
-  if (!paragraph) throw new Error(`no paragraph to describe the page: ${rel}`);
-  const text = textOf(parseFragment(marked.parser([paragraph]))).replace(/\s+/g, ' ').trim();
-  return text.length <= 160 ? text : `${text.slice(0, 159).replace(/\s+\S*$/, '')}…`;
+  for (const token of marked.lexer(md)) {
+    if (token.type !== 'paragraph') continue;
+    const text = textOf(parseFragment(marked.parser([token]))).replace(/\s+/g, ' ').trim();
+    if (text) return text.length <= 160 ? text : `${text.slice(0, 159).replace(/\s+\S*$/, '')}…`;
+  }
+  throw new Error(`no paragraph with text to describe the page: ${rel}`);
 }
 
 function yamlEscape(s) {
