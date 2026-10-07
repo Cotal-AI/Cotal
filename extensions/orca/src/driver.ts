@@ -6,6 +6,9 @@ const MAX_BUFFER = 16 * 1024 * 1024;
 const PROBE_CACHE_MS = 250;
 const MAX_WORKTREE_PARENT_PROBES = 12;
 const EXIT_WAIT_MS = 8_000;
+/** Bounds every read-only call. They run synchronously on the manager's event loop, so an Orca app
+ *  that is up but not answering would otherwise block the whole manager for as long as it stalls. */
+const PROBE_MS = 2_000;
 
 export interface OrcaWorktree {
   id: string;
@@ -227,7 +230,7 @@ export function available(): boolean {
   const cacheable = !process.env.COTAL_ORCA_BIN?.trim();
   if (cacheable && availableCache && Date.now() - availableCache.at < PROBE_CACHE_MS) return availableCache.value;
   try {
-    const r = request<{ runtime?: { reachable?: boolean } }>(["status", "--json"]);
+    const r = request<{ runtime?: { reachable?: boolean } }>(["status", "--json"], { timeoutMs: PROBE_MS });
     const value = r.ok === true && r.result?.runtime?.reachable === true;
     if (cacheable) availableCache = { at: Date.now(), value };
     return value;
@@ -244,7 +247,7 @@ export function resolveWorktree(cwd: string): OrcaWorktree {
   assertDir(requested);
   const abs = realpathSync(requested);
 
-  const current = request<WorktreeResult>(["worktree", "current", "--json"], { cwd: abs });
+  const current = request<WorktreeResult>(["worktree", "current", "--json"], { cwd: abs, timeoutMs: PROBE_MS });
   if (current.ok !== false && current.result?.worktree?.id && current.result.worktree.path) {
     const wt = current.result.worktree;
     if (isUnder(realpathSync(wt.path), abs)) return wt;
@@ -252,7 +255,9 @@ export function resolveWorktree(cwd: string): OrcaWorktree {
 
   let probes = 0;
   for (let dir = abs; probes < MAX_WORKTREE_PARENT_PROBES; probes++) {
-    const shown = request<WorktreeResult>(["worktree", "show", "--worktree", `path:${dir}`, "--json"]);
+    const shown = request<WorktreeResult>(["worktree", "show", "--worktree", `path:${dir}`, "--json"], {
+      timeoutMs: PROBE_MS,
+    });
     if (shown.ok !== false && shown.result?.worktree?.id && shown.result.worktree.path) {
       const wt = shown.result.worktree;
       if (isUnder(realpathSync(wt.path), abs)) return wt;
@@ -285,18 +290,21 @@ export function createTerminal(opts: { worktreeId: string; title: string; comman
   return terminal;
 }
 
-export function showTerminal(handle: string, opts: { timeoutMs?: number } = {}): OrcaEnvelope<TerminalResult> {
-  return request<TerminalResult>(["terminal", "show", "--terminal", handle, "--json"], opts);
+export function showTerminal(
+  handle: string,
+  { timeoutMs = PROBE_MS }: { timeoutMs?: number } = {},
+): OrcaEnvelope<TerminalResult> {
+  return request<TerminalResult>(["terminal", "show", "--terminal", handle, "--json"], { timeoutMs });
 }
 
 /** Resolve the current handle for a terminal. Orca handles are runtime-scoped, while ptyId stays
  * stable across handle rotation. */
 export function currentTerminal(
   terminal: Pick<OrcaTerminal, "handle" | "ptyId">,
-  opts: { timeoutMs?: number } = {},
+  { timeoutMs = PROBE_MS }: { timeoutMs?: number } = {},
 ): OrcaTerminal | undefined {
   if (!terminalCache || Date.now() - terminalCache.at >= PROBE_CACHE_MS) {
-    const listed = requireOk<TerminalListResult>(["terminal", "list", "--json"], opts).terminals ?? [];
+    const listed = requireOk<TerminalListResult>(["terminal", "list", "--json"], { timeoutMs }).terminals ?? [];
     terminalCache = { at: Date.now(), terminals: listed };
   }
   const listed = terminal.ptyId
@@ -304,7 +312,7 @@ export function currentTerminal(
     : terminalCache.terminals.find((candidate) => candidate.handle === terminal.handle);
   if (listed) return { ...terminal, ...listed };
 
-  const shown = showTerminal(terminal.handle, opts);
+  const shown = showTerminal(terminal.handle, { timeoutMs });
   if (shown.ok === false) {
     const code = shown.error?.code ?? "";
     if (/not_found|stale|closed/i.test(code)) return undefined;
@@ -408,10 +416,10 @@ export async function waitManagedTerminalExit(
 
 /** The text terminal `handle` renders now. `--screen` reads the rendered frame, so a prompt a TUI
  *  draws with cursor moves reads whole instead of as stacked repaint fragments. */
-export function readScreen(handle: string, opts: { timeoutMs?: number } = {}): string {
+export function readScreen(handle: string, { timeoutMs = PROBE_MS }: { timeoutMs?: number } = {}): string {
   return requireOk<{ terminal: { tail: string[] } }>(
     ["terminal", "read", "--terminal", handle, "--screen", "--json"],
-    opts,
+    { timeoutMs },
   ).terminal.tail.join("\n");
 }
 
@@ -455,5 +463,5 @@ export function closeManagedTerminal(
 }
 
 export function terminals(): OrcaTerminal[] {
-  return requireOk<TerminalListResult>(["terminal", "list", "--json"]).terminals ?? [];
+  return requireOk<TerminalListResult>(["terminal", "list", "--json"], { timeoutMs: PROBE_MS }).terminals ?? [];
 }

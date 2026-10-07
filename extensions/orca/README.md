@@ -24,7 +24,10 @@ import.
 
 Orca must open terminals with a POSIX-compatible shell that supports `exec` and single-quoted
 arguments. Driver calls are synchronous because Cotal's `Runtime` lifecycle contract is synchronous;
-short probe caches batch status checks and repeated launches from the same cwd.
+short probe caches batch status checks and repeated launches from the same cwd. Every read-only call
+(status, worktree and terminal lookups, screen reads) gives up after 2 seconds, so an Orca app that
+stops answering cannot block the manager. A status check that gives up reports the agent as still
+running.
 
 ## Usage
 
