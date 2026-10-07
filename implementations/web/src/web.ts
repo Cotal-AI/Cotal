@@ -50,10 +50,9 @@ export const WEB_HOST = "127.0.0.1";
 export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
 const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
 const IPV4_MAPPED_WILDCARD = "::ffff:0:0";
-/** The three reasons this surface refuses a request, named as constants because the browser and the
- *  cells must both match the SAME token — a restated literal drifts silently, and a refusal that
- *  cannot be told apart from another refusal is the defect this lane exists to remove. Four
- *  different failures reported as one is the same defect as a failure reported as success. */
+/** The three reasons this surface refuses a request. Each names a different condition so a caller
+ *  learns which one failed, and the refusal body and the smokes share these constants because a
+ *  restated literal drifts silently. */
 export const UNAUTHENTICATED = "unauthenticated";
 export const LAUNCH_TOKEN_ALREADY_USED = "launch-token-already-used";
 export const CROSS_ORIGIN = "cross-origin";
@@ -122,10 +121,10 @@ function cookieValue(header: string | undefined, name: string): string | undefin
 
 /** The gate. Every request passes through it before any route runs.
  *
- *  WHY THIS EXISTS AT ALL: the surface binds loopback and authenticated NOBODY. Loopback defends
- *  against other HOSTS; it does not defend against other PROCESSES on this machine, and it does not
- *  defend against a page in the operator's own browser issuing requests to http://127.0.0.1:7799.
- *  Today that reaches the whole mesh read path and a channel-delete POST.
+ *  WHY THIS EXISTS AT ALL: the default loopback bind keeps out other HOSTS, but it does not
+ *  authenticate other PROCESSES on this machine or a page in the operator's own browser issuing
+ *  requests to http://127.0.0.1:7799. So no mesh read and no channel delete runs for a caller this
+ *  gate has not admitted.
  *
  *  ORDER IS DELIBERATE: origin is checked BEFORE the session. A cross-site request arrives without
  *  the cookie anyway (SameSite=Strict), so checking the session first would report every such
