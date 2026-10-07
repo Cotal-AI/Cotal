@@ -140,8 +140,8 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const persona = def?.persona || undefined;
 
-  // The operator's --prompt (extension.ts:216-229), held until the boot task below opens the
-  // gate. `bootPending` mirrors plugin.ts's own predicate: the text outlives a failed attempt,
+  // The operator's --prompt (`buildLaunch` in extension.ts), held until the boot task below opens
+  // the gate. `bootPending` mirrors plugin.ts's own predicate: the text outlives a failed attempt,
   // only `drive` clears it, and only once the submission has landed.
   let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;
   let bootReady = false;
@@ -154,8 +154,9 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion
 
   /** Create the session this agent owns and announce its id to the serve shim, exactly as
-   *  `plugin.ts:846` does (the shim scans stderr for this exact line to find which session to
-   *  open). 2.x wraps the response in `{data:...}` (measured), unlike 1.x's bare `{id:...}`. */
+   *  plugin.ts's `sessionReady` does (the shim scans stderr for this exact line to find which
+   *  session to open). 2.x wraps the response in `{data:...}` (measured), unlike 1.x's bare
+   *  `{id:...}`. */
   const sessionReady: Promise<string | undefined> = (async () => {
     try {
       await modelReady;

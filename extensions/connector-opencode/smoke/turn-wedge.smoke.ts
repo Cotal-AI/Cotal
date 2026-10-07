@@ -470,8 +470,9 @@ try {
 
   // Stop: a retry is now pending (delay back at 2s after this failure). A cooperative stop landing
   // while it is pending must cancel the timer and submit nothing — two guards hold this: the timer
-  // clear in dispose's teardown (line 624) and the `stopping` refusal in `drive` (line 900), so no
-  // single-site mutant reds this cell; it is asserted here rather than proved by mutation.
+  // clear in dispose's teardown (`clearErrorRetry` in `quiesce`) and the `stopping` refusal in
+  // `drive`, so no single-site mutant reds this cell; it is asserted here rather than proved by
+  // mutation.
   await errorOnce();
   const beforeStop = prompts.length;
   await disposeInProcess(hooks);
