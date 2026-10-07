@@ -139,7 +139,9 @@ injected identity, and its data account must be the assigned account. The IdP pi
 under the explicit `stateDir`, and the auth plane's instance identity in its `.cotal/space.<hex>/`.
 The context never resolves a workspace root from the working directory and has no local manager, so
 only remote manager gates can be selected. It returns after
-the authority plane, the callout subscription and the loopback listener are bound. A fenced plane or
+the authority plane, the callout subscription and the loopback listener are bound. A start that
+fails closes the connections it opened and releases its plane claim, so a retry on the same space
+can claim it. A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
 The host writes no discovery file for it. The handle carries what `auth-service.json` holds for a
 CLI start: the loopback `url`, `publicUrl` when a public face runs, and the per-start `cap`. The cap
