@@ -486,21 +486,21 @@ function enrollmentError(what: string, detail: string): never {
   throw new EpEnvelopeError("bad-request", `${what} request ${detail}`);
 }
 
-/** The envelope fields every managed-agent request shares, validated once for both parsers. */
-function parseManagedAgentEnvelope(
-  o: Record<string, unknown>,
-  what: string,
-  kind: string,
-): {
+/** The envelope fields every request from a registered manager carries. */
+export interface RemoteManagerEnvelope {
   space: string;
   actor: string;
   instanceId: string;
   managerLifecycleUid: string;
   requestId: string;
   registrationProof: string;
-  serveEpoch: number;
   identities: RemoteManagerAuthorityRequest["identities"];
-} {
+}
+
+/** Closed parser for the envelope of a request from a registered manager. `what` names the request
+ *  in every refusal, so each request keeps its own prefix. The epoch differs per request
+ *  (`serveEpoch` or `processEpoch`), so each caller checks its own. */
+export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: string, what: string): RemoteManagerEnvelope {
   if (o.v !== 1 || o.kind !== kind) enrollmentError(what, `must carry { v: 1, kind: ${JSON.stringify(kind)} }`);
   for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof"] as const)
     if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
@@ -510,8 +510,6 @@ function parseManagedAgentEnvelope(
   if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
     enrollmentError(what, "requestId must be a 22-64 character idempotency token");
   if (!/^sha256:[0-9a-f]{64}$/.test(o.registrationProof as string)) enrollmentError(what, "requires a sha256 registrationProof");
-  if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0)
-    enrollmentError(what, "serveEpoch must be a non-negative safe integer");
   const identities = parseRemoteManagerIdentities(o.identities, (detail) => enrollmentError(what, detail));
   return {
     space: o.space as string,
@@ -520,9 +518,15 @@ function parseManagedAgentEnvelope(
     managerLifecycleUid: o.managerLifecycleUid as string,
     requestId: o.requestId as string,
     registrationProof: o.registrationProof as string,
-    serveEpoch: o.serveEpoch,
     identities,
   };
+}
+
+function parseManagedAgentEnvelope(o: Record<string, unknown>, what: string, kind: string): RemoteManagerEnvelope & { serveEpoch: number } {
+  const envelope = parseRemoteManagerEnvelope(o, kind, what);
+  if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0)
+    enrollmentError(what, "serveEpoch must be a non-negative safe integer");
+  return { ...envelope, serveEpoch: o.serveEpoch };
 }
 
 /** One optional channel/pattern list on an enrollment target: bounded, string-only, in-grammar. */

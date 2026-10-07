@@ -1,9 +1,7 @@
 import {
   EpEnvelopeError,
-  assertLifecycleToken,
-  assertValidOwnerToken,
   remoteManagerActors,
-  parseRemoteManagerIdentities,
+  parseRemoteManagerEnvelope,
   type GoalIndexEntry,
   type RemoteManagerGoalIndexScanRequest,
   type RemoteManagerGoalIndexScanResult,
@@ -20,22 +18,9 @@ export function parseRemoteManagerGoalIndexScanRequest(raw: unknown): RemoteMana
   const o = raw as Record<string, unknown>;
   const fields = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities"];
   for (const key of Object.keys(o)) if (!fields.includes(key)) bad(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  if (o.v !== 1 || o.kind !== "manager-goal-index-scan") bad('must carry { v: 1, kind: "manager-goal-index-scan" }');
-  for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof"] as const)
-    if (typeof o[key] !== "string" || o[key].length === 0) bad(`requires non-empty ${key}`);
-  assertValidOwnerToken(o.actor as string);
-  assertLifecycleToken(o.instanceId as string, "manager goal-index scan instanceId");
-  assertLifecycleToken(o.managerLifecycleUid as string, "manager goal-index scan lifecycleUid");
-  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string)) bad("requestId must be a 22-64 character idempotency token");
-  if (!/^sha256:[0-9a-f]{64}$/.test(o.registrationProof as string)) bad("requires a sha256 registrationProof");
+  const envelope = parseRemoteManagerEnvelope(o, "manager-goal-index-scan", "manager goal-index scan");
   if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0) bad("serveEpoch must be a non-negative safe integer");
-  const identities = parseRemoteManagerIdentities(o.identities, bad);
-  return {
-    v: 1, kind: "manager-goal-index-scan", space: o.space as string, actor: o.actor as string,
-    instanceId: o.instanceId as string, managerLifecycleUid: o.managerLifecycleUid as string,
-    requestId: o.requestId as string, registrationProof: o.registrationProof as string,
-    serveEpoch: o.serveEpoch as number, identities,
-  };
+  return { v: 1, kind: "manager-goal-index-scan", ...envelope, serveEpoch: o.serveEpoch as number };
 }
 
 export async function authorizeRemoteManagerGoalIndexScan(args: ManagerAuthorityHolder & {
