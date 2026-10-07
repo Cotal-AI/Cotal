@@ -1,5 +1,5 @@
 // Multicast: alice posts to #general; every subscriber receives it.
-// Loops seamlessly at the length Root.tsx registers.
+// Loops seamlessly at MULTICAST_DURATION.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";
@@ -60,6 +60,8 @@ const T = {
   fanEnd: 92,
   flashEnd: 118,
 };
+
+export const MULTICAST_DURATION = 150;
 
 export const ModeMulticast: React.FC = () => {
   const frame = useCurrentFrame();

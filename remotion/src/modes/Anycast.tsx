@@ -1,6 +1,6 @@
 // Anycast: alice addresses the role "reviewer". The same cast is present; bob
 // and dave are busy, carol is free, so carol claims the work. Exactly one
-// instance picks it up. Loops seamlessly at the length Root.tsx registers.
+// instance picks it up. Loops seamlessly at ANYCAST_DURATION.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";
@@ -60,6 +60,8 @@ const T = {
   flashEnd: 116,
   carolBack: 148,
 };
+
+export const ANYCAST_DURATION = 162;
 
 export const ModeAnycast: React.FC = () => {
   const frame = useCurrentFrame();
