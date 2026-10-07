@@ -1835,12 +1835,18 @@ export class MeshAgent extends EventEmitter {
       throw new Error(
         `unknown mention${unknown.length > 1 ? "s" : ""}: ${unknown.map((u) => `@${u}`).join(", ")} — no such peer observed in space "${this.config.space}"`,
       );
-    const condition =
-      after.state === "stale"
-        ? `the presence view is stale since ${new Date(after.staleSince).toISOString()} (${Math.max(0, Date.now() - after.staleSince)}ms silent)`
-        : "the presence view is unpopulated — the watch has not completed its initial snapshot";
-    throw new Error(
-      `cannot verify mention${unknown.length > 1 ? "s" : ""} ${unknown.map((u) => `@${u}`).join(", ")} in space "${this.config.space}": ${condition}, so absence is not a verdict — the peer may be present but unobserved. The send was not published.`,
+    throw this.cannotVerify(
+      `mention${unknown.length > 1 ? "s" : ""} ${unknown.map((u) => `@${u}`).join(", ")}`,
+      after,
+      "The send was not published.",
+    );
+  }
+
+  /** The mention guard and `dm` refuse an unverifiable name through this one sentence, so the two
+   *  refusals cannot explain one view state differently. */
+  private cannotVerify(subject: string, view: Exclude<PresenceView, { state: "current" }>, outcome: string): Error {
+    return new Error(
+      `cannot verify ${subject} in space "${this.config.space}": ${presenceViewCondition(view)}, so absence is not a verdict — the peer may be present but unobserved. ${outcome}`,
     );
   }
 
@@ -1937,13 +1943,7 @@ export class MeshAgent extends EventEmitter {
       const after = this.ep.presenceView();
       if (after.state === "current")
         throw new Error(`no peer "${target}" in space "${this.config.space}"`);
-      const condition =
-        after.state === "stale"
-          ? `the presence view is stale since ${new Date(after.staleSince).toISOString()} (${Math.max(0, Date.now() - after.staleSince)}ms silent)`
-          : "the presence view is unpopulated — the watch has not completed its initial snapshot";
-      throw new Error(
-        `cannot verify peer "${target}" in space "${this.config.space}": ${condition}, so absence is not a verdict — the peer may be present but unobserved. The DM was not sent.`,
-      );
+      throw this.cannotVerify(`peer "${target}"`, after, "The DM was not sent.");
     }
     // The only status we can truthfully attribute is the roster snapshot taken right before the
     // publish: recipient state can change the instant after, and the ack never tells us either way.
@@ -2841,6 +2841,15 @@ export class MeshAgent extends EventEmitter {
   private log(msg: string): void {
     process.stderr.write(`[cotal-connector] ${msg}\n`);
   }
+}
+
+/** Why a presence view that is not `current` cannot support an absence verdict (#1229). The roster,
+ *  the orientation card and the mention and DM refusals all print this clause, so none of them can
+ *  word one view state differently. */
+export function presenceViewCondition(view: Exclude<PresenceView, { state: "current" }>): string {
+  return view.state === "stale"
+    ? `the presence watch has been silent since ${new Date(view.staleSince).toISOString()}`
+    : "the presence watch has not completed its initial snapshot";
 }
 
 /** Names already known that differ from `channel` by one insertion, deletion, or substitution. */

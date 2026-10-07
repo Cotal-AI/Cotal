@@ -82,9 +82,9 @@ condition. The condition is local diagnosis, not a new wire field.
 The same two tools also render the view's own trust state: under an `unpopulated` view they say
 the presence watch has not completed its initial snapshot, so the roster may be partial and a
 missing name is not an absence verdict, and under a `stale` view they name the silent-since instant
-and call the roster last-known. Both tools print each condition in the same words. A send or DM
-to a name the observer cannot verify is refused with that condition rather than sent, instead of
-being reported as an unknown peer.
+and call the roster last-known. A send or DM to a name the observer cannot verify is refused with
+that condition rather than sent, instead of being reported as an unknown peer. Both tools and both
+refusals print each condition in the same words.
 
 ## Plane liveness
 

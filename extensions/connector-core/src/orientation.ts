@@ -10,7 +10,7 @@
  * it (the text the model reads). A future MCP resource can JSON-stringify the object directly.
  */
 import type { AttentionMode, PresenceStatus } from "@cotal-ai/core";
-import type { MeshAgent } from "./agent.js";
+import { presenceViewCondition, type MeshAgent } from "./agent.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { DOCS_VERSION } from "./docs.js";
 
@@ -106,12 +106,12 @@ export function presenceLiveness(agent: MeshAgent): Orientation["presence"] {
   if (view.state === "unpopulated")
     return {
       live: false,
-      detail: "the presence watch has not completed its initial snapshot, so the roster may be partial and a missing name is not an absence verdict",
+      detail: `${presenceViewCondition(view)}, so the roster may be partial and a missing name is not an absence verdict`,
     };
   if (view.state === "stale")
     return {
       live: false,
-      detail: `the presence watch has been silent since ${new Date(view.staleSince).toISOString()}, so the roster is last-known`,
+      detail: `${presenceViewCondition(view)}, so the roster is last-known`,
     };
   return { live: true };
 }
