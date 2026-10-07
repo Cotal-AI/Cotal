@@ -25,7 +25,7 @@ import { createServer, connect as tcpConnect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstreamManager, type ConsumerMessages, type PushConsumer } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { IncompleteKvScan, isReachable, liveKvEntries, walkKvEntries } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -164,7 +164,7 @@ try {
     Object.defineProperty(victim, "js", {
       value: { ...rjs, consumers: { ...rjs.consumers, getPushConsumer: async (...a: unknown[]) => {
         const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-        const realConsume = (oc.consume as () => Promise<AsyncIterable<unknown> & { close: () => Promise<unknown> }>).bind(oc);
+        const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
         // Real consumer, real bind-time num_pending; the ONLY thing altered is that the iterator
         // stops early and cleanly, exactly as the client does when the connection drops.
         return Object.assign(Object.create(oc as object), {
@@ -296,7 +296,7 @@ try {
           ...rjs.consumers,
           getPushConsumer: async (...a: unknown[]) => {
             const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-            const realConsume = (oc.consume as () => Promise<AsyncIterable<unknown>>).bind(oc);
+            const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
             return Object.assign(Object.create(oc as object), {
               consume: async () => {
                 const inner = await realConsume();
@@ -306,9 +306,10 @@ try {
                     yield m;
                   }
                 })();
+                // The helper calls `stop` only from the abort listener a signal registers, and this is the one stand-in cell that passes a signal.
                 return Object.assign(gen, {
-                  stop: () => (inner as { stop?: () => void }).stop?.(),
-                  close: () => (inner as { close?: () => Promise<unknown> }).close?.() ?? Promise.resolve(),
+                  stop: (err?: Error) => inner.stop(err),
+                  close: () => inner.close(),
                 });
               },
             });
@@ -346,32 +347,23 @@ try {
           ...rjs.consumers,
           getPushConsumer: async (...a: unknown[]) => {
             const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-            const realConsume = (oc.consume as () => Promise<AsyncIterable<unknown>>).bind(oc);
+            const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
             return Object.assign(oc, {
               consume: async () => {
-                const inner = await realConsume() as unknown as {
-                  reset: () => void;
-                  status: () => AsyncIterable<{ type: string; name?: string }>;
-                  stop: () => void;
-                  close: () => Promise<unknown>;
-                  consumer: { name: string };
-                };
+                // The client's iterator carries `reset` and `consumer`; its public type does not.
+                const inner = await realConsume() as ConsumerMessages & { reset: () => void; consumer: { name: string } };
                 let didReset = false;
                 const gen = (async function* () {
-                  for await (const m of inner as unknown as AsyncIterable<unknown>) {
-                    if (!didReset && typeof inner.reset === "function") {
+                  for await (const m of inner) {
+                    if (!didReset) {
                       didReset = true;
                       inner.reset();
-                      rotatedName = inner.consumer?.name;
+                      rotatedName = inner.consumer.name;
                     }
                     yield m;
                   }
                 })();
-                return Object.assign(gen, {
-                  status: () => inner.status(),
-                  stop: () => inner.stop(),
-                  close: () => inner.close(),
-                });
+                return Object.assign(gen, { close: () => inner.close() });
               },
             });
           },
@@ -459,7 +451,7 @@ try {
             return Object.assign(Object.create(oc as object), {
               consume: async () => {
                 const gen = (async function* () {})();
-                return Object.assign(gen, { stop: () => {}, close: async () => {} });
+                return Object.assign(gen, { close: async () => {} });
               },
             });
           },
