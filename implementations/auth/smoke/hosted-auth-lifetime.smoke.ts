@@ -103,3 +103,8 @@ try {
   for (const h of handles) await h.close().catch(() => {});
   await fx.close();
 }
+
+// The public embedder lifetime cells share this already fragment-registered CI entrypoint.
+await import("./auth-public-closure.smoke.js");
+await import("./plane-claim-public.smoke.js");
+await import("./account-liveness-public.smoke.js");
