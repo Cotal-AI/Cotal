@@ -496,18 +496,20 @@ export interface RemoteManagerEnvelope {
   identities: RemoteManagerAuthorityRequest["identities"];
 }
 
-/** Closed parser for the envelope of a request from a registered manager. The epoch differs per
- *  request (`serveEpoch` or `processEpoch`), so each caller checks its own. `fail` throws the
- *  calling parser's error, so each request keeps its own prefix. */
-export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: string, fail: (detail: string) => never): RemoteManagerEnvelope {
-  if (o.v !== 1 || o.kind !== kind) fail(`must carry { v: 1, kind: ${JSON.stringify(kind)} }`);
+/** Closed parser for the envelope of a request from a registered manager. `what` names the request
+ *  in every refusal, so each request keeps its own prefix. The epoch differs per request
+ *  (`serveEpoch` or `processEpoch`), so each caller checks its own. */
+export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: string, what: string): RemoteManagerEnvelope {
+  if (o.v !== 1 || o.kind !== kind) enrollmentError(what, `must carry { v: 1, kind: ${JSON.stringify(kind)} }`);
   for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof"] as const)
-    if (typeof o[key] !== "string" || (o[key] as string).length === 0) fail(`requires non-empty ${key}`);
+    if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
   assertValidOwnerToken(o.actor as string);
-  assertLifecycleToken(o.instanceId as string, "instanceId");
-  assertLifecycleToken(o.managerLifecycleUid as string, "managerLifecycleUid");
-  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string)) fail("requestId must be a 22-64 character idempotency token");
-  if (!/^sha256:[0-9a-f]{64}$/.test(o.registrationProof as string)) fail("requires a sha256 registrationProof");
+  assertLifecycleToken(o.instanceId as string, `${what} instanceId`);
+  assertLifecycleToken(o.managerLifecycleUid as string, `${what} lifecycleUid`);
+  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
+    enrollmentError(what, "requestId must be a 22-64 character idempotency token");
+  if (!/^sha256:[0-9a-f]{64}$/.test(o.registrationProof as string)) enrollmentError(what, "requires a sha256 registrationProof");
+  const identities = parseRemoteManagerIdentities(o.identities, (detail) => enrollmentError(what, detail));
   return {
     space: o.space as string,
     actor: o.actor as string,
@@ -515,12 +517,12 @@ export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: str
     managerLifecycleUid: o.managerLifecycleUid as string,
     requestId: o.requestId as string,
     registrationProof: o.registrationProof as string,
-    identities: parseRemoteManagerIdentities(o.identities, fail),
+    identities,
   };
 }
 
 function parseManagedAgentEnvelope(o: Record<string, unknown>, what: string, kind: string): RemoteManagerEnvelope & { serveEpoch: number } {
-  const envelope = parseRemoteManagerEnvelope(o, kind, (detail) => enrollmentError(what, detail));
+  const envelope = parseRemoteManagerEnvelope(o, kind, what);
   if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0)
     enrollmentError(what, "serveEpoch must be a non-negative safe integer");
   return { ...envelope, serveEpoch: o.serveEpoch };

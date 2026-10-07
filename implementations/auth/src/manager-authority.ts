@@ -287,7 +287,7 @@ export function parseRemoteRunAdmissionRequest(raw: unknown): RemoteRunAdmission
   const o = raw as Record<string, unknown>;
   const allowed = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "accountPublicKey", "processEpoch", "identities", "run"];
   for (const k of Object.keys(o)) if (!allowed.includes(k)) admissionError(`has unknown field ${k}`);
-  const envelope = parseRemoteManagerEnvelope(o, "manager-run-admission", admissionError);
+  const envelope = parseRemoteManagerEnvelope(o, "manager-run-admission", "manager run admission");
   if (typeof o.accountPublicKey !== "string" || o.accountPublicKey.length === 0) admissionError("requires accountPublicKey");
   if (!Number.isSafeInteger(o.processEpoch) || (o.processEpoch as number) < 0) admissionError("requires a non-negative processEpoch");
   const run = o.run as Record<string, unknown> | null;

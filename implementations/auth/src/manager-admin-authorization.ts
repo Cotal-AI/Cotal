@@ -25,7 +25,7 @@ export function parseRemoteManagerAdminAuthorizationRequest(raw: unknown, opts: 
   const o = raw as Record<string, unknown>;
   const fields = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "caller"];
   for (const key of Object.keys(o)) if (!fields.includes(key)) bad(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  const envelope = parseRemoteManagerEnvelope(o, "manager-admin-authorization", bad);
+  const envelope = parseRemoteManagerEnvelope(o, "manager-admin-authorization", "manager admin authorization");
   if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0) bad("serveEpoch must be a non-negative safe integer");
   if (o.caller === null || typeof o.caller !== "object" || Array.isArray(o.caller)) bad("requires caller");
   const caller = o.caller as Record<string, unknown>;

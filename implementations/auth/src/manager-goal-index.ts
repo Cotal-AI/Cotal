@@ -18,7 +18,7 @@ export function parseRemoteManagerGoalIndexScanRequest(raw: unknown): RemoteMana
   const o = raw as Record<string, unknown>;
   const fields = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities"];
   for (const key of Object.keys(o)) if (!fields.includes(key)) bad(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  const envelope = parseRemoteManagerEnvelope(o, "manager-goal-index-scan", bad);
+  const envelope = parseRemoteManagerEnvelope(o, "manager-goal-index-scan", "manager goal-index scan");
   if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0) bad("serveEpoch must be a non-negative safe integer");
   return { v: 1, kind: "manager-goal-index-scan", ...envelope, serveEpoch: o.serveEpoch as number };
 }

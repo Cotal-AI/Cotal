@@ -53,7 +53,7 @@ export function parseRemoteRetainedAgentValidationRequest(raw: unknown, opts: { 
     "registrationProof", "serveEpoch", "identities", "target", "actorToken", "sentinelCreds",
   ]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  const envelope = parseRemoteManagerEnvelope(o, "manager-retained-agent-validation", requestError);
+  const envelope = parseRemoteManagerEnvelope(o, "manager-retained-agent-validation", "manager retained-agent validation");
   for (const key of ["actorToken", "sentinelCreds"] as const)
     if (typeof o[key] !== "string" || o[key].length === 0) requestError(`requires non-empty ${key}`);
   if ((o.actorToken as string).length > 4096 || (o.sentinelCreds as string).length > 16 * 1024)
