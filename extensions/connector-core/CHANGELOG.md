@@ -1,5 +1,20 @@
 # @cotal-ai/connector-core
 
+## 0.71.0
+
+### Minor Changes
+
+- 3518435: A role is now refused unless it is one `[A-Za-z0-9_-]` token, both when an endpoint registers it and when a sender addresses it. Routing used to rewrite any other spelling into a subject token, so `probe` reached the `probe` queue and `pro.be` reached `pro_be` while the message kept the spelling sent, and an anycast to `*` was stored on a subject no role consumer matches. `CotalEndpoint` now throws on a `card.role` that is not a string in the grammar, and a connector passes `COTAL_ROLE` to it untrimmed. `anycast` and `anycastAttributed` throw on such a role or `*` before publishing, and `taskDurable` refuses one instead of rewriting it. `assertValidRole` is exported and `routeToken` is no longer exported, since a role routes as spelled. `cotal_anycast` names the role it was given in its receipt and counts holders whose role matches it. See the 0.71.0 section of `docs/UPGRADING.md`.
+- 50bc2fc: `spawn.env` in the cotal config now refuses a `COTAL_` name the launcher sets for each seat, such as `COTAL_ROLE`, `COTAL_MODEL` or `COTAL_SUBSCRIBE`, and the spawn fails before launch with an error naming the entry. Before, a launch with no role, model or channels of its own forwarded the spawning process's value, and the seat read it as its own role, model pin or read set while the launcher showed none. The machine-wide knobs such as `COTAL_HOME` may still be listed, and names outside the `COTAL_` namespace forward as before.
+
+### Patch Changes
+
+- 726a750: The tmux, cmux, Orca and Herdr runtimes now honour `LaunchSpec.confirm` as the PTY runtime does. Each reads its pane, presses Enter once when the declared prompt is on screen, and ends the seat with `Cotal startup confirmation failed: prompt "<prompt>" did not appear within 15000ms.` in the manager's log when it never appears. They used to press Enter five times on a one-second timer whatever the screen showed, so a dialog shown before the declared prompt was answered with its default. Core exports the shared `confirmWatch` they use.
+
+  Each backend call the watch makes times out after one second: the screen read, the terminal lookup, the Enter, and the close that ends a failed seat. A call that times out is killed with SIGKILL, because Node waits for a timed-out child to exit and a CLI that handles SIGTERM would keep the manager blocked past the timeout. The status probes and other CLI calls that share those helpers are killed the same way when they time out. No read starts once the 15 seconds are up, so a backend CLI that hangs fails the seat instead of stalling the manager. The tmux watch ends a failed seat by closing the seat's pane in whichever window holds it now, so a pane swapped into the seat's first window survives. It reads, presses Enter and closes only on the tmux server that opened the seat's window, so after a tmux restart it never types into or closes a new pane that reuses the seat's pane id.
+
+  A `confirm` prompt that is empty once ANSI codes and whitespace are removed, `""` included, is now refused before anything starts, and its launch files are removed. The PTY runtime used to start the child first and then throw, which left the child running with no handle to stop it and its launch files on disk, and every runtime treated `""` as no prompt.
+
 ## 0.70.2
 
 ## 0.70.1

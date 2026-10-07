@@ -1,5 +1,22 @@
 # @cotal-ai/core
 
+## 0.71.0
+
+### Minor Changes
+
+- 3518435: A role is now refused unless it is one `[A-Za-z0-9_-]` token, both when an endpoint registers it and when a sender addresses it. Routing used to rewrite any other spelling into a subject token, so `probe` reached the `probe` queue and `pro.be` reached `pro_be` while the message kept the spelling sent, and an anycast to `*` was stored on a subject no role consumer matches. `CotalEndpoint` now throws on a `card.role` that is not a string in the grammar, and a connector passes `COTAL_ROLE` to it untrimmed. `anycast` and `anycastAttributed` throw on such a role or `*` before publishing, and `taskDurable` refuses one instead of rewriting it. `assertValidRole` is exported and `routeToken` is no longer exported, since a role routes as spelled. `cotal_anycast` names the role it was given in its receipt and counts holders whose role matches it. See the 0.71.0 section of `docs/UPGRADING.md`.
+
+### Patch Changes
+
+- b9daf53: A whitespace-only `model` or `variant` is now refused everywhere a launch selector enters: a persona file's `model:`/`variant:` when it loads or is saved, `cotal spawn --model`, a manifest agent's `model`/`variant`, and every launch the manager admits, including a direct `Manager.startAgent` call. Before, the same blank value was dropped by the manager, rendered into the harness command and environment by the `claude`, `codex` and `opencode` connectors, and refused only by `jcode`, so one persona launched differently depending on who started it. The manager no longer coerces a blank model to absent, and the `jcode` connector no longer carries its own blank-variant check.
+- 726a750: The tmux, cmux, Orca and Herdr runtimes now honour `LaunchSpec.confirm` as the PTY runtime does. Each reads its pane, presses Enter once when the declared prompt is on screen, and ends the seat with `Cotal startup confirmation failed: prompt "<prompt>" did not appear within 15000ms.` in the manager's log when it never appears. They used to press Enter five times on a one-second timer whatever the screen showed, so a dialog shown before the declared prompt was answered with its default. Core exports the shared `confirmWatch` they use.
+
+  Each backend call the watch makes times out after one second: the screen read, the terminal lookup, the Enter, and the close that ends a failed seat. A call that times out is killed with SIGKILL, because Node waits for a timed-out child to exit and a CLI that handles SIGTERM would keep the manager blocked past the timeout. The status probes and other CLI calls that share those helpers are killed the same way when they time out. No read starts once the 15 seconds are up, so a backend CLI that hangs fails the seat instead of stalling the manager. The tmux watch ends a failed seat by closing the seat's pane in whichever window holds it now, so a pane swapped into the seat's first window survives. It reads, presses Enter and closes only on the tmux server that opened the seat's window, so after a tmux restart it never types into or closes a new pane that reuses the seat's pane id.
+
+  A `confirm` prompt that is empty once ANSI codes and whitespace are removed, `""` included, is now refused before anything starts, and its launch files are removed. The PTY runtime used to start the child first and then throw, which left the child running with no handle to stop it and its launch files on disk, and every runtime treated `""` as no prompt.
+
+- 518351a: A run's `turn` and `wait(down)` no longer read a seat as down while the manager still runs it. On a loaded host a live seat's presence heartbeats could stall for more than the 30-second lapse window while its process kept working, and the run failed the turn with L4002 (`lapsed`) although the seat went on to finish its step. Once a lapse is confirmed from presence, the run now asks the manager with `inspect`: if the manager still runs that incarnation, the 30 seconds start over; if the manager that spawned the seat no longer runs it, or that manager does not answer, the lapse stands and the turn fails with L4002 as before. In a space with several managers, another manager's miss does not count, since a manager knows only its own seats. The asking stops at a cancellation, the wait's timeout, or the turn's deadline or yield, so a late answer or refusal never replaces the timeout's `null` or the turn's own outcome. A run host's credential now carries the `inspect` request for this.
+
 ## 0.70.2
 
 ## 0.70.1
