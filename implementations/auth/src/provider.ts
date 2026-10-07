@@ -226,10 +226,10 @@ export const cotalAuthProvider: AuthProvider = {
         `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
       );
     }
-    const out = (await res.json().catch(() => ({}))) as { token?: string; managerInstanceId?: string };
+    const out = (await res.json().catch(() => ({}))) as { token?: string };
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
-    return { bearer: out.token, sentinelCreds: callout.sentinelCreds, ...(out.managerInstanceId ? { managerInstanceId: out.managerInstanceId } : {}) };
+    return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
   },
 
   async managerServiceAuthority({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAuthorityRequest }): Promise<RemoteManagerAuthorityMaterial> {
@@ -806,7 +806,7 @@ function exchangeBody(idpToken: string, { actor, view, managerInstanceId, sessio
  *  differences: the POST goes to the PUBLIC exchange face (capless - the idpToken IS the
  *  credential; the 0600 capability file exists only where the daemon runs), and the sentinel
  *  creds come from the 0600 file registration landed rather than the local secret store. */
-async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }> {
+async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{ bearer: string; sentinelCreds: string }> {
   const { dir, space, actor, view } = request;
   const remote = remoteUserAuthEntry(dir, space);
   if (!remote)
@@ -858,8 +858,8 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
         : `signed in, but the exchange for ${actorLabel} was refused, and the exchange face withheld the reason (HTTP ${res.status})`,
     );
   }
-  const out = (await res.json().catch(() => ({}))) as { token?: string; managerInstanceId?: string };
+  const out = (await res.json().catch(() => ({}))) as { token?: string };
   if (typeof out.token !== "string" || !out.token)
     throw new Error(`the exchange at ${exchangeUrl} returned no token - the mesh's auth service build may be stale`);
-  return { bearer: out.token, sentinelCreds, ...(out.managerInstanceId ? { managerInstanceId: out.managerInstanceId } : {}) };
+  return { bearer: out.token, sentinelCreds };
 }
