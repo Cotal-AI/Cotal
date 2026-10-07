@@ -17,27 +17,26 @@ import {
   INK,
   Labels,
   lerp,
+  MODE_ALICE,
+  MODE_PEERS,
   prog,
   wirePath,
   Wires,
   type Pt,
 } from "./scene";
 
-// Same cluster as the other cards; bob (top) is the addressee, carol/dave below
-// are present but unaddressed. The inbox sits on the alice -> bob route.
-const ALICE: Pt = { x: 100, y: 410 };
-const BOB: Pt = { x: 700, y: 240 };
-const CAROL: Pt = { x: 700, y: 410 };
-const DAVE: Pt = { x: 700, y: 580 };
+// bob (top) is the addressee, carol/dave below are present but unaddressed. The
+// inbox sits on the alice -> bob route.
+const [BOB, CAROL, DAVE] = MODE_PEERS;
 const INBOX: Pt = { x: 400, y: 325 };
 
 const SEG1: [Pt, Pt] = [
-  { x: ALICE.x + 50, y: ALICE.y - 13 },
+  { x: MODE_ALICE.at.x + 50, y: MODE_ALICE.at.y - 13 },
   { x: INBOX.x - 38, y: INBOX.y + 9 },
 ];
 const SEG2: [Pt, Pt] = [
   { x: INBOX.x + 38, y: INBOX.y - 9 },
-  { x: BOB.x - 48, y: BOB.y + 12 },
+  { x: BOB.at.x - 48, y: BOB.at.y + 12 },
 ];
 
 const PATH1 = wirePath(SEG1[0], lerp(...SEG1, 0.4), lerp(...SEG1, 0.6), SEG1[1]);
@@ -80,16 +79,10 @@ export const ModeUnicast: React.FC = () => {
     <Card>
       <Wires paths={[PATH1, PATH2]} glow={[glow1, glow2]} />
 
-      <AgentNode at={ALICE} name="alice" status="working" flash={emit} type={CARD_TYPE} />
-      <AgentNode
-        at={BOB}
-        name="bob"
-        status={bobStatus}
-        flash={Math.max(deliverFlash, freeFlash)}
-        type={CARD_TYPE}
-      />
-      <AgentNode at={CAROL} name="carol" status="idle" type={CARD_TYPE} />
-      <AgentNode at={DAVE} name="dave" status="working" type={CARD_TYPE} />
+      <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />
+      <AgentNode {...BOB} status={bobStatus} flash={Math.max(deliverFlash, freeFlash)} type={CARD_TYPE} />
+      <AgentNode {...CAROL} type={CARD_TYPE} />
+      <AgentNode {...DAVE} type={CARD_TYPE} />
 
       {/* durable inbox: a rounded slot matching the node language; gold while it holds */}
       <div

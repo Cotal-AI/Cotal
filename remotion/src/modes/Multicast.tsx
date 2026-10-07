@@ -13,6 +13,8 @@ import {
   fade,
   Labels,
   lerp,
+  MODE_ALICE,
+  MODE_PEERS,
   prog,
   Ripple,
   wirePath,
@@ -20,28 +22,14 @@ import {
   type Pt,
 } from "./scene";
 
-// Centered on the stage: alice and the cluster equidistant from the card middle.
-const ALICE: Pt = { x: 100, y: 410 };
 const PILL: Pt = { x: 400, y: 410 };
-const RECV: Pt[] = [
-  { x: 700, y: 240 },
-  { x: 700, y: 410 },
-  { x: 700, y: 580 },
-];
-// Shared cast + presence, identical across all three cards: bob and dave busy,
-// carol free. Only the message flow differs, so the three glance as one space.
-const NAMES = [
-  { name: "bob", status: "working" },
-  { name: "carol", status: "idle" },
-  { name: "dave", status: "working" },
-] as const;
 
 // The pill's label takes the smallest card text size, which leaves the wires
 // on either side room to read.
 const PILL_TYPE = (18 * CARD_TYPE) / 24;
 const PILL_HALF = 92 * PILL_TYPE + 8;
 
-const IN_START: Pt = { x: ALICE.x + 52, y: ALICE.y };
+const IN_START: Pt = { x: MODE_ALICE.at.x + 52, y: MODE_ALICE.at.y };
 const IN_END: Pt = { x: PILL.x - PILL_HALF, y: PILL.y };
 const OUT_START: Pt = { x: PILL.x + PILL_HALF, y: PILL.y };
 const outCtrl = (r: Pt): [Pt, Pt] => [
@@ -51,7 +39,7 @@ const outCtrl = (r: Pt): [Pt, Pt] => [
 const OUT_END = (r: Pt): Pt => ({ x: r.x - 54, y: r.y });
 
 const IN_PATH = wirePath(IN_START, lerp(IN_START, IN_END, 0.4), lerp(IN_START, IN_END, 0.6), IN_END);
-const OUT_PATHS = RECV.map((r) => wirePath(OUT_START, ...outCtrl(r), OUT_END(r)));
+const OUT_PATHS = MODE_PEERS.map((p) => wirePath(OUT_START, ...outCtrl(p.at), OUT_END(p.at)));
 
 const T = {
   sendStart: 18,
@@ -84,10 +72,10 @@ export const ModeMulticast: React.FC = () => {
       <Wires paths={[IN_PATH, ...OUT_PATHS]} glow={[inGlow, flash, flash, flash]} />
       <Ripple at={PILL} p={prog(frame, T.fanStart - 2, T.fanStart + 30)} />
       <Ripple at={PILL} p={prog(frame, T.fanStart + 8, T.fanStart + 42)} />
-      <AgentNode at={ALICE} name="alice" status="working" flash={emit} type={CARD_TYPE} />
+      <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />
       <ChannelPill at={PILL} label="#general" glow={pillGlow} type={PILL_TYPE} />
-      {NAMES.map((n, i) => (
-        <AgentNode key={n.name} at={RECV[i]!} name={n.name} status={n.status} flash={flash} type={CARD_TYPE} />
+      {MODE_PEERS.map((p) => (
+        <AgentNode key={p.name} {...p} flash={flash} type={CARD_TYPE} />
       ))}
       <Beam
         d={IN_PATH}
@@ -95,11 +83,11 @@ export const ModeMulticast: React.FC = () => {
         t={tIn}
         visible={tIn > 0 && tIn < 1}
       />
-      {RECV.map((r, i) => (
+      {MODE_PEERS.map((p, i) => (
         <Beam
           key={i}
           d={OUT_PATHS[i]!}
-          pos={(t) => bez(OUT_START, ...outCtrl(r), OUT_END(r), t)}
+          pos={(t) => bez(OUT_START, ...outCtrl(p.at), OUT_END(p.at), t)}
           t={tOut}
           visible={tOut > 0 && tOut < 1}
         />
