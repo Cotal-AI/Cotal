@@ -5690,6 +5690,10 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: opts.resolved ? `launch agent: ${(e as Error).message}` : `persona ${configPath}: ${(e as Error).message}` };
     }
+    // Checked after every path has resolved its selectors: a direct `startAgent` call skips the
+    // `start` op's checks, and no connector may receive a blank one (#2862).
+    if (model !== undefined && !model.trim()) return { ok: false, error: "model: must not be empty" };
+    if (variant !== undefined && !variant.trim()) return { ok: false, error: "variant: must not be empty" };
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
     // #966: a seat labelled `manager` that cannot spawn is a worker wearing a label, and the label
