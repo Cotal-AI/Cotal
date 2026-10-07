@@ -15,7 +15,7 @@ import {
   unansweredRail,
   registryReadFailed,
   undeclaredArg,
-  renderLifecycleBlocked,
+  controlReplyFrom,
   submitAndFollowGoal,
   scatterCommand,
   mintLifecycleUid,
@@ -130,13 +130,10 @@ async function askManagerEp(
       // that can despawn/attach can also resolve its target (a `ps` SCAN here broker-drops exactly
       // the spawn-scoped user bearers - the 1c.2b read narrowing - and hangs their stop/attach).
       const info = await invokeRepairingSplit(nc, space, service, "inspect", { name }, { deadlineMs: 10_000 });
-      if (info.reply.ok !== true)
-        return {
-          ok: false,
-          error: `could not resolve "${name}": ${info.reply.error?.message ?? info.reply.error?.code ?? "inspect failed"}`,
-          ...(info.reply.error?.code ? { code: info.reply.error.code } : {}),
-          ...(info.reply.error?.details ? { details: info.reply.error.details } : {}),
-        };
+      if (info.reply.ok !== true) {
+        const refused = controlReplyFrom(info.reply);
+        return { ...refused, error: `could not resolve "${name}": ${refused.error}` };
+      }
       const row = info.reply.data as { id: string; lifecycleUid: string };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
       // is the composite `owner.actor` principal key - split it (an embedded dot would break the
@@ -169,13 +166,7 @@ async function askManagerEp(
     const r = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command)
       ? await submitAndFollowGoal(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, timeoutMs ?? START_TIMEOUT_MS, submit)
       : await submit();
-    if (r.reply.ok !== true)
-      return {
-        ok: false,
-        error: renderLifecycleBlocked(r.reply.error?.message ?? r.reply.error?.code ?? "error", r.reply.error),
-        ...(r.reply.error?.code ? { code: r.reply.error.code } : {}),
-        ...(r.reply.error?.details ? { details: r.reply.error.details } : {}),
-      };
+    if (r.reply.ok !== true) return controlReplyFrom(r.reply);
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, ...(data !== undefined ? { data } : {}) };
