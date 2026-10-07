@@ -1,5 +1,17 @@
 # @cotal-ai/manager
 
+## 0.73.0
+
+### Patch Changes
+
+- 49fe22d: The comment on the manager's first-start instance identity mint, which ships in `dist/manager.js`, now names hard-link publication as the exclusive create and states that a filesystem without hard links refuses the first start with `atomic-publish-unsupported`. It still named `link` / `O_EXCL`, which described the destination `O_EXCL` fallback that the create-only secret write no longer has. No runtime change.
+- cbf640a: `startAgent` now copies the `supervise` restart policy it is given before its first await, next to the access lists. It used to keep the caller's object as the seat's restart policy, so a caller that wrote to it after the start changed the crash budget the manager enforced, including to values a `spawn` request refuses.
+- 5269df1: The manager's `spawn` operation refuses an empty or whitespace-only value in its optional string fields (`agent`, `defaultAgent`, `role`, `config`, `identity`, `model`, `variant`, `resume`, `resumeClaim`, `resumeAgent`, `cwd`, `prompt`) with `bad-request` naming the field. Before, an empty value was read as omitted, so `cotal spawn --detach --role ""` or `--agent ""` launched on the persona's role or `agent:` pin without saying so, while a whitespace-only value of the same field was refused or forwarded. The manager cluster document moves to revision 24.
+- Updated dependencies [9873985]
+  - @cotal-ai/core@0.73.0
+  - @cotal-ai/workspace@0.73.0
+  - @cotal-ai/seat@0.73.0
+
 ## 0.72.1
 
 ### Patch Changes
