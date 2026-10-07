@@ -292,7 +292,7 @@ with a `save` function plants it with `createManagerInstanceIdentity` or
 `createAuthInstanceIdentity`, which create the record when it is absent and otherwise return the
 stored one unchanged. Nothing replaces an overwrite of a stored identity.
 
-## Carrying a resumed Claude session to another host
+## Carrying a resumed Claude session to another host in 0.67.0
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the
 operator's host to the target manager instance. Both sides need this release: an older manager does
