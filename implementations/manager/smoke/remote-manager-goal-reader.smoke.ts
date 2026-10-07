@@ -650,8 +650,8 @@ try {
       check(`owner ${label} selects its own live remote manager`, false);
       throw error;
     }
-    check(`owner ${label} selects its own live remote manager`, credentials.managerInstanceId === instanceId);
     const payload = JSON.parse(Buffer.from(credentials.bearer.split(".")[1]!, "base64url").toString("utf8"));
+    check(`owner ${label} selects its own live remote manager`, payload.act.managerInstanceId === instanceId);
     const caller: EpCaller = { owner: payload.sub, actor: payload.act.actor, uid: payload.act.lifecycleUid };
     const nc = await connect({ servers: server, ...standaloneConnectOpts({ bearer: credentials.bearer, sentinelCreds: credentials.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
     if (label === "A") ncA = nc; else ncB = nc;

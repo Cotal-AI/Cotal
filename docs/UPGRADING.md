@@ -292,6 +292,24 @@ with a `save` function plants it with `createManagerInstanceIdentity` or
 `createAuthInstanceIdentity`, which create the record when it is absent and otherwise return the
 stored one unchanged. Nothing replaces an overwrite of a stored identity.
 
+## Manager instance in user credentials in 0.70.0
+
+`AuthProvider.userCredentials` from `@cotal-ai/core` no longer returns `managerInstanceId`. A
+`manager-caller` credential's manager instance is the signed `act.managerInstanceId` claim in its
+bearer, which the broker verifies and the CLI already used. The reference provider in
+`@cotal-ai/auth` stops copying the exchange response's field into its result, where nothing
+compared it with the bearer. The exchange still answers with the field, so a running mesh behaves as
+before.
+
+### What stops working
+
+Code of your own that reads `managerInstanceId` from a `userCredentials` result no longer compiles,
+and plain JavaScript reads `undefined` there.
+
+### Before the upgrade
+
+Read the instance from the bearer's `act.managerInstanceId` claim.
+
 ## Carrying a resumed Claude session to another host in 0.67.0
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the
