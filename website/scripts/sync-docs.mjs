@@ -15,6 +15,7 @@ import { marked } from 'marked';
 import { parse, postprocess, preprocess } from 'micromark';
 import { gfm } from 'micromark-extension-gfm';
 import { decodeString } from 'micromark-util-decode-string';
+import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -153,17 +154,19 @@ function rewriteTarget(target, rel) {
 // The page is parsed as the site renders it (micromark with GFM), so only real link and
 // definition destinations are rewritten: code and HTML keep their text, and titled,
 // angle-bracket and reference-style links are all seen. A destination is read as the site
-// reads it, with its backslash escapes and character references decoded, and the rewritten
-// one is escaped so it parses back to the same address.
+// reads it: its backslash escapes and character references are decoded and the result is
+// percent-encoded as the renderer encodes it, so URL parsing neither strips whitespace nor
+// reads a backslash as a path separator. The rewritten one is escaped so it parses back to
+// the same address.
 function rewriteLinks(md, rel) {
   const events = postprocess(parse({ extensions: [gfm()] }).document().write(preprocess()(md, undefined, true)));
   let out = '';
   let at = 0;
   for (const [kind, { type, start, end }] of events) {
     if (kind !== 'enter' || (type !== 'resourceDestinationString' && type !== 'definitionDestinationString')) continue;
-    const target = decodeString(md.slice(start.offset, end.offset));
+    const target = normalizeUri(decodeString(md.slice(start.offset, end.offset)));
     if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/') || target.startsWith('#')) continue;
-    out += md.slice(at, start.offset) + rewriteTarget(target, rel).replace(/[\\&()]/g, '\\$&');
+    out += md.slice(at, start.offset) + rewriteTarget(target, rel).replace(/[&()]/g, '\\$&');
     at = end.offset;
   }
   return out + md.slice(at);
