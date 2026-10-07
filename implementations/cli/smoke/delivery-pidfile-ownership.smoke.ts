@@ -58,7 +58,7 @@ const PID_PATH = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: wsRoot, spa
  *  descriptor `cotal down`'s own guards are asked about. */
 const DELIVERY_ROW: LocalProcess = {
   kind: "local-process", name: "delivery", label: "delivery daemon", order: 20,
-  pidFile: DELIVERY_PIDFILE, artifacts: ["delivery.creds"],
+  pidFile: DELIVERY_PIDFILE,
 };
 const ctx = { root: wsRoot, space: SPACE };
 

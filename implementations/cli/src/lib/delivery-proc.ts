@@ -339,7 +339,6 @@ export const DELIVERY_PROCESS: LocalProcess = {
   label: "delivery daemon",
   order: 20,
   pidFile: DELIVERY_PIDFILE,
-  artifacts: ["delivery.creds"],
   isOwnCommand: commandIsCotalDelivery,
 };
 
