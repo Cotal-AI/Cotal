@@ -299,31 +299,36 @@ const INSPECT_INPUT_SCHEMA = {
   properties: { name: { type: "string", minLength: 1 } },
 } as const;
 
+/** An optional `spawn` field that is present must say something: the persona fills an omitted
+ *  field, so a blank one read as omitted would launch on a value the caller did not ask for. A
+ *  fresh object per field, because the canonical serializer refuses a shared reference as circular. */
+const nonBlank = () => ({ type: "string", pattern: "^\\s*\\S" }) as const;
+
 /** `spawn` input: EXACTLY the ctl `start` op's coercion surface (manager.ts `opStart`, the 1b
- *  fidelity oracle) — same fields, same types, nothing extra. Deep semantics (empty `resume`,
- *  connector-specific launchOptions keys) stay in the SHARED handler/connector validation. */
+ *  fidelity oracle) — same fields, same types, nothing extra. Deep semantics (connector-specific
+ *  launchOptions keys) stay in the SHARED handler/connector validation. */
 const SPAWN_INPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["name"],
   properties: {
     name: { type: "string", minLength: 1 },
-    agent: { type: "string" },
-    defaultAgent: { type: "string" },
-    role: { type: "string" },
-    config: { type: "string" },
-    identity: { type: "string" },
-    model: { type: "string" },
-    variant: { type: "string" },
+    agent: nonBlank(),
+    defaultAgent: nonBlank(),
+    role: nonBlank(),
+    config: nonBlank(),
+    identity: nonBlank(),
+    model: nonBlank(),
+    variant: nonBlank(),
     launchOptions: { type: "object" },
-    resume: { type: "string" },
+    resume: nonBlank(),
     // #1499: the one-time claim `transcript-receive` issued for carried bytes of `resume`, and the
     // agent the CLI found them with.
-    resumeClaim: { type: "string" },
-    resumeAgent: { type: "string" },
+    resumeClaim: nonBlank(),
+    resumeAgent: nonBlank(),
     events: { type: "boolean" },
-    cwd: { type: "string" },
-    prompt: { type: "string" },
+    cwd: nonBlank(),
+    prompt: nonBlank(),
     subscribe: { type: "array", items: { type: "string" } },
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
@@ -1042,7 +1047,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  23 = the reserved `cancel` (SPEC 13.6 item 4) is served for a relayed turn, so a run withdraws
  *  a turn, an ask attempt or an escalation from a branch it cancelled. A new served command cannot
- *  fold into 22. */
+ *  fold into 22.
+ *
+ *  24 = `spawn` input refuses an empty or whitespace-only value in its optional string fields. A
+ *  changed input contract is a changed described surface even though the command name is
+ *  unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1060,7 +1069,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 23,
+    revision: 24,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

@@ -61,6 +61,10 @@ absolute path on that manager's host and returns its canonical directory plus th
 refuses a relative, missing or non-directory path with `failed-precondition`; it creates nothing.
 `spawn` applies the same check at admission, before any credentials or durables are minted.
 
+`spawn` refuses an empty or whitespace-only value in any of its optional string fields, such as
+`role`, `agent` or `identity`, with `bad-request` naming the field. To take the persona file's value,
+omit the field.
+
 ### Inspecting a managed name
 
 Manager `inspect` keeps its successful response as the live managed-agent row. A live hit does

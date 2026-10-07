@@ -316,12 +316,16 @@ try {
     let badCode: string | undefined;
     try { await A.call("spawn", { name: "wp1", bogus: 1 }); } catch (e) { badCode = e instanceof EpEnvelopeError ? e.code : (e as Error).message; }
     check("an unknown spawn field is bad-request at the CALLER's own closed contract (pre-publish; the responder enforces the same digest-bound schema)", badCode === "bad-request", badCode);
-    const rEmpty = await A.call("spawn", { name: "wp1", resume: "" });
-    check("an empty resume refuses through the shared deep validation",
-      rEmpty.reply.ok === false && String(rEmpty.reply.error?.message ?? "").includes("session id must not be empty"), rEmpty.reply);
-    const rEmptyDefault = await A.call("spawn", { name: "wp1", defaultAgent: "   " });
-    check("an empty detached caller default refuses through the shared deep validation",
-      rEmptyDefault.reply.ok === false && String(rEmptyDefault.reply.error?.message ?? "").includes("defaultAgent: must not be empty"), rEmptyDefault.reply);
+    const blankRefusal = async (field: string, value: string): Promise<string | undefined> => {
+      try { await A.call("spawn", { name: "wp1", [field]: value }); } catch (e) { return e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message; }
+      return undefined;
+    };
+    const rEmpty = await blankRefusal("resume", "");
+    check("an empty resume is bad-request at the spawn contract, naming the field",
+      rEmpty?.startsWith("bad-request") === true && rEmpty.includes("/resume"), rEmpty);
+    const rEmptyRole = await blankRefusal("role", "   ");
+    check("a whitespace-only role is bad-request at the spawn contract, naming the field",
+      rEmptyRole?.startsWith("bad-request") === true && rEmptyRole.includes("/role"), rEmptyRole);
   }
 
   console.log("3. real lifecycle over ep.one: spawn -> ps/inspect -> targeted despawn");

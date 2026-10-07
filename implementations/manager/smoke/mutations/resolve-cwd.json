@@ -35,7 +35,7 @@
     {
       "name": "M3 drop the answered cwd before spawning the real seat",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        cwd: args.cwd ? String(args.cwd) : undefined,",
+      "find": "        cwd: args.cwd as string | undefined,",
       "replace": "        cwd: undefined,",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "a placed spawn's seat starts in the directory resolve-cwd answered",
