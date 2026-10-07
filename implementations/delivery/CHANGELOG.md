@@ -1,5 +1,16 @@
 # @cotal-ai/delivery
 
+## 0.72.0
+
+### Patch Changes
+
+- 00defcd: `startDeliveryService` now builds its `HostedServiceHandle` from a result the delivery runner always returns, with no cast. The runner was typed `void | HostedServiceHandle` and the hosted entry narrowed it with `as HostedServiceHandle`, so a change that sent the hosted path into the CLI's run-until-signalled wait, or returned nothing on it, still typechecked and would have left `startDeliveryService` pending forever or resolving `undefined`. The CLI runner now owns that wait itself. Behaviour is unchanged.
+- 80e54e4: The delivery daemon's transport health no longer assigns `expired = false` on a reconnect. The assignment ran only after the guard that returns while a credential expiry is pending, so it always wrote `false` over `false` and read as if a reconnect cleared an expiry. Only a proved credential adoption clears it, as before. Behavior is unchanged.
+- Updated dependencies [c5a45ab]
+- Updated dependencies [18e7e91]
+  - @cotal-ai/core@0.72.0
+  - @cotal-ai/workspace@0.72.0
+
 ## 0.71.0
 
 ### Patch Changes
