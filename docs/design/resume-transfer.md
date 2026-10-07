@@ -1,10 +1,8 @@
 # Carrying a resumed session to another manager
 
-> **Design** (non-normative, not shipped) · Phase 1 for [#1499](https://github.com/Cotal-AI/Cotal/issues/1499).
-> Measured against `22e210acd`. Phase 2 implements this record as written, in the same change, once
-> it is reviewed. Phase 2 builds the transfer that `cotal spawn --resume <id> --detach --on <instance>`
-> needs. Streaming over the same path is designed here (section 8) and is not built in this change,
-> so the change refers to #1499 and leaves it open.
+> **Design** (non-normative) · Phase 1 for [#1499](https://github.com/Cotal-AI/Cotal/issues/1499).
+> Measured against `22e210acd`. Status: the carry for `cotal spawn --resume <id> --detach --on <instance>`
+> shipped in 0.67.0. Streaming over the same path (section 8) is not built, and #1499 stays open for it.
 
 ## 0. What this settles
 
