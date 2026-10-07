@@ -332,6 +332,16 @@ function caughtEnvelope(e: unknown): EpEnvelopeError | undefined {
   }
 }
 
+/** A caught envelope's optional details. A Proxy can pass the envelope test and still throw from its
+ *  `details` getter, and the failed terminal built from them must commit either way. */
+function caughtDetails(e: unknown): EpEnvelopeError["details"] {
+  try {
+    return caughtEnvelope(e)?.details;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Run one cleanup step, recording its failure in `failed` as `<what>: <reason>`. A step that threw
  *  would otherwise skip every step after it, and a swallowed one would leave nothing to report. */
 async function attemptCleanup(failed: string[], what: string, step: () => unknown): Promise<void> {
@@ -2947,7 +2957,7 @@ export class Manager {
     };
     // A seat that may still be alive keeps this instance's leases and registration (see
     // teardownManagedAgents): they lapse on their TTL instead of being handed to a successor.
-    if (!seatFailure) {
+    if (seatFailure === undefined) {
       await step("release manager lease", () => this.releaseOwnManagerLease());
       // #1634: hand the renewal lease back on a clean stop so a sibling picks it up on its next pass
       // rather than waiting out the bucket TTL. A non-owner holds no revision and this is a no-op.
@@ -2963,14 +2973,14 @@ export class Manager {
     // released run's status write is the last thing this incarnation says about it.
     await step("stop run hosting", () => this.runHosting?.stop());
     this.runHosting = undefined;
-    if (registrationRevision !== undefined && !seatFailure)
+    if (registrationRevision !== undefined && seatFailure === undefined)
       await step("deregister service", () => this.deregisterServiceOnStop(registrationRevision));
     await step("stop goal writer", () => this.stopGoalWriter());
     await step("stop session plane", () => this.stopSessionPlane());
     await step("stop endpoint", () => this.ep.stop());
     await step("stop attach endpoint", () => this.attach.stop());
     const also = failures.length ? `; teardown also failed: ${failures.join("; ")}` : "";
-    if (seatFailure) throw new Error(`${seatFailure}${also}`);
+    if (seatFailure !== undefined) throw new Error(`${seatFailure}${also}`);
     if (releaseFailures.length)
       throw new Error(`manager shutdown could not release every detachable seat: ${releaseFailures.join("; ")}${also}`);
     if (failures.length) throw new Error(`manager shutdown incomplete: ${failures.join("; ")}`);
@@ -8572,7 +8582,7 @@ export class Manager {
       if (acceptance === undefined) { rejectAccept(e); return; }
       // Same obligation for a genuine rejection (one that escaped `run`'s own catch).
       if (!terminalEntered) {
-        const details = caughtEnvelope(e)?.details;
+        const details = caughtDetails(e);
         return onOutcome({ kind: "failed", data: { error: rejectionText(e), ...(details ? { details } : {}) } });
       }
       console.error(`! spawn-as-action async body for ${goalId}: ${rejectionText(e)}`);
