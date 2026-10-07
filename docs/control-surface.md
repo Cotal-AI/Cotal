@@ -115,7 +115,8 @@ owns. Only static managers hold these rows: a user-mode or open manager answers
 Each row carries the same `readOrder` and `consistency` fields `inspect` uses, because the list
 is read the same way: torn across rows as well as within each row's slot/head pair. A `retired`
 row is never listed. `live` reflects the manager's live roster at render time, not the durable
-row.
+row. A slot row is never deleted, so a row whose latest operation is a DEL or PURGE marker is
+corruption: the list answers `unavailable` naming that row, as `inspect` does for its name.
 
 ## Spawn is a goal
 

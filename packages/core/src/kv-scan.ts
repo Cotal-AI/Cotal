@@ -299,9 +299,16 @@ export async function liveKvEntries(
  * `history > 1` shows a key at several revisions and only the greatest decides.
  */
 export async function walkKvEntries(kv: KV, filter: string): Promise<KvEntry[]> {
+  return (await walkKvLatest(kv, filter)).filter((e) => e.operation !== "DEL" && e.operation !== "PURGE");
+}
+
+/** {@link walkKvEntries} before it drops deleted keys: the greatest revision of every key the filter
+ *  matches, DEL and PURGE markers included. For a key family whose rows are never deleted, so a
+ *  marker is corruption the caller must surface. */
+export async function walkKvLatest(kv: KV, filter: string): Promise<KvEntry[]> {
   if (!(kv instanceof Bucket))
     throw new Error(
-      `walkKvEntries needs the @nats-io/kv Bucket implementation to address its backing stream (got ${kv?.constructor?.name ?? typeof kv})`,
+      `walkKvLatest needs the @nats-io/kv Bucket implementation to address its backing stream (got ${kv?.constructor?.name ?? typeof kv})`,
     );
   const bucket: Bucket = kv;
   const subject = `${bucket.prefix}.${filter}`;
@@ -328,9 +335,7 @@ export async function walkKvEntries(kv: KV, filter: string): Promise<KvEntry[]> 
     if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
     seq = sm.seq + 1;
   }
-  const out: KvEntry[] = [];
-  for (const e of latest.values()) if (e.operation !== "DEL" && e.operation !== "PURGE") out.push(e);
-  return out;
+  return [...latest.values()];
 }
 
 /** {@link liveKvEntries}, decoded. `decode` returning `undefined` drops the entry — for callers that

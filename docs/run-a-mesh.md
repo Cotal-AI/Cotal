@@ -207,7 +207,8 @@ On an authenticated manager start, unfinished static lifecycle rows reconcile wh
 endpoint is already serving. The manager `status` response reports
 the `staticReconciliation` state, the last sweep counts, and each failed alias with its durable
 phase and literal disposition. `cotal status --components` reports the state and per-alias failure
-details. A failed exact terminal is retried in the same process after 1, 5,
+details. A slot row carrying a DEL or PURGE marker stops the sweep before it plans any alias, and
+the manager log names the row. A failed exact terminal is retried in the same process after 1, 5,
 and 30 seconds. Each attempt re-reads the durable slot and re-enters the same deterministic terminal
 operation; the delays only schedule work and never release the lifecycle fence. The terminal's
 cleanup removes the lifecycle's credential file and its broker durables and read-ACL row as separate
