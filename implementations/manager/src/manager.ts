@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, resolve } from "node:path";
+import Headless from "@xterm/headless";
 import {
   CotalEndpoint,
   MANAGED_HANDOFF_KIND,
@@ -4969,7 +4970,7 @@ export class Manager {
         restart.recovering = false;
         restart.armed = false;
         let tail = "";
-        try { tail = this.tail(await (replacement ?? a.handle).attach().backlog()); } catch { /* runtime has no readable tail */ }
+        try { tail = await this.tail((replacement ?? a.handle).attach()); } catch { /* runtime has no readable tail */ }
         console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${(error as Error).message}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
         // The replacement may be alive but unable to prove readiness. Stop it BEFORE
         // retiring credentials/durables; otherwise an untracked process survives under torn auth.
@@ -7072,7 +7073,7 @@ export class Manager {
           // waitForExit may close the attach stream before this snapshot
           let tail = "";
           try {
-            tail = this.tail(await s.backlog());
+            tail = await this.tail(s);
           } catch {}
           if (opts.reapOnExit !== false) this.onAgentExit(a);
           // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
@@ -7109,20 +7110,32 @@ export class Manager {
     });
   }
 
-  /** Last non-empty line of terminal output as a single trimmed, control-char-stripped snippet
-   *  (≤160 chars) — a readable one-line cause for an early-exit diagnostic, never the raw ANSI
-   *  scrollback. */
-  private tail(buf: Buffer): string {
-    const text =
-      buf
-        .toString("utf8")
-        .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "") // strip CSI escape sequences
-        .replace(/[^\x20-\x7e\n]/g, "") // drop other control / non-printable bytes
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .pop() ?? "";
-    return text.length > 160 ? `…${text.slice(-160)}` : text;
+  /** Last non-empty line of the session's rendered backlog as a single trimmed snippet (≤160 chars)
+   *  — a readable one-line cause for an early-exit diagnostic. The backlog repaints cells a TUI
+   *  skipped with cursor moves, so it is rendered and the line is read off the terminal; stripping
+   *  its escapes would glue the words those moves separate. */
+  private async tail(session: AttachSession): Promise<string> {
+    const backlog = await session.backlog();
+    // Sized after the snapshot: a custodial seat's snapshot carries the geometry it was taken at.
+    // The headless build exposes `buffer` only as proposed API.
+    const term = new Headless.Terminal({ cols: session.cols, rows: session.rows, allowProposedApi: true });
+    await new Promise<void>((done) => term.write(backlog, done));
+    const screen = term.buffer.active;
+    let text = "";
+    for (let y = screen.length - 1; y >= 0; y--) {
+      const row = screen.getLine(y)!;
+      // A line wider than the screen continues across wrapped rows, so it is read whole.
+      text = row.translateToString(text === "") + text;
+      if (row.isWrapped) continue;
+      // Blanks a program painted survive the right trim, so a line of only blanks is skipped.
+      if (text.trim()) break;
+      text = "";
+    }
+    term.dispose();
+    text = text.trim();
+    // Cut on code points: half a surrogate pair is not I-JSON, and a launch terminal carrying it is refused.
+    const chars = [...text];
+    return chars.length > 160 ? `…${chars.slice(-160).join("")}` : text;
   }
 
   /** Subscribe to a managed agent's process-exit so a self-driven exit frees its slot and reaps
