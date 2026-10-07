@@ -265,21 +265,23 @@ async function main(): Promise<void> {
   // which every peer's roster reads as a live agent (#544).
   process.stdin.once("end", () => void shutdown());
 
+  // Is this session consuming us as a channel? Decided once the client finishes the handshake,
+  // after its `initialize` has carried its capabilities: `connect()` resolves as soon as stdio is
+  // attached, before any client message has been read. The handlers registered above no-op until then.
+  server.server.oninitialized = () => {
+    const clientCaps = server.server.getClientCapabilities();
+    const envFlag = process.env.COTAL_CHANNEL;
+    const channelActive = envFlag
+      ? /^(1|true|yes|on)$/i.test(envFlag)
+      : Boolean((clientCaps?.experimental as Record<string, unknown> | undefined)?.["claude/channel"]);
+    wake?.setChannelActive(channelActive);
+    process.stderr.write(
+      `[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}\n`,
+    );
+  };
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
-
-  // Is this session consuming us as a channel? Only now (post-handshake) can we read the
-  // client's capabilities, so we flip the flag the nudge path is gated on. The handlers
-  // were registered above and simply no-op'd until this point.
-  const clientCaps = server.server.getClientCapabilities();
-  const envFlag = process.env.COTAL_CHANNEL;
-  const channelActive = envFlag
-    ? /^(1|true|yes|on)$/i.test(envFlag)
-    : Boolean((clientCaps?.experimental as Record<string, unknown> | undefined)?.["claude/channel"]);
-  wake?.setChannelActive(channelActive);
-  process.stderr.write(
-    `[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}\n`,
-  );
 
   process.stderr.write(
     `[cotal-connector] MCP ready (stdio) — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}\n`,
