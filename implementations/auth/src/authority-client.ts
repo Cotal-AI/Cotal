@@ -331,6 +331,8 @@ export function barrierExecutorSettlementGrants(space: string, endpoint: string,
 }
 
 export interface AuthorityClientOpts {
+  /** Package-internal connection custody for an embedded auth context. */
+  onConnection?: (nc: NatsConnection, label: string) => void;
   server: string;
   space: string;
   dataAccount: { pub: string; signingSeed: string };
@@ -450,6 +452,7 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
     if (renewal !== undefined) clearInterval(renewal);
     throw e;
   }
+  opts.onConnection?.(nc, opts.label);
   let tuple: PlaneConnTuple | undefined;
   let gone: Promise<void> | undefined;
   if (opts.planeCandidate) {
@@ -472,7 +475,9 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
     ...(gone ? { gone } : {}),
     close: async () => {
       if (renewal !== undefined) clearInterval(renewal);
-      await nc.close().catch(() => {});
+      try { await nc.close(); }
+      catch (cause) { throw new Error(`auth connection ${opts.label} failed to close`, { cause }); }
+      await nc.closed();
     },
   };
 }

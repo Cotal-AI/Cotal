@@ -167,6 +167,7 @@ export async function openAuthAdminListener(opts: {
    *  — `serveEndpoint` consumes it directly; it is the ONE authority source for what this
    *  credential may serve (SPEC 13.9). */
   grant: EpServeGrant;
+  onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): Promise<AuthAdminListener> {
   const { space, log } = opts;
@@ -178,6 +179,7 @@ export async function openAuthAdminListener(opts: {
   const client: AuthorityClient = await openAuthorityClient({
     server: opts.server, space, dataAccount: opts.dataAccount,
     label: `cotal:auth-admin:${space}`,
+    onConnection: opts.onConnection,
     grants: (id) => authAdminListenerGrants(space, id, responder),
     log,
   });

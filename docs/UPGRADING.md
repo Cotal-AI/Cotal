@@ -34,6 +34,27 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Auth context closure in 0.71.0 (unreleased)
+
+Existing deployments need no credential migration or restart for these additive APIs. Embedded
+hosts can now inspect `handle.connections()` and await `handle.closed` after `close()` or `drain()`
+to prove every owned transport ended, including the callout, replaced readiness readers and
+short-lived clients. The inventory is a detached snapshot.
+
+A transport close failure now rejects with its connection label. The terminal signal stays pending
+while any connection remains live. Repair the failure and retry `close()` before awaiting
+`handle.closed`. Closing one hosted context does not close another account's context.
+
+Read a space's claim with `readPlaneClaim(kv, space)` on that account's leader-only auth bucket.
+An unclaimed space returns `undefined`; held and released rows retain their claim identity.
+Deleted, malformed and foreign-space rows refuse. `PlaneClaimRow` and `PLANE_CLAIM_KEY` are exported.
+
+Use `observeAccountLivenessWithCreds({ servers, observerCreds, accountId, options })` with the
+account-scoped membership-observer credential to list that account's connections. It never widens
+credentials or evicts connections. Zero rows prove absence only with a complete sweep and the
+single-server proof. An embedded endpoint's trusted composition can retain transport custody
+through `EndpointOptions.onConnection`.
+
 ## Hermes model from the environment in 0.68.0
 
 A connector now launches on the model and variant its launcher resolved (the `--model` or

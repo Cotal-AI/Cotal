@@ -171,12 +171,14 @@ export async function openRecordsScannerCandidate(opts: {
   server: string;
   space: string;
   dataAccount: { pub: string; signingSeed: string };
+  onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
   /** SMOKE-ONLY scanner observation hooks. Production leaves this absent. */
   probe?: RecordsScannerProbe;
 }): Promise<RecordsScannerCandidate> {
   const client: AuthorityClient = await openAuthorityClient({
     server: opts.server, space: opts.space, dataAccount: opts.dataAccount, label: `cotal:records-scan:${opts.space}`,
+    onConnection: opts.onConnection,
     grants: (id) => recordsScannerGrants(opts.space, id), log: opts.log, planeCandidate: true,
   });
   if (client.tuple === undefined || client.gone === undefined)

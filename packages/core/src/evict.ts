@@ -436,7 +436,9 @@ interface PlaneConnzConn {
  *  reclaim keys on `(serverId, cid)` and the connection's user nkey, the freeze-holder probe keys
  *  on the attributed `principal`. Captured in ONE pass so the two verdicts can never be drawn from
  *  differently-validated observations. */
-interface SweptConn {
+export interface SweptConn {
+  /** The broker-reported connection name, when present. */
+  label?: string;
   serverId: string;
   cid: number;
   userNkey?: string;
@@ -444,7 +446,11 @@ interface SweptConn {
   principal?: string;
 }
 
-interface LivenessSweep {
+export interface LivenessSweep {
+  /** At least one server answered, even when its page was malformed. */
+  gotAnyReply: boolean;
+  /** Pagination reached its safety ceiling. False alone does not prove completeness. */
+  truncated: boolean;
   conns: SweptConn[];
   /** CONNZ OBSERVATION completeness: every round replied, well-formed, no truncation. */
   sweepComplete: boolean;
@@ -522,6 +528,7 @@ async function livenessSweep(
         const principal = principalFromConnz(c, { allowPlatform: true });
         conns.push({
           serverId, cid: c.cid,
+          ...(typeof c.name === "string" ? { label: c.name } : {}),
           ...(typeof c.authorized_user === "string" ? { userNkey: c.authorized_user } : {}),
           ...(principal === null ? {} : { principal }),
         });
@@ -549,7 +556,7 @@ async function livenessSweep(
   }
   const sweepComplete = gotAnyReply && !truncated && !malformed && !lostPage;
   return {
-    conns, sweepComplete, clusterDeclared, repliers: repliers.size,
+    conns, gotAnyReply, truncated, sweepComplete, clusterDeclared, repliers: repliers.size,
     singleServerProven: sweepComplete && !clusterDeclared && repliers.size === 1,
   };
 }
@@ -622,6 +629,31 @@ export async function observePlaneLiveness(
     sweepComplete: s.sweepComplete,
     ...(note === undefined ? {} : { note }),
   };
+}
+
+/** Observe one account's connections through the same read-only observer credential as the
+ * tuple query. The broker enforces the credential's account scope. No wildcard account request,
+ * evictor, or credential mint occurs here. Empty results prove absence only when sweepComplete
+ * and singleServerProven are both true (SPEC 13.13). */
+export async function observeAccountLivenessWithCreds(opts: {
+  servers: string;
+  observerCreds: string;
+  accountId: string;
+  options?: EvictOptions;
+}): Promise<LivenessSweep> {
+  if (!/^A[A-Z2-7]{55}$/.test(opts.accountId))
+    throw new Error("account liveness requires one account public key");
+  const observer = await connect({
+    servers: opts.servers,
+    authenticator: credsAuthenticator(enc(opts.observerCreds)),
+    inboxPrefix: MEMBERSHIP_INBOX_PREFIX,
+    maxReconnectAttempts: 0,
+  });
+  try {
+    return await livenessSweep(observer, opts.accountId, opts.options ?? {});
+  } finally {
+    await observer.drain().catch(() => observer.close());
+  }
 }
 
 /** Creds-level wrapper for the delivery daemon's admin-rail plane-liveness verb: open the $SYS

@@ -164,6 +164,20 @@ export function parsePlaneClaimRow(bytes: Uint8Array): PlaneClaimRow | undefined
   return { v: 1, generation: r.generation, claimId: r.claimId, state: r.state, ledger: r.ledger, records: r.records, openedAt: r.openedAt };
 }
 
+/** Leader-served read of one space's claim in the caller's account. No enumeration or write.
+ * Missing rows return undefined. Deleted or malformed claim rows refuse as corruption. */
+export async function readPlaneClaim(kv: KV, space: string): Promise<PlaneClaimRow | undefined> {
+  const expected = epAuthBucket(space);
+  const status = await kv.status();
+  if (status.bucket !== expected || status.streamInfo.config.allow_direct !== false)
+    throw new EpEnvelopeError("failed-precondition", `plane claim reader needs the leader-only auth bucket ${expected} for this space`);
+  const entry = await kv.get(PLANE_CLAIM_KEY);
+  if (entry === null) return undefined;
+  const row = entry.operation === "PUT" ? parsePlaneClaimRow(entry.value) : undefined;
+  if (row === undefined) throw refused("failed-precondition", "corrupt", corruptCopy(space));
+  return row;
+}
+
 const sameTuple = (a: PlaneConnTuple, b: PlaneConnTuple): boolean =>
   a.serverId === b.serverId && a.cid === b.cid && a.userNkey === b.userNkey;
 
@@ -344,6 +358,7 @@ export function makeDeliveryAdminPlaneOracle(opts: {
   space: string;
   server: string;
   dataAccount: { pub: string; signingSeed: string };
+  onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): PlaneLivenessOracle {
   const auth: SpaceAuth = {
@@ -362,6 +377,7 @@ export function makeDeliveryAdminPlaneOracle(opts: {
     try {
       const creds = await mintCreds(auth, id, "supervisor", { expiresInSeconds: ORACLE_CRED_TTL_SECONDS });
       ep = new CotalEndpoint({
+        onConnection: (nc) => opts.onConnection?.(nc, `cotal:auth-plane-oracle:${opts.space}`),
         space: opts.space,
         servers: opts.server,
         creds,
@@ -402,6 +418,7 @@ export function makeDeliveryAdminPrincipalOracle(opts: {
   space: string;
   server: string;
   dataAccount: { pub: string; signingSeed: string };
+  onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): (principal: string) => Promise<import("@cotal-ai/core").PrincipalLivenessResult> {
   const auth: SpaceAuth = {
@@ -420,6 +437,7 @@ export function makeDeliveryAdminPrincipalOracle(opts: {
     try {
       const creds = await mintCreds(auth, id, "endpoint-evictor", { expiresInSeconds: ORACLE_CRED_TTL_SECONDS });
       ep = new CotalEndpoint({
+        onConnection: (nc) => opts.onConnection?.(nc, `cotal:auth-principal-oracle:${opts.space}`),
         space: opts.space, servers: opts.server, creds,
         card: { id: id.id, name: "auth-principal-oracle", kind: "endpoint" },
         channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,

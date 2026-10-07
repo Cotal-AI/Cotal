@@ -1,0 +1,49 @@
+{
+  "suite": [
+    "implementations/auth/smoke/auth-public-closure.smoke.ts",
+    "implementations/auth/smoke/plane-claim-public.smoke.ts",
+    "implementations/auth/smoke/account-liveness-public.smoke.ts"
+  ],
+  "guard": "owned terminal closure, leader-only space claim reads and broker-enforced account sweep isolation",
+  "command": "pnpm --filter @cotal-ai/auth smoke:public-surfaces",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/auth-public-surfaces.json",
+  "why": [
+    "The real two-account fixture drives startAuthService and the package-root reader/observer. Every transport fault patches an actual live nats.js instance in memory.",
+    "M1 makes the end signal settle while the callout is still live, so cell 1a refuses the false terminal signal.",
+    "M2 selects a nonexistent claim key rather than the package key, so cell 2a observes no held row.",
+    "M3 replaces the account-scoped native CONNZ request with a server-wide request. The unchanged scoped observer credential denies it and cell 3b rejects the incomplete observation."
+  ],
+  "mutations": [
+    {
+      "name": "M1 settle closed before callout end",
+      "file": "implementations/auth/src/owned-connections.ts",
+      "find": "    this.clients.push(client);",
+      "replace": "    this.clients.push(client);\n    if (label.startsWith(\"cotal:auth-service:\")) this.resolve({ connections: this.connections() });",
+      "expectRed": "cell 1a: rejected owned close leaves closed pending",
+      "cell": "cell 1a: rejected owned close leaves closed pending",
+      "completionMarker": "auth public closure:",
+      "command": "pnpm exec tsx implementations/auth/smoke/auth-public-closure.smoke.ts"
+    },
+    {
+      "name": "M2 read wrong plane claim key",
+      "file": "implementations/auth/src/plane-claim.ts",
+      "find": "  const entry = await kv.get(PLANE_CLAIM_KEY);\n  if (entry === null) return undefined;",
+      "replace": "  const entry = await kv.get(\"plane-wrong-key\");\n  if (entry === null) return undefined;",
+      "expectRed": "cell 2a: public reader returns held row",
+      "cell": "cell 2a: public reader returns held row",
+      "completionMarker": "plane claim public:",
+      "command": "pnpm exec tsx implementations/auth/smoke/plane-claim-public.smoke.ts"
+    },
+    {
+      "name": "M3 drop account request filter",
+      "file": "packages/core/src/evict.ts",
+      "find": "      connzRequestSubject(accountId),",
+      "replace": "      \"$SYS.REQ.SERVER.PING.CONNZ\",",
+      "expectRed": "cell 3b: account filter returns complete live plane sweep",
+      "cell": "cell 3b: account filter returns complete live plane sweep",
+      "completionMarker": "account liveness public:",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/account-liveness-public.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}
