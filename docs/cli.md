@@ -2045,7 +2045,9 @@ in `--channels`. It carries no spawn, run, admin or provisioner capability. The 
 written 0600 to `--out` and never printed. Start a hand-driven connector session with it, using the
 printed `COTAL_CREDS` and `COTAL_LIFECYCLE_UID`; that session then sees the endpoint through
 `cotal_describe` and calls it through `cotal_invoke`, and the broker refuses any command its
-credential does not name. Managed `cotal spawn` agents on a static-auth mesh still cannot carry
+credential does not name. A Claude Code or jcode session also serves a local control endpoint and
+refuses to start without one: set `COTAL_CONTROL_SOCKET` to a socket path you choose and
+`COTAL_CONTROL_TOKEN` to a random secret. OpenCode, Codex and pi sessions start without them. Managed `cotal spawn` agents on a static-auth mesh still cannot carry
 endpoint capabilities, so a Linear caller is a hand-launched seat.
 
 A per-user-auth mesh is refused by both `serve` and `caller`: there, endpoint and caller credentials

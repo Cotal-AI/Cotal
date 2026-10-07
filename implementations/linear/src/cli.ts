@@ -162,6 +162,7 @@ async function caller(name: string, endpoint: string, v: Record<string, unknown>
   console.log(`  credential   ${out} (0600)`);
   console.log(`  lifecycle    ${minted.lifecycleUid}`);
   console.log(`  launch a hand-driven seat with COTAL_SERVERS=${target.server} COTAL_SPACE=${target.space} COTAL_NAME=${name} COTAL_CREDS=${out} COTAL_LIFECYCLE_UID=${minted.lifecycleUid}`);
+  console.log("  a Claude Code or jcode seat also needs COTAL_CONTROL_SOCKET=<socket path> and COTAL_CONTROL_TOKEN=<random secret>");
 }
 
 export async function linear(args: ParsedArgs): Promise<void> {
