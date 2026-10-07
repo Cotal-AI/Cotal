@@ -207,7 +207,7 @@ const proto = MeshAgent.prototype as unknown as {
     }
     check(
       "1229:e send under an unpopulated view that never populates refuses naming the view condition, not \"unknown mention\"",
-      threw.includes("unpopulated") && !threw.includes("unknown mention") && threw.includes("otto"),
+      threw.includes("initial snapshot") && !threw.includes("unknown mention") && threw.includes("otto"),
       threw,
     );
     check("1229:e the refused send never reached multicast", multicast.length === 0, multicast);
@@ -236,7 +236,7 @@ const proto = MeshAgent.prototype as unknown as {
     }
     check(
       "1229:f dm under a stale view refuses naming the stale view, not \"no peer\"",
-      threw.includes("stale") && !threw.includes("no peer") && threw.includes("otto"),
+      threw.includes("silent since") && !threw.includes("no peer") && threw.includes("otto"),
       threw,
     );
     check("1229:f the refused dm never reached unicast", unicast.length === 0, unicast);
