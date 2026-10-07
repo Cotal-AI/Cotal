@@ -205,8 +205,8 @@ export async function service(args: ParsedArgs): Promise<void> {
  *  the pre-seeded connector store beside it. */
 const serviceStateDir = (unitDir: string, mesh: string): string => join(unitDir, "cotal-service", spaceKey(mesh));
 
-/** The 0600 EnvironmentFile a unit loads: per-mesh facts never ride ExecStart argv (command
- *  lines are a publication surface on a multi-user host). */
+/** The 0600 EnvironmentFile the systemd unit loads: per-mesh facts never ride ExecStart argv
+ *  (command lines are a publication surface on a multi-user host). */
 const envFileName = (mesh: string): string => `cotal-manager@${spaceKey(mesh)}.env`;
 
 /** The installing shell's PATH, which the unit pins. A service manager hands its units its own
@@ -239,22 +239,31 @@ function installerPath(): string {
   return pinned;
 }
 
+/** The manager's environment in the unit. Both arms render this one list (systemd into the
+ *  EnvironmentFile, launchd into the plist's EnvironmentVariables), so a variable cannot reach
+ *  one platform's unit and miss the other's. */
+function unitEnv(mesh: string, server: string, stateDir: string, pathEnv: string): [name: string, value: string][] {
+  return [
+    ["PATH", pathEnv],
+    ["COTAL_SPACE", mesh],
+    // The REGISTERED server, never a default: a mesh on a non-default port would otherwise boot
+    // its unit into a permanent crash loop on the supervise target mismatch.
+    ["COTAL_SERVER", server],
+    ["COTAL_HOME", stateDir],
+    ["XDG_CONFIG_HOME", join(stateDir, "config")],
+    // Seeding ran synchronously in the installer; the unit must never start a lazy seed (a
+    // manager stopped mid-seed leaves a crash cursor every later manager refuses on).
+    ["COTAL_SKIP_CONNECTOR_SEED", "1"],
+  ];
+}
+
 function writeEnvFile(mesh: string, server: string, stateDir: string, pathEnv: string): string {
   const path = join(stateDir, envFileName(mesh));
   const body = [
     `# ${MARKER}`,
     // Double-quoted with `"` `\` `` ` `` `$` escaped, the only characters systemd unescapes inside
-    // double quotes (it does no `$VAR` expansion here), so any PATH reaches the manager verbatim.
-    `PATH="${pathEnv.replace(/["\\`$]/g, "\\$&")}"`,
-    `COTAL_SPACE=${mesh}`,
-    // The REGISTERED server, never a default: a mesh on a non-default port would otherwise boot
-    // its unit into a permanent crash loop on the supervise target mismatch.
-    `COTAL_SERVER=${server}`,
-    `COTAL_HOME=${stateDir}`,
-    `XDG_CONFIG_HOME=${join(stateDir, "config")}`,
-    // Seeding ran synchronously in the installer; the unit must never start a lazy seed (a
-    // manager stopped mid-seed leaves a crash cursor every later manager refuses on).
-    `COTAL_SKIP_CONNECTOR_SEED=1`,
+    // double quotes (it does no `$VAR` expansion here), so any value reaches the manager verbatim.
+    ...unitEnv(mesh, server, stateDir, pathEnv).map(([name, value]) => `${name}="${value.replace(/["\\`$]/g, "\\$&")}"`),
     ``,
   ].join("\n");
   writeFileSync(path, body, { mode: 0o600 });
@@ -322,7 +331,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     throw new Error(`the recorded manager for mesh "${mesh}" cannot be attributed (${incumbent.state}) - resolve \`${MANAGER_PID_PATH(mesh, root)}\` before installing the service`);
   // BEFORE anything is written: a re-exec that silently does not happen would report a
   // healthy service over nothing, so the argv is proven here, not at unit start. The mesh
-  // facts do NOT ride this argv (see the EnvironmentFile below).
+  // facts do NOT ride this argv (see unitEnv).
   const exec = [...selfArgv(), "supervise"];
   const pathEnv = installerPath();
   if (process.platform === "linux") {
@@ -383,7 +392,6 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     // Same validate-first rule as the Linux arm.
     snapshotMeshEntry(mesh, stateDir);
     preseedService(stateDir);
-    const envFile = writeEnvFile(mesh, server, stateDir, pathEnv);
     const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const body = [
       `<!-- ${MARKER} -->`,
@@ -401,12 +409,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
       `  <key>WorkingDirectory</key><string>${esc(root)}</string>`,
       `  <key>EnvironmentVariables</key>`,
       `<dict>`,
-      `    <key>PATH</key><string>${esc(pathEnv)}</string>`,
-      `    <key>COTAL_SPACE</key><string>${esc(mesh)}</string>`,
-      `    <key>COTAL_SERVER</key><string>${esc(server)}</string>`,
-      `    <key>COTAL_HOME</key><string>${esc(stateDir)}</string>`,
-      `    <key>XDG_CONFIG_HOME</key><string>${esc(join(stateDir, "config"))}</string>`,
-      `    <key>COTAL_SKIP_CONNECTOR_SEED</key><string>1</string>`,
+      ...unitEnv(mesh, server, stateDir, pathEnv).map(([name, value]) => `    <key>${name}</key><string>${esc(value)}</string>`),
       `</dict>`,
       `  <key>RunAtLoad</key><true/>`,
       `  <key>KeepAlive</key><true/>`,
@@ -419,7 +422,6 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     if (existsSync(path) && !readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:", `<!-- ${MARKER} -->`).marked)
       throw new Error(`${path} already exists and was not written by \`cotal service install\` - remove it by hand if you want this command to own it`);
     writeFileSync(path, body);
-    void envFile;
     const loaded = run("launchctl", ["load", "-w", path]);
     if (loaded.status !== 0) throw new Error(`loading ${path} failed: ${loaded.output}`);
     console.log(c.green(`✓ service installed: ${label}`) + c.dim(` - manager for mesh "${mesh}" under ${root}`));

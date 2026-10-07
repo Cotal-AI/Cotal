@@ -1559,18 +1559,19 @@ platform, or an absent systemd/launchd user session, fails with a message naming
 address, so it can be run from any directory. The mesh must be registered (`cotal up` or
 `cotal meshes add`) before installing; an unregistered name refuses before anything is written.
 
-The unit's `ExecStart` is the bare `supervise` command. The mesh facts travel in a `0600`
-`EnvironmentFile` (`COTAL_SPACE`, `COTAL_SERVER` pinned to the registered broker URL, whatever
-port it listens on) rather than the command line, because command lines are readable by every
-user on a multi-user host. The same file gives the service a private `COTAL_HOME` and
+The unit's `ExecStart` is the bare `supervise` command. The mesh facts travel in the unit's
+environment (`COTAL_SPACE`, `COTAL_SERVER` pinned to the registered broker URL, whatever port it
+listens on) rather than the command line, because command lines are readable by every user on a
+multi-user host. On Linux that environment is a `0600` `EnvironmentFile`; on macOS it is the
+plist's `EnvironmentVariables`. The same environment gives the service a private `COTAL_HOME` and
 `XDG_CONFIG_HOME` under the unit directory, so the service manager never touches the login
 user's `~/.cotal`. First-run connector seeding runs synchronously inside `service install`,
 against that private config root; the unit itself starts with `COTAL_SKIP_CONNECTOR_SEED=1`
 so a manager is never interrupted mid-seed by a restart. An install whose pre-seed cannot
 complete (network unreachable, registry error) refuses instead of deferring.
 
-The same file pins `PATH` to the `PATH` of the shell that ran `install`, and on macOS the plist's
-`EnvironmentVariables` carry it too. Without it the unit inherits the service manager's own short
+The same environment pins `PATH` to the `PATH` of the shell that ran `install`.
+Without it the unit inherits the service manager's own short
 `PATH`, which usually lacks `~/.local/bin` and Homebrew, so the manager's boot inventory would
 report a harness unavailable that your shell resolves. Install from a shell that resolves every
 harness the service should launch, and reinstall after moving one. A relative entry, including
