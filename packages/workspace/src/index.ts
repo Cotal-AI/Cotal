@@ -13,6 +13,7 @@ export * from "./official-connectors.js";
 export * from "./extensions.js";
 export * from "./materialize.js";
 export * from "./local-process.js";
+export * from "./web-session.js";
 export * from "./maintenance.js";
 export * from "./manager-shutdown.js";
 export * from "./flags.js";

@@ -21,7 +21,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -1138,14 +1138,14 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   // control surface cannot be located, which is a probe refusal rather than a not-serving answer.
   if (record.kind !== "live") throw new Error("web component record lost its live pid after classification");
   const pid = record.pid;
-  const bound = webBoundAddress(localProcessPath("web.session", context));
+  const bound = webBoundAddress(localProcessPath(WEB_SESSION_FILE, context));
   if (!bound) return { name: "web", verdict: "refused", facts: [...facts, "probe refused (no bound address recorded)"] };
   try {
     // The dashboard refuses an anonymous `/api/meta`; the readiness nonce is the one credential its
     // gate accepts there, so without it a live dashboard could only ever read as a mismatch.
     const response = await fetch(`${bound.url}api/meta`, {
       signal: AbortSignal.timeout(500),
-      headers: bound.readiness === undefined ? {} : { "x-cotal-readiness": bound.readiness },
+      headers: { [WEB_READINESS_HEADER]: bound.readiness },
     });
     const meta = await response.json() as { pid?: unknown };
     if (response.ok && meta.pid === pid) return { name: "web", verdict: "serving", facts: [...facts, `host ${bound.host}`, `port ${bound.port}`, "http reachable"] };

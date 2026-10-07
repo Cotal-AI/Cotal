@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
 import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable, registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
-import { authDir, extensionConnectors, findCotalRoot, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, resolveMeshTarget, resolveOnPath, type LocalProcessContext, type MeshEntry } from "@cotal-ai/workspace";
+import { authDir, extensionConnectors, findCotalRoot, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveMeshTarget, resolveOnPath, WEB_SESSION_FILE, type LocalProcessContext, type MeshEntry } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { resolveNatsServer } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
@@ -18,17 +17,13 @@ export interface MeshStatus {
   origin?: MeshEntry["origin"];
 }
 
-/** The address the dashboard recorded in `web.session` once `listen()` succeeded, with any readiness
- * nonce recorded beside it, or `undefined` while no whole record is readable. The dashboard truncates
- * the file before it writes the record, so a read can find it empty while the dashboard starts. A
- * record without a nonce still names the address. */
-export function webBoundAddress(path: string): { host: string; port: number; url: string; readiness?: string } | undefined {
-  try {
-    const { host, port, readiness } = JSON.parse(readFileSync(path, "utf8")) as { host?: unknown; port?: unknown; readiness?: unknown };
-    if (typeof host !== "string" || typeof port !== "number") return undefined;
-    const url = `http://${host.includes(":") ? `[${host}]` : host}:${port}/`;
-    return typeof readiness === "string" ? { host, port, url, readiness } : { host, port, url };
-  } catch { return undefined; }
+/** The address the dashboard recorded in `web.session` once `listen()` succeeded, with the readiness
+ * nonce recorded beside it, or `undefined` while no whole record is readable. */
+export function webBoundAddress(path: string): { host: string; port: number; url: string; readiness: string } | undefined {
+  const session = readWebSession(path);
+  if (!session) return undefined;
+  const { host, port, readiness } = session;
+  return { host, port, url: `http://${host.includes(":") ? `[${host}]` : host}:${port}/`, readiness };
 }
 
 /** The address a mesh's dashboard recorded once it was listening, while the pid it recorded is alive.
@@ -38,7 +33,7 @@ export function recordedWebUrl(context: LocalProcessContext): string | undefined
   const raw = readPidfile(localProcessPath("web.pid", context));
   const pid = raw === undefined ? undefined : parsePid(raw);
   if (pid === undefined || probeLiveness(pid) !== "alive") return undefined;
-  return webBoundAddress(localProcessPath("web.session", context))?.url;
+  return webBoundAddress(localProcessPath(WEB_SESSION_FILE, context))?.url;
 }
 
 /** Cheap snapshot of the mesh setup and spawn resolve for this folder. Discovered catalog brokers
