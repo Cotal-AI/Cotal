@@ -322,7 +322,9 @@ start of an upgraded root moves the record and keeps the instance. A hosted cont
 
 Code that calls `openAuthAuthorityPlane` without the new `identityRoot` option no longer compiles. A
 start that finds a record both in `.cotal/space.<hex>/` and at its older place refuses and names the
-two files.
+two files. A start also refuses when the older place of the auth or manager identity holds a symlink,
+a directory or anything else that is not a regular file. The manager used to skip a dangling symlink
+there and mint a new identity.
 
 ### Before the upgrade
 

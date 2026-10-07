@@ -396,11 +396,13 @@ function instanceIdentityOf(raw: unknown): ManagerInstanceIdentity | undefined {
  *  so it stays out of `.cotal/auth`: that folder is what an operator copies to give another root a
  *  mesh's trust, and an identity copied with it made the other root's manager this root's logical
  *  instance. An older build kept the record at a `legacy` path; the first touch moves it here, so an
- *  upgraded root restarts as the same instance (SPEC 13.6). */
+ *  upgraded root restarts as the same instance (SPEC 13.6). A `legacy` entry that is not a regular
+ *  file is refused like the record itself, so a dangling link cannot pass for a fresh root and mint
+ *  a new identity. */
 function rootIdentityFile(root: string, space: string, name: string, ...legacy: string[]): string {
   const path = join(root, ".cotal", spaceSegment(space), name);
   for (const from of legacy) {
-    if (!existsSync(from)) continue;
+    if (!hasAuthRecord(from, "an identity record")) continue;
     mkSecretDir(dirname(path));
     // A link, not a rename: it never replaces a record already at `path`, and a concurrent first
     // touch that linked first is the same inode, which tells it apart from a second record.
@@ -703,24 +705,30 @@ export function advanceSeatWriterGeneration(
   }
 }
 
-/** Read one auth-material record: the file's raw text, or undefined when absent. lstat-disciplined
- *  and framed, shared by every load/save below so the readers cannot disagree:
- *   - a non-regular entry at a trust path (symlink, directory, fifo) is REFUSED, never followed —
- *     nothing in this module writes one, so following it would trust material this module cannot
- *     vouch for (and enumeration counts the same entry as corrupt: one answer everywhere);
- *   - only ENOENT means absent; any other errno is uncertainty about trust material and throws;
- *   - the JSON parse is wrapped so a truncated/hand-edited record surfaces as one legible sentence
- *     naming the file, never a raw SyntaxError deep in a caller. */
-function readAuthRecord<T>(f: string, what: string): T | undefined {
+/** Whether a trust path holds an auth-material record, lstat-disciplined:
+ *   - a non-regular entry (symlink, directory, fifo) is REFUSED, never followed — nothing in this
+ *     module writes one, so following it would trust material this module cannot vouch for (and
+ *     enumeration counts the same entry as corrupt: one answer everywhere);
+ *   - only ENOENT means absent; any other errno is uncertainty about trust material and throws. */
+function hasAuthRecord(f: string, what: string): boolean {
   let st;
   try {
     st = lstatSync(f);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw e;
   }
   if (!st.isFile())
     throw new Error(`${f} is not a regular file - refusing to read ${what} through it; remove or restore the real record`);
+  return true;
+}
+
+/** Read one auth-material record: the file's raw text, or undefined when absent. Shared by every
+ *  load/save below so the readers cannot disagree: the entry is checked by {@link hasAuthRecord},
+ *  and the JSON parse is wrapped so a truncated/hand-edited record surfaces as one legible sentence
+ *  naming the file, never a raw SyntaxError deep in a caller. */
+function readAuthRecord<T>(f: string, what: string): T | undefined {
+  if (!hasAuthRecord(f, what)) return undefined;
   try {
     return JSON.parse(readFileSync(f, "utf8")) as T;
   } catch (e) {
