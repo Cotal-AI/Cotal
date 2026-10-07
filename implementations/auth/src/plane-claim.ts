@@ -164,6 +164,20 @@ export function parsePlaneClaimRow(bytes: Uint8Array): PlaneClaimRow | undefined
   return { v: 1, generation: r.generation, claimId: r.claimId, state: r.state, ledger: r.ledger, records: r.records, openedAt: r.openedAt };
 }
 
+/** Leader-served read of one space's claim in the caller's account. No enumeration or write.
+ * Missing rows return undefined. Deleted or malformed claim rows refuse as corruption. */
+export async function readPlaneClaim(kv: KV, space: string): Promise<PlaneClaimRow | undefined> {
+  const expected = epAuthBucket(space);
+  const status = await kv.status();
+  if (status.bucket !== expected || status.streamInfo.config.allow_direct !== false)
+    throw new EpEnvelopeError("failed-precondition", `plane claim reader needs the leader-only auth bucket ${expected} for this space`);
+  const entry = await kv.get(PLANE_CLAIM_KEY);
+  if (entry === null) return undefined;
+  const row = entry.operation === "PUT" ? parsePlaneClaimRow(entry.value) : undefined;
+  if (row === undefined) throw refused("failed-precondition", "corrupt", corruptCopy(space));
+  return row;
+}
+
 const sameTuple = (a: PlaneConnTuple, b: PlaneConnTuple): boolean =>
   a.serverId === b.serverId && a.cid === b.cid && a.userNkey === b.userNkey;
 
