@@ -90,7 +90,7 @@ export function checkServer(raw: string, what: string): Check<string> {
   if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
     return bad(`✗ ${what} scheme "${u.protocol.replace(":", "")}" is not a broker scheme - use nats://, tls://, ws:// or wss://`);
   if (u.username || u.password)
-    return bad(`✗ ${what} must not embed credentials ("${u.username}:***@…") - the registry records this URL and prints it back; pass trust material under --root instead`);
+    return bad(`✗ ${what} must not embed credentials - the registry records this URL and prints it back; pass trust material under --root instead`);
   if (u.search || u.hash)
     return bad(`✗ ${what} must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`);
   // A path is refused on nats:// and tls:// because the NATS wire protocol has no notion of one,
