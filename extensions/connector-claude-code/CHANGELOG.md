@@ -1,5 +1,12 @@
 # @cotal-ai/connector-claude-code
 
+## 0.70.1
+
+### Patch Changes
+
+- 40f637b: The Claude connector now decides whether to push `claude/channel` wake nudges when the MCP client completes its handshake. With `COTAL_CHANNEL` unset it used to read the client's capabilities as soon as stdio was attached, before `initialize` had been read, so the capability was always empty and nudges stayed off even for a client that declares `claude/channel`. `COTAL_CHANNEL` still overrides the detection, so sessions started by the Cotal launcher, which sets it to `1`, keep their nudges on.
+- 5c6c92d: The Claude Code lifecycle hook no longer loads the NATS client, zod or yaml on every event. It imports `runHookRelay` from the new `@cotal-ai/connector-core/relay` subpath, whose environment readers (`hasIdentity`, `controlFromEnv`) now live in their own module and read the launch material through the new `@cotal-ai/core/launch-material` subpath, so neither package's barrel is in the hook's graph. `dist/hook.cjs` drops from about 1.5 MB and 305 modules to about 10 kB and six, and a hook event with no mesh identity now costs what a bare `node` does. Both readers are still exported from the package root.
+
 ## 0.70.0
 
 ### Minor Changes

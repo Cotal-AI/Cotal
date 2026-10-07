@@ -1,5 +1,12 @@
 # @cotal-ai/lang
 
+## 0.70.1
+
+### Patch Changes
+
+- fe54eb0: `validate()` now refuses with L2032 a `parallel`, `race` or `fanOut` branch, or a `once` or `conclave` body, that writes a binding declared outside it through a destructuring target (`[n] = r`, `({ n } = r)`, `[o.a] = r`, nested, default and rest elements included) or through a `for (n of xs)` loop with no declaration. These writes used to validate clean and fail with L2032 only when the branch ran, after any effects dispatched before it.
+- 1ef1396: The run-time half of L2032 now gives the reason that fits the scope a write is refused in. A write from a `once` or `conclave` body, or from a `waitUntil` probe, to a binding declared or a value built outside it now says that a settled scope is replayed without entering its body, and that the value should be read out of the scope's result. That is what the static check already says for `once` and `conclave`. Before, the refusal described concurrent branches writing in completion order and suggested `race`, which only applies to `parallel`, `race` and `fanOut`. The walker and the compiled engine now share one write check and refuse the same binding write with the same message, so a program that catches L2032 reads the same text on both engines. The compiled engine used to word a binding write as a value write.
+
 ## 0.70.0
 
 ### Minor Changes
