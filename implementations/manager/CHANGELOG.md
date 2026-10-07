@@ -1,5 +1,16 @@
 # @cotal-ai/manager
 
+## 0.72.1
+
+### Patch Changes
+
+- b851d8b: Allow a spawn-scoped caller on a per-user-auth mesh to arm the event plane of a child under its own owner, including in spaces that require it. Cross-owner arming still needs admin authority, and event-channel and delegation-envelope restrictions are unchanged. Update the bundled event-plane authority documentation.
+- a06cf42: The manager's user-mode spawn provisioning declares its options and its result once, and the local and hosted enrollment arms both take those declarations. Each arm used to spell out its own inline copy, so a field added or changed on one arm still compiled while the other drifted. Runtime behavior is unchanged.
+- Updated dependencies [07fe6b3]
+  - @cotal-ai/core@0.72.1
+  - @cotal-ai/workspace@0.72.1
+  - @cotal-ai/seat@0.72.1
+
 ## 0.72.0
 
 ### Patch Changes
