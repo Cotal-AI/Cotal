@@ -6,6 +6,7 @@
  * the parent asserts on observations rather than on this child's opinion.
  */
 import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const target = process.env.COTAL_SECRETFS_INTERLEAVE_TARGET;
 const dist = process.env.COTAL_SECRETFS_INTERLEAVE_DIST;
@@ -22,9 +23,9 @@ try {
   bytes = readFileSync(target, "utf8");
 } catch {
   try {
-    const dir = target.slice(0, target.lastIndexOf("/"));
+    const dir = dirname(target);
     const squatted = readdirSync(dir).find((n) => n.startsWith("contested.secret") && n.endsWith(".tmp"));
-    bytes = squatted ? readFileSync(`${dir}/${squatted}`, "utf8") : "\u0000ABSENT";
+    bytes = squatted ? readFileSync(join(dir, squatted), "utf8") : "\u0000ABSENT";
   } catch {
     bytes = "\u0000ABSENT";
   }
