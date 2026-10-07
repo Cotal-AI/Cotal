@@ -494,8 +494,9 @@ space with more than one manager the run sends the cancel again while another ma
 until the accepting one answers. A cancel the accepting manager refuses is sent again until it
 lands or the relay's deadline passes, so the branch's cancellation does not complete while the
 seat can still be shown the relay. The run reads that deadline from the relay's goal and retries
-a failed read, since the relay may still be served until the deadline is known. A refusal that
-lasts past the deadline fails the branch's step.
+a failed read, since the relay may still be served until the deadline is known. A goal record
+that can never yield a deadline, such as one that is not JSON, fails the branch's step at once,
+and so does a refusal that lasts past the deadline.
 A `spawn` may bind its agent to a **logical worktree** (`spawn("builder", { worktree: "wt-1" })`):
 the handle carries the id, and the run enforces the one rule the language states about it: two
 agents never share a worktree concurrently. The validator rejects the literal case up front

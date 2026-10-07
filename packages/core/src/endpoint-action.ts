@@ -42,7 +42,7 @@ import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epfSubject, assertIdToken, endpointToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader, decodeEntry } from "./endpoint-records.js";
 import { epfStreamName, epfGoalBindSubject, readLastFact, parseDecisionFact } from "./endpoint-journal.js";
 import { readCheckpointSpec, readCheckpointSettle } from "./endpoint-checkpoint.js";
 import {
@@ -417,7 +417,7 @@ export async function readGoalSpec(ctx: ActionContext, ref: GoalRef): Promise<{ 
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the goal spec ${key} carries a ${entry.operation} marker; a deletion never erases an accepted goal - reconcile the store (SPEC 13.4)`);
-  return { value: parseSpec(JSON.parse(new TextDecoder().decode(entry.value)), key, snap), revision: entry.revision };
+  return { value: parseSpec(decodeEntry(entry, key), key, snap), revision: entry.revision };
 }
 
 /** The goal STATUS value: the current state projection. State-dependent fields are CLOSED. */

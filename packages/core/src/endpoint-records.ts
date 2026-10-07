@@ -652,7 +652,7 @@ export interface MergedRecord<S = unknown, T = unknown> {
   staleProjection: boolean;
 }
 
-function decodeEntry<T>(e: KvEntry, key: string): T {
+export function decodeEntry<T>(e: KvEntry, key: string): T {
   try {
     return e.json<T>();
   } catch (err) {
