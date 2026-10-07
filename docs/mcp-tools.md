@@ -399,7 +399,7 @@ List the commands a registered endpoint serves, as this session's credential see
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
-| `endpoint` | string | yes | The endpoint name, e.g. com.example.linear. |
+| `endpoint` | string | yes | The endpoint name, e.g. com.example.orders. |
 | `refresh` | boolean | no | Resolve again instead of using this session's cached surface. |
 
 ## `cotal_invoke`
@@ -414,7 +414,7 @@ Call one command on a registered endpoint with JSON arguments, over this session
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
-| `endpoint` | string | yes | The endpoint name, e.g. com.example.linear. |
+| `endpoint` | string | yes | The endpoint name, e.g. com.example.orders. |
 | `command` | string | yes | The command name from cotal_describe. |
 | `args` | record | no | The command's arguments as a JSON object. |
 | `self` | boolean | no | Targeted commands only: act on this session itself. |

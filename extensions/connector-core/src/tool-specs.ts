@@ -1699,7 +1699,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       description:
         "List the commands a registered endpoint serves, as this session's credential sees them: each command's capability, whether it is targeted, and its input schema. The surface comes from the endpoint's describe reply and the content-addressed contract store, digest-verified, never from the endpoint's own claims. Read it before cotal_invoke.",
       schema: {
-        endpoint: z.string().min(1).max(200).describe("The endpoint name, e.g. com.example.linear."),
+        endpoint: z.string().min(1).max(200).describe("The endpoint name, e.g. com.example.orders."),
         refresh: z.boolean().optional().describe("Resolve again instead of using this session's cached surface."),
       },
       async run(agent, _config, { endpoint, refresh }: { endpoint: string; refresh?: boolean }) {
@@ -1728,7 +1728,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       description:
         "Call one command on a registered endpoint with JSON arguments, over this session's own connection and grants. The arguments are checked against the command's digest-verified input schema before anything is sent, and the reply against its output schema. A failure reports its code and outcome: `not-executed` means the command did not run; `unknown` means it may have. Do not repeat a call whose outcome is unknown without checking first.",
       schema: {
-        endpoint: z.string().min(1).max(200).describe("The endpoint name, e.g. com.example.linear."),
+        endpoint: z.string().min(1).max(200).describe("The endpoint name, e.g. com.example.orders."),
         command: z.string().min(1).max(128).describe("The command name from cotal_describe."),
         args: z.record(z.string(), z.unknown()).optional().describe("The command's arguments as a JSON object."),
         self: z.boolean().optional().describe("Targeted commands only: act on this session itself."),
