@@ -30,6 +30,7 @@ import {
   createRunAdmission,
   isDerivedOwner,
   isIssuedCaller,
+  isUserNkey,
   issuedPermitsSubject,
   parseEpSubject,
   parseEndpointRequest,
@@ -142,15 +143,14 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
         typeof r.takeoverId !== "string" || !/^[0-9a-f]{16}$/.test(r.takeoverId) ||
         typeof r.epoch !== "number" || !Number.isSafeInteger(r.epoch) || r.epoch < 1 ||
         typeof r.fencingToken !== "number" || !Number.isSafeInteger(r.fencingToken) || r.fencingToken < 1 ||
-        typeof r.driverId !== "string" || !/^U[A-Z2-7]{55}$/.test(r.driverId) ||
-        typeof r.mediatorId !== "string" || !/^U[A-Z2-7]{55}$/.test(r.mediatorId) || r.driverId === r.mediatorId ||
+        !isUserNkey(r.driverId) || !isUserNkey(r.mediatorId) || r.driverId === r.mediatorId ||
         !r.holder.endsWith(`.${r.takeoverId}`))
       requestError("renewRunDriver requires valid runId, holder, takeoverId, epoch, fencingToken, and distinct driverId/mediatorId");
     run = r as unknown as NonNullable<RemoteManagerAuthorityRequest["run"]>;
   } else if (o.run !== undefined) requestError(`${o.operation} must not carry run`);
   if (o.operation === "session") {
     const s = o.session as Record<string, unknown> | undefined;
-    if (!s || typeof s.id !== "string" || !/^U[A-Z2-7]{55}$/.test(s.id) || s.endpoint !== "manager" ||
+    if (!s || !isUserNkey(s.id) || s.endpoint !== "manager" ||
         typeof s.sessionId !== "string" || s.sessionId.length === 0 || typeof s.epoch !== "number" || !Number.isSafeInteger(s.epoch) || s.epoch < 0 ||
         typeof s.exp !== "number" || !Number.isSafeInteger(s.exp) || s.exp <= 0)
       requestError("session requires { id, endpoint:\"manager\", sessionId, epoch, exp }");
@@ -161,7 +161,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     if (!r || Object.keys(r).sort().join(",") !== "id,opId,serveEpoch,target")
       requestError("retire requires retirement exactly { id, target, opId, serveEpoch }");
     const target = r.target as Record<string, unknown> | undefined;
-    if (typeof r.id !== "string" || !/^U[A-Z2-7]{55}$/.test(r.id) ||
+    if (!isUserNkey(r.id) ||
         !target || Object.keys(target).sort().join(",") !== "actor,lifecycleUid,owner" ||
         typeof target.owner !== "string" || typeof target.actor !== "string" || typeof target.lifecycleUid !== "string" ||
         typeof r.opId !== "string" || typeof r.serveEpoch !== "number" || !Number.isSafeInteger(r.serveEpoch) || r.serveEpoch < 0)
@@ -183,7 +183,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
   } else if (o.retirement !== undefined) requestError(`${o.operation} must not carry retirement`);
   if (o.operation === "transferReader") {
     const t = o.transferReader as Record<string, unknown> | undefined;
-    if (!t || Object.keys(t).join(",") !== "id" || typeof t.id !== "string" || !/^U[A-Z2-7]{55}$/.test(t.id))
+    if (!t || Object.keys(t).join(",") !== "id" || !isUserNkey(t.id))
       requestError("transferReader requires transferReader exactly { id } with a user nkey");
   } else if (o.transferReader !== undefined) requestError(`${o.operation} must not carry transferReader`);
   const identities = parseRemoteManagerIdentities(o.identities, requestError);
@@ -393,7 +393,6 @@ export async function admitRemoteRun(args: {
   }
 }
 
-const NKEY_USER = /^U[A-Z2-7]{55}$/;
 const ID_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Closed parser for {@link RemoteRunAttemptRequest}. */
@@ -417,13 +416,13 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
     const a = plain(attempt, ["runId", "takeoverId", "epoch", "fencingToken", "driverId", "mediatorId"], ["served"]);
     if (!runIdOk(a.runId) || typeof a.takeoverId !== "string" || !ID_TOKEN.test(a.takeoverId) ||
         !Number.isSafeInteger(a.epoch) || (a.epoch as number) < 1 || !Number.isSafeInteger(a.fencingToken) || (a.fencingToken as number) < 1 ||
-        typeof a.driverId !== "string" || !NKEY_USER.test(a.driverId) || typeof a.mediatorId !== "string" || !NKEY_USER.test(a.mediatorId) || a.driverId === a.mediatorId)
+        !isUserNkey(a.driverId) || !isUserNkey(a.mediatorId) || a.driverId === a.mediatorId)
       admissionError("attempt requires a run id, takeover id, positive epoch/fencingToken and distinct driver/mediator nkeys");
     if (!servedOk(a.served)) admissionError("attempt served must be a request subject");
     return { ...registered, kind: "manager-run-attempt", attempt: { runId: a.runId as string, takeoverId: a.takeoverId, epoch: a.epoch as number, fencingToken: a.fencingToken as number, driverId: a.driverId, mediatorId: a.mediatorId, ...(a.served !== undefined ? { served: a.served as string } : {}) } };
   }
   const op = plain(operator, ["id", "takeoverId"], ["runId", "answers", "served"]);
-  if (typeof op.id !== "string" || !NKEY_USER.test(op.id) || typeof op.takeoverId !== "string" || !ID_TOKEN.test(op.takeoverId) ||
+  if (!isUserNkey(op.id) || typeof op.takeoverId !== "string" || !ID_TOKEN.test(op.takeoverId) ||
       (op.runId !== undefined && !runIdOk(op.runId)))
     admissionError("operator requires an nkey id, a takeover id and an optional run id");
   let answers: { runId: string; stepKey: string; amend?: true } | undefined;

@@ -26,6 +26,12 @@ export function newIdentity(): Identity {
   return { id: kp.getPublicKey(), seed };
 }
 
+/** The wire rule for a user nkey public key (`U…`), shared by every parser. It checks shape
+ *  only; `fromPublic` also verifies the checksum. */
+export function isUserNkey(value: unknown): value is string {
+  return typeof value === "string" && /^U[A-Z2-7]{55}$/.test(value);
+}
+
 /** The signing half an authority-bearing artifact needs: `signArtifact` / `mintSessionGrant`
  *  take exactly `{ sign(input): Uint8Array }`, and the matching `publicKey` is what the
  *  verifying anchor pins. An nkey KeyPair already satisfies both; this narrows it to the

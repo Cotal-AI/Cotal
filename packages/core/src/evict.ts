@@ -32,6 +32,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { isUserNkey } from "./identity.js";
 import { connzRequestSubject, isPrincipalOwnerToken, parsePrincipalKey, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -393,7 +394,7 @@ export function isPlaneConnTuple(v: unknown): v is PlaneConnTuple {
   return (
     typeof t.serverId === "string" && t.serverId.length > 0 && t.serverId.length <= 128 &&
     typeof t.cid === "number" && Number.isSafeInteger(t.cid) && t.cid > 0 &&
-    typeof t.userNkey === "string" && /^U[A-Z2-7]{55}$/.test(t.userNkey)
+    isUserNkey(t.userNkey)
   );
 }
 

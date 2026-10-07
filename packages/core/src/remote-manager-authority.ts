@@ -1,5 +1,6 @@
 import { rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
+import { isUserNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
 
 /**
@@ -471,7 +472,7 @@ export function parseRemoteManagerIdentities(raw: unknown, fail: (detail: string
     if (item === null || typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).join(",") !== "id")
       fail(`identities.${name} must be exactly { id }`);
     const id = (item as { id?: unknown }).id;
-    if (typeof id !== "string" || !/^U[A-Z2-7]{55}$/.test(id)) fail(`identities.${name}.id must be a user nkey`);
+    if (!isUserNkey(id)) fail(`identities.${name}.id must be a user nkey`);
     identities[name] = { id };
   }
   return identities;
