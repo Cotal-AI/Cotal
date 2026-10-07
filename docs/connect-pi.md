@@ -43,6 +43,12 @@ boundary. The Pi-local ledger commits those IDs through `MeshAgent.drainInboxIds
 only exact matches even when quiet ambient is physically interleaved or older IDs were overflow-
 evicted. Missing confirmed IDs are marked handled and tombstoned so late copies cannot resurface.
 
+A run turn rides the batch that carries it and counts as shown once the provider takes that batch's
+request: at a successful `after_provider_response`, or, on a transport without that hook, when Pi
+runs a tool from the answer or reaches the clean terminal boundary. The seat can therefore
+`cotal_yield` it during the Pi turn that carries it. A batch the provider never takes leaves the run
+turn unshown, and a later batch carries it again.
+
 Pi emits `agent_end` to extensions without exposing whether it will retry. Error and unknown
 reasons, and zero/missing-output `length`, therefore retain the delivery association in `waiting`
 while the driver itself attempts the continuation: it re-dispatches the retained batch through the

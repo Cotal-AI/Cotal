@@ -42,8 +42,9 @@ interface Batch {
   started: boolean;
   confirmed: boolean;
   watchdog?: ReturnType<typeof setTimeout>;
-  /** Run-turn goal ids riding this batch; they commit as surfaced only when the batch confirms
-   *  (two-phase — a lost batch re-surfaces them instead of arming a `done` for unseen work). */
+  /** Run-turn goal ids riding this batch; they commit as surfaced only once the provider took the
+   *  request carrying it (two-phase — a lost batch re-surfaces them instead of arming a `done` for
+   *  unseen work). */
   turnIds?: string[];
 }
 
@@ -193,7 +194,7 @@ export class PiDriver {
     if (status >= 200 && status < 300) {
       for (const id of this.requestBatchIds) {
         const batch = this.batches.find((candidate) => candidate.id === id);
-        if (batch) batch.confirmed = true;
+        if (batch) this.confirm(batch);
       }
     } else {
       for (const id of this.requestBatchIds) this.terminalEvidenceBatchIds.delete(id);
@@ -208,6 +209,13 @@ export class PiDriver {
 
   onToolStart(name: string): void {
     if (this._state === "shuttingDown") return;
+    // A transport without after_provider_response confirms nothing before agent end, but Pi runs a
+    // tool only from a clean answer to the request that carried these batches. Their run turns are
+    // seen, and cotal_yield is itself a tool, so it must find them surfaced.
+    for (const id of this.requestBatchIds) {
+      const turnIds = this.batches.find((candidate) => candidate.id === id)?.turnIds;
+      if (turnIds) this.mesh.commitSurfacedTurns(turnIds);
+    }
     this.enqueuePresence("working", `running ${name || "tool"}`);
   }
 
@@ -263,7 +271,7 @@ export class PiDriver {
 
     for (const id of this.terminalEvidenceBatchIds) {
       const batch = this.batches.find((candidate) => candidate.id === id);
-      if (batch) batch.confirmed = true;
+      if (batch) this.confirm(batch);
     }
     this.terminalEvidenceBatchIds.clear();
     this.pendingContinuation = false;
@@ -352,14 +360,20 @@ export class PiDriver {
     }
   }
 
+  /** Surfacing at confirmation, not at agent end: a confirmation lets `pump` run mid-turn, which
+   *  would steer a still-unsurfaced turn in again, and the model's own cotal_yield inside this Pi
+   *  turn is refused for a turn that is not surfaced yet. */
+  private confirm(batch: Batch): void {
+    batch.confirmed = true;
+    if (batch.turnIds) this.mesh.commitSurfacedTurns(batch.turnIds);
+  }
+
   private finalizeEnd(context: PiContextLike): void {
     if (this._state === "shuttingDown") return;
     if (this.overflowRetry) return;
     const confirmed = this.batches.filter((batch) => batch.confirmed);
     const ids = confirmed.flatMap((batch) => batch.ids);
     const committed = this.inbox.commitConfirmed(ids);
-    const confirmedTurnIds = confirmed.flatMap((batch) => batch.turnIds ?? []);
-    if (confirmedTurnIds.length) this.mesh.commitSurfacedTurns(confirmedTurnIds);
     this.batches = this.batches.filter((batch) => !batch.confirmed);
 
     if (this.batches.length > 0) {
