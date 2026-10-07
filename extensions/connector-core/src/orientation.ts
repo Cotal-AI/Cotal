@@ -9,7 +9,7 @@
  * The typed {@link Orientation} object is the source of truth; {@link renderOrientation} is one view of
  * it (the text the model reads). A future MCP resource can JSON-stringify the object directly.
  */
-import type { AttentionMode, PresenceStatus } from "@cotal-ai/core";
+import { peerLabel, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
 import { presenceViewCondition, type MeshAgent } from "./agent.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { DOCS_VERSION } from "./docs.js";
@@ -135,7 +135,7 @@ export function buildOrientation(
   const peers = agent.roster().filter((p) => p.card.id !== agent.id);
   const shown = peers
     .slice(0, 8)
-    .map((p) => `${p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name} (${honestStatus(p.status)})`);
+    .map((p) => `${peerLabel(p.card)} (${honestStatus(p.status)})`);
   const summary = peers.length
     ? shown.join(", ") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : "")
     : "no other peers present";
@@ -172,7 +172,7 @@ export function buildOrientation(
 /** Render the card as compact, glanceable text — the view the model reads. */
 export function renderOrientation(o: Orientation): string {
   const fmt = (cs: string[]) => (cs.length ? cs.map((c) => `#${c}`).join(", ") : "—");
-  const who = o.identity.role ? `${o.identity.name}/${o.identity.role}` : o.identity.name;
+  const who = peerLabel(o.identity);
   const aclDiffers =
     o.access.readAcl.length !== o.access.read.length ||
     o.access.readAcl.some((c) => !o.access.read.includes(c));

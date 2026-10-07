@@ -1,4 +1,4 @@
-import { type ParsedArgs, type Presence } from "@cotal-ai/core";
+import { peerLabel, type ParsedArgs, type Presence } from "@cotal-ai/core";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
 
@@ -26,11 +26,10 @@ export function printEndpoints(roster: Presence[], space: string): void {
   }
   const rows = roster
     .map((presence) => {
-      const role = presence.card.role ? `/${presence.card.role}` : "";
       const duplicate = (counts.get(presence.card.name.toLowerCase()) ?? 0) > 1;
       return {
         presence,
-        label: `${presence.card.name}${role}${duplicate ? ` [${presence.card.id}]` : ""}`,
+        label: `${peerLabel(presence.card)}${duplicate ? ` [${presence.card.id}]` : ""}`,
         kind: presence.card.kind ?? "endpoint",
       };
     })

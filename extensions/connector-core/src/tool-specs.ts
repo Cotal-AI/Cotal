@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -804,7 +804,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           counts.set(n, (counts.get(n) ?? 0) + 1);
         }
         const lines = roster.map((p) => {
-          const who = p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name;
+          const who = peerLabel(p.card);
           const isMe = p.card.id === agent.id;
           const me = isMe ? ` (you${agent.attention !== "open" ? `, ${agent.attention}` : ""})` : "";
           const id = (counts.get(p.card.name.toLowerCase()) ?? 0) > 1 ? ` — id: ${p.card.id}` : "";
@@ -1063,7 +1063,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         } catch (e) {
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates
-              .map((c) => `  • ${c.name}${c.role ? `/${c.role}` : ""} (${c.status}) — id: ${c.id}`)
+              .map((c) => `  • ${peerLabel(c)} (${c.status}) — id: ${c.id}`)
               .join("\n");
             return err(
               `"${e.target}" is ambiguous — ${e.candidates.length} peers share that name. ` +
@@ -1334,7 +1334,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           const d = reply.data as { name?: string; mode?: string; model?: string; actor?: string; executor?: { lifecycleUid: string } } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
-          const who = role ? `${actual}/${role}` : actual;
+          const who = peerLabel({ name: actual, role });
           // Make the rename unmissable: a colliding caller must see it asked for `name` but got
           // `actual`, not silently address the wrong peer later (the tool result is the only channel).
           const lead = actual !== name ? `"${name}" was taken — spawning ${who} instead` : `Spawning ${who}`;

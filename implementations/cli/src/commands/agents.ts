@@ -1,4 +1,4 @@
-import { dialerFor, mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
+import { dialerFor, mintCreds, newIdentity, openSessionRail, peerLabel, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
 import { ConnectRefusal, divergentCwdAnchor, isWorkspaceTargetError, loadMeshes, renderWorkspaceError, targetFlags, userSessionAuth } from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c, presenceDetail } from "../ui.js";
@@ -341,7 +341,7 @@ function printAgentRow(r: AgentRow, indent = ""): void {
   // triages "definitely broken" before "might be".
   const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
   console.log(
-    `${indent}${c.bold(r.name)}${r.role ? c.dim("/" + r.role) : ""}  ${c.dim(
+    `${indent}${c.bold(peerLabel(r))}  ${c.dim(
       agentIdentity(r),
     )}  ${proc}  ${mesh}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
   );

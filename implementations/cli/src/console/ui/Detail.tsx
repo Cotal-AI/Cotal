@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import { Box, Text } from "ink";
-import type { Presence } from "@cotal-ai/core";
+import { peerLabel, type Presence } from "@cotal-ai/core";
 import type { FeedEntry } from "../mesh.js";
 import { agentColor, STATUS, ago, fmtTime, wrapText } from "./theme.js";
 
@@ -36,7 +36,6 @@ function deliveryTarget(e: FeedEntry) {
 }
 
 function MessageDetail({ entry, width }: { entry: FeedEntry; width: number }) {
-  const role = entry.from.role && entry.from.role !== entry.from.name ? "/" + entry.from.role : "";
   return (
     <Box flexDirection="column">
       <Field label="delivery">
@@ -47,8 +46,8 @@ function MessageDetail({ entry, width }: { entry: FeedEntry; width: number }) {
       </Field>
       <Field label="from">
         <Text>
-          <Text color={agentColor(entry.from.name)}>{entry.from.name}</Text>
-          <Text dimColor>{role + "  " + entry.from.id}</Text>
+          <Text color={agentColor(entry.from.name)}>{peerLabel(entry.from)}</Text>
+          <Text dimColor>{"  " + entry.from.id}</Text>
         </Text>
       </Field>
       <Field label="to">{deliveryTarget(entry)}</Field>

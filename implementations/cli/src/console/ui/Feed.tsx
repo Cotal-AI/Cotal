@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
+import { peerLabel } from "@cotal-ai/core";
 import type { FeedEntry } from "../mesh.js";
 import { agentColor, fmtTime, wrapText } from "./theme.js";
 
@@ -59,21 +60,20 @@ function targetText(e: FeedEntry): string {
 }
 
 function HeadRow({ entry, selected }: { entry: FeedEntry; selected: boolean }) {
-  const role = entry.from.role && entry.from.role !== entry.from.name ? "/" + entry.from.role : "";
+  const label = peerLabel(entry.from);
   // Selected: one uniform cyan bar (like the tabs) — no per-segment colors to invert into a
   // multi-color mess. Unselected: the normal colored composition.
   if (selected) {
     return (
       <Text inverse bold color="cyan" wrap="truncate-end">
-        {fmtTime(entry.ts) + " " + entry.from.name + role + " → " + targetText(entry) + ":"}
+        {fmtTime(entry.ts) + " " + label + " → " + targetText(entry) + ":"}
       </Text>
     );
   }
   return (
     <Text wrap="truncate-end">
       <Text dimColor>{fmtTime(entry.ts) + " "}</Text>
-      <Text color={agentColor(entry.from.name)}>{entry.from.name}</Text>
-      {role ? <Text dimColor>{role}</Text> : null}
+      <Text color={agentColor(entry.from.name)}>{label}</Text>
       <Text dimColor> → </Text>
       <Target entry={entry} />
       <Text dimColor>:</Text>
