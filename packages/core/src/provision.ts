@@ -2176,7 +2176,7 @@ function purgerPermissions(space: string, pr: MintPrincipal): Record<string, unk
         `$JS.API.STREAM.PURGE.${DM}`, // clearSpaceHistory includeDms — the isolated DM-purge grant
       ],
       // NOTE: this profile does NOT cover `clearChannel` (web/`down -f` channel-delete) — that also does a
-      // `$KV.<channelBucket>.<ch>` registry delete this cred lacks; it stays on the broad operator/CLI cred.
+      // `$KV.<channelBucket>.<ch>` registry delete this cred lacks, which `channel-purger` and `teardown` hold.
     },
     sub: { allow: [`_INBOX_${pr.connId}.>`] },
   };
