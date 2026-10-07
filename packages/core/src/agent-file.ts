@@ -74,9 +74,9 @@ export interface AgentDef {
    *  manifest `launchOptions:`, or a nested `launchOptions:` block here all feed the same bag. */
   launchOptions?: Record<string, unknown>;
   /** Capabilities this agent may exercise on the control plane (auth mode → minted into the
-   *  cred's publish allow-list). Today `spawn` is the only one: it grants publish to the
-   *  privileged control subject (start/purge/definePersona/named stop). Default-deny when
-   *  absent — nats-server, not a handler, is the boundary. Granting authority is operator-level
+   *  cred's publish allow-list). `spawn` grants the manager's `spawnCallerCapabilities` ep rows
+   *  and `run` the `runCallerCapabilities` rows (the run commands plus the spawn set). Default-deny
+   *  when absent — nats-server, not a handler, is the boundary. Granting authority is operator-level
    *  (`definePersona` is itself privileged), so no peer can self-grant via its own agent file.
    *  NOTE: because launchOptions is a raw passthrough, `spawn` is HOST-LAUNCH AUTHORITY — its holder
    *  can drive the connector's full launch surface on the manager host (Claude `--mcp-config` /

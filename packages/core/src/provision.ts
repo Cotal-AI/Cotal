@@ -124,10 +124,10 @@ export type Profile =
   | "channel-writer" // channel-registry value-writes (channels set/default, spawn -f seed)
   | "channel-purger" // channel-writer + STREAM.PURGE.CHAT (web channel-delete)
   | "teardown" // the SOLE STREAM.DELETE holder (down -f space teardown)
-  // Control callers — the manager's control tiers are SUBJECT-gated (holding the tier's pub grant IS
-  // the authority), so ps/start and stop/attach get SEPARATE, tier-scoped caller creds.
-  | "control-caller-privileged" // ps/start → ctl.<privileged>.<id> only (no cross-agent reach)
-  | "control-caller-admin" // stop/attach → ctl.<admin>.<id> only (cross-agent power)
+  // Control callers — each holds its tier's `operatorInstrumentCapabilities` ep rows, and an any-mode
+  // row IS cross-agent reach, so ps/start and stop/attach get SEPARATE, tier-scoped caller creds.
+  | "control-caller-privileged" // ps/start → the privileged instrument set, no any-mode row (no cross-agent reach)
+  | "control-caller-admin" // stop/attach → the admin instrument set, adding the any-mode rows + manager.admin (cross-agent power)
   | "deployer" // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
   // v0.4 control surface (SPEC §13.9): the per-instance endpoint serve credential — EXACTLY the
   // instance's registered rails + epoch-pinned egress, no agent baseline. Consumes only an
@@ -574,9 +574,9 @@ export interface MintOpts {
   allowPublish?: string[];
   /** The agent's role — scopes its TASK-queue consumer to svc_<role>. */
   role?: string;
-  /** Capabilities declared in the agent file (e.g. `"spawn"`). A capability gates the
-   *  privileged control-subject grant in {@link permissionsFor}: `spawn` → the agent may
-   *  publish to the privileged control subject (start/purge/definePersona/named stop).
+  /** Capabilities declared in the agent file (e.g. `"spawn"`). Each gates a set of manager ep
+   *  caller rows in {@link permissionsFor}: `spawn` → {@link spawnCallerCapabilities}, `run` →
+   *  {@link runCallerCapabilities}, `admin` → the admin {@link operatorInstrumentCapabilities} set.
    *  Default-deny when absent — nats-server rejects the publish, no handler involved. */
   capabilities?: string[];
   /** v0.4 endpoint request capabilities (SPEC §13.9 caller rows): each mints its exact
@@ -1499,9 +1499,8 @@ export function permissionsFor(
     for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
   }
   if (opts.capabilities?.includes("admin"))
-    // The admin capability's ep mirror: the v0.3 `ctl.<admin>`
-    // subject above grants the FULL admin-tier op reach, so its holder gets the admin instrument
-    // set on the ep rails — any-mode despawn/attach + the `manager.admin` family + the reads. In
+    // The admin capability grants the admin instrument set on the ep rails, the set a
+    // `control-caller-admin` holds — the any-mode rows + the `manager.admin` family + the reads. In
     // user mode this is the ledger `admin` scope arriving via the callout, the broker-enforced
     // half of the tier; the manager's ledger-derived per-op admin flag stays on top of it.
     {
@@ -1589,9 +1588,12 @@ function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOp
 /** The long-lived SUPERVISOR permission set — the always-on manager daemon
  *  (`manager.ts` `this.ep`), carved down from the former allow-all `manager`. Its breadth is
  *  STANDING, so tightening it removes the always-on DM/DLV body-read AND the stream-admin tamper
- *  from the one connection that never goes away. It does exactly three things — serve
- *  the three lifecycle control tiers (bounded replies), hold the singleton manager lease, and publish +
- *  watch presence (the roster) — and nothing else. Provisioning (DM/DLV/TASK consumer-create + ACL
+ *  from the one connection that never goes away. It holds the manager bucket's `lease.*` instance keys
+ *  and the per-space renewal lease key, its own presence key + the roster watch, the ONE delivery-admin
+ *  call (request + bounded reply subtree), the manager-plane liveness serve + reply rows, and a
+ *  read-only point read of the delivery lease row — and nothing else. It serves no manager control:
+ *  that is the v0.4 `service` endpoint, served on a SEPARATE connection under its own
+ *  `endpoint-serve` credential. Provisioning (DM/DLV/TASK consumer-create + ACL
  *  writes) moves to the EPHEMERAL `provisioner` (opened per-spawn); destructive history-purge moves to the
  *  EPHEMERAL `purger`. So the supervisor holds NO chat/inst/svc publish (it never posts — only
  *  `setActivity`, a presence write), NO DM/DLV read of any kind (no consumer-create, no native sub), NO
@@ -1602,10 +1604,6 @@ function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOp
 function supervisorPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
   const PKV = `KV_${presenceBucket(space)}`, MKV = `KV_${managerBucket(space)}`;
   const SUP_DLVKV = `KV_${deliveryBucket(space)}`;
-  // The supervisor no longer serves the manager control tiers — the manager's control surface
-  // is its v0.4 `service` endpoint, served on a SEPARATE connection under its own `endpoint-serve`
-  // credential (its rails are that credential's grant, not the supervisor's). The supervisor now
-  // holds only the lease, presence, and the ONE delivery-admin call.
   return {
     pub: {
       allow: [
