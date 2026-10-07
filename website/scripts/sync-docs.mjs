@@ -160,8 +160,8 @@ function rewriteTarget(target, rel) {
 // it, so URL parsing neither strips whitespace nor reads a backslash as a path separator. The
 // rewritten one is escaped so it parses back to the same address.
 function rewriteLinks(md, rel) {
-  // micromark skips a leading BOM, so its offsets count from after it.
-  md = md.replace(/^\uFEFF/, '');
+  // micromark skips one leading BOM and counts offsets from after it, so none may remain.
+  md = md.replace(/^\uFEFF+/, '');
   const events = postprocess(parse({ extensions: [gfm()] }).document().write(preprocess()(md, undefined, true)));
   let out = '';
   let at = 0;
