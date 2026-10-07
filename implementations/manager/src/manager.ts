@@ -6337,9 +6337,9 @@ export class Manager {
         return { ok: false, agents: [], error: `unsupported manager resume inventory version ${String(inventory.version)}` };
       if (inventory.space !== this.space)
         return { ok: false, agents: [], error: `resume inventory belongs to space "${inventory.space}", not "${this.space}"` };
-      // The caller keeps its inventory, so each selection is copied before the first await: a later
-      // write to it cannot change what a resumed seat shares or what the next preservation retains.
-      const entries = inventory.agents.map((entry) => ({ ...entry, launch: { ...entry.launch, shareTools: entry.launch.shareTools && [...entry.launch.shareTools] } }));
+      // The caller keeps its inventory, so it is copied before the first await: a later write to it
+      // cannot change what a resumed seat launches with or what the next preservation retains.
+      const entries = structuredClone(inventory.agents);
       const seen = new Set<string>();
       const principals = new Set<string>();
       const orphans: Array<{ principal: string; reference: RuntimeReference }> = [];
