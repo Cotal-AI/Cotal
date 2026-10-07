@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.72.1
+
+### Patch Changes
+
+- 07fe6b3: A followed call to a manager that does not serve `goal-result` is now refused by one core check, `goalFollowRefusal`, on every path. Before, core and the user-credential connector path each built their own copy of the refusal, before the first submission and again after re-resolving, and the connector's copy was worded differently. A user-credential spawn now gets the same `failed-precondition` refusal, with the same message, as a static-credential one.
+
 ## 0.72.0
 
 ### Minor Changes
